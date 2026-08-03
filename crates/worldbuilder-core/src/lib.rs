@@ -68,7 +68,7 @@ impl CoreService {
     }
 
     pub fn project(&self, context: AuthorityContext) -> Result<&ProjectStore, CoreError> {
-        self.require_trusted_shell(context, "access project")?;
+        self.require_project_access(context, "access project")?;
         self.project.as_ref().ok_or(CoreError::ProjectNotOpen)
     }
 
@@ -76,7 +76,7 @@ impl CoreService {
         &mut self,
         context: AuthorityContext,
     ) -> Result<&mut ProjectStore, CoreError> {
-        self.require_trusted_shell(context, "mutate project")?;
+        self.require_project_access(context, "mutate project")?;
         self.project.as_mut().ok_or(CoreError::ProjectNotOpen)
     }
 
@@ -86,6 +86,21 @@ impl CoreService {
         operation: &'static str,
     ) -> Result<(), CoreError> {
         if context.authority() == Authority::TrustedShell {
+            Ok(())
+        } else {
+            Err(CoreError::Unauthorized { operation })
+        }
+    }
+
+    fn require_project_access(
+        &self,
+        context: AuthorityContext,
+        operation: &'static str,
+    ) -> Result<(), CoreError> {
+        if matches!(
+            context.authority(),
+            Authority::TrustedShell | Authority::Plugin
+        ) {
             Ok(())
         } else {
             Err(CoreError::Unauthorized { operation })
@@ -144,5 +159,22 @@ mod tests {
         for worker in workers {
             assert!(worker.join().unwrap().is_empty());
         }
+    }
+
+    #[test]
+    fn plugin_authority_can_use_an_open_project_but_cannot_control_lifecycle() {
+        let mut service = CoreService::new();
+        service
+            .open_memory(AuthorityContext::trusted_shell())
+            .unwrap();
+        assert!(service.project(AuthorityContext::plugin()).is_ok());
+        assert!(matches!(
+            service.open_memory(AuthorityContext::plugin()),
+            Err(CoreError::Unauthorized { .. })
+        ));
+        assert!(matches!(
+            service.close(AuthorityContext::plugin()),
+            Err(CoreError::Unauthorized { .. })
+        ));
     }
 }

@@ -1,26 +1,12 @@
-import type { ModuleContext, ModuleId, WorldbuilderModule, ModuleView } from "../../../module-api/src/index";
+import type { ModuleContext, WorldbuilderModule } from "../../../module-api/src/index";
+import type { ModuleManifest } from "../../../module-api/src/index";
 import { compareCalendarDates, formatCalendarDate } from "../../../../src/lib/date";
+import manifestJson from "../manifest.json";
 
-const id = "worldbuilder.timeline" as ModuleId;
+const manifest = manifestJson as unknown as ModuleManifest;
 
 export const timeline: WorldbuilderModule = {
-  manifest: {
-    id,
-    name: "Timeline",
-    version: "0.1.0",
-    apiVersion: "1",
-    capabilities: ["entity.read", "entity.write", "document.read", "document.write", "relationship.read", "relationship.write", "asset.read", "asset.write", "search.query"],
-    schemas: [{
-      namespace: "timeline",
-      entityTypes: ["event"],
-      fields: [
-        { key: "startsAt", label: "Starts", type: "date", required: true },
-        { key: "endsAt", label: "Ends", type: "date" },
-      ],
-    }],
-    templates: [{ id: "event", name: "Timeline event", entityType: "event", fields: { startsAt: "", endsAt: "" } }],
-    migrations: [{ id: "timeline-v1", from: 0, to: 1, recovery: "backup", operations: [{ kind: "create-namespace", namespace: "timeline" }] }],
-  },
+  manifest,
   views: [{
     id: "timeline-events",
     title: "Timeline Events",

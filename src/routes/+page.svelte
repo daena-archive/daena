@@ -64,7 +64,8 @@
     const id = currentSection === "lore" ? "worldbuilder.lore" : "worldbuilder.timeline";
     const module = bundledModules.find((candidate) => candidate.manifest.id === id);
     if (!module) throw new Error(`Unknown module: ${id}`);
-    return buildModuleContext(module.manifest);
+    if (!projectInfo?.root) throw new Error("No project is open");
+    return buildModuleContext(module.manifest, projectInfo.root);
   }
 
   function sectionEnabled() { return modules.find((module) => module.id === activeModuleId())?.enabled ?? false; }
@@ -174,13 +175,14 @@
   }
 
   async function finishOpening(info?: ProjectInfo) {
+    projectInfo = info ?? await project.info();
+    if (!projectInfo) throw new Error("The project did not return an identity");
     modules = await project.listModuleManifests();
     for (const module of bundledModules) if (modules.find((candidate) => candidate.id === module.manifest.id)?.enabled) {
       await project.enableModule(module.manifest.id);
-      await moduleRegistry.enable(module.manifest.id, buildModuleContext(module.manifest));
+      await moduleRegistry.enable(module.manifest.id, buildModuleContext(module.manifest, projectInfo.root));
     }
-    projectInfo = info ?? await project.info();
-    if (projectInfo) rememberProject(projectInfo);
+    rememberProject(projectInfo);
     await loadEntities();
     await refreshGit();
     ready = true;
@@ -332,7 +334,7 @@
     const installed = modules.find((module) => module.id === id);
     try {
       if (installed?.enabled) { await project.disableModule(id); moduleRegistry.disable(id); }
-      else { await project.enableModule(id); const module = bundledModules.find((candidate) => candidate.manifest.id === id); if (module) await moduleRegistry.enable(id, buildModuleContext(module.manifest)); }
+      else { await project.enableModule(id); const module = bundledModules.find((candidate) => candidate.manifest.id === id); if (module && projectInfo) await moduleRegistry.enable(id, buildModuleContext(module.manifest, projectInfo.root)); }
       modules = await project.listModuleManifests();
       if (!sectionEnabled()) selected = null;
     } catch (cause) { error = friendlyError(cause); }

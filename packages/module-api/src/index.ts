@@ -1,15 +1,9 @@
+export type { PluginManifest, FieldDefinition, SchemaContribution, EntityTemplate, Migration, MigrationOperation, View, Command, Service, Event, Services, Events } from "../../plugin-sdk/src/generated";
+import type { PluginManifest, Migration } from "../../plugin-sdk/src/generated";
+
 export type UUID = string & { readonly __brand: "UUID" };
 export type ModuleId = string & { readonly __brand: "ModuleId" };
-export type Capability =
-  | "entity.read"
-  | "entity.write"
-  | "document.read"
-  | "document.write"
-  | "relationship.read"
-  | "relationship.write"
-  | "asset.read"
-  | "asset.write"
-  | "search.query";
+export type Capability = string;
 
 export interface EntitySummary {
   id: UUID;
@@ -60,14 +54,6 @@ export interface EntityQuery {
   limit?: number;
 }
 
-export interface FieldDefinition {
-  key: string;
-  label: string;
-  type: "text" | "number" | "boolean" | "date" | "enum" | "entity-ref";
-  required?: boolean;
-  options?: string[];
-}
-
 export interface CalendarDate {
   calendar: "gregorian";
   era: "BCE" | "CE";
@@ -77,44 +63,8 @@ export interface CalendarDate {
   precision: "year" | "month" | "day";
 }
 
-export interface SchemaContribution {
-  namespace: string;
-  entityTypes: string[];
-  fields: FieldDefinition[];
-}
-
-export interface EntityTemplate {
-  id: string;
-  name: string;
-  entityType: string;
-  fields: Record<string, unknown>;
-  document?: string;
-}
-
-export interface DeclarativeMigration {
-  id: string;
-  from: number;
-  to: number;
-  operations: MigrationOperation[];
-  recovery: "backup" | "preserve-data";
-}
-
-export type MigrationOperation =
-  | { kind: "create-namespace"; namespace: string }
-  | { kind: "add-field"; namespace: string; field: FieldDefinition }
-  | { kind: "rename-field"; namespace: string; from: string; to: string }
-  | { kind: "drop-field"; namespace: string; key: string };
-
-export interface ModuleManifest {
-  id: ModuleId;
-  name: string;
-  version: string;
-  apiVersion: "1";
-  capabilities: Capability[];
-  schemas: SchemaContribution[];
-  templates: EntityTemplate[];
-  migrations: DeclarativeMigration[];
-}
+export type ModuleManifest = Omit<PluginManifest, "id"> & { id: ModuleId };
+export type DeclarativeMigration = Migration;
 
 export interface ModuleContext {
   readonly module: ModuleManifest;

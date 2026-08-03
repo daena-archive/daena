@@ -10,14 +10,20 @@ import type {
   Relationship,
   UUID,
 } from "../../../packages/module-api/src/index";
-import { project } from "../project/client";
-import type { Entity, Document, FieldValue, Relationship as Rel, Asset } from "../project/client";
+import { invoke } from "@tauri-apps/api/core";
+import { createPluginRpcClient } from "../../../packages/plugin-sdk/src/index";
+
+interface RawEntity { id: string; name: string; entity_type: string | null; deleted: boolean; created_at: string; updated_at: string }
+interface RawDocument { id: string; entity_id: string; format: string; body: string; updated_at: string }
+interface RawField { entity_id: string; namespace: string; key: string; value: unknown }
+interface RawRelationship { id: string; source_id: string; target_id: string; relationship_type: string; metadata: string }
+interface RawAsset { id: string; entity_id: string; namespace: string; filename: string; content_hash: string; size: number; mime_type: string; path: string; created_at: string }
 
 function toUUID(id: string): UUID {
   return id as UUID;
 }
 
-function toEntityRecord(e: Entity): EntityRecord {
+function toEntityRecord(e: RawEntity): EntityRecord {
   return {
     id: toUUID(e.id),
     name: e.name,
@@ -30,7 +36,7 @@ function toEntityRecord(e: Entity): EntityRecord {
   };
 }
 
-function toEntitySummary(e: Entity): EntitySummary {
+function toEntitySummary(e: RawEntity): EntitySummary {
   return {
     id: toUUID(e.id),
     name: e.name,
@@ -39,7 +45,7 @@ function toEntitySummary(e: Entity): EntitySummary {
   };
 }
 
-function toDocumentRecord(d: Document): DocumentRecord {
+function toDocumentRecord(d: RawDocument): DocumentRecord {
   return {
     id: toUUID(d.id),
     entityId: toUUID(d.entity_id),
@@ -49,7 +55,7 @@ function toDocumentRecord(d: Document): DocumentRecord {
   };
 }
 
-function toRelationship(r: Rel): Relationship {
+function toRelationship(r: RawRelationship): Relationship {
   return {
     id: toUUID(r.id),
     sourceId: toUUID(r.source_id),
@@ -59,7 +65,7 @@ function toRelationship(r: Rel): Relationship {
   };
 }
 
-function toAsset(asset: Asset): AssetRecord {
+function toAsset(asset: RawAsset): AssetRecord {
   return {
     id: toUUID(asset.id),
     entityId: toUUID(asset.entity_id),
@@ -102,27 +108,36 @@ function checkCapability(manifest: ModuleManifest, required: Capability): void {
 }
 
 export function buildModuleContext(
-  manifest: ModuleManifest
+  manifest: ModuleManifest,
+  projectId: string,
 ): ModuleContext {
+  const rpc = createPluginRpcClient({
+    call: (method, payload) => invoke("module_rpc", {
+      pluginId: manifest.id,
+      projectId,
+      method,
+      payload,
+    }),
+  });
   return {
     module: manifest,
     entities: {
       get: async (id: UUID) => {
         checkCapability(manifest, "entity.read");
-        const entities = await project.listEntities();
+        const entities = await rpc.call<RawEntity[]>("entity.list", {});
         const found = entities.find((e) => e.id === id);
         if (!found) return null;
         const record = toEntityRecord(found);
-        const docs = await project.listDocuments(id);
+        const docs = await rpc.call<RawDocument[]>("document.list", { entityId: id });
         record.documents = docs.map(toDocumentRecord);
         const namespace = manifest.schemas[0]?.namespace;
-        const fields = await project.listFields(id);
+        const fields = await rpc.call<RawField[]>("field.list", { entityId: id, namespace });
         for (const f of fields.filter((field) => !namespace || field.namespace === namespace)) record.fields[f.key] = f.value;
         return record;
       },
       list: async (query?: EntityQuery) => {
         checkCapability(manifest, "entity.read");
-        const entities = await project.listEntities();
+        const entities = await rpc.call<RawEntity[]>("entity.list", {});
         const filtered = entities.filter((entity) =>
           (!query?.type || entity.entity_type === query.type) &&
           (!query?.text || `${entity.name} ${entity.entity_type ?? ""}`.toLowerCase().includes(query.text.toLowerCase()))
@@ -131,21 +146,17 @@ export function buildModuleContext(
       },
       create: async (input: { name: string; type?: string }) => {
         checkCapability(manifest, "entity.write");
-        const entity = await project.createEntity(input.name, input.type);
+        const entity = await rpc.call<RawEntity>("entity.create", { name: input.name, type: input.type ?? null });
         return toEntityRecord(entity);
       },
       update: async (id: UUID, patch: { name?: string; type?: string | null }) => {
         checkCapability(manifest, "entity.write");
-        const entity = await project.updateEntity(
-          id,
-          patch.name ?? null,
-          patch.type ?? null
-        );
+        const entity = await rpc.call<RawEntity>("entity.update", { id, name: patch.name ?? null, type: patch.type ?? null });
         return toEntityRecord(entity);
       },
       delete: async (id: UUID) => {
-        checkCapability(manifest, "entity.write");
-        await project.deleteEntity(id);
+        checkCapability(manifest, "entity.delete");
+        await rpc.call<null>("entity.delete", { id });
       },
     },
     documents: {
@@ -155,50 +166,51 @@ export function buildModuleContext(
         format?: DocumentRecord["format"];
       }) => {
         checkCapability(manifest, "document.write");
-        await project.saveDocument(input.entityId, input.body, input.format);
-        const docs = await project.listDocuments(input.entityId);
+        await rpc.call<null>("document.save", input);
+        const docs = await rpc.call<RawDocument[]>("document.list", { entityId: input.entityId });
         return docs.map(toDocumentRecord)[0] ?? null;
       },
     },
     fields: {
       list: async (entityId: UUID) => {
-        checkCapability(manifest, "entity.read");
+        checkCapability(manifest, "field.read:self");
         const namespace = manifest.schemas[0]?.namespace;
-        const fields = await project.listFields(entityId);
+        const fields = await rpc.call<RawField[]>("field.list", { entityId, namespace });
         return Object.fromEntries(fields.filter((field) => !namespace || field.namespace === namespace).map((field) => [field.key, field.value]));
       },
       set: async (entityId: UUID, key: string, value: unknown) => {
-        checkCapability(manifest, "entity.write");
+        checkCapability(manifest, "field.write:self");
         const namespace = validateField(manifest, key, value);
-        await project.setField({ entity_id: entityId, namespace, key, value });
+        await rpc.call<null>("field.set", { entityId, namespace, key, value });
       },
     },
     relationships: {
       list: async (entityId: UUID) => {
         checkCapability(manifest, "relationship.read");
-        const rels = await project.listRelationships(entityId);
+        const rels = await rpc.call<RawRelationship[]>("relationship.list", { entityId });
         return rels.map(toRelationship);
       },
       create: async (input: Omit<Relationship, "id">) => {
         checkCapability(manifest, "relationship.write");
-        const rel = await project.createRelationship(
-          input.sourceId,
-          input.targetId,
-          input.type,
-          input.metadata
-        );
+        const rel = await rpc.call<RawRelationship>("relationship.create", {
+          source_id: input.sourceId,
+          target_id: input.targetId,
+          relationship_type: input.type,
+          metadata: JSON.stringify(input.metadata ?? {}),
+        });
         return toRelationship(rel);
       },
     },
     assets: {
       list: async (entityId: UUID) => {
-        checkCapability(manifest, "asset.read");
-        return (await project.listAssets(entityId)).filter((asset) => manifest.schemas.some((schema) => schema.namespace === asset.namespace)).map(toAsset);
+        checkCapability(manifest, "asset.read:self");
+        const namespace = manifest.schemas[0]?.namespace;
+        return (await rpc.call<RawAsset[]>("asset.list", { entityId, namespace })).filter((asset) => manifest.schemas.some((schema) => schema.namespace === asset.namespace)).map(toAsset);
       },
       register: async (input) => {
-        checkCapability(manifest, "asset.write");
+        checkCapability(manifest, "asset.import");
         if (!manifest.schemas.some((schema) => schema.namespace === input.namespace)) throw new Error(`Module ${manifest.id} does not own namespace: ${input.namespace}`);
-        return toAsset(await project.registerAsset({
+        return toAsset(await rpc.call<RawAsset>("asset.register", {
           entity_id: input.entityId,
           namespace: input.namespace,
           filename: input.filename,
@@ -211,7 +223,7 @@ export function buildModuleContext(
     },
     search: async (query: string) => {
       checkCapability(manifest, "search.query");
-      const entities = await project.search(query);
+      const entities = await rpc.call<RawEntity[]>("search.query", { query });
       return entities.map(toEntitySummary);
     },
   };

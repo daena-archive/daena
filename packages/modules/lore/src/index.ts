@@ -1,29 +1,11 @@
-import type { ModuleContext, ModuleId, WorldbuilderModule, ModuleView } from "../../../module-api/src/index";
+import type { ModuleContext, WorldbuilderModule } from "../../../module-api/src/index";
+import type { ModuleManifest } from "../../../module-api/src/index";
+import manifestJson from "../manifest.json";
 
-const id = "worldbuilder.lore" as ModuleId;
+const manifest = manifestJson as unknown as ModuleManifest;
 
 export const lore: WorldbuilderModule = {
-  manifest: {
-    id,
-    name: "Lore",
-    version: "0.1.0",
-    apiVersion: "1",
-    capabilities: ["entity.read", "entity.write", "document.read", "document.write", "relationship.read", "relationship.write", "asset.read", "asset.write", "search.query"],
-    schemas: [{
-      namespace: "lore",
-      entityTypes: ["person", "place", "faction", "artifact", "culture"],
-      fields: [
-        { key: "summary", label: "Summary", type: "text" },
-        { key: "aliases", label: "Aliases", type: "text" },
-      ],
-    }],
-    templates: [
-      { id: "person", name: "Person", entityType: "person", fields: { summary: "", aliases: "" } },
-      { id: "place", name: "Place", entityType: "place", fields: { summary: "", aliases: "" } },
-      { id: "faction", name: "Faction", entityType: "faction", fields: { summary: "", aliases: "" } },
-    ],
-    migrations: [{ id: "lore-v1", from: 0, to: 1, recovery: "backup", operations: [{ kind: "create-namespace", namespace: "lore" }] }],
-  },
+  manifest,
   views: [{
     id: "lore-entities",
     title: "Lore Entries",

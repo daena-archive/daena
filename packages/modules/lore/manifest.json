@@ -7,7 +7,7 @@
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "sandboxed",
   "entrypoints": { "ui": "dist/ui/index.html" },
-  "capabilities": ["entity.read", "entity.write", "document.read", "document.write", "relationship.read", "relationship.write", "asset.read:self", "search.query"],
+  "capabilities": ["entity.read", "entity.write", "entity.delete", "document.read", "document.write", "field.read:self", "field.write:self", "relationship.read", "relationship.write", "asset.read:self", "asset.import", "search.query"],
   "dependencies": {},
   "namespaces": ["lore"],
   "schemas": [{

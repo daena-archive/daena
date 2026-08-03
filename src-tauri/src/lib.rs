@@ -8,7 +8,7 @@ use worldbuilder_core::{
     Entity, FieldValue, GitLogEntry, GitStatus, Migration, Operation, ProjectInfo, Relationship,
     RelationshipInput, SaveDocument, SaveEntry,
 };
-use worldbuilder_plugin_api::{PluginManifest, RpcRequest, RpcResponse};
+use worldbuilder_plugin_api::{MigrationOperation, PluginManifest, RpcRequest, RpcResponse};
 use worldbuilder_plugin_host::PluginHost;
 
 type SharedCore = Arc<Mutex<CoreService>>;
@@ -100,44 +100,82 @@ fn plugin_webview_identity(
     Ok(label.to_string())
 }
 
-fn bundled_manifests() -> Vec<serde_json::Value> {
-    vec![
-        serde_json::json!({
-            "id": "worldbuilder.lore", "name": "Lore", "version": "0.1.0", "apiVersion": "1",
-            "capabilities": ["entity.read", "entity.write", "document.read", "document.write", "relationship.read", "relationship.write", "asset.read", "asset.write", "search.query"],
-            "schemas": [{"namespace": "lore", "entityTypes": ["person", "place", "faction", "artifact", "culture"], "fields": [
-                {"key": "summary", "label": "Summary", "type": "text"}, {"key": "aliases", "label": "Aliases", "type": "text"}
-            ]}],
-            "templates": [
-                {"id": "person", "name": "Person", "entityType": "person", "fields": {"summary": "", "aliases": ""}},
-                {"id": "place", "name": "Place", "entityType": "place", "fields": {"summary": "", "aliases": ""}},
-                {"id": "faction", "name": "Faction", "entityType": "faction", "fields": {"summary": "", "aliases": ""}}
-            ],
-            "migrations": [{"id": "lore-v1", "from": 0, "to": 1, "recovery": "backup", "operations": [{"kind": "create-namespace", "namespace": "lore"}] }]
-        }),
-        serde_json::json!({
-            "id": "worldbuilder.timeline", "name": "Timeline", "version": "0.1.0", "apiVersion": "1",
-            "capabilities": ["entity.read", "entity.write", "document.read", "document.write", "relationship.read", "relationship.write", "asset.read", "asset.write", "search.query"],
-            "schemas": [{"namespace": "timeline", "entityTypes": ["event"], "fields": [
-                {"key": "startsAt", "label": "Starts", "type": "date", "required": true}, {"key": "endsAt", "label": "Ends", "type": "date"}
-            ]}],
-            "templates": [{"id": "event", "name": "Timeline event", "entityType": "event", "fields": {"startsAt": "", "endsAt": ""}}],
-            "migrations": [{"id": "timeline-v1", "from": 0, "to": 1, "recovery": "backup", "operations": [{"kind": "create-namespace", "namespace": "timeline"}] }]
-        }),
-    ]
-}
-
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {name}! You've been greeted from Rust!")
 }
 
+fn bundled_plugin_host() -> Result<PluginHost, String> {
+    let mut host = PluginHost::new();
+    for manifest in [
+        include_str!("../../packages/modules/lore/manifest.json"),
+        include_str!("../../packages/modules/timeline/manifest.json"),
+    ] {
+        host.register_bundled_json(manifest)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(host)
+}
+
+fn core_migration(manifest: &PluginManifest) -> Result<Option<Migration>, String> {
+    let Some(migration) = manifest.migrations.first() else {
+        return Ok(None);
+    };
+    let operations = migration
+        .operations
+        .iter()
+        .map(|operation| match operation {
+            MigrationOperation::CreateNamespace { namespace } => Operation::CreateNamespace {
+                namespace: namespace.clone(),
+            },
+            MigrationOperation::AddField {
+                namespace, field, ..
+            } => Operation::AddField {
+                namespace: namespace.clone(),
+                field: worldbuilder_core::FieldDefinition {
+                    key: field.key.clone(),
+                    field_type: field.field_type.clone(),
+                    required: field.required.unwrap_or(false),
+                },
+            },
+            MigrationOperation::RenameField {
+                namespace,
+                from,
+                to,
+            } => Operation::RenameField {
+                namespace: namespace.clone(),
+                from: from.clone(),
+                to: to.clone(),
+            },
+            MigrationOperation::DropField { namespace, key } => Operation::DropField {
+                namespace: namespace.clone(),
+                key: key.clone(),
+            },
+        })
+        .collect();
+    Ok(Some(Migration {
+        id: migration.id.clone(),
+        module_id: manifest.id.clone(),
+        from: migration.from as i64,
+        to: migration.to as i64,
+        operations,
+        recovery: migration.recovery.clone(),
+    }))
+}
+
 #[tauri::command]
 async fn module_list_manifests(
     state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
 ) -> Result<Vec<serde_json::Value>, String> {
+    let mut manifests = plugins
+        .lock()
+        .map_err(|_| "plugin host lock poisoned".to_string())?
+        .catalog
+        .list()
+        .map(|entry| serde_json::to_value(&entry.manifest).map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
     with_core(state, |core| {
-        let mut manifests = bundled_manifests();
         let context = trusted_shell();
         let Some(project) = core.project(context).ok() else {
             return Ok(manifests);
@@ -161,45 +199,233 @@ async fn module_list_manifests(
 }
 
 #[tauri::command]
-async fn module_enable(state: tauri::State<'_, SharedCore>, id: String) -> Result<(), String> {
+async fn module_enable(
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    id: String,
+) -> Result<(), String> {
+    let manifest = plugins
+        .lock()
+        .map_err(|_| "plugin host lock poisoned".to_string())?
+        .catalog
+        .get(&id)
+        .ok_or_else(|| format!("unknown bundled plugin: {id}"))?
+        .manifest
+        .clone();
+    let migration = core_migration(&manifest)?;
+    let plugins = plugins.inner().clone();
     with_core(state, move |core| {
-        if id != "worldbuilder.lore" && id != "worldbuilder.timeline" {
-            return Err(CoreError::Validation("unknown module".into()));
-        }
         let context = trusted_shell();
         let project = core.project_mut(context)?;
-        if project.get_module_version(&id)? == 0 {
-            let namespace = if id == "worldbuilder.lore" {
-                "lore"
-            } else {
-                "timeline"
-            };
-            project.apply_migration(&Migration {
-                id: format!("{id}-v1"),
-                module_id: id.clone(),
-                from: 0,
-                to: 1,
-                operations: vec![Operation::CreateNamespace {
-                    namespace: namespace.into(),
-                }],
-                recovery: "backup".into(),
-            })?;
+        let current = project.get_module_version(&id)?;
+        if let Some(migration) = &migration {
+            if current == migration.from {
+                project.apply_migration(migration)?;
+            } else if current != migration.to {
+                return Err(CoreError::Validation(format!(
+                    "unsupported stored version {current} for plugin {}",
+                    manifest.id
+                )));
+            }
         }
         project.set_module_enabled(id, true)?;
+        let project_id = project
+            .info()
+            .map(|info| info.root)
+            .ok_or(CoreError::ProjectNotOpen)?;
+        plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
+            .ensure_bundled_session(&manifest.id, &project_id)
+            .map_err(|error| CoreError::Validation(error.to_string()))?;
         Ok(())
     })
     .await
 }
 
 #[tauri::command]
-async fn module_disable(state: tauri::State<'_, SharedCore>, id: String) -> Result<(), String> {
+async fn module_disable(
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    id: String,
+) -> Result<(), String> {
+    let known = plugins
+        .lock()
+        .map_err(|_| "plugin host lock poisoned".to_string())?
+        .catalog
+        .get(&id)
+        .is_some();
+    if !known {
+        return Err(format!("unknown bundled plugin: {id}"));
+    }
+    let plugins = plugins.inner().clone();
     with_core(state, move |core| {
-        if id != "worldbuilder.lore" && id != "worldbuilder.timeline" {
-            return Err(CoreError::Validation("unknown module".into()));
-        }
-        core.project(trusted_shell())?
-            .set_module_enabled(id, false)?;
+        let project = core.project(trusted_shell())?;
+        let project_id = project
+            .info()
+            .map(|info| info.root)
+            .ok_or(CoreError::ProjectNotOpen)?;
+        project.set_module_enabled(id.clone(), false)?;
+        plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
+            .revoke_plugin(&project_id, &id);
         Ok(())
+    })
+    .await
+}
+
+fn payload_string(payload: &serde_json::Value, key: &str) -> Result<String, CoreError> {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| CoreError::Validation(format!("plugin RPC payload requires {key}")))
+}
+
+fn payload_value<T: serde::de::DeserializeOwned>(
+    payload: &serde_json::Value,
+) -> Result<T, CoreError> {
+    serde_json::from_value(payload.clone())
+        .map_err(|error| CoreError::Validation(format!("invalid plugin RPC payload: {error}")))
+}
+
+fn dispatch_module_rpc(
+    core: &mut CoreService,
+    method: &str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, CoreError> {
+    let project = core.project_mut(AuthorityContext::plugin())?;
+    match method {
+        "entity.list" => serde_json::to_value(project.list_entities()?)
+            .map_err(|error| CoreError::Validation(error.to_string())),
+        "entity.get" => {
+            let id = payload_string(&payload, "id")?;
+            let entity = project
+                .list_entities()?
+                .into_iter()
+                .find(|entity| entity.id == id);
+            serde_json::to_value(entity).map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "entity.create" => {
+            let input = worldbuilder_core::CreateEntity {
+                name: payload_string(&payload, "name")?,
+                entity_type: payload
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            };
+            serde_json::to_value(project.create_entity(input)?)
+                .map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "entity.update" => {
+            let id = payload_string(&payload, "id")?;
+            let name = payload
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            let entity_type = payload
+                .get("type")
+                .and_then(|value| {
+                    if value.is_null() {
+                        None
+                    } else {
+                        value.as_str()
+                    }
+                })
+                .map(str::to_owned);
+            serde_json::to_value(project.update_entity(id, name, entity_type)?)
+                .map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "entity.delete" => {
+            project.delete_entity(payload_string(&payload, "id")?)?;
+            Ok(serde_json::Value::Null)
+        }
+        "document.list" => {
+            serde_json::to_value(project.list_documents(payload_string(&payload, "entityId")?)?)
+                .map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "document.save" => {
+            let input = worldbuilder_core::SaveDocument {
+                entity_id: payload_string(&payload, "entityId")?,
+                body: payload_string(&payload, "body")?,
+                format: payload
+                    .get("format")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            };
+            project.save_document(input)?;
+            Ok(serde_json::Value::Null)
+        }
+        "field.list" => {
+            serde_json::to_value(project.list_fields(payload_string(&payload, "entityId")?)?)
+                .map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "field.set" => {
+            let field = worldbuilder_core::FieldValue {
+                entity_id: payload_string(&payload, "entityId")?,
+                namespace: payload_string(&payload, "namespace")?,
+                key: payload_string(&payload, "key")?,
+                value: payload
+                    .get("value")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            };
+            project.set_field(field)?;
+            Ok(serde_json::Value::Null)
+        }
+        "relationship.list" => {
+            serde_json::to_value(project.list_relationships(payload_string(&payload, "entityId")?)?)
+                .map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "relationship.create" => {
+            let input: RelationshipInput = payload_value(&payload)?;
+            serde_json::to_value(project.create_relationship(input)?)
+                .map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "asset.list" => {
+            let entity_id = payload_string(&payload, "entityId")?;
+            let assets = project.list_assets(entity_id)?;
+            serde_json::to_value(assets).map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "asset.register" => {
+            let input: AssetInput = payload_value(&payload)?;
+            serde_json::to_value(project.register_asset(input)?)
+                .map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "search.query" => serde_json::to_value(project.search(payload_string(&payload, "query")?)?)
+            .map_err(|error| CoreError::Validation(error.to_string())),
+        _ => Err(CoreError::Validation(format!(
+            "unknown plugin RPC method: {method}"
+        ))),
+    }
+}
+
+#[tauri::command]
+async fn module_rpc(
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    plugin_id: String,
+    project_id: String,
+    method: String,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    plugins
+        .lock()
+        .map_err(|_| "plugin host lock poisoned".to_string())?
+        .authorize_bundled(&plugin_id, &project_id, &method, payload.clone())
+        .map_err(|error| error.to_string())?;
+    with_core(state, move |core| {
+        let current_project = core
+            .info()
+            .map(|info| info.root)
+            .ok_or(CoreError::ProjectNotOpen)?;
+        if current_project != project_id {
+            return Err(CoreError::Unauthorized {
+                operation: "access another project",
+            });
+        }
+        dispatch_module_rpc(core, &method, payload)
     })
     .await
 }
@@ -232,8 +458,24 @@ async fn project_new(
 }
 
 #[tauri::command]
-async fn project_close(state: tauri::State<'_, SharedCore>) -> Result<(), String> {
-    with_core(state, |core| core.close(trusted_shell())).await
+async fn project_close(
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+) -> Result<(), String> {
+    let plugins = plugins.inner().clone();
+    with_core(state, move |core| {
+        let project_id = core.info().map(|info| info.root);
+        core.close(trusted_shell())?;
+        if let Some(project_id) = project_id {
+            plugins
+                .lock()
+                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
+                .sessions
+                .revoke_project(&project_id);
+        }
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -560,7 +802,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(Mutex::new(CoreService::new())))
-        .manage(Arc::new(Mutex::new(PluginHost::new())))
+        .manage(Arc::new(Mutex::new(
+            bundled_plugin_host().expect("canonical bundled plugin manifests must validate"),
+        )))
         .invoke_handler(tauri::generate_handler![
             greet,
             plugin_bootstrap,
@@ -568,6 +812,7 @@ pub fn run() {
             module_list_manifests,
             module_enable,
             module_disable,
+            module_rpc,
             project_open,
             project_open_directory,
             project_new,
@@ -604,4 +849,40 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_manifests_supply_generic_migrations() {
+        let host = bundled_plugin_host().unwrap();
+        let lore = host.catalog.get("worldbuilder.lore").unwrap();
+        let timeline = host.catalog.get("worldbuilder.timeline").unwrap();
+        assert_eq!(
+            core_migration(&lore.manifest).unwrap().unwrap().id,
+            "lore-v1"
+        );
+        assert_eq!(
+            core_migration(&timeline.manifest).unwrap().unwrap().id,
+            "timeline-v1"
+        );
+    }
+
+    #[test]
+    fn broker_dispatch_uses_plugin_project_authority() {
+        let mut core = CoreService::new();
+        core.open_memory(AuthorityContext::trusted_shell()).unwrap();
+        let created = dispatch_module_rpc(
+            &mut core,
+            "entity.create",
+            serde_json::json!({"name": "Broker Entity", "type": "person"}),
+        )
+        .unwrap();
+        assert_eq!(created["name"], "Broker Entity");
+        let entities =
+            dispatch_module_rpc(&mut core, "entity.list", serde_json::json!({})).unwrap();
+        assert_eq!(entities.as_array().unwrap().len(), 1);
+    }
 }

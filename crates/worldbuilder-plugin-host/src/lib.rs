@@ -81,6 +81,25 @@ impl PluginCatalog {
         Ok(())
     }
 
+    pub fn register_bundled_json(&mut self, json: &str) -> Result<&CatalogEntry, HostError> {
+        let manifest = parse_manifest(json).map_err(|error| HostError(error.to_string()))?;
+        let id = manifest.id.clone();
+        if self.entries.contains_key(&id) {
+            return Err(HostError("plugin ID is already installed".into()));
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(json.as_bytes());
+        self.entries.insert(
+            id.clone(),
+            CatalogEntry {
+                manifest,
+                package_root: PathBuf::new(),
+                digest: hex_digest(&hasher.finalize()),
+            },
+        );
+        Ok(self.entries.get(&id).expect("inserted bundled entry"))
+    }
+
     pub fn get(&self, id: &str) -> Option<&CatalogEntry> {
         self.entries.get(id)
     }
@@ -309,6 +328,18 @@ impl SessionRegistry {
     pub fn get(&self, id: &str) -> Option<&Session> {
         self.sessions.get(id)
     }
+    fn find_active(&self, plugin_id: &str, project_id: &str, origin: &str) -> Option<Session> {
+        self.sessions
+            .values()
+            .find(|session| {
+                session.plugin_id == plugin_id
+                    && session.project_id == project_id
+                    && session.origin == origin
+                    && !session.revoked
+                    && session.expires_at > SystemTime::now()
+            })
+            .cloned()
+    }
     pub fn revoke_session(&mut self, id: &str) {
         if let Some(session) = self.sessions.get_mut(id) {
             session.revoked = true;
@@ -437,6 +468,19 @@ impl PluginHost {
         }
         Ok(self.catalog.get(&id).expect("catalog entry retained"))
     }
+
+    pub fn register_bundled_json(&mut self, json: &str) -> Result<&CatalogEntry, HostError> {
+        let entry = self.catalog.register_bundled_json(json)?;
+        let manifest = entry.manifest.clone();
+        if let Err(error) = self.namespaces.register_manifest(&manifest) {
+            self.catalog.remove(&manifest.id);
+            return Err(error);
+        }
+        Ok(self
+            .catalog
+            .get(&manifest.id)
+            .expect("bundled catalog entry retained"))
+    }
     pub fn bootstrap(
         &mut self,
         plugin_id: &str,
@@ -454,6 +498,48 @@ impl PluginHost {
     }
     pub fn revoke_plugin(&mut self, project_id: &str, plugin_id: &str) {
         self.sessions.revoke_plugin(project_id, plugin_id);
+    }
+    pub fn ensure_bundled_session(
+        &mut self,
+        plugin_id: &str,
+        project_id: &str,
+    ) -> Result<Session, HostError> {
+        let origin = format!("bundled:{plugin_id}");
+        if let Some(session) = self.sessions.find_active(plugin_id, project_id, &origin) {
+            return Ok(session);
+        }
+        let entry = self
+            .catalog
+            .get(plugin_id)
+            .ok_or_else(|| HostError("bundled plugin is not registered".into()))?
+            .clone();
+        if self.grants.get(project_id, plugin_id).is_empty() {
+            self.grants.set(
+                project_id,
+                plugin_id,
+                &entry.manifest.capabilities,
+                entry.manifest.capabilities.iter().cloned().collect(),
+            )?;
+        }
+        self.bootstrap(plugin_id, project_id, &origin)
+    }
+    pub fn authorize_bundled(
+        &mut self,
+        plugin_id: &str,
+        project_id: &str,
+        method: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), HostError> {
+        let session = self.ensure_bundled_session(plugin_id, project_id)?;
+        let request = RpcRequest {
+            rpc_version: RPC_VERSION,
+            session_id: session.id,
+            request_id: "bundled".into(),
+            method: method.into(),
+            payload,
+        };
+        self.authorize(&session.origin, &request)
+            .map_err(|error| HostError(format!("{}: {}", error.code, error.message)))
     }
     pub fn rpc(&self, origin: &str, request: &RpcRequest) -> RpcResponse {
         let result = self
@@ -567,17 +653,22 @@ fn required_capabilities(
     namespaces: &NamespaceOwnership,
 ) -> Result<Vec<String>, RpcError> {
     match method {
-        "entity.read" | "entity.write" | "entity.delete" | "document.read" | "document.write"
-        | "relationship.read" | "relationship.write" | "search.query" | "asset.import" => {
-            Ok(vec![method.into()])
-        }
+        "entity.read" | "entity.list" | "entity.get" => Ok(vec!["entity.read".into()]),
+        "entity.write" | "entity.create" | "entity.update" => Ok(vec!["entity.write".into()]),
+        "entity.delete" => Ok(vec!["entity.delete".into()]),
+        "document.read" | "document.list" => Ok(vec!["document.read".into()]),
+        "document.write" | "document.save" => Ok(vec!["document.write".into()]),
+        "relationship.read" | "relationship.list" => Ok(vec!["relationship.read".into()]),
+        "relationship.write" | "relationship.create" => Ok(vec!["relationship.write".into()]),
+        "search.query" => Ok(vec!["search.query".into()]),
+        "asset.import" | "asset.register" => Ok(vec!["asset.import".into()]),
         "asset.read" => {
             ensure_owned_namespace(payload, session, namespaces)?;
             Ok(vec!["asset.read:self".into()])
         }
-        "field.read" | "field.write" => {
+        "field.read" | "field.list" | "field.write" | "field.set" => {
             ensure_owned_namespace(payload, session, namespaces)?;
-            Ok(vec![if method == "field.read" {
+            Ok(vec![if matches!(method, "field.read" | "field.list") {
                 "field.read:self".into()
             } else {
                 "field.write:self".into()
@@ -953,5 +1044,19 @@ mod tests {
             host.rpc("plugin://one", &request).error.unwrap().code,
             "session.expired"
         );
+    }
+
+    #[test]
+    fn canonical_bundled_manifests_register_without_handwritten_rust_copies() {
+        let mut host = PluginHost::new();
+        host.register_bundled_json(include_str!("../../../packages/modules/lore/manifest.json"))
+            .unwrap();
+        host.register_bundled_json(include_str!(
+            "../../../packages/modules/timeline/manifest.json"
+        ))
+        .unwrap();
+        assert_eq!(host.catalog.list().count(), 2);
+        assert!(host.catalog.get("worldbuilder.lore").is_some());
+        assert!(host.catalog.get("worldbuilder.timeline").is_some());
     }
 }

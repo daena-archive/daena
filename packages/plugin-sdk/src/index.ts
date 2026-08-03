@@ -1,4 +1,20 @@
 export * from "./generated";
+import type { PluginManifest } from "./generated";
+
+export interface PluginRpcTransport {
+  call(method: string, payload: unknown): Promise<unknown>;
+}
+
+export interface PluginRpcClient {
+  call<T>(method: string, payload: unknown): Promise<T>;
+}
+
+/** Framework-neutral SDK boundary. The host owns identity and authorization. */
+export function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcClient {
+  return {
+    call: <T>(method: string, payload: unknown) => transport.call(method, payload) as Promise<T>,
+  };
+}
 
 const knownCapabilities = new Set([
   "entity.read", "entity.write", "entity.delete", "document.read", "document.write",

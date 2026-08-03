@@ -42,7 +42,9 @@ when unmounted. Templates are also creation descriptors: the host aggregates
 templates from enabled modules into one creation flow, derives their inputs from
 the selected entity schema (including optional field-level entity type filters),
 applies each template's optional required-field overrides, and sends their
-entity, document, and field presets through one atomic core operation. Disabled modules are excluded from that
+entity, document, field presets, and relationship selections through one atomic
+core operation. Relationship fields are rendered as multi-select controls and
+persist as graph edges rather than serialized arrays. Disabled modules are excluded from that
 catalog and their RPC calls are rejected while inactive.
 
 Module-owned fields and assets use module namespaces and entity IDs. Disabling a

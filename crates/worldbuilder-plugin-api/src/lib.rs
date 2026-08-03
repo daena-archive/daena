@@ -69,6 +69,10 @@ pub struct FieldDefinition {
     pub options: Option<Vec<String>>,
     #[serde(rename = "entityTypes")]
     pub entity_types: Option<Vec<String>>,
+    #[serde(rename = "relationshipType")]
+    pub relationship_type: Option<String>,
+    #[serde(rename = "targetEntityTypes")]
+    pub target_entity_types: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -296,7 +300,8 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
     for schema in &manifest.schemas {
         for field in &schema.fields {
             if let Some(field_entity_types) = &field.entity_types {
-                let declared_field_entity_types = field_entity_types.iter().collect::<BTreeSet<_>>();
+                let declared_field_entity_types =
+                    field_entity_types.iter().collect::<BTreeSet<_>>();
                 if field_entity_types.is_empty()
                     || declared_field_entity_types.len() != field_entity_types.len()
                     || !declared_field_entity_types.is_subset(&entity_types)
@@ -307,10 +312,36 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                     )));
                 }
             }
-            if fields
-                .insert(&field.key, (schema, field))
-                .is_some()
-            {
+            if field.field_type == "relationship" {
+                if field.relationship_type.as_deref().is_none_or(str::is_empty) {
+                    return Err(ContractError(format!(
+                        "relationship field {} must declare relationshipType",
+                        field.key
+                    )));
+                }
+                let target_entity_types = field.target_entity_types.as_ref().ok_or_else(|| {
+                    ContractError(format!(
+                        "relationship field {} must declare targetEntityTypes",
+                        field.key
+                    ))
+                })?;
+                let declared_target_types = target_entity_types.iter().collect::<BTreeSet<_>>();
+                if target_entity_types.is_empty()
+                    || declared_target_types.len() != target_entity_types.len()
+                    || !declared_target_types.is_subset(&entity_types)
+                {
+                    return Err(ContractError(format!(
+                        "relationship field {} declares unknown or duplicate target entity types",
+                        field.key
+                    )));
+                }
+            } else if field.relationship_type.is_some() || field.target_entity_types.is_some() {
+                return Err(ContractError(format!(
+                    "non-relationship field {} cannot declare relationship metadata",
+                    field.key
+                )));
+            }
+            if fields.insert(&field.key, (schema, field)).is_some() {
                 return Err(ContractError(format!(
                     "duplicate field key across schemas: {}",
                     field.key
@@ -357,10 +388,12 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                 }
             }
         }
-        let values = template
-            .fields
-            .as_object()
-            .ok_or_else(|| ContractError(format!("template fields must be an object: {}", template.id)))?;
+        let values = template.fields.as_object().ok_or_else(|| {
+            ContractError(format!(
+                "template fields must be an object: {}",
+                template.id
+            ))
+        })?;
         for (key, value) in values {
             let (_, field) = fields.get(key).ok_or_else(|| {
                 ContractError(format!(
@@ -381,12 +414,18 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
             }
             let valid = match field.field_type.as_str() {
                 "text" | "entity-ref" => value.is_string(),
+                "relationship" => value
+                    .as_array()
+                    .is_some_and(|targets| targets.iter().all(serde_json::Value::is_string)),
                 "number" => value.as_f64().is_some(),
                 "boolean" => value.is_boolean(),
                 "date" => value.is_string() || value.is_object(),
-                "enum" => value
-                    .as_str()
-                    .is_some_and(|candidate| field.options.as_ref().is_some_and(|options| options.contains(&candidate.to_owned()))),
+                "enum" => value.as_str().is_some_and(|candidate| {
+                    field
+                        .options
+                        .as_ref()
+                        .is_some_and(|options| options.contains(&candidate.to_owned()))
+                }),
                 _ => false,
             };
             if !valid {
@@ -573,6 +612,20 @@ mod tests {
         assert!(validate_manifest(&manifest).is_err());
 
         manifest.templates[0].required_fields = Some(vec!["unknown".into()]);
+        assert!(validate_manifest(&manifest).is_err());
+    }
+
+    #[test]
+    fn relationship_fields_require_valid_target_metadata() {
+        let json = include_str!("../../../packages/modules/lore/manifest.json");
+        let mut manifest = parse_manifest(json).unwrap();
+        assert!(validate_manifest(&manifest).is_ok());
+
+        manifest.schemas[0].fields[3].relationship_type = None;
+        assert!(validate_manifest(&manifest).is_err());
+
+        let mut manifest = parse_manifest(json).unwrap();
+        manifest.schemas[0].fields[3].target_entity_types = Some(vec!["unknown".into()]);
         assert!(validate_manifest(&manifest).is_err());
     }
 

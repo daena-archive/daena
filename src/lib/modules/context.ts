@@ -99,6 +99,7 @@ function validateField(manifest: ModuleManifest, key: string, value: unknown, en
     : field.type === "boolean" ? typeof value === "boolean"
     : field.type === "date" ? typeof value === "string" || (typeof value === "object" && value !== null)
     : field.type === "enum" ? typeof value === "string" && !!field.options?.includes(value)
+    : field.type === "relationship" ? false
     : typeof value === "string";
   if (!valid) throw new Error(`Invalid value for field ${key}`);
   return definition.schema.namespace;
@@ -123,6 +124,25 @@ function createFields(manifest: ModuleManifest, fields: Record<string, unknown>,
       key,
       value,
     }));
+}
+
+function createRelationships(manifest: ModuleManifest, relationships: Record<string, string[]>, entityType?: string) {
+  const entries = Object.entries(relationships);
+  if (entries.length === 0) return [];
+  checkCapability(manifest, "relationship.write");
+  return entries.map(([key, targetIds]) => {
+    const definition = schemaForField(manifest, key, entityType);
+    if (!definition || definition.field.type !== "relationship" || !definition.field.relationshipType) {
+      throw new Error(`Module ${manifest.id} does not declare relationship field: ${key}`);
+    }
+    if (!Array.isArray(targetIds) || targetIds.some((targetId) => typeof targetId !== "string" || !targetId)) {
+      throw new Error(`Invalid targets for relationship field ${key}`);
+    }
+    return {
+      relationship_type: definition.field.relationshipType,
+      target_ids: [...new Set(targetIds)],
+    };
+  });
 }
 
 export function buildModuleContext(
@@ -166,10 +186,12 @@ export function buildModuleContext(
         checkCapability(manifest, "entity.write");
         if (input.document) checkCapability(manifest, "document.write");
         const fields = input.fields ? createFields(manifest, input.fields, input.type) : undefined;
+        const relationships = input.relationships ? createRelationships(manifest, input.relationships, input.type) : undefined;
         const entity = await rpc.call<RawEntity>("entity.create", {
           name: input.name,
           type: input.type ?? null,
           fields,
+          relationships,
           document: input.document,
         });
         return toEntityRecord(entity);
@@ -224,6 +246,10 @@ export function buildModuleContext(
           metadata: JSON.stringify(input.metadata ?? {}),
         });
         return toRelationship(rel);
+      },
+      delete: async (id: UUID) => {
+        checkCapability(manifest, "relationship.write");
+        await rpc.call<null>("relationship.delete", { id });
       },
     },
     assets: {

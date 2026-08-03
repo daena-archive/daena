@@ -75,10 +75,12 @@
       "properties": {
         "key": { "type": "string", "pattern": "^[a-z][a-zA-Z0-9_]*$" },
         "label": { "type": "string", "minLength": 1 },
-        "type": { "enum": ["text", "number", "boolean", "date", "enum", "entity-ref"] },
+        "type": { "enum": ["text", "number", "boolean", "date", "enum", "entity-ref", "relationship"] },
         "required": { "type": "boolean" },
         "options": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
-        "entityTypes": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1, "uniqueItems": true }
+        "entityTypes": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1, "uniqueItems": true },
+        "relationshipType": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+        "targetEntityTypes": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1, "uniqueItems": true }
       }
     },
     "template": {

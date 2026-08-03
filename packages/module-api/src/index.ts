@@ -58,6 +58,7 @@ export interface EntityCreateInput {
   name: string;
   type?: string;
   fields?: Record<string, unknown>;
+  relationships?: Record<string, UUID[]>;
   document?: {
     body: string;
     format?: DocumentRecord["format"];
@@ -95,6 +96,7 @@ export interface ModuleContext {
   relationships: {
     list(entityId: UUID): Promise<Relationship[]>;
     create(input: Omit<Relationship, "id">): Promise<Relationship>;
+    delete(id: UUID): Promise<void>;
   };
   assets: {
     list(entityId: UUID): Promise<AssetRecord[]>;

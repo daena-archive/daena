@@ -1245,6 +1245,15 @@ fn dispatch_module_rpc(
                 .map_err(|error| {
                     CoreError::Validation(format!("invalid entity document: {error}"))
                 })?;
+            let relationships = payload
+                .get("relationships")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|error| {
+                    CoreError::Validation(format!("invalid entity relationships: {error}"))
+                })?
+                .unwrap_or_default();
             let input = worldbuilder_core::CreateEntry {
                 name: payload_string(&payload, "name")?,
                 entity_type: payload
@@ -1253,6 +1262,7 @@ fn dispatch_module_rpc(
                     .map(str::to_owned),
                 document,
                 fields,
+                relationships,
             };
             serde_json::to_value(project.create_entry(input)?)
                 .map_err(|error| CoreError::Validation(error.to_string()))
@@ -1322,6 +1332,10 @@ fn dispatch_module_rpc(
             serde_json::to_value(project.create_relationship(input)?)
                 .map_err(|error| CoreError::Validation(error.to_string()))
         }
+        "relationship.delete" => {
+            project.delete_relationship(payload_string(&payload, "id")?)?;
+            Ok(serde_json::Value::Null)
+        }
         "asset.list" => {
             let entity_id = payload_string(&payload, "entityId")?;
             let assets = project.list_assets(entity_id)?;
@@ -1385,6 +1399,7 @@ async fn module_rpc(
                 | "document.save"
                 | "field.set"
                 | "relationship.create"
+                | "relationship.delete"
                 | "asset.register"
         ) {
             let event_payload = serde_json::json!({

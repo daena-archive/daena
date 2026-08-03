@@ -2,6 +2,7 @@ use crate::error::CoreError;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -27,11 +28,19 @@ pub struct CreateEntryField {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateEntryRelationship {
+    pub relationship_type: String,
+    pub target_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateEntry {
     pub name: String,
     pub entity_type: Option<String>,
     pub document: Option<CreateEntryDocument>,
     pub fields: Vec<CreateEntryField>,
+    #[serde(default)]
+    pub relationships: Vec<CreateEntryRelationship>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -492,11 +501,40 @@ impl ProjectStore {
                 Ok((field, encode_field_value(&field.value)?))
             })
             .collect::<Result<Vec<_>, CoreError>>()?;
-        let entity_type = input
-            .entity_type
-            .map(|value| value.trim().to_owned());
+        let entity_type = input.entity_type.map(|value| value.trim().to_owned());
         let id = Uuid::new_v4().to_string();
         let now = chrono_like_now();
+        let mut relationship_rows = Vec::new();
+        for relationship in &input.relationships {
+            if relationship.relationship_type.trim().is_empty() {
+                return Err(CoreError::Validation(
+                    "relationship type cannot be empty".into(),
+                ));
+            }
+            let mut target_ids = BTreeSet::new();
+            for target_id in &relationship.target_ids {
+                if !target_ids.insert(target_id) {
+                    return Err(CoreError::Validation(
+                        "duplicate relationship target".into(),
+                    ));
+                }
+                let exists: Option<String> = self
+                    .connection
+                    .query_row(
+                        "SELECT id FROM entities WHERE id=?1 AND deleted=0",
+                        params![target_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if exists.is_none() {
+                    return Err(CoreError::NotFound("relationship entity not found".into()));
+                }
+                relationship_rows.push((
+                    target_id.clone(),
+                    relationship.relationship_type.trim().to_owned(),
+                ));
+            }
+        }
         let transaction = self.connection.unchecked_transaction()?;
         transaction.execute(
             "INSERT INTO entities(id,name,entity_type,created_at,updated_at) VALUES (?1,?2,?3,?4,?4)",
@@ -512,6 +550,12 @@ impl ProjectStore {
             transaction.execute(
                 "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
                 params![id, field.namespace, field.key, value],
+            )?;
+        }
+        for (target_id, relationship_type) in relationship_rows {
+            transaction.execute(
+                "INSERT INTO relationships(id,source_id,target_id,relationship_type,metadata) VALUES (?1,?2,?3,?4,?5)",
+                params![Uuid::new_v4().to_string(), id, target_id, relationship_type, "{}"],
             )?;
         }
         transaction.commit()?;
@@ -727,6 +771,17 @@ impl ProjectStore {
             relationship_type: input.relationship_type,
             metadata,
         })
+    }
+
+    pub fn delete_relationship(&self, id: String) -> Result<(), CoreError> {
+        if self
+            .connection
+            .execute("DELETE FROM relationships WHERE id=?1", params![id])?
+            == 0
+        {
+            return Err(CoreError::NotFound("relationship not found".into()));
+        }
+        Ok(())
     }
 
     pub fn list_relationships(&self, entity_id: String) -> Result<Vec<Relationship>, CoreError> {
@@ -1570,9 +1625,13 @@ mod tests {
                     key: "summary".into(),
                     value: serde_json::json!("A quiet power."),
                 }],
+                relationships: vec![],
             })
             .unwrap();
-        assert_eq!(store.list_documents(entity.id.clone()).unwrap()[0].body, "A quiet power.");
+        assert_eq!(
+            store.list_documents(entity.id.clone()).unwrap()[0].body,
+            "A quiet power."
+        );
         assert_eq!(store.list_fields(entity.id).unwrap()[0].key, "summary");
 
         let result = store.create_entry(CreateEntry {
@@ -1594,9 +1653,62 @@ mod tests {
                     value: serde_json::json!("duplicate"),
                 },
             ],
+            relationships: vec![],
         });
         assert!(result.is_err());
         assert_eq!(store.list_entities().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn create_entry_writes_multiple_relationships_atomically() {
+        let store = ProjectStore::in_memory().unwrap();
+        let first_leader = store
+            .create_entity(CreateEntity {
+                name: "First leader".into(),
+                entity_type: Some("person".into()),
+            })
+            .unwrap();
+        let second_leader = store
+            .create_entity(CreateEntity {
+                name: "Second leader".into(),
+                entity_type: Some("person".into()),
+            })
+            .unwrap();
+        let faction = store
+            .create_entry(CreateEntry {
+                name: "The Twin Council".into(),
+                entity_type: Some("faction".into()),
+                document: None,
+                fields: vec![],
+                relationships: vec![CreateEntryRelationship {
+                    relationship_type: "led_by".into(),
+                    target_ids: vec![first_leader.id.clone(), second_leader.id.clone()],
+                }],
+            })
+            .unwrap();
+        assert_eq!(
+            store.list_relationships(faction.id.clone()).unwrap().len(),
+            2
+        );
+
+        let relationship = store.list_relationships(faction.id).unwrap().remove(0);
+        store.delete_relationship(relationship.id).unwrap();
+        let remaining_relationships = store.list_relationships(first_leader.id).unwrap().len()
+            + store.list_relationships(second_leader.id).unwrap().len();
+        assert_eq!(remaining_relationships, 1);
+
+        let result = store.create_entry(CreateEntry {
+            name: "Should roll back".into(),
+            entity_type: Some("faction".into()),
+            document: None,
+            fields: vec![],
+            relationships: vec![CreateEntryRelationship {
+                relationship_type: "led_by".into(),
+                target_ids: vec!["missing".into()],
+            }],
+        });
+        assert!(result.is_err());
+        assert_eq!(store.list_entities().unwrap().len(), 3);
     }
 
     #[test]

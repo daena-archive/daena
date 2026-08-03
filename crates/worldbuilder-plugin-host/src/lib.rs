@@ -1815,11 +1815,7 @@ fn required_capabilities(
                         .get("namespace")
                         .and_then(serde_json::Value::as_str)
                         .ok_or_else(|| {
-                            rpc_error(
-                                "payload.invalid",
-                                "entity fields require namespace",
-                                false,
-                            )
+                            rpc_error("payload.invalid", "entity fields require namespace", false)
                         })?;
                     if namespaces.owner(namespace) != Some(session.plugin_id.as_str()) {
                         return Err(rpc_error(
@@ -1833,13 +1829,27 @@ fn required_capabilities(
                     capabilities.push("field.write:self".into());
                 }
             }
+            if let Some(relationships) = payload.get("relationships") {
+                let relationships = relationships.as_array().ok_or_else(|| {
+                    rpc_error(
+                        "payload.invalid",
+                        "entity relationships must be an array",
+                        false,
+                    )
+                })?;
+                if !relationships.is_empty() {
+                    capabilities.push("relationship.write".into());
+                }
+            }
             Ok(capabilities)
         }
         "entity.delete" => Ok(vec!["entity.delete".into()]),
         "document.read" | "document.list" => Ok(vec!["document.read".into()]),
         "document.write" | "document.save" => Ok(vec!["document.write".into()]),
         "relationship.read" | "relationship.list" => Ok(vec!["relationship.read".into()]),
-        "relationship.write" | "relationship.create" => Ok(vec!["relationship.write".into()]),
+        "relationship.write" | "relationship.create" | "relationship.delete" => {
+            Ok(vec!["relationship.write".into()])
+        }
         "search.query" => Ok(vec!["search.query".into()]),
         "asset.import" | "asset.register" => Ok(vec!["asset.import".into()]),
         "asset.read" | "asset.list" => {
@@ -1994,6 +2004,30 @@ mod tests {
             )
             .unwrap();
         host
+    }
+
+    #[test]
+    fn relationship_delete_is_authorized_as_relationship_write() {
+        let mut host = host();
+        let entry = host.catalog.get("com.example.one").unwrap().clone();
+        let session = host.sessions.issue(
+            &entry,
+            "project",
+            "plugin://com.example.one",
+            BTreeSet::new(),
+            Duration::from_secs(60),
+        );
+
+        assert_eq!(
+            required_capabilities(
+                "relationship.delete",
+                &serde_json::json!({ "id": "relationship-1" }),
+                &session,
+                &host.namespaces,
+            )
+            .unwrap(),
+            vec!["relationship.write".to_string()]
+        );
     }
 
     #[test]

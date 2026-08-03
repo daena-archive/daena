@@ -17,7 +17,18 @@
   "license": "MIT",
   "dependencies": {
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2"
+    "@tauri-apps/plugin-opener": "^2",
+    "@tiptap/core": "^3.29.2",
+    "@tiptap/extension-blockquote": "^3.29.2",
+    "@tiptap/extension-bold": "^3.29.2",
+    "@tiptap/extension-document": "^3.29.2",
+    "@tiptap/extension-heading": "^3.29.2",
+    "@tiptap/extension-italic": "^3.29.2",
+    "@tiptap/extension-list": "^3.29.2",
+    "@tiptap/extension-paragraph": "^3.29.2",
+    "@tiptap/extension-text": "^3.29.2",
+    "@tiptap/extension-underline": "^3.29.2",
+    "@tiptap/extensions": "^3.29.2"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.6",

@@ -6,11 +6,11 @@
  */
 
 export type PluginKind = "declarative" | "sandboxed";
-export type FieldType = "text" | "number" | "boolean" | "date" | "enum" | "entity-ref";
+export type FieldType = "text" | "number" | "boolean" | "date" | "enum" | "entity-ref" | "relationship";
 
 export interface Entrypoints { ui?: string; wasm?: string }
 export interface Dependency { version: string; required: boolean }
-export interface FieldDefinition { key: string; label: string; type: FieldType; required?: boolean; options?: string[]; entityTypes?: string[] }
+export interface FieldDefinition { key: string; label: string; type: FieldType; required?: boolean; options?: string[]; entityTypes?: string[]; relationshipType?: string; targetEntityTypes?: string[] }
 export interface SchemaContribution { namespace: string; entityTypes: string[]; fields: FieldDefinition[] }
 export interface EntityTemplate { id: string; name: string; entityType: string; description?: string; icon?: string; fields: Record<string, unknown>; requiredFields?: string[]; document?: string }
 export type MigrationOperation =

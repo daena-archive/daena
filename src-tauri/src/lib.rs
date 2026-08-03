@@ -8,8 +8,11 @@ use worldbuilder_core::{
     Entity, FieldValue, GitLogEntry, GitStatus, Migration, Operation, ProjectInfo, Relationship,
     RelationshipInput, SaveDocument, SaveEntry,
 };
+use worldbuilder_plugin_api::{PluginManifest, RpcRequest, RpcResponse};
+use worldbuilder_plugin_host::PluginHost;
 
 type SharedCore = Arc<Mutex<CoreService>>;
+type SharedPluginHost = Arc<Mutex<PluginHost>>;
 
 fn trusted_shell() -> AuthorityContext {
     AuthorityContext::trusted_shell()
@@ -30,6 +33,71 @@ where
     .await
     .map_err(|error| format!("core worker failed: {error}"))?
     .map_err(|error| error.to_string())
+}
+
+#[derive(Debug, serde::Serialize)]
+struct PluginBootstrap {
+    session_id: String,
+    plugin_id: String,
+    package_digest: String,
+    manifest: PluginManifest,
+}
+
+/// Bootstrap and RPC use a host-created `plugin:<id>` webview label as the
+/// origin binding. The trusted main window cannot call this surface, and the
+/// plugin cannot submit an arbitrary origin in its request payload.
+#[tauri::command]
+fn plugin_bootstrap(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, SharedPluginHost>,
+    plugin_id: String,
+    project_id: String,
+) -> Result<PluginBootstrap, String> {
+    let origin = plugin_webview_identity(&window, Some(&plugin_id))?;
+    let mut host = state
+        .lock()
+        .map_err(|_| "plugin host lock poisoned".to_string())?;
+    let session = host
+        .bootstrap(&plugin_id, &project_id, &origin)
+        .map_err(|error| error.to_string())?;
+    let entry = host
+        .catalog
+        .get(&plugin_id)
+        .ok_or_else(|| "plugin was removed during bootstrap".to_string())?;
+    Ok(PluginBootstrap {
+        session_id: session.id,
+        plugin_id,
+        package_digest: entry.digest.clone(),
+        manifest: entry.manifest.clone(),
+    })
+}
+
+#[tauri::command]
+fn plugin_rpc(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, SharedPluginHost>,
+    request: RpcRequest,
+) -> Result<RpcResponse, String> {
+    let origin = plugin_webview_identity(&window, None)?;
+    let host = state
+        .lock()
+        .map_err(|_| "plugin host lock poisoned".to_string())?;
+    Ok(host.rpc(&origin, &request))
+}
+
+fn plugin_webview_identity(
+    window: &tauri::WebviewWindow,
+    expected: Option<&str>,
+) -> Result<String, String> {
+    let label = window.label();
+    let plugin_id = label
+        .strip_prefix("plugin:")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "plugin RPC requires a plugin webview".to_string())?;
+    if expected.is_some_and(|expected| expected != plugin_id) {
+        return Err("plugin webview identity mismatch".into());
+    }
+    Ok(label.to_string())
 }
 
 fn bundled_manifests() -> Vec<serde_json::Value> {
@@ -492,8 +560,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(Mutex::new(CoreService::new())))
+        .manage(Arc::new(Mutex::new(PluginHost::new())))
         .invoke_handler(tauri::generate_handler![
             greet,
+            plugin_bootstrap,
+            plugin_rpc,
             module_list_manifests,
             module_enable,
             module_disable,

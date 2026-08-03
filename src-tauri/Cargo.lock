@@ -4857,6 +4857,8 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "worldbuilder-core",
+ "worldbuilder-plugin-api",
+ "worldbuilder-plugin-host",
 ]
 
 [[package]]
@@ -4868,6 +4870,24 @@ dependencies = [
  "serde_json",
  "sha2",
  "uuid",
+]
+
+[[package]]
+name = "worldbuilder-plugin-api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "worldbuilder-plugin-host"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "worldbuilder-plugin-api",
 ]
 
 [[package]]

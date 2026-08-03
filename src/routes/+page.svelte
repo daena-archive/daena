@@ -7,10 +7,13 @@
   import RelationshipPicker from "$lib/RelationshipPicker.svelte";
   import loreManifestJson from "../../packages/modules/lore/manifest.json";
   import timelineManifestJson from "../../packages/modules/timeline/manifest.json";
+  import writingManifestJson from "../../packages/modules/writing/manifest.json";
   import RichTextEditor from "$lib/editor/RichTextEditor.svelte";
   import { formatCalendarDate, isCompleteCalendarDate, parseCalendarDate, serializeCalendarDate, type CalendarDate } from "$lib/date";
 
   type InstalledModule = ProjectModuleManifest;
+  type WorkspaceSection = "lore" | "timeline" | "writing";
+  type WritingView = "manuscripts" | "reference";
   type RecentProject = { name: string; root: string };
   type CreateOption = { key: string; module: InstalledModule; template: EntityTemplate };
   type CreateGroup = { module: InstalledModule; options: CreateOption[] };
@@ -20,7 +23,8 @@
 
   let ready = $state(false);
   let error = $state("");
-  let section = $state<"lore" | "timeline">("lore");
+  let section = $state<WorkspaceSection>("lore");
+  let writingView = $state<WritingView>("manuscripts");
   let entities = $state<Entity[]>([]);
   let selected = $state<Entity | null>(null);
   let documentBody = $state("");
@@ -37,11 +41,12 @@
   let createDocumentBody = $state("");
   let showDiscardPrompt = $state(false);
   let pendingCreateDiscard = $state<(() => void) | null>(null);
-  let relationshipQuery = $state("");
-  let relationshipType = $state("related_to");
-  let relationshipTarget = $state<Entity | null>(null);
   let isSaving = $state(false);
   let savedAt = $state("");
+  let editorFullscreen = $state(false);
+  let hasUnsavedChanges = $state(false);
+  let autoSaveTimer: number | null = null;
+  let documentRevision = 0;
   let showModules = $state(false);
   let projectionRevision = $state(0);
   let projectInfo = $state<ProjectInfo | null>(null);
@@ -67,18 +72,18 @@
     return () => window.clearTimeout(timeout);
   });
   $effect(() => {
-    const modalOpen = showCreateForm || showCommitForm;
+    const modalOpen = showCreateForm || showCommitForm || editorFullscreen;
     document.body.classList.toggle("modal-open", modalOpen);
     return () => document.body.classList.remove("modal-open");
   });
 
-  const activeModuleId = () => section === "lore" ? "worldbuilder.lore" : "worldbuilder.timeline";
-  const activeManifest = () => (section === "lore" ? loreManifestJson : timelineManifestJson) as unknown as ModuleManifest;
+  const activeModuleId = () => section === "lore" ? "worldbuilder.lore" : section === "timeline" ? "worldbuilder.timeline" : "worldbuilder.writing";
+  const activeManifest = () => (section === "lore" ? loreManifestJson : section === "timeline" ? timelineManifestJson : writingManifestJson) as unknown as ModuleManifest;
   function fieldAppliesToEntity(field: FieldDefinition, entityType?: string | null) {
     return !field.entityTypes || !entityType || field.entityTypes.includes(entityType);
   }
   const definitions = () => {
-    const entityType = selected?.entity_type ?? (section === "timeline" ? "event" : undefined);
+    const entityType = selected?.entity_type ?? (section === "timeline" ? "event" : section === "writing" ? writingView === "manuscripts" ? "manuscript" : "reference-page" : undefined);
     return activeManifest()?.schemas
       .filter((schema) => !entityType || schema.entityTypes.includes(entityType))
       .flatMap((schema) => schema.fields.filter((field) => fieldAppliesToEntity(field, entityType))) ?? [];
@@ -109,9 +114,6 @@
           field,
           required: Boolean(field.required || option.template.requiredFields?.includes(field.key)),
         })));
-  }
-  function relationshipCandidatesForField(field: FieldDefinition) {
-    return entities.filter((entity) => !entity.deleted && (!field.targetEntityTypes || field.targetEntityTypes.includes(entity.entity_type ?? "")));
   }
   function createRelationshipValues(key: string) {
     const value = createFieldValues[key];
@@ -193,9 +195,9 @@
   }
 
   function contextFor(currentSection = section): ModuleContext {
-    const id = currentSection === "lore" ? "worldbuilder.lore" : "worldbuilder.timeline";
     if (!projectInfo?.root) throw new Error("No project is open");
-    return buildModuleContext(activeManifest(), projectInfo.root);
+    const manifest = currentSection === "lore" ? loreManifestJson : currentSection === "timeline" ? timelineManifestJson : writingManifestJson;
+    return buildModuleContext(manifest as unknown as ModuleManifest, projectInfo.root);
   }
 
   function sectionEnabled() { return modules.find((module) => module.id === activeModuleId())?.enabled ?? false; }
@@ -203,41 +205,64 @@
   function visibleEntities() {
     const term = query.trim().toLowerCase();
     return entities.filter((entity) => {
-      const belongs = section === "timeline" ? entity.entity_type === "event" : entity.entity_type !== "event";
+      const belongs = section === "timeline"
+        ? entity.entity_type === "event"
+        : section === "writing"
+          ? entity.entity_type === (writingView === "manuscripts" ? "manuscript" : "reference-page")
+          : entity.entity_type !== "event" && entity.entity_type !== "manuscript" && entity.entity_type !== "reference-page";
       return belongs && (!term || `${entity.name} ${entity.entity_type ?? ""}`.toLowerCase().includes(term));
     });
   }
 
   function entityGlyph(entity: Pick<Entity, "entity_type">) {
-    return entity.entity_type === "person" ? "P" : entity.entity_type === "place" ? "L" : entity.entity_type === "faction" ? "F" : entity.entity_type === "artifact" ? "A" : entity.entity_type === "culture" ? "C" : entity.entity_type === "event" ? "E" : "?";
+    return entity.entity_type === "person" ? "P" : entity.entity_type === "place" ? "L" : entity.entity_type === "faction" ? "F" : entity.entity_type === "artifact" ? "A" : entity.entity_type === "culture" ? "C" : entity.entity_type === "event" ? "E" : entity.entity_type === "manuscript" ? "M" : entity.entity_type === "reference-page" ? "R" : "?";
   }
 
   function entityGlyphClass(entity: Pick<Entity, "entity_type">) {
     return `entity-glyph-${entity.entity_type ?? "unknown"}`;
   }
 
-  function selectSearchResult(entity: Entity) {
-    section = entity.entity_type === "event" ? "timeline" : "lore";
+  async function selectSearchResult(entity: Entity) {
+    if (!(await flushAutoSave())) return;
+    section = entity.entity_type === "event" ? "timeline" : entity.entity_type === "manuscript" || entity.entity_type === "reference-page" ? "writing" : "lore";
+    if (entity.entity_type === "reference-page") writingView = "reference";
+    if (entity.entity_type === "manuscript") writingView = "manuscripts";
     showProjection = false;
     globalQuery = "";
     query = "";
-    void selectEntity(entity);
+    await selectEntity(entity);
   }
 
-  function switchSection(next: "lore" | "timeline") {
+  async function switchSection(next: WorkspaceSection) {
+    if (section === next || !(await flushAutoSave())) return;
     section = next;
-    selected = null;
+    clearSelection();
+    query = "";
     showProjection = false;
+  }
+
+  async function switchWritingView(next: WritingView) {
+    if (writingView === next || !(await flushAutoSave())) return;
+    writingView = next;
+    clearSelection();
+    query = "";
+  }
+
+  function sectionLabel() {
+    return section === "lore" ? "Lore library" : section === "timeline" ? "Timeline" : "Writing Studio";
+  }
+
+  function collectionLabel() {
+    return section === "lore" ? "entries" : section === "timeline" ? "events" : writingView === "manuscripts" ? "manuscripts" : "reference pages";
+  }
+
+  function entityTypeLabel(entityType: string | null) {
+    return entityType === "reference-page" ? "Reference page" : entityType === "manuscript" ? "Manuscript" : entityType ?? "Uncategorized";
   }
 
   function openProjection() {
     showProjection = true;
     projectionRevision += 1;
-  }
-
-  function relationshipCandidates() {
-    const term = relationshipQuery.trim().toLowerCase();
-    return entities.filter((entity) => entity.id !== selected?.id && !entity.deleted && (!term || `${entity.name} ${entity.entity_type ?? ""}`.toLowerCase().includes(term))).slice(0, 8);
   }
 
   function normalizeDocument(body: string, format?: string) {
@@ -255,6 +280,7 @@
   function openDateEditor(key: string) {
     dateEditorOpen = { ...dateEditorOpen, [key]: true };
     fields = { ...fields, [key]: "" };
+    markEntryDirty();
   }
   function updateDateField(key: string, patch: Partial<CalendarDate>) {
     const current = dateForField(key) ?? { calendar: "gregorian", era: "CE", year: 1, month: 1, day: 1, precision: "day" };
@@ -263,6 +289,7 @@
     if (patch.precision === "month" && next.month === undefined) next.month = 1;
     if (patch.precision === "day") { next.month ??= 1; next.day ??= 1; }
     fields = { ...fields, [key]: serializeCalendarDate(next) };
+    markEntryDirty();
   }
   function updateDatePart(key: string, part: "year" | "month" | "day", raw: string, min: number, max?: number) {
     if (!raw.trim()) return;
@@ -271,9 +298,38 @@
     const value = Math.min(max ?? parsed, Math.max(min, parsed));
     updateDateField(key, { [part]: value });
   }
-  function clearDateField(key: string) { fields = { ...fields, [key]: "" }; dateEditorOpen = { ...dateEditorOpen, [key]: false }; }
+  function clearDateField(key: string) {
+    fields = { ...fields, [key]: "" };
+    dateEditorOpen = { ...dateEditorOpen, [key]: false };
+    markEntryDirty();
+  }
 
   function wordCount() { return documentBody.replace(/<[^>]*>/g, " ").trim().split(/\s+/).filter(Boolean).length; }
+  function cancelAutoSave() {
+    if (autoSaveTimer !== null) {
+      window.clearTimeout(autoSaveTimer);
+      autoSaveTimer = null;
+    }
+  }
+  function scheduleAutoSave() {
+    cancelAutoSave();
+    if (!selected || !sectionEnabled()) return;
+    autoSaveTimer = window.setTimeout(() => {
+      autoSaveTimer = null;
+      void saveDocument();
+    }, 900);
+  }
+  function markEntryDirty() {
+    documentRevision += 1;
+    hasUnsavedChanges = true;
+    savedAt = "";
+    scheduleAutoSave();
+  }
+  function updateDocumentBody(value: string) {
+    documentBody = value;
+    markEntryDirty();
+  }
+  function setEditorFullscreen(value: boolean) { editorFullscreen = value; }
   function friendlyError(cause: unknown) {
     const message = cause instanceof Error ? cause.message : String(cause);
     return message.includes("invoke") || message.includes("undefined") ? "The desktop bridge is unavailable. Open this workspace in the Tauri app to use local project storage." : message;
@@ -312,7 +368,7 @@
     projectInfo = info ?? await project.info();
     if (!projectInfo) throw new Error("The project did not return an identity");
     modules = await project.listModuleManifests();
-    for (const id of ["worldbuilder.lore", "worldbuilder.timeline"]) if (modules.find((candidate) => candidate.id === id)?.enabled) await project.enableModule(id);
+    for (const id of ["worldbuilder.lore", "worldbuilder.timeline", "worldbuilder.writing"]) if (modules.find((candidate) => candidate.id === id)?.enabled) await project.enableModule(id);
     rememberProject(projectInfo);
     await loadEntities();
     await refreshGit();
@@ -332,6 +388,7 @@
       const selection = await project.pickDirectory();
       const path = typeof selection === "string" ? selection : null;
       if (!path) return;
+      if (!(await flushAutoSave())) return;
       await project.close();
       await finishOpening(await project.openDirectory(path));
     } catch (cause) { error = friendlyError(cause); }
@@ -339,6 +396,7 @@
 
   async function openRecentProject(path: string) {
     error = "";
+    if (!(await flushAutoSave())) return;
     try {
       await project.close();
       await finishOpening(await project.openDirectory(path));
@@ -346,6 +404,7 @@
   }
 
   async function closeProject() {
+    if (!(await flushAutoSave())) return;
     try {
       await project.close();
       clearSelection();
@@ -372,8 +431,18 @@
     catch (cause) { gitMessage = friendlyError(cause); gitBusy = false; }
   }
 
+  async function flushAutoSave() {
+    cancelAutoSave();
+    if (!hasUnsavedChanges) return true;
+    return saveDocument();
+  }
+
   async function selectEntity(entity: Entity) {
+    if (selected?.id === entity.id) return;
+    if (!(await flushAutoSave())) return;
+    editorFullscreen = false;
     selected = entity;
+    hasUnsavedChanges = false;
     error = "";
     try {
       const context = contextFor();
@@ -433,7 +502,9 @@
         relationships: relationshipsForCreate,
         document: createDocumentBody.trim() ? { body: normalizeDocument(createDocumentBody.trim()), format: "rich-text" } : undefined,
       });
-      section = option.template.entityType === "event" ? "timeline" : "lore";
+      section = option.template.entityType === "event" ? "timeline" : option.template.entityType === "manuscript" || option.template.entityType === "reference-page" ? "writing" : "lore";
+      if (option.template.entityType === "manuscript") writingView = "manuscripts";
+      if (option.template.entityType === "reference-page") writingView = "reference";
       name = "";
       showCreateForm = false;
       resetCreateFields(null);
@@ -466,29 +537,41 @@
     setTimeout(() => document.getElementById("new-entity")?.focus(), 0);
   }
 
-  function updateField(key: string, event: Event) { fields = { ...fields, [key]: (event.currentTarget as HTMLInputElement).value }; }
-  async function saveDocument() {
-    if (!selected || !sectionEnabled()) return;
+  function updateField(key: string, event: Event) {
+    fields = { ...fields, [key]: (event.currentTarget as HTMLInputElement).value };
+    markEntryDirty();
+  }
+  async function saveDocument(): Promise<boolean> {
+    if (!selected || !sectionEnabled()) return false;
+    cancelAutoSave();
+    const entityId = selected.id;
+    const body = documentBody;
+    const revision = documentRevision;
+    const definitionsForSave = definitions().filter((definition) => definition.type !== "relationship");
+    const fieldsSnapshot = { ...fields };
     isSaving = true;
     try {
-      for (const definition of definitions().filter((candidate) => candidate.type !== "relationship")) {
-        const value = fields[definition.key] ?? "";
-        if (definition.required && value === "") throw new Error(`${definition.label} is required`);
-        if (definition.type === "date" && value !== "" && !isCompleteCalendarDate(value)) throw new Error(`${definition.label} needs a year, month, and day`);
-      }
       await project.saveEntry({
-        document: { entity_id: selected.id, body: documentBody, format: "rich-text" },
-        fields: definitions().filter((definition) => definition.type !== "relationship").map((definition) => {
-          const value = fields[definition.key] ?? "";
-          return { entity_id: selected!.id, namespace: activeManifest()?.schemas[0]?.namespace ?? activeModuleId(), key: definition.key, value: definition.type === "date" && value ? parseCalendarDate(value) ?? value : value };
+        document: { entity_id: entityId, body, format: "rich-text" },
+        fields: definitionsForSave.map((definition) => {
+          const value = fieldsSnapshot[definition.key] ?? "";
+          return { entity_id: entityId, namespace: activeManifest()?.schemas[0]?.namespace ?? activeModuleId(), key: definition.key, value: definition.type === "date" && value ? parseCalendarDate(value) ?? value : value };
         }),
       });
-      savedAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    } catch (cause) { error = friendlyError(cause); } finally { isSaving = false; }
+      if (selected?.id === entityId && documentRevision === revision) {
+        hasUnsavedChanges = false;
+        savedAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      }
+      return true;
+    } catch (cause) {
+      error = friendlyError(cause);
+      return false;
+    } finally { isSaving = false; }
   }
   async function archiveSelected() {
+    if (!(await flushAutoSave())) return;
     if (!selected || !confirm(`Archive ${selected.name}?`)) return;
-    try { await contextFor().entities.delete(selected.id as UUID); selected = null; await loadEntities(); } catch (cause) { error = friendlyError(cause); }
+    try { await contextFor().entities.delete(selected.id as UUID); clearSelection(); await loadEntities(); } catch (cause) { error = friendlyError(cause); }
   }
   function selectedRelationshipIds(definition: FieldDefinition) {
     if (!selected || !definition.relationshipType) return [];
@@ -505,25 +588,17 @@
     try {
       const context = contextFor();
       await Promise.all(toRemove.map((relationship) => context.relationships.delete(relationship.id as UUID)));
-      const created = await Promise.all(toAdd.map((targetId) => context.relationships.create({
-        sourceId: selected!.id as UUID,
-        targetId: targetId as UUID,
-        type: definition.relationshipType!,
-        metadata: {},
-      })));
+      const created = await Promise.all(toAdd.map((targetId) => project.createRelationship(
+        selected!.id,
+        targetId,
+        definition.relationshipType!,
+        {},
+      )));
       const removedIds = new Set(toRemove.map((relationship) => relationship.id));
       relationships = [
         ...relationships.filter((relationship) => !removedIds.has(relationship.id)),
-        ...created.map((relationship) => ({ id: relationship.id, source_id: relationship.sourceId, target_id: relationship.targetId, relationship_type: relationship.type, metadata: "{}" })),
+        ...created,
       ];
-    } catch (cause) { error = friendlyError(cause); }
-  }
-  async function addRelationship() {
-    if (!selected || !relationshipTarget) return;
-    try {
-      const relationship = await contextFor().relationships.create({ sourceId: selected.id as UUID, targetId: relationshipTarget.id as UUID, type: relationshipType, metadata: {} });
-      relationships = [...relationships, { id: relationship.id, source_id: relationship.sourceId, target_id: relationship.targetId, relationship_type: relationship.type, metadata: "{}" }];
-      relationshipTarget = null; relationshipQuery = "";
     } catch (cause) { error = friendlyError(cause); }
   }
   function mimeTypeFor(filename: string) {
@@ -547,20 +622,24 @@
       if (installed?.enabled) await project.disableModule(id);
       else await project.enableModule(id);
       modules = await project.listModuleManifests();
-      if (!sectionEnabled()) selected = null;
+      if (!sectionEnabled()) {
+        selected = null;
+        editorFullscreen = false;
+      }
       if (!selectedCreateOption()) selectedCreateKey = "";
       if (showCreateForm && !selectedCreateOption()) closeCreateForm();
     } catch (cause) { error = friendlyError(cause); }
   }
   function clearSelection() {
+    cancelAutoSave();
+    editorFullscreen = false;
+    hasUnsavedChanges = false;
     selected = null;
     documentBody = "";
     fields = {};
     relationships = [];
     assets = [];
     savedAt = "";
-    relationshipQuery = "";
-    relationshipTarget = null;
     showCreateForm = false;
   }
   async function seedExample() {
@@ -572,8 +651,6 @@
       error = "Example world seeded.";
     } catch (cause) { error = friendlyError(cause); }
   }
-  function linkedEntity(relationship: Relationship) { return entities.find((entity) => entity.id === (relationship.source_id === selected?.id ? relationship.target_id : relationship.source_id)); }
-  function focusRelated(relationship: Relationship) { const target = linkedEntity(relationship); if (target) void selectEntity(target); }
   $effect(() => {
     const term = globalQuery.trim();
     if (!ready || !term) {
@@ -609,6 +686,7 @@
       <nav class="workspace-nav" aria-label="Workspace sections">
         <button aria-current={section === "lore" ? "page" : undefined} class:active={section === "lore"} class="rail-button" onclick={() => switchSection("lore")}><span class="rail-icon">✦</span><span>Lore library</span></button>
         <button aria-current={section === "timeline" ? "page" : undefined} class:active={section === "timeline"} class="rail-button" onclick={() => switchSection("timeline")}><span class="rail-icon">◷</span><span>Timeline</span></button>
+        <button aria-current={section === "writing" ? "page" : undefined} class:active={section === "writing"} class="rail-button" onclick={() => switchSection("writing")}><span class="rail-icon">✎</span><span>Writing Studio</span></button>
       </nav>
       <div class="rail-label project-label">PROJECT</div>
       <div class="project-card"><span class:online={ready} class="project-dot"></span><div><strong>{projectInfo?.name ?? "Local project"}</strong><small>Saved in project folder</small></div></div>
@@ -633,7 +711,7 @@
   </aside>
 
   <section class="app-main">
-    <header class="topbar"><div class="breadcrumbs" aria-label="Breadcrumb"><span>Private studio</span><i>/</i><strong>{section === "lore" ? "Lore library" : "Timeline"}</strong>{#if selected}<i>/</i><span>{selected.name}</span>{/if}</div><div class="top-actions">{#if ready}<label class="global-search"><span aria-hidden="true">⌕</span><input aria-label="Search your world" bind:value={globalQuery} placeholder="Search whole world" /></label><span class="sync-badge" title="Your work is stored locally"><span></span> Local</span>{/if}</div></header>
+    <header class="topbar"><div class="breadcrumbs" aria-label="Breadcrumb"><span>Private studio</span><i>/</i><strong>{sectionLabel()}</strong>{#if section === "writing"}<i>/</i><span>{writingView === "manuscripts" ? "Manuscripts" : "Reference pages"}</span>{/if}{#if selected}<i>/</i><span>{selected.name}</span>{/if}</div><div class="top-actions">{#if ready}<label class="global-search"><span aria-hidden="true">⌕</span><input aria-label="Search your world" bind:value={globalQuery} placeholder="Search whole world" /></label><span class="sync-badge" title="Your work is stored locally"><span></span> Local</span>{/if}</div></header>
     {#if ready && globalQuery.trim()}<div class="search-modal" role="dialog" aria-label="World search results"><div class="search-modal-heading"><strong>Search results</strong><button class="quiet-button" aria-label="Close search" onclick={() => globalQuery = ""}>×</button></div>{#if searchMatches === null}<p class="search-state">Searching the whole world…</p>{:else if searchMatches.length === 0}<p class="search-state">No matches found.</p>{:else}<div class="search-results">{#each searchMatches as result}<button class="search-result" onclick={() => selectSearchResult(result)}><span class={`entity-glyph ${entityGlyphClass(result)}`}>{entityGlyph(result)}</span><span><strong>{result.name}</strong><small>{result.entity_type ?? "Uncategorized"}</small></span></button>{/each}</div>{/if}</div>{/if}
     {#if showCreateForm}{@const createOption = selectedCreateOption()}<div class="modal-backdrop"><form class="dialog create-dialog" onsubmit={createEntity}><div class="create-dialog-heading"><div><span class="panel-kicker">CREATE SOMETHING NEW</span><strong>Choose a starting point</strong><p>Templates set the shape of your new entry. You can fill in the details before it is saved.</p></div><button type="button" class="new-form-close" aria-label="Close create dialog" onclick={closeCreateForm}>×</button></div><div class="create-dialog-body"><aside class="create-template-panel"><div class="create-panel-label">TEMPLATES</div><div class="create-template-list">{#each createGroups() as group}<div class="create-template-group"><span>{group.module.name}</span>{#each group.options as option}<button type="button" class:selected={option.key === selectedCreateKey} class="create-template-card" onclick={() => selectCreateOption(option.key)}><span class="create-template-icon">{option.template.icon ?? option.template.name.slice(0, 1)}</span><span class="create-template-copy"><strong>{option.template.name}</strong><small>{option.template.description ?? option.template.entityType}</small></span><span class="create-template-check">{option.key === selectedCreateKey ? "✓" : ""}</span></button>{/each}</div>{/each}</div></aside><section class="create-form-panel">{#if createOption}<div class="create-form-title"><span class="panel-kicker">{createOption.module.name.toUpperCase()}</span><h2>{createOption.template.name}</h2><p>{createOption.template.description ?? `Create a new ${createOption.template.entityType}.`}</p></div><label class="create-input-field" for="new-entity"><span>Name <b>*</b></span><input id="new-entity" bind:value={name} placeholder={`e.g. ${createOption.template.name}`} autocomplete="off" /></label>{#each createFieldsFor(createOption) as item}<div class="create-input-field"><label for={`create-${item.field.key}`}><span>{item.field.label} {#if item.required}<b>*</b>{/if}</span></label>{#if item.field.type === "relationship"}<RelationshipPicker field={item.field} entities={entities} selectedIds={createRelationshipValues(item.field.key)} onChange={(ids) => setCreateRelationshipValues(item.field.key, ids)} />{:else if item.field.type === "text"}<textarea id={`create-${item.field.key}`} rows="3" value={String(createFieldValues[item.field.key] ?? "")} placeholder={`Add ${item.field.label.toLowerCase()}`} oninput={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLTextAreaElement).value)}></textarea>{:else if item.field.type === "number"}<input id={`create-${item.field.key}`} type="number" value={String(createFieldValues[item.field.key] ?? "")} placeholder={`Add ${item.field.label.toLowerCase()}`} oninput={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).value)} />{:else if item.field.type === "boolean"}<label class="create-checkbox" for={`create-${item.field.key}`}><input id={`create-${item.field.key}`} type="checkbox" checked={createFieldValues[item.field.key] === true} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).checked)} /><span>Yes</span></label>{:else if item.field.type === "enum"}<select id={`create-${item.field.key}`} value={String(createFieldValues[item.field.key] ?? "")} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}><option value="">Choose {item.field.label.toLowerCase()}</option>{#each item.field.options ?? [] as option}<option value={option}>{option}</option>{/each}</select>{:else if item.field.type === "entity-ref"}<select id={`create-${item.field.key}`} value={String(createFieldValues[item.field.key] ?? "")} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}><option value="">Choose an entity</option>{#each entities.filter((entity) => !entity.deleted) as entity}<option value={entity.id}>{entity.name} · {entity.entity_type ?? "Uncategorized"}</option>{/each}</select>{:else if item.field.type === "date"}{#if createDateForField(item.field.key) || createDateEditorOpen[item.field.key]}{@const date = createDateDraftForField(item.field.key) ?? { calendar: "gregorian", era: "CE", precision: "day" }}<div class="date-editor"><div class="date-fields"><label for={`create-${item.field.key}-year`}>Year<input id={`create-${item.field.key}-year`} aria-label={`${item.field.label} year`} type="number" min="1" value={date.year ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "year", (event.currentTarget as HTMLInputElement).value, 1)} /></label><label for={`create-${item.field.key}-month`}>Month<input id={`create-${item.field.key}-month`} aria-label={`${item.field.label} month`} type="number" min="1" max="12" value={date.month ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "month", (event.currentTarget as HTMLInputElement).value, 1, 12)} /></label><label for={`create-${item.field.key}-day`}>Day<input id={`create-${item.field.key}-day`} aria-label={`${item.field.label} day`} type="number" min="1" max="31" value={date.day ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "day", (event.currentTarget as HTMLInputElement).value, 1, 31)} /></label></div><small class="date-preview">{typeof date.year === "number" ? formatCalendarDate(date) : "Add a date"}</small><button class="date-clear" type="button" onclick={() => clearCreateDateField(item.field.key)}>Clear date</button></div>{:else}<button class="date-empty" type="button" onclick={() => openCreateDateEditor(item.field.key)}>Add a date</button>{/if}{/if}</div>{/each}{#if createOption.template.document}<label class="create-input-field" for="create-document"><span>Opening note</span><textarea id="create-document" rows="5" bind:value={createDocumentBody} placeholder="Add a first note or leave the template text as-is"></textarea></label>{/if}{:else}<div class="create-form-empty">Select a template to begin.</div>{/if}</section></div><div class="create-dialog-actions"><button type="button" class="quiet-button" onclick={closeCreateForm}>Cancel</button><button class="primary-button" type="submit" disabled={!name.trim() || !createOption}>Create {createOption?.template.name ?? "entry"}</button></div></form></div>{/if}
     {#if showDiscardPrompt}<div class="discard-backdrop"><div class="discard-dialog" role="alertdialog" aria-modal="true" aria-labelledby="discard-create-title"><span class="panel-kicker">UNSAVED VALUES</span><h2 id="discard-create-title">Discard this creation?</h2><p>Your entered values will be cleared. You can keep editing or start over with the new template.</p><div class="discard-actions"><button type="button" class="quiet-button" onclick={keepCreateEditing}>Keep editing</button><button type="button" class="primary-button" onclick={discardCreateValues}>Discard values</button></div></div></div>{/if}
@@ -641,24 +719,46 @@
     {#if !ready}
       <section class="welcome"><div class="welcome-copy"><span class="overline">A private place for impossible worlds</span><h1>Build the world<br /><em>behind the story.</em></h1><p>Shape characters, places, factions, and history in one calm, local-first studio.</p><button class="primary-button large" onclick={openWorkspace}>Open local studio <span>→</span></button><small>Everything stays on this device.</small></div><div class="welcome-art"><div class="orb orb-one"></div><div class="orb orb-two"></div><div class="art-card"><span>ELDERMERE</span><strong>The sea remembers<br />what kingdoms forget.</strong><small>Fragments · 12</small></div></div></section>
     {:else if !sectionEnabled()}
-      <section class="disabled-state"><div class="disabled-icon">◌</div><span class="overline">Module unavailable</span><h1>{section === "lore" ? "Lore library" : "Timeline"} is resting.</h1><p>Your project data is safe. Re-enable this module to continue working in this workspace.</p><button class="primary-button" onclick={() => toggleModule(activeModuleId() as ModuleId)}>Enable {section === "lore" ? "Lore" : "Timeline"}</button></section>
+      <section class="disabled-state"><div class="disabled-icon">◌</div><span class="overline">Module unavailable</span><h1>{sectionLabel()} is resting.</h1><p>Your project data is safe. Re-enable this module to continue working in this workspace.</p><button class="primary-button" onclick={() => toggleModule(activeModuleId() as ModuleId)}>Enable {sectionLabel()}</button></section>
     {:else}
-      <div class="workspace-heading"><div><span class="overline">{section === "lore" ? "WORLD BIBLE" : "CHRONOLOGY"}</span><h1>{section === "lore" ? "Lore library" : "Timeline"}</h1><p>{section === "lore" ? "A living reference for every person, place, and power." : "Events, eras, and the threads that connect them."}</p></div><div class="heading-actions"><button class="quiet-button" onclick={openProjection}>Open {section === "lore" ? "graph" : "timeline"} ↗</button></div></div>
+      <div class="workspace-heading"><div><span class="overline">{section === "lore" ? "WORLD BIBLE" : section === "timeline" ? "CHRONOLOGY" : "DRAFTING DESK"}</span><h1>{sectionLabel()}</h1><p>{section === "lore" ? "A living reference for every person, place, and power." : section === "timeline" ? "Events, eras, and the threads that connect them." : writingView === "manuscripts" ? "Draft stories, essays, and other long-form work." : "Build the pages, notes, and references behind the story."}</p></div><div class="heading-actions">{#if section !== "writing"}<button class="quiet-button" onclick={openProjection}>Open {section === "lore" ? "graph" : "timeline"} ↗</button>{/if}</div></div>
       {#if showProjection}{#key projectionRevision}<div class="projection-bar"><PluginViewLauncher pluginId={activeModuleId()} /></div>{/key}{/if}
       <section class="workspace-grid">
         <aside class="collection-panel panel-surface">
           <div class="panel-heading">
-            <div><span class="panel-kicker">{section === "lore" ? "LORE LIBRARY" : "TIMELINE"}</span><strong>{visibleEntities().length} {section === "lore" ? "entries" : "events"}</strong></div>
+            <div><span class="panel-kicker">{section === "lore" ? "LORE LIBRARY" : section === "timeline" ? "TIMELINE" : writingView === "manuscripts" ? "MANUSCRIPTS" : "REFERENCE PAGES"}</span><strong>{visibleEntities().length} {collectionLabel()}</strong></div>
           </div>
-          <div class="collection-search"><span>⌕</span><input aria-label={`Filter ${section === "lore" ? "entries" : "events"}`} bind:value={query} placeholder={`Filter ${section === "lore" ? "entries" : "events"}`} /></div>
+          {#if section === "writing"}<div class="collection-tabs" role="tablist" aria-label="Writing collections"><button role="tab" aria-selected={writingView === "manuscripts"} class:active={writingView === "manuscripts"} onclick={() => switchWritingView("manuscripts")}>Manuscripts</button><button role="tab" aria-selected={writingView === "reference"} class:active={writingView === "reference"} onclick={() => switchWritingView("reference")}>Reference pages</button></div>{/if}
+          <div class="collection-search"><span>⌕</span><input aria-label={`Filter ${collectionLabel()}`} bind:value={query} placeholder={`Filter ${collectionLabel()}`} /></div>
           <div class="collection-list">
-            {#if visibleEntities().length === 0}<div class="list-empty"><span>✦</span><p>No {section === "lore" ? "entries" : "events"} found.</p><small>{query ? "Try a different filter." : "Use the button above to create one."}</small></div>{:else}{#each visibleEntities() as entity}<button class:selected={selected?.id === entity.id} class="collection-item" onclick={() => selectEntity(entity)}><span class={`entity-glyph ${entityGlyphClass(entity)}`}>{entityGlyph(entity)}</span><span class="item-copy"><strong>{entity.name}</strong><small>{entity.entity_type ?? "Uncategorized"}</small></span><span class="item-arrow" aria-hidden="true">›</span></button>{/each}{/if}
+            {#if visibleEntities().length === 0}<div class="list-empty"><span>✦</span><p>No {collectionLabel()} found.</p><small>{query ? "Try a different filter." : "Use the button above to create one."}</small></div>{:else}{#each visibleEntities() as entity}<button class:selected={selected?.id === entity.id} class="collection-item" onclick={() => selectEntity(entity)}><span class={`entity-glyph ${entityGlyphClass(entity)}`}>{entityGlyph(entity)}</span><span class="item-copy"><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span><span class="item-arrow" aria-hidden="true">›</span></button>{/each}{/if}
           </div>
         </aside>
 
-        <article class="editor-panel"><div class="editor-header"><div><span class="panel-kicker">{selected?.entity_type ?? (section === "lore" ? "LORE ENTRY" : "TIMELINE EVENT")}</span><h2>{selected?.name ?? "Choose an entry"}</h2></div>{#if selected}<div class="editor-status">{#if isSaving}<span class="saving-dot"></span> Saving…{:else if savedAt}<span class="saved-dot">✓</span> Saved {savedAt}{/if}</div>{/if}</div>{#if selected}<RichTextEditor value={documentBody} onChange={(value) => documentBody = value} placeholder="Write the canonical story of this entry…" /><div class="editor-footer"><span>{wordCount()} words</span><div><button class="quiet-button" onclick={archiveSelected}>Archive</button><button class="primary-button" disabled={isSaving} onclick={saveDocument}>{isSaving ? "Saving…" : "Save changes"}</button></div></div>{:else}<div class="editor-empty"><div class="empty-mark">✦</div><h3>Your canvas is waiting.</h3><p>Select an entry from the library, or create something new to begin writing.</p></div>{/if}</article>
+        <article class:editor-fullscreen={editorFullscreen} class="editor-panel">
+          <div class="editor-header">
+            <div>
+              <span class="panel-kicker">{selected ? entityTypeLabel(selected.entity_type).toUpperCase() : section === "lore" ? "LORE ENTRY" : section === "timeline" ? "TIMELINE EVENT" : writingView === "manuscripts" ? "MANUSCRIPT" : "REFERENCE PAGE"}</span>
+              <h2>{selected?.name ?? "Choose an entry"}</h2>
+            </div>
+            {#if selected}
+              <div class="editor-status">
+                {#if isSaving}<span class="saving-dot"></span> Saving…{:else if hasUnsavedChanges}<span class="unsaved-dot"></span> Unsaved changes{:else if savedAt}<span class="saved-dot">✓</span> Saved {savedAt}{/if}
+              </div>
+            {/if}
+          </div>
+          {#if selected}
+            <RichTextEditor value={documentBody} fullscreen={editorFullscreen} onChange={updateDocumentBody} onFullscreenChange={setEditorFullscreen} placeholder={section === "writing" ? writingView === "manuscripts" ? "Write your manuscript…" : "Write this reference page…" : "Write the canonical story of this entry…"} />
+            <div class="editor-footer">
+              <span>{wordCount()} words</span>
+              <div><button class="quiet-button" onclick={archiveSelected}>Archive</button></div>
+            </div>
+          {:else}
+            <div class="editor-empty"><div class="empty-mark">✦</div><h3>{section === "writing" ? writingView === "manuscripts" ? "Your draft is waiting." : "Your reference desk is waiting." : "Your canvas is waiting."}</h3><p>Select an entry from the library, or create something new to begin writing.</p></div>
+          {/if}
+        </article>
 
-        {#if selected}<aside class="inspector-panel panel-surface"><div class="inspector-heading"><div><span class="panel-kicker">INSPECTOR</span><strong>Details</strong></div><span class="inspector-type">{selected.entity_type}</span></div><section class="inspector-section"><h3>Properties</h3>{#each definitions().filter((candidate) => candidate.type !== "relationship") as definition}<div class="property-field"><span>{definition.label}{#if definition.required}<b>*</b>{/if}</span>{#if definition.type === "date"}{#if dateForField(definition.key) || dateEditorOpen[definition.key]}{@const date = dateDraftForField(definition.key) ?? { calendar: "gregorian", era: "CE", precision: "day" }}<div class="date-editor"><div class="date-fields"><label for={`${definition.key}-year`}>Year<input id={`${definition.key}-year`} aria-label={`${definition.label} year`} type="number" min="1" value={date.year ?? ""} onchange={(event) => updateDatePart(definition.key, "year", (event.currentTarget as HTMLInputElement).value, 1)} /></label><label for={`${definition.key}-month`}>Month<input id={`${definition.key}-month`} aria-label={`${definition.label} month`} type="number" min="1" max="12" value={date.month ?? ""} onchange={(event) => updateDatePart(definition.key, "month", (event.currentTarget as HTMLInputElement).value, 1, 12)} /></label><label for={`${definition.key}-day`}>Day<input id={`${definition.key}-day`} aria-label={`${definition.label} day`} type="number" min="1" max="31" value={date.day ?? ""} onchange={(event) => updateDatePart(definition.key, "day", (event.currentTarget as HTMLInputElement).value, 1, 31)} /></label></div><small class="date-preview">{typeof date.year === "number" ? formatCalendarDate(date) : "Add a date"}</small><button class="date-clear" type="button" onclick={() => clearDateField(definition.key)}>Clear date</button></div>{:else}<button class="date-empty" type="button" onclick={() => openDateEditor(definition.key)}>Add a date</button>{/if}{:else}<input type="text" value={fields[definition.key] ?? ""} placeholder="Add {definition.label.toLowerCase()}" oninput={(event) => updateField(definition.key, event)} />{/if}</div>{/each}</section>{#each definitions().filter((candidate) => candidate.type === "relationship") as definition}<section class="inspector-section"><div class="section-title"><h3>{definition.label}</h3><span>{selectedRelationshipIds(definition).length}</span></div><RelationshipPicker field={definition} entities={entities} selectedIds={selectedRelationshipIds(definition)} onChange={(ids) => void updateRelationshipField(definition, ids)} /></section>{/each}<section class="inspector-section"><div class="section-title"><h3>Relationships</h3><span>{relationships.length}</span></div>{#each relationships as relationship}<button class="relationship-chip" onclick={() => focusRelated(relationship)}><span class="relation-mark">↗</span><span><strong>{relationship.relationship_type}</strong><small>{linkedEntity(relationship)?.name ?? "Unknown entity"}</small></span></button>{/each}<div class="relationship-form"><input aria-label="Find related entity" bind:value={relationshipQuery} placeholder="Search entities…" />{#if relationshipQuery && !relationshipTarget}{#each relationshipCandidates() as candidate}<button class="candidate" onclick={() => { relationshipTarget = candidate; relationshipQuery = candidate.name; }}><span>{candidate.entity_type === "event" ? "◷" : "✦"}</span><span><strong>{candidate.name}</strong><small>{candidate.entity_type}</small></span></button>{/each}{/if}<div class="relation-controls"><select aria-label="Relationship type" bind:value={relationshipType}><option value="related_to">Related to</option><option value="located_in">Located in</option><option value="created_by">Created by</option><option value="ruler_of">Ruler of</option><option value="follows">Follows</option><option value="opposes">Opposes</option></select><button class="add-button" disabled={!relationshipTarget} onclick={addRelationship}>Link</button></div></div></section><section class="inspector-section"><div class="section-title"><h3>Attachments</h3><span>{assets.length}</span></div><button class="drop-zone" type="button" onclick={attachAsset}><span>＋</span><strong>Attach a file</strong><small>Copied into this project</small></button>{#each assets as asset}<div class="asset-row"><span class="asset-icon">□</span><span><strong>{asset.filename}</strong><small>{Math.max(1, Math.round(asset.size / 1024))} KB</small></span></div>{/each}</section></aside>{:else}<aside class="inspector-panel panel-surface inspector-empty"><span>INSPECTOR</span><p>Select an entry to see its properties, relationships, and attachments.</p></aside>{/if}
+        {#if selected}<aside class="inspector-panel panel-surface"><div class="inspector-heading"><div><span class="panel-kicker">INSPECTOR</span><strong>Details</strong></div><span class="inspector-type">{selected.entity_type}</span></div><section class="inspector-section"><h3>Properties</h3>{#each definitions().filter((candidate) => candidate.type !== "relationship") as definition}<div class="property-field"><span>{definition.label}{#if definition.required}<b>*</b>{/if}</span>{#if definition.type === "date"}{#if dateForField(definition.key) || dateEditorOpen[definition.key]}{@const date = dateDraftForField(definition.key) ?? { calendar: "gregorian", era: "CE", precision: "day" }}<div class="date-editor"><div class="date-fields"><label for={`${definition.key}-year`}>Year<input id={`${definition.key}-year`} aria-label={`${definition.label} year`} type="number" min="1" value={date.year ?? ""} onchange={(event) => updateDatePart(definition.key, "year", (event.currentTarget as HTMLInputElement).value, 1)} /></label><label for={`${definition.key}-month`}>Month<input id={`${definition.key}-month`} aria-label={`${definition.label} month`} type="number" min="1" max="12" value={date.month ?? ""} onchange={(event) => updateDatePart(definition.key, "month", (event.currentTarget as HTMLInputElement).value, 1, 12)} /></label><label for={`${definition.key}-day`}>Day<input id={`${definition.key}-day`} aria-label={`${definition.label} day`} type="number" min="1" max="31" value={date.day ?? ""} onchange={(event) => updateDatePart(definition.key, "day", (event.currentTarget as HTMLInputElement).value, 1, 31)} /></label></div><small class="date-preview">{typeof date.year === "number" ? formatCalendarDate(date) : "Add a date"}</small><button class="date-clear" type="button" onclick={() => clearDateField(definition.key)}>Clear date</button></div>{:else}<button class="date-empty" type="button" onclick={() => openDateEditor(definition.key)}>Add a date</button>{/if}{:else}<input type="text" value={fields[definition.key] ?? ""} placeholder="Add {definition.label.toLowerCase()}" oninput={(event) => updateField(definition.key, event)} />{/if}</div>{/each}</section>{#each definitions().filter((candidate) => candidate.type === "relationship") as definition}<section class="inspector-section"><div class="section-title"><h3>{definition.label}</h3><span>{selectedRelationshipIds(definition).length}</span></div><RelationshipPicker field={definition} entities={entities} selectedIds={selectedRelationshipIds(definition)} onChange={(ids) => void updateRelationshipField(definition, ids)} /></section>{/each}<section class="inspector-section"><div class="section-title"><h3>Attachments</h3><span>{assets.length}</span></div><button class="drop-zone" type="button" onclick={attachAsset}><span>＋</span><strong>Attach a file</strong><small>Copied into this project</small></button>{#each assets as asset}<div class="asset-row"><span class="asset-icon">□</span><span><strong>{asset.filename}</strong><small>{Math.max(1, Math.round(asset.size / 1024))} KB</small></span></div>{/each}</section></aside>{:else}<aside class="inspector-panel panel-surface inspector-empty"><span>INSPECTOR</span><p>Select an entry to see its properties, relationships, and attachments.</p></aside>{/if}
       </section>
     {/if}
     {#if error}<div class="toast" role="status">{error}<button aria-label="Dismiss" onclick={() => error = ""}>×</button></div>{/if}
@@ -677,7 +777,7 @@
   .primary-button, .quiet-button, .add-button { border: 0; border-radius: 8px; cursor: pointer; } .primary-button { padding: 10px 15px; background: var(--accent-dark); color: #fff; font-weight: 700; font-size: 12px; box-shadow: 0 5px 12px rgba(42,68,51,.14); } .primary-button:hover { background: #2b4535; } .primary-button:disabled { opacity: .55; cursor: wait; } .primary-button.large { padding: 14px 18px; font-size: 13px; } .primary-button span { margin-left: 18px; font-size: 18px; } .quiet-button { padding: 10px 12px; background: transparent; color: var(--ink-soft); font-size: 12px; } .quiet-button:hover { background: var(--surface-muted); color: var(--ink); }
   .workspace-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; padding: 42px 40px 25px; } .workspace-heading h1 { margin: 8px 0 4px; font: 500 38px/1 var(--font-display); } .workspace-heading p { margin: 0; color: var(--ink-soft); font-size: 13px; } .heading-actions { display: flex; gap: 7px; } .projection-bar { min-height: 42px; margin: 0 40px 15px; padding: 0 14px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,254,250,.72); } .projection-bar:empty { display: none; } .workspace-grid { display: grid; grid-template-columns: 245px minmax(360px, 1fr) 270px; gap: 14px; padding: 0 40px 40px; align-items: start; } .panel-surface, .editor-panel { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-sm); } .collection-panel, .inspector-panel { min-height: 650px; } .collection-panel { display: flex; flex-direction: column; } .panel-heading, .inspector-heading { display: flex; align-items: center; justify-content: space-between; padding: 18px 17px 12px; } .panel-heading strong { display: block; margin-top: 5px; font: 500 28px var(--font-display); }
   .editor-panel { min-height: 650px; padding: 24px 25px 18px; } .editor-header { display: flex; align-items: flex-start; justify-content: space-between; min-height: 72px; } .editor-header h2 { margin: 8px 0 0; font: 500 28px/1.1 var(--font-display); } .editor-status { color: var(--ink-faint); font-size: 11px; } .saving-dot, .saved-dot { display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: #d6a35f; } .saved-dot { width: auto; height: auto; margin: 0 4px 0 0; color: #6fa276; background: transparent; } .editor-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 14px; color: var(--ink-faint); font-size: 11px; } .editor-footer div { display: flex; gap: 4px; } .editor-empty { display: grid; place-items: center; min-height: 500px; padding: 30px; text-align: center; } .empty-mark, .disabled-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 16px; background: #f2e4d2; color: var(--accent); font-size: 23px; } .editor-empty h3 { margin: 18px 0 6px; font: 500 23px var(--font-display); } .editor-empty p, .disabled-state p { max-width: 280px; margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
-  .date-editor { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fcf8f1; } .date-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; } .date-fields label { display: grid; gap: 4px; color: var(--ink-faint); font-size: 9px; font-weight: 700; text-transform: uppercase; } .date-fields input { min-width: 0; width: 100%; padding: 8px 6px; border: 1px solid var(--line); border-radius: 7px; background: var(--canvas); color: var(--ink); font-size: 11px; } .date-fields input:focus { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180,119,63,.1); outline: 0; } .date-preview { color: var(--accent); font-size: 10px; font-weight: 700; } .date-clear, .date-empty { width: fit-content; padding: 0; border: 0; background: transparent; color: var(--ink-faint); font-size: 10px; cursor: pointer; } .date-empty { padding: 8px 10px; border: 1px dashed #d3c0a9; border-radius: 7px; color: var(--accent); } .inspector-heading { border-bottom: 1px solid var(--line); } .inspector-heading strong { display: block; margin-top: 7px; font: 500 20px var(--font-display); } .inspector-type { padding: 4px 7px; border-radius: 5px; background: #f2e4d2; color: var(--accent); font-size: 9px; font-weight: 800; text-transform: uppercase; } .inspector-section { padding: 18px 16px; border-bottom: 1px solid var(--line); } .inspector-section h3, .section-title h3 { margin: 0; color: var(--ink-soft); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; } .property-field { display: block; margin-top: 14px; } .property-field span { display: block; margin-bottom: 5px; color: var(--ink-soft); font-size: 10px; } .property-field b { margin-left: 3px; color: var(--accent); } .property-field input, .relationship-form > input { width: 100%; padding: 8px 9px; border: 1px solid var(--line); border-radius: 7px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 11px; } .property-field input:focus { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180,119,63,.1); } .section-title { display: flex; align-items: center; justify-content: space-between; } .section-title span { color: var(--ink-faint); font-size: 11px; } .relationship-chip, .candidate { width: 100%; display: flex; align-items: center; gap: 9px; margin-top: 9px; padding: 8px; border: 0; border-radius: 7px; background: var(--surface-muted); color: var(--ink); text-align: left; cursor: pointer; } .relationship-chip:hover, .candidate:hover { background: #eee9df; } .relation-mark, .candidate > span:first-child { color: var(--accent); } .relationship-chip strong, .relationship-chip small, .candidate strong, .candidate small, .asset-row strong, .asset-row small { display: block; } .relationship-chip strong, .candidate strong, .asset-row strong { font-size: 10px; } .relationship-chip small, .candidate small, .asset-row small { margin-top: 3px; color: var(--ink-faint); font-size: 9px; } .relationship-form { position: relative; margin-top: 12px; } .candidate { margin-top: 3px; padding: 7px; } .relation-controls { display: flex; gap: 5px; margin-top: 6px; } .relation-controls select { min-width: 0; flex: 1; padding: 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink-soft); font-size: 9px; } .add-button { padding: 0 9px; background: var(--accent-dark); color: #fff; font-size: 10px; } .add-button:disabled { opacity: .4; cursor: not-allowed; } .drop-zone { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 12px; padding: 16px 8px; border: 1px dashed #d3c0a9; border-radius: 8px; background: #fcf8f1; color: var(--accent); text-align: center; cursor: pointer; } .drop-zone span { font-size: 22px; } .drop-zone strong { color: var(--ink-soft); font-size: 10px; } .drop-zone small { color: var(--ink-faint); font-size: 9px; } .asset-row { display: flex; align-items: center; gap: 8px; margin-top: 9px; } .asset-icon { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 6px; background: #ede9e0; color: var(--accent); }
+  .date-editor { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fcf8f1; } .date-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; } .date-fields label { display: grid; gap: 4px; color: var(--ink-faint); font-size: 9px; font-weight: 700; text-transform: uppercase; } .date-fields input { min-width: 0; width: 100%; padding: 8px 6px; border: 1px solid var(--line); border-radius: 7px; background: var(--canvas); color: var(--ink); font-size: 11px; } .date-fields input:focus { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180,119,63,.1); outline: 0; } .date-preview { color: var(--accent); font-size: 10px; font-weight: 700; } .date-clear, .date-empty { width: fit-content; padding: 0; border: 0; background: transparent; color: var(--ink-faint); font-size: 10px; cursor: pointer; } .date-empty { padding: 8px 10px; border: 1px dashed #d3c0a9; border-radius: 7px; color: var(--accent); } .inspector-heading { border-bottom: 1px solid var(--line); } .inspector-heading strong { display: block; margin-top: 7px; font: 500 20px var(--font-display); } .inspector-type { padding: 4px 7px; border-radius: 5px; background: #f2e4d2; color: var(--accent); font-size: 9px; font-weight: 800; text-transform: uppercase; } .inspector-section { padding: 18px 16px; border-bottom: 1px solid var(--line); } .inspector-section h3, .section-title h3 { margin: 0; color: var(--ink-soft); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; } .property-field { display: block; margin-top: 14px; } .property-field span { display: block; margin-bottom: 5px; color: var(--ink-soft); font-size: 10px; } .property-field b { margin-left: 3px; color: var(--accent); } .property-field input { width: 100%; padding: 8px 9px; border: 1px solid var(--line); border-radius: 7px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 11px; } .property-field input:focus { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180,119,63,.1); } .section-title { display: flex; align-items: center; justify-content: space-between; } .section-title span { color: var(--ink-faint); font-size: 11px; } .asset-row strong, .asset-row small { display: block; } .asset-row strong { font-size: 10px; } .asset-row small { margin-top: 3px; color: var(--ink-faint); font-size: 9px; } .drop-zone { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 12px; padding: 16px 8px; border: 1px dashed #d3c0a9; border-radius: 8px; background: #fcf8f1; color: var(--accent); text-align: center; cursor: pointer; } .drop-zone span { font-size: 22px; } .drop-zone strong { color: var(--ink-soft); font-size: 10px; } .drop-zone small { color: var(--ink-faint); font-size: 9px; } .asset-row { display: flex; align-items: center; gap: 8px; margin-top: 9px; } .asset-icon { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 6px; background: #ede9e0; color: var(--accent); }
   .disabled-state { display: grid; min-height: calc(100vh - 70px); place-content: center; justify-items: center; padding: 40px; text-align: center; } .disabled-state h1 { margin: 12px 0 10px; font: 500 42px var(--font-display); } .disabled-state p { margin-bottom: 24px; } .toast { position: fixed; right: 24px; bottom: 24px; z-index: 10; max-width: 430px; padding: 13px 14px; border: 1px solid #e5d4ba; border-radius: 9px; background: #fff8ed; box-shadow: var(--shadow-lg); color: #765a39; font-size: 12px; } .toast button { margin-left: 10px; border: 0; background: none; color: inherit; cursor: pointer; font-size: 17px; } .inspector-empty { display: grid; place-items: center; min-height: 240px; padding: 30px; color: var(--ink-faint); text-align: center; font-size: 10px; } .inspector-empty p { max-width: 170px; margin-top: 13px; line-height: 1.6; }
   @media (max-width: 1180px) { .workspace-grid { grid-template-columns: 220px minmax(320px, 1fr); } .inspector-panel { grid-column: 1 / -1; min-height: auto; display: grid; grid-template-columns: repeat(3, 1fr); } .inspector-heading { grid-column: 1 / -1; } .inspector-section { border-right: 1px solid var(--line); border-bottom: 0; } }
   @media (max-width: 760px) { .studio-shell { display: block; } .rail { display: block; width: 100%; height: auto; padding: 12px 14px; } .startup-rail { min-height: 100vh; padding: 24px 14px; } .brand { padding: 0 4px 12px; } .rail-label, .project-card, .rail-spacer, .rail-footer, .module-menu { display: none; } .startup-rail .rail-label, .startup-rail .recent-projects { display: block; } .startup-rail .recent-label { margin-top: 27px; } .startup-rail .rail-button { display: flex; width: 100%; margin: 0 0 5px; padding: 10px 11px; } .startup-rail .rail-button span:not(.rail-icon) { display: inline; } .rail-button { display: inline-flex; width: auto; margin: 0 3px 0 0; padding: 8px 10px; } .rail-button span:not(.rail-icon) { display: none; } .topbar { min-height: 58px; padding: 0 17px; } .breadcrumbs span:first-child, .sync-badge { display: none; } .global-search { width: 150px; } .welcome { min-height: calc(100vh - 58px); display: block; padding: 55px 24px; } .welcome h1 { font-size: 52px; } .welcome-art { width: 100%; height: 270px; margin-top: 35px; transform: scale(.84); transform-origin: left top; } .workspace-heading { display: block; padding: 30px 17px 18px; } .workspace-heading h1 { font-size: 33px; } .heading-actions { margin-top: 18px; } .projection-bar { margin: 0 17px 12px; } .workspace-grid { display: flex; flex-direction: column; padding: 0 17px 25px; } .collection-panel, .editor-panel, .inspector-panel { width: 100%; min-height: auto; } .collection-list { max-height: 260px; overflow-y: auto; } .inspector-panel { display: block; } .inspector-section { border-bottom: 1px solid var(--line); border-right: 0; } .editor-panel { padding: 18px 14px 14px; } .editor-header h2 { font-size: 24px; } .editor-footer { align-items: flex-end; gap: 10px; } .toast { right: 12px; bottom: 12px; left: 12px; } }
@@ -723,7 +823,12 @@
   .entity-glyph-artifact { color: #a2783c; background: #f7eed8 !important; }
   .entity-glyph-culture { color: #4e7890; background: #e4eff3 !important; }
   .entity-glyph-event { color: #ae6a56; background: #f8e8e2 !important; }
+  .entity-glyph-manuscript { color: #7c6548; background: #f4eadb !important; }
+  .entity-glyph-reference-page { color: #597a84; background: #e5eff0 !important; }
   .entity-glyph-unknown { color: #837d73; background: #eeeae3 !important; }
+  .collection-tabs { display: flex; gap: 4px; margin: 0 10px 8px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-muted); }
+  .collection-tabs button { flex: 1; min-width: 0; padding: 7px 5px; border: 0; border-radius: 6px; background: transparent; color: var(--ink-faint); font-size: 10px; cursor: pointer; }
+  .collection-tabs button:hover, .collection-tabs button.active { background: var(--surface); color: var(--accent-dark); box-shadow: var(--shadow-sm); }
   .collection-item .item-copy { display: grid; min-width: 0; align-content: center; gap: 4px; overflow: hidden; }
   .collection-item .item-copy strong { overflow: hidden; color: var(--ink); font-size: 13px; font-weight: 700; line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
   .collection-item .item-copy small { width: max-content; max-width: 150px; margin: 0; padding: 3px 6px; border-radius: 4px; background: #f4f0e8; color: var(--ink-faint); font-size: 10px; line-height: 1; letter-spacing: .04em; text-transform: uppercase; }
@@ -771,13 +876,22 @@
   .rail { position: sticky; top: 0; align-self: flex-start; height: 100vh; max-height: 100vh; overflow-y: auto; overscroll-behavior: contain; }
   .topbar { position: sticky; top: 0; z-index: 4; backdrop-filter: blur(14px); }
   .workspace-grid > * { min-width: 0; }
-  .collection-panel, .editor-panel, .inspector-panel { overflow: hidden; }
+  .collection-panel, .editor-panel { overflow: hidden; }
+  .inspector-panel { overflow: visible; }
   .panel-heading { gap: 12px; }
   .panel-heading > div, .editor-header > div:first-child, .inspector-heading > div { min-width: 0; }
   .editor-header h2 { overflow-wrap: anywhere; }
-  .collection-search, .global-search, .property-field input, .relationship-form > input { transition: border-color .16s ease, box-shadow .16s ease; }
+  .collection-search, .global-search, .property-field input { transition: border-color .16s ease, box-shadow .16s ease; }
   .collection-search:focus-within, .global-search:focus-within { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180, 119, 63, .1); }
   .primary-button, .quiet-button, .add-button, .new-form-close { transition: background .16s ease, color .16s ease, opacity .16s ease, transform .16s ease; }
+  .unsaved-dot { display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: #d6a35f; }
+  .editor-fullscreen { position: fixed; inset: 0 0 0 248px; z-index: 30; display: flex; flex-direction: column; min-height: 100vh; overflow: auto; padding: 28px clamp(22px, 5vw, 72px) 24px; border: 0; border-radius: 0; background: var(--canvas); box-shadow: 0 24px 80px rgba(37, 37, 31, .18); }
+  .editor-fullscreen .editor-header { width: min(1120px, 100%); flex: 0 0 auto; align-self: center; }
+  .editor-fullscreen :global(.editor-shell) { display: grid; width: min(1120px, 100%); min-height: 0; flex: 1 1 auto; align-self: center; grid-template-rows: auto minmax(0, 1fr) auto; }
+  .editor-fullscreen :global(.editor-content) { overflow: auto; }
+  .editor-fullscreen .editor-footer { width: min(1120px, 100%); flex: 0 0 auto; align-self: center; }
+  .editor-fullscreen .editor-header h2 { font-size: 32px; }
+  .editor-fullscreen .editor-footer { padding-top: 12px; }
   .dialog { max-height: min(680px, calc(100vh - 32px)); overflow-y: auto; }
   .search-modal { top: 70px; }
 
@@ -815,6 +929,9 @@
     .collection-list { max-height: 320px; -webkit-overflow-scrolling: touch; }
     .panel-heading strong { font-size: 24px; }
     .editor-panel { padding: 18px 14px 14px; }
+    .editor-fullscreen { inset: 0; padding: 16px 14px 12px; }
+    .editor-fullscreen .editor-header { min-height: 58px; }
+    .editor-fullscreen .editor-header h2 { font-size: 24px; }
     .editor-header { min-height: 62px; gap: 10px; }
     .editor-status { flex: 0 0 auto; }
     .editor-footer { align-items: flex-start; flex-wrap: wrap; }
@@ -837,7 +954,7 @@
     .startup-primary { min-height: 43px; }
     .welcome-art { height: 225px; }
     .editor-footer > div { flex-direction: column-reverse; }
-    .editor-footer > div .primary-button, .editor-footer > div .quiet-button { width: 100%; text-align: center; }
+    .editor-footer > div .quiet-button { width: 100%; text-align: center; }
   }
 
   .rail-create-button { width: 100%; display: flex; align-items: center; gap: 11px; margin: 0 0 18px; padding: 12px 11px; border: 1px solid rgba(213,171,108,.55); border-radius: 8px; background: #d5ab6c; color: #2c4032; font-size: 14px; font-weight: 800; text-align: left; cursor: pointer; }

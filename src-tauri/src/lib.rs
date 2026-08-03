@@ -126,6 +126,10 @@ fn plugin_asset_response(
                 include_bytes!("../plugin-assets/timeline/index.html"),
                 "text/html",
             ),
+            ("worldbuilder.writing", "/dist/ui/index.html") => (
+                include_bytes!("../plugin-assets/writing/index.html"),
+                "text/html",
+            ),
             (_, "/dist/ui/plugin.js") => (
                 include_bytes!("../plugin-assets/shared/plugin.js"),
                 "text/javascript",
@@ -148,6 +152,9 @@ fn plugin_asset_response(
             "worldbuilder.lore" => include_str!("../../packages/modules/lore/manifest.json"),
             "worldbuilder.timeline" => {
                 include_str!("../../packages/modules/timeline/manifest.json")
+            }
+            "worldbuilder.writing" => {
+                include_str!("../../packages/modules/writing/manifest.json")
             }
             _ => return None,
         };
@@ -663,6 +670,7 @@ fn bundled_plugin_host() -> Result<PluginHost, String> {
     for manifest in [
         include_str!("../../packages/modules/lore/manifest.json"),
         include_str!("../../packages/modules/timeline/manifest.json"),
+        include_str!("../../packages/modules/writing/manifest.json"),
     ] {
         host.register_bundled_json(manifest)
             .map_err(|error| error.to_string())?;
@@ -1934,6 +1942,7 @@ mod tests {
         let host = bundled_plugin_host().unwrap();
         let lore = host.catalog.get("worldbuilder.lore").unwrap();
         let timeline = host.catalog.get("worldbuilder.timeline").unwrap();
+        let writing = host.catalog.get("worldbuilder.writing").unwrap();
         assert_eq!(
             core_migration(&lore.manifest).unwrap().unwrap().id,
             "lore-v1"
@@ -1941,6 +1950,10 @@ mod tests {
         assert_eq!(
             core_migration(&timeline.manifest).unwrap().unwrap().id,
             "timeline-v1"
+        );
+        assert_eq!(
+            core_migration(&writing.manifest).unwrap().unwrap().id,
+            "writing-v1"
         );
     }
 

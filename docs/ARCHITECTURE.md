@@ -92,6 +92,6 @@ separate from package versions and are advanced only by migrations.
 1. Ship this contract and the typed API package.
 2. Implement the Rust project store and narrow Tauri commands.
 3. Build the Svelte host and registry.
-4. Build Lore, then Timeline, using only the public context.
+4. Build Lore, Timeline, and Writing Studio using only the public context.
 5. Validate the Eldermere example through export/import, migration rollback,
    disablement, renames, and search-index rebuild.

@@ -1,0 +1,33 @@
+{
+  "manifestVersion": 1,
+  "id": "worldbuilder.writing",
+  "name": "Writing Studio",
+  "version": "0.1.0",
+  "publisher": "worldbuilder",
+  "hostApi": ">=1.0.0 <2.0.0",
+  "kind": "declarative",
+  "entrypoints": { "ui": "dist/ui/index.html" },
+  "capabilities": ["entity.read", "entity.write", "entity.delete", "document.read", "document.write", "field.read:self", "field.write:self", "relationship.read", "relationship.write", "asset.read:self", "asset.import", "search.query"],
+  "dependencies": {},
+  "namespaces": ["writing"],
+  "schemas": [{
+    "namespace": "writing",
+    "entityTypes": ["manuscript", "reference-page"],
+    "fields": [
+      { "key": "status", "label": "Status", "type": "enum", "options": ["idea", "drafting", "revising", "complete"], "entityTypes": ["manuscript"] },
+      { "key": "genre", "label": "Genre", "type": "text", "entityTypes": ["manuscript"] },
+      { "key": "synopsis", "label": "Synopsis", "type": "text", "entityTypes": ["manuscript"] },
+      { "key": "category", "label": "Category", "type": "enum", "options": ["setting", "character", "plot", "research", "other"], "entityTypes": ["reference-page"] },
+      { "key": "aliases", "label": "Aliases", "type": "text", "entityTypes": ["reference-page"] }
+    ]
+  }],
+  "templates": [
+    { "id": "manuscript", "name": "Manuscript", "entityType": "manuscript", "description": "A long-form story, essay, or other work in progress.", "icon": "M", "fields": { "status": "idea", "genre": "", "synopsis": "" }, "document": "Begin your manuscript here." },
+    { "id": "reference-page", "name": "Reference page", "entityType": "reference-page", "description": "A freeform wiki page for ideas, research, and world notes.", "icon": "R", "fields": { "category": "other", "aliases": "" }, "document": "Add the facts, links, and notes for this page." }
+  ],
+  "views": [{ "id": "writing-studio", "title": "Writing Studio" }],
+  "commands": [],
+  "services": { "provides": [], "consumes": [] },
+  "events": { "publishes": [], "subscribes": [] },
+  "migrations": [{ "id": "writing-v1", "from": 0, "to": 1, "recovery": "backup", "operations": [{ "kind": "create-namespace", "namespace": "writing" }] }]
+}

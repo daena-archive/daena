@@ -53,7 +53,11 @@
   class="relationship-picker"
   onfocusout={(event) => {
     const next = event.relatedTarget as Node | null;
-    if (!next || !(event.currentTarget as HTMLElement).contains(next)) open = false;
+    const picker = event.currentTarget as HTMLElement;
+    if (next && picker.contains(next)) return;
+    window.setTimeout(() => {
+      if (!picker.contains(document.activeElement)) open = false;
+    }, 0);
   }}
 >
   {#if selectedIds.length > 0}
@@ -87,7 +91,13 @@
           role="option"
           aria-selected={isSelected(entity.id)}
           class:selected={isSelected(entity.id)}
-          onclick={() => toggle(entity.id)}
+          onpointerdown={(event) => { event.preventDefault(); toggle(entity.id); }}
+          onkeydown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              toggle(entity.id);
+            }
+          }}
         >
           <span><strong>{entity.name}</strong><small>{entity.entity_type ?? "Uncategorized"}</small></span>
           {#if isSelected(entity.id)}<b aria-hidden="true">✓</b>{/if}

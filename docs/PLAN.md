@@ -27,6 +27,7 @@ broker-backed conversion gate.
 - Implement the core project format and the smallest host API required to create, read, update, link, search, and migrate entities.
 - Build a first-party **Lore** module with rich documents, entity types, templates, fields, links, and attachments.
 - Build a deliberately different **Timeline** module that contributes event schemas and renders shared entities without owning duplicate data.
+- Build a **Writing Studio** module with separate Manuscripts and Reference Pages collections backed by the same shared entity/document primitives.
 - Require both modules to use only the public module API; treat any missing capability as a contract-design issue, not an excuse for privileged access.
 - Include a small example world to validate relationships, renames, deletes, module disablement, export, and migration behavior.
 
@@ -37,7 +38,7 @@ broker-backed conversion gate.
 3. **Timeline validation** — prove the contract supports a contrasting module and cross-module references.
 4. **Maps or Boards** — test visual projections and module-owned annotations referencing shared entities.
 5. **Runtime extensions** — add verified third-party package installation only after bundled modules and migrations are stable.
-6. **Manuscript and mobile/web targets** — add authoring workflows after the world model has proven durable.
+6. **Advanced writing workflows and mobile/web targets** — expand Manuscripts and Reference Pages after the shared editor and world model have proven durable.
 
 ## Stack
 
@@ -50,7 +51,8 @@ broker-backed conversion gate.
 ## Acceptance Criteria
 
 - A project can create shared entities and attach prose, typed fields, links, and assets.
-- Lore and Timeline are independently packaged modules and have no private host APIs.
+- Lore, Timeline, and Writing Studio are independently packaged modules and have no private host APIs.
+- Writing Studio can create and edit Manuscripts and Reference Pages without duplicating Lore entities or core documents.
 - A timeline event can reference a lore entity; renaming that entity preserves the reference.
 - Disabling a module hides its views without deleting its project data.
 - Module migrations are validated, transactional, versioned, and recoverable.

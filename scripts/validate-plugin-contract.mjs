@@ -13,7 +13,7 @@ if (rpcSchema.$id !== "https://worldbuilder.app/schemas/plugin-rpc-v1.json") thr
 if (errorSchema.$id !== "https://worldbuilder.app/schemas/plugin-error-v1.json") throw new Error("error schema id mismatch");
 if (capabilityRegistry.version !== 1 || capabilityRegistry.deniedByDefault.length === 0) throw new Error("capability registry is incomplete");
 
-for (const name of ["lore", "timeline"]) {
+for (const name of ["lore", "timeline", "writing"]) {
   const manifest = await readJson(`packages/modules/${name}/manifest.json`);
   const required = ["manifestVersion", "id", "name", "version", "publisher", "hostApi", "kind", "entrypoints", "capabilities", "dependencies", "namespaces", "schemas", "templates", "views", "commands", "services", "events", "migrations"];
   for (const key of required) if (!(key in manifest)) throw new Error(`${name}: missing ${key}`);

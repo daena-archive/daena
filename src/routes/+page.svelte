@@ -3,7 +3,7 @@
   import { project, type Asset, type Entity, type Relationship, type ProjectModuleManifest, type ProjectInfo, type GitStatus, type GitLogEntry } from "$lib/project/client";
   import type { EntityTemplate, ModuleContext, ModuleId, UUID, ModuleManifest } from "../../packages/module-api/src/index";
   import { buildModuleContext } from "$lib/modules/context";
-  import PluginFrame from "$lib/modules/PluginFrame.svelte";
+  import PluginViewLauncher from "$lib/modules/PluginViewLauncher.svelte";
   import loreManifestJson from "../../packages/modules/lore/manifest.json";
   import timelineManifestJson from "../../packages/modules/timeline/manifest.json";
   import RichTextEditor from "$lib/editor/RichTextEditor.svelte";
@@ -51,6 +51,13 @@
   let showProjection = $state(false);
   let dateEditorOpen = $state<Record<string, boolean>>({});
 
+  const toastDurationMs = 3500;
+  $effect(() => {
+    if (!error) return;
+    const timeout = window.setTimeout(() => { error = ""; }, toastDurationMs);
+    return () => window.clearTimeout(timeout);
+  });
+
   const activeModuleId = () => section === "lore" ? "worldbuilder.lore" : "worldbuilder.timeline";
   const activeManifest = () => (section === "lore" ? loreManifestJson : timelineManifestJson) as unknown as ModuleManifest;
   const templates = () => activeManifest()?.templates ?? [];
@@ -92,6 +99,11 @@
     section = next;
     selected = null;
     showProjection = false;
+  }
+
+  function openProjection() {
+    showProjection = true;
+    projectionRevision += 1;
   }
 
   function relationshipCandidates() {
@@ -155,7 +167,6 @@
   }
   async function loadEntities() {
     entities = await project.listEntities();
-    projectionRevision += 1;
   }
 
   async function refreshGit() {
@@ -416,8 +427,8 @@
     {:else if !sectionEnabled()}
       <section class="disabled-state"><div class="disabled-icon">◌</div><span class="overline">Module unavailable</span><h1>{section === "lore" ? "Lore library" : "Timeline"} is resting.</h1><p>Your project data is safe. Re-enable this module to continue working in this workspace.</p><button class="primary-button" onclick={() => toggleModule(activeModuleId() as ModuleId)}>Enable {section === "lore" ? "Lore" : "Timeline"}</button></section>
     {:else}
-      <div class="workspace-heading"><div><span class="overline">{section === "lore" ? "WORLD BIBLE" : "CHRONOLOGY"}</span><h1>{section === "lore" ? "Lore library" : "Timeline"}</h1><p>{section === "lore" ? "A living reference for every person, place, and power." : "Events, eras, and the threads that connect them."}</p></div><div class="heading-actions"><button class="quiet-button" onclick={() => showProjection = !showProjection}>{showProjection ? "Hide" : "Show"} {section === "lore" ? "graph" : "timeline"}</button></div></div>
-      {#if showProjection}{#key projectionRevision}<div class="projection-bar"><PluginFrame pluginId={activeModuleId()} entities={visibleEntities()} relationships={relationships} /></div>{/key}{/if}
+      <div class="workspace-heading"><div><span class="overline">{section === "lore" ? "WORLD BIBLE" : "CHRONOLOGY"}</span><h1>{section === "lore" ? "Lore library" : "Timeline"}</h1><p>{section === "lore" ? "A living reference for every person, place, and power." : "Events, eras, and the threads that connect them."}</p></div><div class="heading-actions"><button class="quiet-button" onclick={openProjection}>Open {section === "lore" ? "graph" : "timeline"} ↗</button></div></div>
+      {#if showProjection}{#key projectionRevision}<div class="projection-bar"><PluginViewLauncher pluginId={activeModuleId()} /></div>{/key}{/if}
       <section class="workspace-grid">
         <aside class="collection-panel panel-surface">
           <div class="panel-heading">

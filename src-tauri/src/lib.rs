@@ -9,10 +9,273 @@ use worldbuilder_core::{
     RelationshipInput, SaveDocument, SaveEntry,
 };
 use worldbuilder_plugin_api::{MigrationOperation, PluginManifest, RpcRequest, RpcResponse};
-use worldbuilder_plugin_host::{HostError, PluginHost, ServiceRequest};
+use worldbuilder_plugin_host::{
+    plugin_window_label, webview_policy, HostError, PluginHost, ServiceRequest,
+};
 
 type SharedCore = Arc<Mutex<CoreService>>;
 type SharedPluginHost = Arc<Mutex<PluginHost>>;
+
+fn percent_encode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
+fn plugin_asset_response(
+    plugin_id: &str,
+    request: &tauri::http::Request<Vec<u8>>,
+) -> tauri::http::Response<Vec<u8>> {
+    let path = request.uri().path();
+    let (bytes, content_type): (&[u8], &str) = match (plugin_id, path) {
+        ("worldbuilder.lore", "/dist/ui/index.html") => (
+            include_bytes!("../plugin-assets/lore/index.html"),
+            "text/html",
+        ),
+        ("worldbuilder.timeline", "/dist/ui/index.html") => (
+            include_bytes!("../plugin-assets/timeline/index.html"),
+            "text/html",
+        ),
+        (_, "/dist/ui/plugin.js") => (
+            include_bytes!("../plugin-assets/shared/plugin.js"),
+            "text/javascript",
+        ),
+        (_, "/dist/ui/plugin.css") => (
+            include_bytes!("../plugin-assets/shared/plugin.css"),
+            "text/css",
+        ),
+        _ => {
+            return tauri::http::Response::builder()
+                .status(404)
+                .body(Vec::new())
+                .unwrap()
+        }
+    };
+    let manifest = match plugin_id {
+        "worldbuilder.lore" => include_str!("../../packages/modules/lore/manifest.json"),
+        "worldbuilder.timeline" => include_str!("../../packages/modules/timeline/manifest.json"),
+        _ => "",
+    };
+    let manifest = serde_json::from_str::<PluginManifest>(manifest).ok();
+    let csp = manifest
+        .as_ref()
+        .and_then(webview_policy)
+        .map(|policy| policy.csp)
+        .unwrap_or_else(|| "default-src 'none'".into());
+    tauri::http::Response::builder()
+        .status(200)
+        .header("Content-Type", content_type)
+        .header("Content-Security-Policy", csp)
+        .header("X-Content-Type-Options", "nosniff")
+        .body(bytes.to_vec())
+        .unwrap()
+}
+
+fn json_response(value: serde_json::Value, status: u16) -> tauri::http::Response<Vec<u8>> {
+    tauri::http::Response::builder()
+        .status(status)
+        .header("Content-Type", "application/json")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()))
+        .unwrap()
+}
+
+fn plugin_protocol_response(
+    plugin_id: &str,
+    webview_label: &str,
+    request: &tauri::http::Request<Vec<u8>>,
+    core: &SharedCore,
+    plugins: &SharedPluginHost,
+) -> tauri::http::Response<Vec<u8>> {
+    if request.uri().path() != "/__rpc" {
+        return plugin_asset_response(plugin_id, request);
+    }
+    let envelope = match serde_json::from_slice::<serde_json::Value>(request.body()) {
+        Ok(value) => value,
+        Err(error) => return json_response(serde_json::json!({"error": error.to_string()}), 400),
+    };
+    let operation = envelope.get("op").and_then(serde_json::Value::as_str);
+    let result = match operation {
+        Some("bootstrap") => {
+            let requested_plugin = envelope.get("pluginId").and_then(serde_json::Value::as_str);
+            let project_id = envelope
+                .get("projectId")
+                .and_then(serde_json::Value::as_str);
+            if requested_plugin != Some(plugin_id) || project_id.is_none() {
+                Err("plugin bootstrap identity mismatch".to_string())
+            } else {
+                let project_id = project_id.unwrap_or_default();
+                let current_project = core
+                    .lock()
+                    .ok()
+                    .and_then(|core| core.info())
+                    .map(|info| info.root);
+                if current_project.as_deref() != Some(project_id) {
+                    Err("plugin bootstrap project mismatch".into())
+                } else {
+                    let host = plugins
+                        .lock()
+                        .map_err(|_| "plugin host lock poisoned".to_string());
+                    host.and_then(|mut host| {
+                        let session = host
+                            .bootstrap(plugin_id, project_id, webview_label)
+                            .map_err(|error| error.to_string())?;
+                        let entry = host
+                            .catalog
+                            .get(plugin_id)
+                            .ok_or_else(|| "plugin was removed during bootstrap".to_string())?;
+                        serde_json::to_value(PluginBootstrap {
+                            session_id: session.id,
+                            plugin_id: plugin_id.to_string(),
+                            package_digest: entry.digest.clone(),
+                            manifest: entry.manifest.clone(),
+                        })
+                        .map_err(|error| error.to_string())
+                    })
+                }
+            }
+        }
+        Some("rpc") => {
+            let request = match envelope
+                .get("request")
+                .cloned()
+                .and_then(|value| serde_json::from_value::<RpcRequest>(value).ok())
+            {
+                Some(request) => request,
+                None => {
+                    return json_response(
+                        serde_json::json!({"ok": false, "error": {"message": "invalid plugin RPC request"}}),
+                        400,
+                    )
+                }
+            };
+            let request_id = request.request_id.clone();
+            let result = (|| -> Result<serde_json::Value, String> {
+                let session = plugins
+                    .lock()
+                    .map_err(|_| "plugin host lock poisoned".to_string())?
+                    .authorize_rpc(webview_label, &request)
+                    .map_err(|error| error.message)?;
+                let current_project = core
+                    .lock()
+                    .map_err(|_| "core lock poisoned".to_string())?
+                    .info()
+                    .map(|info| info.root);
+                if current_project.as_deref() != Some(session.project_id.as_str()) {
+                    return Err("plugin session is not bound to the open project".into());
+                }
+                let value = if matches!(
+                    request.method.as_str(),
+                    "event.subscribe" | "event.poll" | "event.publish" | "service.call"
+                ) {
+                    dispatch_host_rpc(
+                        plugins,
+                        &session.plugin_id,
+                        &session.project_id,
+                        &request.method,
+                        request.payload,
+                    )?
+                } else {
+                    let mut core = core.lock().map_err(|_| "core lock poisoned".to_string())?;
+                    dispatch_module_rpc(&mut core, &request.method, request.payload)
+                        .map_err(|error| error.to_string())?
+                };
+                Ok(
+                    serde_json::json!({"rpcVersion": 1, "requestId": request_id, "ok": true, "result": value}),
+                )
+            })();
+            match result {
+                Ok(value) => Ok(value),
+                Err(error) => Ok(
+                    serde_json::json!({"rpcVersion": 1, "requestId": request_id, "ok": false, "error": {"code": "core.error", "message": error, "retryable": false}}),
+                ),
+            }
+        }
+        _ => Err("unknown plugin protocol operation".into()),
+    };
+    match result {
+        Ok(value) => json_response(value, 200),
+        Err(error) => json_response(serde_json::json!({"error": error}), 400),
+    }
+}
+
+fn open_plugin_webview(
+    app: &tauri::AppHandle,
+    plugin_id: &str,
+    project_id: &str,
+    host: &PluginHost,
+) -> Result<(), String> {
+    let entry = host
+        .catalog
+        .get(plugin_id)
+        .ok_or_else(|| "plugin is not installed".to_string())?;
+    if entry.manifest.kind != worldbuilder_plugin_api::PluginKind::Sandboxed {
+        return Err("only sandboxed plugins have UI webviews".into());
+    }
+    if host.lifecycle.state(project_id, plugin_id).state
+        != worldbuilder_plugin_api::LifecycleState::Active
+    {
+        return Err("plugin is not active".into());
+    }
+    let policy =
+        webview_policy(&entry.manifest).ok_or_else(|| "plugin has no UI entrypoint".to_string())?;
+    if let Some(window) = app.get_webview_window(&policy.label) {
+        window.show().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    let url = format!("{}?project={}", policy.url, percent_encode(project_id));
+    tauri::WebviewWindowBuilder::new(
+        app,
+        policy.label,
+        tauri::WebviewUrl::External(url.parse().map_err(|error| format!("invalid plugin URL: {error}"))?),
+    )
+    .use_https_scheme(true)
+    .initialization_script("Object.defineProperty(window, '__TAURI_INTERNALS__', { value: undefined, configurable: false });")
+    .title(entry.manifest.name.clone())
+    .inner_size(980.0, 720.0)
+    .visible(true)
+    .build()
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn close_plugin_webview(app: &tauri::AppHandle, plugin_id: &str) {
+    if let Some(window) = app.get_webview_window(&format!("plugin:{plugin_id}")) {
+        let _ = window.close();
+    }
+}
+
+#[tauri::command]
+fn plugin_open_webview(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    plugin_id: String,
+) -> Result<(), String> {
+    let project_id = state
+        .lock()
+        .map_err(|_| "core lock poisoned".to_string())?
+        .info()
+        .map(|info| info.root)
+        .ok_or_else(|| "project is not open".to_string())?;
+    let host = plugins
+        .lock()
+        .map_err(|_| "plugin host lock poisoned".to_string())?;
+    open_plugin_webview(&app, &plugin_id, &project_id, &host)
+}
+
+#[tauri::command]
+fn plugin_close_webview(app: tauri::AppHandle, plugin_id: String) -> Result<(), String> {
+    close_plugin_webview(&app, &plugin_id);
+    Ok(())
+}
 
 fn trusted_shell() -> AuthorityContext {
     AuthorityContext::trusted_shell()
@@ -36,6 +299,7 @@ where
 }
 
 #[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct PluginBootstrap {
     session_id: String,
     plugin_id: String,
@@ -247,7 +511,7 @@ fn plugin_webview_identity(
         .strip_prefix("plugin:")
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "plugin RPC requires a plugin webview".to_string())?;
-    if expected.is_some_and(|expected| expected != plugin_id) {
+    if expected.is_some_and(|expected| plugin_window_label(expected) != label) {
         return Err("plugin webview identity mismatch".into());
     }
     Ok(label.to_string())
@@ -416,6 +680,7 @@ async fn module_enable(
 
 #[tauri::command]
 async fn module_disable(
+    app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
     id: String,
@@ -441,6 +706,7 @@ async fn module_disable(
             .lock()
             .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
             .deactivate_bundled(&project_id, &id);
+        close_plugin_webview(&app, &id);
         Ok(())
     })
     .await
@@ -667,6 +933,7 @@ async fn project_new(
 
 #[tauri::command]
 async fn project_close(
+    app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
 ) -> Result<(), String> {
@@ -679,6 +946,14 @@ async fn project_close(
                 .lock()
                 .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
                 .deactivate_project(&project_id);
+            for entry in plugins
+                .lock()
+                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
+                .catalog
+                .list()
+            {
+                close_plugin_webview(&app, &entry.manifest.id);
+            }
         }
         Ok(())
     })
@@ -1005,17 +1280,43 @@ async fn migration_apply(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let core = Arc::new(Mutex::new(CoreService::new()));
+    let plugins = Arc::new(Mutex::new(
+        bundled_plugin_host().expect("canonical bundled plugin manifests must validate"),
+    ));
+    let lore_core = core.clone();
+    let lore_plugins = plugins.clone();
+    let timeline_core = core.clone();
+    let timeline_plugins = plugins.clone();
     tauri::Builder::default()
+        .register_uri_scheme_protocol("plugin-worldbuilder-lore", move |ctx, request| {
+            plugin_protocol_response(
+                "worldbuilder.lore",
+                ctx.webview_label(),
+                &request,
+                &lore_core,
+                &lore_plugins,
+            )
+        })
+        .register_uri_scheme_protocol("plugin-worldbuilder-timeline", move |ctx, request| {
+            plugin_protocol_response(
+                "worldbuilder.timeline",
+                ctx.webview_label(),
+                &request,
+                &timeline_core,
+                &timeline_plugins,
+            )
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(Arc::new(Mutex::new(CoreService::new())))
-        .manage(Arc::new(Mutex::new(
-            bundled_plugin_host().expect("canonical bundled plugin manifests must validate"),
-        )))
+        .manage(core)
+        .manage(plugins)
         .invoke_handler(tauri::generate_handler![
             greet,
             plugin_bootstrap,
             plugin_rpc,
+            plugin_open_webview,
+            plugin_close_webview,
             module_list_manifests,
             module_enable,
             module_disable,
@@ -1091,5 +1392,42 @@ mod tests {
         let entities =
             dispatch_module_rpc(&mut core, "entity.list", serde_json::json!({})).unwrap();
         assert_eq!(entities.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn bundled_plugin_protocol_serves_only_embedded_assets() {
+        let request = tauri::http::Request::builder()
+            .uri("plugin-worldbuilder-lore://localhost/dist/ui/index.html")
+            .body(Vec::new())
+            .unwrap();
+        let response = plugin_asset_response("worldbuilder.lore", &request);
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers().get("Content-Type").unwrap(), "text/html");
+        assert!(String::from_utf8_lossy(response.body()).contains("plugin.js"));
+
+        let traversal = tauri::http::Request::builder()
+            .uri("plugin-worldbuilder-lore://localhost/../manifest.json")
+            .body(Vec::new())
+            .unwrap();
+        assert_eq!(
+            plugin_asset_response("worldbuilder.lore", &traversal).status(),
+            404
+        );
+    }
+
+    #[test]
+    fn plugin_bootstrap_uses_camel_case_wire_fields() {
+        let value = serde_json::to_value(PluginBootstrap {
+            session_id: "session".into(),
+            plugin_id: "worldbuilder.lore".into(),
+            package_digest: "digest".into(),
+            manifest: serde_json::from_str(include_str!(
+                "../../packages/modules/lore/manifest.json"
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+        assert_eq!(value["sessionId"], "session");
+        assert!(value.get("session_id").is_none());
     }
 }

@@ -19,7 +19,10 @@ use worldbuilder_plugin_api::{
 };
 
 pub mod runtime;
-pub use runtime::{validate_bridge_request, webview_policy, PluginWebviewPolicy, WasmLimits};
+pub use runtime::{
+    plugin_window_label, validate_bridge_request, webview_policy, PluginWebviewPolicy, WasmLimits,
+    WasmRuntimeRegistry,
+};
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -979,7 +982,7 @@ impl LifecycleRegistry {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PluginHost {
     pub catalog: PluginCatalog,
     pub grants: GrantStore,
@@ -989,6 +992,7 @@ pub struct PluginHost {
     pub lifecycle: LifecycleRegistry,
     pub events: EventBus,
     pub services: ServiceRegistry,
+    pub wasm: WasmRuntimeRegistry,
 }
 
 impl Default for PluginHost {
@@ -1007,6 +1011,7 @@ impl PluginHost {
             lifecycle: LifecycleRegistry::default(),
             events: EventBus::default(),
             services: ServiceRegistry::new(256 * 1024),
+            wasm: WasmRuntimeRegistry::default(),
         }
     }
     pub fn install_development_dir(
@@ -1058,6 +1063,7 @@ impl PluginHost {
             .issue(entry, project_id, origin, grants, self.session_ttl))
     }
     pub fn revoke_plugin(&mut self, project_id: &str, plugin_id: &str) {
+        self.wasm.stop(project_id, plugin_id);
         self.sessions.revoke_plugin(project_id, plugin_id);
         self.lifecycle.deactivate(project_id, plugin_id);
         self.events.unsubscribe_plugin(project_id, plugin_id);
@@ -1082,6 +1088,34 @@ impl PluginHost {
             }
             match self.ensure_bundled_session(activation_id, project_id) {
                 Ok(_) => {
+                    let (package_root, wasm_entry) = {
+                        let entry = self
+                            .catalog
+                            .get(activation_id)
+                            .expect("resolved plugin remains installed");
+                        (
+                            entry.package_root.clone(),
+                            entry.manifest.entrypoints.wasm.clone(),
+                        )
+                    };
+                    if let Err(error) = self.wasm.start(
+                        project_id,
+                        activation_id,
+                        &package_root,
+                        wasm_entry.as_deref(),
+                        WasmLimits::default(),
+                    ) {
+                        self.lifecycle.activation_failed(
+                            project_id,
+                            activation_id,
+                            &error.to_string(),
+                        );
+                        self.sessions.revoke_plugin(project_id, activation_id);
+                        for previous in activated.into_iter().rev() {
+                            self.deactivate_bundled(project_id, &previous);
+                        }
+                        return Err(HostError(format!("WASM runtime failed: {error:?}")));
+                    }
                     self.lifecycle
                         .activation_succeeded(project_id, activation_id);
                     self.services.resume_plugin(activation_id);
@@ -1369,7 +1403,7 @@ fn required_capabilities(
         "relationship.write" | "relationship.create" => Ok(vec!["relationship.write".into()]),
         "search.query" => Ok(vec!["search.query".into()]),
         "asset.import" | "asset.register" => Ok(vec!["asset.import".into()]),
-        "asset.read" => {
+        "asset.read" | "asset.list" => {
             ensure_owned_namespace(payload, session, namespaces)?;
             Ok(vec!["asset.read:self".into()])
         }
@@ -1471,6 +1505,7 @@ mod tests {
             capabilities: vec![
                 "entity.read".into(),
                 "field.read:self".into(),
+                "asset.read:self".into(),
                 "event.publish:<type>".into(),
                 "service.call:<name>".into(),
             ],
@@ -1635,6 +1670,26 @@ mod tests {
         assert_eq!(
             host.rpc("plugin://one", &foreign).error.unwrap().code,
             "namespace.denied"
+        );
+    }
+    #[test]
+    fn asset_list_is_authorized_for_read_capability() {
+        let mut host = host();
+        let session = host
+            .bootstrap("com.example.one", "project", "plugin://one")
+            .unwrap();
+        let request = RpcRequest {
+            rpc_version: 1,
+            session_id: session.id,
+            request_id: "asset-list".into(),
+            method: "asset.list".into(),
+            payload: serde_json::json!({"namespace": "one", "entityId": "entity-1"}),
+        };
+        assert_ne!(
+            host.rpc("plugin://one", &request)
+                .error
+                .map(|error| error.code),
+            Some("method.unknown".into())
         );
     }
     #[test]

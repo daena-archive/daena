@@ -4,13 +4,14 @@
 //! policy is shared by the Tauri adapter and the conformance tests so a plugin
 //! cannot get a weaker development path than a packaged plugin.
 
+use std::collections::BTreeMap;
+use std::path::Path;
 use std::time::Duration;
 
 use wasmtime::{Config, Engine, Instance, Module, Store, StoreLimitsBuilder};
 use worldbuilder_plugin_api::{PluginKind, PluginManifest, RpcRequest};
 
 pub const HOST_ORIGIN: &str = "https://worldbuilder.local";
-pub const PLUGIN_ORIGIN_PREFIX: &str = "https://plugin.worldbuilder.local/";
 pub const MAX_RPC_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,9 +36,29 @@ impl Default for WasmLimits {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginWebviewPolicy {
     pub label: String,
+    pub protocol: String,
     pub origin: String,
+    pub url: String,
     pub csp: String,
     pub entrypoint: String,
+}
+
+pub fn plugin_protocol(plugin_id: &str) -> String {
+    format!("plugin-{}", plugin_id.replace('.', "-"))
+}
+
+pub fn plugin_window_label(plugin_id: &str) -> String {
+    let sanitized = plugin_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '/' | '_' | ':') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    format!("plugin:{sanitized}")
 }
 
 pub fn webview_policy(manifest: &PluginManifest) -> Option<PluginWebviewPolicy> {
@@ -45,12 +66,16 @@ pub fn webview_policy(manifest: &PluginManifest) -> Option<PluginWebviewPolicy> 
         return None;
     }
     let entrypoint = manifest.entrypoints.ui.clone()?;
+    let protocol = plugin_protocol(&manifest.id);
+    let origin = format!("{protocol}://localhost");
     Some(PluginWebviewPolicy {
-        label: format!("plugin:{}", manifest.id),
-        origin: format!("{PLUGIN_ORIGIN_PREFIX}{}", manifest.id),
+        label: plugin_window_label(&manifest.id),
+        protocol,
+        url: format!("{origin}/{entrypoint}"),
+        origin,
         // No inline/eval code, no network, no frames, no form submission, and
         // no parent/opener access. Static assets are served by the host only.
-        csp: "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'".into(),
+        csp: "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'".into(),
         entrypoint,
     })
 }
@@ -80,15 +105,68 @@ pub enum WasmFailure {
     Trap(String),
 }
 
+impl std::fmt::Display for WasmFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{self:?}")
+    }
+}
+
 /// Executes a plugin component without linking WASI or any host imports.
 ///
 /// This is intentionally a deny-by-default WASI boundary: a module that asks
 /// for WASI or another import cannot start. Capabilities will be added as
 /// narrowly-scoped host functions in later phases, never by inheriting the
 /// process environment or opening a preopened directory.
+#[derive(Clone)]
 pub struct WasmRuntime {
     engine: Engine,
     limits: WasmLimits,
+}
+
+#[derive(Clone, Default)]
+pub struct WasmRuntimeRegistry {
+    runtimes: BTreeMap<(String, String), WasmRuntime>,
+    failures: BTreeMap<(String, String), u8>,
+}
+
+impl WasmRuntimeRegistry {
+    pub fn start(
+        &mut self,
+        project_id: &str,
+        plugin_id: &str,
+        package_root: &Path,
+        entrypoint: Option<&str>,
+        limits: WasmLimits,
+    ) -> Result<(), WasmFailure> {
+        let Some(entrypoint) = entrypoint else {
+            return Ok(());
+        };
+        if package_root.as_os_str().is_empty() {
+            return Ok(());
+        }
+        let bytes = std::fs::read(package_root.join(entrypoint))
+            .map_err(|error| WasmFailure::InvalidModule(error.to_string()))?;
+        let runtime = WasmRuntime::new(limits)?;
+        if let Err(error) = runtime.run(&bytes) {
+            let key = (project_id.into(), plugin_id.into());
+            let failures = self.failures.entry(key.clone()).or_default();
+            *failures = failures.saturating_add(1);
+            return Err(error);
+        }
+        self.runtimes
+            .insert((project_id.into(), plugin_id.into()), runtime);
+        Ok(())
+    }
+
+    pub fn stop(&mut self, project_id: &str, plugin_id: &str) {
+        self.runtimes
+            .remove(&(project_id.to_owned(), plugin_id.to_owned()));
+    }
+
+    pub fn is_running(&self, project_id: &str, plugin_id: &str) -> bool {
+        self.runtimes
+            .contains_key(&(project_id.to_owned(), plugin_id.to_owned()))
+    }
 }
 
 impl WasmRuntime {
@@ -193,11 +271,15 @@ mod tests {
     #[test]
     fn policy_uses_an_app_controlled_origin_and_denies_ambient_network() {
         let policy = webview_policy(&manifest(PluginKind::Sandboxed)).unwrap();
+        assert_eq!(policy.protocol, "plugin-com-example-plugin");
+        assert_eq!(policy.label, "plugin:com-example-plugin");
+        assert_eq!(policy.origin, "plugin-com-example-plugin://localhost");
         assert_eq!(
-            policy.origin,
-            "https://plugin.worldbuilder.local/com.example.plugin"
+            policy.url,
+            "plugin-com-example-plugin://localhost/dist/index.html"
         );
-        assert!(policy.csp.contains("connect-src 'none'"));
+        assert!(policy.csp.contains("connect-src 'self'"));
+        assert!(!policy.csp.contains("http://") && !policy.csp.contains("https://"));
         assert!(webview_policy(&manifest(PluginKind::Declarative)).is_none());
     }
 
@@ -288,5 +370,29 @@ mod tests {
         )
         .unwrap();
         assert_eq!(runtime.run(&module).unwrap(), -1);
+    }
+
+    #[test]
+    fn registry_starts_and_stops_packaged_wasm() {
+        let root = std::env::temp_dir().join(format!("worldbuilder-wasm-{}", std::process::id()));
+        let entrypoint = root.join("dist");
+        std::fs::create_dir_all(&entrypoint).unwrap();
+        let module =
+            wat::parse_str("(module (func (export \"run\") (result i32) i32.const 1))").unwrap();
+        std::fs::write(entrypoint.join("service.wasm"), module).unwrap();
+        let mut registry = WasmRuntimeRegistry::default();
+        registry
+            .start(
+                "project",
+                "com.example.plugin",
+                &root,
+                Some("dist/service.wasm"),
+                WasmLimits::default(),
+            )
+            .unwrap();
+        assert!(registry.is_running("project", "com.example.plugin"));
+        registry.stop("project", "com.example.plugin");
+        assert!(!registry.is_running("project", "com.example.plugin"));
+        let _ = std::fs::remove_dir_all(root);
     }
 }

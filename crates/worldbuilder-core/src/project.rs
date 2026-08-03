@@ -1,3 +1,4 @@
+use crate::error::CoreError;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -5,28 +6,6 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use uuid::Uuid;
-
-#[derive(Debug)]
-pub enum ProjectError {
-    Sql(rusqlite::Error),
-    NotFound(String),
-}
-
-impl std::fmt::Display for ProjectError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Sql(error) => write!(f, "database error: {error}"),
-            Self::NotFound(message) => f.write_str(message),
-        }
-    }
-}
-
-impl std::error::Error for ProjectError {}
-impl From<rusqlite::Error> for ProjectError {
-    fn from(error: rusqlite::Error) -> Self {
-        Self::Sql(error)
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateEntity {
@@ -145,7 +124,7 @@ pub struct ProjectSnapshot {
     pub modules: Vec<ModuleState>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectInfo {
     pub name: String,
     pub root: String,
@@ -175,8 +154,8 @@ fn decode_field_value(value: String) -> serde_json::Value {
     serde_json::from_str(&value).unwrap_or(serde_json::Value::String(value))
 }
 
-fn encode_field_value(value: &serde_json::Value) -> Result<String, ProjectError> {
-    serde_json::to_string(value).map_err(|error| ProjectError::NotFound(error.to_string()))
+fn encode_field_value(value: &serde_json::Value) -> Result<String, CoreError> {
+    serde_json::to_string(value).map_err(|error| CoreError::NotFound(error.to_string()))
 }
 
 pub struct ProjectStore {
@@ -185,7 +164,7 @@ pub struct ProjectStore {
 }
 
 impl ProjectStore {
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, ProjectError> {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, CoreError> {
         let path = path.as_ref();
         if path.is_dir() {
             return Self::open_directory(path);
@@ -194,17 +173,17 @@ impl ProjectStore {
         Self::open_database(path, root)
     }
 
-    pub fn open_directory(path: impl AsRef<Path>) -> Result<Self, ProjectError> {
+    pub fn open_directory(path: impl AsRef<Path>) -> Result<Self, CoreError> {
         let root = path.as_ref();
-        std::fs::create_dir_all(root).map_err(|error| ProjectError::NotFound(error.to_string()))?;
+        std::fs::create_dir_all(root).map_err(|error| CoreError::NotFound(error.to_string()))?;
         std::fs::create_dir_all(root.join("assets/images"))
-            .map_err(|error| ProjectError::NotFound(error.to_string()))?;
+            .map_err(|error| CoreError::NotFound(error.to_string()))?;
         std::fs::create_dir_all(root.join("assets/videos"))
-            .map_err(|error| ProjectError::NotFound(error.to_string()))?;
+            .map_err(|error| CoreError::NotFound(error.to_string()))?;
         std::fs::create_dir_all(root.join("assets/maps"))
-            .map_err(|error| ProjectError::NotFound(error.to_string()))?;
+            .map_err(|error| CoreError::NotFound(error.to_string()))?;
         std::fs::create_dir_all(root.join("assets/files"))
-            .map_err(|error| ProjectError::NotFound(error.to_string()))?;
+            .map_err(|error| CoreError::NotFound(error.to_string()))?;
         let metadata_path = root.join("project.json");
         if !metadata_path.exists() {
             let name = root
@@ -218,9 +197,9 @@ impl ProjectStore {
                 assets: "assets".into(),
             };
             let content = serde_json::to_string_pretty(&metadata)
-                .map_err(|error| ProjectError::NotFound(error.to_string()))?;
+                .map_err(|error| CoreError::NotFound(error.to_string()))?;
             std::fs::write(&metadata_path, format!("{content}\n"))
-                .map_err(|error| ProjectError::NotFound(error.to_string()))?;
+                .map_err(|error| CoreError::NotFound(error.to_string()))?;
         }
         let gitignore = root.join(".gitignore");
         if !gitignore.exists() {
@@ -228,12 +207,12 @@ impl ProjectStore {
                 &gitignore,
                 "worldbuilder.sqlite-wal\nworldbuilder.sqlite-shm\nworldbuilder.sqlite-journal\n",
             )
-            .map_err(|error| ProjectError::NotFound(error.to_string()))?;
+            .map_err(|error| CoreError::NotFound(error.to_string()))?;
         }
         Self::open_database(root.join("worldbuilder.sqlite"), Some(root.to_path_buf()))
     }
 
-    fn open_database(path: impl AsRef<Path>, root: Option<PathBuf>) -> Result<Self, ProjectError> {
+    fn open_database(path: impl AsRef<Path>, root: Option<PathBuf>) -> Result<Self, CoreError> {
         let connection = Connection::open(path)?;
         connection.pragma_update(None, "foreign_keys", true)?;
         let store = Self { connection, root };
@@ -241,7 +220,7 @@ impl ProjectStore {
         Ok(store)
     }
 
-    pub fn in_memory() -> Result<Self, ProjectError> {
+    pub fn in_memory() -> Result<Self, CoreError> {
         Self::open_database(":memory:", None)
     }
 
@@ -262,22 +241,22 @@ impl ProjectStore {
         })
     }
 
-    fn project_root(&self) -> Result<&Path, ProjectError> {
+    fn project_root(&self) -> Result<&Path, CoreError> {
         self.root
             .as_deref()
-            .ok_or_else(|| ProjectError::NotFound("project is not directory-backed".into()))
+            .ok_or_else(|| CoreError::NotFound("project is not directory-backed".into()))
     }
 
-    fn run_git(&self, args: &[&str]) -> Result<std::process::Output, ProjectError> {
+    fn run_git(&self, args: &[&str]) -> Result<std::process::Output, CoreError> {
         let root = self.project_root()?;
         Command::new("git")
             .args(args)
             .current_dir(root)
             .output()
-            .map_err(|error| ProjectError::NotFound(format!("git is unavailable: {error}")))
+            .map_err(|error| CoreError::NotFound(format!("git is unavailable: {error}")))
     }
 
-    pub fn git_status(&self) -> Result<GitStatus, ProjectError> {
+    pub fn git_status(&self) -> Result<GitStatus, CoreError> {
         let repository = self.run_git(&["rev-parse", "--is-inside-work-tree"])?;
         if !repository.status.success() {
             return Ok(GitStatus {
@@ -301,17 +280,17 @@ impl ProjectStore {
         })
     }
 
-    pub fn git_init(&self) -> Result<GitStatus, ProjectError> {
+    pub fn git_init(&self) -> Result<GitStatus, CoreError> {
         let output = self.run_git(&["init"])?;
         if !output.status.success() {
-            return Err(ProjectError::NotFound(
+            return Err(CoreError::NotFound(
                 String::from_utf8_lossy(&output.stderr).trim().into(),
             ));
         }
         self.git_status()
     }
 
-    pub fn git_log(&self) -> Result<Vec<GitLogEntry>, ProjectError> {
+    pub fn git_log(&self) -> Result<Vec<GitLogEntry>, CoreError> {
         if !self.git_status()?.repository {
             return Ok(Vec::new());
         }
@@ -326,7 +305,7 @@ impl ProjectStore {
             if stderr.contains("does not have any commits yet") {
                 return Ok(Vec::new());
             }
-            return Err(ProjectError::NotFound(stderr.trim().into()));
+            return Err(CoreError::NotFound(stderr.trim().into()));
         }
         Ok(String::from_utf8_lossy(&output.stdout)
             .lines()
@@ -341,33 +320,31 @@ impl ProjectStore {
             .collect())
     }
 
-    pub fn git_commit(&self, message: String) -> Result<GitStatus, ProjectError> {
+    pub fn git_commit(&self, message: String) -> Result<GitStatus, CoreError> {
         if message.trim().is_empty() {
-            return Err(ProjectError::NotFound(
-                "commit message cannot be empty".into(),
-            ));
+            return Err(CoreError::NotFound("commit message cannot be empty".into()));
         }
         if !self.git_status()?.repository {
-            return Err(ProjectError::NotFound(
+            return Err(CoreError::NotFound(
                 "project is not a git repository".into(),
             ));
         }
         let add = self.run_git(&["add", "--all"])?;
         if !add.status.success() {
-            return Err(ProjectError::NotFound(
+            return Err(CoreError::NotFound(
                 String::from_utf8_lossy(&add.stderr).trim().into(),
             ));
         }
         let commit = self.run_git(&["commit", "-m", message.trim()])?;
         if !commit.status.success() {
-            return Err(ProjectError::NotFound(
+            return Err(CoreError::NotFound(
                 String::from_utf8_lossy(&commit.stderr).trim().into(),
             ));
         }
         self.git_status()
     }
 
-    fn initialize(&self) -> Result<(), ProjectError> {
+    fn initialize(&self) -> Result<(), CoreError> {
         self.connection.execute_batch(
             "PRAGMA journal_mode = WAL;
              CREATE TABLE IF NOT EXISTS project_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -402,9 +379,9 @@ impl ProjectStore {
         Ok(())
     }
 
-    pub fn create_entity(&self, input: CreateEntity) -> Result<Entity, ProjectError> {
+    pub fn create_entity(&self, input: CreateEntity) -> Result<Entity, CoreError> {
         if input.name.trim().is_empty() {
-            return Err(ProjectError::NotFound("entity name cannot be empty".into()));
+            return Err(CoreError::NotFound("entity name cannot be empty".into()));
         }
         let entity_type = input.entity_type.map(|value| value.trim().to_owned());
         let id = Uuid::new_v4().to_string();
@@ -424,15 +401,15 @@ impl ProjectStore {
         })
     }
 
-    pub fn list_entities(&self) -> Result<Vec<Entity>, ProjectError> {
+    pub fn list_entities(&self) -> Result<Vec<Entity>, CoreError> {
         self.list_entities_where("WHERE deleted=0")
     }
 
-    fn list_all_entities(&self) -> Result<Vec<Entity>, ProjectError> {
+    fn list_all_entities(&self) -> Result<Vec<Entity>, CoreError> {
         self.list_entities_where("")
     }
 
-    fn list_entities_where(&self, predicate: &str) -> Result<Vec<Entity>, ProjectError> {
+    fn list_entities_where(&self, predicate: &str) -> Result<Vec<Entity>, CoreError> {
         let mut statement = self.connection.prepare(&format!("SELECT id,name,entity_type,deleted,created_at,updated_at FROM entities {predicate} ORDER BY name"))?;
         let rows = statement.query_map([], |row| {
             Ok(Entity {
@@ -452,42 +429,42 @@ impl ProjectStore {
         id: String,
         name: Option<String>,
         entity_type: Option<String>,
-    ) -> Result<Entity, ProjectError> {
+    ) -> Result<Entity, CoreError> {
         if let Some(value) = &name {
             if value.trim().is_empty() {
-                return Err(ProjectError::NotFound("entity name cannot be empty".into()));
+                return Err(CoreError::NotFound("entity name cannot be empty".into()));
             }
         }
         let now = chrono_like_now();
-        if self.connection.execute("UPDATE entities SET name=COALESCE(?2,name), entity_type=COALESCE(?3,entity_type), updated_at=?4 WHERE id=?1 AND deleted=0", params![id, name, entity_type, now])? == 0 { return Err(ProjectError::NotFound("entity not found".into())); }
+        if self.connection.execute("UPDATE entities SET name=COALESCE(?2,name), entity_type=COALESCE(?3,entity_type), updated_at=?4 WHERE id=?1 AND deleted=0", params![id, name, entity_type, now])? == 0 { return Err(CoreError::NotFound("entity not found".into())); }
         self.rebuild_search()?;
         self.connection.query_row("SELECT id,name,entity_type,deleted,created_at,updated_at FROM entities WHERE id=?1", params![id], |row| Ok(Entity { id: row.get(0)?, name: row.get(1)?, entity_type: row.get(2)?, deleted: row.get::<_, i64>(3)? != 0, created_at: row.get(4)?, updated_at: row.get(5)? })).map_err(Into::into)
     }
 
-    pub fn delete_entity(&self, id: String) -> Result<(), ProjectError> {
+    pub fn delete_entity(&self, id: String) -> Result<(), CoreError> {
         if self.connection.execute(
             "UPDATE entities SET deleted=1, updated_at=?2 WHERE id=?1 AND deleted=0",
             params![id, chrono_like_now()],
         )? == 0
         {
-            return Err(ProjectError::NotFound("entity not found".into()));
+            return Err(CoreError::NotFound("entity not found".into()));
         }
         self.rebuild_search()?;
         Ok(())
     }
 
-    pub fn save_document(&self, input: SaveDocument) -> Result<(), ProjectError> {
+    pub fn save_document(&self, input: SaveDocument) -> Result<(), CoreError> {
         self.save_entry(SaveEntry {
             document: input,
             fields: Vec::new(),
         })
     }
 
-    pub fn save_entry(&self, input: SaveEntry) -> Result<(), ProjectError> {
+    pub fn save_entry(&self, input: SaveEntry) -> Result<(), CoreError> {
         let document = input.document;
         let format = document.format.unwrap_or_else(|| "markdown".into());
         if format != "markdown" && format != "plain-text" && format != "rich-text" {
-            return Err(ProjectError::NotFound("unsupported document format".into()));
+            return Err(CoreError::NotFound("unsupported document format".into()));
         }
         let exists: Option<String> = self
             .connection
@@ -498,25 +475,25 @@ impl ProjectStore {
             )
             .optional()?;
         if exists.is_none() {
-            return Err(ProjectError::NotFound("entity not found".into()));
+            return Err(CoreError::NotFound("entity not found".into()));
         }
         let encoded_fields = input
             .fields
             .iter()
             .map(|field| {
                 if field.entity_id != document.entity_id {
-                    return Err(ProjectError::NotFound(
+                    return Err(CoreError::NotFound(
                         "field entity does not match document entity".into(),
                     ));
                 }
                 if field.namespace.trim().is_empty() || field.key.trim().is_empty() {
-                    return Err(ProjectError::NotFound(
+                    return Err(CoreError::NotFound(
                         "field namespace and key are required".into(),
                     ));
                 }
                 Ok((field, encode_field_value(&field.value)?))
             })
-            .collect::<Result<Vec<_>, ProjectError>>()?;
+            .collect::<Result<Vec<_>, CoreError>>()?;
         let now = chrono_like_now();
         let document_id: Option<String> = self
             .connection
@@ -546,7 +523,7 @@ impl ProjectStore {
         Ok(())
     }
 
-    pub fn list_documents(&self, entity_id: String) -> Result<Vec<Document>, ProjectError> {
+    pub fn list_documents(&self, entity_id: String) -> Result<Vec<Document>, CoreError> {
         let mut statement = self.connection.prepare("SELECT id,entity_id,format,body,updated_at FROM documents WHERE entity_id=?1 ORDER BY updated_at DESC")?;
         let rows = statement.query_map(params![entity_id], |row| {
             Ok(Document {
@@ -559,7 +536,7 @@ impl ProjectStore {
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
-    pub fn set_field(&self, field: FieldValue) -> Result<(), ProjectError> {
+    pub fn set_field(&self, field: FieldValue) -> Result<(), CoreError> {
         let exists: Option<String> = self
             .connection
             .query_row(
@@ -569,10 +546,10 @@ impl ProjectStore {
             )
             .optional()?;
         if exists.is_none() {
-            return Err(ProjectError::NotFound("entity not found".into()));
+            return Err(CoreError::NotFound("entity not found".into()));
         }
         if field.namespace.trim().is_empty() || field.key.trim().is_empty() {
-            return Err(ProjectError::NotFound(
+            return Err(CoreError::NotFound(
                 "field namespace and key are required".into(),
             ));
         }
@@ -580,7 +557,7 @@ impl ProjectStore {
         self.connection.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value", params![field.entity_id, field.namespace, field.key, value])?;
         Ok(())
     }
-    pub fn list_fields(&self, entity_id: String) -> Result<Vec<FieldValue>, ProjectError> {
+    pub fn list_fields(&self, entity_id: String) -> Result<Vec<FieldValue>, CoreError> {
         let mut s = self.connection.prepare(
             "SELECT entity_id,namespace,key,value FROM entity_fields WHERE entity_id=?1",
         )?;
@@ -596,10 +573,7 @@ impl ProjectStore {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    pub fn create_relationship(
-        &self,
-        input: RelationshipInput,
-    ) -> Result<Relationship, ProjectError> {
+    pub fn create_relationship(&self, input: RelationshipInput) -> Result<Relationship, CoreError> {
         for entity_id in [&input.source_id, &input.target_id] {
             let exists: Option<String> = self
                 .connection
@@ -610,13 +584,11 @@ impl ProjectStore {
                 )
                 .optional()?;
             if exists.is_none() {
-                return Err(ProjectError::NotFound(
-                    "relationship entity not found".into(),
-                ));
+                return Err(CoreError::NotFound("relationship entity not found".into()));
             }
         }
         if input.relationship_type.trim().is_empty() {
-            return Err(ProjectError::NotFound(
+            return Err(CoreError::NotFound(
                 "relationship type cannot be empty".into(),
             ));
         }
@@ -632,7 +604,7 @@ impl ProjectStore {
         })
     }
 
-    pub fn list_relationships(&self, entity_id: String) -> Result<Vec<Relationship>, ProjectError> {
+    pub fn list_relationships(&self, entity_id: String) -> Result<Vec<Relationship>, CoreError> {
         let mut statement = self.connection.prepare("SELECT id,source_id,target_id,relationship_type,metadata FROM relationships WHERE source_id=?1 OR target_id=?1")?;
         let rows = statement.query_map(params![entity_id], |row| {
             Ok(Relationship {
@@ -646,7 +618,7 @@ impl ProjectStore {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    pub fn search(&self, query: String) -> Result<Vec<Entity>, ProjectError> {
+    pub fn search(&self, query: String) -> Result<Vec<Entity>, CoreError> {
         if query.trim().is_empty() {
             return self.list_entities();
         }
@@ -669,7 +641,7 @@ impl ProjectStore {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    pub fn export_json(&self) -> Result<String, ProjectError> {
+    pub fn export_json(&self) -> Result<String, CoreError> {
         let entities = self.list_all_entities()?;
         let mut documents = Vec::new();
         let mut fields = Vec::new();
@@ -702,14 +674,14 @@ impl ProjectStore {
             assets,
             modules,
         })
-        .map_err(|error| ProjectError::NotFound(error.to_string()))
+        .map_err(|error| CoreError::NotFound(error.to_string()))
     }
 
-    fn import_json_with_mode(&self, payload: &str, replace: bool) -> Result<usize, ProjectError> {
+    fn import_json_with_mode(&self, payload: &str, replace: bool) -> Result<usize, CoreError> {
         let snapshot: ProjectSnapshot = serde_json::from_str(payload)
-            .map_err(|error| ProjectError::NotFound(error.to_string()))?;
+            .map_err(|error| CoreError::NotFound(error.to_string()))?;
         if snapshot.format_version != current_snapshot_version() {
-            return Err(ProjectError::NotFound(format!(
+            return Err(CoreError::NotFound(format!(
                 "unsupported project snapshot version {}",
                 snapshot.format_version
             )));
@@ -751,7 +723,7 @@ impl ProjectStore {
         Ok(snapshot.entities.len())
     }
 
-    pub fn register_asset(&self, input: AssetInput) -> Result<Asset, ProjectError> {
+    pub fn register_asset(&self, input: AssetInput) -> Result<Asset, CoreError> {
         let exists: Option<String> = self
             .connection
             .query_row(
@@ -761,7 +733,7 @@ impl ProjectStore {
             )
             .optional()?;
         if exists.is_none() {
-            return Err(ProjectError::NotFound("entity not found".into()));
+            return Err(CoreError::NotFound("entity not found".into()));
         }
         let id = Uuid::new_v4().to_string();
         let now = chrono_like_now();
@@ -782,19 +754,19 @@ impl ProjectStore {
         })
     }
 
-    pub fn register_asset_file(&self, input: AssetFileInput) -> Result<Asset, ProjectError> {
+    pub fn register_asset_file(&self, input: AssetFileInput) -> Result<Asset, CoreError> {
         let root = self.project_root()?.to_path_buf();
         let source = Path::new(&input.source_path);
         let metadata =
-            std::fs::metadata(source).map_err(|error| ProjectError::NotFound(error.to_string()))?;
+            std::fs::metadata(source).map_err(|error| CoreError::NotFound(error.to_string()))?;
         if !metadata.is_file() {
-            return Err(ProjectError::NotFound("asset source is not a file".into()));
+            return Err(CoreError::NotFound("asset source is not a file".into()));
         }
         let filename = Path::new(&input.filename)
             .file_name()
             .and_then(|value| value.to_str())
             .filter(|value| !value.is_empty() && *value != "." && *value != "..")
-            .ok_or_else(|| ProjectError::NotFound("asset filename is invalid".into()))?;
+            .ok_or_else(|| CoreError::NotFound("asset filename is invalid".into()))?;
         let category = if input.mime_type.starts_with("image/") {
             "images"
         } else if input.mime_type.starts_with("video/") {
@@ -813,20 +785,19 @@ impl ProjectStore {
         };
         let destination_dir = root.join("assets").join(category);
         std::fs::create_dir_all(&destination_dir)
-            .map_err(|error| ProjectError::NotFound(error.to_string()))?;
+            .map_err(|error| CoreError::NotFound(error.to_string()))?;
         let destination = destination_dir.join(format!("{}-{}", Uuid::new_v4(), filename));
         std::fs::copy(source, &destination)
-            .map_err(|error| ProjectError::NotFound(error.to_string()))?;
+            .map_err(|error| CoreError::NotFound(error.to_string()))?;
         let mut reader = BufReader::new(
-            std::fs::File::open(source)
-                .map_err(|error| ProjectError::NotFound(error.to_string()))?,
+            std::fs::File::open(source).map_err(|error| CoreError::NotFound(error.to_string()))?,
         );
         let mut hasher = Sha256::new();
         let mut buffer = [0_u8; 64 * 1024];
         loop {
             let count = reader
                 .read(&mut buffer)
-                .map_err(|error| ProjectError::NotFound(error.to_string()))?;
+                .map_err(|error| CoreError::NotFound(error.to_string()))?;
             if count == 0 {
                 break;
             }
@@ -848,7 +819,7 @@ impl ProjectStore {
         })
     }
 
-    pub fn list_assets(&self, entity_id: String) -> Result<Vec<Asset>, ProjectError> {
+    pub fn list_assets(&self, entity_id: String) -> Result<Vec<Asset>, CoreError> {
         let mut statement = self.connection.prepare("SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets WHERE entity_id=?1 ORDER BY created_at")?;
         let rows = statement.query_map(params![entity_id], |row| {
             Ok(Asset {
@@ -866,34 +837,34 @@ impl ProjectStore {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    pub fn backup(&self) -> Result<String, ProjectError> {
+    pub fn backup(&self) -> Result<String, CoreError> {
         self.backup_to(std::env::temp_dir())
     }
 
-    pub fn backup_to(&self, dir: impl AsRef<Path>) -> Result<String, ProjectError> {
+    pub fn backup_to(&self, dir: impl AsRef<Path>) -> Result<String, CoreError> {
         let export = self.export_json()?;
         let dir = dir.as_ref();
-        std::fs::create_dir_all(dir).map_err(|e| ProjectError::NotFound(e.to_string()))?;
+        std::fs::create_dir_all(dir).map_err(|e| CoreError::NotFound(e.to_string()))?;
         let timestamp = chrono_like_now();
         let filename = format!("worldbuilder-backup-{}-{}.json", timestamp, Uuid::new_v4());
         let path = dir.join(&filename);
-        std::fs::write(&path, export).map_err(|e| ProjectError::NotFound(e.to_string()))?;
+        std::fs::write(&path, export).map_err(|e| CoreError::NotFound(e.to_string()))?;
         Ok(path.to_string_lossy().to_string())
     }
 
-    pub fn restore(&self, path: String) -> Result<(), ProjectError> {
+    pub fn restore(&self, path: String) -> Result<(), CoreError> {
         let content =
-            std::fs::read_to_string(&path).map_err(|e| ProjectError::NotFound(e.to_string()))?;
+            std::fs::read_to_string(&path).map_err(|e| CoreError::NotFound(e.to_string()))?;
         self.restore_payload(&content)?;
         Ok(())
     }
 
-    pub fn restore_payload(&self, payload: &str) -> Result<(), ProjectError> {
+    pub fn restore_payload(&self, payload: &str) -> Result<(), CoreError> {
         self.import_json_with_mode(payload, true)?;
         Ok(())
     }
 
-    pub fn rebuild_search(&self) -> Result<(), ProjectError> {
+    pub fn rebuild_search(&self) -> Result<(), CoreError> {
         self.connection.execute_batch(
             "DROP TRIGGER IF EXISTS entities_search_insert;
              DROP TRIGGER IF EXISTS entities_search_update;
@@ -911,7 +882,7 @@ impl ProjectStore {
         Ok(())
     }
 
-    pub fn seed_example(&mut self) -> Result<usize, ProjectError> {
+    pub fn seed_example(&mut self) -> Result<usize, CoreError> {
         let tx = self.connection.transaction()?;
         tx.execute("DELETE FROM assets", [])?;
         tx.execute("DELETE FROM entity_fields", [])?;
@@ -1012,7 +983,7 @@ impl ProjectStore {
         Ok(9)
     }
 
-    pub fn get_module_version(&self, module_id: &str) -> Result<i64, ProjectError> {
+    pub fn get_module_version(&self, module_id: &str) -> Result<i64, CoreError> {
         self.connection
             .query_row(
                 "SELECT COALESCE(version, 0) FROM module_versions WHERE module_id=?1",
@@ -1026,18 +997,18 @@ impl ProjectStore {
                     Err(e)
                 }
             })
-            .map_err(ProjectError::Sql)
+            .map_err(CoreError::Database)
     }
 
     pub fn validate_migration(
         &self,
         migration: &crate::migrations::Migration,
         current: i64,
-    ) -> Result<(), String> {
+    ) -> Result<(), CoreError> {
         crate::migrations::validate(migration, current)
     }
 
-    pub fn set_module_enabled(&self, module_id: String, enabled: bool) -> Result<(), ProjectError> {
+    pub fn set_module_enabled(&self, module_id: String, enabled: bool) -> Result<(), CoreError> {
         self.connection.execute(
             "INSERT OR IGNORE INTO module_versions(module_id,version) VALUES (?1,0)",
             params![module_id],
@@ -1049,7 +1020,7 @@ impl ProjectStore {
         Ok(())
     }
 
-    pub fn is_module_enabled(&self, module_id: &str) -> Result<bool, ProjectError> {
+    pub fn is_module_enabled(&self, module_id: &str) -> Result<bool, CoreError> {
         Ok(self
             .connection
             .query_row(
@@ -1065,8 +1036,9 @@ impl ProjectStore {
     pub fn apply_migration(
         &mut self,
         migration: &crate::migrations::Migration,
-    ) -> Result<(), String> {
-        self.backup().map_err(|error| error.to_string())?;
+    ) -> Result<(), CoreError> {
+        self.backup()
+            .map_err(|error| CoreError::Validation(error.to_string()))?;
         crate::migrations::apply(&mut self.connection, migration)
     }
 }

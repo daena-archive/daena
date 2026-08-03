@@ -4850,14 +4850,23 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 name = "worldbuilder"
 version = "0.1.0"
 dependencies = [
- "rusqlite",
  "serde",
  "serde_json",
- "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "worldbuilder-core",
+]
+
+[[package]]
+name = "worldbuilder-core"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
  "uuid",
 ]
 

@@ -45,6 +45,18 @@ module changes visibility and unregisters its commands/views, but does not
 delete its rows, documents, or assets. Enabled state is persisted in the
 project database so reopening a project does not silently re-enable a module.
 
+## Rust core boundary
+
+`crates/worldbuilder-core` owns the project store, SQLite schema, migrations,
+filesystem-backed assets, search, import/export, backup/restore, Git helpers,
+and module state. It exposes typed `CoreError` results and accepts an explicit
+`AuthorityContext`; Phase 1 currently provides only the trusted-shell authority.
+
+`src-tauri` is an adapter over `CoreService`. It resolves Tauri-specific paths,
+serializes command inputs/outputs, and runs blocking core operations through
+Tauri's blocking task pool. The core has no Tauri dependency and does not know
+about webviews, commands, or plugin runtimes.
+
 ## Migrations
 
 Migrations are declarative operations (`create namespace`, `add field`,

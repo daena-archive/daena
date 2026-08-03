@@ -1,3 +1,4 @@
+use crate::error::CoreError;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -40,7 +41,7 @@ pub struct Migration {
     pub recovery: String,
 }
 
-pub fn validate(migration: &Migration, current: i64) -> Result<(), String> {
+pub fn validate(migration: &Migration, current: i64) -> Result<(), CoreError> {
     if migration.id.trim().is_empty() || migration.module_id.trim().is_empty() {
         return Err("migration and module IDs are required".into());
     }
@@ -48,7 +49,8 @@ pub fn validate(migration: &Migration, current: i64) -> Result<(), String> {
         return Err(format!(
             "invalid migration version {} -> {} (current {})",
             migration.from, migration.to, current
-        ));
+        )
+        .into());
     }
     if migration.recovery != "backup" && migration.recovery != "preserve-data" {
         return Err("recovery must be backup or preserve-data".into());
@@ -83,33 +85,29 @@ pub fn validate(migration: &Migration, current: i64) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_schema(connection: &Connection, migration: &Migration) -> Result<(), String> {
+fn validate_schema(connection: &Connection, migration: &Migration) -> Result<(), CoreError> {
     let mut namespaces = HashSet::new();
-    let mut namespace_statement = connection
-        .prepare("SELECT module_id, namespace FROM module_namespaces")
-        .map_err(|error| error.to_string())?;
-    let namespace_rows = namespace_statement
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
-        .map_err(|error| error.to_string())?;
+    let mut namespace_statement =
+        connection.prepare("SELECT module_id, namespace FROM module_namespaces")?;
+    let namespace_rows = namespace_statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
     for row in namespace_rows {
-        namespaces.insert(row.map_err(|error| error.to_string())?);
+        namespaces.insert(row?);
     }
 
     let mut fields = HashSet::new();
-    let mut field_statement = connection
-        .prepare("SELECT module_id, namespace, key FROM module_fields")
-        .map_err(|error| error.to_string())?;
-    let field_rows = field_statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(|error| error.to_string())?;
+    let mut field_statement =
+        connection.prepare("SELECT module_id, namespace, key FROM module_fields")?;
+    let field_rows = field_statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
     for row in field_rows {
-        fields.insert(row.map_err(|error| error.to_string())?);
+        fields.insert(row?);
     }
 
     for operation in &migration.operations {
@@ -119,12 +117,16 @@ fn validate_schema(connection: &Connection, migration: &Migration) -> Result<(),
             }
             Operation::AddField { namespace, field } => {
                 let namespace_key = (migration.module_id.clone(), namespace.clone());
-                let field_key = (migration.module_id.clone(), namespace.clone(), field.key.clone());
+                let field_key = (
+                    migration.module_id.clone(),
+                    namespace.clone(),
+                    field.key.clone(),
+                );
                 if !namespaces.contains(&namespace_key) {
-                    return Err(format!("namespace does not exist: {namespace}"));
+                    return Err(format!("namespace does not exist: {namespace}").into());
                 }
                 if !fields.insert(field_key) {
-                    return Err(format!("field already exists: {namespace}.{}", field.key));
+                    return Err(format!("field already exists: {namespace}.{}", field.key).into());
                 }
             }
             Operation::RenameField {
@@ -135,22 +137,22 @@ fn validate_schema(connection: &Connection, migration: &Migration) -> Result<(),
                 let from_key = (migration.module_id.clone(), namespace.clone(), from.clone());
                 let to_key = (migration.module_id.clone(), namespace.clone(), to.clone());
                 if !namespaces.contains(&(migration.module_id.clone(), namespace.clone())) {
-                    return Err(format!("namespace does not exist: {namespace}"));
+                    return Err(format!("namespace does not exist: {namespace}").into());
                 }
                 if !fields.remove(&from_key) {
-                    return Err(format!("field does not exist: {namespace}.{from}"));
+                    return Err(format!("field does not exist: {namespace}.{from}").into());
                 }
                 if !fields.insert(to_key) {
-                    return Err(format!("field already exists: {namespace}.{to}"));
+                    return Err(format!("field already exists: {namespace}.{to}").into());
                 }
             }
             Operation::DropField { namespace, key } => {
                 let field_key = (migration.module_id.clone(), namespace.clone(), key.clone());
                 if !namespaces.contains(&(migration.module_id.clone(), namespace.clone())) {
-                    return Err(format!("namespace does not exist: {namespace}"));
+                    return Err(format!("namespace does not exist: {namespace}").into());
                 }
                 if !fields.remove(&field_key) {
-                    return Err(format!("field does not exist: {namespace}.{key}"));
+                    return Err(format!("field does not exist: {namespace}.{key}").into());
                 }
             }
         }
@@ -158,15 +160,14 @@ fn validate_schema(connection: &Connection, migration: &Migration) -> Result<(),
     Ok(())
 }
 
-pub fn apply(connection: &mut Connection, migration: &Migration) -> Result<(), String> {
+pub fn apply(connection: &mut Connection, migration: &Migration) -> Result<(), CoreError> {
     let current: i64 = connection
         .query_row(
             "SELECT COALESCE(version, 0) FROM module_versions WHERE module_id=?1",
             params![migration.module_id],
             |row| row.get(0),
         )
-        .optional()
-        .map_err(|error| error.to_string())?
+        .optional()?
         .unwrap_or(0);
     validate(migration, current)?;
     validate_schema(connection, migration)?;
@@ -231,7 +232,8 @@ pub fn apply(connection: &mut Connection, migration: &Migration) -> Result<(), S
         "INSERT INTO migration_history(module_id,migration_id,from_version,to_version,checksum) VALUES (?1,?2,?3,?4,?5)",
         params![migration.module_id, migration.id, migration.from, migration.to, checksum],
     ).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())
+    tx.commit()?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -18,6 +18,7 @@ export interface GitStatus { repository: boolean; branch: string | null; changes
 export interface GitLogEntry { hash: string; date: string; subject: string; }
 export type { ModuleManifest };
 export type ProjectModuleManifest = ModuleManifest & { enabled: boolean };
+export interface InstalledPluginVersion { id: string; version: string; publisher: string; digest: string; signed: boolean; }
 type DialogSelection = string | string[] | null;
 
 export const project = {
@@ -64,4 +65,16 @@ export const project = {
   listModuleManifests: () => invoke<ProjectModuleManifest[]>("module_list_manifests"),
   enableModule: (id: string) => invoke<void>("module_enable", { id }),
   disableModule: (id: string) => invoke<void>("module_disable", { id }),
+  installPlugin: (archive: string, allowUnsigned = false) =>
+    invoke<InstalledPluginVersion>("plugin_install_package", { archive, allowUnsigned }),
+  selectPluginVersion: (projectId: string, pluginId: string, version: string) =>
+    invoke<void>("plugin_select_version", { projectId, pluginId, version }),
+  upgradePlugin: (pluginId: string, version: string, consent: boolean) =>
+    invoke<void>("plugin_upgrade", { pluginId, version, consent }),
+  rollbackPlugin: (pluginId: string, version: string) =>
+    invoke<void>("plugin_rollback", { pluginId, version }),
+  uninstallPluginCode: (pluginId: string, version: string) =>
+    invoke<void>("plugin_uninstall_code", { pluginId, version }),
+  deletePluginData: (pluginId: string, confirmation: string) =>
+    invoke<string>("plugin_delete_data", { pluginId, confirmation }),
 };

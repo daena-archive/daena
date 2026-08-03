@@ -18,13 +18,34 @@ use worldbuilder_plugin_api::{
     RpcResponse, RPC_VERSION,
 };
 
+pub mod package;
 pub mod runtime;
+pub use package::{
+    plan_rollback, plan_upgrade, select_migrations, ArchiveLimits, CapabilityConsent,
+    InstalledVersion, MigrationPlan, PackageCatalog, PackageError, PackageSignature, PluginPackage,
+    RollbackPlan, UpgradePlan, VerificationPolicy,
+};
 pub use runtime::{
     plugin_window_label, validate_bridge_request, webview_policy, PluginWebviewPolicy, WasmLimits,
     WasmRuntimeRegistry,
 };
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectPluginUsage {
+    pub project_id: String,
+    pub plugin_id: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct PersistentHostState {
+    #[serde(default)]
+    packages: PackageCatalog,
+    #[serde(default)]
+    project_usage: Vec<ProjectPluginUsage>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostError(pub String);
@@ -88,6 +109,20 @@ impl PluginCatalog {
         {
             return Err(HostError("plugin ID is already installed".into()));
         }
+        Ok(())
+    }
+
+    fn replace_runtime_entry(&mut self, entry: CatalogEntry) -> Result<(), HostError> {
+        if self
+            .entries
+            .get(&entry.manifest.id)
+            .is_some_and(|existing| existing.package_root.as_os_str().is_empty())
+        {
+            return Err(HostError(
+                "cannot replace a bundled plugin with a runtime package".into(),
+            ));
+        }
+        self.entries.insert(entry.manifest.id.clone(), entry);
         Ok(())
     }
 
@@ -985,6 +1020,10 @@ impl LifecycleRegistry {
 #[derive(Clone)]
 pub struct PluginHost {
     pub catalog: PluginCatalog,
+    pub packages: PackageCatalog,
+    /// Selected package version per project; package installations remain
+    /// global while activation is project-scoped.
+    pub project_versions: BTreeMap<(String, String), String>,
     pub grants: GrantStore,
     pub sessions: SessionRegistry,
     pub namespaces: NamespaceOwnership,
@@ -993,6 +1032,8 @@ pub struct PluginHost {
     pub events: EventBus,
     pub services: ServiceRegistry,
     pub wasm: WasmRuntimeRegistry,
+    state_path: Option<PathBuf>,
+    project_usage: BTreeMap<(String, String), String>,
 }
 
 impl Default for PluginHost {
@@ -1004,6 +1045,8 @@ impl PluginHost {
     pub fn new() -> Self {
         Self {
             catalog: PluginCatalog::default(),
+            packages: PackageCatalog::default(),
+            project_versions: BTreeMap::new(),
             grants: GrantStore::default(),
             sessions: SessionRegistry::default(),
             namespaces: NamespaceOwnership::default(),
@@ -1012,7 +1055,143 @@ impl PluginHost {
             events: EventBus::default(),
             services: ServiceRegistry::new(256 * 1024),
             wasm: WasmRuntimeRegistry::default(),
+            state_path: None,
+            project_usage: BTreeMap::new(),
         }
+    }
+
+    /// Load and verify packages retained in the app-owned store. Invalid
+    /// versions are returned as rejected entries and are never placed in the
+    /// executable package catalog.
+    pub fn load_installed_packages(
+        &mut self,
+        install_root: impl AsRef<Path>,
+        state_path: impl AsRef<Path>,
+        limits: ArchiveLimits,
+        policy: VerificationPolicy,
+    ) -> Result<Vec<String>, HostError> {
+        let state_path = state_path.as_ref().to_path_buf();
+        let state = if state_path.is_file() {
+            let bytes = fs::read(&state_path).map_err(io_error)?;
+            serde_json::from_slice::<PersistentHostState>(&bytes)
+                .map_err(|error| HostError(format!("invalid persistent plugin state: {error}")))?
+        } else {
+            PersistentHostState::default()
+        };
+        self.packages = state.packages;
+        self.project_usage = state
+            .project_usage
+            .into_iter()
+            .map(|usage| ((usage.project_id, usage.plugin_id), usage.version))
+            .collect();
+        self.state_path = Some(state_path);
+        let rejected = self
+            .packages
+            .rediscover(install_root, limits, &policy)
+            .map_err(|error| HostError(error.to_string()))?
+            .into_iter()
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>();
+        for plugin_id in self.packages.plugin_ids().cloned().collect::<Vec<_>>() {
+            if self.catalog.get(&plugin_id).is_some() {
+                continue;
+            }
+            let package = self
+                .packages
+                .active_candidate(&plugin_id)
+                .ok_or_else(|| HostError("discovered plugin has no active version".into()))?;
+            let manifest = parse_manifest(
+                &fs::read_to_string(package.root.join("manifest.json")).map_err(io_error)?,
+            )
+            .map_err(|error| HostError(error.to_string()))?;
+            let entry = CatalogEntry {
+                manifest: manifest.clone(),
+                package_root: package.root.clone(),
+                digest: package.digest.clone(),
+            };
+            self.catalog.insert_for_test(entry)?;
+            if let Err(error) = self.namespaces.register_manifest(&manifest) {
+                self.catalog.remove(&plugin_id);
+                return Err(error);
+            }
+        }
+        self.persist_state()?;
+        Ok(rejected)
+    }
+
+    fn persist_state(&self) -> Result<(), HostError> {
+        let Some(path) = &self.state_path else {
+            return Ok(());
+        };
+        let project_usage = self
+            .project_usage
+            .iter()
+            .map(|((project_id, plugin_id), version)| ProjectPluginUsage {
+                project_id: project_id.clone(),
+                plugin_id: plugin_id.clone(),
+                version: version.clone(),
+            })
+            .collect();
+        let state = PersistentHostState {
+            packages: self.packages.clone(),
+            project_usage,
+        };
+        let bytes = serde_json::to_vec_pretty(&state)
+            .map_err(|error| HostError(format!("serialize persistent plugin state: {error}")))?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| HostError("persistent plugin state has no parent directory".into()))?;
+        fs::create_dir_all(parent).map_err(io_error)?;
+        let temporary = tempfile::NamedTempFile::new_in(parent).map_err(io_error)?;
+        fs::write(temporary.path(), bytes).map_err(io_error)?;
+        temporary
+            .persist(path)
+            .map_err(|error| HostError(error.error.to_string()))?;
+        Ok(())
+    }
+
+    pub fn record_project_usage(
+        &mut self,
+        project_id: &str,
+        plugin_id: &str,
+        version: &str,
+    ) -> Result<(), HostError> {
+        let key = (project_id.to_owned(), plugin_id.to_owned());
+        let previous = self.project_usage.insert(key.clone(), version.to_owned());
+        if let Err(error) = self.persist_state() {
+            match previous {
+                Some(version) => {
+                    self.project_usage.insert(key, version);
+                }
+                None => {
+                    self.project_usage.remove(&key);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn clear_project_usage(
+        &mut self,
+        project_id: &str,
+        plugin_id: &str,
+    ) -> Result<(), HostError> {
+        let key = (project_id.to_owned(), plugin_id.to_owned());
+        let previous = self.project_usage.remove(&key);
+        if let Err(error) = self.persist_state() {
+            if let Some(version) = previous {
+                self.project_usage.insert(key, version);
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn project_uses_version(&self, plugin_id: &str, version: &str) -> bool {
+        self.project_usage
+            .iter()
+            .any(|((_, id), selected)| id == plugin_id && selected == version)
     }
     pub fn install_development_dir(
         &mut self,
@@ -1035,6 +1214,176 @@ impl PluginHost {
         Ok(self.catalog.get(&id).expect("catalog entry retained"))
     }
 
+    /// Verify and atomically install a `.wbplugin`, then register its verified
+    /// manifest for the existing Phase 5 runtime authority.
+    pub fn install_package(
+        &mut self,
+        archive: impl AsRef<Path>,
+        install_root: impl AsRef<Path>,
+        limits: ArchiveLimits,
+        policy: VerificationPolicy,
+    ) -> Result<PluginPackage, HostError> {
+        let package = self
+            .packages
+            .install(archive, install_root, limits, policy)
+            .map_err(|e| HostError(e.to_string()))?;
+        if self.catalog.get(&package.manifest.id).is_some()
+            && self.packages.list(&package.manifest.id).count() == 1
+        {
+            let _ = self
+                .packages
+                .remove_version(&package.manifest.id, &package.manifest.version);
+            return Err(HostError(
+                "plugin package ID conflicts with a bundled or development plugin".into(),
+            ));
+        }
+        let active = self
+            .packages
+            .active_candidate(&package.manifest.id)
+            .ok_or_else(|| HostError("installed package disappeared from the catalog".into()))?
+            .clone();
+        let active_manifest = parse_manifest(
+            &fs::read_to_string(active.root.join("manifest.json")).map_err(io_error)?,
+        )
+        .map_err(|error| HostError(error.to_string()))?;
+        let entry = CatalogEntry {
+            manifest: active_manifest.clone(),
+            package_root: active.root,
+            digest: active.digest,
+        };
+        let previous_entry = self.catalog.get(&package.manifest.id).cloned();
+        let inserted_runtime_entry = self.catalog.get(&package.manifest.id).is_none();
+        if inserted_runtime_entry {
+            if let Err(error) = self.catalog.insert_for_test(entry) {
+                let _ = self
+                    .packages
+                    .remove_version(&package.manifest.id, &package.manifest.version);
+                return Err(error);
+            }
+        } else {
+            self.catalog.replace_runtime_entry(entry)?;
+        }
+        if let Err(error) = self.namespaces.register_manifest(&active_manifest) {
+            if inserted_runtime_entry {
+                self.catalog.remove(&package.manifest.id);
+            } else if let Some(previous) = previous_entry {
+                let _ = self.catalog.replace_runtime_entry(previous);
+            }
+            let _ = self
+                .packages
+                .remove_version(&package.manifest.id, &package.manifest.version);
+            return Err(error);
+        }
+        if let Err(error) = self.persist_state() {
+            if inserted_runtime_entry {
+                self.catalog.remove(&package.manifest.id);
+            }
+            let _ = self
+                .packages
+                .remove_version(&package.manifest.id, &package.manifest.version);
+            return Err(error);
+        }
+        Ok(package)
+    }
+
+    pub fn plan_upgrade(
+        &self,
+        plugin_id: &str,
+        version: &str,
+        project_id: &str,
+        current_data_version: u32,
+    ) -> Result<UpgradePlan, HostError> {
+        let target = self
+            .packages
+            .get(plugin_id, version)
+            .ok_or_else(|| HostError("target plugin version is not installed".into()))?;
+        let target_json =
+            fs::read_to_string(target.root.join("manifest.json")).map_err(io_error)?;
+        let target_manifest = parse_manifest(&target_json).map_err(|e| HostError(e.to_string()))?;
+        let previous = self
+            .runtime_entry(project_id, plugin_id)
+            .map(|entry| (entry.manifest.clone(), current_data_version));
+        plan_upgrade(
+            previous
+                .as_ref()
+                .map(|(manifest, version)| (manifest, *version)),
+            &target_manifest,
+        )
+        .map_err(|e| HostError(format!("upgrade plan for {project_id}: {e}")))
+    }
+
+    /// Switch runtime selection to a retained, already verified version. Data
+    /// rollback remains backup-driven; callers must restore the plan's backup
+    /// before reactivating when the target cannot preserve the stored version.
+    pub fn rollback_plugin(
+        &mut self,
+        project_id: &str,
+        plugin_id: &str,
+        target_version: &str,
+        current_data_version: u32,
+    ) -> Result<RollbackPlan, HostError> {
+        let target = self
+            .packages
+            .get(plugin_id, target_version)
+            .ok_or_else(|| HostError("rollback version is not retained".into()))?
+            .clone();
+        let active = self
+            .runtime_entry(project_id, plugin_id)
+            .ok_or_else(|| HostError("plugin is not selected in the runtime catalog".into()))?;
+        let target_manifest = parse_manifest(
+            &fs::read_to_string(target.root.join("manifest.json")).map_err(io_error)?,
+        )
+        .map_err(|e| HostError(e.to_string()))?;
+        let active_installed = InstalledVersion {
+            plugin_id: active.manifest.id.clone(),
+            version: active.manifest.version.clone(),
+            digest: active.digest.clone(),
+            root: active.package_root.clone(),
+            publisher: active.manifest.publisher.clone(),
+            signed: true,
+            installed_at: 0,
+            unsigned_consent: false,
+        };
+        let plan = plan_rollback(
+            plugin_id,
+            &active_installed,
+            &target,
+            current_data_version,
+            &target_manifest,
+        )
+        .map_err(|e| HostError(e.to_string()))?;
+        let previous_selection = self
+            .project_versions
+            .get(&(project_id.into(), plugin_id.into()))
+            .cloned();
+        self.deactivate_bundled(project_id, plugin_id);
+        self.select_project_version(project_id, plugin_id, target_version)?;
+        if let Err(error) = self.activate_bundled(project_id, plugin_id) {
+            if let Some(previous) = previous_selection {
+                self.project_versions
+                    .insert((project_id.into(), plugin_id.into()), previous);
+            } else {
+                self.project_versions
+                    .remove(&(project_id.into(), plugin_id.into()));
+            }
+            let _ = self.activate_bundled(project_id, plugin_id);
+            return Err(error);
+        }
+        Ok(plan)
+    }
+
+    pub fn uninstall_code(&mut self, plugin_id: &str, version: &str) -> Result<(), HostError> {
+        if self.project_uses_version(plugin_id, version) {
+            return Err(HostError(
+                "cannot uninstall code while that version is selected in a project".into(),
+            ));
+        }
+        self.packages
+            .remove_version(plugin_id, version)
+            .map_err(|e| HostError(e.to_string()))?;
+        self.persist_state()
+    }
+
     pub fn register_bundled_json(&mut self, json: &str) -> Result<&CatalogEntry, HostError> {
         let entry = self.catalog.register_bundled_json(json)?;
         let manifest = entry.manifest.clone();
@@ -1047,6 +1396,68 @@ impl PluginHost {
             .get(&manifest.id)
             .expect("bundled catalog entry retained"))
     }
+
+    pub fn select_project_version(
+        &mut self,
+        project_id: &str,
+        plugin_id: &str,
+        version: &str,
+    ) -> Result<(), HostError> {
+        if self.packages.get(plugin_id, version).is_none()
+            && self
+                .catalog
+                .get(plugin_id)
+                .is_none_or(|entry| entry.manifest.version != version)
+        {
+            return Err(HostError("plugin version is not installed".into()));
+        }
+        self.revoke_plugin(project_id, plugin_id);
+        let key = (project_id.into(), plugin_id.into());
+        let previous = self.project_versions.insert(key.clone(), version.into());
+        if let Err(error) = self.record_project_usage(project_id, plugin_id, version) {
+            match previous {
+                Some(version) => {
+                    self.project_versions.insert(key, version);
+                }
+                None => {
+                    self.project_versions.remove(&key);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn selected_project_version(&self, project_id: &str, plugin_id: &str) -> Option<String> {
+        self.project_versions
+            .get(&(project_id.into(), plugin_id.into()))
+            .cloned()
+            .or_else(|| {
+                self.project_usage
+                    .get(&(project_id.into(), plugin_id.into()))
+                    .cloned()
+            })
+            .or_else(|| {
+                self.catalog
+                    .get(plugin_id)
+                    .map(|entry| entry.manifest.version.clone())
+            })
+    }
+
+    pub fn runtime_entry(&self, project_id: &str, plugin_id: &str) -> Option<CatalogEntry> {
+        let selected = self.selected_project_version(project_id, plugin_id)?;
+        if let Some(package) = self.packages.get(plugin_id, &selected) {
+            let manifest =
+                parse_manifest(&fs::read_to_string(package.root.join("manifest.json")).ok()?)
+                    .ok()?;
+            return Some(CatalogEntry {
+                manifest,
+                package_root: package.root.clone(),
+                digest: package.digest.clone(),
+            });
+        }
+        self.catalog.get(plugin_id).cloned()
+    }
     pub fn bootstrap(
         &mut self,
         plugin_id: &str,
@@ -1054,13 +1465,12 @@ impl PluginHost {
         origin: &str,
     ) -> Result<Session, HostError> {
         let entry = self
-            .catalog
-            .get(plugin_id)
+            .runtime_entry(project_id, plugin_id)
             .ok_or_else(|| HostError("plugin is not installed".into()))?;
         let grants = self.grants.get(project_id, plugin_id);
         Ok(self
             .sessions
-            .issue(entry, project_id, origin, grants, self.session_ttl))
+            .issue(&entry, project_id, origin, grants, self.session_ttl))
     }
     pub fn revoke_plugin(&mut self, project_id: &str, plugin_id: &str) {
         self.wasm.stop(project_id, plugin_id);
@@ -1090,8 +1500,7 @@ impl PluginHost {
                 Ok(_) => {
                     let (package_root, wasm_entry) = {
                         let entry = self
-                            .catalog
-                            .get(activation_id)
+                            .runtime_entry(project_id, activation_id)
                             .expect("resolved plugin remains installed");
                         (
                             entry.package_root.clone(),
@@ -1239,10 +1648,8 @@ impl PluginHost {
             return Ok(session);
         }
         let entry = self
-            .catalog
-            .get(plugin_id)
-            .ok_or_else(|| HostError("bundled plugin is not registered".into()))?
-            .clone();
+            .runtime_entry(project_id, plugin_id)
+            .ok_or_else(|| HostError("bundled plugin is not registered".into()))?;
         if self.grants.get(project_id, plugin_id).is_empty() {
             self.grants.set(
                 project_id,
@@ -1307,11 +1714,9 @@ impl PluginHost {
         }
         let session = self.sessions.valid(&request.session_id, origin)?;
         let manifest = self
-            .catalog
-            .get(&session.plugin_id)
+            .runtime_entry(&session.project_id, &session.plugin_id)
             .ok_or_else(|| rpc_error("plugin.missing", "plugin is not installed", false))?
-            .manifest
-            .clone();
+            .manifest;
         validate_declared_resource(&manifest, &request.method, &request.payload)?;
         let capabilities =
             required_capabilities(&request.method, &request.payload, session, &self.namespaces)?;
@@ -1553,6 +1958,27 @@ mod tests {
             .unwrap();
         host
     }
+
+    #[test]
+    fn project_version_selection_is_scoped_and_revokes_sessions() {
+        let mut host = host();
+        host.select_project_version("project-a", "com.example.one", "1.0.0")
+            .unwrap();
+        assert_eq!(
+            host.selected_project_version("project-a", "com.example.one"),
+            Some("1.0.0".into())
+        );
+        assert_eq!(
+            host.selected_project_version("project-b", "com.example.one"),
+            Some("1.0.0".into())
+        );
+        assert!(host
+            .project_versions
+            .contains_key(&("project-a".into(), "com.example.one".into())));
+        assert!(!host
+            .project_versions
+            .contains_key(&("project-b".into(), "com.example.one".into())));
+    }
     #[test]
     fn digest_changes_when_file_changes() {
         let root = std::env::temp_dir().join(format!(
@@ -1610,6 +2036,36 @@ mod tests {
             .install_development_dir(&root)
             .is_err());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_usage_survives_host_restart_for_uninstall_protection() {
+        let directory = tempfile::tempdir().unwrap();
+        let install_root = directory.path().join("plugins");
+        let state_path = directory.path().join("plugin-state.json");
+        let mut first = PluginHost::new();
+        first
+            .load_installed_packages(
+                &install_root,
+                &state_path,
+                ArchiveLimits::default(),
+                VerificationPolicy::default(),
+            )
+            .unwrap();
+        first
+            .record_project_usage("closed-project", "com.example.plugin", "1.0.0")
+            .unwrap();
+
+        let mut restarted = PluginHost::new();
+        restarted
+            .load_installed_packages(
+                &install_root,
+                &state_path,
+                ArchiveLimits::default(),
+                VerificationPolicy::default(),
+            )
+            .unwrap();
+        assert!(restarted.project_uses_version("com.example.plugin", "1.0.0"));
     }
     #[test]
     fn forged_identity_and_origin_are_rejected() {

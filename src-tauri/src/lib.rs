@@ -1,16 +1,18 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
+use std::path::{Component, Path};
 use std::sync::{Arc, Mutex};
 
 use tauri::Manager;
 use worldbuilder_core::{
     Asset, AssetFileInput, AssetInput, AuthorityContext, CoreError, CoreService, CreateEntity,
-    Entity, FieldValue, GitLogEntry, GitStatus, Migration, Operation, ProjectInfo, Relationship,
-    RelationshipInput, SaveDocument, SaveEntry,
+    Entity, FieldValue, GitLogEntry, GitStatus, Migration, Operation, ProjectInfo, ProjectStore,
+    Relationship, RelationshipInput, SaveDocument, SaveEntry,
 };
 use worldbuilder_plugin_api::{MigrationOperation, PluginManifest, RpcRequest, RpcResponse};
 use worldbuilder_plugin_host::{
-    plugin_window_label, webview_policy, HostError, PluginHost, ServiceRequest,
+    plugin_window_label, webview_policy, ArchiveLimits, HostError, PluginHost, ServiceRequest,
+    VerificationPolicy,
 };
 
 type SharedCore = Arc<Mutex<CoreService>>;
@@ -31,38 +33,126 @@ fn percent_encode(value: &str) -> String {
 fn plugin_asset_response(
     plugin_id: &str,
     request: &tauri::http::Request<Vec<u8>>,
+    package_root: Option<&Path>,
+    package_manifest: Option<&PluginManifest>,
 ) -> tauri::http::Response<Vec<u8>> {
     let path = request.uri().path();
-    let (bytes, content_type): (&[u8], &str) = match (plugin_id, path) {
-        ("worldbuilder.lore", "/dist/ui/index.html") => (
-            include_bytes!("../plugin-assets/lore/index.html"),
-            "text/html",
-        ),
-        ("worldbuilder.timeline", "/dist/ui/index.html") => (
-            include_bytes!("../plugin-assets/timeline/index.html"),
-            "text/html",
-        ),
-        (_, "/dist/ui/plugin.js") => (
-            include_bytes!("../plugin-assets/shared/plugin.js"),
-            "text/javascript",
-        ),
-        (_, "/dist/ui/plugin.css") => (
-            include_bytes!("../plugin-assets/shared/plugin.css"),
-            "text/css",
-        ),
-        _ => {
+    let (bytes, content_type) = if let Some(package_root) = package_root {
+        let Some(manifest) = package_manifest else {
             return tauri::http::Response::builder()
                 .status(404)
                 .body(Vec::new())
-                .unwrap()
+                .unwrap();
+        };
+        let Some(entrypoint) = manifest.entrypoints.ui.as_deref() else {
+            return tauri::http::Response::builder()
+                .status(404)
+                .body(Vec::new())
+                .unwrap();
+        };
+        let Some(relative) = path.strip_prefix('/') else {
+            return tauri::http::Response::builder()
+                .status(404)
+                .body(Vec::new())
+                .unwrap();
+        };
+        if relative.is_empty()
+            || Path::new(relative).components().any(|component| {
+                matches!(
+                    component,
+                    Component::CurDir
+                        | Component::ParentDir
+                        | Component::RootDir
+                        | Component::Prefix(_)
+                )
+            })
+        {
+            return tauri::http::Response::builder()
+                .status(404)
+                .body(Vec::new())
+                .unwrap();
         }
+        let ui_root = package_root
+            .join(entrypoint)
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| package_root.to_path_buf());
+        let requested = package_root.join(relative);
+        let Ok(canonical_ui_root) = ui_root.canonicalize() else {
+            return tauri::http::Response::builder()
+                .status(404)
+                .body(Vec::new())
+                .unwrap();
+        };
+        let Ok(canonical_requested) = requested.canonicalize() else {
+            return tauri::http::Response::builder()
+                .status(404)
+                .body(Vec::new())
+                .unwrap();
+        };
+        if !canonical_requested.starts_with(&canonical_ui_root) || !canonical_requested.is_file() {
+            return tauri::http::Response::builder()
+                .status(404)
+                .body(Vec::new())
+                .unwrap();
+        }
+        let content_type = match requested.extension().and_then(|value| value.to_str()) {
+            Some("html") => "text/html",
+            Some("js") | Some("mjs") => "text/javascript",
+            Some("css") => "text/css",
+            Some("json") => "application/json",
+            Some("svg") => "image/svg+xml",
+            Some("png") => "image/png",
+            Some("jpg") | Some("jpeg") => "image/jpeg",
+            Some("webp") => "image/webp",
+            Some("woff") => "font/woff",
+            Some("woff2") => "font/woff2",
+            _ => "application/octet-stream",
+        };
+        let Ok(bytes) = std::fs::read(&canonical_requested) else {
+            return tauri::http::Response::builder()
+                .status(404)
+                .body(Vec::new())
+                .unwrap();
+        };
+        (bytes, content_type)
+    } else {
+        let (bytes, content_type): (&[u8], &str) = match (plugin_id, path) {
+            ("worldbuilder.lore", "/dist/ui/index.html") => (
+                include_bytes!("../plugin-assets/lore/index.html"),
+                "text/html",
+            ),
+            ("worldbuilder.timeline", "/dist/ui/index.html") => (
+                include_bytes!("../plugin-assets/timeline/index.html"),
+                "text/html",
+            ),
+            (_, "/dist/ui/plugin.js") => (
+                include_bytes!("../plugin-assets/shared/plugin.js"),
+                "text/javascript",
+            ),
+            (_, "/dist/ui/plugin.css") => (
+                include_bytes!("../plugin-assets/shared/plugin.css"),
+                "text/css",
+            ),
+            _ => {
+                return tauri::http::Response::builder()
+                    .status(404)
+                    .body(Vec::new())
+                    .unwrap()
+            }
+        };
+        (bytes.to_vec(), content_type)
     };
-    let manifest = match plugin_id {
-        "worldbuilder.lore" => include_str!("../../packages/modules/lore/manifest.json"),
-        "worldbuilder.timeline" => include_str!("../../packages/modules/timeline/manifest.json"),
-        _ => "",
-    };
-    let manifest = serde_json::from_str::<PluginManifest>(manifest).ok();
+    let manifest = package_manifest.cloned().or_else(|| {
+        let manifest = match plugin_id {
+            "worldbuilder.lore" => include_str!("../../packages/modules/lore/manifest.json"),
+            "worldbuilder.timeline" => {
+                include_str!("../../packages/modules/timeline/manifest.json")
+            }
+            _ => return None,
+        };
+        serde_json::from_str::<PluginManifest>(manifest).ok()
+    });
     let csp = manifest
         .as_ref()
         .and_then(webview_policy)
@@ -73,7 +163,7 @@ fn plugin_asset_response(
         .header("Content-Type", content_type)
         .header("Content-Security-Policy", csp)
         .header("X-Content-Type-Options", "nosniff")
-        .body(bytes.to_vec())
+        .body(bytes)
         .unwrap()
 }
 
@@ -87,14 +177,49 @@ fn json_response(value: serde_json::Value, status: u16) -> tauri::http::Response
 }
 
 fn plugin_protocol_response(
-    plugin_id: &str,
     webview_label: &str,
     request: &tauri::http::Request<Vec<u8>>,
     core: &SharedCore,
     plugins: &SharedPluginHost,
 ) -> tauri::http::Response<Vec<u8>> {
+    let plugin_id = request.uri().host().unwrap_or_default();
+    if plugin_id.is_empty() {
+        return json_response(
+            serde_json::json!({"error": "plugin protocol requires an ID"}),
+            400,
+        );
+    }
+    if plugin_window_label(plugin_id) != webview_label {
+        return json_response(
+            serde_json::json!({"error": "plugin protocol origin mismatch"}),
+            403,
+        );
+    }
     if request.uri().path() != "/__rpc" {
-        return plugin_asset_response(plugin_id, request);
+        let project_id = core
+            .lock()
+            .ok()
+            .and_then(|core| core.info())
+            .map(|info| info.root);
+        let Some(project_id) = project_id else {
+            return tauri::http::Response::builder()
+                .status(404)
+                .body(Vec::new())
+                .unwrap();
+        };
+        let entry = plugins
+            .lock()
+            .ok()
+            .and_then(|host| host.runtime_entry(&project_id, plugin_id));
+        let Some(entry) = entry else {
+            return tauri::http::Response::builder()
+                .status(404)
+                .body(Vec::new())
+                .unwrap();
+        };
+        let package_root =
+            (!entry.package_root.as_os_str().is_empty()).then_some(entry.package_root.as_path());
+        return plugin_asset_response(plugin_id, request, package_root, Some(&entry.manifest));
     }
     let envelope = match serde_json::from_slice::<serde_json::Value>(request.body()) {
         Ok(value) => value,
@@ -127,14 +252,13 @@ fn plugin_protocol_response(
                             .bootstrap(plugin_id, project_id, webview_label)
                             .map_err(|error| error.to_string())?;
                         let entry = host
-                            .catalog
-                            .get(plugin_id)
+                            .runtime_entry(project_id, plugin_id)
                             .ok_or_else(|| "plugin was removed during bootstrap".to_string())?;
                         serde_json::to_value(PluginBootstrap {
                             session_id: session.id,
                             plugin_id: plugin_id.to_string(),
-                            package_digest: entry.digest.clone(),
-                            manifest: entry.manifest.clone(),
+                            package_digest: entry.digest,
+                            manifest: entry.manifest,
                         })
                         .map_err(|error| error.to_string())
                     })
@@ -212,8 +336,7 @@ fn open_plugin_webview(
     host: &PluginHost,
 ) -> Result<(), String> {
     let entry = host
-        .catalog
-        .get(plugin_id)
+        .runtime_entry(project_id, plugin_id)
         .ok_or_else(|| "plugin is not installed".to_string())?;
     if entry.manifest.kind != worldbuilder_plugin_api::PluginKind::Sandboxed {
         return Err("only sandboxed plugins have UI webviews".into());
@@ -247,7 +370,7 @@ fn open_plugin_webview(
 }
 
 fn close_plugin_webview(app: &tauri::AppHandle, plugin_id: &str) {
-    if let Some(window) = app.get_webview_window(&format!("plugin:{plugin_id}")) {
+    if let Some(window) = app.get_webview_window(&plugin_window_label(plugin_id)) {
         let _ = window.close();
     }
 }
@@ -335,14 +458,13 @@ fn plugin_bootstrap(
         .bootstrap(&plugin_id, &project_id, &origin)
         .map_err(|error| error.to_string())?;
     let entry = host
-        .catalog
-        .get(&plugin_id)
+        .runtime_entry(&project_id, &plugin_id)
         .ok_or_else(|| "plugin was removed during bootstrap".to_string())?;
     Ok(PluginBootstrap {
         session_id: session.id,
         plugin_id,
-        package_digest: entry.digest.clone(),
-        manifest: entry.manifest.clone(),
+        package_digest: entry.digest,
+        manifest: entry.manifest,
     })
 }
 
@@ -507,7 +629,7 @@ fn plugin_webview_identity(
     expected: Option<&str>,
 ) -> Result<String, String> {
     let label = window.label();
-    let plugin_id = label
+    let _plugin_id = label
         .strip_prefix("plugin:")
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "plugin RPC requires a plugin webview".to_string())?;
@@ -515,6 +637,20 @@ fn plugin_webview_identity(
         return Err("plugin webview identity mismatch".into());
     }
     Ok(label.to_string())
+}
+
+fn sync_project_usage(project: &ProjectStore, host: &mut PluginHost) -> Result<(), CoreError> {
+    let project_id = project
+        .info()
+        .map(|info| info.root)
+        .ok_or(CoreError::ProjectNotOpen)?;
+    for module in project.module_states()? {
+        if let Some(version) = module.package_version {
+            host.record_project_usage(&project_id, &module.module_id, &version)
+                .map_err(|error| CoreError::Conflict(error.to_string()))?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -552,50 +688,60 @@ fn bundled_plugin_host() -> Result<PluginHost, String> {
     Ok(host)
 }
 
+#[cfg(test)]
 fn core_migration(manifest: &PluginManifest) -> Result<Option<Migration>, String> {
-    let Some(migration) = manifest.migrations.first() else {
-        return Ok(None);
-    };
-    let operations = migration
-        .operations
+    Ok(core_migrations(manifest)?.into_iter().next())
+}
+
+fn core_migrations(manifest: &PluginManifest) -> Result<Vec<Migration>, String> {
+    manifest
+        .migrations
         .iter()
-        .map(|operation| match operation {
-            MigrationOperation::CreateNamespace { namespace } => Operation::CreateNamespace {
-                namespace: namespace.clone(),
-            },
-            MigrationOperation::AddField {
-                namespace, field, ..
-            } => Operation::AddField {
-                namespace: namespace.clone(),
-                field: worldbuilder_core::FieldDefinition {
-                    key: field.key.clone(),
-                    field_type: field.field_type.clone(),
-                    required: field.required.unwrap_or(false),
-                },
-            },
-            MigrationOperation::RenameField {
-                namespace,
-                from,
-                to,
-            } => Operation::RenameField {
-                namespace: namespace.clone(),
-                from: from.clone(),
-                to: to.clone(),
-            },
-            MigrationOperation::DropField { namespace, key } => Operation::DropField {
-                namespace: namespace.clone(),
-                key: key.clone(),
-            },
+        .map(|migration| {
+            let operations = migration
+                .operations
+                .iter()
+                .map(|operation| match operation {
+                    MigrationOperation::CreateNamespace { namespace } => {
+                        Operation::CreateNamespace {
+                            namespace: namespace.clone(),
+                        }
+                    }
+                    MigrationOperation::AddField {
+                        namespace, field, ..
+                    } => Operation::AddField {
+                        namespace: namespace.clone(),
+                        field: worldbuilder_core::FieldDefinition {
+                            key: field.key.clone(),
+                            field_type: field.field_type.clone(),
+                            required: field.required.unwrap_or(false),
+                        },
+                    },
+                    MigrationOperation::RenameField {
+                        namespace,
+                        from,
+                        to,
+                    } => Operation::RenameField {
+                        namespace: namespace.clone(),
+                        from: from.clone(),
+                        to: to.clone(),
+                    },
+                    MigrationOperation::DropField { namespace, key } => Operation::DropField {
+                        namespace: namespace.clone(),
+                        key: key.clone(),
+                    },
+                })
+                .collect();
+            Ok(Migration {
+                id: migration.id.clone(),
+                module_id: manifest.id.clone(),
+                from: migration.from as i64,
+                to: migration.to as i64,
+                operations,
+                recovery: migration.recovery.clone(),
+            })
         })
-        .collect();
-    Ok(Some(Migration {
-        id: migration.id.clone(),
-        module_id: manifest.id.clone(),
-        from: migration.from as i64,
-        to: migration.to as i64,
-        operations,
-        recovery: migration.recovery.clone(),
-    }))
+        .collect()
 }
 
 #[tauri::command]
@@ -603,30 +749,38 @@ async fn module_list_manifests(
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let mut manifests = plugins
-        .lock()
-        .map_err(|_| "plugin host lock poisoned".to_string())?
-        .catalog
-        .list()
-        .map(|entry| serde_json::to_value(&entry.manifest).map_err(|error| error.to_string()))
-        .collect::<Result<Vec<_>, _>>()?;
-    with_core(state, |core| {
+    let plugins = plugins.inner().clone();
+    with_core(state, move |core| {
         let context = trusted_shell();
-        let Some(project) = core.project(context).ok() else {
-            return Ok(manifests);
-        };
-        for manifest in &mut manifests {
-            let id = manifest
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            let enabled = project
-                .is_module_enabled(id)
+        let project = core.project(context).ok();
+        let project_id = project.and_then(|project| project.info().map(|info| info.root));
+        let host = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        let plugin_ids = host
+            .catalog
+            .list()
+            .map(|entry| entry.manifest.id.clone())
+            .collect::<Vec<_>>();
+        let mut manifests = Vec::with_capacity(plugin_ids.len());
+        for id in plugin_ids {
+            let entry = project_id
+                .as_deref()
+                .and_then(|project_id| host.runtime_entry(project_id, &id))
+                .or_else(|| host.catalog.get(&id).cloned())
+                .ok_or_else(|| CoreError::Validation("plugin catalog entry disappeared".into()))?;
+            let mut manifest = serde_json::to_value(&entry.manifest)
                 .map_err(|error| CoreError::Validation(error.to_string()))?;
+            let enabled = if let Some(project) = project {
+                project.is_module_enabled(&id)?
+            } else {
+                false
+            };
             manifest
                 .as_object_mut()
                 .expect("manifest is an object")
                 .insert("enabled".into(), serde_json::Value::Bool(enabled));
+            manifests.push(manifest);
         }
         Ok(manifests)
     })
@@ -639,39 +793,59 @@ async fn module_enable(
     plugins: tauri::State<'_, SharedPluginHost>,
     id: String,
 ) -> Result<(), String> {
-    let manifest = plugins
+    let known = plugins
         .lock()
         .map_err(|_| "plugin host lock poisoned".to_string())?
         .catalog
         .get(&id)
-        .ok_or_else(|| format!("unknown bundled plugin: {id}"))?
-        .manifest
-        .clone();
-    let migration = core_migration(&manifest)?;
+        .is_some();
+    if !known {
+        return Err(format!("unknown plugin: {id}"));
+    }
     let plugins = plugins.inner().clone();
     with_core(state, move |core| {
         let context = trusted_shell();
         let project = core.project_mut(context)?;
+        let project_id = project
+            .info()
+            .map(|info| info.root)
+            .ok_or(CoreError::ProjectNotOpen)?;
+        let manifest = {
+            let mut host = plugins
+                .lock()
+                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+            if let Some(version) = project.module_package_version(&id)? {
+                host.select_project_version(&project_id, &id, &version)
+                    .map_err(|error| CoreError::Validation(error.to_string()))?;
+            }
+            host.runtime_entry(&project_id, &id)
+                .ok_or_else(|| CoreError::Validation("plugin runtime version is missing".into()))?
+                .manifest
+        };
+        let migrations =
+            core_migrations(&manifest).map_err(|error| CoreError::Validation(error.to_string()))?;
         let current = project.get_module_version(&id)?;
-        if let Some(migration) = &migration {
-            if current == migration.from {
-                project.apply_migration(migration)?;
-            } else if current != migration.to {
+        let pending = migrations
+            .iter()
+            .filter(|migration| migration.from >= current)
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(first) = pending.first() {
+            if current != first.from {
                 return Err(CoreError::Validation(format!(
                     "unsupported stored version {current} for plugin {}",
                     manifest.id
                 )));
             }
+            project.apply_migrations(&pending)?;
         }
-        let project_id = project
-            .info()
-            .map(|info| info.root)
-            .ok_or(CoreError::ProjectNotOpen)?;
-        plugins
+        let mut host = plugins
             .lock()
-            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
-            .activate_bundled(&project_id, &manifest.id)
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        host.activate_bundled(&project_id, &manifest.id)
             .map_err(|error| CoreError::Validation(error.to_string()))?;
+        host.record_project_usage(&project_id, &id, &manifest.version)
+            .map_err(|error| CoreError::Conflict(error.to_string()))?;
         project.set_module_enabled(id, true)?;
         Ok(())
     })
@@ -708,6 +882,317 @@ async fn module_disable(
             .deactivate_bundled(&project_id, &id);
         close_plugin_webview(&app, &id);
         Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+fn plugin_install_package(
+    app: tauri::AppHandle,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    archive: String,
+    allow_unsigned: bool,
+) -> Result<serde_json::Value, String> {
+    let install_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("plugins");
+    let policy = if allow_unsigned {
+        VerificationPolicy::with_unsigned_consent()
+    } else {
+        VerificationPolicy::default()
+    };
+    let package = plugins
+        .lock()
+        .map_err(|_| "plugin host lock poisoned".to_string())?
+        .install_package(archive, install_root, ArchiveLimits::default(), policy)
+        .map_err(|error| error.to_string())?;
+    serde_json::to_value(serde_json::json!({
+        "id": package.manifest.id,
+        "version": package.manifest.version,
+        "publisher": package.manifest.publisher,
+        "digest": package.digest,
+        "signed": package.signed,
+    }))
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn plugin_select_version(
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    project_id: String,
+    plugin_id: String,
+    version: String,
+) -> Result<(), String> {
+    let plugins = plugins.inner().clone();
+    with_core(state, move |core| {
+        let project = core.project(trusted_shell())?;
+        if project.info().map(|info| info.root) != Some(project_id.clone()) {
+            return Err(CoreError::Unauthorized {
+                operation: "select plugin version for another project",
+            });
+        }
+        let mut host = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        let installed = host.packages.get(&plugin_id, &version).is_some()
+            || host
+                .catalog
+                .get(&plugin_id)
+                .is_some_and(|entry| entry.manifest.version == version);
+        if !installed {
+            return Err(CoreError::Validation(
+                "plugin version is not installed".into(),
+            ));
+        }
+        project.set_module_package_version(&plugin_id, Some(&version))?;
+        host.select_project_version(&project_id, &plugin_id, &version)
+            .map_err(|error| CoreError::Validation(error.to_string()))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn plugin_upgrade(
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    plugin_id: String,
+    version: String,
+    consent: bool,
+) -> Result<(), String> {
+    let plugins = plugins.inner().clone();
+    with_core(state, move |core| {
+        let project = core.project_mut(trusted_shell())?;
+        let project_id = project
+            .info()
+            .map(|info| info.root)
+            .ok_or(CoreError::ProjectNotOpen)?;
+        let (old_version, old_grants, target_manifest, plan) = {
+            let host = plugins
+                .lock()
+                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+            let old_version = host.selected_project_version(&project_id, &plugin_id);
+            let old_grants = host.grants.get(&project_id, &plugin_id);
+            let target = host.packages.get(&plugin_id, &version).ok_or_else(|| {
+                CoreError::Validation("target plugin version is not installed".into())
+            })?;
+            let target_manifest = worldbuilder_plugin_api::parse_manifest(
+                &std::fs::read_to_string(target.root.join("manifest.json"))
+                    .map_err(|error| CoreError::Validation(error.to_string()))?,
+            )
+            .map_err(|error| CoreError::Validation(error.to_string()))?;
+            let plan = host
+                .plan_upgrade(
+                    &plugin_id,
+                    &version,
+                    &project_id,
+                    project.get_module_version(&plugin_id)? as u32,
+                )
+                .map_err(|error| CoreError::Validation(error.to_string()))?;
+            (old_version, old_grants, target_manifest, plan)
+        };
+        if plan.consent.requires_renewal && !consent {
+            return Err(CoreError::Unauthorized {
+                operation: "consent to plugin capability changes",
+            });
+        }
+        let old_version =
+            old_version.ok_or(CoreError::Validation("plugin has no active version".into()))?;
+        let current = project.get_module_version(&plugin_id)? as u32;
+        let backup = project.create_plugin_backup(
+            &plugin_id,
+            Some(&old_version),
+            Some(&version),
+            current as i64,
+        )?;
+        let requested = target_manifest.capabilities.clone();
+        let mut next_grants = old_grants
+            .iter()
+            .filter(|grant| requested.contains(grant))
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        if consent {
+            next_grants.extend(plan.consent.added.iter().cloned());
+        }
+        {
+            let mut host = plugins
+                .lock()
+                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+            host.deactivate_bundled(&project_id, &plugin_id);
+            host.select_project_version(&project_id, &plugin_id, &version)
+                .map_err(|error| CoreError::Validation(error.to_string()))?;
+            host.grants
+                .set(&project_id, &plugin_id, &requested, next_grants)
+                .map_err(|error| CoreError::Validation(error.to_string()))?;
+        }
+        let migrations = core_migrations(&target_manifest)
+            .map_err(|error| CoreError::Validation(error.to_string()))?
+            .into_iter()
+            .filter(|migration| migration.from >= current as i64)
+            .collect::<Vec<_>>();
+        if let Err(error) = project.apply_migrations(&migrations) {
+            let _ = project.restore_plugin_backup(&backup);
+            let mut host = plugins
+                .lock()
+                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+            host.select_project_version(&project_id, &plugin_id, &old_version)
+                .map_err(|restore| CoreError::Validation(restore.to_string()))?;
+            host.grants
+                .set(
+                    &project_id,
+                    &plugin_id,
+                    &old_grants.iter().cloned().collect::<Vec<_>>(),
+                    old_grants.clone(),
+                )
+                .map_err(|restore| CoreError::Validation(restore.to_string()))?;
+            let _ = host.activate_bundled(&project_id, &plugin_id);
+            return Err(error);
+        }
+        let activation = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
+            .activate_bundled(&project_id, &plugin_id);
+        if let Err(error) = activation {
+            let _ = project.restore_plugin_backup(&backup);
+            let mut host = plugins
+                .lock()
+                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+            host.select_project_version(&project_id, &plugin_id, &old_version)
+                .map_err(|restore| CoreError::Validation(restore.to_string()))?;
+            host.grants
+                .set(
+                    &project_id,
+                    &plugin_id,
+                    &old_grants.iter().cloned().collect::<Vec<_>>(),
+                    old_grants,
+                )
+                .map_err(|restore| CoreError::Validation(restore.to_string()))?;
+            let _ = host.activate_bundled(&project_id, &plugin_id);
+            return Err(CoreError::Validation(error.to_string()));
+        }
+        project.set_module_package_version(&plugin_id, Some(&version))?;
+        project.set_module_enabled(plugin_id, true)?;
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn plugin_rollback(
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    plugin_id: String,
+    version: String,
+) -> Result<(), String> {
+    let plugins = plugins.inner().clone();
+    with_core(state, move |core| {
+        let project = core.project_mut(trusted_shell())?;
+        let project_id = project
+            .info()
+            .map(|info| info.root)
+            .ok_or(CoreError::ProjectNotOpen)?;
+        let current = project.get_module_version(&plugin_id)? as u32;
+        let current_version = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
+            .selected_project_version(&project_id, &plugin_id)
+            .ok_or_else(|| CoreError::Validation("plugin has no selected version".into()))?;
+        if current_version == version {
+            return Err(CoreError::Validation(
+                "rollback target is already selected".into(),
+            ));
+        }
+        let backup = project
+            .latest_plugin_backup(&plugin_id, Some(&version), Some(&current_version))?
+            .ok_or_else(|| {
+                CoreError::Validation("no pre-upgrade backup exists for rollback".into())
+            })?;
+        let safety_backup = project.create_plugin_backup(
+            &plugin_id,
+            Some(&current_version),
+            Some(&version),
+            current as i64,
+        )?;
+        let result = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
+            .rollback_plugin(
+                &project_id,
+                &plugin_id,
+                &version,
+                backup.data_version as u32,
+            );
+        if let Err(error) = result {
+            let _ = project.restore_plugin_backup(&safety_backup);
+            return Err(CoreError::Validation(error.to_string()));
+        }
+        if let Err(error) = project.restore_plugin_backup(&backup) {
+            let _ = project.restore_plugin_backup(&safety_backup);
+            let mut host = plugins.lock().map_err(|lock_error| {
+                CoreError::Conflict(format!("plugin host lock poisoned: {lock_error}"))
+            })?;
+            host.select_project_version(&project_id, &plugin_id, &current_version)
+                .map_err(|restore| CoreError::Validation(restore.to_string()))?;
+            let _ = host.activate_bundled(&project_id, &plugin_id);
+            return Err(error);
+        }
+        project.set_module_package_version(&plugin_id, Some(&version))?;
+        project.set_module_enabled(plugin_id, true)?;
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn plugin_uninstall_code(
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    plugin_id: String,
+    version: String,
+) -> Result<(), String> {
+    let plugins = plugins.inner().clone();
+    with_core(state, move |core| {
+        if core.info().is_some() {
+            let project = core.project(trusted_shell())?;
+            if project.module_package_version(&plugin_id)?.as_deref() == Some(version.as_str()) {
+                return Err(CoreError::Conflict(
+                    "cannot uninstall code selected by the open project".into(),
+                ));
+            }
+        }
+        plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
+            .uninstall_code(&plugin_id, &version)
+            .map_err(|error| CoreError::Validation(error.to_string()))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn plugin_delete_data(
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    plugin_id: String,
+    confirmation: String,
+) -> Result<String, String> {
+    let plugins = plugins.inner().clone();
+    with_core(state, move |core| {
+        let project_id = core
+            .info()
+            .map(|info| info.root)
+            .ok_or(CoreError::ProjectNotOpen)?;
+        let backup = core
+            .project_mut(trusted_shell())?
+            .delete_plugin_data(&plugin_id, &confirmation)?;
+        plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
+            .clear_project_usage(&project_id, &plugin_id)
+            .map_err(|error| CoreError::Conflict(error.to_string()))?;
+        Ok(backup)
     })
     .await
 }
@@ -905,17 +1390,37 @@ async fn module_rpc(
 }
 
 #[tauri::command]
-async fn project_open(state: tauri::State<'_, SharedCore>, path: String) -> Result<(), String> {
-    with_core(state, move |core| core.open(trusted_shell(), path)).await
+async fn project_open(
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    path: String,
+) -> Result<(), String> {
+    let plugins = plugins.inner().clone();
+    with_core(state, move |core| {
+        core.open(trusted_shell(), path)?;
+        let project = core.project(trusted_shell())?;
+        let mut host = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        sync_project_usage(project, &mut host)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn project_open_directory(
     state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
     path: String,
 ) -> Result<ProjectInfo, String> {
+    let plugins = plugins.inner().clone();
     with_core(state, move |core| {
-        core.open_directory(trusted_shell(), path)
+        let info = core.open_directory(trusted_shell(), path)?;
+        let mut host = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        sync_project_usage(core.project(trusted_shell())?, &mut host)?;
+        Ok(info)
     })
     .await
 }
@@ -923,10 +1428,17 @@ async fn project_open_directory(
 #[tauri::command]
 async fn project_new(
     state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
     path: String,
 ) -> Result<ProjectInfo, String> {
+    let plugins = plugins.inner().clone();
     with_core(state, move |core| {
-        core.open_directory(trusted_shell(), path)
+        let info = core.open_directory(trusted_shell(), path)?;
+        let mut host = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        sync_project_usage(core.project(trusted_shell())?, &mut host)?;
+        Ok(info)
     })
     .await
 }
@@ -1000,11 +1512,13 @@ async fn project_open_memory(state: tauri::State<'_, SharedCore>) -> Result<(), 
 async fn project_open_default(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
 ) -> Result<(), String> {
     let directory = app
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
+    let plugins = plugins.inner().clone();
     with_core(state, move |core| {
         std::fs::create_dir_all(&directory).map_err(|error| CoreError::Io {
             operation: "create app data directory",
@@ -1023,8 +1537,11 @@ async fn project_open_default(
                 source: error,
             })?;
         }
-        core.open_directory(trusted_shell(), project_directory)
-            .map(|_| ())
+        core.open_directory(trusted_shell(), project_directory)?;
+        let mut host = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        sync_project_usage(core.project(trusted_shell())?, &mut host)
     })
     .await
 }
@@ -1284,27 +1801,38 @@ pub fn run() {
     let plugins = Arc::new(Mutex::new(
         bundled_plugin_host().expect("canonical bundled plugin manifests must validate"),
     ));
-    let lore_core = core.clone();
-    let lore_plugins = plugins.clone();
-    let timeline_core = core.clone();
-    let timeline_plugins = plugins.clone();
+    let protocol_core = core.clone();
+    let protocol_plugins = plugins.clone();
+    let startup_plugins = plugins.clone();
     tauri::Builder::default()
-        .register_uri_scheme_protocol("plugin-worldbuilder-lore", move |ctx, request| {
-            plugin_protocol_response(
-                "worldbuilder.lore",
-                ctx.webview_label(),
-                &request,
-                &lore_core,
-                &lore_plugins,
-            )
+        .setup(move |app| {
+            let app_data = app
+                .path()
+                .app_data_dir()
+                .map_err(|error| error.to_string())?;
+            let install_root = app_data.join("plugins");
+            let state_path = app_data.join("plugin-state.json");
+            let rejected = startup_plugins
+                .lock()
+                .map_err(|_| "plugin host lock poisoned".to_string())?
+                .load_installed_packages(
+                    install_root,
+                    state_path,
+                    ArchiveLimits::default(),
+                    VerificationPolicy::default(),
+                )
+                .map_err(|error| error.to_string())?;
+            for error in rejected {
+                eprintln!("ignoring rejected installed plugin package: {error}");
+            }
+            Ok(())
         })
-        .register_uri_scheme_protocol("plugin-worldbuilder-timeline", move |ctx, request| {
+        .register_uri_scheme_protocol("plugin", move |ctx, request| {
             plugin_protocol_response(
-                "worldbuilder.timeline",
                 ctx.webview_label(),
                 &request,
-                &timeline_core,
-                &timeline_plugins,
+                &protocol_core,
+                &protocol_plugins,
             )
         })
         .plugin(tauri_plugin_opener::init())
@@ -1320,6 +1848,12 @@ pub fn run() {
             module_list_manifests,
             module_enable,
             module_disable,
+            plugin_install_package,
+            plugin_select_version,
+            plugin_upgrade,
+            plugin_rollback,
+            plugin_uninstall_code,
+            plugin_delete_data,
             module_rpc,
             project_open,
             project_open_directory,
@@ -1397,22 +1931,63 @@ mod tests {
     #[test]
     fn bundled_plugin_protocol_serves_only_embedded_assets() {
         let request = tauri::http::Request::builder()
-            .uri("plugin-worldbuilder-lore://localhost/dist/ui/index.html")
+            .uri("plugin://worldbuilder.lore/dist/ui/index.html")
             .body(Vec::new())
             .unwrap();
-        let response = plugin_asset_response("worldbuilder.lore", &request);
+        let response = plugin_asset_response("worldbuilder.lore", &request, None, None);
         assert_eq!(response.status(), 200);
         assert_eq!(response.headers().get("Content-Type").unwrap(), "text/html");
         assert!(String::from_utf8_lossy(response.body()).contains("plugin.js"));
 
         let traversal = tauri::http::Request::builder()
-            .uri("plugin-worldbuilder-lore://localhost/../manifest.json")
+            .uri("plugin://worldbuilder.lore/../manifest.json")
             .body(Vec::new())
             .unwrap();
         assert_eq!(
-            plugin_asset_response("worldbuilder.lore", &traversal).status(),
+            plugin_asset_response("worldbuilder.lore", &traversal, None, None).status(),
             404
         );
+    }
+
+    #[test]
+    fn installed_plugin_assets_are_served_from_the_verified_ui_root() {
+        let root =
+            std::env::temp_dir().join(format!("worldbuilder-protocol-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("dist/ui")).unwrap();
+        std::fs::write(root.join("dist/ui/index.html"), b"installed plugin").unwrap();
+        let mut manifest: PluginManifest =
+            serde_json::from_str(include_str!("../../packages/modules/lore/manifest.json"))
+                .unwrap();
+        manifest.id = "com.example.third-party".into();
+        let request = tauri::http::Request::builder()
+            .uri("plugin://com.example.third-party/dist/ui/index.html")
+            .body(Vec::new())
+            .unwrap();
+        let response = plugin_asset_response(
+            "com.example.third-party",
+            &request,
+            Some(&root),
+            Some(&manifest),
+        );
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.body(), b"installed plugin");
+
+        let traversal = tauri::http::Request::builder()
+            .uri("plugin://com.example.third-party/dist/ui/../../manifest.json")
+            .body(Vec::new())
+            .unwrap();
+        assert_eq!(
+            plugin_asset_response(
+                "com.example.third-party",
+                &traversal,
+                Some(&root),
+                Some(&manifest),
+            )
+            .status(),
+            404
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

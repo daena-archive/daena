@@ -107,6 +107,44 @@ pub struct ModuleState {
     pub module_id: String,
     pub enabled: bool,
     pub version: i64,
+    #[serde(default)]
+    pub package_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModuleNamespace {
+    pub module_id: String,
+    pub namespace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModuleField {
+    pub module_id: String,
+    pub namespace: String,
+    pub key: String,
+    pub field_type: String,
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MigrationHistoryEntry {
+    pub module_id: String,
+    pub migration_id: String,
+    pub from_version: i64,
+    pub to_version: i64,
+    pub checksum: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginBackup {
+    pub id: String,
+    pub module_id: String,
+    pub from_package_version: Option<String>,
+    pub to_package_version: Option<String>,
+    pub data_version: i64,
+    pub path: String,
+    pub content_hash: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +160,12 @@ pub struct ProjectSnapshot {
     pub assets: Vec<Asset>,
     #[serde(default)]
     pub modules: Vec<ModuleState>,
+    #[serde(default)]
+    pub module_namespaces: Vec<ModuleNamespace>,
+    #[serde(default)]
+    pub module_fields: Vec<ModuleField>,
+    #[serde(default)]
+    pub migration_history: Vec<MigrationHistoryEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -368,6 +412,7 @@ impl ProjectStore {
         )?;
         self.connection.execute_batch("CREATE TABLE IF NOT EXISTS module_versions(module_id TEXT PRIMARY KEY, version INTEGER NOT NULL DEFAULT 0);
               CREATE TABLE IF NOT EXISTS module_state(module_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1);
+              CREATE TABLE IF NOT EXISTS module_package_versions(module_id TEXT PRIMARY KEY, package_version TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS module_namespaces(module_id TEXT NOT NULL, namespace TEXT NOT NULL, PRIMARY KEY(module_id, namespace));
               CREATE TABLE IF NOT EXISTS module_fields(module_id TEXT NOT NULL, namespace TEXT NOT NULL, key TEXT NOT NULL, field_type TEXT NOT NULL, required INTEGER NOT NULL, PRIMARY KEY(module_id, namespace, key));
               CREATE TABLE IF NOT EXISTS entity_fields(entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(entity_id, namespace, key));
@@ -375,7 +420,7 @@ impl ProjectStore {
         self.connection.execute_batch("CREATE VIRTUAL TABLE IF NOT EXISTS world_search USING fts5(entity_id UNINDEXED, content);
              CREATE TRIGGER IF NOT EXISTS entities_search_insert AFTER INSERT ON entities BEGIN INSERT INTO world_search(entity_id, content) VALUES (new.id, new.name || ' ' || COALESCE(new.entity_type, '')); END;
              CREATE TRIGGER IF NOT EXISTS documents_search_insert AFTER INSERT ON documents BEGIN INSERT INTO world_search(entity_id, content) VALUES (new.entity_id, new.body); END;")?;
-        self.connection.execute_batch("CREATE TABLE IF NOT EXISTS migration_history(module_id TEXT NOT NULL, migration_id TEXT NOT NULL, from_version INTEGER NOT NULL, to_version INTEGER NOT NULL, checksum TEXT NOT NULL, PRIMARY KEY(module_id, migration_id));")?;
+        self.connection.execute_batch("CREATE TABLE IF NOT EXISTS migration_history(module_id TEXT NOT NULL, migration_id TEXT NOT NULL, from_version INTEGER NOT NULL, to_version INTEGER NOT NULL, checksum TEXT NOT NULL, PRIMARY KEY(module_id, migration_id)); CREATE TABLE IF NOT EXISTS plugin_backups(id TEXT PRIMARY KEY, module_id TEXT NOT NULL, from_package_version TEXT, to_package_version TEXT, data_version INTEGER NOT NULL, path TEXT NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL);")?;
         Ok(())
     }
 
@@ -655,13 +700,52 @@ impl ProjectStore {
         }
         relationships.sort_by(|a, b| a.id.cmp(&b.id));
         relationships.dedup_by(|a, b| a.id == b.id);
-        let mut module_statement = self.connection.prepare("SELECT m.module_id, COALESCE(s.enabled, 1), m.version FROM module_versions m LEFT JOIN module_state s ON s.module_id = m.module_id ORDER BY m.module_id")?;
+        let mut module_statement = self.connection.prepare("SELECT m.module_id, COALESCE(s.enabled, 1), m.version, p.package_version FROM module_versions m LEFT JOIN module_state s ON s.module_id = m.module_id LEFT JOIN module_package_versions p ON p.module_id = m.module_id ORDER BY m.module_id")?;
         let modules = module_statement
             .query_map([], |row| {
                 Ok(ModuleState {
                     module_id: row.get(0)?,
                     enabled: row.get::<_, i64>(1)? != 0,
                     version: row.get(2)?,
+                    package_version: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let module_namespaces = self
+            .connection
+            .prepare(
+                "SELECT module_id,namespace FROM module_namespaces ORDER BY module_id,namespace",
+            )?
+            .query_map([], |row| {
+                Ok(ModuleNamespace {
+                    module_id: row.get(0)?,
+                    namespace: row.get(1)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let module_fields = self
+            .connection
+            .prepare("SELECT module_id,namespace,key,field_type,required FROM module_fields ORDER BY module_id,namespace,key")?
+            .query_map([], |row| {
+                Ok(ModuleField {
+                    module_id: row.get(0)?,
+                    namespace: row.get(1)?,
+                    key: row.get(2)?,
+                    field_type: row.get(3)?,
+                    required: row.get::<_, i64>(4)? != 0,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let migration_history = self
+            .connection
+            .prepare("SELECT module_id,migration_id,from_version,to_version,checksum FROM migration_history ORDER BY module_id,migration_id")?
+            .query_map([], |row| {
+                Ok(MigrationHistoryEntry {
+                    module_id: row.get(0)?,
+                    migration_id: row.get(1)?,
+                    from_version: row.get(2)?,
+                    to_version: row.get(3)?,
+                    checksum: row.get(4)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -673,6 +757,9 @@ impl ProjectStore {
             relationships,
             assets,
             modules,
+            module_namespaces,
+            module_fields,
+            migration_history,
         })
         .map_err(|error| CoreError::NotFound(error.to_string()))
     }
@@ -695,7 +782,11 @@ impl ProjectStore {
                  DELETE FROM relationships;
                  DELETE FROM entities;
                  DELETE FROM module_state;
-                 DELETE FROM module_versions;",
+                 DELETE FROM module_versions;
+                 DELETE FROM module_package_versions;
+                 DELETE FROM module_fields;
+                 DELETE FROM module_namespaces;
+                 DELETE FROM migration_history;",
             )?;
         }
         for entity in &snapshot.entities {
@@ -717,6 +808,27 @@ impl ProjectStore {
         for module in &snapshot.modules {
             transaction.execute("INSERT INTO module_versions(module_id,version) VALUES (?1,?2) ON CONFLICT(module_id) DO UPDATE SET version=excluded.version", params![module.module_id, module.version])?;
             transaction.execute("INSERT INTO module_state(module_id,enabled) VALUES (?1,?2) ON CONFLICT(module_id) DO UPDATE SET enabled=excluded.enabled", params![module.module_id, module.enabled as i64])?;
+            if let Some(package_version) = &module.package_version {
+                transaction.execute("INSERT INTO module_package_versions(module_id,package_version) VALUES (?1,?2) ON CONFLICT(module_id) DO UPDATE SET package_version=excluded.package_version", params![module.module_id, package_version])?;
+            }
+        }
+        for namespace in &snapshot.module_namespaces {
+            transaction.execute(
+                "INSERT INTO module_namespaces(module_id,namespace) VALUES (?1,?2)",
+                params![namespace.module_id, namespace.namespace],
+            )?;
+        }
+        for field in &snapshot.module_fields {
+            transaction.execute(
+                "INSERT INTO module_fields(module_id,namespace,key,field_type,required) VALUES (?1,?2,?3,?4,?5)",
+                params![field.module_id, field.namespace, field.key, field.field_type, field.required as i64],
+            )?;
+        }
+        for migration in &snapshot.migration_history {
+            transaction.execute(
+                "INSERT INTO migration_history(module_id,migration_id,from_version,to_version,checksum) VALUES (?1,?2,?3,?4,?5)",
+                params![migration.module_id, migration.migration_id, migration.from_version, migration.to_version, migration.checksum],
+            )?;
         }
         transaction.commit()?;
         self.rebuild_search()?;
@@ -852,6 +964,101 @@ impl ProjectStore {
         Ok(path.to_string_lossy().to_string())
     }
 
+    pub fn create_plugin_backup(
+        &self,
+        module_id: &str,
+        from_package_version: Option<&str>,
+        to_package_version: Option<&str>,
+        data_version: i64,
+    ) -> Result<PluginBackup, CoreError> {
+        if module_id.trim().is_empty() {
+            return Err(CoreError::Validation(
+                "plugin backup requires a module ID".into(),
+            ));
+        }
+        let root = self.project_root()?.to_path_buf();
+        let directory = root.join("backups").join("plugins");
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| CoreError::NotFound(error.to_string()))?;
+        let created_at = chrono_like_now();
+        let backup_id = Uuid::new_v4().to_string();
+        let safe_module = module_id
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                    character
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        let path = directory.join(format!(
+            "plugin-{safe_module}-{created_at}-{backup_id}.json"
+        ));
+        let payload = self.export_json()?;
+        let content_hash = digest_bytes(payload.as_bytes());
+        std::fs::write(&path, payload).map_err(|error| CoreError::NotFound(error.to_string()))?;
+        let backup = PluginBackup {
+            id: backup_id,
+            module_id: module_id.into(),
+            from_package_version: from_package_version.map(str::to_owned),
+            to_package_version: to_package_version.map(str::to_owned),
+            data_version,
+            path: path.to_string_lossy().into_owned(),
+            content_hash,
+            created_at,
+        };
+        let result = self.connection.execute(
+            "INSERT INTO plugin_backups(id,module_id,from_package_version,to_package_version,data_version,path,content_hash,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![backup.id, backup.module_id, backup.from_package_version, backup.to_package_version, backup.data_version, backup.path, backup.content_hash, backup.created_at],
+        );
+        if let Err(error) = result {
+            let _ = std::fs::remove_file(&path);
+            return Err(error.into());
+        }
+        Ok(backup)
+    }
+
+    pub fn latest_plugin_backup(
+        &self,
+        module_id: &str,
+        from_package_version: Option<&str>,
+        to_package_version: Option<&str>,
+    ) -> Result<Option<PluginBackup>, CoreError> {
+        self.connection
+            .query_row(
+                "SELECT id,module_id,from_package_version,to_package_version,data_version,path,content_hash,created_at FROM plugin_backups WHERE module_id=?1 AND from_package_version IS ?2 AND to_package_version IS ?3 ORDER BY created_at DESC LIMIT 1",
+                params![module_id, from_package_version, to_package_version],
+                |row| {
+                    Ok(PluginBackup {
+                        id: row.get(0)?,
+                        module_id: row.get(1)?,
+                        from_package_version: row.get(2)?,
+                        to_package_version: row.get(3)?,
+                        data_version: row.get(4)?,
+                        path: row.get(5)?,
+                        content_hash: row.get(6)?,
+                        created_at: row.get(7)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(CoreError::from)
+    }
+
+    pub fn restore_plugin_backup(&self, backup: &PluginBackup) -> Result<(), CoreError> {
+        let payload = std::fs::read(&backup.path)
+            .map_err(|error| CoreError::NotFound(format!("read plugin backup: {error}")))?;
+        if digest_bytes(&payload) != backup.content_hash {
+            return Err(CoreError::Validation(
+                "plugin backup integrity check failed".into(),
+            ));
+        }
+        self.restore_payload(std::str::from_utf8(&payload).map_err(|error| {
+            CoreError::Validation(format!("plugin backup is not UTF-8: {error}"))
+        })?)
+    }
+
     pub fn restore(&self, path: String) -> Result<(), CoreError> {
         let content =
             std::fs::read_to_string(&path).map_err(|e| CoreError::NotFound(e.to_string()))?;
@@ -862,6 +1069,57 @@ impl ProjectStore {
     pub fn restore_payload(&self, payload: &str) -> Result<(), CoreError> {
         self.import_json_with_mode(payload, true)?;
         Ok(())
+    }
+
+    /// Remove only data owned by a plugin. Code uninstall and disablement do
+    /// not call this method; callers must present the explicit confirmation
+    /// phrase and a backup is created before the destructive transaction.
+    pub fn delete_plugin_data(
+        &self,
+        plugin_id: &str,
+        confirmation: &str,
+    ) -> Result<String, CoreError> {
+        if plugin_id.trim().is_empty() || confirmation != format!("DELETE:{plugin_id}") {
+            return Err(CoreError::Unauthorized {
+                operation: "confirm plugin data deletion",
+            });
+        }
+        let backup = self.backup()?;
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
+            "DELETE FROM entity_fields WHERE namespace IN (SELECT namespace FROM module_namespaces WHERE module_id=?1)",
+            params![plugin_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM assets WHERE namespace IN (SELECT namespace FROM module_namespaces WHERE module_id=?1)",
+            params![plugin_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM module_fields WHERE module_id=?1",
+            params![plugin_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM module_namespaces WHERE module_id=?1",
+            params![plugin_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM module_versions WHERE module_id=?1",
+            params![plugin_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM module_state WHERE module_id=?1",
+            params![plugin_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM module_package_versions WHERE module_id=?1",
+            params![plugin_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM migration_history WHERE module_id=?1",
+            params![plugin_id],
+        )?;
+        transaction.commit()?;
+        Ok(backup)
     }
 
     pub fn rebuild_search(&self) -> Result<(), CoreError> {
@@ -1064,6 +1322,19 @@ impl ProjectStore {
             .map_err(CoreError::Database)
     }
 
+    pub fn module_states(&self) -> Result<Vec<ModuleState>, CoreError> {
+        let mut statement = self.connection.prepare("SELECT m.module_id, COALESCE(s.enabled, 1), m.version, p.package_version FROM module_versions m LEFT JOIN module_state s ON s.module_id = m.module_id LEFT JOIN module_package_versions p ON p.module_id = m.module_id ORDER BY m.module_id")?;
+        let rows = statement.query_map([], |row| {
+            Ok(ModuleState {
+                module_id: row.get(0)?,
+                enabled: row.get::<_, i64>(1)? != 0,
+                version: row.get(2)?,
+                package_version: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     pub fn validate_migration(
         &self,
         migration: &crate::migrations::Migration,
@@ -1097,13 +1368,73 @@ impl ProjectStore {
             != 0)
     }
 
+    pub fn set_module_package_version(
+        &self,
+        module_id: &str,
+        package_version: Option<&str>,
+    ) -> Result<(), CoreError> {
+        match package_version {
+            Some(version) => {
+                self.connection.execute(
+                    "INSERT OR IGNORE INTO module_versions(module_id,version) VALUES (?1,0)",
+                    params![module_id],
+                )?;
+                self.connection.execute(
+                    "INSERT INTO module_package_versions(module_id,package_version) VALUES (?1,?2) ON CONFLICT(module_id) DO UPDATE SET package_version=excluded.package_version",
+                    params![module_id, version],
+                )?;
+            }
+            None => {
+                self.connection.execute(
+                    "DELETE FROM module_package_versions WHERE module_id=?1",
+                    params![module_id],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn module_package_version(&self, module_id: &str) -> Result<Option<String>, CoreError> {
+        self.connection
+            .query_row(
+                "SELECT package_version FROM module_package_versions WHERE module_id=?1",
+                params![module_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(CoreError::from)
+    }
+
     pub fn apply_migration(
         &mut self,
         migration: &crate::migrations::Migration,
     ) -> Result<(), CoreError> {
-        self.backup()
+        self.apply_migrations(std::slice::from_ref(migration))
+            .map(|_| ())
+    }
+
+    /// Apply a plugin migration chain after one backup. If a later migration
+    /// fails, restore the backup so the project remains usable at its prior
+    /// data version.
+    pub fn apply_migrations(
+        &mut self,
+        migrations: &[crate::migrations::Migration],
+    ) -> Result<String, CoreError> {
+        let backup = self
+            .backup()
             .map_err(|error| CoreError::Validation(error.to_string()))?;
-        crate::migrations::apply(&mut self.connection, migration)
+        for migration in migrations {
+            if let Err(error) = crate::migrations::apply(&mut self.connection, migration) {
+                let restore_result = self.restore(backup.clone());
+                return match restore_result {
+                    Ok(()) => Err(error),
+                    Err(restore_error) => Err(CoreError::Validation(format!(
+                        "migration failed and backup restore failed: {error}; {restore_error}"
+                    ))),
+                };
+            }
+        }
+        Ok(backup)
     }
 }
 
@@ -1113,6 +1444,13 @@ fn chrono_like_now() -> String {
         .unwrap_or_default()
         .as_secs()
         .to_string()
+}
+
+fn digest_bytes(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 #[cfg(test)]
@@ -1349,12 +1687,22 @@ mod tests {
         source
             .set_module_enabled("worldbuilder.lore".into(), false)
             .unwrap();
+        source
+            .set_module_package_version("worldbuilder.lore", Some("1.2.0"))
+            .unwrap();
         let target = ProjectStore::in_memory().unwrap();
         target
             .import_json_with_mode(&source.export_json().unwrap(), false)
             .unwrap();
         assert_eq!(target.list_assets(entity.id).unwrap()[0].id, asset.id);
         assert!(!target.is_module_enabled("worldbuilder.lore").unwrap());
+        assert_eq!(
+            target
+                .module_package_version("worldbuilder.lore")
+                .unwrap()
+                .as_deref(),
+            Some("1.2.0")
+        );
     }
 
     #[test]
@@ -1418,6 +1766,102 @@ mod tests {
             store.get_module_version("worldbuilder.timeline").unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn plugin_backup_restores_schema_and_migration_history() {
+        let directory =
+            std::env::temp_dir().join(format!("worldbuilder-plugin-backup-{}", Uuid::new_v4()));
+        let mut store = ProjectStore::open_directory(&directory).unwrap();
+        let backup = store
+            .create_plugin_backup("worldbuilder.timeline", Some("0.1.0"), Some("0.2.0"), 0)
+            .unwrap();
+        assert_eq!(
+            store
+                .latest_plugin_backup("worldbuilder.timeline", Some("0.1.0"), Some("0.2.0"),)
+                .unwrap()
+                .unwrap()
+                .id,
+            backup.id
+        );
+        let migration = crate::migrations::Migration {
+            id: "timeline-v1".into(),
+            module_id: "worldbuilder.timeline".into(),
+            from: 0,
+            to: 1,
+            operations: vec![crate::migrations::Operation::CreateNamespace {
+                namespace: "timeline".into(),
+            }],
+            recovery: "backup".into(),
+        };
+        store.apply_migration(&migration).unwrap();
+        store.restore_plugin_backup(&backup).unwrap();
+        assert_eq!(
+            store.get_module_version("worldbuilder.timeline").unwrap(),
+            0
+        );
+        store.apply_migration(&migration).unwrap();
+        assert_eq!(
+            store.get_module_version("worldbuilder.timeline").unwrap(),
+            1
+        );
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn plugin_data_deletion_requires_confirmation_and_keeps_backup() {
+        let mut store = ProjectStore::in_memory().unwrap();
+        let migration = crate::migrations::Migration {
+            id: "lore-v1".into(),
+            module_id: "worldbuilder.lore".into(),
+            from: 0,
+            to: 1,
+            operations: vec![crate::migrations::Operation::CreateNamespace {
+                namespace: "lore".into(),
+            }],
+            recovery: "backup".into(),
+        };
+        store.apply_migration(&migration).unwrap();
+        assert!(store.delete_plugin_data("worldbuilder.lore", "no").is_err());
+        let backup = store
+            .delete_plugin_data("worldbuilder.lore", "DELETE:worldbuilder.lore")
+            .unwrap();
+        assert!(std::path::Path::new(&backup).is_file());
+        assert_eq!(store.get_module_version("worldbuilder.lore").unwrap(), 0);
+        std::fs::remove_file(backup).unwrap();
+    }
+
+    #[test]
+    fn migration_chain_failure_restores_the_pre_chain_state() {
+        let mut store = ProjectStore::in_memory().unwrap();
+        let first = crate::migrations::Migration {
+            id: "lore-v1".into(),
+            module_id: "worldbuilder.lore".into(),
+            from: 0,
+            to: 1,
+            operations: vec![crate::migrations::Operation::CreateNamespace {
+                namespace: "lore".into(),
+            }],
+            recovery: "backup".into(),
+        };
+        let second = crate::migrations::Migration {
+            id: "lore-v2".into(),
+            module_id: "worldbuilder.lore".into(),
+            from: 1,
+            to: 2,
+            operations: vec![crate::migrations::Operation::AddField {
+                namespace: "missing".into(),
+                field: crate::migrations::FieldDefinition {
+                    key: "summary".into(),
+                    field_type: "text".into(),
+                    required: false,
+                },
+            }],
+            recovery: "backup".into(),
+        };
+        assert!(store.apply_migrations(&[first, second]).is_err());
+        assert_eq!(store.get_module_version("worldbuilder.lore").unwrap(), 0);
     }
 
     #[test]

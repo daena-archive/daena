@@ -13,6 +13,7 @@ use worldbuilder_plugin_api::{PluginKind, PluginManifest, RpcRequest};
 
 pub const HOST_ORIGIN: &str = "https://worldbuilder.local";
 pub const MAX_RPC_BYTES: usize = 256 * 1024;
+pub const PLUGIN_PROTOCOL: &str = "plugin";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WasmLimits {
@@ -44,7 +45,8 @@ pub struct PluginWebviewPolicy {
 }
 
 pub fn plugin_protocol(plugin_id: &str) -> String {
-    format!("plugin-{}", plugin_id.replace('.', "-"))
+    let _ = plugin_id;
+    PLUGIN_PROTOCOL.into()
 }
 
 pub fn plugin_window_label(plugin_id: &str) -> String {
@@ -67,7 +69,7 @@ pub fn webview_policy(manifest: &PluginManifest) -> Option<PluginWebviewPolicy> 
     }
     let entrypoint = manifest.entrypoints.ui.clone()?;
     let protocol = plugin_protocol(&manifest.id);
-    let origin = format!("{protocol}://localhost");
+    let origin = format!("{protocol}://{}", manifest.id);
     Some(PluginWebviewPolicy {
         label: plugin_window_label(&manifest.id),
         protocol,
@@ -271,13 +273,10 @@ mod tests {
     #[test]
     fn policy_uses_an_app_controlled_origin_and_denies_ambient_network() {
         let policy = webview_policy(&manifest(PluginKind::Sandboxed)).unwrap();
-        assert_eq!(policy.protocol, "plugin-com-example-plugin");
+        assert_eq!(policy.protocol, "plugin");
         assert_eq!(policy.label, "plugin:com-example-plugin");
-        assert_eq!(policy.origin, "plugin-com-example-plugin://localhost");
-        assert_eq!(
-            policy.url,
-            "plugin-com-example-plugin://localhost/dist/index.html"
-        );
+        assert_eq!(policy.origin, "plugin://com.example.plugin");
+        assert_eq!(policy.url, "plugin://com.example.plugin/dist/index.html");
         assert!(policy.csp.contains("connect-src 'self'"));
         assert!(!policy.csp.contains("http://") && !policy.csp.contains("https://"));
         assert!(webview_policy(&manifest(PluginKind::Declarative)).is_none());

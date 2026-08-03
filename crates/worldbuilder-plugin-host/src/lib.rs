@@ -18,6 +18,9 @@ use worldbuilder_plugin_api::{
     RpcResponse, RPC_VERSION,
 };
 
+pub mod runtime;
+pub use runtime::{validate_bridge_request, webview_policy, PluginWebviewPolicy, WasmLimits};
+
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1236,7 +1239,7 @@ impl PluginHost {
     }
     pub fn rpc(&self, origin: &str, request: &RpcRequest) -> RpcResponse {
         let result = self
-            .authorize(origin, request)
+            .authorize_rpc(origin, request)
             .map(|_| serde_json::json!({"authorized": true}));
         match result {
             Ok(result) => RpcResponse {
@@ -1254,6 +1257,14 @@ impl PluginHost {
                 error: Some(error),
             },
         }
+    }
+    pub fn authorize_rpc(&self, origin: &str, request: &RpcRequest) -> Result<String, RpcError> {
+        runtime::validate_bridge_request(request)
+            .map_err(|message| rpc_error("payload.invalid", message, false))?;
+        self.authorize(origin, request)?;
+        self.sessions
+            .valid(&request.session_id, origin)
+            .map(|session| session.plugin_id.clone())
     }
     fn authorize(&self, origin: &str, request: &RpcRequest) -> Result<(), RpcError> {
         if request.rpc_version != RPC_VERSION {

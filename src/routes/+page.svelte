@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { project, type Asset, type Entity, type Relationship, type ProjectModuleManifest, type ProjectInfo, type GitStatus, type GitLogEntry } from "$lib/project/client";
-  import type { EntityTemplate, ModuleContext, ModuleId, UUID } from "../../packages/module-api/src/index";
-  import { bundledModules, ModuleRegistry } from "$lib/modules/registry";
+  import type { EntityTemplate, ModuleContext, ModuleId, UUID, ModuleManifest } from "../../packages/module-api/src/index";
   import { buildModuleContext } from "$lib/modules/context";
-  import { viewRegistry } from "$lib/modules/view-registry";
+  import PluginFrame from "$lib/modules/PluginFrame.svelte";
+  import loreManifestJson from "../../packages/modules/lore/manifest.json";
+  import timelineManifestJson from "../../packages/modules/timeline/manifest.json";
   import RichTextEditor from "$lib/editor/RichTextEditor.svelte";
   import { formatCalendarDate, isCompleteCalendarDate, parseCalendarDate, serializeCalendarDate, type CalendarDate } from "$lib/date";
 
@@ -33,7 +34,6 @@
   let isSaving = $state(false);
   let savedAt = $state("");
   let showModules = $state(false);
-  let moduleHost = $state<HTMLElement | null>(null);
   let projectionRevision = $state(0);
   let projectInfo = $state<ProjectInfo | null>(null);
   let gitStatus = $state<GitStatus | null>(null);
@@ -51,21 +51,15 @@
   let showProjection = $state(false);
   let dateEditorOpen = $state<Record<string, boolean>>({});
 
-  const moduleRegistry = new ModuleRegistry();
-  for (const module of bundledModules) moduleRegistry.register(module);
-
   const activeModuleId = () => section === "lore" ? "worldbuilder.lore" : "worldbuilder.timeline";
-  const activeModule = () => bundledModules.find((module) => module.manifest.id === activeModuleId());
-  const activeManifest = () => activeModule()?.manifest;
+  const activeManifest = () => (section === "lore" ? loreManifestJson : timelineManifestJson) as unknown as ModuleManifest;
   const templates = () => activeManifest()?.templates ?? [];
   const definitions = () => activeManifest()?.schemas.flatMap((schema) => schema.fields) ?? [];
 
   function contextFor(currentSection = section): ModuleContext {
     const id = currentSection === "lore" ? "worldbuilder.lore" : "worldbuilder.timeline";
-    const module = bundledModules.find((candidate) => candidate.manifest.id === id);
-    if (!module) throw new Error(`Unknown module: ${id}`);
     if (!projectInfo?.root) throw new Error("No project is open");
-    return buildModuleContext(module.manifest, projectInfo.root);
+    return buildModuleContext(activeManifest(), projectInfo.root);
   }
 
   function sectionEnabled() { return modules.find((module) => module.id === activeModuleId())?.enabled ?? false; }
@@ -178,10 +172,7 @@
     projectInfo = info ?? await project.info();
     if (!projectInfo) throw new Error("The project did not return an identity");
     modules = await project.listModuleManifests();
-    for (const module of bundledModules) if (modules.find((candidate) => candidate.id === module.manifest.id)?.enabled) {
-      await project.enableModule(module.manifest.id);
-      await moduleRegistry.enable(module.manifest.id, buildModuleContext(module.manifest, projectInfo.root));
-    }
+    for (const id of ["worldbuilder.lore", "worldbuilder.timeline"]) if (modules.find((candidate) => candidate.id === id)?.enabled) await project.enableModule(id);
     rememberProject(projectInfo);
     await loadEntities();
     await refreshGit();
@@ -217,7 +208,6 @@
   async function closeProject() {
     try {
       await project.close();
-      for (const module of bundledModules) if (moduleRegistry.isEnabled(module.manifest.id)) moduleRegistry.disable(module.manifest.id);
       clearSelection();
       projectInfo = null;
       gitStatus = null;
@@ -333,8 +323,8 @@
   async function toggleModule(id: ModuleId) {
     const installed = modules.find((module) => module.id === id);
     try {
-      if (installed?.enabled) { await project.disableModule(id); moduleRegistry.disable(id); }
-      else { await project.enableModule(id); const module = bundledModules.find((candidate) => candidate.manifest.id === id); if (module && projectInfo) await moduleRegistry.enable(id, buildModuleContext(module.manifest, projectInfo.root)); }
+      if (installed?.enabled) await project.disableModule(id);
+      else await project.enableModule(id);
       modules = await project.listModuleManifests();
       if (!sectionEnabled()) selected = null;
     } catch (cause) { error = friendlyError(cause); }
@@ -361,13 +351,6 @@
   }
   function linkedEntity(relationship: Relationship) { return entities.find((entity) => entity.id === (relationship.source_id === selected?.id ? relationship.target_id : relationship.source_id)); }
   function focusRelated(relationship: Relationship) { const target = linkedEntity(relationship); if (target) void selectEntity(target); }
-  $effect(() => {
-    const view = activeModule()?.views[0];
-    if (!ready || !moduleHost || !view || !sectionEnabled()) return;
-    const key = `${activeModuleId()}:${view.id}`;
-    viewRegistry.mountView(activeModuleId() as ModuleId, view, moduleHost, contextFor());
-    return () => viewRegistry.unmountView(key);
-  });
   $effect(() => {
     const term = globalQuery.trim();
     if (!ready || !term) {
@@ -434,7 +417,7 @@
       <section class="disabled-state"><div class="disabled-icon">◌</div><span class="overline">Module unavailable</span><h1>{section === "lore" ? "Lore library" : "Timeline"} is resting.</h1><p>Your project data is safe. Re-enable this module to continue working in this workspace.</p><button class="primary-button" onclick={() => toggleModule(activeModuleId() as ModuleId)}>Enable {section === "lore" ? "Lore" : "Timeline"}</button></section>
     {:else}
       <div class="workspace-heading"><div><span class="overline">{section === "lore" ? "WORLD BIBLE" : "CHRONOLOGY"}</span><h1>{section === "lore" ? "Lore library" : "Timeline"}</h1><p>{section === "lore" ? "A living reference for every person, place, and power." : "Events, eras, and the threads that connect them."}</p></div><div class="heading-actions"><button class="quiet-button" onclick={() => showProjection = !showProjection}>{showProjection ? "Hide" : "Show"} {section === "lore" ? "graph" : "timeline"}</button></div></div>
-      {#if showProjection}{#key projectionRevision}<div class="projection-bar" bind:this={moduleHost}></div>{/key}{/if}
+      {#if showProjection}{#key projectionRevision}<div class="projection-bar"><PluginFrame pluginId={activeModuleId()} entities={visibleEntities()} relationships={relationships} /></div>{/key}{/if}
       <section class="workspace-grid">
         <aside class="collection-panel panel-surface">
           <div class="panel-heading">

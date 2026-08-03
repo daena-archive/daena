@@ -73,16 +73,47 @@ fn plugin_bootstrap(
 }
 
 #[tauri::command]
-fn plugin_rpc(
+async fn plugin_rpc(
     window: tauri::WebviewWindow,
+    core: tauri::State<'_, SharedCore>,
     state: tauri::State<'_, SharedPluginHost>,
     request: RpcRequest,
 ) -> Result<RpcResponse, String> {
     let origin = plugin_webview_identity(&window, None)?;
-    let host = state
-        .lock()
-        .map_err(|_| "plugin host lock poisoned".to_string())?;
-    Ok(host.rpc(&origin, &request))
+    let plugin_id = {
+        let host = state
+            .lock()
+            .map_err(|_| "plugin host lock poisoned".to_string())?;
+        host.authorize_rpc(&origin, &request).map_err(|error| {
+            serde_json::to_string(&error).unwrap_or_else(|_| error.message.clone())
+        })?
+    };
+    let request_id = request.request_id.clone();
+    let result = with_core(core, move |core| {
+        dispatch_module_rpc(core, &request.method, request.payload)
+    })
+    .await;
+    match result {
+        Ok(result) => Ok(RpcResponse {
+            rpc_version: worldbuilder_plugin_api::RPC_VERSION,
+            request_id,
+            ok: true,
+            result: Some(result),
+            error: None,
+        }),
+        Err(error) => Ok(RpcResponse {
+            rpc_version: worldbuilder_plugin_api::RPC_VERSION,
+            request_id,
+            ok: false,
+            result: None,
+            error: Some(worldbuilder_plugin_api::RpcError {
+                code: "core.error".into(),
+                message: format!("plugin {plugin_id}: {error}"),
+                retryable: false,
+                details: None,
+            }),
+        }),
+    }
 }
 
 fn plugin_webview_identity(

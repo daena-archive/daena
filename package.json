@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:plugin-contract": "node scripts/validate-plugin-contract.mjs",
+    "check:plugin-isolation": "node scripts/check-plugin-isolation.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri"
   },

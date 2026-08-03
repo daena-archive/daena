@@ -49,11 +49,21 @@ struct PluginBootstrap {
 #[tauri::command]
 fn plugin_bootstrap(
     window: tauri::WebviewWindow,
+    core: tauri::State<'_, SharedCore>,
     state: tauri::State<'_, SharedPluginHost>,
     plugin_id: String,
     project_id: String,
 ) -> Result<PluginBootstrap, String> {
     let origin = plugin_webview_identity(&window, Some(&plugin_id))?;
+    let current_project = core
+        .lock()
+        .map_err(|_| "core lock poisoned".to_string())?
+        .info()
+        .map(|info| info.root)
+        .ok_or_else(|| "project is not open".to_string())?;
+    if current_project != project_id {
+        return Err("plugin bootstrap project mismatch".into());
+    }
     let mut host = state
         .lock()
         .map_err(|_| "plugin host lock poisoned".to_string())?;
@@ -80,7 +90,7 @@ async fn plugin_rpc(
     request: RpcRequest,
 ) -> Result<RpcResponse, String> {
     let origin = plugin_webview_identity(&window, None)?;
-    let plugin_id = {
+    let session = {
         let host = state
             .lock()
             .map_err(|_| "plugin host lock poisoned".to_string())?;
@@ -89,10 +99,43 @@ async fn plugin_rpc(
         })?
     };
     let request_id = request.request_id.clone();
-    let result = with_core(core, move |core| {
-        dispatch_module_rpc(core, &request.method, request.payload)
-    })
-    .await;
+    let plugin_id = session.plugin_id.clone();
+    let method = request.method;
+    let payload = request.payload;
+    let current_project = core
+        .lock()
+        .map_err(|_| "core lock poisoned".to_string())?
+        .info()
+        .map(|info| info.root);
+    let result = if current_project.as_deref() != Some(session.project_id.as_str()) {
+        Err("plugin session is not bound to the open project".to_string())
+    } else if matches!(
+        method.as_str(),
+        "event.subscribe" | "event.poll" | "event.publish" | "service.call"
+    ) {
+        dispatch_host_rpc(
+            &state,
+            &session.plugin_id,
+            &session.project_id,
+            &method,
+            payload,
+        )
+    } else {
+        let project_id = session.project_id;
+        with_core(core, move |core| {
+            let current_project = core
+                .info()
+                .map(|info| info.root)
+                .ok_or(CoreError::ProjectNotOpen)?;
+            if current_project != project_id {
+                return Err(CoreError::Unauthorized {
+                    operation: "access another project",
+                });
+            }
+            dispatch_module_rpc(core, &method, payload)
+        })
+        .await
+    };
     match result {
         Ok(result) => Ok(RpcResponse {
             rpc_version: worldbuilder_plugin_api::RPC_VERSION,
@@ -113,6 +156,85 @@ async fn plugin_rpc(
                 details: None,
             }),
         }),
+    }
+}
+
+fn dispatch_host_rpc(
+    plugins: &SharedPluginHost,
+    plugin_id: &str,
+    project_id: &str,
+    method: &str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let mut host = plugins
+        .lock()
+        .map_err(|_| "plugin host lock poisoned".to_string())?;
+    if method == "service.call" {
+        let name = payload
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "service RPC payload requires name".to_string())?;
+        let major = payload
+            .get("major")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|major| u32::try_from(major).ok())
+            .ok_or_else(|| "service RPC payload requires a valid major".to_string())?;
+        let deadline_ms = payload
+            .get("deadlineMs")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(5_000)
+            .clamp(1, 30_000);
+        return host
+            .call_service(
+                plugin_id,
+                project_id,
+                name,
+                major,
+                payload
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+                std::time::Duration::from_millis(deadline_ms),
+            )
+            .map_err(|error| error.to_string());
+    }
+
+    let event_type = payload
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "event RPC payload requires type".to_string())?;
+    let (name, version) = event_type
+        .rsplit_once('@')
+        .ok_or_else(|| "event type must include @version".to_string())?;
+    let version = version
+        .parse::<u32>()
+        .map_err(|_| "event version is invalid".to_string())?;
+    match method {
+        "event.subscribe" => {
+            host.subscribe_event(plugin_id, project_id, name, version)
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::Value::Null)
+        }
+        "event.poll" => serde_json::to_value(
+            host.poll_events(plugin_id, project_id, name, version)
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string()),
+        "event.publish" => serde_json::to_value(
+            host.publish_event(
+                plugin_id,
+                project_id,
+                name,
+                version,
+                payload
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string()),
+        _ => Err(format!("unknown plugin host RPC method: {method}")),
     }
 }
 
@@ -277,7 +399,6 @@ async fn module_enable(
                 )));
             }
         }
-        project.set_module_enabled(id, true)?;
         let project_id = project
             .info()
             .map(|info| info.root)
@@ -287,6 +408,7 @@ async fn module_enable(
             .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
             .activate_bundled(&project_id, &manifest.id)
             .map_err(|error| CoreError::Validation(error.to_string()))?;
+        project.set_module_enabled(id, true)?;
         Ok(())
     })
     .await
@@ -466,80 +588,9 @@ async fn module_rpc(
         .map_err(|error| error.to_string())?;
     if matches!(
         method.as_str(),
-        "event.subscribe" | "event.poll" | "event.publish"
+        "event.subscribe" | "event.poll" | "event.publish" | "service.call"
     ) {
-        let event_type = payload
-            .get("type")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "event RPC payload requires type".to_string())?;
-        let (name, version) = event_type
-            .rsplit_once('@')
-            .ok_or_else(|| "event type must include @version".to_string())?;
-        let version = version
-            .parse::<u32>()
-            .map_err(|_| "event version is invalid".to_string())?;
-        let mut host = plugins
-            .lock()
-            .map_err(|_| "plugin host lock poisoned".to_string())?;
-        return match method.as_str() {
-            "event.subscribe" => {
-                host.subscribe_event(&plugin_id, &project_id, name, version)
-                    .map_err(|error| error.to_string())?;
-                Ok(serde_json::Value::Null)
-            }
-            "event.poll" => serde_json::to_value(
-                host.poll_events(&plugin_id, &project_id, name, version)
-                    .map_err(|error| error.to_string())?,
-            )
-            .map_err(|error| error.to_string()),
-            "event.publish" => Ok(serde_json::to_value(
-                host.publish_event(
-                    &plugin_id,
-                    &project_id,
-                    name,
-                    version,
-                    payload
-                        .get("payload")
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Null),
-                )
-                .map_err(|error| error.to_string())?,
-            )
-            .map_err(|error| error.to_string())?),
-            _ => unreachable!(),
-        };
-    }
-    if method == "service.call" {
-        let name = payload
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "service RPC payload requires name".to_string())?;
-        let major = payload
-            .get("major")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| "service RPC payload requires major".to_string())?
-            as u32;
-        let deadline_ms = payload
-            .get("deadlineMs")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(5_000)
-            .clamp(1, 30_000);
-        let mut host = plugins
-            .lock()
-            .map_err(|_| "plugin host lock poisoned".to_string())?;
-        return host
-            .call_service(
-                &plugin_id,
-                &project_id,
-                name,
-                major,
-                payload
-                    .get("payload")
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null),
-                std::time::Duration::from_millis(deadline_ms),
-            )
-            .map_err(|error| error.to_string());
+        return dispatch_host_rpc(plugins.inner(), &plugin_id, &project_id, &method, payload);
     }
     let event_method = method.clone();
     let event_project_id = project_id.clone();

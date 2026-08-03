@@ -12,14 +12,9 @@ pub use project::{
     RelationshipInput, SaveDocument, SaveEntry,
 };
 
+#[derive(Default)]
 pub struct CoreService {
     project: Option<ProjectStore>,
-}
-
-impl Default for CoreService {
-    fn default() -> Self {
-        Self { project: None }
-    }
 }
 
 impl CoreService {

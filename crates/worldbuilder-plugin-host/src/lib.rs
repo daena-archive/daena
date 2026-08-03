@@ -1071,6 +1071,9 @@ impl PluginHost {
         let plan = DependencyResolver::resolve(&self.catalog, plugin_id)?;
         let mut activated: Vec<String> = Vec::new();
         for activation_id in &plan.order {
+            if self.lifecycle.state(project_id, activation_id).state == LifecycleState::Active {
+                continue;
+            }
             if let Err(error) = self.lifecycle.begin_activation(project_id, activation_id) {
                 for previous in activated.into_iter().rev() {
                     self.deactivate_bundled(project_id, &previous);
@@ -1258,13 +1261,11 @@ impl PluginHost {
             },
         }
     }
-    pub fn authorize_rpc(&self, origin: &str, request: &RpcRequest) -> Result<String, RpcError> {
+    pub fn authorize_rpc(&self, origin: &str, request: &RpcRequest) -> Result<Session, RpcError> {
         runtime::validate_bridge_request(request)
             .map_err(|message| rpc_error("payload.invalid", message, false))?;
         self.authorize(origin, request)?;
-        self.sessions
-            .valid(&request.session_id, origin)
-            .map(|session| session.plugin_id.clone())
+        self.sessions.valid(&request.session_id, origin).cloned()
     }
     fn authorize(&self, origin: &str, request: &RpcRequest) -> Result<(), RpcError> {
         if request.rpc_version != RPC_VERSION {
@@ -1280,10 +1281,12 @@ impl PluginHost {
         validate_declared_resource(&manifest, &request.method, &request.payload)?;
         let capabilities =
             required_capabilities(&request.method, &request.payload, session, &self.namespaces)?;
-        if !capabilities
-            .iter()
-            .any(|capability| session.grants.contains(capability))
-        {
+        if !capabilities.iter().any(|capability| {
+            session
+                .grants
+                .iter()
+                .any(|grant| capability_matches(grant, capability))
+        }) {
             return Err(rpc_error(
                 "capability.denied",
                 "operation is not granted",
@@ -1312,10 +1315,10 @@ fn validate_declared_resource(
             } else {
                 &manifest.events.subscribes
             };
-            if !events.iter().any(|event| {
-                event.name == event_type
-                    || format!("{}@{}", event.name, event.version) == event_type
-            }) {
+            if !events
+                .iter()
+                .any(|event| format!("{}@{}", event.name, event.version) == event_type)
+            {
                 return Err(rpc_error(
                     "event.undeclared",
                     "event is not declared by the manifest",
@@ -1690,7 +1693,7 @@ mod tests {
                 "com.example.one",
                 &entry.capabilities,
                 [
-                    "event.publish:worldbuilder.core/event".into(),
+                    "event.publish:worldbuilder.core/event@1".into(),
                     "service.call:com.example.calculate".into(),
                 ]
                 .into_iter()
@@ -1703,7 +1706,7 @@ mod tests {
         for (method, payload) in [
             (
                 "event.publish",
-                serde_json::json!({"type":"worldbuilder.core/event"}),
+                serde_json::json!({"type":"worldbuilder.core/event@1"}),
             ),
             (
                 "service.call",
@@ -1719,6 +1722,25 @@ mod tests {
             };
             assert!(host.rpc("plugin://one", &request).ok);
         }
+        host.grants
+            .set(
+                "project",
+                "com.example.one",
+                &entry.capabilities,
+                entry.capabilities.iter().cloned().collect(),
+            )
+            .unwrap();
+        let session = host
+            .bootstrap("com.example.one", "project", "plugin://one")
+            .unwrap();
+        let request = RpcRequest {
+            rpc_version: 1,
+            session_id: session.id,
+            request_id: "wildcard-event".into(),
+            method: "event.publish".into(),
+            payload: serde_json::json!({"type":"worldbuilder.core/event@1"}),
+        };
+        assert!(host.rpc("plugin://one", &request).ok);
     }
     #[test]
     fn namespace_collisions_are_rejected() {

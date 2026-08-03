@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use wasmtime::{Config, Engine, Instance, Module, Store};
+use wasmtime::{Config, Engine, Instance, Module, Store, StoreLimitsBuilder};
 use worldbuilder_plugin_api::{PluginKind, PluginManifest, RpcRequest};
 
 pub const HOST_ORIGIN: &str = "https://worldbuilder.local";
@@ -110,21 +110,27 @@ impl WasmRuntime {
             if let wasmtime::ExternType::Memory(memory) = export.ty() {
                 let maximum = memory.maximum().unwrap_or(u64::MAX);
                 let max_pages = (self.limits.max_memory_bytes / 65_536) as u64;
-                if memory.minimum() as u64 > max_pages || maximum > max_pages {
+                if memory.minimum() > max_pages || maximum > max_pages {
                     return Err(WasmFailure::MemoryLimit);
                 }
             }
         }
-        let mut store = Store::new(&self.engine, ());
+        let store_limits = StoreLimitsBuilder::new()
+            .memory_size(self.limits.max_memory_bytes)
+            .build();
+        let mut store = Store::new(&self.engine, store_limits);
+        store.limiter(|limits| limits);
         store
             .set_fuel(self.limits.fuel)
             .map_err(|e| WasmFailure::Trap(e.to_string()))?;
         store.set_epoch_deadline(1);
         let engine = self.engine.clone();
         let timeout = self.limits.timeout;
-        let _timer = std::thread::spawn(move || {
-            std::thread::sleep(timeout);
-            engine.increment_epoch();
+        let (cancel_timer, timer_cancelled) = std::sync::mpsc::channel();
+        let timer = std::thread::spawn(move || {
+            if timer_cancelled.recv_timeout(timeout).is_err() {
+                engine.increment_epoch();
+            }
         });
         let instance = Instance::new(&mut store, &module, &[])
             .map_err(|e| WasmFailure::Trap(e.to_string()))?;
@@ -141,6 +147,8 @@ impl WasmRuntime {
                 WasmFailure::Trap(message)
             }
         });
+        let _ = cancel_timer.send(());
+        let _ = timer.join();
         result
     }
 }
@@ -252,5 +260,33 @@ mod tests {
             small_memory.run(&memory_module),
             Err(WasmFailure::MemoryLimit)
         );
+    }
+
+    #[test]
+    fn completed_run_cannot_timeout_a_later_run() {
+        let runtime = WasmRuntime::new(WasmLimits {
+            timeout: Duration::from_millis(25),
+            ..Default::default()
+        })
+        .unwrap();
+        let pure =
+            wat::parse_str("(module (func (export \"run\") (result i32) i32.const 7))").unwrap();
+        assert_eq!(runtime.run(&pure).unwrap(), 7);
+        std::thread::sleep(Duration::from_millis(35));
+        assert_eq!(runtime.run(&pure).unwrap(), 7);
+    }
+
+    #[test]
+    fn runtime_limits_unexported_memory() {
+        let runtime = WasmRuntime::new(WasmLimits {
+            max_memory_bytes: 65_536,
+            ..Default::default()
+        })
+        .unwrap();
+        let module = wat::parse_str(
+            "(module (memory 1) (func (export \"run\") (result i32) i32.const 2 memory.grow))",
+        )
+        .unwrap();
+        assert_eq!(runtime.run(&module).unwrap(), -1);
     }
 }

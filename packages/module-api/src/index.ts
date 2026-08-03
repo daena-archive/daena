@@ -1,0 +1,172 @@
+export type UUID = string & { readonly __brand: "UUID" };
+export type ModuleId = string & { readonly __brand: "ModuleId" };
+export type Capability =
+  | "entity.read"
+  | "entity.write"
+  | "document.read"
+  | "document.write"
+  | "relationship.read"
+  | "relationship.write"
+  | "asset.read"
+  | "asset.write"
+  | "search.query";
+
+export interface EntitySummary {
+  id: UUID;
+  name: string;
+  type: string | null;
+  deleted: boolean;
+}
+
+export interface EntityRecord extends EntitySummary {
+  createdAt: string;
+  updatedAt: string;
+  documents: DocumentRecord[];
+  fields: Record<string, unknown>;
+}
+
+export interface DocumentRecord {
+  id: UUID;
+  entityId: UUID;
+  format: "markdown" | "plain-text" | "rich-text";
+  body: string;
+  updatedAt: string;
+}
+
+export interface Relationship {
+  id: UUID;
+  sourceId: UUID;
+  targetId: UUID;
+  type: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface AssetRecord {
+  id: UUID;
+  entityId: UUID;
+  namespace: string;
+  filename: string;
+  contentHash: string;
+  size: number;
+  mimeType: string;
+  path: string;
+  createdAt: string;
+}
+
+export interface EntityQuery {
+  type?: string;
+  text?: string;
+  includeDeleted?: boolean;
+  limit?: number;
+}
+
+export interface FieldDefinition {
+  key: string;
+  label: string;
+  type: "text" | "number" | "boolean" | "date" | "enum" | "entity-ref";
+  required?: boolean;
+  options?: string[];
+}
+
+export interface CalendarDate {
+  calendar: "gregorian";
+  era: "BCE" | "CE";
+  year: number;
+  month?: number;
+  day?: number;
+  precision: "year" | "month" | "day";
+}
+
+export interface SchemaContribution {
+  namespace: string;
+  entityTypes: string[];
+  fields: FieldDefinition[];
+}
+
+export interface EntityTemplate {
+  id: string;
+  name: string;
+  entityType: string;
+  fields: Record<string, unknown>;
+  document?: string;
+}
+
+export interface DeclarativeMigration {
+  id: string;
+  from: number;
+  to: number;
+  operations: MigrationOperation[];
+  recovery: "backup" | "preserve-data";
+}
+
+export type MigrationOperation =
+  | { kind: "create-namespace"; namespace: string }
+  | { kind: "add-field"; namespace: string; field: FieldDefinition }
+  | { kind: "rename-field"; namespace: string; from: string; to: string }
+  | { kind: "drop-field"; namespace: string; key: string };
+
+export interface ModuleManifest {
+  id: ModuleId;
+  name: string;
+  version: string;
+  apiVersion: "1";
+  capabilities: Capability[];
+  schemas: SchemaContribution[];
+  templates: EntityTemplate[];
+  migrations: DeclarativeMigration[];
+}
+
+export interface ModuleContext {
+  readonly module: ModuleManifest;
+  entities: {
+    get(id: UUID): Promise<EntityRecord | null>;
+    list(query?: EntityQuery): Promise<EntitySummary[]>;
+    create(input: { name: string; type?: string }): Promise<EntityRecord>;
+    update(id: UUID, patch: { name?: string; type?: string | null }): Promise<EntityRecord>;
+    delete(id: UUID): Promise<void>;
+  };
+  documents: {
+    save(input: { entityId: UUID; body: string; format?: DocumentRecord["format"] }): Promise<DocumentRecord>;
+  };
+  fields: {
+    list(entityId: UUID): Promise<Record<string, unknown>>;
+    set(entityId: UUID, key: string, value: unknown): Promise<void>;
+  };
+  relationships: {
+    list(entityId: UUID): Promise<Relationship[]>;
+    create(input: Omit<Relationship, "id">): Promise<Relationship>;
+  };
+  assets: {
+    list(entityId: UUID): Promise<AssetRecord[]>;
+    register(input: Omit<AssetRecord, "id" | "createdAt" | "entityId"> & { entityId: UUID }): Promise<AssetRecord>;
+  };
+  search(query: string): Promise<EntitySummary[]>;
+}
+
+export interface ModuleView {
+  id: string;
+  title: string;
+  mount(element: HTMLElement, context: ModuleContext): () => void;
+}
+
+export interface WorldbuilderModule {
+  manifest: ModuleManifest;
+  views: ModuleView[];
+  register?(context: ModuleContext): Promise<void>;
+}
+
+export function requireCapabilities(manifest: ModuleManifest, required: Capability[]): void {
+  const granted = new Set(manifest.capabilities);
+  const missing = required.filter((capability) => !granted.has(capability));
+  if (missing.length > 0) {
+    throw new Error(`Module ${manifest.id} lacks capabilities: ${missing.join(", ")}`);
+  }
+}
+
+export function isMigrationContiguous(migrations: DeclarativeMigration[], current: number): boolean {
+  return [...migrations].sort((a, b) => a.from - b.from).every((migration) => {
+    const valid = migration.from === current;
+    current = migration.to;
+    return valid && migration.to > migration.from;
+  });
+}

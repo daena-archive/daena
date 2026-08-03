@@ -1,0 +1,67 @@
+import { invoke } from "@tauri-apps/api/core";
+import type { ModuleManifest } from "../../../packages/module-api/src/index";
+
+export interface Entity {
+  id: string;
+  name: string;
+  entity_type: string | null;
+  deleted: boolean;
+  created_at: string;
+  updated_at: string;
+}
+export interface Document { id: string; entity_id: string; format: string; body: string; updated_at: string; }
+export interface FieldValue { entity_id: string; namespace: string; key: string; value: unknown; }
+export interface Relationship { id: string; source_id: string; target_id: string; relationship_type: string; metadata: string; }
+export interface Asset { id: string; entity_id: string; namespace: string; filename: string; content_hash: string; size: number; mime_type: string; path: string; created_at: string; }
+export interface ProjectInfo { name: string; root: string; database: string; assets: string; }
+export interface GitStatus { repository: boolean; branch: string | null; changes: string[]; }
+export interface GitLogEntry { hash: string; date: string; subject: string; }
+export type { ModuleManifest };
+export type ProjectModuleManifest = ModuleManifest & { enabled: boolean };
+type DialogSelection = string | string[] | null;
+
+export const project = {
+  openMemory: () => invoke<void>("project_open_memory"),
+  openDefault: () => invoke<void>("project_open_default"),
+  open: (path: string) => invoke<void>("project_open", { path }),
+  openDirectory: (path: string) => invoke<ProjectInfo>("project_open_directory", { path }),
+  pickDirectory: () => invoke<DialogSelection>("plugin:dialog|open", { options: { directory: true, multiple: false } }),
+  pickFile: () => invoke<DialogSelection>("plugin:dialog|open", { options: { directory: false, multiple: false } }),
+  create: (path: string) => invoke<ProjectInfo>("project_new", { path }),
+  close: () => invoke<void>("project_close"),
+  info: () => invoke<ProjectInfo | null>("project_info"),
+  gitStatus: () => invoke<GitStatus>("project_git_status"),
+  gitInit: () => invoke<GitStatus>("project_git_init"),
+  gitLog: () => invoke<GitLogEntry[]>("project_git_log"),
+  gitCommit: (message: string) => invoke<GitStatus>("project_git_commit", { message }),
+  listEntities: () => invoke<Entity[]>("project_list_entities"),
+  search: (query: string) => invoke<Entity[]>("project_search", { query }),
+  deleteEntity: (id: string) => invoke<void>("project_delete_entity", { id }),
+  createEntity: (name: string, entityType?: string) =>
+    invoke<Entity>("project_create_entity", {
+      input: { name, entity_type: entityType || null },
+    }),
+  updateEntity: (id: string, name?: string | null, entityType?: string | null) =>
+    invoke<Entity>("project_update_entity", { id, name: name ?? null, entity_type: entityType ?? null }),
+  listDocuments: (entityId: string) => invoke<Document[]>("project_list_documents", { entityId }),
+  saveDocument: (entityId: string, body: string, format: "markdown" | "plain-text" | "rich-text" = "rich-text") => invoke<void>("project_save_document", { input: { entity_id: entityId, body, format } }),
+  saveEntry: (input: { document: { entity_id: string; body: string; format?: "markdown" | "plain-text" | "rich-text" }; fields: FieldValue[] }) => invoke<void>("project_save_entry", { input }),
+  listFields: (entityId: string) => invoke<FieldValue[]>("project_list_fields", { entityId }),
+  setField: (field: FieldValue) => invoke<void>("project_set_field", { field }),
+  createRelationship: (sourceId: string, targetId: string, type: string, metadata?: Record<string, unknown>) =>
+    invoke<Relationship>("project_create_relationship", { input: { source_id: sourceId, target_id: targetId, relationship_type: type, metadata: metadata ? JSON.stringify(metadata) : null } }),
+  listRelationships: (entityId: string) => invoke<Relationship[]>("project_list_relationships", { entityId }),
+  registerAsset: (input: { entity_id: string; namespace: string; filename: string; content_hash: string; size: number; mime_type: string; path: string }) =>
+    invoke<Asset>("project_register_asset", { input }),
+  registerAssetFile: (input: { entity_id: string; namespace: string; source_path: string; filename: string; mime_type: string }) =>
+    invoke<Asset>("project_register_asset_file", { input }),
+  listAssets: (entityId: string) => invoke<Asset[]>("project_list_assets", { entityId }),
+  backup: () => invoke<string>("project_backup"),
+  restore: (path: string) => invoke<void>("project_restore", { path }),
+  restorePayload: (payload: string) => invoke<void>("project_restore_payload", { payload }),
+  rebuildSearch: () => invoke<void>("project_rebuild_search"),
+  seedExample: () => invoke<number>("project_seed_example"),
+  listModuleManifests: () => invoke<ProjectModuleManifest[]>("module_list_manifests"),
+  enableModule: (id: string) => invoke<void>("module_enable", { id }),
+  disableModule: (id: string) => invoke<void>("module_disable", { id }),
+};

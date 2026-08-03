@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { project, type Asset, type Entity, type Relationship, type ProjectModuleManifest, type ProjectInfo, type GitStatus, type GitLogEntry } from "$lib/project/client";
-  import type { EntityTemplate, ModuleContext, ModuleId, UUID, ModuleManifest } from "../../packages/module-api/src/index";
+  import type { EntityTemplate, FieldDefinition, ModuleContext, ModuleId, UUID, ModuleManifest } from "../../packages/module-api/src/index";
   import { buildModuleContext } from "$lib/modules/context";
   import PluginViewLauncher from "$lib/modules/PluginViewLauncher.svelte";
   import loreManifestJson from "../../packages/modules/lore/manifest.json";
@@ -11,6 +11,9 @@
 
   type InstalledModule = ProjectModuleManifest;
   type RecentProject = { name: string; root: string };
+  type CreateOption = { key: string; module: InstalledModule; template: EntityTemplate };
+  type CreateGroup = { module: InstalledModule; options: CreateOption[] };
+  type CreateField = { namespace: string; field: FieldDefinition; required: boolean };
 
   const recentProjectsKey = "worldbuilder.recent-projects";
 
@@ -27,7 +30,12 @@
   let query = $state("");
   let globalQuery = $state("");
   let name = $state("");
-  let selectedTemplate = $state("person");
+  let selectedCreateKey = $state("");
+  let createFieldValues = $state<Record<string, unknown>>({});
+  let createDateEditorOpen = $state<Record<string, boolean>>({});
+  let createDocumentBody = $state("");
+  let showDiscardPrompt = $state(false);
+  let pendingCreateDiscard = $state<(() => void) | null>(null);
   let relationshipQuery = $state("");
   let relationshipType = $state("related_to");
   let relationshipTarget = $state<Entity | null>(null);
@@ -57,11 +65,120 @@
     const timeout = window.setTimeout(() => { error = ""; }, toastDurationMs);
     return () => window.clearTimeout(timeout);
   });
+  $effect(() => {
+    const modalOpen = showCreateForm || showCommitForm;
+    document.body.classList.toggle("modal-open", modalOpen);
+    return () => document.body.classList.remove("modal-open");
+  });
 
   const activeModuleId = () => section === "lore" ? "worldbuilder.lore" : "worldbuilder.timeline";
   const activeManifest = () => (section === "lore" ? loreManifestJson : timelineManifestJson) as unknown as ModuleManifest;
-  const templates = () => activeManifest()?.templates ?? [];
-  const definitions = () => activeManifest()?.schemas.flatMap((schema) => schema.fields) ?? [];
+  function fieldAppliesToEntity(field: FieldDefinition, entityType?: string | null) {
+    return !field.entityTypes || !entityType || field.entityTypes.includes(entityType);
+  }
+  const definitions = () => {
+    const entityType = selected?.entity_type ?? (section === "timeline" ? "event" : undefined);
+    return activeManifest()?.schemas
+      .filter((schema) => !entityType || schema.entityTypes.includes(entityType))
+      .flatMap((schema) => schema.fields.filter((field) => fieldAppliesToEntity(field, entityType))) ?? [];
+  };
+  function createOptions(): CreateOption[] {
+    return modules
+      .filter((module) => module.enabled)
+      .flatMap((module) => module.templates.map((template) => ({ key: `${module.id}:${template.id}`, module, template })));
+  }
+  function createGroups(): CreateGroup[] {
+    const groups = new Map<string, CreateGroup>();
+    for (const option of createOptions()) {
+      const group = groups.get(option.module.id) ?? { module: option.module, options: [] };
+      group.options.push(option);
+      groups.set(option.module.id, group);
+    }
+    return [...groups.values()];
+  }
+  function selectedCreateOption() { return createOptions().find((option) => option.key === selectedCreateKey) ?? null; }
+  function createFieldsFor(option: CreateOption | null = selectedCreateOption()): CreateField[] {
+    if (!option) return [];
+    return option.module.schemas
+      .filter((schema) => schema.entityTypes.includes(option.template.entityType))
+      .flatMap((schema) => schema.fields
+        .filter((field) => fieldAppliesToEntity(field, option.template.entityType))
+        .map((field) => ({
+          namespace: schema.namespace,
+          field,
+          required: Boolean(field.required || option.template.requiredFields?.includes(field.key)),
+        })));
+  }
+  function defaultCreateFieldValue(field: FieldDefinition, template: EntityTemplate) {
+    if (Object.prototype.hasOwnProperty.call(template.fields, field.key)) return template.fields[field.key];
+    return field.type === "boolean" ? false : "";
+  }
+  function resetCreateFields(option: CreateOption | null) {
+    createFieldValues = Object.fromEntries(createFieldsFor(option).map(({ field }) => [field.key, defaultCreateFieldValue(field, option!.template)]));
+    createDateEditorOpen = {};
+    createDocumentBody = option?.template.document ?? "";
+  }
+  function selectCreateOption(key: string) {
+    if (key === selectedCreateKey && Object.keys(createFieldValues).length > 0) return;
+    requestCreateDiscard(() => {
+      name = "";
+      selectedCreateKey = key;
+      resetCreateFields(createOptions().find((option) => option.key === key) ?? null);
+    });
+  }
+  function setCreateField(key: string, value: unknown) {
+    createFieldValues = { ...createFieldValues, [key]: value };
+  }
+  function isCreateValuePopulated(value: unknown) {
+    return value !== "" && value !== null && value !== undefined && value !== false;
+  }
+  function hasCreateValues() {
+    return Boolean(name.trim() || createDocumentBody.trim() || Object.values(createFieldValues).some(isCreateValuePopulated));
+  }
+  function requestCreateDiscard(action: () => void) {
+    if (!hasCreateValues()) {
+      action();
+      return;
+    }
+    pendingCreateDiscard = action;
+    showDiscardPrompt = true;
+  }
+  function keepCreateEditing() {
+    showDiscardPrompt = false;
+    pendingCreateDiscard = null;
+  }
+  function discardCreateValues() {
+    const action = pendingCreateDiscard;
+    showDiscardPrompt = false;
+    pendingCreateDiscard = null;
+    action?.();
+  }
+  function createDateForField(key: string) { return parseCalendarDate(createFieldValues[key]); }
+  function createDateDraftForField(key: string): Partial<CalendarDate> | null {
+    return createDateForField(key) ?? (createDateEditorOpen[key] ? { calendar: "gregorian", era: "CE", precision: "day" } : null);
+  }
+  function openCreateDateEditor(key: string) {
+    createDateEditorOpen = { ...createDateEditorOpen, [key]: true };
+    setCreateField(key, "");
+  }
+  function updateCreateDateField(key: string, patch: Partial<CalendarDate>) {
+    const current = createDateForField(key) ?? { calendar: "gregorian", era: "CE", year: 1, month: 1, day: 1, precision: "day" };
+    const next = { ...current, ...patch } as CalendarDate;
+    if (patch.precision === "year") { delete next.month; delete next.day; }
+    if (patch.precision === "month" && next.month === undefined) next.month = 1;
+    if (patch.precision === "day") { next.month ??= 1; next.day ??= 1; }
+    setCreateField(key, serializeCalendarDate(next));
+  }
+  function updateCreateDatePart(key: string, part: "year" | "month" | "day", raw: string, min: number, max?: number) {
+    if (!raw.trim()) return;
+    const parsed = Math.floor(Number(raw));
+    if (!Number.isFinite(parsed)) return;
+    updateCreateDateField(key, { [part]: Math.min(max ?? parsed, Math.max(min, parsed)) });
+  }
+  function clearCreateDateField(key: string) {
+    setCreateField(key, "");
+    createDateEditorOpen = { ...createDateEditorOpen, [key]: false };
+  }
 
   function contextFor(currentSection = section): ModuleContext {
     const id = currentSection === "lore" ? "worldbuilder.lore" : "worldbuilder.timeline";
@@ -270,18 +387,66 @@
 
   async function createEntity(event: SubmitEvent) {
     event.preventDefault();
-    if (!name.trim() || !sectionEnabled()) return;
+    const option = selectedCreateOption();
+    if (!name.trim() || !option || !option.module.enabled) return;
     try {
-      const context = contextFor();
-      const template = templates().find((candidate) => candidate.id === selectedTemplate) as EntityTemplate | undefined;
-      const created = await context.entities.create({ name: name.trim(), type: section === "timeline" ? "event" : template?.entityType });
-      if (template) for (const [key, value] of Object.entries(template.fields)) if (value !== "") await context.fields.set(created.id, key, value);
-      if (template?.document) await context.documents.save({ entityId: created.id, body: `<p>${template.document}</p>`, format: "rich-text" });
+      const fieldsForCreate: Record<string, unknown> = {};
+      for (const { field, required } of createFieldsFor(option)) {
+        const value = createFieldValues[field.key];
+        const empty = value === "" || value === null || value === undefined || (typeof value === "string" && value.trim() === "");
+        if (empty) {
+          if (required) throw new Error(`${field.label} is required`);
+          continue;
+        }
+        if (field.type === "number") {
+          const numberValue = typeof value === "number" ? value : Number(value);
+          if (!Number.isFinite(numberValue)) throw new Error(`${field.label} must be a number`);
+          fieldsForCreate[field.key] = numberValue;
+        } else if (field.type === "date") {
+          if (!isCompleteCalendarDate(value)) throw new Error(`${field.label} needs a year, month, and day`);
+          fieldsForCreate[field.key] = parseCalendarDate(value) ?? value;
+        } else {
+          fieldsForCreate[field.key] = value;
+        }
+      }
+      const context = buildModuleContext(option.module, projectInfo?.root ?? "");
+      const created = await context.entities.create({
+        name: name.trim(),
+        type: option.template.entityType,
+        fields: fieldsForCreate,
+        document: createDocumentBody.trim() ? { body: normalizeDocument(createDocumentBody.trim()), format: "rich-text" } : undefined,
+      });
+      section = option.template.entityType === "event" ? "timeline" : "lore";
       name = "";
       showCreateForm = false;
+      resetCreateFields(null);
       await loadEntities();
       await selectEntity({ id: created.id, name: created.name, entity_type: created.type, deleted: created.deleted, created_at: created.createdAt, updated_at: created.updatedAt });
     } catch (cause) { error = friendlyError(cause); }
+  }
+
+  function closeCreateForm() {
+    requestCreateDiscard(() => {
+      showCreateForm = false;
+      name = "";
+      resetCreateFields(null);
+    });
+  }
+
+  function toggleCreateForm() {
+    if (showCreateForm) {
+      closeCreateForm();
+      return;
+    }
+    const options = createOptions();
+    if (options.length === 0) {
+      error = "Enable a module with a creation template to get started.";
+      return;
+    }
+    if (!options.some((option) => option.key === selectedCreateKey)) selectCreateOption(options[0].key);
+    else if (Object.keys(createFieldValues).length === 0) resetCreateFields(selectedCreateOption());
+    showCreateForm = true;
+    setTimeout(() => document.getElementById("new-entity")?.focus(), 0);
   }
 
   function updateField(key: string, event: Event) { fields = { ...fields, [key]: (event.currentTarget as HTMLInputElement).value }; }
@@ -338,6 +503,8 @@
       else await project.enableModule(id);
       modules = await project.listModuleManifests();
       if (!sectionEnabled()) selected = null;
+      if (!selectedCreateOption()) selectedCreateKey = "";
+      if (showCreateForm && !selectedCreateOption()) closeCreateForm();
     } catch (cause) { error = friendlyError(cause); }
   }
   function clearSelection() {
@@ -380,7 +547,7 @@
 
 <svelte:head><title>Worldbuilder Studio</title></svelte:head>
 
-<main class="studio-shell">
+<main class="studio-shell" aria-label="Worldbuilder Studio">
   <aside class:startup-rail={!ready} class="rail">
     <div class="brand"><span class="brand-mark">W</span><div><strong>Worldbuilder</strong><small>Studio edition</small></div></div>
     {#if !ready}
@@ -392,12 +559,15 @@
         <div class="recent-projects">{#each recentProjects as recent}<div class="recent-project"><button class="recent-project-open" onclick={() => openRecentProject(recent.root)}><span class="project-dot"></span><span><strong>{recent.name}</strong><small>{recent.root}</small></span></button><button class="recent-project-remove" aria-label={`Remove ${recent.name} from recent projects`} title="Remove from recent projects" onclick={() => removeRecentProject(recent.root)}>×</button></div>{/each}</div>
       {/if}
     {:else}
+      <button aria-expanded={showCreateForm} class="rail-create-button" onclick={toggleCreateForm}><span class="rail-icon">＋</span><span>New entry</span></button>
       <div class="rail-label">WORKSPACE</div>
-      <button class:active={section === "lore"} class="rail-button" onclick={() => switchSection("lore")}><span class="rail-icon">✦</span><span>Lore library</span></button>
-      <button class:active={section === "timeline"} class="rail-button" onclick={() => switchSection("timeline")}><span class="rail-icon">◷</span><span>Timeline</span></button>
+      <nav class="workspace-nav" aria-label="Workspace sections">
+        <button aria-current={section === "lore" ? "page" : undefined} class:active={section === "lore"} class="rail-button" onclick={() => switchSection("lore")}><span class="rail-icon">✦</span><span>Lore library</span></button>
+        <button aria-current={section === "timeline" ? "page" : undefined} class:active={section === "timeline"} class="rail-button" onclick={() => switchSection("timeline")}><span class="rail-icon">◷</span><span>Timeline</span></button>
+      </nav>
       <div class="rail-label project-label">PROJECT</div>
       <div class="project-card"><span class:online={ready} class="project-dot"></span><div><strong>{projectInfo?.name ?? "Local project"}</strong><small>Saved in project folder</small></div></div>
-      <button class:active={showProjectMenu} class="rail-button" onclick={() => showProjectMenu = !showProjectMenu}><span class="rail-icon">⋯</span><span>Project actions</span></button>
+      <button aria-expanded={showProjectMenu} class:active={showProjectMenu} class="rail-button" onclick={() => showProjectMenu = !showProjectMenu}><span class="rail-icon">⋯</span><span>Project actions</span></button>
       {#if showProjectMenu}
         <div class="project-menu">
           <button class="rail-button" onclick={openProjectDirectory}><span class="rail-icon">↗</span><span>Open another folder</span></button>
@@ -409,18 +579,19 @@
     {/if}
     <div class="rail-spacer"></div>
     {#if ready}
-      <button class:active={showGit} class="rail-button muted-button" onclick={() => { showGit = !showGit; if (showGit) void refreshGit(); }}><span class="rail-icon">⑂</span><span>Git</span></button>
+      <button aria-expanded={showGit} class:active={showGit} class="rail-button muted-button" onclick={() => { showGit = !showGit; if (showGit) void refreshGit(); }}><span class="rail-icon">⑂</span><span>Git</span></button>
       {#if showGit}<div class="module-menu git-menu"><strong>{gitBusy ? "Checking Git…" : gitStatus?.repository ? `Git · ${gitStatus.branch || "detached"}` : "Git is not initialized"}</strong><small>{gitMessage || (gitStatus?.repository ? gitStatus.changes.length === 0 ? "Working tree clean" : `${gitStatus.changes.length} changed files` : "Initialize Git to track this project")}</small>{#if gitStatus?.repository}<button disabled={gitBusy} onclick={() => { commitMessage = ""; showCommitForm = true; }}>Commit changes</button>{:else}<button disabled={gitBusy} onclick={initializeGit}>{gitBusy ? "Initializing…" : "Initialize Git"}</button>{/if}</div>{/if}
-      <button class="rail-button muted-button" onclick={() => showModules = !showModules}><span class="rail-icon">⚙</span><span>Module settings</span></button>
+      <button aria-expanded={showModules} class="rail-button muted-button" onclick={() => showModules = !showModules}><span class="rail-icon">⚙</span><span>Module settings</span></button>
       {#if showModules}<div class="module-menu">{#each modules as module}<label><span>{module.name}</span><input type="checkbox" checked={module.enabled} onchange={() => toggleModule(module.id)} /></label>{/each}</div>{/if}
     {/if}
     <div class="rail-footer">v0.2 · local first</div>
   </aside>
 
   <section class="app-main">
-    <header class="topbar"><div class="breadcrumbs"><span>Private studio</span><i>/</i><strong>{section === "lore" ? "Lore library" : "Timeline"}</strong>{#if selected}<i>/</i><span>{selected.name}</span>{/if}</div><div class="top-actions">{#if ready}<label class="global-search"><span>⌕</span><input aria-label="Search your world" bind:value={globalQuery} placeholder="Search whole world" /></label><span class="sync-badge"><span></span> Local</span>{/if}</div></header>
+    <header class="topbar"><div class="breadcrumbs" aria-label="Breadcrumb"><span>Private studio</span><i>/</i><strong>{section === "lore" ? "Lore library" : "Timeline"}</strong>{#if selected}<i>/</i><span>{selected.name}</span>{/if}</div><div class="top-actions">{#if ready}<label class="global-search"><span aria-hidden="true">⌕</span><input aria-label="Search your world" bind:value={globalQuery} placeholder="Search whole world" /></label><span class="sync-badge" title="Your work is stored locally"><span></span> Local</span>{/if}</div></header>
     {#if ready && globalQuery.trim()}<div class="search-modal" role="dialog" aria-label="World search results"><div class="search-modal-heading"><strong>Search results</strong><button class="quiet-button" aria-label="Close search" onclick={() => globalQuery = ""}>×</button></div>{#if searchMatches === null}<p class="search-state">Searching the whole world…</p>{:else if searchMatches.length === 0}<p class="search-state">No matches found.</p>{:else}<div class="search-results">{#each searchMatches as result}<button class="search-result" onclick={() => selectSearchResult(result)}><span class={`entity-glyph ${entityGlyphClass(result)}`}>{entityGlyph(result)}</span><span><strong>{result.name}</strong><small>{result.entity_type ?? "Uncategorized"}</small></span></button>{/each}</div>{/if}</div>{/if}
-    {#if showCreateForm}<div class="modal-backdrop"><form class="dialog new-form" onsubmit={createEntity}><div class="new-form-heading"><div><span class="panel-kicker">CREATE {section === "lore" ? "LORE ENTRY" : "TIMELINE EVENT"}</span><strong>Give it a name</strong></div><button type="button" class="new-form-close" onclick={() => showCreateForm = false}>×</button></div><div class="new-input"><input id="new-entity" bind:value={name} placeholder={section === "lore" ? "e.g. The western marshes" : "e.g. The coronation"} /></div>{#if section === "lore"}<label class="template-field"><span>Entry type</span><select aria-label="Entry type" bind:value={selectedTemplate}>{#each templates() as template}<option value={template.id}>{template.name}</option>{/each}</select></label>{/if}<div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => showCreateForm = false}>Cancel</button><button class="primary-button" type="submit">Create {section === "lore" ? "entry" : "event"}</button></div></form></div>{/if}
+    {#if showCreateForm}{@const createOption = selectedCreateOption()}<div class="modal-backdrop"><form class="dialog create-dialog" onsubmit={createEntity}><div class="create-dialog-heading"><div><span class="panel-kicker">CREATE SOMETHING NEW</span><strong>Choose a starting point</strong><p>Templates set the shape of your new entry. You can fill in the details before it is saved.</p></div><button type="button" class="new-form-close" aria-label="Close create dialog" onclick={closeCreateForm}>×</button></div><div class="create-dialog-body"><aside class="create-template-panel"><div class="create-panel-label">TEMPLATES</div><div class="create-template-list">{#each createGroups() as group}<div class="create-template-group"><span>{group.module.name}</span>{#each group.options as option}<button type="button" class:selected={option.key === selectedCreateKey} class="create-template-card" onclick={() => selectCreateOption(option.key)}><span class="create-template-icon">{option.template.icon ?? option.template.name.slice(0, 1)}</span><span class="create-template-copy"><strong>{option.template.name}</strong><small>{option.template.description ?? option.template.entityType}</small></span><span class="create-template-check">{option.key === selectedCreateKey ? "✓" : ""}</span></button>{/each}</div>{/each}</div></aside><section class="create-form-panel">{#if createOption}<div class="create-form-title"><span class="panel-kicker">{createOption.module.name.toUpperCase()}</span><h2>{createOption.template.name}</h2><p>{createOption.template.description ?? `Create a new ${createOption.template.entityType}.`}</p></div><label class="create-input-field" for="new-entity"><span>Name <b>*</b></span><input id="new-entity" bind:value={name} placeholder={`e.g. ${createOption.template.name}`} autocomplete="off" /></label>{#each createFieldsFor(createOption) as item}<div class="create-input-field"><label for={`create-${item.field.key}`}><span>{item.field.label} {#if item.required}<b>*</b>{/if}</span></label>{#if item.field.type === "text"}<textarea id={`create-${item.field.key}`} rows="3" value={String(createFieldValues[item.field.key] ?? "")} placeholder={`Add ${item.field.label.toLowerCase()}`} oninput={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLTextAreaElement).value)}></textarea>{:else if item.field.type === "number"}<input id={`create-${item.field.key}`} type="number" value={String(createFieldValues[item.field.key] ?? "")} placeholder={`Add ${item.field.label.toLowerCase()}`} oninput={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).value)} />{:else if item.field.type === "boolean"}<label class="create-checkbox" for={`create-${item.field.key}`}><input id={`create-${item.field.key}`} type="checkbox" checked={createFieldValues[item.field.key] === true} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).checked)} /><span>Yes</span></label>{:else if item.field.type === "enum"}<select id={`create-${item.field.key}`} value={String(createFieldValues[item.field.key] ?? "")} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}><option value="">Choose {item.field.label.toLowerCase()}</option>{#each item.field.options ?? [] as option}<option value={option}>{option}</option>{/each}</select>{:else if item.field.type === "entity-ref"}<select id={`create-${item.field.key}`} value={String(createFieldValues[item.field.key] ?? "")} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}><option value="">Choose an entity</option>{#each entities.filter((entity) => !entity.deleted) as entity}<option value={entity.id}>{entity.name} · {entity.entity_type ?? "Uncategorized"}</option>{/each}</select>{:else if item.field.type === "date"}{#if createDateForField(item.field.key) || createDateEditorOpen[item.field.key]}{@const date = createDateDraftForField(item.field.key) ?? { calendar: "gregorian", era: "CE", precision: "day" }}<div class="date-editor"><div class="date-fields"><label for={`create-${item.field.key}-year`}>Year<input id={`create-${item.field.key}-year`} aria-label={`${item.field.label} year`} type="number" min="1" value={date.year ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "year", (event.currentTarget as HTMLInputElement).value, 1)} /></label><label for={`create-${item.field.key}-month`}>Month<input id={`create-${item.field.key}-month`} aria-label={`${item.field.label} month`} type="number" min="1" max="12" value={date.month ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "month", (event.currentTarget as HTMLInputElement).value, 1, 12)} /></label><label for={`create-${item.field.key}-day`}>Day<input id={`create-${item.field.key}-day`} aria-label={`${item.field.label} day`} type="number" min="1" max="31" value={date.day ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "day", (event.currentTarget as HTMLInputElement).value, 1, 31)} /></label></div><small class="date-preview">{typeof date.year === "number" ? formatCalendarDate(date) : "Add a date"}</small><button class="date-clear" type="button" onclick={() => clearCreateDateField(item.field.key)}>Clear date</button></div>{:else}<button class="date-empty" type="button" onclick={() => openCreateDateEditor(item.field.key)}>Add a date</button>{/if}{/if}</div>{/each}{#if createOption.template.document}<label class="create-input-field" for="create-document"><span>Opening note</span><textarea id="create-document" rows="5" bind:value={createDocumentBody} placeholder="Add a first note or leave the template text as-is"></textarea></label>{/if}{:else}<div class="create-form-empty">Select a template to begin.</div>{/if}</section></div><div class="create-dialog-actions"><button type="button" class="quiet-button" onclick={closeCreateForm}>Cancel</button><button class="primary-button" type="submit" disabled={!name.trim() || !createOption}>Create {createOption?.template.name ?? "entry"}</button></div></form></div>{/if}
+    {#if showDiscardPrompt}<div class="discard-backdrop"><div class="discard-dialog" role="alertdialog" aria-modal="true" aria-labelledby="discard-create-title"><span class="panel-kicker">UNSAVED VALUES</span><h2 id="discard-create-title">Discard this creation?</h2><p>Your entered values will be cleared. You can keep editing or start over with the new template.</p><div class="discard-actions"><button type="button" class="quiet-button" onclick={keepCreateEditing}>Keep editing</button><button type="button" class="primary-button" onclick={discardCreateValues}>Discard values</button></div></div></div>{/if}
     {#if showCommitForm}<div class="modal-backdrop"><form class="dialog commit-form" onsubmit={(event) => { event.preventDefault(); void commitGit(); }}><div class="new-form-heading"><div><span class="panel-kicker">VERSION CONTROL</span><strong>Commit changes</strong></div><button type="button" class="new-form-close" onclick={() => showCommitForm = false}>×</button></div><p>Save the current project changes to Git.</p><input aria-label="Commit message" bind:value={commitMessage} placeholder="Describe the changes" /><div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => showCommitForm = false}>Cancel</button><button class="primary-button" type="submit" disabled={!commitMessage.trim() || gitBusy}>{gitBusy ? "Committing…" : "Commit changes"}</button></div></form></div>{/if}
     {#if !ready}
       <section class="welcome"><div class="welcome-copy"><span class="overline">A private place for impossible worlds</span><h1>Build the world<br /><em>behind the story.</em></h1><p>Shape characters, places, factions, and history in one calm, local-first studio.</p><button class="primary-button large" onclick={openWorkspace}>Open local studio <span>→</span></button><small>Everything stays on this device.</small></div><div class="welcome-art"><div class="orb orb-one"></div><div class="orb orb-two"></div><div class="art-card"><span>ELDERMERE</span><strong>The sea remembers<br />what kingdoms forget.</strong><small>Fragments · 12</small></div></div></section>
@@ -433,7 +604,6 @@
         <aside class="collection-panel panel-surface">
           <div class="panel-heading">
             <div><span class="panel-kicker">{section === "lore" ? "LORE LIBRARY" : "TIMELINE"}</span><strong>{visibleEntities().length} {section === "lore" ? "entries" : "events"}</strong></div>
-            <button class="new-entry-button" onclick={() => { showCreateForm = !showCreateForm; if (showCreateForm) setTimeout(() => document.getElementById("new-entity")?.focus(), 0); }}>{showCreateForm ? "Close" : `New ${section === "lore" ? "entry" : "event"}`}</button>
           </div>
           <div class="collection-search"><span>⌕</span><input aria-label={`Filter ${section === "lore" ? "entries" : "events"}`} bind:value={query} placeholder={`Filter ${section === "lore" ? "entries" : "events"}`} /></div>
           <div class="collection-list">
@@ -448,6 +618,7 @@
     {/if}
     {#if error}<div class="toast" role="status">{error}<button aria-label="Dismiss" onclick={() => error = ""}>×</button></div>{/if}
   </section>
+  {#if ready}<button class="mobile-create-button" aria-label="New entry" aria-expanded={showCreateForm} onclick={toggleCreateForm}>＋</button>{/if}
 </main>
 
 <style>
@@ -510,17 +681,9 @@
   .collection-item .item-copy small { width: max-content; max-width: 150px; margin: 0; padding: 3px 6px; border-radius: 4px; background: #f4f0e8; color: var(--ink-faint); font-size: 10px; line-height: 1; letter-spacing: .04em; text-transform: uppercase; }
   .collection-item .item-arrow { padding-left: 6px; color: #c3b6a4; font-size: 18px; line-height: 1; }
   .collection-item:hover .item-arrow, .collection-item.selected .item-arrow { color: var(--accent); }
-  .new-entry-button { padding: 9px 11px; border: 1px solid #c6d4c8; border-radius: 7px; background: var(--accent-dark); color: #fff; font-size: 11px; font-weight: 700; cursor: pointer; }
-  .new-entry-button:hover { background: #2b4535; }
-  .new-form { margin: 8px 10px 12px; padding: 15px; border: 1px solid #dccbb4; border-radius: 10px; background: #fcf8f1; }
   .new-form-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 13px; }
   .new-form-heading strong { display: block; margin-top: 5px; font: 500 19px var(--font-display); }
   .new-form-close { border: 0; background: transparent; color: var(--ink-faint); font-size: 20px; line-height: 1; cursor: pointer; }
-  .new-form .new-input { display: block; border: 0; overflow: visible; }
-  .new-form .new-input input { width: 100%; padding: 10px 11px; border: 1px solid #d9cdbd; border-radius: 7px; background: var(--surface); color: var(--ink); font-size: 12px; }
-  .template-field { display: block; margin-top: 10px; }
-  .template-field span { display: block; margin-bottom: 5px; color: var(--ink-soft); font-size: 10px; font-weight: 700; }
-  .template-field select { width: 100%; padding: 9px; border: 1px solid #d9cdbd; border-radius: 7px; background: var(--surface); color: var(--ink); font-size: 11px; }
   .new-form-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 14px; }
   .new-form-actions .quiet-button { padding: 9px 10px; }
   .modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 20px; background: rgba(37, 37, 31, .28); }
@@ -548,4 +711,149 @@
   .search-result strong, .search-result small { display: block; }
   .search-result strong { font-size: 12px; }
   .search-result small { margin-top: 3px; color: var(--ink-faint); font-size: 10px; }
+
+  :global(html) { background: var(--canvas); }
+  :global(body) { min-width: 320px; text-rendering: optimizeLegibility; }
+  :global(body.modal-open) { overflow: hidden; }
+  :global(button), :global(input), :global(select) { -webkit-tap-highlight-color: transparent; }
+  :global(button:focus-visible), :global(input:focus-visible), :global(select:focus-visible) { outline: 3px solid rgba(180, 119, 63, .28); outline-offset: 2px; }
+  .workspace-nav { display: grid; gap: 3px; }
+  .rail-button { transition: background .16s ease, color .16s ease, transform .16s ease; }
+  .rail-button:active, .primary-button:active { transform: translateY(1px); }
+  .rail { position: sticky; top: 0; align-self: flex-start; height: 100vh; max-height: 100vh; overflow-y: auto; overscroll-behavior: contain; }
+  .topbar { position: sticky; top: 0; z-index: 4; backdrop-filter: blur(14px); }
+  .workspace-grid > * { min-width: 0; }
+  .collection-panel, .editor-panel, .inspector-panel { overflow: hidden; }
+  .panel-heading { gap: 12px; }
+  .panel-heading > div, .editor-header > div:first-child, .inspector-heading > div { min-width: 0; }
+  .editor-header h2 { overflow-wrap: anywhere; }
+  .collection-search, .global-search, .property-field input, .relationship-form > input { transition: border-color .16s ease, box-shadow .16s ease; }
+  .collection-search:focus-within, .global-search:focus-within { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180, 119, 63, .1); }
+  .primary-button, .quiet-button, .add-button, .new-form-close { transition: background .16s ease, color .16s ease, opacity .16s ease, transform .16s ease; }
+  .dialog { max-height: min(680px, calc(100vh - 32px)); overflow-y: auto; }
+  .search-modal { top: 70px; }
+
+  @media (max-width: 1040px) {
+    .topbar { padding-inline: 28px; }
+    .workspace-heading { padding: 36px 28px 23px; }
+    .projection-bar { margin-inline: 28px; }
+    .workspace-grid { grid-template-columns: 215px minmax(280px, 1fr); padding-inline: 28px; }
+  }
+
+  @media (max-width: 760px) {
+    :global(body) { overflow-x: hidden; }
+    .rail { position: static; height: auto; max-height: none; overflow: visible; display: flex; flex-direction: column; gap: 0; }
+    .workspace-nav { display: flex; gap: 4px; margin: 0 -4px 9px; overflow-x: auto; scrollbar-width: none; }
+    .workspace-nav::-webkit-scrollbar { display: none; }
+    .workspace-nav .rail-button { flex: 1 0 auto; justify-content: center; width: auto; margin: 0; padding-inline: 12px; }
+    .workspace-nav .rail-button span:not(.rail-icon) { display: inline; }
+    .topbar { position: relative; align-items: stretch; flex-direction: column; gap: 10px; min-height: 0; padding: 12px 17px; }
+    .breadcrumbs { width: 100%; }
+    .top-actions { width: 100%; }
+    .global-search { flex: 1; width: auto; }
+    .search-modal { top: 105px; right: 17px; left: 17px; width: auto; }
+    .welcome { min-height: calc(100vh - 130px); padding-top: 42px; }
+    .welcome h1 { font-size: clamp(43px, 13vw, 56px); }
+    .welcome p { font-size: 14px; }
+    .welcome-art { margin-top: 22px; transform: scale(.72); transform-origin: left top; }
+    .workspace-heading { padding: 28px 17px 18px; }
+    .workspace-heading h1 { font-size: clamp(31px, 10vw, 38px); }
+    .workspace-heading p { max-width: 38ch; line-height: 1.5; }
+    .heading-actions, .heading-actions .quiet-button { width: 100%; }
+    .heading-actions .quiet-button { text-align: left; }
+    .projection-bar { margin: 0 17px 12px; }
+    .workspace-grid { gap: 12px; padding: 0 17px 25px; }
+    .collection-panel, .editor-panel, .inspector-panel { border-radius: 11px; }
+    .collection-list { max-height: 320px; -webkit-overflow-scrolling: touch; }
+    .panel-heading strong { font-size: 24px; }
+    .editor-panel { padding: 18px 14px 14px; }
+    .editor-header { min-height: 62px; gap: 10px; }
+    .editor-status { flex: 0 0 auto; }
+    .editor-footer { align-items: flex-start; flex-wrap: wrap; }
+    .editor-footer > div { width: 100%; justify-content: flex-end; }
+    .editor-empty { min-height: 300px; }
+    .inspector-panel { display: block; }
+    .inspector-section { border-right: 0; }
+    .date-fields { gap: 5px; }
+    .date-fields input { padding-inline: 5px; }
+    .modal-backdrop { padding: 12px; }
+    .dialog { padding: 18px; border-radius: 12px; }
+    .toast { right: 12px; bottom: 12px; left: 12px; max-width: none; }
+    :global(.timeline-event) { grid-template-columns: 1fr; gap: 5px; }
+    :global(.timeline-date) { padding-left: 1px; }
+  }
+
+  @media (max-width: 430px) {
+    .startup-rail { padding-top: 20px; }
+    .brand { padding-bottom: 10px; }
+    .startup-primary { min-height: 43px; }
+    .welcome-art { height: 225px; }
+    .editor-footer > div { flex-direction: column-reverse; }
+    .editor-footer > div .primary-button, .editor-footer > div .quiet-button { width: 100%; text-align: center; }
+  }
+
+  .rail-create-button { width: 100%; display: flex; align-items: center; gap: 11px; margin: 0 0 18px; padding: 12px 11px; border: 1px solid rgba(213,171,108,.55); border-radius: 8px; background: #d5ab6c; color: #2c4032; font-size: 14px; font-weight: 800; text-align: left; cursor: pointer; }
+  .rail-create-button:hover { background: #e1bc82; }
+  .rail-create-button .rail-icon { color: #2c4032; font-size: 17px; }
+  .create-dialog { display: flex; flex-direction: column; width: min(980px, 100%); max-height: min(760px, calc(100vh - 32px)); padding: 0; overflow: hidden; }
+  .create-dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 24px 26px 20px; border-bottom: 1px solid var(--line); }
+  .create-dialog-heading strong { display: block; margin-top: 6px; font: 500 27px/1.05 var(--font-display); }
+  .create-dialog-heading p { max-width: 560px; margin: 9px 0 0; color: var(--ink-soft); font-size: 12px; line-height: 1.5; }
+  .create-dialog-body { display: grid; grid-template-columns: 300px minmax(0, 1fr); min-height: 440px; overflow: hidden; }
+  .create-template-panel { min-width: 0; overflow-y: auto; padding: 20px 13px 20px; border-right: 1px solid var(--line); background: #faf8f2; }
+  .create-panel-label { display: block; margin-bottom: 16px; color: var(--accent); font-size: 9px; font-weight: 800; letter-spacing: .18em; text-transform: uppercase; }
+  .create-template-group > span { display: block; margin: 0 4px 2px; color: var(--ink-faint); font-size: 9px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+  .create-template-group { display: grid; gap: 6px; margin-top: 18px; }
+  .create-template-group:first-child { margin-top: 0; }
+  .create-template-card { display: grid; grid-template-columns: 36px minmax(0, 1fr) 18px; align-items: center; gap: 9px; width: 100%; padding: 10px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
+  .create-template-card:hover { border-color: #e5d8c6; background: #fffefa; }
+  .create-template-card.selected { border-color: #d8c3a5; background: #fffefa; box-shadow: inset 3px 0 var(--accent), var(--shadow-sm); }
+  .create-template-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: #f2e4d2; color: var(--accent); font-size: 13px; font-weight: 800; }
+  .create-template-copy { min-width: 0; }
+  .create-template-copy strong, .create-template-copy small { display: block; overflow: hidden; text-overflow: ellipsis; }
+  .create-template-copy strong { font-size: 12px; }
+  .create-template-copy small { margin-top: 4px; color: var(--ink-faint); font-size: 10px; line-height: 1.35; white-space: nowrap; }
+  .create-template-check { color: var(--accent); font-size: 15px; font-weight: 800; text-align: center; }
+  .create-form-panel { min-width: 0; overflow-y: auto; padding: 25px 28px 28px; }
+  .create-form-title { padding-bottom: 18px; border-bottom: 1px solid var(--line); }
+  .create-form-title h2 { margin: 7px 0 4px; font: 500 25px/1.1 var(--font-display); }
+  .create-form-title p { margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.5; }
+  .create-input-field { display: block; margin-top: 17px; }
+  .create-input-field > span, .create-input-field > label > span { display: block; margin-bottom: 6px; color: var(--ink-soft); font-size: 10px; font-weight: 700; }
+  .create-input-field b { margin-left: 3px; color: var(--accent); }
+  .create-input-field > input, .create-input-field > textarea, .create-input-field > select, .create-input-field > label + input, .create-input-field > label + textarea, .create-input-field > label + select { width: 100%; padding: 10px 11px; border: 1px solid #d9cdbd; border-radius: 8px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 12px; }
+  .create-input-field > textarea { min-height: 78px; resize: vertical; line-height: 1.5; }
+  .create-input-field > input:focus, .create-input-field > textarea:focus, .create-input-field > select:focus { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180,119,63,.1); }
+  .create-input-field > label + .date-editor, .create-input-field > label + .create-checkbox { display: flex; }
+  .create-checkbox { align-items: center; gap: 8px; min-height: 38px; color: var(--ink-soft); font-size: 12px; }
+  .create-checkbox input { width: 16px; height: 16px; accent-color: var(--accent-dark); }
+  .create-form-empty { display: grid; min-height: 300px; place-items: center; color: var(--ink-faint); font-size: 12px; }
+  .create-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 15px 26px; border-top: 1px solid var(--line); background: #fcfbf7; }
+  .discard-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 20px; background: rgba(37, 37, 31, .28); }
+  .discard-dialog { width: min(390px, 100%); padding: 24px; border: 1px solid #e3d9ca; border-radius: 14px; background: var(--surface); box-shadow: 0 22px 70px rgba(37, 37, 31, .2); }
+  .discard-dialog h2 { margin: 8px 0 7px; font: 500 23px/1.1 var(--font-display); }
+  .discard-dialog p { margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.55; }
+  .discard-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 20px; }
+  .mobile-create-button { display: none; }
+
+  @media (max-width: 760px) {
+    .rail-create-button { display: none; }
+    .mobile-create-button { position: fixed; right: 18px; bottom: 18px; z-index: 15; display: grid; place-items: center; width: 52px; height: 52px; border: 1px solid rgba(213,171,108,.7); border-radius: 50%; background: #d5ab6c; color: #2c4032; box-shadow: 0 10px 24px rgba(37,37,31,.2); font-size: 26px; line-height: 1; cursor: pointer; }
+    .mobile-create-button:hover { background: #e1bc82; }
+    .create-dialog { max-height: calc(100vh - 24px); }
+    .create-dialog-heading { padding: 19px 18px 16px; }
+    .create-dialog-heading strong { font-size: 23px; }
+    .create-dialog-body { grid-template-columns: 1fr; min-height: 0; overflow: auto; }
+    .create-template-panel { max-height: 235px; padding: 16px 12px 14px; border-right: 0; border-bottom: 1px solid var(--line); }
+    .create-panel-label { margin-bottom: 12px; }
+    .create-template-group { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 13px; }
+    .create-template-group > span { grid-column: 1 / -1; }
+    .create-template-card { grid-template-columns: 30px minmax(0, 1fr) 14px; padding: 8px; }
+    .create-template-icon { width: 29px; height: 29px; border-radius: 8px; font-size: 11px; }
+    .create-template-copy strong { font-size: 11px; }
+    .create-template-copy small { font-size: 9px; }
+    .create-form-panel { padding: 20px 18px 22px; overflow: visible; }
+    .create-dialog-actions { padding: 13px 18px; }
+    .create-dialog-actions .primary-button { max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  }
 </style>

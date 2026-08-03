@@ -44,7 +44,7 @@
 </script>
 
 <div class="editor-shell">
-  <div class="editor-toolbar" aria-label="Formatting tools">
+  <div class="editor-toolbar" role="toolbar" aria-label="Formatting tools">
     <button type="button" title="Bold" aria-label="Bold" onclick={() => run("bold")}><strong>B</strong></button>
     <button type="button" title="Italic" aria-label="Italic" onclick={() => run("italic")}><em>I</em></button>
     <button type="button" title="Underline" aria-label="Underline" onclick={() => run("underline")}><u>U</u></button>
@@ -62,6 +62,8 @@
     role="textbox"
     aria-multiline="true"
     aria-label="Document editor"
+    aria-placeholder={placeholder}
+    spellcheck="true"
     data-placeholder={placeholder}
     bind:this={editor}
     oninput={handleInput}
@@ -82,4 +84,5 @@
   .editor-content :global(blockquote) { margin: 1em 0; padding: 4px 0 4px 18px; border-left: 3px solid var(--accent); color: var(--ink-soft); }
   .editor-content :global(a) { color: var(--accent); }
   @media (max-width: 700px) { .editor-content { min-height: 300px; padding: 22px 20px 30px; font-size: 16px; } .editor-hint { display: none; } }
+  @media (max-width: 520px) { .editor-toolbar { flex-wrap: wrap; gap: 2px; padding: 7px; } .editor-toolbar button { min-width: 29px; padding-inline: 6px; } .toolbar-divider { margin-inline: 2px; } }
 </style>

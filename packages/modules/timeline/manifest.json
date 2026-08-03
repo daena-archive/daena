@@ -18,7 +18,7 @@
       { "key": "endsAt", "label": "Ends", "type": "date" }
     ]
   }],
-  "templates": [{ "id": "event", "name": "Timeline event", "entityType": "event", "fields": { "startsAt": "", "endsAt": "" } }],
+  "templates": [{ "id": "event", "name": "Timeline event", "entityType": "event", "description": "A moment, turning point, or span of history.", "icon": "E", "fields": { "startsAt": "", "endsAt": "" } }],
   "views": [{ "id": "timeline-events", "title": "Timeline Events" }],
   "commands": [],
   "services": { "provides": [{ "name": "worldbuilder.timeline.resolve-date", "major": 1 }], "consumes": [] },

@@ -54,6 +54,16 @@ export interface EntityQuery {
   limit?: number;
 }
 
+export interface EntityCreateInput {
+  name: string;
+  type?: string;
+  fields?: Record<string, unknown>;
+  document?: {
+    body: string;
+    format?: DocumentRecord["format"];
+  };
+}
+
 export interface CalendarDate {
   calendar: "gregorian";
   era: "BCE" | "CE";
@@ -71,7 +81,7 @@ export interface ModuleContext {
   entities: {
     get(id: UUID): Promise<EntityRecord | null>;
     list(query?: EntityQuery): Promise<EntitySummary[]>;
-    create(input: { name: string; type?: string }): Promise<EntityRecord>;
+    create(input: EntityCreateInput): Promise<EntityRecord>;
     update(id: UUID, patch: { name?: string; type?: string | null }): Promise<EntityRecord>;
     delete(id: UUID): Promise<void>;
   };

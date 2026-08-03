@@ -5,6 +5,7 @@ import type {
   EntityRecord,
   EntitySummary,
   EntityQuery,
+  EntityCreateInput,
   DocumentRecord,
   AssetRecord,
   Relationship,
@@ -79,12 +80,16 @@ function toAsset(asset: RawAsset): AssetRecord {
   };
 }
 
-function schemaForField(manifest: ModuleManifest, key: string) {
-  return manifest.schemas.flatMap((schema) => schema.fields.map((field) => ({ schema, field }))).find(({ field }) => field.key === key);
+function schemaForField(manifest: ModuleManifest, key: string, entityType?: string) {
+  return manifest.schemas
+    .flatMap((schema) => schema.fields.map((field) => ({ schema, field })))
+    .find(({ schema, field }) => field.key === key
+      && (entityType === undefined || schema.entityTypes.includes(entityType))
+      && (!field.entityTypes || entityType === undefined || field.entityTypes.includes(entityType)));
 }
 
-function validateField(manifest: ModuleManifest, key: string, value: unknown): string {
-  const definition = schemaForField(manifest, key);
+function validateField(manifest: ModuleManifest, key: string, value: unknown, entityType?: string): string {
+  const definition = schemaForField(manifest, key, entityType);
   if (!definition) throw new Error(`Module ${manifest.id} does not declare field: ${key}`);
   const { field } = definition;
   if (field.required && (value === null || value === undefined || value === "")) throw new Error(`Field ${key} is required`);
@@ -105,6 +110,19 @@ function checkCapability(manifest: ModuleManifest, required: Capability): void {
       `Module ${manifest.id} lacks required capability: ${required}`
     );
   }
+}
+
+function createFields(manifest: ModuleManifest, fields: Record<string, unknown>, entityType?: string) {
+  const entries = Object.entries(fields)
+    .filter(([, value]) => value !== "" && value !== null && value !== undefined)
+  if (entries.length === 0) return [];
+  checkCapability(manifest, "field.write:self");
+  return entries
+    .map(([key, value]) => ({
+      namespace: validateField(manifest, key, value, entityType),
+      key,
+      value,
+    }));
 }
 
 export function buildModuleContext(
@@ -144,9 +162,16 @@ export function buildModuleContext(
         );
         return filtered.slice(0, query?.limit ?? filtered.length).map(toEntitySummary);
       },
-      create: async (input: { name: string; type?: string }) => {
+      create: async (input: EntityCreateInput) => {
         checkCapability(manifest, "entity.write");
-        const entity = await rpc.call<RawEntity>("entity.create", { name: input.name, type: input.type ?? null });
+        if (input.document) checkCapability(manifest, "document.write");
+        const fields = input.fields ? createFields(manifest, input.fields, input.type) : undefined;
+        const entity = await rpc.call<RawEntity>("entity.create", {
+          name: input.name,
+          type: input.type ?? null,
+          fields,
+          document: input.document,
+        });
         return toEntityRecord(entity);
       },
       update: async (id: UUID, patch: { name?: string; type?: string | null }) => {

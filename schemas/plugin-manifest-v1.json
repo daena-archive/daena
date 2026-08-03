@@ -77,7 +77,8 @@
         "label": { "type": "string", "minLength": 1 },
         "type": { "enum": ["text", "number", "boolean", "date", "enum", "entity-ref"] },
         "required": { "type": "boolean" },
-        "options": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+        "options": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "entityTypes": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1, "uniqueItems": true }
       }
     },
     "template": {
@@ -85,7 +86,11 @@
       "required": ["id", "name", "entityType", "fields"],
       "properties": {
         "id": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1 },
-        "entityType": { "type": "string", "minLength": 1 }, "fields": { "type": "object" },
+        "entityType": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "icon": { "type": "string", "minLength": 1, "maxLength": 8 },
+        "fields": { "type": "object" },
+        "requiredFields": { "type": "array", "items": { "type": "string", "pattern": "^[a-z][a-zA-Z0-9_]*$" }, "minItems": 1, "uniqueItems": true },
         "document": { "type": "string" }
       }
     },

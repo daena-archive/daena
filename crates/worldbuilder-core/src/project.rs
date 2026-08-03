@@ -14,6 +14,27 @@ pub struct CreateEntity {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateEntryDocument {
+    pub body: String,
+    pub format: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateEntryField {
+    pub namespace: String,
+    pub key: String,
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateEntry {
+    pub name: String,
+    pub entity_type: Option<String>,
+    pub document: Option<CreateEntryDocument>,
+    pub fields: Vec<CreateEntryField>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entity {
     pub id: String,
     pub name: String,
@@ -435,6 +456,65 @@ impl ProjectStore {
             "INSERT INTO entities(id,name,entity_type,created_at,updated_at) VALUES (?1,?2,?3,?4,?4)",
             params![id, input.name.trim(), entity_type, now],
         )?;
+        self.rebuild_search()?;
+        Ok(Entity {
+            id,
+            name: input.name.trim().into(),
+            entity_type,
+            deleted: false,
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    pub fn create_entry(&self, input: CreateEntry) -> Result<Entity, CoreError> {
+        if input.name.trim().is_empty() {
+            return Err(CoreError::NotFound("entity name cannot be empty".into()));
+        }
+        let format = input
+            .document
+            .as_ref()
+            .and_then(|document| document.format.as_deref())
+            .unwrap_or("markdown")
+            .to_owned();
+        if format != "markdown" && format != "plain-text" && format != "rich-text" {
+            return Err(CoreError::NotFound("unsupported document format".into()));
+        }
+        let encoded_fields = input
+            .fields
+            .iter()
+            .map(|field| {
+                if field.namespace.trim().is_empty() || field.key.trim().is_empty() {
+                    return Err(CoreError::NotFound(
+                        "field namespace and key are required".into(),
+                    ));
+                }
+                Ok((field, encode_field_value(&field.value)?))
+            })
+            .collect::<Result<Vec<_>, CoreError>>()?;
+        let entity_type = input
+            .entity_type
+            .map(|value| value.trim().to_owned());
+        let id = Uuid::new_v4().to_string();
+        let now = chrono_like_now();
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
+            "INSERT INTO entities(id,name,entity_type,created_at,updated_at) VALUES (?1,?2,?3,?4,?4)",
+            params![id, input.name.trim(), entity_type, now],
+        )?;
+        if let Some(document) = input.document {
+            transaction.execute(
+                "INSERT INTO documents(id,entity_id,format,body,updated_at) VALUES (?1,?2,?3,?4,?5)",
+                params![Uuid::new_v4().to_string(), id, format, document.body, now],
+            )?;
+        }
+        for (field, value) in encoded_fields {
+            transaction.execute(
+                "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
+                params![id, field.namespace, field.key, value],
+            )?;
+        }
+        transaction.commit()?;
         self.rebuild_search()?;
         Ok(Entity {
             id,
@@ -1472,6 +1552,51 @@ mod tests {
                 entity_type: None
             })
             .is_err());
+    }
+
+    #[test]
+    fn create_entry_writes_template_content_atomically() {
+        let store = ProjectStore::in_memory().unwrap();
+        let entity = store
+            .create_entry(CreateEntry {
+                name: "The Ash Court".into(),
+                entity_type: Some("faction".into()),
+                document: Some(CreateEntryDocument {
+                    body: "A quiet power.".into(),
+                    format: Some("plain-text".into()),
+                }),
+                fields: vec![CreateEntryField {
+                    namespace: "lore".into(),
+                    key: "summary".into(),
+                    value: serde_json::json!("A quiet power."),
+                }],
+            })
+            .unwrap();
+        assert_eq!(store.list_documents(entity.id.clone()).unwrap()[0].body, "A quiet power.");
+        assert_eq!(store.list_fields(entity.id).unwrap()[0].key, "summary");
+
+        let result = store.create_entry(CreateEntry {
+            name: "Should roll back".into(),
+            entity_type: Some("place".into()),
+            document: Some(CreateEntryDocument {
+                body: "Not persisted".into(),
+                format: None,
+            }),
+            fields: vec![
+                CreateEntryField {
+                    namespace: "lore".into(),
+                    key: "summary".into(),
+                    value: serde_json::json!("first"),
+                },
+                CreateEntryField {
+                    namespace: "lore".into(),
+                    key: "summary".into(),
+                    value: serde_json::json!("duplicate"),
+                },
+            ],
+        });
+        assert!(result.is_err());
+        assert_eq!(store.list_entities().unwrap().len(), 1);
     }
 
     #[test]

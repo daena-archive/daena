@@ -1230,14 +1230,31 @@ fn dispatch_module_rpc(
             serde_json::to_value(entity).map_err(|error| CoreError::Validation(error.to_string()))
         }
         "entity.create" => {
-            let input = worldbuilder_core::CreateEntity {
+            let fields = payload
+                .get("fields")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|error| CoreError::Validation(format!("invalid entity fields: {error}")))?
+                .unwrap_or_default();
+            let document = payload
+                .get("document")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|error| {
+                    CoreError::Validation(format!("invalid entity document: {error}"))
+                })?;
+            let input = worldbuilder_core::CreateEntry {
                 name: payload_string(&payload, "name")?,
                 entity_type: payload
                     .get("type")
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned),
+                document,
+                fields,
             };
-            serde_json::to_value(project.create_entity(input)?)
+            serde_json::to_value(project.create_entry(input)?)
                 .map_err(|error| CoreError::Validation(error.to_string()))
         }
         "entity.update" => {

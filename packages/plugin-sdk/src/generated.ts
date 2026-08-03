@@ -10,9 +10,9 @@ export type FieldType = "text" | "number" | "boolean" | "date" | "enum" | "entit
 
 export interface Entrypoints { ui?: string; wasm?: string }
 export interface Dependency { version: string; required: boolean }
-export interface FieldDefinition { key: string; label: string; type: FieldType; required?: boolean; options?: string[] }
+export interface FieldDefinition { key: string; label: string; type: FieldType; required?: boolean; options?: string[]; entityTypes?: string[] }
 export interface SchemaContribution { namespace: string; entityTypes: string[]; fields: FieldDefinition[] }
-export interface EntityTemplate { id: string; name: string; entityType: string; fields: Record<string, unknown>; document?: string }
+export interface EntityTemplate { id: string; name: string; entityType: string; description?: string; icon?: string; fields: Record<string, unknown>; requiredFields?: string[]; document?: string }
 export type MigrationOperation =
   | { kind: "create-namespace"; namespace: string }
   | { kind: "add-field"; namespace: string; field: FieldDefinition }
@@ -54,4 +54,3 @@ export interface RpcFailure { rpcVersion: 1; requestId: string; ok: false; error
 export type RpcResponse = RpcSuccess | RpcFailure;
 
 export type LifecycleState = "discovered" | "validated" | "installed" | "resolved" | "activating" | "active" | "deactivating" | "failed" | "quarantined" | "incompatible" | "uninstalling" | "removed";
-

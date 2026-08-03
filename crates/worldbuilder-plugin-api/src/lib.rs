@@ -67,6 +67,8 @@ pub struct FieldDefinition {
     pub field_type: String,
     pub required: Option<bool>,
     pub options: Option<Vec<String>>,
+    #[serde(rename = "entityTypes")]
+    pub entity_types: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -85,7 +87,11 @@ pub struct EntityTemplate {
     pub name: String,
     #[serde(rename = "entityType")]
     pub entity_type: String,
+    pub description: Option<String>,
+    pub icon: Option<String>,
     pub fields: serde_json::Value,
+    #[serde(rename = "requiredFields")]
+    pub required_fields: Option<Vec<String>>,
     pub document: Option<String>,
 }
 
@@ -281,6 +287,116 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
             "schema namespace is not owned by plugin".into(),
         ));
     }
+    let entity_types = manifest
+        .schemas
+        .iter()
+        .flat_map(|schema| schema.entity_types.iter())
+        .collect::<BTreeSet<_>>();
+    let mut fields = BTreeMap::new();
+    for schema in &manifest.schemas {
+        for field in &schema.fields {
+            if let Some(field_entity_types) = &field.entity_types {
+                let declared_field_entity_types = field_entity_types.iter().collect::<BTreeSet<_>>();
+                if field_entity_types.is_empty()
+                    || declared_field_entity_types.len() != field_entity_types.len()
+                    || !declared_field_entity_types.is_subset(&entity_types)
+                {
+                    return Err(ContractError(format!(
+                        "field {} declares unknown or duplicate entity types",
+                        field.key
+                    )));
+                }
+            }
+            if fields
+                .insert(&field.key, (schema, field))
+                .is_some()
+            {
+                return Err(ContractError(format!(
+                    "duplicate field key across schemas: {}",
+                    field.key
+                )));
+            }
+        }
+    }
+    let mut template_ids = BTreeSet::new();
+    for template in &manifest.templates {
+        if !template_ids.insert(&template.id) {
+            return Err(ContractError(format!(
+                "duplicate template id: {}",
+                template.id
+            )));
+        }
+        if !entity_types.contains(&template.entity_type) {
+            return Err(ContractError(format!(
+                "template uses undeclared entity type: {}",
+                template.entity_type
+            )));
+        }
+        if let Some(required_fields) = &template.required_fields {
+            let mut required_field_ids = BTreeSet::new();
+            for key in required_fields {
+                if !required_field_ids.insert(key) {
+                    return Err(ContractError(format!(
+                        "template {} has duplicate required field: {key}",
+                        template.id
+                    )));
+                }
+                let (_, field) = fields.get(key).ok_or_else(|| {
+                    ContractError(format!(
+                        "template {} requires undeclared field: {key}",
+                        template.id
+                    ))
+                })?;
+                if let Some(field_entity_types) = &field.entity_types {
+                    if !field_entity_types.contains(&template.entity_type) {
+                        return Err(ContractError(format!(
+                            "template {} requires field not applicable to entity type: {key}",
+                            template.id
+                        )));
+                    }
+                }
+            }
+        }
+        let values = template
+            .fields
+            .as_object()
+            .ok_or_else(|| ContractError(format!("template fields must be an object: {}", template.id)))?;
+        for (key, value) in values {
+            let (_, field) = fields.get(key).ok_or_else(|| {
+                ContractError(format!(
+                    "template {} uses undeclared field: {key}",
+                    template.id
+                ))
+            })?;
+            if let Some(field_entity_types) = &field.entity_types {
+                if !field_entity_types.contains(&template.entity_type) {
+                    return Err(ContractError(format!(
+                        "template {} uses field not applicable to entity type: {key}",
+                        template.id
+                    )));
+                }
+            }
+            if value.is_null() || value == "" {
+                continue;
+            }
+            let valid = match field.field_type.as_str() {
+                "text" | "entity-ref" => value.is_string(),
+                "number" => value.as_f64().is_some(),
+                "boolean" => value.is_boolean(),
+                "date" => value.is_string() || value.is_object(),
+                "enum" => value
+                    .as_str()
+                    .is_some_and(|candidate| field.options.as_ref().is_some_and(|options| options.contains(&candidate.to_owned()))),
+                _ => false,
+            };
+            if !valid {
+                return Err(ContractError(format!(
+                    "template {} has invalid preset for field: {key}",
+                    template.id
+                )));
+            }
+        }
+    }
     let mut current = 0;
     let mut migrations = manifest.migrations.iter().collect::<Vec<_>>();
     migrations.sort_by_key(|migration| migration.from);
@@ -416,6 +532,48 @@ mod tests {
             "\"name\": \"Lore\", \"unexpected\": true",
         );
         assert!(parse_manifest(&json).is_err());
+    }
+
+    #[test]
+    fn template_references_must_match_declared_schema() {
+        let json = include_str!("../../../packages/modules/lore/manifest.json");
+        let mut manifest = parse_manifest(json).unwrap();
+        manifest.templates[0].entity_type = "unknown".into();
+        assert!(validate_manifest(&manifest).is_err());
+
+        let mut manifest = parse_manifest(json).unwrap();
+        manifest.templates[0].fields = serde_json::json!({"unknown": "value"});
+        assert!(validate_manifest(&manifest).is_err());
+    }
+
+    #[test]
+    fn field_entity_types_must_match_declared_types() {
+        let json = include_str!("../../../packages/modules/lore/manifest.json");
+        let mut manifest = parse_manifest(json).unwrap();
+        assert!(validate_manifest(&manifest).is_ok());
+
+        manifest.schemas[0].fields[2].entity_types = Some(vec!["unknown".into()]);
+        assert!(validate_manifest(&manifest).is_err());
+
+        let mut manifest = parse_manifest(json).unwrap();
+        manifest.templates[0].fields = serde_json::json!({"occupation": "Archivist"});
+        assert!(validate_manifest(&manifest).is_ok());
+        manifest.templates[1].fields = serde_json::json!({"occupation": "Archivist"});
+        assert!(validate_manifest(&manifest).is_err());
+    }
+
+    #[test]
+    fn template_required_fields_must_match_template_schema() {
+        let json = include_str!("../../../packages/modules/lore/manifest.json");
+        let mut manifest = parse_manifest(json).unwrap();
+        manifest.templates[0].required_fields = Some(vec!["occupation".into()]);
+        assert!(validate_manifest(&manifest).is_ok());
+
+        manifest.templates[0].required_fields = Some(vec!["region".into()]);
+        assert!(validate_manifest(&manifest).is_err());
+
+        manifest.templates[0].required_fields = Some(vec!["unknown".into()]);
+        assert!(validate_manifest(&manifest).is_err());
     }
 
     #[test]

@@ -1720,7 +1720,7 @@ impl PluginHost {
         validate_declared_resource(&manifest, &request.method, &request.payload)?;
         let capabilities =
             required_capabilities(&request.method, &request.payload, session, &self.namespaces)?;
-        if !capabilities.iter().any(|capability| {
+        if !capabilities.iter().all(|capability| {
             session
                 .grants
                 .iter()
@@ -1800,7 +1800,41 @@ fn required_capabilities(
 ) -> Result<Vec<String>, RpcError> {
     match method {
         "entity.read" | "entity.list" | "entity.get" => Ok(vec!["entity.read".into()]),
-        "entity.write" | "entity.create" | "entity.update" => Ok(vec!["entity.write".into()]),
+        "entity.write" | "entity.update" => Ok(vec!["entity.write".into()]),
+        "entity.create" => {
+            let mut capabilities = vec!["entity.write".into()];
+            if payload.get("document").is_some() {
+                capabilities.push("document.write".into());
+            }
+            if let Some(fields) = payload.get("fields") {
+                let fields = fields.as_array().ok_or_else(|| {
+                    rpc_error("payload.invalid", "entity fields must be an array", false)
+                })?;
+                for field in fields {
+                    let namespace = field
+                        .get("namespace")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| {
+                            rpc_error(
+                                "payload.invalid",
+                                "entity fields require namespace",
+                                false,
+                            )
+                        })?;
+                    if namespaces.owner(namespace) != Some(session.plugin_id.as_str()) {
+                        return Err(rpc_error(
+                            "namespace.denied",
+                            "plugin does not own namespace",
+                            false,
+                        ));
+                    }
+                }
+                if !fields.is_empty() {
+                    capabilities.push("field.write:self".into());
+                }
+            }
+            Ok(capabilities)
+        }
         "entity.delete" => Ok(vec!["entity.delete".into()]),
         "document.read" | "document.list" => Ok(vec!["document.read".into()]),
         "document.write" | "document.save" => Ok(vec!["document.write".into()]),
@@ -1909,7 +1943,10 @@ mod tests {
             },
             capabilities: vec![
                 "entity.read".into(),
+                "entity.write".into(),
+                "document.write".into(),
                 "field.read:self".into(),
+                "field.write:self".into(),
                 "asset.read:self".into(),
                 "event.publish:<type>".into(),
                 "service.call:<name>".into(),
@@ -2126,6 +2163,46 @@ mod tests {
         assert_eq!(
             host.rpc("plugin://one", &foreign).error.unwrap().code,
             "namespace.denied"
+        );
+    }
+
+    #[test]
+    fn templated_entity_creation_requires_all_declared_capabilities() {
+        let mut host = host();
+        host.grants
+            .set(
+                "project",
+                "com.example.one",
+                &[
+                    "entity.read".into(),
+                    "entity.write".into(),
+                    "document.write".into(),
+                    "field.write:self".into(),
+                ]
+                .into_iter()
+                .collect(),
+                ["entity.write".into(), "document.write".into()]
+                    .into_iter()
+                    .collect(),
+            )
+            .unwrap();
+        let session = host
+            .bootstrap("com.example.one", "project", "plugin://one")
+            .unwrap();
+        let request = RpcRequest {
+            rpc_version: 1,
+            session_id: session.id,
+            request_id: "create".into(),
+            method: "entity.create".into(),
+            payload: serde_json::json!({
+                "name": "Ash Court",
+                "document": {"body": "A quiet power."},
+                "fields": [{"namespace": "one", "key": "summary", "value": "A quiet power."}]
+            }),
+        };
+        assert_eq!(
+            host.rpc("plugin://one", &request).error.unwrap().code,
+            "capability.denied"
         );
     }
     #[test]

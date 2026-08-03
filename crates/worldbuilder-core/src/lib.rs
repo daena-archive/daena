@@ -7,10 +7,10 @@ pub use authority::{Authority, AuthorityContext};
 pub use error::CoreError;
 pub use migrations::{FieldDefinition, Migration, Operation};
 pub use project::{
-    Asset, AssetFileInput, AssetInput, CreateEntity, Document, Entity, FieldValue, GitLogEntry,
-    GitStatus, MigrationHistoryEntry, ModuleField, ModuleNamespace, ModuleState, PluginBackup,
-    ProjectInfo, ProjectSnapshot, ProjectStore, Relationship, RelationshipInput, SaveDocument,
-    SaveEntry,
+    Asset, AssetFileInput, AssetInput, CreateEntity, CreateEntry, CreateEntryDocument,
+    CreateEntryField, Document, Entity, FieldValue, GitLogEntry, GitStatus, MigrationHistoryEntry,
+    ModuleField, ModuleNamespace, ModuleState, PluginBackup, ProjectInfo, ProjectSnapshot,
+    ProjectStore, Relationship, RelationshipInput, SaveDocument, SaveEntry,
 };
 
 #[derive(Default)]

@@ -15,8 +15,14 @@ assert.doesNotMatch(plugin, /__TAURI_INTERNALS__|@tauri-apps/, "plugin bundle mu
 assert.match(plugin, /fetch\("\/__rpc"/);
 assert.match(tauriSource, /WebviewWindowBuilder::new/);
 assert.match(tauriSource, /use_https_scheme\(true\)/);
-assert.match(tauriSource, /register_uri_scheme_protocol\("plugin-worldbuilder-lore"/);
-assert.match(tauriSource, /register_uri_scheme_protocol\("plugin-worldbuilder-timeline"/);
+assert.match(tauriSource, /register_uri_scheme_protocol\("plugin"/);
+assert.doesNotMatch(
+  tauriSource,
+  /register_uri_scheme_protocol\("plugin-worldbuilder-(?:lore|timeline)"/,
+  "plugin assets must use the shared broker protocol",
+);
+assert.match(tauriSource, /plugin_protocol_response\(/);
+assert.match(tauriSource, /plugin_window_label\(plugin_id\) != webview_label/);
 assert.match(tauri, /connect-src 'self'/);
 assert.match(tauri, /frame-src 'none'/);
 assert.equal(/core:default/.test(capability), false, "plugin webviews must not receive the core API");

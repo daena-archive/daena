@@ -9,7 +9,7 @@ use worldbuilder_core::{
     RelationshipInput, SaveDocument, SaveEntry,
 };
 use worldbuilder_plugin_api::{MigrationOperation, PluginManifest, RpcRequest, RpcResponse};
-use worldbuilder_plugin_host::PluginHost;
+use worldbuilder_plugin_host::{HostError, PluginHost, ServiceRequest};
 
 type SharedCore = Arc<Mutex<CoreService>>;
 type SharedPluginHost = Arc<Mutex<PluginHost>>;
@@ -114,6 +114,24 @@ fn bundled_plugin_host() -> Result<PluginHost, String> {
         host.register_bundled_json(manifest)
             .map_err(|error| error.to_string())?;
     }
+    host.services
+        .register(
+            "worldbuilder.timeline",
+            "worldbuilder.timeline.resolve-date",
+            1,
+            Arc::new(|request: ServiceRequest| {
+                if request.cancellation.is_cancelled() {
+                    return Err(HostError("timeline service call cancelled".into()));
+                }
+                let date = request
+                    .payload
+                    .get("date")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| HostError("timeline service requires date".into()))?;
+                Ok(serde_json::json!({"date": date}))
+            }),
+        )
+        .map_err(|error| error.to_string())?;
     Ok(host)
 }
 
@@ -236,7 +254,7 @@ async fn module_enable(
         plugins
             .lock()
             .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
-            .ensure_bundled_session(&manifest.id, &project_id)
+            .activate_bundled(&project_id, &manifest.id)
             .map_err(|error| CoreError::Validation(error.to_string()))?;
         Ok(())
     })
@@ -269,7 +287,7 @@ async fn module_disable(
         plugins
             .lock()
             .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
-            .revoke_plugin(&project_id, &id);
+            .deactivate_bundled(&project_id, &id);
         Ok(())
     })
     .await
@@ -415,6 +433,86 @@ async fn module_rpc(
         .map_err(|_| "plugin host lock poisoned".to_string())?
         .authorize_bundled(&plugin_id, &project_id, &method, payload.clone())
         .map_err(|error| error.to_string())?;
+    if matches!(
+        method.as_str(),
+        "event.subscribe" | "event.poll" | "event.publish"
+    ) {
+        let event_type = payload
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "event RPC payload requires type".to_string())?;
+        let (name, version) = event_type
+            .rsplit_once('@')
+            .ok_or_else(|| "event type must include @version".to_string())?;
+        let version = version
+            .parse::<u32>()
+            .map_err(|_| "event version is invalid".to_string())?;
+        let mut host = plugins
+            .lock()
+            .map_err(|_| "plugin host lock poisoned".to_string())?;
+        return match method.as_str() {
+            "event.subscribe" => {
+                host.subscribe_event(&plugin_id, &project_id, name, version)
+                    .map_err(|error| error.to_string())?;
+                Ok(serde_json::Value::Null)
+            }
+            "event.poll" => serde_json::to_value(
+                host.poll_events(&plugin_id, &project_id, name, version)
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string()),
+            "event.publish" => Ok(serde_json::to_value(
+                host.publish_event(
+                    &plugin_id,
+                    &project_id,
+                    name,
+                    version,
+                    payload
+                        .get("payload")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                )
+                .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?),
+            _ => unreachable!(),
+        };
+    }
+    if method == "service.call" {
+        let name = payload
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "service RPC payload requires name".to_string())?;
+        let major = payload
+            .get("major")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| "service RPC payload requires major".to_string())?
+            as u32;
+        let deadline_ms = payload
+            .get("deadlineMs")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(5_000)
+            .clamp(1, 30_000);
+        let mut host = plugins
+            .lock()
+            .map_err(|_| "plugin host lock poisoned".to_string())?;
+        return host
+            .call_service(
+                &plugin_id,
+                &project_id,
+                name,
+                major,
+                payload
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+                std::time::Duration::from_millis(deadline_ms),
+            )
+            .map_err(|error| error.to_string());
+    }
+    let event_method = method.clone();
+    let event_project_id = project_id.clone();
+    let event_plugins = plugins.inner().clone();
     with_core(state, move |core| {
         let current_project = core
             .info()
@@ -428,6 +526,34 @@ async fn module_rpc(
         dispatch_module_rpc(core, &method, payload)
     })
     .await
+    .and_then(move |result| {
+        if matches!(
+            event_method.as_str(),
+            "entity.create"
+                | "entity.update"
+                | "entity.delete"
+                | "document.save"
+                | "field.set"
+                | "relationship.create"
+                | "asset.register"
+        ) {
+            let event_payload = serde_json::json!({
+                "method": event_method,
+                "result": result.clone(),
+            });
+            event_plugins
+                .lock()
+                .map_err(|_| "plugin host lock poisoned".to_string())?
+                .publish_core_event(
+                    &event_project_id,
+                    "worldbuilder.core/entity-changed",
+                    1,
+                    event_payload,
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(result)
+    })
 }
 
 #[tauri::command]
@@ -470,8 +596,7 @@ async fn project_close(
             plugins
                 .lock()
                 .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
-                .sessions
-                .revoke_project(&project_id);
+                .deactivate_project(&project_id);
         }
         Ok(())
     })

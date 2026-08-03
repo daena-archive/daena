@@ -4,14 +4,18 @@
 //! owns the facts needed to attribute and authorize a plugin request before a
 //! future core service is called.
 
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread;
 use std::time::{Duration, SystemTime};
 use worldbuilder_plugin_api::{
-    parse_manifest, PluginManifest, RpcError, RpcRequest, RpcResponse, RPC_VERSION,
+    lifecycle_transition, parse_manifest, LifecycleState, PluginManifest, RpcError, RpcRequest,
+    RpcResponse, RPC_VERSION,
 };
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -424,6 +428,554 @@ impl NamespaceOwnership {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependencyPlan {
+    pub order: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisitState {
+    Visiting,
+    Visited,
+}
+
+pub struct DependencyResolver;
+
+impl DependencyResolver {
+    pub fn resolve(catalog: &PluginCatalog, root: &str) -> Result<DependencyPlan, HostError> {
+        let mut states = BTreeMap::new();
+        let mut order = Vec::new();
+        Self::visit(catalog, root, &mut states, &mut order)?;
+        Ok(DependencyPlan { order })
+    }
+
+    fn visit(
+        catalog: &PluginCatalog,
+        id: &str,
+        states: &mut BTreeMap<String, VisitState>,
+        order: &mut Vec<String>,
+    ) -> Result<(), HostError> {
+        match states.get(id) {
+            Some(VisitState::Visited) => return Ok(()),
+            Some(VisitState::Visiting) => {
+                return Err(HostError(format!("plugin dependency cycle includes {id}")))
+            }
+            None => {}
+        }
+        let entry = catalog
+            .get(id)
+            .ok_or_else(|| HostError(format!("plugin dependency is not installed: {id}")))?;
+        states.insert(id.into(), VisitState::Visiting);
+        for (dependency_id, dependency) in &entry.manifest.dependencies {
+            let Some(dependency_entry) = catalog.get(dependency_id) else {
+                if dependency.required {
+                    return Err(HostError(format!(
+                        "required plugin dependency is not installed: {dependency_id}"
+                    )));
+                }
+                continue;
+            };
+            if !version_satisfies(&dependency_entry.manifest.version, &dependency.version) {
+                if dependency.required {
+                    return Err(HostError(format!(
+                        "plugin {dependency_id} version {} does not satisfy {}",
+                        dependency_entry.manifest.version, dependency.version
+                    )));
+                }
+                continue;
+            }
+            Self::visit(catalog, dependency_id, states, order)?;
+        }
+        states.insert(id.into(), VisitState::Visited);
+        order.push(id.into());
+        Ok(())
+    }
+}
+
+fn version_satisfies(version: &str, range: &str) -> bool {
+    if range.trim().is_empty() || range.trim() == "*" {
+        return true;
+    }
+    let Some(actual) = parse_version(version) else {
+        return false;
+    };
+    range.split_whitespace().all(|constraint| {
+        let (operator, value) = if let Some(value) = constraint.strip_prefix(">=") {
+            (">=", value)
+        } else if let Some(value) = constraint.strip_prefix("<=") {
+            ("<=", value)
+        } else if let Some(value) = constraint.strip_prefix('>') {
+            (">", value)
+        } else if let Some(value) = constraint.strip_prefix('<') {
+            ("<", value)
+        } else if let Some(value) = constraint.strip_prefix('^') {
+            ("^", value)
+        } else if let Some(value) = constraint.strip_prefix('~') {
+            ("~", value)
+        } else {
+            ("=", constraint)
+        };
+        let Some(required) = parse_version(value) else {
+            return false;
+        };
+        match operator {
+            ">=" => actual >= required,
+            "<=" => actual <= required,
+            ">" => actual > required,
+            "<" => actual < required,
+            "^" => actual >= required && actual.0 == required.0,
+            "~" => actual >= required && actual.0 == required.0 && actual.1 == required.1,
+            "=" => actual == required,
+            _ => false,
+        }
+    })
+}
+
+fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
+    let core = value.split(['-', '+']).next()?;
+    let mut parts = core.split('.');
+    Some((
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    ))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EventEnvelope {
+    pub project_id: String,
+    pub name: String,
+    pub version: u32,
+    pub source_plugin: String,
+    pub sequence: u64,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PublishResult {
+    pub delivered: usize,
+    pub dropped: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventBus {
+    queues: BTreeMap<(String, String, String), VecDeque<EventEnvelope>>,
+    queue_limit: usize,
+    payload_limit: usize,
+    next_sequence: u64,
+}
+
+impl Default for EventBus {
+    fn default() -> Self {
+        Self::new(64, 256 * 1024)
+    }
+}
+
+impl EventBus {
+    pub fn new(queue_limit: usize, payload_limit: usize) -> Self {
+        Self {
+            queues: BTreeMap::new(),
+            queue_limit: queue_limit.max(1),
+            payload_limit,
+            next_sequence: 0,
+        }
+    }
+
+    pub fn subscribe(&mut self, project_id: &str, plugin_id: &str, name: &str, version: u32) {
+        self.queues
+            .entry((
+                project_id.into(),
+                plugin_id.into(),
+                event_key(name, version),
+            ))
+            .or_default();
+    }
+
+    pub fn unsubscribe(&mut self, project_id: &str, plugin_id: &str, name: &str, version: u32) {
+        self.queues.remove(&(
+            project_id.into(),
+            plugin_id.into(),
+            event_key(name, version),
+        ));
+    }
+
+    pub fn unsubscribe_plugin(&mut self, project_id: &str, plugin_id: &str) {
+        self.queues
+            .retain(|(project, subscriber, _), _| project != project_id || subscriber != plugin_id);
+    }
+
+    pub fn publish(
+        &mut self,
+        project_id: &str,
+        source_plugin: &str,
+        name: &str,
+        version: u32,
+        payload: serde_json::Value,
+    ) -> Result<PublishResult, HostError> {
+        let size = serde_json::to_vec(&payload)
+            .map_err(|error| HostError(format!("event payload is not serializable: {error}")))?
+            .len();
+        if size > self.payload_limit {
+            return Err(HostError("event payload exceeds host limit".into()));
+        }
+        self.next_sequence = self.next_sequence.wrapping_add(1);
+        let key = event_key(name, version);
+        let mut delivered = 0;
+        let mut dropped = 0;
+        for ((project, _, subscription), queue) in self.queues.iter_mut() {
+            if project != project_id {
+                continue;
+            }
+            if subscription != &key {
+                continue;
+            }
+            if queue.len() >= self.queue_limit {
+                queue.pop_front();
+                dropped += 1;
+            }
+            queue.push_back(EventEnvelope {
+                project_id: project_id.into(),
+                name: name.into(),
+                version,
+                source_plugin: source_plugin.into(),
+                sequence: self.next_sequence,
+                payload: payload.clone(),
+            });
+            delivered += 1;
+        }
+        Ok(PublishResult { delivered, dropped })
+    }
+
+    pub fn drain(
+        &mut self,
+        project_id: &str,
+        plugin_id: &str,
+        name: &str,
+        version: u32,
+    ) -> Vec<EventEnvelope> {
+        self.queues
+            .get_mut(&(
+                project_id.into(),
+                plugin_id.into(),
+                event_key(name, version),
+            ))
+            .map(|queue| queue.drain(..).collect())
+            .unwrap_or_default()
+    }
+}
+
+fn event_key(name: &str, version: u32) -> String {
+    format!("{name}@{version}")
+}
+
+#[derive(Debug, Clone)]
+pub struct CancellationToken(Arc<AtomicBool>);
+
+impl CancellationToken {
+    pub fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(false)))
+    }
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+impl Default for CancellationToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct ServiceRequest {
+    pub payload: serde_json::Value,
+    pub cancellation: CancellationToken,
+}
+
+pub type ServiceHandler =
+    Arc<dyn Fn(ServiceRequest) -> Result<serde_json::Value, HostError> + Send + Sync>;
+
+#[derive(Clone)]
+struct ServiceProvider {
+    plugin_id: String,
+    handler: ServiceHandler,
+    active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ServiceKey {
+    name: String,
+    major: u32,
+}
+
+#[derive(Clone)]
+pub struct ServiceRegistry {
+    providers: BTreeMap<ServiceKey, ServiceProvider>,
+    payload_limit: usize,
+}
+
+impl ServiceRegistry {
+    pub fn new(payload_limit: usize) -> Self {
+        Self {
+            providers: BTreeMap::new(),
+            payload_limit,
+        }
+    }
+
+    pub fn register(
+        &mut self,
+        plugin_id: &str,
+        name: &str,
+        major: u32,
+        handler: ServiceHandler,
+    ) -> Result<(), HostError> {
+        let key = ServiceKey {
+            name: name.into(),
+            major,
+        };
+        if let Some(provider) = self.providers.get_mut(&key) {
+            if provider.plugin_id != plugin_id {
+                return Err(HostError(format!(
+                    "service provider already exists: {name}@{major}"
+                )));
+            }
+            provider.handler = handler;
+            provider.active = true;
+            return Ok(());
+        }
+        self.providers.insert(
+            key,
+            ServiceProvider {
+                plugin_id: plugin_id.into(),
+                handler,
+                active: true,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn unregister_plugin(&mut self, plugin_id: &str) {
+        for provider in self
+            .providers
+            .values_mut()
+            .filter(|provider| provider.plugin_id == plugin_id)
+        {
+            provider.active = false;
+        }
+    }
+
+    pub fn resume_plugin(&mut self, plugin_id: &str) {
+        for provider in self
+            .providers
+            .values_mut()
+            .filter(|provider| provider.plugin_id == plugin_id)
+        {
+            provider.active = true;
+        }
+    }
+
+    pub fn call(
+        &self,
+        consumer_id: &str,
+        name: &str,
+        major: u32,
+        payload: serde_json::Value,
+        deadline: Duration,
+    ) -> Result<serde_json::Value, HostError> {
+        self.call_with_stack(&[consumer_id.to_string()], name, major, payload, deadline)
+    }
+
+    pub fn call_with_stack(
+        &self,
+        stack: &[String],
+        name: &str,
+        major: u32,
+        payload: serde_json::Value,
+        deadline: Duration,
+    ) -> Result<serde_json::Value, HostError> {
+        let size = serde_json::to_vec(&payload)
+            .map_err(|error| HostError(format!("service payload is not serializable: {error}")))?
+            .len();
+        if size > self.payload_limit {
+            return Err(HostError("service payload exceeds host limit".into()));
+        }
+        let key = format!("{name}@{major}");
+        if stack.iter().any(|item| item == &key) {
+            return Err(HostError("re-entrant service call cycle detected".into()));
+        }
+        let provider = self
+            .providers
+            .get(&ServiceKey {
+                name: name.into(),
+                major,
+            })
+            .ok_or_else(|| HostError("service provider unavailable".into()))?;
+        if !provider.active {
+            return Err(HostError("service provider unavailable".into()));
+        }
+        let handler = Arc::clone(&provider.handler);
+        let cancellation = CancellationToken::new();
+        let worker_token = cancellation.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = sender.send(handler(ServiceRequest {
+                payload,
+                cancellation: worker_token,
+            }));
+        });
+        match receiver.recv_timeout(deadline) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                cancellation.cancel();
+                Err(HostError("service deadline exceeded".into()))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(HostError("service provider failed".into()))
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for ServiceRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServiceRegistry")
+            .field("providers", &self.providers.keys().collect::<Vec<_>>())
+            .field("payload_limit", &self.payload_limit)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifecycleRecord {
+    pub state: LifecycleState,
+    pub failures: u32,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct LifecycleRegistry {
+    records: BTreeMap<(String, String), LifecycleRecord>,
+}
+
+impl LifecycleRegistry {
+    fn record(&self, project_id: &str, plugin_id: &str) -> LifecycleRecord {
+        self.records
+            .get(&(project_id.into(), plugin_id.into()))
+            .cloned()
+            .unwrap_or(LifecycleRecord {
+                state: LifecycleState::Discovered,
+                failures: 0,
+                last_error: None,
+            })
+    }
+
+    pub fn state(&self, project_id: &str, plugin_id: &str) -> LifecycleRecord {
+        self.record(project_id, plugin_id)
+    }
+
+    pub fn activate_with<F>(
+        &mut self,
+        project_id: &str,
+        plugin_id: &str,
+        start: F,
+    ) -> Result<(), HostError>
+    where
+        F: FnOnce() -> Result<(), HostError>,
+    {
+        self.begin_activation(project_id, plugin_id)?;
+        match start() {
+            Ok(()) => {
+                self.activation_succeeded(project_id, plugin_id);
+                Ok(())
+            }
+            Err(error) => {
+                self.activation_failed(project_id, plugin_id, &error.to_string());
+                Err(error)
+            }
+        }
+    }
+
+    fn set_state(&mut self, project_id: &str, plugin_id: &str, state: LifecycleState) {
+        self.records
+            .entry((project_id.into(), plugin_id.into()))
+            .or_insert(LifecycleRecord {
+                state: LifecycleState::Discovered,
+                failures: 0,
+                last_error: None,
+            })
+            .state = state;
+    }
+
+    fn begin_activation(&mut self, project_id: &str, plugin_id: &str) -> Result<(), HostError> {
+        let mut record = self.record(project_id, plugin_id);
+        if record.state == LifecycleState::Quarantined {
+            return Err(HostError("plugin is quarantined".into()));
+        }
+        if record.state == LifecycleState::Active {
+            return Ok(());
+        }
+        if record.state == LifecycleState::Resolved {
+            record.state = LifecycleState::Activating;
+            self.records
+                .insert((project_id.into(), plugin_id.into()), record);
+            return Ok(());
+        }
+        if record.state == LifecycleState::Failed {
+            record.state = LifecycleState::Activating;
+            self.records
+                .insert((project_id.into(), plugin_id.into()), record);
+            return Ok(());
+        }
+        for next in [
+            LifecycleState::Validated,
+            LifecycleState::Installed,
+            LifecycleState::Resolved,
+            LifecycleState::Activating,
+        ] {
+            if record.state == next {
+                continue;
+            }
+            if !lifecycle_transition(record.state.clone(), next.clone()) {
+                return Err(HostError(format!(
+                    "invalid lifecycle transition {:?} -> {:?}",
+                    record.state, next
+                )));
+            } else {
+                record.state = next;
+            }
+        }
+        self.records
+            .insert((project_id.into(), plugin_id.into()), record);
+        Ok(())
+    }
+
+    fn activation_succeeded(&mut self, project_id: &str, plugin_id: &str) {
+        self.set_state(project_id, plugin_id, LifecycleState::Active);
+    }
+
+    fn activation_failed(&mut self, project_id: &str, plugin_id: &str, error: &str) {
+        let mut record = self.record(project_id, plugin_id);
+        record.failures = record.failures.saturating_add(1);
+        record.last_error = Some(error.into());
+        record.state = LifecycleState::Failed;
+        if record.failures >= 3 {
+            record.state = LifecycleState::Quarantined;
+        }
+        self.records
+            .insert((project_id.into(), plugin_id.into()), record);
+    }
+
+    fn deactivate(&mut self, project_id: &str, plugin_id: &str) {
+        let record = self.record(project_id, plugin_id);
+        if record.state == LifecycleState::Active {
+            self.set_state(project_id, plugin_id, LifecycleState::Deactivating);
+            self.set_state(project_id, plugin_id, LifecycleState::Resolved);
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PluginHost {
     pub catalog: PluginCatalog,
@@ -431,6 +983,9 @@ pub struct PluginHost {
     pub sessions: SessionRegistry,
     pub namespaces: NamespaceOwnership,
     pub session_ttl: Duration,
+    pub lifecycle: LifecycleRegistry,
+    pub events: EventBus,
+    pub services: ServiceRegistry,
 }
 
 impl Default for PluginHost {
@@ -446,6 +1001,9 @@ impl PluginHost {
             sessions: SessionRegistry::default(),
             namespaces: NamespaceOwnership::default(),
             session_ttl: Duration::from_secs(15 * 60),
+            lifecycle: LifecycleRegistry::default(),
+            events: EventBus::default(),
+            services: ServiceRegistry::new(256 * 1024),
         }
     }
     pub fn install_development_dir(
@@ -498,6 +1056,138 @@ impl PluginHost {
     }
     pub fn revoke_plugin(&mut self, project_id: &str, plugin_id: &str) {
         self.sessions.revoke_plugin(project_id, plugin_id);
+        self.lifecycle.deactivate(project_id, plugin_id);
+        self.events.unsubscribe_plugin(project_id, plugin_id);
+        self.services.unregister_plugin(plugin_id);
+    }
+    pub fn activate_bundled(
+        &mut self,
+        project_id: &str,
+        plugin_id: &str,
+    ) -> Result<DependencyPlan, HostError> {
+        let plan = DependencyResolver::resolve(&self.catalog, plugin_id)?;
+        let mut activated: Vec<String> = Vec::new();
+        for activation_id in &plan.order {
+            if let Err(error) = self.lifecycle.begin_activation(project_id, activation_id) {
+                for previous in activated.into_iter().rev() {
+                    self.deactivate_bundled(project_id, &previous);
+                }
+                return Err(error);
+            }
+            match self.ensure_bundled_session(activation_id, project_id) {
+                Ok(_) => {
+                    self.lifecycle
+                        .activation_succeeded(project_id, activation_id);
+                    self.services.resume_plugin(activation_id);
+                    activated.push(activation_id.clone());
+                }
+                Err(error) => {
+                    self.lifecycle
+                        .activation_failed(project_id, activation_id, &error.to_string());
+                    self.sessions.revoke_plugin(project_id, activation_id);
+                    for previous in activated.into_iter().rev() {
+                        self.deactivate_bundled(project_id, &previous);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(plan)
+    }
+    pub fn deactivate_bundled(&mut self, project_id: &str, plugin_id: &str) {
+        if let Ok(plan) = DependencyResolver::resolve(&self.catalog, plugin_id) {
+            for dependency in plan.order.into_iter().rev() {
+                self.revoke_plugin(project_id, &dependency);
+            }
+        } else {
+            self.revoke_plugin(project_id, plugin_id);
+        }
+    }
+    pub fn deactivate_project(&mut self, project_id: &str) {
+        let plugin_ids = self
+            .catalog
+            .list()
+            .map(|entry| entry.manifest.id.clone())
+            .collect::<Vec<_>>();
+        for plugin_id in plugin_ids {
+            self.deactivate_bundled(project_id, &plugin_id);
+        }
+    }
+    pub fn publish_event(
+        &mut self,
+        source_plugin: &str,
+        project_id: &str,
+        name: &str,
+        version: u32,
+        payload: serde_json::Value,
+    ) -> Result<PublishResult, HostError> {
+        self.authorize_bundled(
+            source_plugin,
+            project_id,
+            "event.publish",
+            serde_json::json!({"type": format!("{name}@{version}")}),
+        )?;
+        self.events
+            .publish(project_id, source_plugin, name, version, payload)
+    }
+    pub fn publish_core_event(
+        &mut self,
+        project_id: &str,
+        name: &str,
+        version: u32,
+        payload: serde_json::Value,
+    ) -> Result<PublishResult, HostError> {
+        self.events
+            .publish(project_id, "worldbuilder.core", name, version, payload)
+    }
+    pub fn subscribe_event(
+        &mut self,
+        plugin_id: &str,
+        project_id: &str,
+        name: &str,
+        version: u32,
+    ) -> Result<(), HostError> {
+        self.authorize_bundled(
+            plugin_id,
+            project_id,
+            "event.subscribe",
+            serde_json::json!({"type": format!("{name}@{version}")}),
+        )?;
+        self.events.subscribe(project_id, plugin_id, name, version);
+        Ok(())
+    }
+    pub fn poll_events(
+        &mut self,
+        plugin_id: &str,
+        project_id: &str,
+        name: &str,
+        version: u32,
+    ) -> Result<Vec<EventEnvelope>, HostError> {
+        self.authorize_bundled(
+            plugin_id,
+            project_id,
+            "event.subscribe",
+            serde_json::json!({"type": format!("{name}@{version}")}),
+        )?;
+        Ok(self.events.drain(project_id, plugin_id, name, version))
+    }
+    pub fn call_service(
+        &mut self,
+        consumer_id: &str,
+        project_id: &str,
+        name: &str,
+        major: u32,
+        payload: serde_json::Value,
+        deadline: Duration,
+    ) -> Result<serde_json::Value, HostError> {
+        self.authorize_bundled(
+            consumer_id,
+            project_id,
+            "service.call",
+            serde_json::json!({"name": name}),
+        )?;
+        self.services
+            .call(consumer_id, name, major, payload, deadline)
     }
     pub fn ensure_bundled_session(
         &mut self,
@@ -530,6 +1220,9 @@ impl PluginHost {
         method: &str,
         payload: serde_json::Value,
     ) -> Result<(), HostError> {
+        if self.lifecycle.state(project_id, plugin_id).state != LifecycleState::Active {
+            return Err(HostError("plugin is not active".into()));
+        }
         let session = self.ensure_bundled_session(plugin_id, project_id)?;
         let request = RpcRequest {
             rpc_version: RPC_VERSION,
@@ -596,7 +1289,7 @@ fn validate_declared_resource(
     payload: &serde_json::Value,
 ) -> Result<(), RpcError> {
     match method {
-        "event.publish" | "event.subscribe" => {
+        "event.publish" | "event.subscribe" | "event.poll" => {
             let event_type = payload
                 .get("type")
                 .and_then(serde_json::Value::as_str)
@@ -674,7 +1367,7 @@ fn required_capabilities(
                 "field.write:self".into()
             }])
         }
-        "event.publish" | "event.subscribe" => {
+        "event.publish" | "event.subscribe" | "event.poll" => {
             let event_type = payload
                 .get("type")
                 .and_then(serde_json::Value::as_str)
@@ -1058,5 +1751,278 @@ mod tests {
         assert_eq!(host.catalog.list().count(), 2);
         assert!(host.catalog.get("worldbuilder.lore").is_some());
         assert!(host.catalog.get("worldbuilder.timeline").is_some());
+    }
+
+    #[test]
+    fn dependencies_resolve_in_activation_order_and_reject_cycles() {
+        let mut catalog = PluginCatalog::default();
+        let mut app = manifest("com.example.app", "app");
+        app.dependencies.insert(
+            "com.example.service".into(),
+            worldbuilder_plugin_api::Dependency {
+                version: "^1.0.0".into(),
+                required: true,
+            },
+        );
+        catalog
+            .insert_for_test(CatalogEntry {
+                manifest: app,
+                package_root: PathBuf::new(),
+                digest: "a".repeat(64),
+            })
+            .unwrap();
+        catalog
+            .insert_for_test(CatalogEntry {
+                manifest: manifest("com.example.service", "service"),
+                package_root: PathBuf::new(),
+                digest: "b".repeat(64),
+            })
+            .unwrap();
+        assert_eq!(
+            DependencyResolver::resolve(&catalog, "com.example.app")
+                .unwrap()
+                .order,
+            vec!["com.example.service", "com.example.app"]
+        );
+        let mut cycle = catalog.get("com.example.service").unwrap().manifest.clone();
+        cycle.dependencies.insert(
+            "com.example.app".into(),
+            worldbuilder_plugin_api::Dependency {
+                version: "*".into(),
+                required: true,
+            },
+        );
+        let mut cyclic = PluginCatalog::default();
+        cyclic
+            .insert_for_test(CatalogEntry {
+                manifest: catalog.get("com.example.app").unwrap().manifest.clone(),
+                package_root: PathBuf::new(),
+                digest: "a".repeat(64),
+            })
+            .unwrap();
+        cyclic
+            .insert_for_test(CatalogEntry {
+                manifest: cycle,
+                package_root: PathBuf::new(),
+                digest: "b".repeat(64),
+            })
+            .unwrap();
+        assert!(DependencyResolver::resolve(&cyclic, "com.example.app").is_err());
+    }
+
+    #[test]
+    fn event_bus_is_at_most_once_and_bounded_for_slow_subscribers() {
+        let mut bus = EventBus::new(1, 1024);
+        bus.subscribe("project", "consumer", "worldbuilder.core/entity-changed", 1);
+        assert_eq!(
+            bus.publish(
+                "project",
+                "worldbuilder.core",
+                "worldbuilder.core/entity-changed",
+                1,
+                serde_json::json!({"id": 1})
+            )
+            .unwrap(),
+            PublishResult {
+                delivered: 1,
+                dropped: 0
+            }
+        );
+        assert_eq!(
+            bus.publish(
+                "project",
+                "worldbuilder.core",
+                "worldbuilder.core/entity-changed",
+                1,
+                serde_json::json!({"id": 2})
+            )
+            .unwrap(),
+            PublishResult {
+                delivered: 1,
+                dropped: 1
+            }
+        );
+        let events = bus.drain("project", "consumer", "worldbuilder.core/entity-changed", 1);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload["id"], 2);
+        let mut limited = EventBus::new(1, 4);
+        assert!(limited
+            .publish(
+                "project",
+                "core",
+                "large",
+                1,
+                serde_json::json!("0123456789")
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn services_enforce_provider_loss_deadlines_and_reentrancy() {
+        let mut services = ServiceRegistry::new(1024);
+        services
+            .register(
+                "timeline",
+                "com.example.timeline/date",
+                1,
+                Arc::new(|request| Ok(request.payload)),
+            )
+            .unwrap();
+        assert_eq!(
+            services
+                .call(
+                    "consumer",
+                    "com.example.timeline/date",
+                    1,
+                    serde_json::json!({"date":"1-1-1"}),
+                    Duration::from_millis(100),
+                )
+                .unwrap()["date"],
+            "1-1-1"
+        );
+        assert!(services
+            .call_with_stack(
+                &["consumer".into(), "com.example.timeline/date@1".into()],
+                "com.example.timeline/date",
+                1,
+                serde_json::json!({}),
+                Duration::from_millis(100),
+            )
+            .is_err());
+        services.unregister_plugin("timeline");
+        assert!(services
+            .call(
+                "consumer",
+                "com.example.timeline/date",
+                1,
+                serde_json::json!({}),
+                Duration::from_millis(100),
+            )
+            .is_err());
+        services
+            .register(
+                "slow",
+                "com.example.slow",
+                1,
+                Arc::new(|request| {
+                    while !request.cancellation.is_cancelled() {
+                        thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(HostError("cancelled".into()))
+                }),
+            )
+            .unwrap();
+        assert!(services
+            .call(
+                "consumer",
+                "com.example.slow",
+                1,
+                serde_json::json!({}),
+                Duration::from_millis(10),
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn lifecycle_quarantines_after_three_failed_activations() {
+        let mut lifecycle = LifecycleRegistry::default();
+        for _ in 0..3 {
+            lifecycle.begin_activation("project", "plugin").unwrap();
+            lifecycle.activation_failed("project", "plugin", "startup failed");
+        }
+        let record = lifecycle.state("project", "plugin");
+        assert_eq!(record.state, LifecycleState::Quarantined);
+        assert!(lifecycle.begin_activation("project", "plugin").is_err());
+    }
+
+    #[test]
+    fn lifecycle_rolls_back_failed_startup_and_can_retry_before_quarantine() {
+        let mut lifecycle = LifecycleRegistry::default();
+        assert!(lifecycle
+            .activate_with("project", "plugin", || {
+                Err(HostError("startup failed".into()))
+            })
+            .is_err());
+        assert_eq!(
+            lifecycle.state("project", "plugin").state,
+            LifecycleState::Failed
+        );
+        lifecycle
+            .activate_with("project", "plugin", || Ok(()))
+            .unwrap();
+        assert_eq!(
+            lifecycle.state("project", "plugin").state,
+            LifecycleState::Active
+        );
+    }
+
+    #[test]
+    fn optional_timeline_service_supports_a_declared_consumer() {
+        let service_name = "com.example.timeline.resolve-date";
+        let mut provider = manifest("com.example.timeline", "timeline");
+        provider
+            .services
+            .provides
+            .push(worldbuilder_plugin_api::Service {
+                name: service_name.into(),
+                major: 1,
+            });
+        let mut consumer = manifest("com.example.consumer", "consumer");
+        consumer.capabilities.push("service.call:<name>".into());
+        consumer
+            .services
+            .consumes
+            .push(worldbuilder_plugin_api::Service {
+                name: service_name.into(),
+                major: 1,
+            });
+        let mut host = PluginHost::new();
+        for plugin in [provider, consumer] {
+            host.catalog
+                .insert_for_test(CatalogEntry {
+                    manifest: plugin.clone(),
+                    package_root: PathBuf::new(),
+                    digest: plugin.id.repeat(64).chars().take(64).collect(),
+                })
+                .unwrap();
+            host.namespaces.register_manifest(&plugin).unwrap();
+        }
+        host.grants
+            .set(
+                "project",
+                "com.example.consumer",
+                &host
+                    .catalog
+                    .get("com.example.consumer")
+                    .unwrap()
+                    .manifest
+                    .capabilities,
+                ["entity.read".into(), format!("service.call:{service_name}")]
+                    .into_iter()
+                    .collect(),
+            )
+            .unwrap();
+        host.services
+            .register(
+                "com.example.timeline",
+                service_name,
+                1,
+                Arc::new(|request| Ok(serde_json::json!({"resolved": request.payload["date"]}))),
+            )
+            .unwrap();
+        host.activate_bundled("project", "com.example.consumer")
+            .unwrap();
+        assert_eq!(
+            host.call_service(
+                "com.example.consumer",
+                "project",
+                service_name,
+                1,
+                serde_json::json!({"date": "0042-03-15"}),
+                Duration::from_millis(100),
+            )
+            .unwrap()["resolved"],
+            "0042-03-15"
+        );
     }
 }

@@ -7,12 +7,20 @@ export interface PluginRpcTransport {
 
 export interface PluginRpcClient {
   call<T>(method: string, payload: unknown): Promise<T>;
+  publishEvent(name: string, version: number, payload: unknown): Promise<unknown>;
+  subscribeEvent(name: string, version: number): Promise<void>;
+  pollEvents<T = unknown>(name: string, version: number): Promise<T[]>;
+  callService<T = unknown>(name: string, major: number, payload: unknown, deadlineMs?: number): Promise<T>;
 }
 
 /** Framework-neutral SDK boundary. The host owns identity and authorization. */
 export function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcClient {
   return {
     call: <T>(method: string, payload: unknown) => transport.call(method, payload) as Promise<T>,
+    publishEvent: (name, version, payload) => transport.call("event.publish", { type: `${name}@${version}`, payload }),
+    subscribeEvent: (name, version) => transport.call("event.subscribe", { type: `${name}@${version}` }).then(() => undefined),
+    pollEvents: <T>(name: string, version: number) => transport.call("event.poll", { type: `${name}@${version}` }) as Promise<T[]>,
+    callService: <T>(name: string, major: number, payload: unknown, deadlineMs = 5000) => transport.call("service.call", { name, major, payload, deadlineMs }) as Promise<T>,
   };
 }
 

@@ -8,6 +8,11 @@ The product will use a Rust/Tauri host with a Svelte 5, TypeScript, and Vite fro
 
 ## Architecture
 
+The public plugin-platform contract and its phased migration plan are defined
+in [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md). Runtime-installable
+plugins remain deferred until the bundled Lore and Timeline modules pass the
+broker-backed conversion gate.
+
 - The core owns project storage, stable IDs, migrations, entity links, assets, search indexing, compatibility backups, and permission-checked native operations.
 - A project is a portable directory: `project.json` describes the format, `worldbuilder.sqlite` is the canonical database, and `assets/` contains images, videos, maps, and other files. Git integration is optional and user-controlled.
 - The canonical model is an entity graph with documents: entities have prose documents, optional schema-defined fields, typed relationships, references, and assets.

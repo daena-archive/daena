@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://worldbuilder.app/schemas/plugin-manifest-v1.json",
+  "title": "Worldbuilder Plugin Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["manifestVersion", "id", "name", "version", "publisher", "hostApi", "kind", "entrypoints", "capabilities", "dependencies", "namespaces", "schemas", "templates", "views", "commands", "services", "events", "migrations"],
+  "properties": {
+    "manifestVersion": { "const": 1 },
+    "id": { "$ref": "#/$defs/identifier" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "version": { "$ref": "#/$defs/semver" },
+    "publisher": { "$ref": "#/$defs/identifier" },
+    "hostApi": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "kind": { "enum": ["declarative", "sandboxed"] },
+    "entrypoints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ui": { "$ref": "#/$defs/packagePath" },
+        "wasm": { "$ref": "#/$defs/packagePath" }
+      },
+      "minProperties": 1
+    },
+    "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/dependency" }
+    },
+    "namespaces": { "type": "array", "items": { "$ref": "#/$defs/namespace" }, "uniqueItems": true },
+    "schemas": { "type": "array", "items": { "$ref": "#/$defs/schema" } },
+    "templates": { "type": "array", "items": { "$ref": "#/$defs/template" } },
+    "views": { "type": "array", "items": { "$ref": "#/$defs/view" } },
+    "commands": { "type": "array", "items": { "$ref": "#/$defs/command" } },
+    "services": {
+      "type": "object", "additionalProperties": false,
+      "required": ["provides", "consumes"],
+      "properties": {
+        "provides": { "type": "array", "items": { "$ref": "#/$defs/service" } },
+        "consumes": { "type": "array", "items": { "$ref": "#/$defs/service" } }
+      }
+    },
+    "events": {
+      "type": "object", "additionalProperties": false,
+      "required": ["publishes", "subscribes"],
+      "properties": {
+        "publishes": { "type": "array", "items": { "$ref": "#/$defs/event" } },
+        "subscribes": { "type": "array", "items": { "$ref": "#/$defs/event" } }
+      }
+    },
+    "migrations": { "type": "array", "items": { "$ref": "#/$defs/migration" } }
+  },
+  "$defs": {
+    "identifier": { "type": "string", "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*(?:\\.[a-z0-9]+(?:[.-][a-z0-9]+)*)*$", "maxLength": 128 },
+    "semver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$" },
+    "packagePath": { "type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[^\\u0000]+$" },
+    "dependency": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "required"],
+      "properties": { "version": { "type": "string", "minLength": 1 }, "required": { "type": "boolean" } }
+    },
+    "namespace": { "type": "string", "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$", "maxLength": 64 },
+    "schema": {
+      "type": "object", "additionalProperties": false,
+      "required": ["namespace", "entityTypes", "fields"],
+      "properties": {
+        "namespace": { "$ref": "#/$defs/namespace" },
+        "entityTypes": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "fields": { "type": "array", "items": { "$ref": "#/$defs/field" } }
+      }
+    },
+    "field": {
+      "type": "object", "additionalProperties": false,
+      "required": ["key", "label", "type"],
+      "properties": {
+        "key": { "type": "string", "pattern": "^[a-z][a-zA-Z0-9_]*$" },
+        "label": { "type": "string", "minLength": 1 },
+        "type": { "enum": ["text", "number", "boolean", "date", "enum", "entity-ref"] },
+        "required": { "type": "boolean" },
+        "options": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      }
+    },
+    "template": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "name", "entityType", "fields"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1 },
+        "entityType": { "type": "string", "minLength": 1 }, "fields": { "type": "object" },
+        "document": { "type": "string" }
+      }
+    },
+    "view": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "title"],
+      "properties": { "id": { "type": "string", "minLength": 1 }, "title": { "type": "string", "minLength": 1 } }
+    },
+    "command": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "title"],
+      "properties": { "id": { "type": "string", "minLength": 1 }, "title": { "type": "string", "minLength": 1 } }
+    },
+    "service": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "major"],
+      "properties": { "name": { "$ref": "#/$defs/identifier" }, "major": { "type": "integer", "minimum": 1 } }
+    },
+    "event": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": { "name": { "$ref": "#/$defs/identifier" }, "version": { "type": "integer", "minimum": 1 } }
+    },
+    "migration": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "from", "to", "recovery", "operations"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 }, "from": { "type": "integer", "minimum": 0 },
+        "to": { "type": "integer", "minimum": 1 }, "recovery": { "enum": ["backup", "preserve-data"] },
+        "operations": { "type": "array", "items": { "$ref": "#/$defs/operation" } }
+      }
+    },
+    "operation": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["kind", "namespace"], "properties": { "kind": { "const": "create-namespace" }, "namespace": { "$ref": "#/$defs/namespace" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "namespace", "field"], "properties": { "kind": { "const": "add-field" }, "namespace": { "$ref": "#/$defs/namespace" }, "field": { "$ref": "#/$defs/field" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "namespace", "from", "to"], "properties": { "kind": { "const": "rename-field" }, "namespace": { "$ref": "#/$defs/namespace" }, "from": { "type": "string" }, "to": { "type": "string" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "namespace", "key"], "properties": { "kind": { "const": "drop-field" }, "namespace": { "$ref": "#/$defs/namespace" }, "key": { "type": "string" } } }
+      ]
+    }
+  }
+}

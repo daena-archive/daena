@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://worldbuilder.app/schemas/capability-registry-v1.json",
+  "version": 1,
+  "capabilities": [
+    { "id": "entity.read", "resource": "project.entities", "operations": ["read"] },
+    { "id": "entity.write", "resource": "project.entities", "operations": ["create", "update"] },
+    { "id": "entity.delete", "resource": "project.entities", "operations": ["delete"], "confirmation": "interactive" },
+    { "id": "document.read", "resource": "project.documents", "operations": ["read"] },
+    { "id": "document.write", "resource": "project.documents", "operations": ["create", "update"] },
+    { "id": "field.read:self", "resource": "plugin.namespace", "operations": ["read"] },
+    { "id": "field.read:shared", "resource": "shared.field", "operations": ["read"] },
+    { "id": "field.write:self", "resource": "plugin.namespace", "operations": ["create", "update"] },
+    { "id": "relationship.read", "resource": "project.relationships", "operations": ["read"] },
+    { "id": "relationship.write", "resource": "project.relationships", "operations": ["create"] },
+    { "id": "asset.read:self", "resource": "plugin.assets", "operations": ["read-metadata"] },
+    { "id": "asset.import", "resource": "host.file-picker", "operations": ["import"], "confirmation": "interactive" },
+    { "id": "search.query", "resource": "project.search", "operations": ["query"] },
+    { "id": "event.publish:<type>", "resource": "declared.event", "operations": ["publish"] },
+    { "id": "event.subscribe:<type>", "resource": "declared.event", "operations": ["subscribe"] },
+    { "id": "service.provide:<name>", "resource": "declared.service", "operations": ["provide"] },
+    { "id": "service.call:<name>", "resource": "declared.service", "operations": ["call"] }
+  ],
+  "deniedByDefault": ["filesystem", "shell", "process", "dialog", "tauri", "network"]
+}

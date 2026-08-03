@@ -1,0 +1,31 @@
+{
+  "manifestVersion": 1,
+  "id": "worldbuilder.lore",
+  "name": "Lore",
+  "version": "0.1.0",
+  "publisher": "worldbuilder",
+  "hostApi": ">=1.0.0 <2.0.0",
+  "kind": "sandboxed",
+  "entrypoints": { "ui": "dist/ui/index.html" },
+  "capabilities": ["entity.read", "entity.write", "document.read", "document.write", "relationship.read", "relationship.write", "asset.read:self", "search.query"],
+  "dependencies": {},
+  "namespaces": ["lore"],
+  "schemas": [{
+    "namespace": "lore",
+    "entityTypes": ["person", "place", "faction", "artifact", "culture"],
+    "fields": [
+      { "key": "summary", "label": "Summary", "type": "text" },
+      { "key": "aliases", "label": "Aliases", "type": "text" }
+    ]
+  }],
+  "templates": [
+    { "id": "person", "name": "Person", "entityType": "person", "fields": { "summary": "", "aliases": "" } },
+    { "id": "place", "name": "Place", "entityType": "place", "fields": { "summary": "", "aliases": "" } },
+    { "id": "faction", "name": "Faction", "entityType": "faction", "fields": { "summary": "", "aliases": "" } }
+  ],
+  "views": [{ "id": "lore-entities", "title": "Lore Entries" }],
+  "commands": [],
+  "services": { "provides": [], "consumes": [] },
+  "events": { "publishes": [], "subscribes": [] },
+  "migrations": [{ "id": "lore-v1", "from": 0, "to": 1, "recovery": "backup", "operations": [{ "kind": "create-namespace", "namespace": "lore" }] }]
+}

@@ -1,0 +1,27 @@
+{
+  "manifestVersion": 1,
+  "id": "worldbuilder.timeline",
+  "name": "Timeline",
+  "version": "0.1.0",
+  "publisher": "worldbuilder",
+  "hostApi": ">=1.0.0 <2.0.0",
+  "kind": "sandboxed",
+  "entrypoints": { "ui": "dist/ui/index.html" },
+  "capabilities": ["entity.read", "entity.write", "document.read", "document.write", "relationship.read", "relationship.write", "asset.read:self", "search.query"],
+  "dependencies": {},
+  "namespaces": ["timeline"],
+  "schemas": [{
+    "namespace": "timeline",
+    "entityTypes": ["event"],
+    "fields": [
+      { "key": "startsAt", "label": "Starts", "type": "date", "required": true },
+      { "key": "endsAt", "label": "Ends", "type": "date" }
+    ]
+  }],
+  "templates": [{ "id": "event", "name": "Timeline event", "entityType": "event", "fields": { "startsAt": "", "endsAt": "" } }],
+  "views": [{ "id": "timeline-events", "title": "Timeline Events" }],
+  "commands": [],
+  "services": { "provides": [], "consumes": [] },
+  "events": { "publishes": [], "subscribes": [] },
+  "migrations": [{ "id": "timeline-v1", "from": 0, "to": 1, "recovery": "backup", "operations": [{ "kind": "create-namespace", "namespace": "timeline" }] }]
+}

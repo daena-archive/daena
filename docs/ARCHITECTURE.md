@@ -4,6 +4,12 @@ This document turns the MVP in `docs/PLAN.md` into the contract implemented by
 the host and bundled modules. The contract is intentionally small: the core
 owns durable data and modules own meaning and presentation.
 
+The third-party plugin platform contract is defined in
+[`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md). Its Phase 0 schemas,
+Rust API types, generated SDK types, and ADRs are authoritative for future
+runtime plugins; this document describes the current bundled-module behavior
+until the later conversion phases are complete.
+
 ## Canonical data
 
 Each project is a portable directory containing `project.json`, the canonical

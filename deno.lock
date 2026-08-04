@@ -1010,6 +1010,22 @@
         "npm:typescript@~5.6.2",
         "npm:vite@^6.0.3"
       ]
+    },
+    "members": {
+      "packages/plugin-cli": {
+        "packageJson": {
+          "dependencies": [
+            "npm:@worldbuilder/plugin-sdk@1.0.0"
+          ]
+        }
+      },
+      "packages/plugin-test-host": {
+        "packageJson": {
+          "dependencies": [
+            "npm:@worldbuilder/plugin-sdk@1.0.0"
+          ]
+        }
+      }
     }
   }
 }

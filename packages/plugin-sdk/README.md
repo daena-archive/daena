@@ -1,14 +1,7 @@
 # `@worldbuilder/plugin-sdk`
 
-Framework-neutral TypeScript SDK for Worldbuilder's brokered plugin API.
+Use the definitive [Worldbuilder plugin guide](../../docs/PLUGIN_SDK.md) for
+the SDK contract, broker client, capabilities, migrations, testing, and
+packaging workflow.
 
-```ts
-import { createPluginRpcClient } from "@worldbuilder/plugin-sdk";
-
-const client = createPluginRpcClient(transportProvidedByTheHost);
-const bootstrap = await client.bootstrap();
-const entities = await client.listEntities();
-```
-
-The package publishes compiled ESM in `dist/` with declaration files. Runtime
-identity, grants, storage ownership, and resource policy remain host-owned.
+This package publishes compiled ESM and declaration files for that contract.

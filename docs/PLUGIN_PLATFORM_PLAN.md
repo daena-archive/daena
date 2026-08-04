@@ -8,6 +8,10 @@ supersedes the runtime-extension assumptions in `ARCHITECTURE.md` and `PLAN.md`
 where those documents are less specific. It does not change the canonical
 project data model described there.
 
+Plugin authors should use the [definitive plugin authoring guide](PLUGIN_SDK.md)
+for the current manifest, SDK, testing, packaging, installation, and lifecycle
+workflow. This plan remains the architectural record and phase authority.
+
 The current implementation is a useful contract prototype, but it is not a
 security boundary. Bundled TypeScript modules run in the main webview,
 capability checks run in frontend code, Rust commands do not know which module

@@ -10,6 +10,9 @@ Rust API types, generated SDK types, and ADRs are authoritative for future
 runtime plugins; this document describes the current bundled-module behavior
 until the later conversion phases are complete.
 
+For creating or packaging a plugin, use the [definitive plugin authoring
+guide](./PLUGIN_SDK.md).
+
 ## Canonical data
 
 Each project is a portable directory containing `project.json`, the canonical

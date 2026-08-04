@@ -16,6 +16,8 @@ My World/
 
 Open and close project folders from the app. Files attached through the UI are copied into the project and recorded with a SHA-256 hash. Git can be initialized, inspected, and committed from the project menu; JSON snapshots are used internally for backups and recovery.
 
+Plugin authors should start with the [definitive plugin guide](docs/PLUGIN_SDK.md).
+
 ## Cross-compile
 
 ### Windows

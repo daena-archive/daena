@@ -11,6 +11,10 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:plugin-contract": "node scripts/validate-plugin-contract.mjs",
     "check:plugin-isolation": "node scripts/check-plugin-isolation.mjs",
+    "build:plugin-sdk": "tsc -p packages/plugin-sdk/tsconfig.json",
+    "build:plugin-examples": "node scripts/build-example-wasm.mjs",
+    "test:plugin-conformance": "node scripts/plugin-conformance.mjs",
+    "test:plugin-cli": "node scripts/plugin-cli.test.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri"
   },

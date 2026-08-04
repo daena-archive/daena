@@ -1,0 +1,20 @@
+{
+  "manifestVersion": 1,
+  "id": "com.example.field-notes",
+  "name": "Field Notes",
+  "version": "1.0.0",
+  "publisher": "com.example",
+  "hostApi": ">=1.0.0 <2.0.0",
+  "kind": "declarative",
+  "entrypoints": { "ui": "dist/ui/index.html" },
+  "capabilities": ["entity.read", "entity.write", "field.write:self"],
+  "dependencies": {},
+  "namespaces": ["field-notes"],
+  "schemas": [{ "namespace": "field-notes", "entityTypes": ["note"], "fields": [{ "key": "color", "label": "Color", "type": "enum", "options": ["amber", "blue", "green"] }] }],
+  "templates": [{ "id": "note", "name": "Field note", "entityType": "note", "fields": { "color": "amber" } }],
+  "views": [{ "id": "notes", "title": "Field Notes" }],
+  "commands": [],
+  "services": { "provides": [], "consumes": [] },
+  "events": { "publishes": [], "subscribes": [] },
+  "migrations": [{ "id": "field-notes-v1", "from": 0, "to": 1, "recovery": "backup", "operations": [{ "kind": "create-namespace", "namespace": "field-notes" }] }]
+}

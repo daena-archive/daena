@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
@@ -20,6 +20,14 @@ for (const name of ["lore", "timeline", "writing"]) {
   if (manifest.manifestVersion !== 1 || manifest.id !== `worldbuilder.${name}`) throw new Error(`${name}: identity mismatch`);
   if (manifest.migrations.length !== 1 || manifest.migrations[0].from !== 0 || manifest.migrations[0].to !== 1) throw new Error(`${name}: migration chain mismatch`);
   if (!manifest.namespaces.includes(manifest.schemas[0].namespace)) throw new Error(`${name}: schema namespace is not owned`);
+}
+
+for (const name of ["declarative", "ui", "wasm-service"]) {
+  const manifest = await readJson(`examples/plugins/${name}/manifest.json`);
+  if (!manifest.id.startsWith("com.example.")) throw new Error(`${name}: example identity mismatch`);
+  const entrypoint = manifest.entrypoints.ui ?? manifest.entrypoints.wasm;
+  if (!entrypoint) throw new Error(`${name}: example entrypoint missing`);
+  await stat(resolve(root, `examples/plugins/${name}`, entrypoint));
 }
 
 console.log("plugin contract fixtures are structurally valid");

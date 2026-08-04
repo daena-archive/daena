@@ -1,0 +1,10 @@
+{
+  "name": "@worldbuilder/plugin-cli",
+  "version": "1.0.0",
+  "description": "Validate, package, and author Worldbuilder plugins",
+  "license": "MIT",
+  "type": "module",
+  "bin": { "worldbuilder-plugin": "bin/worldbuilder-plugin.mjs" },
+  "files": ["bin", "README.md"],
+  "dependencies": { "@worldbuilder/plugin-sdk": "1.0.0" }
+}

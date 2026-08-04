@@ -1,0 +1,20 @@
+{
+  "manifestVersion": 1,
+  "id": "com.example.word-count",
+  "name": "Word Count Service",
+  "version": "1.0.0",
+  "publisher": "com.example",
+  "hostApi": ">=1.0.0 <2.0.0",
+  "kind": "sandboxed",
+  "entrypoints": { "wasm": "dist/service.wasm" },
+  "capabilities": ["service.provide:com.example.word-count.count@1"],
+  "dependencies": {},
+  "namespaces": [],
+  "schemas": [],
+  "templates": [],
+  "views": [],
+  "commands": [],
+  "services": { "provides": [{ "name": "com.example.word-count.count", "major": 1 }], "consumes": [] },
+  "events": { "publishes": [], "subscribes": [] },
+  "migrations": []
+}

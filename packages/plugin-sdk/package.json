@@ -1,7 +1,16 @@
 {
   "name": "@worldbuilder/plugin-sdk",
-  "version": "0.1.0",
-  "private": true,
+  "version": "1.0.0",
+  "description": "Framework-neutral Worldbuilder plugin SDK",
+  "license": "MIT",
+  "private": false,
   "type": "module",
-  "exports": { ".": "./src/index.ts", "./generated": "./src/generated.ts" }
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "src", "README.md"],
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./generated": { "types": "./dist/generated.d.ts", "import": "./dist/generated.js" }
+  },
+  "scripts": { "build": "tsc -p tsconfig.json" }
 }

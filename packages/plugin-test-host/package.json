@@ -1,0 +1,12 @@
+{
+  "name": "@worldbuilder/plugin-test-host",
+  "version": "1.0.0",
+  "description": "In-memory broker and conformance helpers for Worldbuilder plugins",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "src", "README.md"],
+  "dependencies": { "@worldbuilder/plugin-sdk": "1.0.0" },
+  "scripts": { "build": "tsc -p tsconfig.json", "test": "node ../../scripts/plugin-conformance.mjs" }
+}

@@ -1,0 +1,20 @@
+{
+  "manifestVersion": 1,
+  "id": "com.example.ink-tools",
+  "name": "Ink Tools",
+  "version": "1.0.0",
+  "publisher": "com.example",
+  "hostApi": ">=1.0.0 <2.0.0",
+  "kind": "sandboxed",
+  "entrypoints": { "ui": "dist/ui/index.html" },
+  "capabilities": ["entity.read", "entity.write"],
+  "dependencies": {},
+  "namespaces": [],
+  "schemas": [],
+  "templates": [],
+  "views": [{ "id": "ink-tools", "title": "Ink Tools" }],
+  "commands": [],
+  "services": { "provides": [], "consumes": [] },
+  "events": { "publishes": [], "subscribes": [] },
+  "migrations": []
+}

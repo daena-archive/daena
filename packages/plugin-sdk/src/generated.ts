@@ -49,8 +49,32 @@ export interface PluginManifest {
 
 export interface RpcRequest { rpcVersion: 1; sessionId: string; requestId: string; method: string; payload: unknown }
 export interface RpcError { code: string; message: string; retryable: boolean; details?: unknown }
+export type PluginRpcError = RpcError;
 export interface RpcSuccess { rpcVersion: 1; requestId: string; ok: true; result: unknown }
 export interface RpcFailure { rpcVersion: 1; requestId: string; ok: false; error: RpcError }
 export type RpcResponse = RpcSuccess | RpcFailure;
+
+export interface PluginBootstrap {
+  rpcVersion: 1;
+  pluginId: string;
+  sessionId: string;
+  projectId: string;
+  version: string;
+  hostApi: string;
+  grantedCapabilities: string[];
+  optionalFeatures: string[];
+}
+
+export interface EntityRecord {
+  id: string;
+  entityType: string;
+  fields: Record<string, unknown>;
+  document?: string;
+}
+
+export interface MigrationAuthoringOptions {
+  recovery?: Migration["recovery"];
+  description?: string;
+}
 
 export type LifecycleState = "discovered" | "validated" | "installed" | "resolved" | "activating" | "active" | "deactivating" | "failed" | "quarantined" | "incompatible" | "uninstalling" | "removed";

@@ -916,6 +916,17 @@ impl LifecycleRegistry {
         self.record(project_id, plugin_id)
     }
 
+    /// Clear a quarantine or failed state after an explicit user retry. Resets
+    /// the failure counter and last error so activation can be attempted again.
+    pub fn clear_quarantine(&mut self, project_id: &str, plugin_id: &str) {
+        let mut record = self.record(project_id, plugin_id);
+        record.failures = 0;
+        record.last_error = None;
+        record.state = LifecycleState::Resolved;
+        self.records
+            .insert((project_id.into(), plugin_id.into()), record);
+    }
+
     pub fn activate_with<F>(
         &mut self,
         project_id: &str,
@@ -1178,10 +1189,14 @@ impl PluginHost {
         plugin_id: &str,
     ) -> Result<(), HostError> {
         let key = (project_id.to_owned(), plugin_id.to_owned());
-        let previous = self.project_usage.remove(&key);
+        let previous_usage = self.project_usage.remove(&key);
+        let previous_selection = self.project_versions.remove(&key);
         if let Err(error) = self.persist_state() {
-            if let Some(version) = previous {
-                self.project_usage.insert(key, version);
+            if let Some(version) = previous_usage {
+                self.project_usage.insert(key.clone(), version);
+            }
+            if let Some(version) = previous_selection {
+                self.project_versions.insert(key, version);
             }
             return Err(error);
         }
@@ -1561,6 +1576,9 @@ impl PluginHost {
         for plugin_id in plugin_ids {
             self.deactivate_bundled(project_id, &plugin_id);
         }
+    }
+    pub fn retry_plugin(&mut self, project_id: &str, plugin_id: &str) {
+        self.lifecycle.clear_quarantine(project_id, plugin_id);
     }
     pub fn publish_event(
         &mut self,
@@ -2138,6 +2156,25 @@ mod tests {
             .unwrap();
         assert!(restarted.project_uses_version("com.example.plugin", "1.0.0"));
     }
+
+    #[test]
+    fn clearing_project_usage_clears_the_live_project_selection() {
+        let mut host = host();
+        host.select_project_version("project", "com.example.one", "1.0.0")
+            .unwrap();
+        assert!(host
+            .project_versions
+            .contains_key(&("project".into(), "com.example.one".into())));
+
+        host.clear_project_usage("project", "com.example.one")
+            .unwrap();
+
+        assert!(!host
+            .project_versions
+            .contains_key(&("project".into(), "com.example.one".into())));
+        assert!(!host.project_uses_version("com.example.one", "1.0.0"));
+    }
+
     #[test]
     fn forged_identity_and_origin_are_rejected() {
         let mut host = host();
@@ -2212,12 +2249,10 @@ mod tests {
                     "entity.write".into(),
                     "document.write".into(),
                     "field.write:self".into(),
-                ]
-                .into_iter()
-                .collect(),
+                ],
                 ["entity.write".into(), "document.write".into()]
                     .into_iter()
-                    .collect(),
+                    .collect::<std::collections::BTreeSet<String>>(),
             )
             .unwrap();
         let session = host
@@ -2588,6 +2623,30 @@ mod tests {
         let record = lifecycle.state("project", "plugin");
         assert_eq!(record.state, LifecycleState::Quarantined);
         assert!(lifecycle.begin_activation("project", "plugin").is_err());
+    }
+
+    #[test]
+    fn quarantine_is_cleared_only_by_explicit_retry() {
+        let mut lifecycle = LifecycleRegistry::default();
+        for _ in 0..3 {
+            lifecycle.begin_activation("project", "plugin").unwrap();
+            lifecycle.activation_failed("project", "plugin", "startup failed");
+        }
+        assert_eq!(
+            lifecycle.state("project", "plugin").state,
+            LifecycleState::Quarantined
+        );
+        lifecycle.clear_quarantine("project", "plugin");
+        let record = lifecycle.state("project", "plugin");
+        assert_eq!(record.state, LifecycleState::Resolved);
+        assert_eq!(record.failures, 0);
+        assert_eq!(record.last_error, None);
+        lifecycle.begin_activation("project", "plugin").unwrap();
+        lifecycle.activation_succeeded("project", "plugin");
+        assert_eq!(
+            lifecycle.state("project", "plugin").state,
+            LifecycleState::Active
+        );
     }
 
     #[test]

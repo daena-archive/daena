@@ -19,6 +19,39 @@ export interface GitLogEntry { hash: string; date: string; subject: string; }
 export type { ModuleManifest };
 export type ProjectModuleManifest = ModuleManifest & { enabled: boolean };
 export interface InstalledPluginVersion { id: string; version: string; publisher: string; digest: string; signed: boolean; }
+export interface LifecycleInfo { state: string; failures: number; lastError: string | null; }
+export interface InstalledVersionInfo {
+  version: string;
+  publisher: string;
+  digest: string;
+  signed: boolean;
+  unsignedConsent: boolean;
+  installedAt: number;
+  isSelected: boolean;
+  isActiveCandidate: boolean;
+  bundled: boolean;
+  rollbackAvailable: boolean;
+}
+export interface DependencyState { resolved: boolean; order: string[]; error: string | null; }
+export interface PluginAdminEntry extends ProjectModuleManifest {
+  enabled: boolean;
+  selectedVersion: string | null;
+  dataVersion: number;
+  lifecycle: LifecycleInfo;
+  runtimeRunning: boolean;
+  grantedCapabilities: string[];
+  installedVersions: InstalledVersionInfo[];
+  dependencyState: DependencyState;
+}
+export interface PluginAdminView { plugins: PluginAdminEntry[]; }
+export interface PluginUpgradePlan {
+  pluginId: string;
+  fromVersion: string | null;
+  toVersion: string;
+  consent: { added: string[]; removed: string[]; requiresRenewal: boolean };
+  migrations: { from: number; to: number; migrationIds: string[]; requiresBackup: boolean };
+  target: { signed: boolean; publisher: string };
+}
 type DialogSelection = string | string[] | null;
 
 export const project = {
@@ -65,16 +98,26 @@ export const project = {
   listModuleManifests: () => invoke<ProjectModuleManifest[]>("module_list_manifests"),
   enableModule: (id: string) => invoke<void>("module_enable", { id }),
   disableModule: (id: string) => invoke<void>("module_disable", { id }),
+  adminView: () => invoke<PluginAdminView>("plugin_admin_view"),
   installPlugin: (archive: string, allowUnsigned = false) =>
     invoke<InstalledPluginVersion>("plugin_install_package", { archive, allowUnsigned }),
-  selectPluginVersion: (projectId: string, pluginId: string, version: string) =>
-    invoke<void>("plugin_select_version", { projectId, pluginId, version }),
   upgradePlugin: (pluginId: string, version: string, consent: boolean) =>
     invoke<void>("plugin_upgrade", { pluginId, version, consent }),
+  pluginUpgradePlan: (pluginId: string, version: string) =>
+    invoke<PluginUpgradePlan>("plugin_upgrade_plan", { pluginId, version }),
   rollbackPlugin: (pluginId: string, version: string) =>
     invoke<void>("plugin_rollback", { pluginId, version }),
   uninstallPluginCode: (pluginId: string, version: string) =>
     invoke<void>("plugin_uninstall_code", { pluginId, version }),
   deletePluginData: (pluginId: string, confirmation: string) =>
     invoke<string>("plugin_delete_data", { pluginId, confirmation }),
+  retryPlugin: (pluginId: string) => invoke<void>("plugin_retry", { pluginId }),
+  pickPluginPackage: () =>
+    invoke<DialogSelection>("plugin:dialog|open", {
+      options: {
+        directory: false,
+        multiple: false,
+        filters: [{ name: "Worldbuilder plugin", extensions: ["wbplugin"] }],
+      },
+    }),
 };

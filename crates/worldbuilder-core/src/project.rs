@@ -1214,7 +1214,7 @@ impl ProjectStore {
         plugin_id: &str,
         confirmation: &str,
     ) -> Result<String, CoreError> {
-        if plugin_id.trim().is_empty() || confirmation != format!("DELETE:{plugin_id}") {
+        if plugin_id.trim().is_empty() || confirmation != plugin_id {
             return Err(CoreError::Unauthorized {
                 operation: "confirm plugin data deletion",
             });
@@ -2054,7 +2054,7 @@ mod tests {
         store.apply_migration(&migration).unwrap();
         assert!(store.delete_plugin_data("worldbuilder.lore", "no").is_err());
         let backup = store
-            .delete_plugin_data("worldbuilder.lore", "DELETE:worldbuilder.lore")
+            .delete_plugin_data("worldbuilder.lore", "worldbuilder.lore")
             .unwrap();
         assert!(std::path::Path::new(&backup).is_file());
         assert_eq!(store.get_module_version("worldbuilder.lore").unwrap(), 0);

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { project, type Asset, type Entity, type Relationship, type ProjectModuleManifest, type ProjectInfo, type GitStatus, type GitLogEntry } from "$lib/project/client";
+  import { project, type Asset, type Entity, type Relationship, type ProjectModuleManifest, type ProjectInfo, type GitStatus, type GitLogEntry, type PluginAdminEntry, type PluginUpgradePlan } from "$lib/project/client";
   import type { EntityTemplate, FieldDefinition, ModuleContext, ModuleId, UUID, ModuleManifest } from "../../packages/module-api/src/index";
   import { buildModuleContext } from "$lib/modules/context";
   import PluginViewLauncher from "$lib/modules/PluginViewLauncher.svelte";
@@ -47,7 +47,20 @@
   let hasUnsavedChanges = $state(false);
   let autoSaveTimer: number | null = null;
   let documentRevision = 0;
-  let showModules = $state(false);
+  let showPlugins = $state(false);
+  let adminPlugins = $state<PluginAdminEntry[] | null>(null);
+  let adminBusy = $state(false);
+  let installing = $state(false);
+  let installConsent = $state<{ path: string; message: string } | null>(null);
+  let installSummary = $state<{ id: string; version: string; signed: boolean; digest: string } | null>(null);
+  let upgradePreview = $state<{ entry: PluginAdminEntry; version: string; plan: PluginUpgradePlan } | null>(null);
+  let upgradeBusy = $state(false);
+  let confirmAction = $state<{ title: string; message: string; confirmLabel: string; run: () => Promise<void> } | null>(null);
+  let confirmBusy = $state(false);
+  let deleteTarget = $state<PluginAdminEntry | null>(null);
+  let deleteInput = $state("");
+  let deleteBusy = $state(false);
+  let deleteBackupPath = $state("");
   let projectionRevision = $state(0);
   let projectInfo = $state<ProjectInfo | null>(null);
   let gitStatus = $state<GitStatus | null>(null);
@@ -72,7 +85,7 @@
     return () => window.clearTimeout(timeout);
   });
   $effect(() => {
-    const modalOpen = showCreateForm || showCommitForm || editorFullscreen;
+    const modalOpen = showCreateForm || showCommitForm || editorFullscreen || showPlugins || upgradePreview !== null || confirmAction !== null || deleteTarget !== null || installConsent !== null || deleteBackupPath !== "";
     document.body.classList.toggle("modal-open", modalOpen);
     return () => document.body.classList.remove("modal-open");
   });
@@ -637,6 +650,165 @@
       if (showCreateForm && !selectedCreateOption()) closeCreateForm();
     } catch (cause) { error = friendlyError(cause); }
   }
+  async function refreshAdmin() {
+    adminBusy = true;
+    try {
+      const view = await project.adminView();
+      adminPlugins = view.plugins;
+    } catch (cause) { error = friendlyError(cause); }
+    finally { adminBusy = false; }
+  }
+  async function openPlugins() {
+    showPlugins = true;
+    adminPlugins = null;
+    installSummary = null;
+    deleteBackupPath = "";
+    await refreshAdmin();
+  }
+  async function installFromPicker() {
+    try {
+      const selection = await project.pickPluginPackage();
+      const source = typeof selection === "string" ? selection : null;
+      if (source) await installPackage(source);
+    } catch (cause) { error = friendlyError(cause); }
+  }
+  async function installPackage(path: string, allowUnsigned = false) {
+    installing = true;
+    installConsent = null;
+    installSummary = null;
+    try {
+      const installed = await project.installPlugin(path, allowUnsigned);
+      installSummary = { id: installed.id, version: installed.version, signed: installed.signed, digest: installed.digest };
+      await refreshAdmin();
+      modules = await project.listModuleManifests();
+    } catch (cause) {
+      const message = friendlyError(cause);
+      if (!allowUnsigned && message.toLowerCase().includes("unsigned")) {
+        installConsent = { path, message };
+      } else {
+        error = message;
+      }
+    } finally { installing = false; }
+  }
+  async function installWithConsent() {
+    if (!installConsent) return;
+    const path = installConsent.path;
+    installConsent = null;
+    await installPackage(path, true);
+  }
+  async function previewUpgrade(plugin: PluginAdminEntry, version: string) {
+    try {
+      const plan = await project.pluginUpgradePlan(plugin.id, version);
+      upgradePreview = { entry: plugin, version, plan };
+    } catch (cause) { error = friendlyError(cause); }
+  }
+  async function confirmUpgrade() {
+    const preview = upgradePreview;
+    if (!preview) return;
+    upgradeBusy = true;
+    try {
+      await project.upgradePlugin(preview.entry.id, preview.version, true);
+      upgradePreview = null;
+      await refreshAdmin();
+      modules = await project.listModuleManifests();
+      error = `Upgraded ${preview.entry.name} to ${preview.version}.`;
+    } catch (cause) { error = friendlyError(cause); }
+    finally { upgradeBusy = false; }
+  }
+  function askConfirm(title: string, message: string, confirmLabel: string, run: () => Promise<void>) {
+    confirmAction = { title, message, confirmLabel, run };
+  }
+  async function runConfirm() {
+    const action = confirmAction;
+    if (!action) return;
+    confirmBusy = true;
+    try {
+      await action.run();
+      confirmAction = null;
+    }
+    catch (cause) { error = friendlyError(cause); }
+    finally { confirmBusy = false; }
+  }
+  async function confirmRollback(plugin: PluginAdminEntry, version: string) {
+    askConfirm(
+      "Roll back plugin",
+      `Restore ${plugin.name} to version ${version}? The pre-upgrade backup will be restored and the previous version reactivated.`,
+      "Roll back",
+      async () => {
+        await project.rollbackPlugin(plugin.id, version);
+        await refreshAdmin();
+        modules = await project.listModuleManifests();
+        error = `Rolled ${plugin.name} back to ${version}.`;
+      },
+    );
+  }
+  async function confirmUninstall(plugin: PluginAdminEntry, version: string) {
+    askConfirm(
+      "Uninstall code",
+      `Remove ${plugin.name} ${version} from the plugin library? It will still be listed if another version is installed.`,
+      "Uninstall",
+      async () => {
+        await project.uninstallPluginCode(plugin.id, version);
+        await refreshAdmin();
+        modules = await project.listModuleManifests();
+        error = `Uninstalled ${plugin.name} ${version}.`;
+      },
+    );
+  }
+  async function retryPlugin(plugin: PluginAdminEntry) {
+    try {
+      await project.retryPlugin(plugin.id);
+      if (!plugin.enabled) await project.enableModule(plugin.id);
+      modules = await project.listModuleManifests();
+      await refreshAdmin();
+      error = `Retried ${plugin.name}.`;
+    } catch (cause) { error = friendlyError(cause); }
+  }
+  async function openDeleteData(plugin: PluginAdminEntry) {
+    deleteInput = "";
+    deleteBackupPath = "";
+    deleteTarget = plugin;
+  }
+  async function confirmDeleteData() {
+    const target = deleteTarget;
+    if (!target || deleteInput.trim() !== target.id) return;
+    deleteBusy = true;
+    try {
+      deleteBackupPath = await project.deletePluginData(target.id, deleteInput.trim());
+      deleteTarget = null;
+      await refreshAdmin();
+      modules = await project.listModuleManifests();
+    } catch (cause) { error = friendlyError(cause); }
+    finally { deleteBusy = false; }
+  }
+  async function togglePluginEnabled(plugin: PluginAdminEntry) {
+    try {
+      if (plugin.enabled) await project.disableModule(plugin.id);
+      else await project.enableModule(plugin.id);
+      modules = await project.listModuleManifests();
+      await refreshAdmin();
+    } catch (cause) { error = friendlyError(cause); }
+  }
+  function capabilityLabel(capability: string) {
+    const labels: Record<string, string> = {
+      "entity.read": "Read entities",
+      "entity.write": "Create and edit entities",
+      "entity.delete": "Delete entities",
+      "document.read": "Read documents",
+      "document.write": "Save and edit documents",
+      "relationship.read": "Read relationships",
+      "relationship.write": "Create and delete relationships",
+      "search.query": "Search the whole world",
+      "asset.import": "Import asset files",
+      "asset.register": "Register assets",
+      "asset.read:self": "Read assets in own namespace",
+      "field.read:self": "Read fields in own namespace",
+      "field.write:self": "Write fields in own namespace",
+    };
+    return labels[capability] ?? capability;
+  }
+  function shortDigest(digest: string) { return digest ? digest.slice(0, 12) : ""; }
+  function installedAtLabel(timestamp: number) { return timestamp ? new Date(timestamp * 1000).toLocaleString() : ""; }
   function clearSelection() {
     cancelAutoSave();
     editorFullscreen = false;
@@ -715,8 +887,7 @@
     {#if ready}
       <button aria-expanded={showGit} class:active={showGit} class="rail-button muted-button" onclick={() => { showGit = !showGit; if (showGit) void refreshGit(); }}><span class="rail-icon">⑂</span><span>Git</span></button>
       {#if showGit}<div class="module-menu git-menu"><strong>{gitBusy ? "Checking Git…" : gitStatus?.repository ? `Git · ${gitStatus.branch || "detached"}` : "Git is not initialized"}</strong><small>{gitMessage || (gitStatus?.repository ? gitStatus.changes.length === 0 ? "Working tree clean" : `${gitStatus.changes.length} changed files` : "Initialize Git to track this project")}</small>{#if gitStatus?.repository}<button disabled={gitBusy} onclick={() => { commitMessage = ""; showCommitForm = true; }}>Commit changes</button>{:else}<button disabled={gitBusy} onclick={initializeGit}>{gitBusy ? "Initializing…" : "Initialize Git"}</button>{/if}</div>{/if}
-      <button aria-expanded={showModules} class="rail-button muted-button" onclick={() => showModules = !showModules}><span class="rail-icon">⚙</span><span>Module settings</span></button>
-      {#if showModules}<div class="module-menu">{#each modules as module}<label><span>{module.name}</span><input type="checkbox" checked={module.enabled} onchange={() => toggleModule(module.id)} /></label>{/each}</div>{/if}
+      <button aria-expanded={showPlugins} class:active={showPlugins} class="rail-button muted-button" onclick={() => void openPlugins()}><span class="rail-icon">▦</span><span>Plugins</span></button>
     {/if}
     <div class="rail-footer">v0.2 · local first</div>
   </aside>
@@ -727,6 +898,190 @@
     {#if showCreateForm}{@const createOption = selectedCreateOption()}<div class="modal-backdrop"><form class="dialog create-dialog" onsubmit={createEntity}><div class="create-dialog-heading"><div><span class="panel-kicker">CREATE SOMETHING NEW</span><strong>Choose a starting point</strong><p>Templates set the shape of your new entry. You can fill in the details before it is saved.</p></div><button type="button" class="new-form-close" aria-label="Close create dialog" onclick={closeCreateForm}>×</button></div><div class="create-dialog-body"><aside class="create-template-panel"><div class="create-panel-label">TEMPLATES</div><div class="create-template-list">{#each createGroups() as group}<div class="create-template-group"><span>{group.module.name}</span>{#each group.options as option}<button type="button" class:selected={option.key === selectedCreateKey} class="create-template-card" onclick={() => selectCreateOption(option.key)}><span class="create-template-icon">{option.template.icon ?? option.template.name.slice(0, 1)}</span><span class="create-template-copy"><strong>{option.template.name}</strong><small>{option.template.description ?? option.template.entityType}</small></span><span class="create-template-check">{option.key === selectedCreateKey ? "✓" : ""}</span></button>{/each}</div>{/each}</div></aside><section class="create-form-panel">{#if createOption}<div class="create-form-title"><span class="panel-kicker">{createOption.module.name.toUpperCase()}</span><h2>{createOption.template.name}</h2><p>{createOption.template.description ?? `Create a new ${createOption.template.entityType}.`}</p></div><label class="create-input-field" for="new-entity"><span>Name <b>*</b></span><input id="new-entity" bind:value={name} placeholder={`e.g. ${createOption.template.name}`} autocomplete="off" /></label>{#each createFieldsFor(createOption) as item}<div class="create-input-field"><label for={`create-${item.field.key}`}><span>{item.field.label} {#if item.required}<b>*</b>{/if}</span></label>{#if item.field.type === "relationship"}<RelationshipPicker field={item.field} entities={entities} selectedIds={createRelationshipValues(item.field.key)} onChange={(ids) => setCreateRelationshipValues(item.field.key, ids)} />{:else if item.field.type === "text"}<textarea id={`create-${item.field.key}`} rows="3" value={String(createFieldValues[item.field.key] ?? "")} placeholder={`Add ${item.field.label.toLowerCase()}`} oninput={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLTextAreaElement).value)}></textarea>{:else if item.field.type === "number"}<input id={`create-${item.field.key}`} type="number" value={String(createFieldValues[item.field.key] ?? "")} placeholder={`Add ${item.field.label.toLowerCase()}`} oninput={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).value)} />{:else if item.field.type === "boolean"}<label class="create-checkbox" for={`create-${item.field.key}`}><input id={`create-${item.field.key}`} type="checkbox" checked={createFieldValues[item.field.key] === true} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).checked)} /><span>Yes</span></label>{:else if item.field.type === "enum"}<select id={`create-${item.field.key}`} value={String(createFieldValues[item.field.key] ?? "")} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}><option value="">Choose {item.field.label.toLowerCase()}</option>{#each item.field.options ?? [] as option}<option value={option}>{option}</option>{/each}</select>{:else if item.field.type === "entity-ref"}<select id={`create-${item.field.key}`} value={String(createFieldValues[item.field.key] ?? "")} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}><option value="">Choose an entity</option>{#each entities.filter((entity) => !entity.deleted) as entity}<option value={entity.id}>{entity.name} · {entity.entity_type ?? "Uncategorized"}</option>{/each}</select>{:else if item.field.type === "date"}{#if createDateForField(item.field.key) || createDateEditorOpen[item.field.key]}{@const date = createDateDraftForField(item.field.key) ?? { calendar: "gregorian", era: "CE", precision: "day" }}<div class="date-editor"><div class="date-fields"><label for={`create-${item.field.key}-year`}>Year<input id={`create-${item.field.key}-year`} aria-label={`${item.field.label} year`} type="number" min="1" value={date.year ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "year", (event.currentTarget as HTMLInputElement).value, 1)} /></label><label for={`create-${item.field.key}-month`}>Month<input id={`create-${item.field.key}-month`} aria-label={`${item.field.label} month`} type="number" min="1" max="12" value={date.month ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "month", (event.currentTarget as HTMLInputElement).value, 1, 12)} /></label><label for={`create-${item.field.key}-day`}>Day<input id={`create-${item.field.key}-day`} aria-label={`${item.field.label} day`} type="number" min="1" max="31" value={date.day ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "day", (event.currentTarget as HTMLInputElement).value, 1, 31)} /></label></div><small class="date-preview">{typeof date.year === "number" ? formatCalendarDate(date) : "Add a date"}</small><button class="date-clear" type="button" onclick={() => clearCreateDateField(item.field.key)}>Clear date</button></div>{:else}<button class="date-empty" type="button" onclick={() => openCreateDateEditor(item.field.key)}>Add a date</button>{/if}{/if}</div>{/each}{#if createOption.template.document}<label class="create-input-field" for="create-document"><span>Opening note</span><textarea id="create-document" rows="5" bind:value={createDocumentBody} placeholder="Add a first note or leave the template text as-is"></textarea></label>{/if}{:else}<div class="create-form-empty">Select a template to begin.</div>{/if}</section></div><div class="create-dialog-actions"><button type="button" class="quiet-button" onclick={closeCreateForm}>Cancel</button><button class="primary-button" type="submit" disabled={!name.trim() || !createOption}>Create {createOption?.template.name ?? "entry"}</button></div></form></div>{/if}
     {#if showDiscardPrompt}<div class="discard-backdrop"><div class="discard-dialog" role="alertdialog" aria-modal="true" aria-labelledby="discard-create-title"><span class="panel-kicker">UNSAVED VALUES</span><h2 id="discard-create-title">Discard this creation?</h2><p>Your entered values will be cleared. You can keep editing or start over with the new template.</p><div class="discard-actions"><button type="button" class="quiet-button" onclick={keepCreateEditing}>Keep editing</button><button type="button" class="primary-button" onclick={discardCreateValues}>Discard values</button></div></div></div>{/if}
     {#if showCommitForm}<div class="modal-backdrop"><form class="dialog commit-form" onsubmit={(event) => { event.preventDefault(); void commitGit(); }}><div class="new-form-heading"><div><span class="panel-kicker">VERSION CONTROL</span><strong>Commit changes</strong></div><button type="button" class="new-form-close" onclick={() => showCommitForm = false}>×</button></div><p>Save the current project changes to Git.</p><input aria-label="Commit message" bind:value={commitMessage} placeholder="Describe the changes" /><div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => showCommitForm = false}>Cancel</button><button class="primary-button" type="submit" disabled={!commitMessage.trim() || gitBusy}>{gitBusy ? "Committing…" : "Commit changes"}</button></div></form></div>{/if}
+    {#if showPlugins}
+      <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) showPlugins = false; }} onkeydown={(event) => { if (event.key === "Escape") showPlugins = false; }}>
+        <div class="dialog plugins-dialog">
+          <div class="new-form-heading plugins-heading"><div><span class="panel-kicker">PLUGIN LIBRARY</span><strong>Plugins</strong></div><button type="button" class="new-form-close" onclick={() => showPlugins = false}>×</button></div>
+          <p class="plugins-intro">Sandboxed extensions that power this project. Every install, upgrade, and rollback is verified and reversible.</p>
+          <div class="plugins-toolbar">
+            <button class="primary-button" disabled={installing || adminBusy} onclick={installFromPicker}>{installing ? "Installing…" : "Install package…"}</button>
+            <span class="muted-note">{adminBusy ? "Refreshing…" : ""}</span>
+          </div>
+          {#if installSummary}
+            <div class="plugins-note">Installed {installSummary.id} {installSummary.version}{installSummary.signed ? " (signed)" : " (unsigned)"}{installSummary.digest ? ` · ${shortDigest(installSummary.digest)}` : ""}.</div>
+          {/if}
+          <div class="plugins-list">
+            {#if adminPlugins === null}
+              <p class="search-state">Loading plugins…</p>
+            {:else if adminPlugins.length === 0}
+              <p class="search-state">No plugins installed. Install a .wbplugin package to get started.</p>
+            {:else}
+              {#each adminPlugins as plugin (plugin.id)}
+                <article class="plugin-card">
+                  <header class="plugin-card-head">
+                    <div class="plugin-card-title"><strong>{plugin.name}</strong><span class="plugin-id">{plugin.id}</span></div>
+                    <div class="plugin-badges">
+                      <span class:badge-off={!plugin.enabled} class="plugin-badge">{plugin.enabled ? "Enabled" : "Disabled"}</span>
+                      <span class="plugin-badge">{plugin.kind}</span>
+                      <span class="plugin-badge" title={`Lifecycle: ${plugin.lifecycle.state}`}>{plugin.lifecycle.state}</span>
+                      {#if plugin.lifecycle.failures > 0}<span class="plugin-badge danger" title={plugin.lifecycle.lastError ?? ""}>{plugin.lifecycle.failures} failure{plugin.lifecycle.failures === 1 ? "" : "s"}</span>{/if}
+                    </div>
+                  </header>
+                  <div class="plugin-card-meta">
+                    <span>v{plugin.selectedVersion ?? plugin.version} · {plugin.publisher}</span>
+                    <span>host API {plugin.hostApi}</span>
+                    <span>data v{plugin.dataVersion}</span>
+                    <span class:runtime-off={!plugin.runtimeRunning} class="runtime-dot" title={plugin.runtimeRunning ? "Runtime active" : "Runtime stopped"}>{plugin.runtimeRunning ? "● running" : "○ stopped"}</span>
+                  </div>
+                  {#if !plugin.dependencyState.resolved}
+                    <p class="plugin-warning">Dependency problem: {plugin.dependencyState.error ?? "could not resolve dependencies"}</p>
+                  {:else if plugin.dependencyState.order.length > 0}
+                    <p class="plugin-muted">Loads after: {plugin.dependencyState.order.join(" → ")}</p>
+                  {/if}
+                  {#if plugin.lifecycle.lastError}
+                    <p class="plugin-error" title={plugin.lifecycle.lastError}>Last failure: {plugin.lifecycle.lastError}</p>
+                  {/if}
+                  <div class="plugin-actions">
+                    <button class:on={plugin.enabled} class="plugin-toggle" onclick={() => togglePluginEnabled(plugin)} disabled={adminBusy}>{plugin.enabled ? "Disable" : "Enable"}</button>
+                    {#if plugin.lifecycle.state === "quarantined"}<button class="quiet-button" onclick={() => retryPlugin(plugin)} disabled={adminBusy}>Retry</button>{/if}
+                    <button class="quiet-button" onclick={() => openDeleteData(plugin)} disabled={adminBusy}>Delete project data…</button>
+                  </div>
+                  {#if plugin.installedVersions.length > 0}
+                    <div class="version-list">
+                      {#each plugin.installedVersions as version (version.version)}
+                        <div class="version-row">
+                          <div class="version-copy">
+                            <span class="version-name">
+                              v{version.version}
+                              {#if version.isActiveCandidate}<span class="version-tag latest">Latest</span>{/if}
+                              {#if version.isSelected}<span class="version-tag selected">Selected</span>{/if}
+                              {#if version.bundled}<span class="version-tag bundled">Bundled</span>{/if}
+                              {#if version.signed}<span class="version-tag signed">Signed</span>{:else if !version.bundled}<span class="version-tag unsigned">Unsigned</span>{/if}
+                            </span>
+                            <span class="version-detail">{version.publisher}{version.installedAt ? ` · installed ${installedAtLabel(version.installedAt)}` : ""}{version.digest ? ` · ${shortDigest(version.digest)}` : ""}</span>
+                          </div>
+                          <div class="version-actions">
+                            {#if version.isActiveCandidate && !version.isSelected && !version.bundled}
+                              <button class="quiet-button" onclick={() => previewUpgrade(plugin, version.version)} disabled={adminBusy}>Update to v{version.version}</button>
+                            {/if}
+                            {#if version.rollbackAvailable}
+                              <button class="quiet-button" onclick={() => confirmRollback(plugin, version.version)} disabled={adminBusy}>Rollback</button>
+                            {/if}
+                            {#if !version.isSelected && !version.bundled}
+                              <button class="quiet-button" onclick={() => confirmUninstall(plugin, version.version)} disabled={adminBusy}>Uninstall code</button>
+                            {/if}
+                          </div>
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                  <details class="plugin-details">
+                    <summary>Capabilities, namespaces, services &amp; migrations</summary>
+                    <div class="plugin-details-grid">
+                      <section class="plugin-detail-section">
+                        <h4>Capabilities</h4>
+                        <ul class="plugin-detail-list">
+                          {#each plugin.capabilities as capability}
+                            {@const granted = plugin.grantedCapabilities.includes(capability)}
+                            <li class:granted={granted}>{capabilityLabel(capability)} <span class="cap-mark">{granted ? "✓" : "—"}</span></li>
+                          {/each}
+                        </ul>
+                      </section>
+                      <section class="plugin-detail-section">
+                        <h4>Namespaces</h4>
+                        <ul class="plugin-detail-list">{#each plugin.namespaces as namespace}<li>{namespace}</li>{/each}</ul>
+                      </section>
+                      <section class="plugin-detail-section">
+                        <h4>Services</h4>
+                        <ul class="plugin-detail-list">
+                          {#each plugin.services.provides as service}<li class="provides">provides <code>{service.name}@{service.major}</code></li>{/each}
+                          {#each plugin.services.consumes as service}<li class="consumes">consumes <code>{service.name}@{service.major}</code></li>{/each}
+                          {#if plugin.services.provides.length === 0 && plugin.services.consumes.length === 0}<li class="muted-item">none</li>{/if}
+                        </ul>
+                      </section>
+                      <section class="plugin-detail-section">
+                        <h4>Events</h4>
+                        <ul class="plugin-detail-list">
+                          {#each plugin.events.publishes as event}<li class="provides">publishes <code>{event.name}@{event.version}</code></li>{/each}
+                          {#each plugin.events.subscribes as event}<li class="consumes">subscribes <code>{event.name}@{event.version}</code></li>{/each}
+                          {#if plugin.events.publishes.length === 0 && plugin.events.subscribes.length === 0}<li class="muted-item">none</li>{/if}
+                        </ul>
+                      </section>
+                      <section class="plugin-detail-section">
+                        <h4>Migrations</h4>
+                        <ul class="plugin-detail-list">
+                          {#each plugin.migrations as migration}<li class="migration"><code>{migration.from} → {migration.to}</code>{migration.recovery === "backup" ? " · backs up" : ""}</li>{/each}
+                          {#if plugin.migrations.length === 0}<li class="muted-item">no data migrations</li>{/if}
+                        </ul>
+                      </section>
+                    </div>
+                  </details>
+                </article>
+              {/each}
+            {/if}
+          </div>
+        </div>
+      </div>
+      {#if installConsent}
+        <div class="modal-backdrop"><div class="dialog" role="alertdialog" aria-modal="true">
+          <div class="new-form-heading"><div><span class="panel-kicker">UNSIGNED PACKAGE</span><strong>Confirm unsigned install</strong></div><button type="button" class="new-form-close" onclick={() => installConsent = null}>×</button></div>
+          <p class="dialog-body-copy">This package is <strong>not signed by a trusted publisher</strong>. {installConsent.path.split(/[\\/]/).pop()} will run sandboxed, but its identity cannot be verified.</p>
+          <p class="dialog-body-copy">Reason: {installConsent.message}</p>
+          <p class="dialog-body-copy">Install it anyway? You can uninstall its code at any time.</p>
+          <div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => installConsent = null}>Cancel</button><button type="button" class="primary-button" onclick={installWithConsent} disabled={installing}>{installing ? "Installing…" : "Install anyway"}</button></div>
+        </div></div>
+      {/if}
+      {#if upgradePreview}
+        {@const preview = upgradePreview}
+        <div class="modal-backdrop"><div class="dialog upgrade-dialog" role="dialog" aria-modal="true">
+          <div class="new-form-heading"><div><span class="panel-kicker">UPDATE PLUGIN</span><strong>Update {preview.entry.name} to v{preview.version}</strong></div><button type="button" class="new-form-close" onclick={() => upgradePreview = null}>×</button></div>
+          <p class="dialog-body-copy">From <code>v{preview.plan.fromVersion ?? preview.entry.version}</code> to <code>v{preview.plan.toVersion}</code>{preview.plan.target.signed ? ", signed by" : ", unsigned — "}{preview.plan.target.publisher}.</p>
+          {#if preview.plan.consent.requiresRenewal}
+            <p class="plugin-warning">This update requests new capabilities. Your consent is required before they are granted.</p>
+          {/if}
+          {#if preview.plan.consent.added.length > 0}
+            <h4 class="plugin-subhead">New capabilities</h4>
+            <ul class="plugin-detail-list">{#each preview.plan.consent.added as capability}<li class="provides">{capabilityLabel(capability)}</li>{/each}</ul>
+          {/if}
+          {#if preview.plan.consent.removed.length > 0}
+            <h4 class="plugin-subhead">Removed capabilities</h4>
+            <ul class="plugin-detail-list">{#each preview.plan.consent.removed as capability}<li class="consumes">{capabilityLabel(capability)}</li>{/each}</ul>
+          {/if}
+          <h4 class="plugin-subhead">Data migrations</h4>
+          {#if preview.plan.migrations.migrationIds.length > 0}
+            <p class="dialog-body-copy">Data will migrate from <code>v{preview.plan.migrations.from}</code> to <code>v{preview.plan.migrations.to}</code>{preview.plan.migrations.requiresBackup ? ". A backup is created before migrating." : "."}</p>
+            <ul class="plugin-detail-list">{#each preview.plan.migrations.migrationIds as id}<li>{id}</li>{/each}</ul>
+          {:else}
+            <p class="dialog-body-copy">No data migrations required.</p>
+          {/if}
+          <div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => upgradePreview = null}>Cancel</button><button type="button" class="primary-button" onclick={confirmUpgrade} disabled={upgradeBusy}>{upgradeBusy ? "Updating…" : "Confirm update"}</button></div>
+        </div></div>
+      {/if}
+      {#if confirmAction}
+        <div class="modal-backdrop"><div class="dialog" role="alertdialog" aria-modal="true">
+          <div class="new-form-heading"><div><span class="panel-kicker">CONFIRM ACTION</span><strong>{confirmAction.title}</strong></div><button type="button" class="new-form-close" onclick={() => confirmAction = null}>×</button></div>
+          <p class="dialog-body-copy">{confirmAction.message}</p>
+          <div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => confirmAction = null}>Cancel</button><button type="button" class="primary-button" onclick={runConfirm} disabled={confirmBusy}>{confirmBusy ? "Working…" : confirmAction.confirmLabel}</button></div>
+        </div></div>
+      {/if}
+      {#if deleteTarget}
+        <div class="modal-backdrop"><div class="dialog" role="alertdialog" aria-modal="true">
+          <div class="new-form-heading"><div><span class="panel-kicker">DELETE PROJECT DATA</span><strong>Delete {deleteTarget.name} data?</strong></div><button type="button" class="new-form-close" onclick={() => deleteTarget = null}>×</button></div>
+          <p class="dialog-body-copy">All entities, documents, fields, relationships, and assets owned by <code>{deleteTarget.id}</code> in this project will be deleted. A backup is kept on disk.</p>
+          <p class="dialog-body-copy">Type <code>{deleteTarget.id}</code> to confirm.</p>
+          <input aria-label="Delete confirmation" bind:value={deleteInput} placeholder={deleteTarget.id} />
+          <div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => deleteTarget = null}>Cancel</button><button type="button" class="primary-button danger-button" onclick={confirmDeleteData} disabled={deleteBusy || deleteInput.trim() !== deleteTarget.id}>{deleteBusy ? "Deleting…" : "Delete project data"}</button></div>
+        </div></div>
+      {/if}
+      {#if deleteBackupPath}
+        <div class="modal-backdrop"><div class="dialog" role="alertdialog" aria-modal="true">
+          <div class="new-form-heading"><div><span class="panel-kicker">DATA DELETED</span><strong>Plugin data deleted</strong></div><button type="button" class="new-form-close" onclick={() => deleteBackupPath = ""}>×</button></div>
+          <p class="dialog-body-copy">A backup was kept at:</p>
+          <code class="backup-path">{deleteBackupPath}</code>
+          <div class="new-form-actions"><button type="button" class="primary-button" onclick={() => deleteBackupPath = ""}>Done</button></div>
+        </div></div>
+      {/if}
+    {/if}
     {#if !ready}
       <section class="welcome"><div class="welcome-copy"><span class="overline">A private place for impossible worlds</span><h1>Build the world<br /><em>behind the story.</em></h1><p>Shape characters, places, factions, and history in one calm, local-first studio.</p></div><div class="welcome-art"><div class="orb orb-one"></div><div class="orb orb-two"></div><div class="art-card"><span>ELDERMERE</span><strong>The sea remembers<br />what kingdoms forget.</strong><small>Fragments · 12</small></div></div></section>
     {:else if !sectionEnabled()}
@@ -782,7 +1137,7 @@
   :global(:root) { --ink: #25251f; --ink-soft: #77766d; --ink-faint: #aaa79d; --line: #e4e1d8; --surface: #fffefa; --surface-muted: #f4f2ec; --canvas: #f7f6f2; --accent: #b4773f; --accent-dark: #365342; --shadow-sm: 0 2px 8px rgba(38, 42, 33, .05); --shadow-lg: 0 18px 50px rgba(38, 42, 33, .08); --font-display: Georgia, serif; }
   :global(body) { margin: 0; background: var(--canvas); color: var(--ink); font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
   :global(button), :global(input), :global(select) { font: inherit; }
-  .studio-shell { min-height: 100vh; display: flex; } .rail { width: 248px; flex: 0 0 248px; display: flex; flex-direction: column; padding: 25px 15px 18px; background: #283a30; color: #eef0e9; } .startup-rail { padding-top: 34px; } .brand { display: flex; align-items: center; gap: 11px; padding: 0 10px 40px; } .rail:not(.startup-rail) .brand { padding-bottom: 20px; } .brand-mark { display: grid; place-items: center; width: 31px; height: 31px; border-radius: 9px; background: #d5ab6c; color: #2c4032; font: 700 18px Georgia, serif; } .brand strong, .brand small, .project-card strong, .recent-project strong, .recent-project small { display: block; } .brand strong { font-size: 14px; } .brand small, .recent-project small { margin-top: 3px; color: #aab9ad; font-size: 11px; } .rail-label { margin: 0 10px 9px; color: #819688; font-size: 10px; font-weight: 700; letter-spacing: .16em; } .recent-label { margin-top: 27px; } .rail-button { width: 100%; display: flex; align-items: center; gap: 11px; padding: 10px 11px; margin-bottom: 3px; border: 0; border-radius: 8px; background: transparent; color: #b9c8bc; text-align: left; cursor: pointer; } .rail-button:hover, .rail-button.active { background: #3b5243; color: #fff; } .startup-primary { margin-top: 8px; background: #d5ab6c; color: #2c4032; font-weight: 700; } .startup-primary:hover { background: #e1bc82; color: #2c4032; } .rail-icon { width: 18px; color: #d5ab6c; text-align: center; } .startup-primary .rail-icon { color: #2c4032; } .muted-button { color: #91a397; } .rail-spacer { flex: 1; } .rail-footer { padding: 17px 10px 0; color: #708476; font-size: 11px; } .project-switcher { margin-bottom: 18px; } .project-card { display: flex; align-items: center; width: 100%; gap: 10px; padding: 10px; border: 0; border-radius: 8px; background: transparent; color: #eef0e9; font: inherit; text-align: left; cursor: pointer; } .project-card:hover, .project-card.active { background: #3b5243; } .project-copy { min-width: 0; flex: 1; } .project-chevron { flex: 0 0 auto; color: #aab9ad; font-size: 16px; line-height: 1; transform: translateY(-3px); } .project-card strong, .recent-project strong { font-size: 13px; max-width: 185px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .project-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: #777f78; } .project-dot.online { background: #88c18e; box-shadow: 0 0 0 4px rgba(136,193,142,.12); } .recent-projects { display: grid; gap: 3px; } .recent-project { width: 100%; display: flex; align-items: flex-start; gap: 10px; padding: 10px; border: 0; border-radius: 8px; background: transparent; color: #eef0e9; text-align: left; cursor: pointer; } .recent-project:hover { background: #3b5243; } .recent-project small { overflow: hidden; max-width: 180px; text-overflow: ellipsis; white-space: nowrap; } .project-menu { margin: 3px 0 8px 8px; padding-left: 8px; border-left: 1px solid #486052; } .project-menu .rail-button { padding: 8px 9px; color: #aab9ad; font-size: 11px; } .module-menu { margin: 6px 8px 12px; padding: 8px 10px; border: 1px solid #486052; border-radius: 8px; background: #30483a; } .module-menu label { display: block; } .module-menu label { display: flex; justify-content: space-between; padding: 5px 0; color: #bdcabe; font-size: 11px; }
+  .studio-shell { min-height: 100vh; display: flex; } .rail { width: 248px; flex: 0 0 248px; display: flex; flex-direction: column; padding: 25px 15px 18px; background: #283a30; color: #eef0e9; } .startup-rail { padding-top: 34px; } .brand { display: flex; align-items: center; gap: 11px; padding: 0 10px 40px; } .rail:not(.startup-rail) .brand { padding-bottom: 20px; } .brand-mark { display: grid; place-items: center; width: 31px; height: 31px; border-radius: 9px; background: #d5ab6c; color: #2c4032; font: 700 18px Georgia, serif; } .brand strong, .brand small, .project-card strong, .recent-project strong, .recent-project small { display: block; } .brand strong { font-size: 14px; } .brand small, .recent-project small { margin-top: 3px; color: #aab9ad; font-size: 11px; } .rail-label { margin: 0 10px 9px; color: #819688; font-size: 10px; font-weight: 700; letter-spacing: .16em; } .recent-label { margin-top: 27px; } .rail-button { width: 100%; display: flex; align-items: center; gap: 11px; padding: 10px 11px; margin-bottom: 3px; border: 0; border-radius: 8px; background: transparent; color: #b9c8bc; text-align: left; cursor: pointer; } .rail-button:hover, .rail-button.active { background: #3b5243; color: #fff; } .startup-primary { margin-top: 8px; background: #d5ab6c; color: #2c4032; font-weight: 700; } .startup-primary:hover { background: #e1bc82; color: #2c4032; } .rail-icon { width: 18px; color: #d5ab6c; text-align: center; } .startup-primary .rail-icon { color: #2c4032; } .muted-button { color: #91a397; } .rail-spacer { flex: 1; } .rail-footer { padding: 17px 10px 0; color: #708476; font-size: 11px; } .project-switcher { margin-bottom: 18px; } .project-card { display: flex; align-items: center; width: 100%; gap: 10px; padding: 10px; border: 0; border-radius: 8px; background: transparent; color: #eef0e9; font: inherit; text-align: left; cursor: pointer; } .project-card:hover, .project-card.active { background: #3b5243; } .project-copy { min-width: 0; flex: 1; } .project-chevron { flex: 0 0 auto; color: #aab9ad; font-size: 16px; line-height: 1; transform: translateY(-3px); } .project-card strong, .recent-project strong { font-size: 13px; max-width: 185px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .project-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: #777f78; } .project-dot.online { background: #88c18e; box-shadow: 0 0 0 4px rgba(136,193,142,.12); } .recent-projects { display: grid; gap: 3px; } .recent-project { width: 100%; display: flex; align-items: flex-start; gap: 10px; padding: 10px; border: 0; border-radius: 8px; background: transparent; color: #eef0e9; text-align: left; cursor: pointer; } .recent-project:hover { background: #3b5243; } .recent-project small { overflow: hidden; max-width: 180px; text-overflow: ellipsis; white-space: nowrap; } .project-menu { margin: 3px 0 8px 8px; padding-left: 8px; border-left: 1px solid #486052; } .project-menu .rail-button { padding: 8px 9px; color: #aab9ad; font-size: 11px; } .module-menu { margin: 6px 8px 12px; padding: 8px 10px; border: 1px solid #486052; border-radius: 8px; background: #30483a; }
   .app-main { min-width: 0; flex: 1; } .topbar { display: flex; align-items: center; justify-content: space-between; min-height: 58px; padding: 0 40px 0; border-bottom: 1px solid var(--line); background: rgba(255,254,250,.78); } .breadcrumbs, .top-actions { display: flex; align-items: center; gap: 10px; } .breadcrumbs { min-width: 0; color: var(--ink-faint); font-size: 12px; } .breadcrumbs strong { color: var(--ink-soft); } .breadcrumbs span:last-child { overflow: hidden; max-width: 180px; text-overflow: ellipsis; white-space: nowrap; } .breadcrumbs i { color: #d0ccc2; font-style: normal; } .global-search { display: flex; align-items: center; gap: 8px; width: 230px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink-faint); } .global-search input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 12px; } .sync-badge { color: var(--ink-faint); font-size: 10px; } .sync-badge { display: flex; align-items: center; gap: 6px; color: var(--ink-soft); } .sync-badge span { width: 6px; height: 6px; border-radius: 50%; background: #72a97a; }
   .welcome, .disabled-state { max-width: 1080px; min-height: calc(100vh - 58px); margin: auto; padding: 10vh 7vw; display: flex; align-items: center; gap: 8vw; } .welcome-copy { flex: 1; } .overline, .panel-kicker { display: block; color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: .18em; } .welcome h1 { margin: 20px 0 18px; font: 500 clamp(48px, 6vw, 78px)/.98 var(--font-display); letter-spacing: -.04em; } .welcome h1 em { color: var(--accent); font-style: italic; } .welcome p { max-width: 380px; margin: 0; color: var(--ink-soft); font-size: 16px; line-height: 1.7; } .welcome-art { position: relative; width: 360px; height: 390px; } .orb { position: absolute; border-radius: 50%; } .orb-one { top: 16px; right: 15px; width: 275px; height: 275px; background: radial-gradient(circle at 33% 30%, #eed5a5, #c2794d 64%, #7b4d3f); box-shadow: 30px 35px 60px rgba(115,74,56,.22); } .orb-two { left: 10px; bottom: 36px; width: 140px; height: 140px; background: #365342; box-shadow: 14px 16px 30px rgba(45,71,54,.2); } .art-card { position: absolute; right: -10px; bottom: 0; width: 235px; padding: 22px; border: 1px solid rgba(255,255,255,.65); border-radius: 12px; background: rgba(255,254,250,.86); box-shadow: var(--shadow-lg); } .art-card span, .art-card small { display: block; color: var(--accent); font-size: 9px; font-weight: 800; letter-spacing: .16em; } .art-card strong { display: block; margin: 17px 0 27px; font: 500 20px/1.18 var(--font-display); } .art-card small { color: var(--ink-faint); font-weight: 500; letter-spacing: 0; }
   .primary-button, .quiet-button, .add-button { border: 0; border-radius: 8px; cursor: pointer; } .primary-button { padding: 10px 15px; background: var(--accent-dark); color: #fff; font-weight: 700; font-size: 12px; box-shadow: 0 5px 12px rgba(42,68,51,.14); } .primary-button:hover { background: #2b4535; } .primary-button:disabled { opacity: .55; cursor: wait; } .quiet-button { padding: 10px 12px; background: transparent; color: var(--ink-soft); font-size: 12px; } .quiet-button:hover { background: var(--surface-muted); color: var(--ink); }
@@ -1049,5 +1404,81 @@
     .workspace-heading { padding: 20px 17px 12px; }
     .list-empty { min-height: 260px; padding: 28px 14px 32px; }
     .list-empty strong { font-size: 21px; }
+  }
+
+  .plugins-dialog { display: flex; flex-direction: column; width: min(900px, 100%); max-height: min(780px, calc(100vh - 32px)); padding: 0; overflow: hidden; }
+  .plugins-heading { padding: 22px 24px 16px; border-bottom: 1px solid var(--line); }
+  .plugins-heading strong { font-size: 26px; }
+  .plugins-intro { margin: 0; padding: 14px 24px 0; color: var(--ink-soft); font-size: 12px; line-height: 1.55; }
+  .plugins-toolbar { display: flex; align-items: center; gap: 10px; padding: 14px 24px 12px; }
+  .muted-note { color: var(--ink-faint); font-size: 10px; }
+  .plugins-note { margin: 0 24px 10px; padding: 9px 12px; border: 1px solid #d9e6db; border-radius: 8px; background: #f2f8f3; color: #3f6b4c; font-size: 11px; }
+  .plugins-list { min-height: 200px; overflow-y: auto; padding: 4px 24px 22px; }
+  .plugin-card { padding: 16px 17px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); box-shadow: var(--shadow-sm); }
+  .plugin-card + .plugin-card { margin-top: 11px; }
+  .plugin-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .plugin-card-title { min-width: 0; }
+  .plugin-card-title strong { display: block; font: 500 17px/1.2 var(--font-display); }
+  .plugin-id { display: block; margin-top: 3px; color: var(--ink-faint); font-size: 10px; }
+  .plugin-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+  .plugin-badge { padding: 3px 7px; border-radius: 5px; background: #f0ece5; color: var(--ink-soft); font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; }
+  .plugin-badge.badge-off { background: #efe9dd; color: var(--ink-faint); }
+  .plugin-badge.danger { background: #f5e0da; color: #a1482f; }
+  .plugin-card-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 13px; margin-top: 10px; color: var(--ink-faint); font-size: 10px; }
+  .runtime-dot { color: #6fa276; font-size: 10px; }
+  .runtime-dot.runtime-off { color: #c0b7a8; }
+  .plugin-warning { margin: 10px 0 0; padding: 8px 10px; border: 1px solid #ecd9bb; border-radius: 7px; background: #fcf5ea; color: #8a5f24; font-size: 11px; line-height: 1.45; }
+  .plugin-error { margin: 8px 0 0; color: #a1482f; font-size: 11px; line-height: 1.45; }
+  .plugin-muted { margin: 8px 0 0; color: var(--ink-faint); font-size: 10px; }
+  .plugin-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 11px; }
+  .plugin-actions .quiet-button { padding: 7px 10px; font-size: 11px; }
+  .plugin-toggle { padding: 8px 16px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 10px rgba(180, 119, 63, .18); transition: background .16s ease, transform .16s ease; }
+  .plugin-toggle:hover { background: #a86b37; }
+  .plugin-toggle.on { background: var(--surface); border-color: #d8c3a5; color: var(--ink-soft); box-shadow: none; }
+  .plugin-toggle.on:hover { background: var(--surface-muted); color: var(--ink); }
+  .plugin-toggle:disabled { opacity: .55; cursor: wait; }
+  .plugin-toggle:active { transform: translateY(1px); }
+  .version-list { margin-top: 12px; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+  .version-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 11px; background: var(--surface); }
+  .version-row + .version-row { border-top: 1px solid var(--line); }
+  .version-copy { min-width: 0; }
+  .version-name { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; color: var(--ink); font-size: 12px; font-weight: 700; }
+  .version-detail { display: block; margin-top: 3px; color: var(--ink-faint); font-size: 10px; }
+  .version-tag { padding: 2px 6px; border-radius: 4px; background: #f0ece5; color: var(--ink-soft); font-size: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; }
+  .version-tag.latest { background: #e4efdf; color: #3f6b4c; }
+  .version-tag.selected { background: #f2e4d2; color: var(--accent); }
+  .version-tag.bundled { background: #e8e4ee; color: #6a5b8a; }
+  .version-tag.signed { background: #e4efdf; color: #3f6b4c; }
+  .version-tag.unsigned { background: #f5e0da; color: #a1482f; }
+  .version-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 3px; }
+  .version-actions .quiet-button { padding: 6px 8px; font-size: 10px; }
+  .plugin-details { margin-top: 12px; }
+  .plugin-details summary { color: var(--ink-soft); font-size: 11px; font-weight: 700; cursor: pointer; }
+  .plugin-details-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-top: 11px; }
+  .plugin-detail-section { padding: 11px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--canvas); }
+  .plugin-detail-section h4 { margin: 0 0 7px; color: var(--ink-soft); font-size: 9px; letter-spacing: .1em; text-transform: uppercase; }
+  .plugin-detail-list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+  .plugin-detail-list li { color: var(--ink-soft); font-size: 11px; line-height: 1.35; }
+  .plugin-detail-list li.granted { color: var(--ink); }
+  .plugin-detail-list li.provides { color: #3f6b4c; }
+  .plugin-detail-list li.consumes { color: #8a5f24; }
+  .plugin-detail-list li.muted-item { color: var(--ink-faint); }
+  .plugin-detail-list code, .dialog-body-copy code, .backup-path { color: var(--accent-dark); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .95em; }
+  .cap-mark { float: right; color: var(--ink-faint); }
+  li.granted .cap-mark { color: #6fa276; }
+  .dialog-body-copy { margin: 0 0 12px; color: var(--ink-soft); font-size: 12px; line-height: 1.55; }
+  .plugin-subhead { margin: 14px 0 7px; color: var(--ink-soft); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+  .backup-path { display: block; margin: 4px 0 2px; overflow-wrap: anywhere; font-size: 11px; }
+  .danger-button { background: #a1482f; box-shadow: none; }
+  .danger-button:hover { background: #8f3f28; }
+
+  @media (max-width: 600px) {
+    .plugins-list { padding-inline: 14px; }
+    .plugins-toolbar, .plugins-intro { padding-inline: 16px; }
+    .plugins-heading { padding-inline: 16px; }
+    .version-row { align-items: flex-start; flex-direction: column; }
+    .version-actions { justify-content: flex-start; }
+    .plugin-card-head { flex-direction: column; }
+    .plugin-badges { justify-content: flex-start; }
   }
 </style>

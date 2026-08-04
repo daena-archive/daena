@@ -210,12 +210,24 @@ UI assets are static files served in a separate host-created webview. Use the
 host-provided broker transport with the framework-neutral SDK:
 
 ```ts
-import { createPluginRpcClient } from "@worldbuilder/plugin-sdk";
+import {
+  createBrowserPluginRpcTransport,
+  createPluginRpcClient,
+} from "@worldbuilder/plugin-sdk";
 
-const client = createPluginRpcClient(transportProvidedByTheHost);
+const transport = createBrowserPluginRpcTransport();
+const client = createPluginRpcClient(transport);
 const bootstrap = await client.bootstrap();
 const entries = await client.listEntities("forecast");
 ```
+
+`createBrowserPluginRpcTransport` reads the host-assigned plugin ID from the
+webview document and the current project ID from its URL, then performs the
+session bootstrap against the same-origin `/__rpc` endpoint. It adds a unique
+request ID, serializes the versioned envelope, correlates the response, bounds
+payloads, and turns broker failures into `PluginRpcException`. Tests may inject
+`pluginId`, `projectId`, `endpoint`, and `fetch`; production plugins should not
+replace the transport with a caller-selected identity or a Tauri command.
 
 The bootstrap response contains the host-assigned plugin ID, session, project,
 version, API range, grants, and optional features. Do not invent identity or
@@ -358,8 +370,10 @@ the Plugins panel:
   consent and activation.
 - **Rollback** restores the selected previous code version and the pre-upgrade
   project backup when required.
-- **Uninstall code** removes a retained package version only when it is not
-  selected by an active project.
+- **Uninstall code** removes a retained package version. If it is selected by
+  the current project, disable the plugin first; uninstall then detaches that
+  code version while preserving plugin-owned project data. Code selected by
+  another project remains protected until that project is detached.
 - **Delete project data** is separate, explicit, and destructive; disabling or
   uninstalling code preserves plugin-owned project data by default.
 - **Retry** is available for a quarantined plugin after repeated failures.

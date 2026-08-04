@@ -134,6 +134,14 @@ fn plugin_asset_response(
                 include_bytes!("../plugin-assets/shared/plugin.js"),
                 "text/javascript",
             ),
+            (_, "/dist/ui/plugin-sdk.js") => (
+                include_bytes!("../../packages/plugin-sdk/dist/index.js"),
+                "text/javascript",
+            ),
+            (_, "/dist/ui/generated.js") => (
+                include_bytes!("../../packages/plugin-sdk/dist/generated.js"),
+                "text/javascript",
+            ),
             (_, "/dist/ui/plugin.css") => (
                 include_bytes!("../plugin-assets/shared/plugin.css"),
                 "text/css",
@@ -189,6 +197,12 @@ fn plugin_protocol_response(
     core: &SharedCore,
     plugins: &SharedPluginHost,
 ) -> tauri::http::Response<Vec<u8>> {
+    if request.body().len() > worldbuilder_plugin_host::runtime::MAX_RPC_BYTES {
+        return json_response(
+            serde_json::json!({"error": "plugin protocol request exceeds payload limit"}),
+            413,
+        );
+    }
     let plugin_id = request.uri().host().unwrap_or_default();
     if plugin_id.is_empty() {
         return json_response(
@@ -262,8 +276,14 @@ fn plugin_protocol_response(
                             .runtime_entry(project_id, plugin_id)
                             .ok_or_else(|| "plugin was removed during bootstrap".to_string())?;
                         serde_json::to_value(PluginBootstrap {
-                            session_id: session.id,
+                            rpc_version: worldbuilder_plugin_api::RPC_VERSION,
+                            session_id: session.id.clone(),
                             plugin_id: plugin_id.to_string(),
+                            project_id: project_id.to_string(),
+                            version: entry.manifest.version.clone(),
+                            host_api: entry.manifest.host_api.clone(),
+                            granted_capabilities: session.grants.iter().cloned().collect(),
+                            optional_features: Vec::new(),
                             package_digest: entry.digest,
                             manifest: entry.manifest,
                         })
@@ -341,6 +361,7 @@ fn open_plugin_webview(
     plugin_id: &str,
     project_id: &str,
     host: &PluginHost,
+    view_id: Option<&str>,
 ) -> Result<(), String> {
     let entry = host
         .runtime_entry(project_id, plugin_id)
@@ -355,12 +376,17 @@ fn open_plugin_webview(
     }
     let policy =
         webview_policy(&entry.manifest).ok_or_else(|| "plugin has no UI entrypoint".to_string())?;
+    validate_plugin_view(&entry.manifest, view_id)?;
     if let Some(window) = app.get_webview_window(&policy.label) {
         window.show().map_err(|error| error.to_string())?;
         window.set_focus().map_err(|error| error.to_string())?;
         return Ok(());
     }
-    let url = format!("{}?project={}", policy.url, percent_encode(project_id));
+    let mut url = format!("{}?project={}", policy.url, percent_encode(project_id));
+    if let Some(view_id) = view_id {
+        url.push_str("&view=");
+        url.push_str(&percent_encode(view_id));
+    }
     tauri::WebviewWindowBuilder::new(
         app,
         policy.label,
@@ -382,12 +408,24 @@ fn close_plugin_webview(app: &tauri::AppHandle, plugin_id: &str) {
     }
 }
 
+fn validate_plugin_view(manifest: &PluginManifest, view_id: Option<&str>) -> Result<(), String> {
+    let Some(view_id) = view_id else {
+        return Ok(());
+    };
+    if manifest.views.iter().any(|view| view.id == view_id) {
+        Ok(())
+    } else {
+        Err(format!("plugin view is not declared: {view_id}"))
+    }
+}
+
 #[tauri::command]
 fn plugin_open_webview(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
     plugin_id: String,
+    view_id: Option<String>,
 ) -> Result<(), String> {
     let project_id = state
         .lock()
@@ -398,7 +436,7 @@ fn plugin_open_webview(
     let host = plugins
         .lock()
         .map_err(|_| "plugin host lock poisoned".to_string())?;
-    open_plugin_webview(&app, &plugin_id, &project_id, &host)
+    open_plugin_webview(&app, &plugin_id, &project_id, &host, view_id.as_deref())
 }
 
 #[tauri::command]
@@ -431,8 +469,14 @@ where
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PluginBootstrap {
+    rpc_version: u32,
     session_id: String,
     plugin_id: String,
+    project_id: String,
+    version: String,
+    host_api: String,
+    granted_capabilities: Vec<String>,
+    optional_features: Vec<String>,
     package_digest: String,
     manifest: PluginManifest,
 }
@@ -468,8 +512,14 @@ fn plugin_bootstrap(
         .runtime_entry(&project_id, &plugin_id)
         .ok_or_else(|| "plugin was removed during bootstrap".to_string())?;
     Ok(PluginBootstrap {
-        session_id: session.id,
+        rpc_version: worldbuilder_plugin_api::RPC_VERSION,
+        session_id: session.id.clone(),
         plugin_id,
+        project_id,
+        version: entry.manifest.version.clone(),
+        host_api: entry.manifest.host_api.clone(),
+        granted_capabilities: session.grants.iter().cloned().collect(),
+        optional_features: Vec::new(),
         package_digest: entry.digest,
         manifest: entry.manifest,
     })
@@ -652,8 +702,13 @@ fn sync_project_usage(project: &ProjectStore, host: &mut PluginHost) -> Result<(
         .map(|info| info.root)
         .ok_or(CoreError::ProjectNotOpen)?;
     for module in project.module_states()? {
-        if let Some(version) = module.package_version {
-            host.record_project_usage(&project_id, &module.module_id, &version)
+        if module.enabled {
+            if let Some(version) = module.package_version {
+                host.record_project_usage(&project_id, &module.module_id, &version)
+                    .map_err(|error| CoreError::Conflict(error.to_string()))?;
+            }
+        } else {
+            host.clear_project_usage(&project_id, &module.module_id)
                 .map_err(|error| CoreError::Conflict(error.to_string()))?;
         }
     }
@@ -884,10 +939,14 @@ async fn module_disable(
             .map(|info| info.root)
             .ok_or(CoreError::ProjectNotOpen)?;
         project.set_module_enabled(id.clone(), false)?;
-        plugins
+        let mut host = plugins
             .lock()
-            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
-            .deactivate_bundled(&project_id, &id);
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        if let Err(error) = host.clear_project_usage(&project_id, &id) {
+            project.set_module_enabled(id, true)?;
+            return Err(CoreError::Conflict(error.to_string()));
+        }
+        host.deactivate_bundled(&project_id, &id);
         close_plugin_webview(&app, &id);
         Ok(())
     })
@@ -1126,19 +1185,53 @@ async fn plugin_uninstall_code(
 ) -> Result<(), String> {
     let plugins = plugins.inner().clone();
     with_core(state, move |core| {
+        let mut detached_project: Option<(String, String)> = None;
         if core.info().is_some() {
             let project = core.project(trusted_shell())?;
             if project.module_package_version(&plugin_id)?.as_deref() == Some(version.as_str()) {
-                return Err(CoreError::Conflict(
-                    "cannot uninstall code selected by the open project".into(),
-                ));
+                if project.is_module_enabled(&plugin_id)? {
+                    return Err(CoreError::Conflict(
+                        "disable the plugin before uninstalling its selected code".into(),
+                    ));
+                }
+                let project_id = project
+                    .info()
+                    .map(|info| info.root)
+                    .ok_or(CoreError::ProjectNotOpen)?;
+                project.set_module_package_version(&plugin_id, None)?;
+                let clear_result = plugins
+                    .lock()
+                    .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
+                    .clear_project_usage(&project_id, &plugin_id);
+                if let Err(error) = clear_result {
+                    let _ = project.set_module_package_version(&plugin_id, Some(&version));
+                    return Err(CoreError::Conflict(error.to_string()));
+                }
+                detached_project = Some((project_id, version.clone()));
             }
         }
-        plugins
+        let uninstall_result = plugins
             .lock()
             .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
             .uninstall_code(&plugin_id, &version)
-            .map_err(|error| CoreError::Validation(error.to_string()))
+            .map_err(|error| CoreError::Validation(error.to_string()));
+        if let Err(error) = uninstall_result {
+            if let Some((project_id, selected_version)) = detached_project {
+                let project = core.project(trusted_shell())?;
+                let _ = project.set_module_package_version(&plugin_id, Some(&selected_version));
+                let restore_result = plugins
+                    .lock()
+                    .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
+                    .select_project_version(&project_id, &plugin_id, &selected_version);
+                if let Err(restore_error) = restore_result {
+                    return Err(CoreError::Conflict(format!(
+                        "{error}; failed to restore project plugin selection: {restore_error}"
+                    )));
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
     })
     .await
 }
@@ -2246,8 +2339,14 @@ mod tests {
     #[test]
     fn plugin_bootstrap_uses_camel_case_wire_fields() {
         let value = serde_json::to_value(PluginBootstrap {
+            rpc_version: worldbuilder_plugin_api::RPC_VERSION,
             session_id: "session".into(),
             plugin_id: "worldbuilder.lore".into(),
+            project_id: "project".into(),
+            version: "0.1.0".into(),
+            host_api: ">=1.0.0 <2.0.0".into(),
+            granted_capabilities: Vec::new(),
+            optional_features: Vec::new(),
             package_digest: "digest".into(),
             manifest: serde_json::from_str(include_str!(
                 "../../packages/modules/lore/manifest.json"
@@ -2257,5 +2356,15 @@ mod tests {
         .unwrap();
         assert_eq!(value["sessionId"], "session");
         assert!(value.get("session_id").is_none());
+    }
+
+    #[test]
+    fn plugin_view_selection_requires_manifest_declaration() {
+        let manifest: PluginManifest =
+            serde_json::from_str(include_str!("../../examples/plugins/ui/manifest.json"))
+                .unwrap();
+        assert!(validate_plugin_view(&manifest, None).is_ok());
+        assert!(validate_plugin_view(&manifest, Some("ink-tools")).is_ok());
+        assert!(validate_plugin_view(&manifest, Some("missing-view")).is_err());
     }
 }

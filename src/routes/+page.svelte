@@ -215,6 +215,20 @@
 
   function sectionEnabled() { return modules.find((module) => module.id === activeModuleId())?.enabled ?? false; }
 
+  const hostWorkspacePluginIds = new Set(["worldbuilder.lore", "worldbuilder.timeline", "worldbuilder.writing"]);
+  function pluginViews() {
+    return (adminPlugins ?? [])
+      .filter((plugin) => plugin.enabled && plugin.kind === "sandboxed" && plugin.lifecycle.state === "active" && !hostWorkspacePluginIds.has(plugin.id))
+      .flatMap((plugin) => plugin.views.map((view) => ({ plugin, view, key: `${plugin.id}:${view.id}` })))
+      .sort((left, right) => left.view.title.localeCompare(right.view.title));
+  }
+
+  async function openPluginView(pluginId: string, viewId: string) {
+    try {
+      await project.openPluginWebview(pluginId, viewId);
+    } catch (cause) { error = friendlyError(cause); }
+  }
+
   function visibleEntities() {
     const term = query.trim().toLowerCase();
     return entities.filter((entity) => {
@@ -389,6 +403,7 @@
     rememberProject(projectInfo);
     await loadEntities();
     await refreshGit();
+    await refreshAdmin();
     ready = true;
   }
 
@@ -429,6 +444,7 @@
       await project.close();
       clearSelection();
       projectInfo = null;
+      adminPlugins = null;
       gitStatus = null;
       gitLog = [];
       ready = false;
@@ -642,6 +658,7 @@
       if (installed?.enabled) await project.disableModule(id);
       else await project.enableModule(id);
       modules = await project.listModuleManifests();
+      await refreshAdmin();
       if (!sectionEnabled()) {
         selected = null;
         editorFullscreen = false;
@@ -717,6 +734,9 @@
   }
   function askConfirm(title: string, message: string, confirmLabel: string, run: () => Promise<void>) {
     confirmAction = { title, message, confirmLabel, run };
+  }
+  function selectedUninstallableVersion(plugin: PluginAdminEntry) {
+    return plugin.installedVersions.find((version) => version.isSelected && !version.bundled) ?? null;
   }
   async function runConfirm() {
     const action = confirmAction;
@@ -882,6 +902,14 @@
         <button aria-current={section === "timeline" ? "page" : undefined} class:active={section === "timeline"} class="rail-button" onclick={() => switchSection("timeline")}><span class="rail-icon">◷</span><span>Timeline</span></button>
         <button aria-current={section === "writing" ? "page" : undefined} class:active={section === "writing"} class="rail-button" onclick={() => switchSection("writing")}><span class="rail-icon">✎</span><span>Writing Studio</span></button>
       </nav>
+      {#if pluginViews().length > 0}
+        <div class="rail-label plugin-views-label">PLUGINS</div>
+        <nav class="workspace-nav" aria-label="Plugin views">
+          {#each pluginViews() as item (item.key)}
+            <button class="rail-button" title={`${item.plugin.name} · ${item.view.title}`} aria-label={`Open ${item.plugin.name}: ${item.view.title}`} onclick={() => void openPluginView(item.plugin.id, item.view.id)}><span class="rail-icon">◇</span><span>{item.view.title}</span></button>
+          {/each}
+        </nav>
+      {/if}
     {/if}
     <div class="rail-spacer"></div>
     {#if ready}
@@ -943,6 +971,14 @@
                   {/if}
                   <div class="plugin-actions">
                     <button class:on={plugin.enabled} class="plugin-toggle" onclick={() => togglePluginEnabled(plugin)} disabled={adminBusy}>{plugin.enabled ? "Disable" : "Enable"}</button>
+                    {#if selectedUninstallableVersion(plugin)}
+                      <button
+                        class="quiet-button"
+                        onclick={() => confirmUninstall(plugin, selectedUninstallableVersion(plugin)!.version)}
+                        disabled={adminBusy || plugin.enabled}
+                        title={plugin.enabled ? "Disable the plugin before uninstalling its selected code." : "Remove the selected plugin code while preserving project data."}
+                      >{plugin.enabled ? "Disable to uninstall" : "Uninstall code"}</button>
+                    {/if}
                     {#if plugin.lifecycle.state === "quarantined"}<button class="quiet-button" onclick={() => retryPlugin(plugin)} disabled={adminBusy}>Retry</button>{/if}
                     <button class="quiet-button" onclick={() => openDeleteData(plugin)} disabled={adminBusy}>Delete project data…</button>
                   </div>
@@ -1127,7 +1163,7 @@
         {#if selected}<aside class="inspector-panel panel-surface"><div class="inspector-heading"><div><span class="panel-kicker">INSPECTOR</span><strong>Details</strong></div><span class="inspector-type">{selected.entity_type}</span></div><section class="inspector-section"><h3>Properties</h3>{#each definitions().filter((candidate) => candidate.type !== "relationship") as definition}<div class="property-field"><span>{definition.label}{#if definition.required}<b>*</b>{/if}</span>{#if definition.type === "date"}{#if dateForField(definition.key) || dateEditorOpen[definition.key]}{@const date = dateDraftForField(definition.key) ?? { calendar: "gregorian", era: "CE", precision: "day" }}<div class="date-editor"><div class="date-fields"><label for={`${definition.key}-year`}>Year<input id={`${definition.key}-year`} aria-label={`${definition.label} year`} type="number" min="1" value={date.year ?? ""} onchange={(event) => updateDatePart(definition.key, "year", (event.currentTarget as HTMLInputElement).value, 1)} /></label><label for={`${definition.key}-month`}>Month<input id={`${definition.key}-month`} aria-label={`${definition.label} month`} type="number" min="1" max="12" value={date.month ?? ""} onchange={(event) => updateDatePart(definition.key, "month", (event.currentTarget as HTMLInputElement).value, 1, 12)} /></label><label for={`${definition.key}-day`}>Day<input id={`${definition.key}-day`} aria-label={`${definition.label} day`} type="number" min="1" max="31" value={date.day ?? ""} onchange={(event) => updateDatePart(definition.key, "day", (event.currentTarget as HTMLInputElement).value, 1, 31)} /></label></div><small class="date-preview">{typeof date.year === "number" ? formatCalendarDate(date) : "Add a date"}</small><button class="date-clear" type="button" onclick={() => clearDateField(definition.key)}>Clear date</button></div>{:else}<button class="date-empty" type="button" onclick={() => openDateEditor(definition.key)}>Add a date</button>{/if}{:else}<input type="text" value={fields[definition.key] ?? ""} placeholder="Add {definition.label.toLowerCase()}" oninput={(event) => updateField(definition.key, event)} />{/if}</div>{/each}</section>{#each definitions().filter((candidate) => candidate.type === "relationship") as definition}<section class="inspector-section"><div class="section-title"><h3>{definition.label}</h3><span>{selectedRelationshipIds(definition).length}</span></div><RelationshipPicker field={definition} entities={entities} selectedIds={selectedRelationshipIds(definition)} onChange={(ids) => void updateRelationshipField(definition, ids)} /></section>{/each}<section class="inspector-section"><div class="section-title"><h3>Attachments</h3><span>{assets.length}</span></div><button class="drop-zone" type="button" onclick={attachAsset}><span>＋</span><strong>Attach a file</strong><small>Copied into this project</small></button>{#each assets as asset}<div class="asset-row"><span class="asset-icon">□</span><span><strong>{asset.filename}</strong><small>{Math.max(1, Math.round(asset.size / 1024))} KB</small></span></div>{/each}</section></aside>{:else}<aside class="inspector-panel panel-surface inspector-empty"><span>INSPECTOR</span><p>Select an entry to see its properties, relationships, and attachments.</p></aside>{/if}
       </section>
     {/if}
-    {#if error}<div class="toast" role="status">{error}<button aria-label="Dismiss" onclick={() => error = ""}>×</button></div>{/if}
+    {#if error}<div class="toast" role="alert" aria-live="assertive">{error}<button aria-label="Dismiss" onclick={() => error = ""}>×</button></div>{/if}
   </section>
   {#if ready}<button class="mobile-create-button" aria-label="New entry" aria-expanded={showCreateForm} onclick={toggleCreateForm}>＋</button>{/if}
 </main>
@@ -1144,7 +1180,7 @@
   .workspace-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; padding: 42px 40px 25px; } .workspace-heading h1 { margin: 8px 0 4px; font: 500 38px/1 var(--font-display); } .workspace-heading p { margin: 0; color: var(--ink-soft); font-size: 13px; } .heading-actions { display: flex; gap: 7px; } .projection-bar { min-height: 42px; margin: 0 40px 15px; padding: 0 14px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,254,250,.72); } .projection-bar:empty { display: none; } .workspace-grid { display: grid; grid-template-columns: 245px minmax(360px, 1fr) 270px; gap: 14px; padding: 0 40px 40px; align-items: start; } .panel-surface, .editor-panel { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-sm); } .collection-panel, .inspector-panel { min-height: 650px; } .collection-panel { display: flex; flex-direction: column; } .panel-heading, .inspector-heading { display: flex; align-items: center; justify-content: space-between; padding: 18px 17px 12px; } .panel-heading strong { display: block; margin-top: 5px; font: 500 28px var(--font-display); }
   .editor-panel { min-height: 650px; padding: 24px 25px 18px; } .editor-header { display: flex; align-items: flex-start; justify-content: space-between; min-height: 72px; } .editor-header h2 { margin: 8px 0 0; font: 500 28px/1.1 var(--font-display); } .editor-status { color: var(--ink-faint); font-size: 11px; } .saving-dot, .saved-dot { display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: #d6a35f; } .saved-dot { width: auto; height: auto; margin: 0 4px 0 0; color: #6fa276; background: transparent; } .editor-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 14px; color: var(--ink-faint); font-size: 11px; } .editor-footer div { display: flex; gap: 4px; } .editor-empty { display: grid; place-items: center; min-height: 500px; padding: 30px; text-align: center; } .empty-mark, .disabled-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 16px; background: #f2e4d2; color: var(--accent); font-size: 23px; } .editor-empty h3 { margin: 18px 0 6px; font: 500 23px var(--font-display); } .editor-empty p, .disabled-state p { max-width: 280px; margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
   .date-editor { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fcf8f1; } .date-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; } .date-fields label { display: grid; gap: 4px; color: var(--ink-faint); font-size: 9px; font-weight: 700; text-transform: uppercase; } .date-fields input { min-width: 0; width: 100%; padding: 8px 6px; border: 1px solid var(--line); border-radius: 7px; background: var(--canvas); color: var(--ink); font-size: 11px; } .date-fields input:focus { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180,119,63,.1); outline: 0; } .date-preview { color: var(--accent); font-size: 10px; font-weight: 700; } .date-clear, .date-empty { width: fit-content; padding: 0; border: 0; background: transparent; color: var(--ink-faint); font-size: 10px; cursor: pointer; } .date-empty { padding: 8px 10px; border: 1px dashed #d3c0a9; border-radius: 7px; color: var(--accent); } .inspector-heading { border-bottom: 1px solid var(--line); } .inspector-heading strong { display: block; margin-top: 7px; font: 500 20px var(--font-display); } .inspector-type { padding: 4px 7px; border-radius: 5px; background: #f2e4d2; color: var(--accent); font-size: 9px; font-weight: 800; text-transform: uppercase; } .inspector-section { padding: 18px 16px; border-bottom: 1px solid var(--line); } .inspector-section h3, .section-title h3 { margin: 0; color: var(--ink-soft); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; } .property-field { display: block; margin-top: 14px; } .property-field span { display: block; margin-bottom: 5px; color: var(--ink-soft); font-size: 10px; } .property-field b { margin-left: 3px; color: var(--accent); } .property-field input { width: 100%; padding: 8px 9px; border: 1px solid var(--line); border-radius: 7px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 11px; } .property-field input:focus { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180,119,63,.1); } .section-title { display: flex; align-items: center; justify-content: space-between; } .section-title span { color: var(--ink-faint); font-size: 11px; } .asset-row strong, .asset-row small { display: block; } .asset-row strong { font-size: 10px; } .asset-row small { margin-top: 3px; color: var(--ink-faint); font-size: 9px; } .drop-zone { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 12px; padding: 16px 8px; border: 1px dashed #d3c0a9; border-radius: 8px; background: #fcf8f1; color: var(--accent); text-align: center; cursor: pointer; } .drop-zone span { font-size: 22px; } .drop-zone strong { color: var(--ink-soft); font-size: 10px; } .drop-zone small { color: var(--ink-faint); font-size: 9px; } .asset-row { display: flex; align-items: center; gap: 8px; margin-top: 9px; } .asset-icon { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 6px; background: #ede9e0; color: var(--accent); }
-  .disabled-state { display: grid; min-height: calc(100vh - 58px); place-content: center; justify-items: center; padding: 40px; text-align: center; } .disabled-state h1 { margin: 12px 0 10px; font: 500 42px var(--font-display); } .disabled-state p { margin-bottom: 24px; } .toast { position: fixed; right: 24px; bottom: 24px; z-index: 10; max-width: 430px; padding: 13px 14px; border: 1px solid #e5d4ba; border-radius: 9px; background: #fff8ed; box-shadow: var(--shadow-lg); color: #765a39; font-size: 12px; } .toast button { margin-left: 10px; border: 0; background: none; color: inherit; cursor: pointer; font-size: 17px; } .inspector-empty { display: grid; place-items: center; min-height: 240px; padding: 30px; color: var(--ink-faint); text-align: center; font-size: 10px; } .inspector-empty p { max-width: 170px; margin-top: 13px; line-height: 1.6; }
+  .disabled-state { display: grid; min-height: calc(100vh - 58px); place-content: center; justify-items: center; padding: 40px; text-align: center; } .disabled-state h1 { margin: 12px 0 10px; font: 500 42px var(--font-display); } .disabled-state p { margin-bottom: 24px; } .toast { position: fixed; right: 24px; bottom: 24px; z-index: 60; max-width: 430px; padding: 13px 14px; border: 1px solid #e5d4ba; border-radius: 9px; background: #fff8ed; box-shadow: var(--shadow-lg); color: #765a39; font-size: 12px; } .toast button { margin-left: 10px; border: 0; background: none; color: inherit; cursor: pointer; font-size: 17px; } .inspector-empty { display: grid; place-items: center; min-height: 240px; padding: 30px; color: var(--ink-faint); text-align: center; font-size: 10px; } .inspector-empty p { max-width: 170px; margin-top: 13px; line-height: 1.6; }
   @media (max-width: 1180px) { .workspace-grid { grid-template-columns: 220px minmax(320px, 1fr); } .inspector-panel { grid-column: 1 / -1; min-height: auto; display: grid; grid-template-columns: repeat(3, 1fr); } .inspector-heading { grid-column: 1 / -1; } .inspector-section { border-right: 1px solid var(--line); border-bottom: 0; } }
   @media (max-width: 760px) { .studio-shell { display: block; } .rail { display: block; width: 100%; height: auto; padding: 12px 14px; } .startup-rail { min-height: 100vh; padding: 24px 14px; } .brand { padding: 0 4px 12px; } .rail-label, .rail-spacer, .rail-footer, .module-menu { display: none; } .startup-rail .rail-label, .startup-rail .recent-projects { display: block; } .startup-rail .recent-label { margin-top: 27px; } .startup-rail .rail-button { display: flex; width: 100%; margin: 0 0 5px; padding: 10px 11px; } .startup-rail .rail-button span:not(.rail-icon) { display: inline; } .rail-button { display: inline-flex; width: auto; margin: 0 3px 0 0; padding: 8px 10px; } .rail-button span:not(.rail-icon) { display: none; } .project-menu .rail-button { display: flex; width: 100%; margin: 0 0 3px; } .project-menu .rail-button span:not(.rail-icon) { display: inline; } .topbar { min-height: 58px; padding: 0 17px; } .breadcrumbs span:first-child, .sync-badge { display: none; } .global-search { width: 150px; } .welcome { min-height: calc(100vh - 58px); display: block; padding: 55px 24px; } .welcome h1 { font-size: 52px; } .welcome-art { width: 100%; height: 270px; margin-top: 35px; transform: scale(.84); transform-origin: left top; } .workspace-heading { display: block; padding: 30px 17px 18px; } .workspace-heading h1 { font-size: 33px; } .heading-actions { margin-top: 18px; } .projection-bar { margin: 0 17px 12px; } .workspace-grid { display: flex; flex-direction: column; padding: 0 17px 25px; } .collection-panel, .editor-panel, .inspector-panel { width: 100%; min-height: auto; } .collection-list { max-height: 260px; overflow-y: auto; } .inspector-panel { display: block; } .inspector-section { border-bottom: 1px solid var(--line); border-right: 0; } .editor-panel { padding: 18px 14px 14px; } .editor-header h2 { font-size: 24px; } .editor-footer { align-items: flex-end; gap: 10px; } .toast { right: 12px; bottom: 12px; left: 12px; } }
   :global(.projection-bar) { min-height: 0; padding: 0; border: 0; background: transparent; box-shadow: none; }

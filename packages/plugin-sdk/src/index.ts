@@ -17,6 +17,21 @@ export interface PluginRpcTransport {
   call(method: string, payload: unknown): Promise<unknown>;
 }
 
+export interface BrowserPluginRpcTransportOptions {
+  /** Host-assigned package identity. Defaults to `body[data-plugin]`. */
+  pluginId?: string;
+  /** Current project identity. Defaults to the `project` URL parameter. */
+  projectId?: string;
+  /** Same-origin broker endpoint. Defaults to `/__rpc`. */
+  endpoint?: string;
+  /** Injectable for browser tests; defaults to the global fetch function. */
+  fetch?: typeof globalThis.fetch;
+  /** Matches the host bridge limit and prevents oversized requests client-side. */
+  maxRequestBytes?: number;
+  /** Matches the host bridge limit and bounds responses before JSON parsing. */
+  maxResponseBytes?: number;
+}
+
 export interface PluginRpcClient {
   call<T>(method: string, payload: unknown): Promise<T>;
   bootstrap(): Promise<PluginBootstrap>;
@@ -62,6 +77,120 @@ function isRpcError(value: unknown): value is PluginRpcError {
     typeof (value as { code?: unknown }).code === "string" &&
     typeof (value as { message?: unknown }).message === "string" &&
     typeof (value as { retryable?: unknown }).retryable === "boolean";
+}
+
+function rpcFailure(code: string, message: string, retryable = false, details?: unknown): PluginRpcError {
+  return { code, message, retryable, details };
+}
+
+function runtimeValue(name: "pluginId" | "projectId"): string {
+  if (name === "pluginId" && typeof document !== "undefined") {
+    const value = document.body?.dataset.plugin;
+    if (value) return value;
+  }
+  if (name === "projectId" && typeof location !== "undefined") {
+    const value = new URLSearchParams(location.search).get("project");
+    if (value) return value;
+  }
+  throw new Error(`plugin ${name} is not available in the current runtime`);
+}
+
+function utf8Length(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function responseError(value: unknown, fallback: string): PluginRpcError {
+  if (isRecord(value) && isRpcError(value.error)) return value.error;
+  if (isRecord(value) && typeof value.error === "string") return rpcFailure("transport.host", value.error);
+  return rpcFailure("transport.protocol", fallback);
+}
+
+/**
+ * Create the production browser transport for an isolated plugin webview.
+ *
+ * The transport owns the session handshake and request envelope. Plugin code
+ * only supplies method names and payloads; it cannot choose the session or
+ * host identity used for an RPC request.
+ */
+export function createBrowserPluginRpcTransport(options: BrowserPluginRpcTransportOptions = {}): PluginRpcTransport {
+  const pluginId = options.pluginId ?? runtimeValue("pluginId");
+  const projectId = options.projectId ?? runtimeValue("projectId");
+  const endpoint = options.endpoint ?? "/__rpc";
+  const requestFetch = options.fetch ?? globalThis.fetch?.bind(globalThis);
+  const maxRequestBytes = options.maxRequestBytes ?? 256 * 1024;
+  const maxResponseBytes = options.maxResponseBytes ?? 256 * 1024;
+  if (!requestFetch) throw new Error("plugin RPC requires fetch");
+
+  let sequence = 0;
+  let sessionId: string | undefined;
+  let handshake: Promise<PluginBootstrap> | undefined;
+
+  async function post(body: Record<string, unknown>): Promise<unknown> {
+    const serialized = JSON.stringify(body);
+    if (utf8Length(serialized) > maxRequestBytes) {
+      throw rpcFailure("payload.invalid", "plugin RPC request exceeds payload limit");
+    }
+    let response: Response;
+    try {
+      response = await requestFetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: serialized,
+      });
+    } catch (cause) {
+      throw rpcFailure("transport.unavailable", cause instanceof Error ? cause.message : String(cause), true);
+    }
+    const text = await response.text();
+    if (utf8Length(text) > maxResponseBytes) {
+      throw rpcFailure("transport.protocol", "plugin RPC response exceeds payload limit");
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      throw rpcFailure("transport.protocol", "plugin RPC returned invalid JSON");
+    }
+    if (!response.ok) throw responseError(value, `plugin RPC HTTP request failed (${response.status})`);
+    return value;
+  }
+
+  async function bootstrap(): Promise<PluginBootstrap> {
+    const value = await post({ op: "bootstrap", pluginId, projectId });
+    if (!isRecord(value) || value.rpcVersion !== 1 || value.pluginId !== pluginId || value.projectId !== projectId ||
+      typeof value.sessionId !== "string" || !value.sessionId || typeof value.version !== "string" ||
+      typeof value.hostApi !== "string" || !Array.isArray(value.grantedCapabilities) || !Array.isArray(value.optionalFeatures)) {
+      throw rpcFailure("transport.protocol", "plugin bootstrap response is invalid");
+    }
+    sessionId = value.sessionId;
+    return value as unknown as PluginBootstrap;
+  }
+
+  async function ensureSession(): Promise<void> {
+    if (sessionId) return;
+    handshake ??= bootstrap().finally(() => { handshake = undefined; });
+    await handshake;
+  }
+
+  async function call(method: string, payload: unknown): Promise<unknown> {
+    if (method === "plugin.bootstrap") return bootstrap();
+    await ensureSession();
+    const requestId = `${pluginId}-${++sequence}`;
+    const value = await post({
+      op: "rpc",
+      request: { rpcVersion: 1, sessionId, requestId, method, payload },
+    });
+    if (!isRecord(value) || value.rpcVersion !== 1 || value.requestId !== requestId || typeof value.ok !== "boolean") {
+      throw rpcFailure("transport.protocol", "plugin RPC response does not match the request");
+    }
+    if (!value.ok) {
+      if (!isRpcError(value.error)) throw rpcFailure("transport.protocol", "plugin RPC returned an invalid error");
+      throw value.error;
+    }
+    if (!("result" in value)) throw rpcFailure("transport.protocol", "plugin RPC success has no result");
+    return value.result;
+  }
+
+  return { call };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

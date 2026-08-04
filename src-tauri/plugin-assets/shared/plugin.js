@@ -1,25 +1,10 @@
+import { createBrowserPluginRpcTransport, createPluginRpcClient } from "./plugin-sdk.js";
+
 const pluginId = document.body.dataset.plugin;
 const projectId = new URLSearchParams(window.location.search).get("project");
 const status = document.querySelector("#status");
 const projection = document.querySelector("#projection");
-let sequence = 0;
-let sessionId;
-
-async function protocol(body) {
-  const response = await fetch("/__rpc", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const value = await response.json();
-  if (!response.ok || value.error) throw new Error(value.error?.message ?? value.error ?? "Plugin protocol request failed");
-  return value;
-}
-
-function rpc(method, payload) {
-  return protocol({ op: "rpc", request: {
-    rpcVersion: 1, sessionId, requestId: `${pluginId}-${++sequence}`, method, payload,
-  }}).then((response) => {
-    if (!response.ok) throw new Error(response.error?.message ?? "Plugin request failed");
-    return response.result;
-  });
-}
+const client = createPluginRpcClient(createBrowserPluginRpcTransport({ pluginId, projectId }));
 
 function render(entities, relationships) {
   projection.replaceChildren();
@@ -95,16 +80,15 @@ function renderTimeline(events) {
 
 async function start() {
   if (!projectId) throw new Error("Plugin project is missing");
-  const bootstrap = await protocol({ op: "bootstrap", pluginId, projectId });
-  sessionId = bootstrap.sessionId;
-  const entities = await rpc("entity.list", {});
-  const relationships = (await Promise.all(entities.map((entity) => rpc("relationship.list", { entityId: entity.id })))).flat();
+  const bootstrap = await client.bootstrap();
+  const entities = await client.call("entity.list", {});
+  const relationships = (await Promise.all(entities.map((entity) => client.call("relationship.list", { entityId: entity.id })))).flat();
   status.textContent = "Ready to explore.";
   if (pluginId === "worldbuilder.timeline") {
     const events = await Promise.all(entities
       .filter((entity) => entity.entity_type === "event")
       .map(async (entity) => {
-        const fields = await rpc("field.list", { entityId: entity.id, namespace: "timeline" });
+        const fields = await client.call("field.list", { entityId: entity.id, namespace: "timeline" });
         const values = Object.fromEntries(fields.map((field) => [field.key, field.value]));
         return { ...entity, startsAt: values.startsAt, endsAt: values.endsAt };
       }));

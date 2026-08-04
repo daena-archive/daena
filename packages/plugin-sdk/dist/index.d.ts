@@ -3,6 +3,20 @@ export * from "./generated.js";
 export interface PluginRpcTransport {
     call(method: string, payload: unknown): Promise<unknown>;
 }
+export interface BrowserPluginRpcTransportOptions {
+    /** Host-assigned package identity. Defaults to `body[data-plugin]`. */
+    pluginId?: string;
+    /** Current project identity. Defaults to the `project` URL parameter. */
+    projectId?: string;
+    /** Same-origin broker endpoint. Defaults to `/__rpc`. */
+    endpoint?: string;
+    /** Injectable for browser tests; defaults to the global fetch function. */
+    fetch?: typeof globalThis.fetch;
+    /** Matches the host bridge limit and prevents oversized requests client-side. */
+    maxRequestBytes?: number;
+    /** Matches the host bridge limit and bounds responses before JSON parsing. */
+    maxResponseBytes?: number;
+}
 export interface PluginRpcClient {
     call<T>(method: string, payload: unknown): Promise<T>;
     bootstrap(): Promise<PluginBootstrap>;
@@ -21,6 +35,14 @@ export declare class PluginRpcException extends Error {
     readonly details: unknown;
     constructor(error: PluginRpcError);
 }
+/**
+ * Create the production browser transport for an isolated plugin webview.
+ *
+ * The transport owns the session handshake and request envelope. Plugin code
+ * only supplies method names and payloads; it cannot choose the session or
+ * host identity used for an RPC request.
+ */
+export declare function createBrowserPluginRpcTransport(options?: BrowserPluginRpcTransportOptions): PluginRpcTransport;
 /** Framework-neutral SDK boundary. The host owns identity and authorization. */
 export declare function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcClient;
 export declare function isPluginIdentifier(value: string): boolean;

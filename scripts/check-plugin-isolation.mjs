@@ -12,7 +12,8 @@ assert.equal(/packages\/modules\/(?:index\.ts|lore\/src|timeline\/src)/.test(rou
 assert.doesNotMatch(frame, /srcdoc|sandbox=/, "main webview must not host plugin code");
 assert.match(frame, /plugin_open_webview/);
 assert.doesNotMatch(plugin, /__TAURI_INTERNALS__|@tauri-apps/, "plugin bundle must use the broker protocol, not Tauri APIs");
-assert.match(plugin, /fetch\("\/__rpc"/);
+assert.match(plugin, /createBrowserPluginRpcTransport/);
+assert.match(tauriSource, /plugin-sdk\.js/);
 assert.match(tauriSource, /WebviewWindowBuilder::new/);
 assert.match(tauriSource, /use_https_scheme\(true\)/);
 assert.match(tauriSource, /register_uri_scheme_protocol\("plugin"/);

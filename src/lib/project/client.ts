@@ -99,6 +99,9 @@ export const project = {
   enableModule: (id: string) => invoke<void>("module_enable", { id }),
   disableModule: (id: string) => invoke<void>("module_disable", { id }),
   adminView: () => invoke<PluginAdminView>("plugin_admin_view"),
+  openPluginWebview: (pluginId: string, viewId?: string) =>
+    invoke<void>("plugin_open_webview", { pluginId, viewId }),
+  closePluginWebview: (pluginId: string) => invoke<void>("plugin_close_webview", { pluginId }),
   installPlugin: (archive: string, allowUnsigned = false) =>
     invoke<InstalledPluginVersion>("plugin_install_package", { archive, allowUnsigned }),
   upgradePlugin: (pluginId: string, version: string, consent: boolean) =>

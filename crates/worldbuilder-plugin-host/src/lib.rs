@@ -1396,6 +1396,23 @@ impl PluginHost {
         self.packages
             .remove_version(plugin_id, version)
             .map_err(|e| HostError(e.to_string()))?;
+        if let Some(active) = self.packages.active_candidate(plugin_id).cloned() {
+            let manifest = parse_manifest(
+                &fs::read_to_string(active.root.join("manifest.json")).map_err(io_error)?,
+            )
+            .map_err(|error| HostError(error.to_string()))?;
+            self.catalog.replace_runtime_entry(CatalogEntry {
+                manifest,
+                package_root: active.root,
+                digest: active.digest,
+            })?;
+        } else if self
+            .catalog
+            .get(plugin_id)
+            .is_some_and(|entry| !entry.package_root.as_os_str().is_empty())
+        {
+            self.catalog.remove(plugin_id);
+        }
         self.persist_state()
     }
 

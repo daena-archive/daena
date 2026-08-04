@@ -30,6 +30,121 @@ function isRpcError(value) {
         typeof value.message === "string" &&
         typeof value.retryable === "boolean";
 }
+function rpcFailure(code, message, retryable = false, details) {
+    return { code, message, retryable, details };
+}
+function runtimeValue(name) {
+    if (name === "pluginId" && typeof document !== "undefined") {
+        const value = document.body?.dataset.plugin;
+        if (value)
+            return value;
+    }
+    if (name === "projectId" && typeof location !== "undefined") {
+        const value = new URLSearchParams(location.search).get("project");
+        if (value)
+            return value;
+    }
+    throw new Error(`plugin ${name} is not available in the current runtime`);
+}
+function utf8Length(value) {
+    return new TextEncoder().encode(value).byteLength;
+}
+function responseError(value, fallback) {
+    if (isRecord(value) && isRpcError(value.error))
+        return value.error;
+    if (isRecord(value) && typeof value.error === "string")
+        return rpcFailure("transport.host", value.error);
+    return rpcFailure("transport.protocol", fallback);
+}
+/**
+ * Create the production browser transport for an isolated plugin webview.
+ *
+ * The transport owns the session handshake and request envelope. Plugin code
+ * only supplies method names and payloads; it cannot choose the session or
+ * host identity used for an RPC request.
+ */
+export function createBrowserPluginRpcTransport(options = {}) {
+    const pluginId = options.pluginId ?? runtimeValue("pluginId");
+    const projectId = options.projectId ?? runtimeValue("projectId");
+    const endpoint = options.endpoint ?? "/__rpc";
+    const requestFetch = options.fetch ?? globalThis.fetch?.bind(globalThis);
+    const maxRequestBytes = options.maxRequestBytes ?? 256 * 1024;
+    const maxResponseBytes = options.maxResponseBytes ?? 256 * 1024;
+    if (!requestFetch)
+        throw new Error("plugin RPC requires fetch");
+    let sequence = 0;
+    let sessionId;
+    let handshake;
+    async function post(body) {
+        const serialized = JSON.stringify(body);
+        if (utf8Length(serialized) > maxRequestBytes) {
+            throw rpcFailure("payload.invalid", "plugin RPC request exceeds payload limit");
+        }
+        let response;
+        try {
+            response = await requestFetch(endpoint, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: serialized,
+            });
+        }
+        catch (cause) {
+            throw rpcFailure("transport.unavailable", cause instanceof Error ? cause.message : String(cause), true);
+        }
+        const text = await response.text();
+        if (utf8Length(text) > maxResponseBytes) {
+            throw rpcFailure("transport.protocol", "plugin RPC response exceeds payload limit");
+        }
+        let value;
+        try {
+            value = JSON.parse(text);
+        }
+        catch {
+            throw rpcFailure("transport.protocol", "plugin RPC returned invalid JSON");
+        }
+        if (!response.ok)
+            throw responseError(value, `plugin RPC HTTP request failed (${response.status})`);
+        return value;
+    }
+    async function bootstrap() {
+        const value = await post({ op: "bootstrap", pluginId, projectId });
+        if (!isRecord(value) || value.rpcVersion !== 1 || value.pluginId !== pluginId || value.projectId !== projectId ||
+            typeof value.sessionId !== "string" || !value.sessionId || typeof value.version !== "string" ||
+            typeof value.hostApi !== "string" || !Array.isArray(value.grantedCapabilities) || !Array.isArray(value.optionalFeatures)) {
+            throw rpcFailure("transport.protocol", "plugin bootstrap response is invalid");
+        }
+        sessionId = value.sessionId;
+        return value;
+    }
+    async function ensureSession() {
+        if (sessionId)
+            return;
+        handshake ??= bootstrap().finally(() => { handshake = undefined; });
+        await handshake;
+    }
+    async function call(method, payload) {
+        if (method === "plugin.bootstrap")
+            return bootstrap();
+        await ensureSession();
+        const requestId = `${pluginId}-${++sequence}`;
+        const value = await post({
+            op: "rpc",
+            request: { rpcVersion: 1, sessionId, requestId, method, payload },
+        });
+        if (!isRecord(value) || value.rpcVersion !== 1 || value.requestId !== requestId || typeof value.ok !== "boolean") {
+            throw rpcFailure("transport.protocol", "plugin RPC response does not match the request");
+        }
+        if (!value.ok) {
+            if (!isRpcError(value.error))
+                throw rpcFailure("transport.protocol", "plugin RPC returned an invalid error");
+            throw value.error;
+        }
+        if (!("result" in value))
+            throw rpcFailure("transport.protocol", "plugin RPC success has no result");
+        return value.result;
+    }
+    return { call };
+}
 function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }

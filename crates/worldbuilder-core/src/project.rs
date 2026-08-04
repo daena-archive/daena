@@ -163,6 +163,10 @@ pub struct MigrationHistoryEntry {
     pub from_version: i64,
     pub to_version: i64,
     pub checksum: String,
+    #[serde(default)]
+    pub package_digest: String,
+    #[serde(default)]
+    pub applied_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -450,7 +454,15 @@ impl ProjectStore {
         self.connection.execute_batch("CREATE VIRTUAL TABLE IF NOT EXISTS world_search USING fts5(entity_id UNINDEXED, content);
              CREATE TRIGGER IF NOT EXISTS entities_search_insert AFTER INSERT ON entities BEGIN INSERT INTO world_search(entity_id, content) VALUES (new.id, new.name || ' ' || COALESCE(new.entity_type, '')); END;
              CREATE TRIGGER IF NOT EXISTS documents_search_insert AFTER INSERT ON documents BEGIN INSERT INTO world_search(entity_id, content) VALUES (new.entity_id, new.body); END;")?;
-        self.connection.execute_batch("CREATE TABLE IF NOT EXISTS migration_history(module_id TEXT NOT NULL, migration_id TEXT NOT NULL, from_version INTEGER NOT NULL, to_version INTEGER NOT NULL, checksum TEXT NOT NULL, PRIMARY KEY(module_id, migration_id)); CREATE TABLE IF NOT EXISTS plugin_backups(id TEXT PRIMARY KEY, module_id TEXT NOT NULL, from_package_version TEXT, to_package_version TEXT, data_version INTEGER NOT NULL, path TEXT NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL);")?;
+        self.connection.execute_batch("CREATE TABLE IF NOT EXISTS migration_history(module_id TEXT NOT NULL, migration_id TEXT NOT NULL, from_version INTEGER NOT NULL, to_version INTEGER NOT NULL, checksum TEXT NOT NULL, package_digest TEXT NOT NULL DEFAULT '', applied_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(module_id, migration_id)); CREATE TABLE IF NOT EXISTS plugin_backups(id TEXT PRIMARY KEY, module_id TEXT NOT NULL, from_package_version TEXT, to_package_version TEXT, data_version INTEGER NOT NULL, path TEXT NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL);")?;
+        let _ = self.connection.execute(
+            "ALTER TABLE migration_history ADD COLUMN package_digest TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        let _ = self.connection.execute(
+            "ALTER TABLE migration_history ADD COLUMN applied_at TEXT NOT NULL DEFAULT ''",
+            [],
+        );
         Ok(())
     }
 
@@ -873,7 +885,7 @@ impl ProjectStore {
             .collect::<Result<Vec<_>, _>>()?;
         let migration_history = self
             .connection
-            .prepare("SELECT module_id,migration_id,from_version,to_version,checksum FROM migration_history ORDER BY module_id,migration_id")?
+            .prepare("SELECT module_id,migration_id,from_version,to_version,checksum,package_digest,applied_at FROM migration_history ORDER BY module_id,migration_id")?
             .query_map([], |row| {
                 Ok(MigrationHistoryEntry {
                     module_id: row.get(0)?,
@@ -881,6 +893,8 @@ impl ProjectStore {
                     from_version: row.get(2)?,
                     to_version: row.get(3)?,
                     checksum: row.get(4)?,
+                    package_digest: row.get(5)?,
+                    applied_at: row.get(6)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -961,8 +975,8 @@ impl ProjectStore {
         }
         for migration in &snapshot.migration_history {
             transaction.execute(
-                "INSERT INTO migration_history(module_id,migration_id,from_version,to_version,checksum) VALUES (?1,?2,?3,?4,?5)",
-                params![migration.module_id, migration.migration_id, migration.from_version, migration.to_version, migration.checksum],
+                "INSERT INTO migration_history(module_id,migration_id,from_version,to_version,checksum,package_digest,applied_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                params![migration.module_id, migration.migration_id, migration.from_version, migration.to_version, migration.checksum, migration.package_digest, migration.applied_at],
             )?;
         }
         transaction.commit()?;
@@ -1989,12 +2003,20 @@ mod tests {
                 namespace: "timeline".into(),
             }],
             recovery: "backup".into(),
+            package_digest: "sha256:test-package".into(),
         };
         store.apply_migration(&migration).unwrap();
         assert_eq!(
             store.get_module_version("worldbuilder.timeline").unwrap(),
             1
         );
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&store.export_json().unwrap()).unwrap();
+        let history = &snapshot["migration_history"][0];
+        assert_eq!(history["package_digest"], "sha256:test-package");
+        assert!(history["applied_at"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
     }
 
     #[test]
@@ -2022,6 +2044,7 @@ mod tests {
                 namespace: "timeline".into(),
             }],
             recovery: "backup".into(),
+            package_digest: String::new(),
         };
         store.apply_migration(&migration).unwrap();
         store.restore_plugin_backup(&backup).unwrap();
@@ -2050,6 +2073,7 @@ mod tests {
                 namespace: "lore".into(),
             }],
             recovery: "backup".into(),
+            package_digest: String::new(),
         };
         store.apply_migration(&migration).unwrap();
         assert!(store.delete_plugin_data("worldbuilder.lore", "no").is_err());
@@ -2073,6 +2097,7 @@ mod tests {
                 namespace: "lore".into(),
             }],
             recovery: "backup".into(),
+            package_digest: String::new(),
         };
         let second = crate::migrations::Migration {
             id: "lore-v2".into(),
@@ -2088,6 +2113,7 @@ mod tests {
                 },
             }],
             recovery: "backup".into(),
+            package_digest: String::new(),
         };
         assert!(store.apply_migrations(&[first, second]).is_err());
         assert_eq!(store.get_module_version("worldbuilder.lore").unwrap(), 0);

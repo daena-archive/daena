@@ -39,6 +39,8 @@ pub struct Migration {
     pub to: i64,
     pub operations: Vec<Operation>,
     pub recovery: String,
+    #[serde(default)]
+    pub package_digest: String,
 }
 
 pub fn validate(migration: &Migration, current: i64) -> Result<(), CoreError> {
@@ -229,11 +231,27 @@ pub fn apply(connection: &mut Connection, migration: &Migration) -> Result<(), C
     )
     .map_err(|e| e.to_string())?;
     tx.execute(
-        "INSERT INTO migration_history(module_id,migration_id,from_version,to_version,checksum) VALUES (?1,?2,?3,?4,?5)",
-        params![migration.module_id, migration.id, migration.from, migration.to, checksum],
+        "INSERT INTO migration_history(module_id,migration_id,from_version,to_version,checksum,package_digest,applied_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        params![
+            migration.module_id,
+            migration.id,
+            migration.from,
+            migration.to,
+            checksum,
+            migration.package_digest,
+            migration_applied_at(),
+        ],
     ).map_err(|e| e.to_string())?;
     tx.commit()?;
     Ok(())
+}
+
+fn migration_applied_at() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .to_string()
 }
 
 #[cfg(test)]
@@ -242,7 +260,7 @@ mod tests {
 
     fn schema_connection() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch("CREATE TABLE module_versions(module_id TEXT PRIMARY KEY, version INTEGER NOT NULL); CREATE TABLE module_namespaces(module_id TEXT NOT NULL, namespace TEXT NOT NULL, PRIMARY KEY(module_id, namespace)); CREATE TABLE module_fields(module_id TEXT NOT NULL, namespace TEXT NOT NULL, key TEXT NOT NULL, field_type TEXT NOT NULL, required INTEGER NOT NULL, PRIMARY KEY(module_id, namespace, key)); CREATE TABLE migration_history(module_id TEXT NOT NULL, migration_id TEXT NOT NULL, from_version INTEGER NOT NULL, to_version INTEGER NOT NULL, checksum TEXT NOT NULL, PRIMARY KEY(module_id, migration_id));").unwrap();
+        connection.execute_batch("CREATE TABLE module_versions(module_id TEXT PRIMARY KEY, version INTEGER NOT NULL); CREATE TABLE module_namespaces(module_id TEXT NOT NULL, namespace TEXT NOT NULL, PRIMARY KEY(module_id, namespace)); CREATE TABLE module_fields(module_id TEXT NOT NULL, namespace TEXT NOT NULL, key TEXT NOT NULL, field_type TEXT NOT NULL, required INTEGER NOT NULL, PRIMARY KEY(module_id, namespace, key)); CREATE TABLE migration_history(module_id TEXT NOT NULL, migration_id TEXT NOT NULL, from_version INTEGER NOT NULL, to_version INTEGER NOT NULL, checksum TEXT NOT NULL, package_digest TEXT NOT NULL DEFAULT '', applied_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(module_id, migration_id));").unwrap();
         connection
     }
 
@@ -256,6 +274,7 @@ mod tests {
                 namespace: "lore".into(),
             }],
             recovery: "backup".into(),
+            package_digest: String::new(),
         }
     }
 

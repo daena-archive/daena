@@ -399,7 +399,6 @@
     projectInfo = info ?? await project.info();
     if (!projectInfo) throw new Error("The project did not return an identity");
     modules = await project.listModuleManifests();
-    for (const id of ["worldbuilder.lore", "worldbuilder.timeline", "worldbuilder.writing"]) if (modules.find((candidate) => candidate.id === id)?.enabled) await project.enableModule(id);
     rememberProject(projectInfo);
     await loadEntities();
     await refreshGit();
@@ -623,7 +622,7 @@
     const toAdd = [...desired].filter((targetId) => !current.some((relationship) => relationship.target_id === targetId));
     try {
       const context = contextFor();
-      await Promise.all(toRemove.map((relationship) => context.relationships.delete(relationship.id as UUID)));
+      await Promise.all(toRemove.map((relationship) => context.relationships.delete(relationship.id as UUID, relationship.relationship_type)));
       const created = await Promise.all(toAdd.map((targetId) => project.createRelationship(
         selected!.id,
         targetId,
@@ -654,9 +653,22 @@
   }
   async function toggleModule(id: ModuleId) {
     const installed = modules.find((module) => module.id === id);
+    if (!installed) return;
+    if (!installed.enabled) {
+      askConfirm(
+        "Grant plugin capabilities",
+        `Enable ${installed.name} with these requested capabilities?\n\n${installed.capabilities.map(capabilityLabel).join("\n") || "No capabilities requested."}`,
+        "Enable plugin",
+        async () => {
+          await project.enableModule(id, installed.capabilities);
+          modules = await project.listModuleManifests();
+          await refreshAdmin();
+        },
+      );
+      return;
+    }
     try {
-      if (installed?.enabled) await project.disableModule(id);
-      else await project.enableModule(id);
+      await project.disableModule(id);
       modules = await project.listModuleManifests();
       await refreshAdmin();
       if (!sectionEnabled()) {
@@ -778,7 +790,7 @@
   async function retryPlugin(plugin: PluginAdminEntry) {
     try {
       await project.retryPlugin(plugin.id);
-      if (!plugin.enabled) await project.enableModule(plugin.id);
+      if (!plugin.enabled) await project.enableModule(plugin.id, plugin.capabilities);
       modules = await project.listModuleManifests();
       await refreshAdmin();
       error = `Retried ${plugin.name}.`;
@@ -802,9 +814,21 @@
     finally { deleteBusy = false; }
   }
   async function togglePluginEnabled(plugin: PluginAdminEntry) {
+    if (!plugin.enabled) {
+      askConfirm(
+        "Grant plugin capabilities",
+        `Enable ${plugin.name} with these requested capabilities?\n\n${plugin.capabilities.map(capabilityLabel).join("\n") || "No capabilities requested."}`,
+        "Enable plugin",
+        async () => {
+          await project.enableModule(plugin.id, plugin.capabilities);
+          modules = await project.listModuleManifests();
+          await refreshAdmin();
+        },
+      );
+      return;
+    }
     try {
-      if (plugin.enabled) await project.disableModule(plugin.id);
-      else await project.enableModule(plugin.id);
+      await project.disableModule(plugin.id);
       modules = await project.listModuleManifests();
       await refreshAdmin();
     } catch (cause) { error = friendlyError(cause); }
@@ -1424,7 +1448,6 @@
     .create-dialog-actions .primary-button { max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   }
 
-  .workspace-heading { padding: 28px 40px 16px; }
   .rail:not(.startup-rail) .brand { padding-bottom: 8px; }
   .collection-list { flex: 1; }
   .list-empty { display: grid; align-content: center; justify-items: start; min-height: 100%; padding: 36px 18px 42px; text-align: left; }

@@ -3,7 +3,10 @@
   "version": "0.1.0",
   "description": "",
   "type": "module",
-  "workspaces": ["packages/*", "packages/modules/*"],
+  "workspaces": [
+    "packages/*",
+    "packages/modules/*"
+  ],
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
@@ -16,7 +19,6 @@
     "test:plugin-conformance": "node scripts/plugin-conformance.mjs",
     "test:plugin-cli": "node scripts/plugin-cli.test.mjs",
     "test:plugin-transport": "node scripts/plugin-transport.test.mjs",
-    "test:plugin-bestiary": "node scripts/test-bestiary-plugin.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri"
   },

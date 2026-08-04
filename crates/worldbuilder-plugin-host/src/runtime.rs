@@ -6,9 +6,12 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use wasmtime::{Config, Engine, Instance, Module, Store, StoreLimitsBuilder};
+use wasmtime::{
+    Config, Engine, Instance, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc,
+};
 use worldbuilder_plugin_api::{PluginKind, PluginManifest, RpcRequest};
 
 pub const HOST_ORIGIN: &str = "https://worldbuilder.local";
@@ -123,6 +126,13 @@ impl std::fmt::Display for WasmFailure {
 pub struct WasmRuntime {
     engine: Engine,
     limits: WasmLimits,
+    module: Option<Module>,
+    instance: Arc<Mutex<Option<PersistentInstance>>>,
+}
+
+struct PersistentInstance {
+    store: Store<StoreLimits>,
+    entry: TypedFunc<(), i32>,
 }
 
 #[derive(Clone, Default)]
@@ -148,8 +158,9 @@ impl WasmRuntimeRegistry {
         }
         let bytes = std::fs::read(package_root.join(entrypoint))
             .map_err(|error| WasmFailure::InvalidModule(error.to_string()))?;
-        let runtime = WasmRuntime::new(limits)?;
-        if let Err(error) = runtime.run(&bytes) {
+        let mut runtime = WasmRuntime::new(limits)?;
+        runtime.load(&bytes)?;
+        if let Err(error) = runtime.invoke() {
             let key = (project_id.into(), plugin_id.into());
             let failures = self.failures.entry(key.clone()).or_default();
             *failures = failures.saturating_add(1);
@@ -169,6 +180,12 @@ impl WasmRuntimeRegistry {
         self.runtimes
             .contains_key(&(project_id.to_owned(), plugin_id.to_owned()))
     }
+
+    pub fn runtime(&self, project_id: &str, plugin_id: &str) -> Option<WasmRuntime> {
+        self.runtimes
+            .get(&(project_id.to_owned(), plugin_id.to_owned()))
+            .cloned()
+    }
 }
 
 impl WasmRuntime {
@@ -177,10 +194,51 @@ impl WasmRuntime {
         config.consume_fuel(true);
         config.epoch_interruption(true);
         let engine = Engine::new(&config).map_err(|e| WasmFailure::InvalidModule(e.to_string()))?;
-        Ok(Self { engine, limits })
+        Ok(Self {
+            engine,
+            limits,
+            module: None,
+            instance: Arc::new(Mutex::new(None)),
+        })
     }
 
     pub fn run(&self, bytes: &[u8]) -> Result<i32, WasmFailure> {
+        let module = self.compile(bytes)?;
+        let mut instance = self.instantiate(&module)?;
+        self.run_instance(&mut instance)
+    }
+
+    pub fn load(&mut self, bytes: &[u8]) -> Result<(), WasmFailure> {
+        let module = self.compile(bytes)?;
+        let instance = self.instantiate(&module)?;
+        self.module = Some(module);
+        *self
+            .instance
+            .lock()
+            .map_err(|_| WasmFailure::Trap("WASM runtime state lock poisoned".into()))? =
+            Some(instance);
+        Ok(())
+    }
+
+    pub fn invoke(&self) -> Result<i32, WasmFailure> {
+        if self.module.is_none() {
+            return Err(WasmFailure::MissingEntryPoint);
+        }
+        let mut guard = self
+            .instance
+            .lock()
+            .map_err(|_| WasmFailure::Trap("WASM runtime state lock poisoned".into()))?;
+        let instance = guard.as_mut().ok_or(WasmFailure::MissingEntryPoint)?;
+        let result = self.run_instance(instance);
+        if result.is_err() {
+            // A trapped or interrupted store is not reused. Successful calls
+            // retain the instance and its linear memory for later requests.
+            *guard = None;
+        }
+        result
+    }
+
+    fn compile(&self, bytes: &[u8]) -> Result<Module, WasmFailure> {
         let module = Module::new(&self.engine, bytes)
             .map_err(|e| WasmFailure::InvalidModule(e.to_string()))?;
         if let Some(import) = module.imports().next() {
@@ -195,15 +253,29 @@ impl WasmRuntime {
                 }
             }
         }
+        Ok(module)
+    }
+
+    fn instantiate(&self, module: &Module) -> Result<PersistentInstance, WasmFailure> {
         let store_limits = StoreLimitsBuilder::new()
             .memory_size(self.limits.max_memory_bytes)
             .build();
         let mut store = Store::new(&self.engine, store_limits);
         store.limiter(|limits| limits);
-        store
+        let instance =
+            Instance::new(&mut store, module, &[]).map_err(|e| WasmFailure::Trap(e.to_string()))?;
+        let entry = instance
+            .get_typed_func::<(), i32>(&mut store, "run")
+            .map_err(|_| WasmFailure::MissingEntryPoint)?;
+        Ok(PersistentInstance { store, entry })
+    }
+
+    fn run_instance(&self, instance: &mut PersistentInstance) -> Result<i32, WasmFailure> {
+        instance
+            .store
             .set_fuel(self.limits.fuel)
             .map_err(|e| WasmFailure::Trap(e.to_string()))?;
-        store.set_epoch_deadline(1);
+        instance.store.set_epoch_deadline(1);
         let engine = self.engine.clone();
         let timeout = self.limits.timeout;
         let (cancel_timer, timer_cancelled) = std::sync::mpsc::channel();
@@ -212,12 +284,7 @@ impl WasmRuntime {
                 engine.increment_epoch();
             }
         });
-        let instance = Instance::new(&mut store, &module, &[])
-            .map_err(|e| WasmFailure::Trap(e.to_string()))?;
-        let entry = instance
-            .get_typed_func::<(), i32>(&mut store, "run")
-            .map_err(|_| WasmFailure::MissingEntryPoint)?;
-        let result = entry.call(&mut store, ()).map_err(|e| {
+        let result = instance.entry.call(&mut instance.store, ()).map_err(|e| {
             let message = e.to_string();
             if message.contains("all fuel consumed") {
                 WasmFailure::FuelExhausted
@@ -393,5 +460,17 @@ mod tests {
         registry.stop("project", "com.example.plugin");
         assert!(!registry.is_running("project", "com.example.plugin"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn loaded_wasm_service_keeps_successful_instance_state_between_calls() {
+        let module = wat::parse_str(
+            "(module (global $count (mut i32) (i32.const 0)) (func (export \"run\") (result i32) global.get $count i32.const 1 i32.add global.set $count global.get $count))",
+        )
+        .unwrap();
+        let mut runtime = WasmRuntime::new(WasmLimits::default()).unwrap();
+        runtime.load(&module).unwrap();
+        assert_eq!(runtime.invoke().unwrap(), 1);
+        assert_eq!(runtime.invoke().unwrap(), 2);
     }
 }

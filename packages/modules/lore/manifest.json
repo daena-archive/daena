@@ -40,7 +40,7 @@
     { "id": "faction", "name": "Faction", "entityType": "faction", "description": "A group, institution, or power with shared interests.", "icon": "F", "requiredFields": ["goal"], "fields": { "summary": "", "aliases": "", "goal": "", "leader": [], "headquarters": [] } },
     { "id": "culture", "name": "Culture", "entityType": "culture", "description": "A people, tradition, or way of life that shapes the world.", "icon": "C", "requiredFields": ["values"], "fields": { "summary": "", "aliases": "", "values": "", "language": "", "homeland": [] } }
   ],
-  "views": [{ "id": "lore-entities", "title": "Lore Entries" }],
+  "views": [],
   "commands": [],
   "services": { "provides": [], "consumes": [] },
   "events": { "publishes": [], "subscribes": [] },

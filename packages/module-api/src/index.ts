@@ -96,7 +96,7 @@ export interface ModuleContext {
   relationships: {
     list(entityId: UUID): Promise<Relationship[]>;
     create(input: Omit<Relationship, "id">): Promise<Relationship>;
-    delete(id: UUID): Promise<void>;
+    delete(id: UUID, relationshipType: string): Promise<void>;
   };
   assets: {
     list(entityId: UUID): Promise<AssetRecord[]>;

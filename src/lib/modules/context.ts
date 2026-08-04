@@ -149,13 +149,9 @@ export function buildModuleContext(
   manifest: ModuleManifest,
   projectId: string,
 ): ModuleContext {
+  void projectId;
   const rpc = createPluginRpcClient({
-    call: (method, payload) => invoke("module_rpc", {
-      pluginId: manifest.id,
-      projectId,
-      method,
-      payload,
-    }),
+    call: (method, payload) => invoke("trusted_module_rpc", { method, payload }),
   });
   return {
     module: manifest,
@@ -247,9 +243,12 @@ export function buildModuleContext(
         });
         return toRelationship(rel);
       },
-      delete: async (id: UUID) => {
+      delete: async (id: UUID, relationshipType: string) => {
         checkCapability(manifest, "relationship.write");
-        await rpc.call<null>("relationship.delete", { id });
+        if (!manifest.schemas.some((schema) => schema.fields.some((field) => field.relationshipType === relationshipType))) {
+          throw new Error(`Module ${manifest.id} does not declare relationship type: ${relationshipType}`);
+        }
+        await rpc.call<null>("relationship.delete", { id, relationship_type: relationshipType });
       },
     },
     assets: {

@@ -14,8 +14,8 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, SystemTime};
 use worldbuilder_plugin_api::{
-    lifecycle_transition, parse_manifest, LifecycleState, PluginManifest, RpcError, RpcRequest,
-    RpcResponse, RPC_VERSION,
+    lifecycle_transition, parse_manifest, Command, LifecycleState, PluginManifest, RpcError,
+    RpcRequest, RpcResponse, View, RPC_VERSION,
 };
 
 pub mod package;
@@ -43,6 +43,8 @@ pub struct ProjectPluginUsage {
 struct PersistentHostState {
     #[serde(default)]
     packages: PackageCatalog,
+    #[serde(default)]
+    grants: GrantStore,
     #[serde(default)]
     project_usage: Vec<ProjectPluginUsage>,
 }
@@ -265,9 +267,76 @@ fn hex_digest(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct GrantStore {
+    #[serde(default, with = "grant_store_format")]
     grants: BTreeMap<(String, String), BTreeSet<String>>,
+}
+
+mod grant_store_format {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct Entry {
+        project_id: String,
+        plugin_id: String,
+        grants: BTreeSet<String>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(untagged)]
+    enum StoredGrants {
+        Entries(Vec<Entry>),
+        LegacyEmpty(BTreeMap<String, BTreeSet<String>>),
+    }
+
+    pub fn serialize<S>(
+        grants: &BTreeMap<(String, String), BTreeSet<String>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        grants
+            .iter()
+            .map(|((project_id, plugin_id), capabilities)| Entry {
+                project_id: project_id.clone(),
+                plugin_id: plugin_id.clone(),
+                grants: capabilities.clone(),
+            })
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<BTreeMap<(String, String), BTreeSet<String>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let entries = match StoredGrants::deserialize(deserializer)? {
+            StoredGrants::Entries(entries) => entries,
+            StoredGrants::LegacyEmpty(entries) if entries.is_empty() => Vec::new(),
+            StoredGrants::LegacyEmpty(_) => {
+                return Err(serde::de::Error::custom(
+                    "unsupported legacy capability grant format",
+                ));
+            }
+        };
+        let mut grants = BTreeMap::new();
+        for entry in entries {
+            if grants
+                .insert((entry.project_id, entry.plugin_id), entry.grants)
+                .is_some()
+            {
+                return Err(serde::de::Error::custom(
+                    "duplicate project/plugin capability grant",
+                ));
+            }
+        }
+        Ok(grants)
+    }
 }
 
 impl GrantStore {
@@ -295,6 +364,10 @@ impl GrantStore {
             .cloned()
             .unwrap_or_default()
     }
+
+    pub fn is_empty(&self, project_id: &str, plugin_id: &str) -> bool {
+        self.get(project_id, plugin_id).is_empty()
+    }
 }
 
 fn capability_matches(requested: &str, granted: &str) -> bool {
@@ -305,6 +378,9 @@ fn capability_matches(requested: &str, granted: &str) -> bool {
         || requested
             .strip_suffix(":<name>")
             .is_some_and(|prefix| granted.starts_with(prefix))
+        || granted.strip_prefix(requested).is_some_and(|suffix| {
+            suffix.starts_with('@') && suffix[1..].chars().all(|c| c.is_ascii_digit())
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -448,24 +524,49 @@ impl SessionRegistry {
 #[derive(Debug, Default, Clone)]
 pub struct NamespaceOwnership {
     owners: BTreeMap<String, String>,
+    relationship_types: BTreeMap<String, String>,
 }
 
 impl NamespaceOwnership {
     pub fn register_manifest(&mut self, manifest: &PluginManifest) -> Result<(), HostError> {
+        let mut next_owners = self.owners.clone();
+        let mut next_relationship_types = self.relationship_types.clone();
         for namespace in &manifest.namespaces {
-            if let Some(owner) = self.owners.get(namespace) {
+            if let Some(owner) = next_owners.get(namespace) {
                 if owner != &manifest.id {
                     return Err(HostError(format!(
                         "namespace {namespace} is owned by {owner}"
                     )));
                 }
             }
-            self.owners.insert(namespace.clone(), manifest.id.clone());
+            next_owners.insert(namespace.clone(), manifest.id.clone());
         }
+        for schema in &manifest.schemas {
+            for field in &schema.fields {
+                if let Some(relationship_type) = &field.relationship_type {
+                    if let Some(owner) = next_relationship_types.get(relationship_type) {
+                        if owner != &manifest.id {
+                            return Err(HostError(format!(
+                                "relationship type {relationship_type} is owned by {owner}"
+                            )));
+                        }
+                    }
+                    next_relationship_types.insert(relationship_type.clone(), manifest.id.clone());
+                }
+            }
+        }
+        self.owners = next_owners;
+        self.relationship_types = next_relationship_types;
         Ok(())
     }
     pub fn owner(&self, namespace: &str) -> Option<&str> {
         self.owners.get(namespace).map(String::as_str)
+    }
+
+    pub fn relationship_owner(&self, relationship_type: &str) -> Option<&str> {
+        self.relationship_types
+            .get(relationship_type)
+            .map(String::as_str)
     }
 }
 
@@ -757,6 +858,70 @@ pub struct ServiceRegistry {
     payload_limit: usize,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct DeclarationRegistry {
+    views: BTreeMap<(String, String, String), View>,
+    commands: BTreeMap<(String, String, String), Command>,
+}
+
+impl DeclarationRegistry {
+    pub fn register(
+        &mut self,
+        project_id: &str,
+        plugin_id: &str,
+        manifest: &PluginManifest,
+    ) -> Result<(), HostError> {
+        let mut views = self.views.clone();
+        let mut commands = self.commands.clone();
+        for view in &manifest.views {
+            let key = (project_id.into(), plugin_id.into(), view.id.clone());
+            if views.contains_key(&key) {
+                return Err(HostError(format!(
+                    "view is already registered: {}",
+                    view.id
+                )));
+            }
+            views.insert(key, view.clone());
+        }
+        for command in &manifest.commands {
+            let key = (project_id.into(), plugin_id.into(), command.id.clone());
+            if commands.contains_key(&key) {
+                return Err(HostError(format!(
+                    "command is already registered: {}",
+                    command.id
+                )));
+            }
+            commands.insert(key, command.clone());
+        }
+        self.views = views;
+        self.commands = commands;
+        Ok(())
+    }
+
+    pub fn unregister_plugin(&mut self, project_id: &str, plugin_id: &str) {
+        self.views
+            .retain(|(project, plugin, _), _| project != project_id || plugin != plugin_id);
+        self.commands
+            .retain(|(project, plugin, _), _| project != project_id || plugin != plugin_id);
+    }
+
+    pub fn views(&self, project_id: &str, plugin_id: &str) -> Vec<View> {
+        self.views
+            .iter()
+            .filter(|((project, plugin, _), _)| project == project_id && plugin == plugin_id)
+            .map(|(_, view)| view.clone())
+            .collect()
+    }
+
+    pub fn commands(&self, project_id: &str, plugin_id: &str) -> Vec<Command> {
+        self.commands
+            .iter()
+            .filter(|((project, plugin, _), _)| project == project_id && plugin == plugin_id)
+            .map(|(_, command)| command.clone())
+            .collect()
+    }
+}
+
 impl ServiceRegistry {
     pub fn new(payload_limit: usize) -> Self {
         Self {
@@ -795,6 +960,13 @@ impl ServiceRegistry {
             },
         );
         Ok(())
+    }
+
+    pub fn has_provider(&self, name: &str, major: u32) -> bool {
+        self.providers.contains_key(&ServiceKey {
+            name: name.into(),
+            major,
+        })
     }
 
     pub fn unregister_plugin(&mut self, plugin_id: &str) {
@@ -1042,6 +1214,7 @@ pub struct PluginHost {
     pub lifecycle: LifecycleRegistry,
     pub events: EventBus,
     pub services: ServiceRegistry,
+    pub declarations: DeclarationRegistry,
     pub wasm: WasmRuntimeRegistry,
     state_path: Option<PathBuf>,
     project_usage: BTreeMap<(String, String), String>,
@@ -1065,6 +1238,7 @@ impl PluginHost {
             lifecycle: LifecycleRegistry::default(),
             events: EventBus::default(),
             services: ServiceRegistry::new(256 * 1024),
+            declarations: DeclarationRegistry::default(),
             wasm: WasmRuntimeRegistry::default(),
             state_path: None,
             project_usage: BTreeMap::new(),
@@ -1090,6 +1264,7 @@ impl PluginHost {
             PersistentHostState::default()
         };
         self.packages = state.packages;
+        self.grants = state.grants;
         self.project_usage = state
             .project_usage
             .into_iter()
@@ -1145,6 +1320,7 @@ impl PluginHost {
             .collect();
         let state = PersistentHostState {
             packages: self.packages.clone(),
+            grants: self.grants.clone(),
             project_usage,
         };
         let bytes = serde_json::to_vec_pretty(&state)
@@ -1181,6 +1357,22 @@ impl PluginHost {
             return Err(error);
         }
         Ok(())
+    }
+
+    /// Record an explicit user capability decision. Manifest capabilities are
+    /// requests only; an empty grant set is a valid and safe decision.
+    pub fn grant_capabilities(
+        &mut self,
+        project_id: &str,
+        plugin_id: &str,
+        granted: BTreeSet<String>,
+    ) -> Result<(), HostError> {
+        let entry = self
+            .runtime_entry(project_id, plugin_id)
+            .ok_or_else(|| HostError("plugin is not installed".into()))?;
+        self.grants
+            .set(project_id, plugin_id, &entry.manifest.capabilities, granted)?;
+        self.persist_state()
     }
 
     pub fn clear_project_usage(
@@ -1510,6 +1702,7 @@ impl PluginHost {
         self.lifecycle.deactivate(project_id, plugin_id);
         self.events.unsubscribe_plugin(project_id, plugin_id);
         self.services.unregister_plugin(plugin_id);
+        self.declarations.unregister_plugin(project_id, plugin_id);
     }
     pub fn activate_bundled(
         &mut self,
@@ -1559,6 +1752,20 @@ impl PluginHost {
                     }
                     self.lifecycle
                         .activation_succeeded(project_id, activation_id);
+                    if let Err(error) =
+                        self.register_manifest_declarations(project_id, activation_id)
+                    {
+                        self.revoke_plugin(project_id, activation_id);
+                        self.lifecycle.activation_failed(
+                            project_id,
+                            activation_id,
+                            &error.to_string(),
+                        );
+                        for previous in activated.into_iter().rev() {
+                            self.deactivate_bundled(project_id, &previous);
+                        }
+                        return Err(error);
+                    }
                     self.services.resume_plugin(activation_id);
                     activated.push(activation_id.clone());
                 }
@@ -1574,6 +1781,58 @@ impl PluginHost {
             }
         }
         Ok(plan)
+    }
+
+    fn register_manifest_declarations(
+        &mut self,
+        project_id: &str,
+        plugin_id: &str,
+    ) -> Result<(), HostError> {
+        let entry = self
+            .runtime_entry(project_id, plugin_id)
+            .ok_or_else(|| HostError("plugin runtime version is missing".into()))?;
+        self.declarations
+            .register(project_id, plugin_id, &entry.manifest)?;
+        let grants = self.grants.get(project_id, plugin_id);
+        for event in &entry.manifest.events.subscribes {
+            let required = format!("event.subscribe:{}@{}", event.name, event.version);
+            if grants
+                .iter()
+                .any(|grant| capability_matches(grant, &required))
+            {
+                self.events
+                    .subscribe(project_id, plugin_id, &event.name, event.version);
+            }
+        }
+        let runtime = self.wasm.runtime(project_id, plugin_id);
+        for service in &entry.manifest.services.provides {
+            let required = format!("service.provide:{}@{}", service.name, service.major);
+            if !grants
+                .iter()
+                .any(|grant| capability_matches(grant, &required))
+            {
+                continue;
+            }
+            if self.services.has_provider(&service.name, service.major) {
+                continue;
+            }
+            let runtime = runtime.clone();
+            self.services.register(
+                plugin_id,
+                &service.name,
+                service.major,
+                Arc::new(move |_request| {
+                    let runtime = runtime
+                        .as_ref()
+                        .ok_or_else(|| HostError("service provider unavailable".into()))?;
+                    let value = runtime
+                        .invoke()
+                        .map_err(|error| HostError(format!("WASM service failed: {error}")))?;
+                    Ok(serde_json::json!({"value": value}))
+                }),
+            )?;
+        }
+        Ok(())
     }
     pub fn deactivate_bundled(&mut self, project_id: &str, plugin_id: &str) {
         if let Ok(plan) = DependencyResolver::resolve(&self.catalog, plugin_id) {
@@ -1668,7 +1927,7 @@ impl PluginHost {
             consumer_id,
             project_id,
             "service.call",
-            serde_json::json!({"name": name}),
+            serde_json::json!({"name": name, "major": major}),
         )?;
         self.services
             .call(consumer_id, name, major, payload, deadline)
@@ -1682,17 +1941,11 @@ impl PluginHost {
         if let Some(session) = self.sessions.find_active(plugin_id, project_id, &origin) {
             return Ok(session);
         }
-        let entry = self
-            .runtime_entry(project_id, plugin_id)
+        self.runtime_entry(project_id, plugin_id)
             .ok_or_else(|| HostError("bundled plugin is not registered".into()))?;
-        if self.grants.get(project_id, plugin_id).is_empty() {
-            self.grants.set(
-                project_id,
-                plugin_id,
-                &entry.manifest.capabilities,
-                entry.manifest.capabilities.iter().cloned().collect(),
-            )?;
-        }
+        // A missing grant is an explicit deny-all state. Activation callers
+        // must obtain consent through `grant_capabilities`; runtime bootstrap
+        // must never silently turn a manifest request into authority.
         self.bootstrap(plugin_id, project_id, &origin)
     }
     pub fn authorize_bundled(
@@ -1753,6 +2006,13 @@ impl PluginHost {
             .ok_or_else(|| rpc_error("plugin.missing", "plugin is not installed", false))?
             .manifest;
         validate_declared_resource(&manifest, &request.method, &request.payload)?;
+        validate_schema_resource(
+            &manifest,
+            &request.method,
+            &request.payload,
+            session,
+            &self.namespaces,
+        )?;
         let capabilities =
             required_capabilities(&request.method, &request.payload, session, &self.namespaces)?;
         if !capabilities.iter().all(|capability| {
@@ -1768,6 +2028,237 @@ impl PluginHost {
             ));
         }
         Ok(())
+    }
+}
+
+fn validate_schema_resource(
+    manifest: &PluginManifest,
+    method: &str,
+    payload: &serde_json::Value,
+    session: &Session,
+    namespaces: &NamespaceOwnership,
+) -> Result<(), RpcError> {
+    let validate_field = |namespace: &str,
+                          key: &str,
+                          value: Option<&serde_json::Value>,
+                          entity_type: Option<&str>| {
+        if namespaces.owner(namespace) != Some(session.plugin_id.as_str()) {
+            return Err(rpc_error(
+                "namespace.denied",
+                "plugin does not own namespace",
+                false,
+            ));
+        }
+        let field = manifest
+            .schemas
+            .iter()
+            .find(|schema| schema.namespace == namespace)
+            .and_then(|schema| schema.fields.iter().find(|field| field.key == key))
+            .ok_or_else(|| rpc_error("schema.undeclared", "field is not declared", false))?;
+        if let Some(entity_type) = entity_type {
+            let schema = manifest
+                .schemas
+                .iter()
+                .find(|schema| schema.namespace == namespace)
+                .ok_or_else(|| rpc_error("schema.undeclared", "schema is not declared", false))?;
+            if !schema.entity_types.iter().any(|kind| kind == entity_type)
+                || field
+                    .entity_types
+                    .as_ref()
+                    .is_some_and(|types| !types.iter().any(|kind| kind == entity_type))
+            {
+                return Err(rpc_error(
+                    "schema.inapplicable",
+                    "field does not apply to the entity type",
+                    false,
+                ));
+            }
+        }
+        if let Some(value) = value {
+            if !field_value_matches(field, value) {
+                return Err(rpc_error(
+                    "schema.invalid",
+                    "field value does not match its declared schema",
+                    false,
+                ));
+            }
+        }
+        Ok(())
+    };
+
+    match method {
+        "entity.create" => {
+            let entity_type = payload.get("type").and_then(serde_json::Value::as_str);
+            if let Some(entity_type) = entity_type {
+                if !manifest
+                    .schemas
+                    .iter()
+                    .any(|schema| schema.entity_types.iter().any(|kind| kind == entity_type))
+                {
+                    return Err(rpc_error(
+                        "schema.undeclared",
+                        "entity type is not declared",
+                        false,
+                    ));
+                }
+            }
+            if let Some(fields) = payload.get("fields") {
+                for field in fields.as_array().ok_or_else(|| {
+                    rpc_error("payload.invalid", "entity fields must be an array", false)
+                })? {
+                    let namespace = field
+                        .get("namespace")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| {
+                            rpc_error("payload.invalid", "field namespace is required", false)
+                        })?;
+                    let key = field
+                        .get("key")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| {
+                            rpc_error("payload.invalid", "field key is required", false)
+                        })?;
+                    validate_field(namespace, key, field.get("value"), entity_type)?;
+                }
+            }
+            if let Some(relationships) = payload.get("relationships") {
+                for relationship in relationships.as_array().ok_or_else(|| {
+                    rpc_error(
+                        "payload.invalid",
+                        "entity relationships must be an array",
+                        false,
+                    )
+                })? {
+                    let relationship_type = relationship
+                        .get("relationship_type")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| {
+                            rpc_error("payload.invalid", "relationship type is required", false)
+                        })?;
+                    match namespaces.relationship_owner(relationship_type) {
+                        None => {
+                            return Err(rpc_error(
+                                "relationship.undeclared",
+                                "relationship type is not registered",
+                                false,
+                            ));
+                        }
+                        Some(owner) if owner != session.plugin_id => {
+                            return Err(rpc_error(
+                                "relationship.denied",
+                                "plugin does not own relationship type",
+                                false,
+                            ));
+                        }
+                        Some(_) => {}
+                    }
+                }
+            }
+        }
+        "entity.update" => {
+            if let Some(entity_type) = payload.get("type").and_then(serde_json::Value::as_str) {
+                if !manifest
+                    .schemas
+                    .iter()
+                    .any(|schema| schema.entity_types.iter().any(|kind| kind == entity_type))
+                {
+                    return Err(rpc_error(
+                        "schema.undeclared",
+                        "entity type is not declared",
+                        false,
+                    ));
+                }
+            }
+        }
+        "field.read" | "field.list" | "field.write" | "field.set" => {
+            let namespace = payload
+                .get("namespace")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    rpc_error(
+                        "payload.invalid",
+                        "field operation requires namespace",
+                        false,
+                    )
+                })?;
+            if let Some(key) = payload.get("key").and_then(serde_json::Value::as_str) {
+                validate_field(namespace, key, payload.get("value"), None)?;
+            } else if namespaces.owner(namespace) != Some(session.plugin_id.as_str()) {
+                return Err(rpc_error(
+                    "namespace.denied",
+                    "plugin does not own namespace",
+                    false,
+                ));
+            }
+        }
+        "asset.read" | "asset.list" | "asset.import" | "asset.register" => {
+            let namespace = payload
+                .get("namespace")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    rpc_error(
+                        "payload.invalid",
+                        "asset operation requires namespace",
+                        false,
+                    )
+                })?;
+            if namespaces.owner(namespace) != Some(session.plugin_id.as_str()) {
+                return Err(rpc_error(
+                    "namespace.denied",
+                    "plugin does not own namespace",
+                    false,
+                ));
+            }
+        }
+        "relationship.create" | "relationship.delete" => {
+            let relationship_type = payload
+                .get("relationship_type")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    rpc_error("payload.invalid", "relationship type is required", false)
+                })?;
+            match namespaces.relationship_owner(relationship_type) {
+                None => {
+                    return Err(rpc_error(
+                        "relationship.undeclared",
+                        "relationship type is not registered",
+                        false,
+                    ));
+                }
+                Some(owner) if owner != session.plugin_id => {
+                    return Err(rpc_error(
+                        "relationship.denied",
+                        "plugin does not own relationship type",
+                        false,
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn field_value_matches(
+    field: &worldbuilder_plugin_api::FieldDefinition,
+    value: &serde_json::Value,
+) -> bool {
+    if value.is_null() {
+        return true;
+    }
+    match field.field_type.as_str() {
+        "text" | "date" | "entity-ref" => {
+            value.is_string() || (field.field_type == "date" && value.is_object())
+        }
+        "number" => value.is_number(),
+        "boolean" => value.is_boolean(),
+        "enum" => value
+            .as_str()
+            .zip(field.options.as_ref())
+            .is_some_and(|(value, options)| options.iter().any(|option| option == value)),
+        "relationship" => value.is_array(),
+        _ => false,
     }
 }
 
@@ -1807,14 +2298,22 @@ fn validate_declared_resource(
                 .ok_or_else(|| {
                     rpc_error("payload.invalid", "service operations require name", false)
                 })?;
+            let major = payload
+                .get("major")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|major| u32::try_from(major).ok())
+                .ok_or_else(|| {
+                    rpc_error("payload.invalid", "service operations require major", false)
+                })?;
             let services = if method == "service.provide" {
                 &manifest.services.provides
             } else {
                 &manifest.services.consumes
             };
-            if !services.iter().any(|service| {
-                service.name == name || format!("{}@{}", service.name, service.major) == name
-            }) {
+            if !services
+                .iter()
+                .any(|service| service.name == name && service.major == major)
+            {
                 return Err(rpc_error(
                     "service.undeclared",
                     "service is not declared by the manifest",
@@ -1886,7 +2385,10 @@ fn required_capabilities(
             Ok(vec!["relationship.write".into()])
         }
         "search.query" => Ok(vec!["search.query".into()]),
-        "asset.import" | "asset.register" => Ok(vec!["asset.import".into()]),
+        "asset.import" | "asset.register" => {
+            ensure_owned_namespace(payload, session, namespaces)?;
+            Ok(vec!["asset.import".into()])
+        }
         "asset.read" | "asset.list" => {
             ensure_owned_namespace(payload, session, namespaces)?;
             Ok(vec!["asset.read:self".into()])
@@ -1922,8 +2424,15 @@ fn required_capabilities(
                 .ok_or_else(|| {
                     rpc_error("payload.invalid", "service operations require name", false)
                 })?;
+            let major = payload
+                .get("major")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|major| u32::try_from(major).ok())
+                .ok_or_else(|| {
+                    rpc_error("payload.invalid", "service operations require major", false)
+                })?;
             Ok(vec![format!(
-                "service.{}:{name}",
+                "service.{}:{name}@{major}",
                 if method == "service.provide" {
                     "provide"
                 } else {
@@ -1998,10 +2507,29 @@ mod tests {
             ],
             dependencies: BTreeMap::new(),
             namespaces: vec![namespace.into()],
-            schemas: vec![],
+            schemas: vec![worldbuilder_plugin_api::SchemaContribution {
+                namespace: namespace.into(),
+                entity_types: vec!["person".into()],
+                fields: vec![worldbuilder_plugin_api::FieldDefinition {
+                    key: "summary".into(),
+                    label: "Summary".into(),
+                    field_type: "text".into(),
+                    required: None,
+                    options: None,
+                    entity_types: None,
+                    relationship_type: None,
+                    target_entity_types: None,
+                }],
+            }],
             templates: vec![],
-            views: vec![],
-            commands: vec![],
+            views: vec![worldbuilder_plugin_api::View {
+                id: "overview".into(),
+                title: "Overview".into(),
+            }],
+            commands: vec![worldbuilder_plugin_api::Command {
+                id: "refresh".into(),
+                title: "Refresh".into(),
+            }],
             services: worldbuilder_plugin_api::Services {
                 provides: vec![],
                 consumes: vec![worldbuilder_plugin_api::Service {
@@ -2175,6 +2703,56 @@ mod tests {
     }
 
     #[test]
+    fn capability_grants_survive_host_restart_with_json_safe_keys() {
+        let directory = tempfile::tempdir().unwrap();
+        let state_path = directory.path().join("plugin-state.json");
+        let install_root = directory.path().join("plugins");
+        let expected = ["entity.read".into(), "field.read:self".into()]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+
+        let mut first = host();
+        first.state_path = Some(state_path.clone());
+        first.persist_state().unwrap();
+
+        let mut restarted = PluginHost::new();
+        restarted
+            .load_installed_packages(
+                &install_root,
+                &state_path,
+                ArchiveLimits::default(),
+                VerificationPolicy::default(),
+            )
+            .unwrap();
+
+        assert_eq!(restarted.grants.get("project", "com.example.one"), expected);
+    }
+
+    #[test]
+    fn empty_legacy_grants_are_accepted_during_host_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let state_path = directory.path().join("plugin-state.json");
+        let install_root = directory.path().join("plugins");
+        fs::write(
+            &state_path,
+            r#"{"packages":{"versions":{}},"grants":{},"project_usage":[]}"#,
+        )
+        .unwrap();
+
+        let mut restarted = PluginHost::new();
+        restarted
+            .load_installed_packages(
+                &install_root,
+                &state_path,
+                ArchiveLimits::default(),
+                VerificationPolicy::default(),
+            )
+            .unwrap();
+
+        assert!(restarted.grants.is_empty("project", "com.example.one"));
+    }
+
+    #[test]
     fn clearing_project_usage_clears_the_live_project_selection() {
         let mut host = host();
         host.select_project_version("project", "com.example.one", "1.0.0")
@@ -2217,6 +2795,143 @@ mod tests {
             host.rpc("plugin://one", &forged).error.unwrap().code,
             "session.invalid"
         );
+    }
+
+    #[test]
+    fn bundled_bootstrap_is_deny_by_default_without_consent() {
+        let mut host = PluginHost::new();
+        let entry = CatalogEntry {
+            manifest: manifest("com.example.unconsented", "unconsented"),
+            package_root: PathBuf::new(),
+            digest: "b".repeat(64),
+        };
+        host.catalog.insert_for_test(entry.clone()).unwrap();
+        host.namespaces.register_manifest(&entry.manifest).unwrap();
+        let session = host
+            .ensure_bundled_session("com.example.unconsented", "project")
+            .unwrap();
+        assert!(session.grants.is_empty());
+        let request = RpcRequest {
+            rpc_version: RPC_VERSION,
+            session_id: session.id,
+            request_id: "deny".into(),
+            method: "entity.read".into(),
+            payload: serde_json::json!({}),
+        };
+        assert_eq!(
+            host.rpc("bundled:com.example.unconsented", &request)
+                .error
+                .unwrap()
+                .code,
+            "capability.denied"
+        );
+    }
+
+    #[test]
+    fn undeclared_fields_and_relationship_types_fail_closed() {
+        let mut host = host();
+        let session = host
+            .bootstrap("com.example.one", "project", "plugin://one")
+            .unwrap();
+        let field = RpcRequest {
+            rpc_version: RPC_VERSION,
+            session_id: session.id.clone(),
+            request_id: "field".into(),
+            method: "field.read".into(),
+            payload: serde_json::json!({
+                "namespace": "one",
+                "key": "not_declared"
+            }),
+        };
+        assert_eq!(
+            host.rpc("plugin://one", &field).error.unwrap().code,
+            "schema.undeclared"
+        );
+        let relationship = RpcRequest {
+            request_id: "relationship".into(),
+            method: "relationship.create".into(),
+            payload: serde_json::json!({
+                "source_id": "source",
+                "target_id": "target",
+                "relationship_type": "forged_type",
+                "metadata": "{}"
+            }),
+            ..field
+        };
+        assert_eq!(
+            host.rpc("plugin://one", &relationship).error.unwrap().code,
+            "relationship.undeclared"
+        );
+    }
+
+    #[test]
+    fn explicit_grants_are_bound_to_the_manifest_request() {
+        let mut host = host();
+        host.grant_capabilities(
+            "project",
+            "com.example.one",
+            ["entity.read".into()].into_iter().collect(),
+        )
+        .unwrap();
+        assert_eq!(
+            host.grants.get("project", "com.example.one"),
+            ["entity.read".into()].into_iter().collect()
+        );
+        assert!(host
+            .grant_capabilities(
+                "project",
+                "com.example.one",
+                ["filesystem.write".into()].into_iter().collect(),
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn wasm_service_provider_is_registered_and_invokable_after_activation() {
+        let root = tempfile::tempdir().unwrap();
+        let dist = root.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+        fs::write(
+            dist.join("service.wasm"),
+            wat::parse_str("(module (func (export \"run\") (result i32) i32.const 7))").unwrap(),
+        )
+        .unwrap();
+        let mut provider = manifest("com.example.wasm-provider", "wasm-provider");
+        provider.entrypoints.wasm = Some("dist/service.wasm".into());
+        provider.capabilities = vec!["service.provide:com.example.wasm.count@1".into()];
+        provider.services.provides = vec![worldbuilder_plugin_api::Service {
+            name: "com.example.wasm.count".into(),
+            major: 1,
+        }];
+        let mut host = PluginHost::new();
+        host.catalog
+            .insert_for_test(CatalogEntry {
+                manifest: provider.clone(),
+                package_root: root.path().into(),
+                digest: "c".repeat(64),
+            })
+            .unwrap();
+        host.namespaces.register_manifest(&provider).unwrap();
+        host.grants
+            .set(
+                "project",
+                &provider.id,
+                &provider.capabilities,
+                provider.capabilities.iter().cloned().collect(),
+            )
+            .unwrap();
+        host.activate_bundled("project", &provider.id).unwrap();
+        let value = host
+            .services
+            .call(
+                "consumer",
+                "com.example.wasm.count",
+                1,
+                serde_json::json!({}),
+                Duration::from_millis(100),
+            )
+            .unwrap();
+        assert_eq!(value["value"], 7);
     }
     #[test]
     fn undeclared_and_foreign_namespace_operations_are_rejected() {
@@ -2384,7 +3099,7 @@ mod tests {
             ),
             (
                 "service.call",
-                serde_json::json!({"name":"com.example.calculate"}),
+                serde_json::json!({"name":"com.example.calculate","major":1}),
             ),
         ] {
             let request = RpcRequest {
@@ -2755,5 +3470,34 @@ mod tests {
             .unwrap()["resolved"],
             "0042-03-15"
         );
+    }
+
+    #[test]
+    fn activation_registers_and_deactivation_removes_manifest_declarations() {
+        let mut host = host();
+        host.activate_bundled("project", "com.example.one").unwrap();
+        assert_eq!(
+            host.declarations.views("project", "com.example.one"),
+            vec![worldbuilder_plugin_api::View {
+                id: "overview".into(),
+                title: "Overview".into(),
+            }]
+        );
+        assert_eq!(
+            host.declarations.commands("project", "com.example.one"),
+            vec![worldbuilder_plugin_api::Command {
+                id: "refresh".into(),
+                title: "Refresh".into(),
+            }]
+        );
+        host.deactivate_bundled("project", "com.example.one");
+        assert!(host
+            .declarations
+            .views("project", "com.example.one")
+            .is_empty());
+        assert!(host
+            .declarations
+            .commands("project", "com.example.one")
+            .is_empty());
     }
 }

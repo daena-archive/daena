@@ -544,12 +544,14 @@ async fn plugin_rpc(
     let request_id = request.request_id.clone();
     let plugin_id = session.plugin_id.clone();
     let method = request.method;
+    let event_method = method.clone();
     let payload = request.payload;
     let current_project = core
         .lock()
         .map_err(|_| "core lock poisoned".to_string())?
         .info()
         .map(|info| info.root);
+    let event_project_id = session.project_id.clone();
     let result = if current_project.as_deref() != Some(session.project_id.as_str()) {
         Err("plugin session is not bound to the open project".to_string())
     } else if matches!(
@@ -579,6 +581,10 @@ async fn plugin_rpc(
         })
         .await
     };
+    let result = result.and_then(|result| {
+        publish_core_mutation_event(state.inner(), &event_project_id, &event_method, &result)?;
+        Ok(result)
+    });
     match result {
         Ok(result) => Ok(RpcResponse {
             rpc_version: worldbuilder_plugin_api::RPC_VERSION,
@@ -707,7 +713,10 @@ fn sync_project_usage(project: &ProjectStore, host: &mut PluginHost) -> Result<(
                 host.record_project_usage(&project_id, &module.module_id, &version)
                     .map_err(|error| CoreError::Conflict(error.to_string()))?;
             }
+            host.activate_bundled(&project_id, &module.module_id)
+                .map_err(|error| CoreError::Validation(error.to_string()))?;
         } else {
+            host.deactivate_bundled(&project_id, &module.module_id);
             host.clear_project_usage(&project_id, &module.module_id)
                 .map_err(|error| CoreError::Conflict(error.to_string()))?;
         }
@@ -753,10 +762,13 @@ fn bundled_plugin_host() -> Result<PluginHost, String> {
 
 #[cfg(test)]
 fn core_migration(manifest: &PluginManifest) -> Result<Option<Migration>, String> {
-    Ok(core_migrations(manifest)?.into_iter().next())
+    Ok(core_migrations(manifest, "")?.into_iter().next())
 }
 
-fn core_migrations(manifest: &PluginManifest) -> Result<Vec<Migration>, String> {
+fn core_migrations(
+    manifest: &PluginManifest,
+    package_digest: &str,
+) -> Result<Vec<Migration>, String> {
     manifest
         .migrations
         .iter()
@@ -802,6 +814,7 @@ fn core_migrations(manifest: &PluginManifest) -> Result<Vec<Migration>, String> 
                 to: migration.to as i64,
                 operations,
                 recovery: migration.recovery.clone(),
+                package_digest: package_digest.into(),
             })
         })
         .collect()
@@ -855,6 +868,7 @@ async fn module_enable(
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
     id: String,
+    granted_capabilities: Option<Vec<String>>,
 ) -> Result<(), String> {
     let known = plugins
         .lock()
@@ -873,7 +887,7 @@ async fn module_enable(
             .info()
             .map(|info| info.root)
             .ok_or(CoreError::ProjectNotOpen)?;
-        let manifest = {
+        let (manifest, package_digest) = {
             let mut host = plugins
                 .lock()
                 .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
@@ -881,18 +895,48 @@ async fn module_enable(
                 host.select_project_version(&project_id, &id, &version)
                     .map_err(|error| CoreError::Validation(error.to_string()))?;
             }
-            host.runtime_entry(&project_id, &id)
-                .ok_or_else(|| CoreError::Validation("plugin runtime version is missing".into()))?
-                .manifest
+            let entry = host
+                .runtime_entry(&project_id, &id)
+                .ok_or_else(|| CoreError::Validation("plugin runtime version is missing".into()))?;
+            (entry.manifest, entry.digest)
         };
-        let migrations =
-            core_migrations(&manifest).map_err(|error| CoreError::Validation(error.to_string()))?;
+        {
+            let mut host = plugins
+                .lock()
+                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+            if let Some(granted_capabilities) = granted_capabilities {
+                host.grant_capabilities(
+                    &project_id,
+                    &manifest.id,
+                    granted_capabilities.into_iter().collect(),
+                )
+                .map_err(|error| CoreError::Validation(error.to_string()))?;
+            } else if !manifest.capabilities.is_empty()
+                && host.grants.is_empty(&project_id, &manifest.id)
+            {
+                return Err(CoreError::Unauthorized {
+                    operation: "consent to plugin capabilities",
+                });
+            }
+        }
+        let migrations = core_migrations(&manifest, &package_digest)
+            .map_err(|error| CoreError::Validation(error.to_string()))?;
         let current = project.get_module_version(&id)?;
         let pending = migrations
             .iter()
             .filter(|migration| migration.from >= current)
             .cloned()
             .collect::<Vec<_>>();
+        let backup = if pending.is_empty() {
+            None
+        } else {
+            Some(project.create_plugin_backup(
+                &manifest.id,
+                project.module_package_version(&id)?.as_deref(),
+                Some(&manifest.version),
+                current,
+            )?)
+        };
         if let Some(first) = pending.first() {
             if current != first.from {
                 return Err(CoreError::Validation(format!(
@@ -900,13 +944,22 @@ async fn module_enable(
                     manifest.id
                 )));
             }
-            project.apply_migrations(&pending)?;
+            if let Err(error) = project.apply_migrations(&pending) {
+                if let Some(backup) = &backup {
+                    let _ = project.restore_plugin_backup(backup);
+                }
+                return Err(error);
+            }
         }
         let mut host = plugins
             .lock()
             .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
-        host.activate_bundled(&project_id, &manifest.id)
-            .map_err(|error| CoreError::Validation(error.to_string()))?;
+        if let Err(error) = host.activate_bundled(&project_id, &manifest.id) {
+            if let Some(backup) = &backup {
+                let _ = project.restore_plugin_backup(backup);
+            }
+            return Err(CoreError::Validation(error.to_string()));
+        }
         host.record_project_usage(&project_id, &id, &manifest.version)
             .map_err(|error| CoreError::Conflict(error.to_string()))?;
         project.set_module_enabled(id, true)?;
@@ -1000,7 +1053,7 @@ async fn plugin_upgrade(
             .info()
             .map(|info| info.root)
             .ok_or(CoreError::ProjectNotOpen)?;
-        let (old_version, old_grants, target_manifest, plan) = {
+        let (old_version, old_grants, target_manifest, target_digest, plan) = {
             let host = plugins
                 .lock()
                 .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
@@ -1022,7 +1075,13 @@ async fn plugin_upgrade(
                     project.get_module_version(&plugin_id)? as u32,
                 )
                 .map_err(|error| CoreError::Validation(error.to_string()))?;
-            (old_version, old_grants, target_manifest, plan)
+            (
+                old_version,
+                old_grants,
+                target_manifest,
+                target.digest.clone(),
+                plan,
+            )
         };
         if plan.consent.requires_renewal && !consent {
             return Err(CoreError::Unauthorized {
@@ -1058,7 +1117,7 @@ async fn plugin_upgrade(
                 .set(&project_id, &plugin_id, &requested, next_grants)
                 .map_err(|error| CoreError::Validation(error.to_string()))?;
         }
-        let migrations = core_migrations(&target_manifest)
+        let migrations = core_migrations(&target_manifest, &target_digest)
             .map_err(|error| CoreError::Validation(error.to_string()))?
             .into_iter()
             .filter(|migration| migration.from >= current as i64)
@@ -1661,71 +1720,62 @@ fn dispatch_module_rpc(
     }
 }
 
+/// Main-window workspace editing is a trusted shell operation. It deliberately
+/// has no plugin or project identity parameters; third-party webviews use the
+/// session-bound `plugin_rpc` surface above.
 #[tauri::command]
-async fn module_rpc(
+async fn trusted_module_rpc(
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
-    plugin_id: String,
-    project_id: String,
     method: String,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    let project_id = state
+        .inner()
+        .lock()
+        .map_err(|_| "core lock poisoned".to_string())?
+        .info()
+        .map(|info| info.root)
+        .ok_or_else(|| "project is not open".to_string())?;
+    let event_method = method.clone();
+    let result = with_core(state, move |core| {
+        dispatch_module_rpc(core, &method, payload)
+    })
+    .await?;
+    publish_core_mutation_event(plugins.inner(), &project_id, &event_method, &result)?;
+    Ok(result)
+}
+
+fn publish_core_mutation_event(
+    plugins: &SharedPluginHost,
+    project_id: &str,
+    method: &str,
+    result: &serde_json::Value,
+) -> Result<(), String> {
+    if !matches!(
+        method,
+        "entity.create"
+            | "entity.update"
+            | "entity.delete"
+            | "document.save"
+            | "field.set"
+            | "relationship.create"
+            | "relationship.delete"
+            | "asset.register"
+    ) {
+        return Ok(());
+    }
     plugins
         .lock()
         .map_err(|_| "plugin host lock poisoned".to_string())?
-        .authorize_bundled(&plugin_id, &project_id, &method, payload.clone())
+        .publish_core_event(
+            project_id,
+            "worldbuilder.core/entity-changed",
+            1,
+            serde_json::json!({"method": method, "result": result}),
+        )
         .map_err(|error| error.to_string())?;
-    if matches!(
-        method.as_str(),
-        "event.subscribe" | "event.poll" | "event.publish" | "service.call"
-    ) {
-        return dispatch_host_rpc(plugins.inner(), &plugin_id, &project_id, &method, payload);
-    }
-    let event_method = method.clone();
-    let event_project_id = project_id.clone();
-    let event_plugins = plugins.inner().clone();
-    with_core(state, move |core| {
-        let current_project = core
-            .info()
-            .map(|info| info.root)
-            .ok_or(CoreError::ProjectNotOpen)?;
-        if current_project != project_id {
-            return Err(CoreError::Unauthorized {
-                operation: "access another project",
-            });
-        }
-        dispatch_module_rpc(core, &method, payload)
-    })
-    .await
-    .and_then(move |result| {
-        if matches!(
-            event_method.as_str(),
-            "entity.create"
-                | "entity.update"
-                | "entity.delete"
-                | "document.save"
-                | "field.set"
-                | "relationship.create"
-                | "relationship.delete"
-                | "asset.register"
-        ) {
-            let event_payload = serde_json::json!({
-                "method": event_method,
-                "result": result.clone(),
-            });
-            event_plugins
-                .lock()
-                .map_err(|_| "plugin host lock poisoned".to_string())?
-                .publish_core_event(
-                    &event_project_id,
-                    "worldbuilder.core/entity-changed",
-                    1,
-                    event_payload,
-                )
-                .map_err(|error| error.to_string())?;
-        }
-        Ok(result)
-    })
+    Ok(())
 }
 
 #[tauri::command]
@@ -1736,6 +1786,12 @@ async fn project_open(
 ) -> Result<(), String> {
     let plugins = plugins.inner().clone();
     with_core(state, move |core| {
+        if let Some(previous_project) = core.info().map(|info| info.root) {
+            plugins
+                .lock()
+                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
+                .deactivate_project(&previous_project);
+        }
         core.open(trusted_shell(), path)?;
         let project = core.project(trusted_shell())?;
         let mut host = plugins
@@ -1754,6 +1810,12 @@ async fn project_open_directory(
 ) -> Result<ProjectInfo, String> {
     let plugins = plugins.inner().clone();
     with_core(state, move |core| {
+        if let Some(previous_project) = core.info().map(|info| info.root) {
+            plugins
+                .lock()
+                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
+                .deactivate_project(&previous_project);
+        }
         let info = core.open_directory(trusted_shell(), path)?;
         let mut host = plugins
             .lock()
@@ -1772,6 +1834,12 @@ async fn project_new(
 ) -> Result<ProjectInfo, String> {
     let plugins = plugins.inner().clone();
     with_core(state, move |core| {
+        if let Some(previous_project) = core.info().map(|info| info.root) {
+            plugins
+                .lock()
+                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
+                .deactivate_project(&previous_project);
+        }
         let info = core.open_directory(trusted_shell(), path)?;
         let mut host = plugins
             .lock()
@@ -1875,6 +1943,12 @@ async fn project_open_default(
                 operation: "migrate legacy database",
                 source: error,
             })?;
+        }
+        if let Some(previous_project) = core.info().map(|info| info.root) {
+            plugins
+                .lock()
+                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
+                .deactivate_project(&previous_project);
         }
         core.open_directory(trusted_shell(), project_directory)?;
         let mut host = plugins
@@ -2195,7 +2269,7 @@ pub fn run() {
             plugin_delete_data,
             plugin_admin_view,
             plugin_retry,
-            module_rpc,
+            trusted_module_rpc,
             project_open,
             project_open_directory,
             project_new,
@@ -2256,6 +2330,26 @@ mod tests {
             core_migration(&writing.manifest).unwrap().unwrap().id,
             "writing-v1"
         );
+    }
+
+    #[test]
+    fn bundled_workspace_manifests_do_not_declare_duplicate_sidebar_views() {
+        let host = bundled_plugin_host().unwrap();
+        for plugin_id in [
+            "worldbuilder.lore",
+            "worldbuilder.timeline",
+            "worldbuilder.writing",
+        ] {
+            assert!(
+                host.catalog
+                    .get(plugin_id)
+                    .unwrap()
+                    .manifest
+                    .views
+                    .is_empty(),
+                "{plugin_id} must use host-owned workspace navigation"
+            );
+        }
     }
 
     #[test]
@@ -2361,8 +2455,7 @@ mod tests {
     #[test]
     fn plugin_view_selection_requires_manifest_declaration() {
         let manifest: PluginManifest =
-            serde_json::from_str(include_str!("../../examples/plugins/ui/manifest.json"))
-                .unwrap();
+            serde_json::from_str(include_str!("../../examples/plugins/ui/manifest.json")).unwrap();
         assert!(validate_plugin_view(&manifest, None).is_ok());
         assert!(validate_plugin_view(&manifest, Some("ink-tools")).is_ok());
         assert!(validate_plugin_view(&manifest, Some("missing-view")).is_err());

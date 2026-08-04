@@ -2,7 +2,7 @@
   "name": "@worldbuilder/plugin-test-host",
   "version": "1.0.0",
   "description": "In-memory broker and conformance helpers for Worldbuilder plugins",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

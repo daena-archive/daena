@@ -2,7 +2,7 @@
   "name": "@worldbuilder/plugin-sdk",
   "version": "1.0.0",
   "description": "Framework-neutral Worldbuilder plugin SDK",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "private": false,
   "type": "module",
   "main": "./dist/index.js",

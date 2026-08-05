@@ -24,6 +24,7 @@
     "npm:@tiptap/extension-text@^3.29.2": "3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2_@tiptap+pm@3.29.2",
     "npm:@tiptap/extension-underline@^3.29.2": "3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2_@tiptap+pm@3.29.2",
     "npm:@tiptap/extensions@^3.29.2": "3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2_@tiptap+pm@3.29.2",
+    "npm:cytoscape@^3.34.0": "3.34.0",
     "npm:svelte-check@4": "4.7.4_svelte@5.56.8_typescript@5.6.3",
     "npm:svelte@5": "5.56.8",
     "npm:typescript@~5.6.2": "5.6.3",
@@ -619,6 +620,9 @@
     "cookie@0.6.0": {
       "integrity": "sha512-U71cyTamuh1CRNCfpGY6to28lxvNwPG4Guz/EVjgf3Jmzv0vlDp1atT9eS5dDjMYHucpHbWns6Lwf3BKz6svdw=="
     },
+    "cytoscape@3.34.0": {
+      "integrity": "sha512-62rNSrioXw93uliKFBwjukeQyeWwH2PqDrTac31r2P6464u3AUvTk0xS4LVvT251g7IgkFunrI48ZEZGjywSOg=="
+    },
     "debug@4.4.3": {
       "integrity": "sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==",
       "dependencies": [
@@ -1005,6 +1009,7 @@
         "npm:@tiptap/extension-text@^3.29.2",
         "npm:@tiptap/extension-underline@^3.29.2",
         "npm:@tiptap/extensions@^3.29.2",
+        "npm:cytoscape@^3.34.0",
         "npm:svelte-check@4",
         "npm:svelte@5",
         "npm:typescript@~5.6.2",

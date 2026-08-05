@@ -17,6 +17,14 @@ use worldbuilder_plugin_api::{PluginKind, PluginManifest, RpcRequest};
 pub const HOST_ORIGIN: &str = "https://worldbuilder.local";
 pub const MAX_RPC_BYTES: usize = 256 * 1024;
 pub const PLUGIN_PROTOCOL: &str = "plugin";
+/// Synchronous service ABI for packaged WASM providers. The module exports
+/// `alloc(i32) -> i32`, `handle_json(i32, i32) -> i64`, and `memory`; the input
+/// and output are UTF-8 JSON. The returned i64 packs `(len << 32) | ptr`.
+/// Background event loops are intentionally unsupported in this phase.
+pub const WASM_SERVICE_ABI: &str = "wb.service.sync.v1";
+pub const WASM_SERVICE_MAX_BYTES: usize = MAX_RPC_BYTES;
+pub const BUNDLED_TIMELINE_SERVICE_WASM: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/timeline-service.wasm"));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WasmLimits {
@@ -132,7 +140,10 @@ pub struct WasmRuntime {
 
 struct PersistentInstance {
     store: Store<StoreLimits>,
-    entry: TypedFunc<(), i32>,
+    entry: Option<TypedFunc<(), i32>>,
+    alloc: Option<TypedFunc<i32, i32>>,
+    handle_json: Option<TypedFunc<(i32, i32), i64>>,
+    memory: Option<wasmtime::Memory>,
 }
 
 #[derive(Clone, Default)]
@@ -150,21 +161,45 @@ impl WasmRuntimeRegistry {
         entrypoint: Option<&str>,
         limits: WasmLimits,
     ) -> Result<(), WasmFailure> {
+        self.start_with_bytes(
+            project_id,
+            plugin_id,
+            package_root,
+            entrypoint,
+            None,
+            limits,
+        )
+    }
+
+    pub fn start_with_bytes(
+        &mut self,
+        project_id: &str,
+        plugin_id: &str,
+        package_root: &Path,
+        entrypoint: Option<&str>,
+        embedded_bytes: Option<&[u8]>,
+        limits: WasmLimits,
+    ) -> Result<(), WasmFailure> {
         let Some(entrypoint) = entrypoint else {
             return Ok(());
         };
-        if package_root.as_os_str().is_empty() {
+        let bytes = if let Some(embedded_bytes) = embedded_bytes {
+            embedded_bytes.to_vec()
+        } else if package_root.as_os_str().is_empty() {
             return Ok(());
-        }
-        let bytes = std::fs::read(package_root.join(entrypoint))
-            .map_err(|error| WasmFailure::InvalidModule(error.to_string()))?;
+        } else {
+            std::fs::read(package_root.join(entrypoint))
+                .map_err(|error| WasmFailure::InvalidModule(error.to_string()))?
+        };
         let mut runtime = WasmRuntime::new(limits)?;
         runtime.load(&bytes)?;
-        if let Err(error) = runtime.invoke() {
-            let key = (project_id.into(), plugin_id.into());
-            let failures = self.failures.entry(key.clone()).or_default();
-            *failures = failures.saturating_add(1);
-            return Err(error);
+        if runtime.has_run_entrypoint()? {
+            if let Err(error) = runtime.invoke() {
+                let key = (project_id.into(), plugin_id.into());
+                let failures = self.failures.entry(key.clone()).or_default();
+                *failures = failures.saturating_add(1);
+                return Err(error);
+            }
         }
         self.runtimes
             .insert((project_id.into(), plugin_id.into()), runtime);
@@ -238,6 +273,111 @@ impl WasmRuntime {
         result
     }
 
+    pub fn has_run_entrypoint(&self) -> Result<bool, WasmFailure> {
+        Ok(self
+            .instance
+            .lock()
+            .map_err(|_| WasmFailure::Trap("WASM runtime state lock poisoned".into()))?
+            .as_ref()
+            .is_some_and(|instance| instance.entry.is_some()))
+    }
+
+    pub fn invoke_service(
+        &self,
+        payload: &serde_json::Value,
+    ) -> Result<serde_json::Value, WasmFailure> {
+        let input = serde_json::to_vec(payload)
+            .map_err(|error| WasmFailure::Trap(format!("service request is not JSON: {error}")))?;
+        if input.len() > WASM_SERVICE_MAX_BYTES {
+            return Err(WasmFailure::Trap(
+                "service request exceeds payload limit".into(),
+            ));
+        }
+        let supports_json = self
+            .instance
+            .lock()
+            .map_err(|_| WasmFailure::Trap("WASM runtime state lock poisoned".into()))?
+            .as_ref()
+            .is_some_and(|instance| {
+                instance.alloc.is_some()
+                    && instance.handle_json.is_some()
+                    && instance.memory.is_some()
+            });
+        if !supports_json {
+            return self
+                .invoke()
+                .map(|value| serde_json::json!({ "value": value }));
+        }
+        let mut guard = self
+            .instance
+            .lock()
+            .map_err(|_| WasmFailure::Trap("WASM runtime state lock poisoned".into()))?;
+        let instance = guard.as_mut().ok_or(WasmFailure::MissingEntryPoint)?;
+        let alloc = instance
+            .alloc
+            .as_ref()
+            .ok_or(WasmFailure::MissingEntryPoint)?
+            .clone();
+        let handle = instance
+            .handle_json
+            .as_ref()
+            .ok_or(WasmFailure::MissingEntryPoint)?
+            .clone();
+        let memory = instance.memory.ok_or(WasmFailure::MissingEntryPoint)?;
+        instance
+            .store
+            .set_fuel(self.limits.fuel)
+            .map_err(|e| WasmFailure::Trap(e.to_string()))?;
+        instance.store.set_epoch_deadline(1);
+        let ptr = alloc
+            .call(&mut instance.store, input.len() as i32)
+            .map_err(|e| WasmFailure::Trap(e.to_string()))?;
+        if ptr < 0 {
+            return Err(WasmFailure::Trap(
+                "WASM allocator returned a negative pointer".into(),
+            ));
+        }
+        memory
+            .write(&mut instance.store, ptr as usize, &input)
+            .map_err(|e| WasmFailure::Trap(e.to_string()))?;
+        let engine = self.engine.clone();
+        let timeout = self.limits.timeout;
+        let (cancel_timer, timer_cancelled) = std::sync::mpsc::channel();
+        let timer = std::thread::spawn(move || {
+            if timer_cancelled.recv_timeout(timeout).is_err() {
+                engine.increment_epoch();
+            }
+        });
+        let result = handle
+            .call(&mut instance.store, (ptr, input.len() as i32))
+            .map_err(|e| {
+                let message = e.to_string();
+                if message.contains("all fuel consumed") {
+                    WasmFailure::FuelExhausted
+                } else if message.contains("epoch deadline") {
+                    WasmFailure::TimedOut
+                } else {
+                    WasmFailure::Trap(message)
+                }
+            });
+        let _ = cancel_timer.send(());
+        let _ = timer.join();
+        let packed = result? as u64;
+        let output_ptr = (packed & u32::MAX as u64) as usize;
+        let output_len = (packed >> 32) as usize;
+        if output_len > WASM_SERVICE_MAX_BYTES {
+            return Err(WasmFailure::Trap(
+                "service response exceeds payload limit".into(),
+            ));
+        }
+        let mut output = vec![0; output_len];
+        memory
+            .read(&mut instance.store, output_ptr, &mut output)
+            .map_err(|e| WasmFailure::Trap(e.to_string()))?;
+        serde_json::from_slice(&output)
+            .map_err(|error| WasmFailure::Trap(format!("service response is not JSON: {error}")))
+    }
+
     fn compile(&self, bytes: &[u8]) -> Result<Module, WasmFailure> {
         let module = Module::new(&self.engine, bytes)
             .map_err(|e| WasmFailure::InvalidModule(e.to_string()))?;
@@ -264,13 +404,31 @@ impl WasmRuntime {
         store.limiter(|limits| limits);
         let instance =
             Instance::new(&mut store, module, &[]).map_err(|e| WasmFailure::Trap(e.to_string()))?;
-        let entry = instance
-            .get_typed_func::<(), i32>(&mut store, "run")
-            .map_err(|_| WasmFailure::MissingEntryPoint)?;
-        Ok(PersistentInstance { store, entry })
+        let entry = instance.get_typed_func::<(), i32>(&mut store, "run").ok();
+        let alloc = instance
+            .get_typed_func::<i32, i32>(&mut store, "alloc")
+            .ok();
+        let handle_json = instance
+            .get_typed_func::<(i32, i32), i64>(&mut store, "handle_json")
+            .ok();
+        if entry.is_none() && (alloc.is_none() || handle_json.is_none()) {
+            return Err(WasmFailure::MissingEntryPoint);
+        }
+        let memory = instance.get_memory(&mut store, "memory");
+        Ok(PersistentInstance {
+            store,
+            entry,
+            alloc,
+            handle_json,
+            memory,
+        })
     }
 
     fn run_instance(&self, instance: &mut PersistentInstance) -> Result<i32, WasmFailure> {
+        let entry = instance
+            .entry
+            .as_ref()
+            .ok_or(WasmFailure::MissingEntryPoint)?;
         instance
             .store
             .set_fuel(self.limits.fuel)
@@ -284,7 +442,7 @@ impl WasmRuntime {
                 engine.increment_epoch();
             }
         });
-        let result = instance.entry.call(&mut instance.store, ()).map_err(|e| {
+        let result = entry.call(&mut instance.store, ()).map_err(|e| {
             let message = e.to_string();
             if message.contains("all fuel consumed") {
                 WasmFailure::FuelExhausted
@@ -382,6 +540,28 @@ mod tests {
             runtime.run(&imported),
             Err(WasmFailure::AmbientImport(_))
         ));
+    }
+
+    #[test]
+    fn wasm_json_service_abi_round_trips_a_bounded_response() {
+        let runtime = WasmRuntime::new(WasmLimits::default()).unwrap();
+        let module = wat::parse_str(
+            r#"(module
+                (memory (export "memory") 1 1)
+                (data (i32.const 16) "{\"ok\":true}")
+                (func (export "alloc") (param i32) (result i32) i32.const 0)
+                (func (export "handle_json") (param i32 i32) (result i64) i64.const 47244640272)
+            )"#,
+        )
+        .unwrap();
+        let mut loaded = runtime.clone();
+        loaded.load(&module).unwrap();
+        assert_eq!(
+            loaded
+                .invoke_service(&serde_json::json!({"request": true}))
+                .unwrap(),
+            serde_json::json!({"ok": true})
+        );
     }
 
     #[test]

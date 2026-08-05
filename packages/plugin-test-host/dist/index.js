@@ -18,6 +18,7 @@ export class FakePluginHost {
     services = new Map();
     nextEntity = 1;
     revoked = false;
+    declarativeActive = false;
     constructor(options) {
         assertValidPluginManifest(options.manifest);
         this.manifest = options.manifest;
@@ -30,6 +31,37 @@ export class FakePluginHost {
     seed(entity) { this.entities.set(entity.id, structuredClone(entity)); }
     registerService(name, major, handler) {
         this.services.set(`${name}@${major}`, handler);
+    }
+    activateDeclarative() {
+        if (this.manifest.kind !== "declarative")
+            throw new Error("only declarative plugins use the host renderer");
+        this.declarativeActive = true;
+    }
+    deactivateDeclarative() {
+        this.declarativeActive = false;
+    }
+    hostView(viewId) {
+        if (!this.declarativeActive)
+            throw new Error("declarative plugin is not active");
+        const view = this.manifest.views.find((candidate) => candidate.id === viewId);
+        if (!view)
+            throw new Error("declarative view is not declared");
+        return structuredClone(view);
+    }
+    invokeHostCommand(viewId, commandId, payload = {}) {
+        const view = this.hostView(viewId);
+        const command = this.manifest.commands.find((candidate) => candidate.id === commandId);
+        if (!command?.action)
+            throw new Error("declarative command is not executable");
+        if (command.exposure?.length && !command.exposure.includes("view"))
+            throw new Error("declarative command is not exposed to views");
+        if (command.capabilities?.some((capability) => !this.grants.has(capability)))
+            throw new Error("declarative command capability is not granted");
+        if (!view.components?.some((component) => component.type === "button" && component.command === commandId))
+            throw new Error("declarative command is not exposed by this view");
+        if (Object.keys(payload).length > 0 && !command.input)
+            throw new Error("declarative command does not accept input");
+        return { type: command.action.type };
     }
     async call(method, payload) {
         this.calls.push({ method, payload: structuredClone(payload) });

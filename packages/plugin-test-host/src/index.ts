@@ -43,6 +43,7 @@ export class FakePluginHost implements PluginRpcTransport {
   private readonly services = new Map<string, ServiceHandler>();
   private nextEntity = 1;
   private revoked = false;
+  private declarativeActive = false;
 
   constructor(options: FakePluginHostOptions) {
     assertValidPluginManifest(options.manifest);
@@ -60,6 +61,33 @@ export class FakePluginHost implements PluginRpcTransport {
 
   registerService(name: string, major: number, handler: ServiceHandler): void {
     this.services.set(`${name}@${major}`, handler);
+  }
+
+  activateDeclarative(): void {
+    if (this.manifest.kind !== "declarative") throw new Error("only declarative plugins use the host renderer");
+    this.declarativeActive = true;
+  }
+
+  deactivateDeclarative(): void {
+    this.declarativeActive = false;
+  }
+
+  hostView(viewId: string): PluginManifest["views"][number] {
+    if (!this.declarativeActive) throw new Error("declarative plugin is not active");
+    const view = this.manifest.views.find((candidate) => candidate.id === viewId);
+    if (!view) throw new Error("declarative view is not declared");
+    return structuredClone(view);
+  }
+
+  invokeHostCommand(viewId: string, commandId: string, payload: Record<string, unknown> = {}): { type: string } {
+    const view = this.hostView(viewId);
+    const command = this.manifest.commands.find((candidate) => candidate.id === commandId);
+    if (!command?.action) throw new Error("declarative command is not executable");
+    if (command.exposure?.length && !command.exposure.includes("view")) throw new Error("declarative command is not exposed to views");
+    if (command.capabilities?.some((capability) => !this.grants.has(capability))) throw new Error("declarative command capability is not granted");
+    if (!view.components?.some((component) => component.type === "button" && component.command === commandId)) throw new Error("declarative command is not exposed by this view");
+    if (Object.keys(payload).length > 0 && !command.input) throw new Error("declarative command does not accept input");
+    return { type: command.action.type };
   }
 
   async call(method: string, payload: unknown): Promise<unknown> {

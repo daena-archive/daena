@@ -17,6 +17,7 @@
     "build:plugin-sdk": "tsc -p packages/plugin-sdk/tsconfig.json",
     "build:plugin-examples": "node scripts/build-example-wasm.mjs",
     "test:plugin-conformance": "node scripts/plugin-conformance.mjs",
+    "test:plugin-declarative": "node scripts/plugin-declarative.test.mjs",
     "test:plugin-cli": "node scripts/plugin-cli.test.mjs",
     "test:plugin-transport": "node scripts/plugin-transport.test.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",

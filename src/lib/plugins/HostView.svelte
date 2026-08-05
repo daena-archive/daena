@@ -51,6 +51,16 @@
     return plugin.commands.find((command) => command.id === commandId)?.action?.type;
   }
 
+  async function invokeCommand(commandId: string) {
+    error = "";
+    try {
+      const action = await project.hostViewInvokeCommand(plugin.id, view.id, commandId);
+      if (action === "refresh-view") await refresh();
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    }
+  }
+
   function displayValue(value: unknown): string {
     if (value === null || value === undefined || value === "") return "Not set";
     if (typeof value === "boolean") return value ? "Yes" : "No";
@@ -164,7 +174,7 @@
           </article>
         {:else if component.type === "button"}
           <div class="host-view-action">
-            <button type="button" class="host-view-button" disabled={commandAction(component.command) !== "refresh-view"} onclick={() => void refresh()}>{component.label}</button>
+            <button type="button" class="host-view-button" disabled={commandAction(component.command) !== "refresh-view"} onclick={() => void invokeCommand(component.command)}>{component.label}</button>
           </div>
         {/if}
       {/each}

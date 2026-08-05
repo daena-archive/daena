@@ -10,12 +10,13 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 use worldbuilder_plugin_api::{
-    lifecycle_transition, parse_manifest, Command, LifecycleState, PluginManifest, RpcError,
-    RpcRequest, RpcResponse, View, ViewComponent, RPC_VERSION,
+    command_exposes, lifecycle_transition, parse_manifest, validate_command_value, Command,
+    CommandAction, CommandExposure, LifecycleState, PluginManifest, RpcError, RpcRequest,
+    RpcResponse, View, ViewComponent, RPC_VERSION,
 };
 
 pub mod package;
@@ -27,7 +28,7 @@ pub use package::{
 };
 pub use runtime::{
     plugin_window_label, validate_bridge_request, webview_policy, PluginWebviewPolicy, WasmLimits,
-    WasmRuntimeRegistry,
+    WasmRuntimeRegistry, BUNDLED_TIMELINE_SERVICE_WASM, WASM_SERVICE_ABI, WASM_SERVICE_MAX_BYTES,
 };
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -64,6 +65,7 @@ pub struct CatalogEntry {
     pub manifest: PluginManifest,
     pub package_root: PathBuf,
     pub digest: String,
+    pub embedded_wasm: Option<Arc<[u8]>>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -98,6 +100,7 @@ impl PluginCatalog {
                 manifest,
                 package_root: root,
                 digest,
+                embedded_wasm: None,
             },
         );
         Ok(self.entries.get(&id).expect("inserted catalog entry"))
@@ -129,6 +132,14 @@ impl PluginCatalog {
     }
 
     pub fn register_bundled_json(&mut self, json: &str) -> Result<&CatalogEntry, HostError> {
+        self.register_bundled_json_with_wasm(json, None)
+    }
+
+    pub fn register_bundled_json_with_wasm(
+        &mut self,
+        json: &str,
+        embedded_wasm: Option<&[u8]>,
+    ) -> Result<&CatalogEntry, HostError> {
         let manifest = parse_manifest(json).map_err(|error| HostError(error.to_string()))?;
         let id = manifest.id.clone();
         if self.entries.contains_key(&id) {
@@ -142,6 +153,7 @@ impl PluginCatalog {
                 manifest,
                 package_root: PathBuf::new(),
                 digest: hex_digest(&hasher.finalize()),
+                embedded_wasm: embedded_wasm.map(Arc::<[u8]>::from),
             },
         );
         Ok(self.entries.get(&id).expect("inserted bundled entry"))
@@ -525,12 +537,14 @@ impl SessionRegistry {
 pub struct NamespaceOwnership {
     owners: BTreeMap<String, String>,
     relationship_types: BTreeMap<String, String>,
+    fields: BTreeMap<(String, String), (String, bool)>,
 }
 
 impl NamespaceOwnership {
     pub fn register_manifest(&mut self, manifest: &PluginManifest) -> Result<(), HostError> {
         let mut next_owners = self.owners.clone();
         let mut next_relationship_types = self.relationship_types.clone();
+        let mut next_fields = self.fields.clone();
         for namespace in &manifest.namespaces {
             if let Some(owner) = next_owners.get(namespace) {
                 if owner != &manifest.id {
@@ -543,6 +557,16 @@ impl NamespaceOwnership {
         }
         for schema in &manifest.schemas {
             for field in &schema.fields {
+                let field_key = (schema.namespace.clone(), field.key.clone());
+                if let Some((owner, _)) = next_fields.get(&field_key) {
+                    if owner != &manifest.id {
+                        return Err(HostError(format!(
+                            "field {}.{} is owned by {owner}",
+                            schema.namespace, field.key
+                        )));
+                    }
+                }
+                next_fields.insert(field_key, (manifest.id.clone(), field.shared));
                 if let Some(relationship_type) = &field.relationship_type {
                     if let Some(owner) = next_relationship_types.get(relationship_type) {
                         if owner != &manifest.id {
@@ -557,6 +581,7 @@ impl NamespaceOwnership {
         }
         self.owners = next_owners;
         self.relationship_types = next_relationship_types;
+        self.fields = next_fields;
         Ok(())
     }
     pub fn owner(&self, namespace: &str) -> Option<&str> {
@@ -567,6 +592,32 @@ impl NamespaceOwnership {
         self.relationship_types
             .get(relationship_type)
             .map(String::as_str)
+    }
+
+    pub fn field_owner(&self, namespace: &str, key: &str) -> Option<&str> {
+        self.fields
+            .get(&(namespace.into(), key.into()))
+            .map(|(owner, _)| owner.as_str())
+    }
+
+    pub fn field_is_shared(&self, namespace: &str, key: &str) -> bool {
+        self.fields
+            .get(&(namespace.into(), key.into()))
+            .is_some_and(|(_, shared)| *shared)
+    }
+
+    pub fn namespace_has_shared_fields(&self, namespace: &str) -> bool {
+        self.fields
+            .iter()
+            .any(|((field_namespace, _), (_, shared))| field_namespace == namespace && *shared)
+    }
+
+    pub fn shared_field_keys(&self, namespace: &str) -> BTreeSet<String> {
+        self.fields
+            .iter()
+            .filter(|((field_namespace, _), (_, shared))| field_namespace == namespace && *shared)
+            .map(|((_, key), _)| key.clone())
+            .collect()
     }
 }
 
@@ -843,7 +894,15 @@ pub type ServiceHandler =
 struct ServiceProvider {
     plugin_id: String,
     handler: ServiceHandler,
-    active: bool,
+    health: Arc<Mutex<ProviderHealth>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderHealth {
+    Active,
+    Disabled,
+    Failed,
+    Quarantined,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -856,6 +915,8 @@ struct ServiceKey {
 pub struct ServiceRegistry {
     providers: BTreeMap<ServiceKey, ServiceProvider>,
     payload_limit: usize,
+    in_flight: Arc<(Mutex<BTreeMap<(String, u64), CancellationToken>>, Condvar)>,
+    next_call: Arc<AtomicU64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -920,6 +981,12 @@ impl DeclarationRegistry {
             .map(|(_, command)| command.clone())
             .collect()
     }
+
+    fn command(&self, project_id: &str, plugin_id: &str, command_id: &str) -> Option<Command> {
+        self.commands
+            .get(&(project_id.into(), plugin_id.into(), command_id.into()))
+            .cloned()
+    }
 }
 
 impl ServiceRegistry {
@@ -927,6 +994,8 @@ impl ServiceRegistry {
         Self {
             providers: BTreeMap::new(),
             payload_limit,
+            in_flight: Arc::new((Mutex::new(BTreeMap::new()), Condvar::new())),
+            next_call: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -948,7 +1017,9 @@ impl ServiceRegistry {
                 )));
             }
             provider.handler = handler;
-            provider.active = true;
+            if let Ok(mut health) = provider.health.lock() {
+                *health = ProviderHealth::Active;
+            }
             return Ok(());
         }
         self.providers.insert(
@@ -956,7 +1027,7 @@ impl ServiceRegistry {
             ServiceProvider {
                 plugin_id: plugin_id.into(),
                 handler,
-                active: true,
+                health: Arc::new(Mutex::new(ProviderHealth::Active)),
             },
         );
         Ok(())
@@ -969,14 +1040,17 @@ impl ServiceRegistry {
         })
     }
 
+    pub fn provider_health(&self, name: &str, major: u32) -> Option<ProviderHealth> {
+        self.providers
+            .get(&ServiceKey {
+                name: name.into(),
+                major,
+            })
+            .and_then(|provider| provider.health.lock().ok().map(|health| *health))
+    }
+
     pub fn unregister_plugin(&mut self, plugin_id: &str) {
-        for provider in self
-            .providers
-            .values_mut()
-            .filter(|provider| provider.plugin_id == plugin_id)
-        {
-            provider.active = false;
-        }
+        self.deactivate_plugin(plugin_id, Duration::ZERO);
     }
 
     pub fn resume_plugin(&mut self, plugin_id: &str) {
@@ -985,8 +1059,63 @@ impl ServiceRegistry {
             .values_mut()
             .filter(|provider| provider.plugin_id == plugin_id)
         {
-            provider.active = true;
+            if let Ok(mut health) = provider.health.lock() {
+                *health = ProviderHealth::Active;
+            }
         }
+    }
+
+    /// Stop accepting provider calls, cancel cooperative work, and wait for a
+    /// bounded grace period. A provider that does not drain is quarantined so
+    /// a later activation cannot accidentally reuse a wedged implementation.
+    pub fn deactivate_plugin(&mut self, plugin_id: &str, grace: Duration) -> bool {
+        for provider in self
+            .providers
+            .values_mut()
+            .filter(|provider| provider.plugin_id == plugin_id)
+        {
+            if let Ok(mut health) = provider.health.lock() {
+                *health = ProviderHealth::Disabled;
+            }
+        }
+        let (in_flight, wake) = &*self.in_flight;
+        if let Ok(calls) = in_flight.lock() {
+            for ((owner, _), token) in calls.iter() {
+                if owner == plugin_id {
+                    token.cancel();
+                }
+            }
+        }
+        let deadline = std::time::Instant::now() + grace;
+        let mut calls = match in_flight.lock() {
+            Ok(calls) => calls,
+            Err(_) => return false,
+        };
+        loop {
+            if !calls.keys().any(|(owner, _)| owner == plugin_id) {
+                return true;
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let timeout = deadline.saturating_duration_since(now);
+            let (next, result) = wake.wait_timeout(calls, timeout).unwrap();
+            calls = next;
+            if result.timed_out() {
+                break;
+            }
+        }
+        for provider in self
+            .providers
+            .values_mut()
+            .filter(|provider| provider.plugin_id == plugin_id)
+        {
+            if let Ok(mut health) = provider.health.lock() {
+                *health = ProviderHealth::Quarantined;
+            }
+        }
+        false
     }
 
     pub fn call(
@@ -1025,27 +1154,61 @@ impl ServiceRegistry {
                 major,
             })
             .ok_or_else(|| HostError("service provider unavailable".into()))?;
-        if !provider.active {
+        let health = provider
+            .health
+            .lock()
+            .map(|health| *health)
+            .unwrap_or(ProviderHealth::Quarantined);
+        if health != ProviderHealth::Active {
             return Err(HostError("service provider unavailable".into()));
         }
         let handler = Arc::clone(&provider.handler);
         let cancellation = CancellationToken::new();
         let worker_token = cancellation.clone();
+        let provider_id = provider.plugin_id.clone();
+        let call_id = self.next_call.fetch_add(1, Ordering::Relaxed);
+        self.in_flight
+            .0
+            .lock()
+            .map_err(|_| HostError("service lifecycle state unavailable".into()))?
+            .insert((provider_id.clone(), call_id), cancellation.clone());
+        let in_flight = Arc::clone(&self.in_flight);
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let _ = sender.send(handler(ServiceRequest {
+            let result = handler(ServiceRequest {
                 payload,
                 cancellation: worker_token,
-            }));
+            });
+            let _ = sender.send(result);
+            if let Ok(mut calls) = in_flight.0.lock() {
+                calls.remove(&(provider_id, call_id));
+                in_flight.1.notify_all();
+            }
         });
         match receiver.recv_timeout(deadline) {
-            Ok(result) => result,
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(error)) => {
+                if let Ok(mut health) = provider.health.lock() {
+                    *health = ProviderHealth::Failed;
+                }
+                Err(HostError(format!("provider-unavailable: {error}")))
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 cancellation.cancel();
-                Err(HostError("service deadline exceeded".into()))
+                if let Ok(mut health) = provider.health.lock() {
+                    *health = ProviderHealth::Failed;
+                }
+                Err(HostError(
+                    "provider-unavailable: service deadline exceeded".into(),
+                ))
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                Err(HostError("service provider failed".into()))
+                if let Ok(mut health) = provider.health.lock() {
+                    *health = ProviderHealth::Failed;
+                }
+                Err(HostError(
+                    "provider-unavailable: service provider failed".into(),
+                ))
             }
         }
     }
@@ -1198,6 +1361,14 @@ impl LifecycleRegistry {
             self.set_state(project_id, plugin_id, LifecycleState::Resolved);
         }
     }
+
+    fn quarantine(&mut self, project_id: &str, plugin_id: &str, error: &str) {
+        let mut record = self.record(project_id, plugin_id);
+        record.last_error = Some(error.into());
+        record.state = LifecycleState::Quarantined;
+        self.records
+            .insert((project_id.into(), plugin_id.into()), record);
+    }
 }
 
 #[derive(Clone)]
@@ -1294,6 +1465,7 @@ impl PluginHost {
                 manifest: manifest.clone(),
                 package_root: package.root.clone(),
                 digest: package.digest.clone(),
+                embedded_wasm: None,
             };
             self.catalog.insert_for_test(entry)?;
             if let Err(error) = self.namespaces.register_manifest(&manifest) {
@@ -1457,6 +1629,7 @@ impl PluginHost {
             manifest: active_manifest.clone(),
             package_root: active.root,
             digest: active.digest,
+            embedded_wasm: None,
         };
         let previous_entry = self.catalog.get(&package.manifest.id).cloned();
         let inserted_runtime_entry = self.catalog.get(&package.manifest.id).is_none();
@@ -1597,6 +1770,7 @@ impl PluginHost {
                 manifest,
                 package_root: active.root,
                 digest: active.digest,
+                embedded_wasm: None,
             })?;
         } else if self
             .catalog
@@ -1609,7 +1783,17 @@ impl PluginHost {
     }
 
     pub fn register_bundled_json(&mut self, json: &str) -> Result<&CatalogEntry, HostError> {
-        let entry = self.catalog.register_bundled_json(json)?;
+        self.register_bundled_json_with_wasm(json, None)
+    }
+
+    pub fn register_bundled_json_with_wasm(
+        &mut self,
+        json: &str,
+        embedded_wasm: Option<&[u8]>,
+    ) -> Result<&CatalogEntry, HostError> {
+        let entry = self
+            .catalog
+            .register_bundled_json_with_wasm(json, embedded_wasm)?;
         let manifest = entry.manifest.clone();
         if let Err(error) = self.namespaces.register_manifest(&manifest) {
             self.catalog.remove(&manifest.id);
@@ -1678,6 +1862,7 @@ impl PluginHost {
                 manifest,
                 package_root: package.root.clone(),
                 digest: package.digest.clone(),
+                embedded_wasm: None,
             });
         }
         self.catalog.get(plugin_id).cloned()
@@ -1753,7 +1938,16 @@ impl PluginHost {
         self.sessions.revoke_plugin(project_id, plugin_id);
         self.lifecycle.deactivate(project_id, plugin_id);
         self.events.unsubscribe_plugin(project_id, plugin_id);
-        self.services.unregister_plugin(plugin_id);
+        let drained = self
+            .services
+            .deactivate_plugin(plugin_id, Duration::from_millis(250));
+        if !drained {
+            self.lifecycle.quarantine(
+                project_id,
+                plugin_id,
+                "provider work did not drain before deactivation deadline",
+            );
+        }
         self.declarations.unregister_plugin(project_id, plugin_id);
     }
     pub fn activate_bundled(
@@ -1775,20 +1969,22 @@ impl PluginHost {
             }
             match self.ensure_bundled_session(activation_id, project_id) {
                 Ok(_) => {
-                    let (package_root, wasm_entry) = {
+                    let (package_root, wasm_entry, embedded_wasm) = {
                         let entry = self
                             .runtime_entry(project_id, activation_id)
                             .expect("resolved plugin remains installed");
                         (
                             entry.package_root.clone(),
                             entry.manifest.entrypoints.wasm.clone(),
+                            entry.embedded_wasm.clone(),
                         )
                     };
-                    if let Err(error) = self.wasm.start(
+                    if let Err(error) = self.wasm.start_with_bytes(
                         project_id,
                         activation_id,
                         &package_root,
                         wasm_entry.as_deref(),
+                        embedded_wasm.as_deref(),
                         WasmLimits::default(),
                     ) {
                         self.lifecycle.activation_failed(
@@ -1869,7 +2065,7 @@ impl PluginHost {
                 continue;
             }
             let runtime = runtime.clone();
-            self.services.register(
+            self.register_declared_service_provider(
                 plugin_id,
                 &service.name,
                 service.major,
@@ -1878,9 +2074,9 @@ impl PluginHost {
                         .as_ref()
                         .ok_or_else(|| HostError("service provider unavailable".into()))?;
                     let value = runtime
-                        .invoke()
+                        .invoke_service(&_request.payload)
                         .map_err(|error| HostError(format!("WASM service failed: {error}")))?;
-                    Ok(serde_json::json!({"value": value}))
+                    Ok(value)
                 }),
             )?;
         }
@@ -1983,6 +2179,151 @@ impl PluginHost {
         )?;
         self.services
             .call(consumer_id, name, major, payload, deadline)
+    }
+
+    pub fn register_declared_service_provider(
+        &mut self,
+        plugin_id: &str,
+        name: &str,
+        major: u32,
+        handler: ServiceHandler,
+    ) -> Result<(), HostError> {
+        let entry = self
+            .catalog
+            .get(plugin_id)
+            .ok_or_else(|| HostError("service provider plugin is not installed".into()))?;
+        if !entry
+            .manifest
+            .services
+            .provides
+            .iter()
+            .any(|service| service.name == name && service.major == major)
+        {
+            return Err(HostError(format!(
+                "service provider is not declared: {name}@{major}"
+            )));
+        }
+        self.services.register(plugin_id, name, major, handler)
+    }
+
+    pub fn invoke_command(
+        &self,
+        project_id: &str,
+        plugin_id: &str,
+        view_id: &str,
+        command_id: &str,
+    ) -> Result<CommandAction, HostError> {
+        self.invoke_command_with_payload(
+            project_id,
+            plugin_id,
+            view_id,
+            command_id,
+            serde_json::json!({}),
+        )
+    }
+
+    pub fn invoke_broker_command(
+        &self,
+        project_id: &str,
+        plugin_id: &str,
+        command_id: &str,
+        payload: serde_json::Value,
+    ) -> Result<CommandAction, HostError> {
+        self.invoke_command_for_exposure(
+            project_id,
+            plugin_id,
+            None,
+            command_id,
+            payload,
+            CommandExposure::Broker,
+        )
+    }
+
+    pub fn invoke_command_with_payload(
+        &self,
+        project_id: &str,
+        plugin_id: &str,
+        view_id: &str,
+        command_id: &str,
+        payload: serde_json::Value,
+    ) -> Result<CommandAction, HostError> {
+        self.invoke_command_for_exposure(
+            project_id,
+            plugin_id,
+            Some(view_id),
+            command_id,
+            payload,
+            CommandExposure::View,
+        )
+    }
+
+    fn invoke_command_for_exposure(
+        &self,
+        project_id: &str,
+        plugin_id: &str,
+        view_id: Option<&str>,
+        command_id: &str,
+        payload: serde_json::Value,
+        exposure: CommandExposure,
+    ) -> Result<CommandAction, HostError> {
+        if self.lifecycle.state(project_id, plugin_id).state != LifecycleState::Active {
+            return Err(HostError("plugin is not active".into()));
+        }
+        let command = self
+            .declarations
+            .command(project_id, plugin_id, command_id)
+            .ok_or_else(|| HostError("plugin command is not declared".into()))?;
+        if !command_exposes(&command, exposure.clone()) {
+            return Err(HostError(format!(
+                "plugin command is not exposed to {}",
+                match exposure {
+                    CommandExposure::View => "views",
+                    CommandExposure::Broker => "the broker",
+                }
+            )));
+        }
+        let grants = self.grants.get(project_id, plugin_id);
+        if command
+            .capabilities
+            .iter()
+            .any(|required| !grants.iter().any(|grant| grant == required))
+        {
+            return Err(HostError("plugin command capability is not granted".into()));
+        }
+        if let Some(schema) = &command.input {
+            validate_command_value(schema, &payload)
+                .map_err(|error| HostError(format!("invalid plugin command input: {error}")))?;
+        } else if !payload.as_object().is_some_and(serde_json::Map::is_empty) {
+            return Err(HostError(
+                "plugin command does not accept input properties".into(),
+            ));
+        }
+        if let Some(view_id) = view_id {
+            let view = self
+                .declarations
+                .views(project_id, plugin_id)
+                .into_iter()
+                .find(|view| view.id == view_id)
+                .ok_or_else(|| HostError("plugin command view is not declared".into()))?;
+            let referenced = view.components.iter().any(|component| {
+                matches!(component, ViewComponent::Button { command, .. } if command == command_id)
+            });
+            if !referenced {
+                return Err(HostError(
+                    "plugin command is not exposed by this view".into(),
+                ));
+            }
+        }
+        let action = command
+            .action
+            .ok_or_else(|| HostError("plugin command has no executable action".into()))?;
+        if let Some(schema) = &command.output {
+            let output = serde_json::to_value(&action)
+                .map_err(|error| HostError(format!("plugin command output is invalid: {error}")))?;
+            validate_command_value(schema, &output)
+                .map_err(|error| HostError(format!("invalid plugin command output: {error}")))?;
+        }
+        Ok(action)
     }
     pub fn ensure_bundled_session(
         &mut self,
@@ -2094,12 +2435,27 @@ fn validate_schema_resource(
                           key: &str,
                           value: Option<&serde_json::Value>,
                           entity_type: Option<&str>| {
-        if namespaces.owner(namespace) != Some(session.plugin_id.as_str()) {
-            return Err(rpc_error(
-                "namespace.denied",
-                "plugin does not own namespace",
-                false,
-            ));
+        let owned = namespaces.owner(namespace) == Some(session.plugin_id.as_str());
+        let reading = matches!(method, "field.read" | "field.list");
+        if !owned {
+            if !reading || !namespaces.field_is_shared(namespace, key) {
+                return Err(rpc_error(
+                    "namespace.denied",
+                    "plugin may only read explicitly shared fields",
+                    false,
+                ));
+            }
+            // The owner manifest is authoritative for a shared field. A
+            // foreign plugin cannot smuggle a schema or write value through
+            // its own manifest by merely naming the same namespace/key.
+            if value.is_some() || entity_type.is_some() {
+                return Err(rpc_error(
+                    "field.readonly",
+                    "shared fields are read-only",
+                    false,
+                ));
+            }
+            return Ok(());
         }
         let field = manifest
             .schemas
@@ -2235,10 +2591,13 @@ fn validate_schema_resource(
                 })?;
             if let Some(key) = payload.get("key").and_then(serde_json::Value::as_str) {
                 validate_field(namespace, key, payload.get("value"), None)?;
-            } else if namespaces.owner(namespace) != Some(session.plugin_id.as_str()) {
+            } else if namespaces.owner(namespace) != Some(session.plugin_id.as_str())
+                && (!matches!(method, "field.read" | "field.list")
+                    || !namespaces.namespace_has_shared_fields(namespace))
+            {
                 return Err(rpc_error(
                     "namespace.denied",
-                    "plugin does not own namespace",
+                    "plugin may only read explicitly shared fields",
                     false,
                 ));
             }
@@ -2262,7 +2621,7 @@ fn validate_schema_resource(
                 ));
             }
         }
-        "relationship.create" | "relationship.delete" => {
+        "relationship.create" => {
             let relationship_type = payload
                 .get("relationship_type")
                 .and_then(serde_json::Value::as_str)
@@ -2281,6 +2640,47 @@ fn validate_schema_resource(
                     return Err(rpc_error(
                         "relationship.denied",
                         "plugin does not own relationship type",
+                        false,
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        "relationship.delete" => {
+            let stored_type = payload
+                .get("__stored_relationship_type")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    rpc_error(
+                        "relationship.identity",
+                        "relationship deletion requires the stored relationship identity",
+                        false,
+                    )
+                })?;
+            if let Some(requested_type) = payload
+                .get("relationship_type")
+                .and_then(serde_json::Value::as_str)
+            {
+                if requested_type != stored_type {
+                    return Err(rpc_error(
+                        "relationship.identity",
+                        "relationship type does not match the stored relationship",
+                        false,
+                    ));
+                }
+            }
+            match namespaces.relationship_owner(stored_type) {
+                None => {
+                    return Err(rpc_error(
+                        "relationship.undeclared",
+                        "stored relationship type is not registered",
+                        false,
+                    ));
+                }
+                Some(owner) if owner != session.plugin_id => {
+                    return Err(rpc_error(
+                        "relationship.denied",
+                        "plugin does not own stored relationship type",
                         false,
                     ));
                 }
@@ -2433,9 +2833,8 @@ fn required_capabilities(
         "document.read" | "document.list" => Ok(vec!["document.read".into()]),
         "document.write" | "document.save" => Ok(vec!["document.write".into()]),
         "relationship.read" | "relationship.list" => Ok(vec!["relationship.read".into()]),
-        "relationship.write" | "relationship.create" | "relationship.delete" => {
-            Ok(vec!["relationship.write".into()])
-        }
+        "relationship.write" | "relationship.create" => Ok(vec!["relationship.write".into()]),
+        "relationship.delete" => Ok(vec!["relationship.write".into()]),
         "search.query" => Ok(vec!["search.query".into()]),
         "asset.import" | "asset.register" => {
             ensure_owned_namespace(payload, session, namespaces)?;
@@ -2446,12 +2845,43 @@ fn required_capabilities(
             Ok(vec!["asset.read:self".into()])
         }
         "field.read" | "field.list" | "field.write" | "field.set" => {
-            ensure_owned_namespace(payload, session, namespaces)?;
-            Ok(vec![if matches!(method, "field.read" | "field.list") {
-                "field.read:self".into()
+            let namespace = payload
+                .get("namespace")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    rpc_error("payload.invalid", "operation requires namespace", false)
+                })?;
+            if namespaces.owner(namespace) == Some(session.plugin_id.as_str()) {
+                return Ok(vec![if matches!(method, "field.read" | "field.list") {
+                    "field.read:self".into()
+                } else {
+                    "field.write:self".into()
+                }]);
+            }
+            if matches!(method, "field.read" | "field.list") {
+                if let Some(key) = payload.get("key").and_then(serde_json::Value::as_str) {
+                    if !namespaces.field_is_shared(namespace, key) {
+                        return Err(rpc_error(
+                            "namespace.denied",
+                            "field is not explicitly shared",
+                            false,
+                        ));
+                    }
+                } else if !namespaces.namespace_has_shared_fields(namespace) {
+                    return Err(rpc_error(
+                        "namespace.denied",
+                        "namespace has no explicitly shared fields",
+                        false,
+                    ));
+                }
+                Ok(vec!["field.read:shared".into()])
             } else {
-                "field.write:self".into()
-            }])
+                Err(rpc_error(
+                    "namespace.denied",
+                    "plugin may only read explicitly shared fields",
+                    false,
+                ))
+            }
         }
         "event.publish" | "event.subscribe" | "event.poll" => {
             let event_type = payload
@@ -2571,6 +3001,7 @@ mod tests {
                     entity_types: None,
                     relationship_type: None,
                     target_entity_types: None,
+                    shared: false,
                 }],
             }],
             templates: vec![],
@@ -2583,6 +3014,10 @@ mod tests {
                 id: "refresh".into(),
                 title: "Refresh".into(),
                 action: None,
+                input: None,
+                output: None,
+                capabilities: vec![],
+                exposure: vec![],
             }],
             services: worldbuilder_plugin_api::Services {
                 provides: vec![],
@@ -2607,6 +3042,7 @@ mod tests {
             manifest: manifest("com.example.one", "one"),
             package_root: PathBuf::new(),
             digest: "a".repeat(64),
+            embedded_wasm: None,
         };
         host.catalog.insert_for_test(entry.clone()).unwrap();
         host.namespaces.register_manifest(&entry.manifest).unwrap();
@@ -2858,6 +3294,7 @@ mod tests {
             manifest: manifest("com.example.unconsented", "unconsented"),
             package_root: PathBuf::new(),
             digest: "b".repeat(64),
+            embedded_wasm: None,
         };
         host.catalog.insert_for_test(entry.clone()).unwrap();
         host.namespaces.register_manifest(&entry.manifest).unwrap();
@@ -2919,6 +3356,111 @@ mod tests {
     }
 
     #[test]
+    fn shared_fields_are_readable_cross_namespace_but_never_writable() {
+        let mut owner = manifest("com.example.owner", "owner");
+        owner.schemas[0].fields[0].shared = true;
+        let mut reader = manifest("com.example.reader", "reader");
+        reader.capabilities.push("field.read:shared".into());
+        let mut host = PluginHost::new();
+        for plugin in [owner.clone(), reader.clone()] {
+            host.catalog
+                .insert_for_test(CatalogEntry {
+                    manifest: plugin.clone(),
+                    package_root: PathBuf::new(),
+                    digest: plugin.id.repeat(64).chars().take(64).collect(),
+                    embedded_wasm: None,
+                })
+                .unwrap();
+            host.namespaces.register_manifest(&plugin).unwrap();
+        }
+        host.grants
+            .set(
+                "project",
+                &reader.id,
+                &reader.capabilities,
+                ["field.read:shared".into()].into_iter().collect(),
+            )
+            .unwrap();
+        let session = host
+            .bootstrap(&reader.id, "project", "plugin://reader")
+            .unwrap();
+        let read = RpcRequest {
+            rpc_version: RPC_VERSION,
+            session_id: session.id.clone(),
+            request_id: "shared-read".into(),
+            method: "field.read".into(),
+            payload: serde_json::json!({
+                "entityId": "entity",
+                "namespace": "owner",
+                "key": "summary"
+            }),
+        };
+        assert!(host.rpc("plugin://reader", &read).ok);
+
+        let write = RpcRequest {
+            request_id: "shared-write".into(),
+            method: "field.set".into(),
+            payload: serde_json::json!({
+                "entityId": "entity",
+                "namespace": "owner",
+                "key": "summary",
+                "value": "forged"
+            }),
+            ..read
+        };
+        assert_eq!(
+            host.rpc("plugin://reader", &write).error.unwrap().code,
+            "namespace.denied"
+        );
+    }
+
+    #[test]
+    fn relationship_delete_requires_the_stored_identity() {
+        let mut plugin = manifest("com.example.relationship", "relationship");
+        plugin.schemas[0].fields[0].relationship_type = Some("linked".into());
+        plugin.capabilities.push("relationship.write".into());
+        let mut host = PluginHost::new();
+        host.catalog
+            .insert_for_test(CatalogEntry {
+                manifest: plugin.clone(),
+                package_root: PathBuf::new(),
+                digest: "a".repeat(64),
+                embedded_wasm: None,
+            })
+            .unwrap();
+        host.namespaces.register_manifest(&plugin).unwrap();
+        host.grants
+            .set(
+                "project",
+                &plugin.id,
+                &plugin.capabilities,
+                ["relationship.write".into()].into_iter().collect(),
+            )
+            .unwrap();
+        let session = host
+            .bootstrap(&plugin.id, "project", "plugin://relationship")
+            .unwrap();
+        let request = RpcRequest {
+            rpc_version: RPC_VERSION,
+            session_id: session.id,
+            request_id: "relationship-delete".into(),
+            method: "relationship.delete".into(),
+            payload: serde_json::json!({
+                "id": "relationship-id",
+                "relationship_type": "forged",
+                "__stored_relationship_type": "linked"
+            }),
+        };
+        assert_eq!(
+            host.rpc("plugin://relationship", &request)
+                .error
+                .unwrap()
+                .code,
+            "relationship.identity"
+        );
+    }
+
+    #[test]
     fn explicit_grants_are_bound_to_the_manifest_request() {
         let mut host = host();
         host.grant_capabilities(
@@ -2963,6 +3505,7 @@ mod tests {
                 manifest: provider.clone(),
                 package_root: root.path().into(),
                 digest: "c".repeat(64),
+                embedded_wasm: None,
             })
             .unwrap();
         host.namespaces.register_manifest(&provider).unwrap();
@@ -2986,6 +3529,48 @@ mod tests {
             )
             .unwrap();
         assert_eq!(value["value"], 7);
+    }
+
+    #[test]
+    fn bundled_timeline_service_uses_the_generic_wasm_provider_path() {
+        let mut host = PluginHost::new();
+        host.register_bundled_json_with_wasm(
+            include_str!("../../../packages/modules/timeline/manifest.json"),
+            Some(BUNDLED_TIMELINE_SERVICE_WASM),
+        )
+        .unwrap();
+        let manifest = host
+            .catalog
+            .get("worldbuilder.timeline")
+            .unwrap()
+            .manifest
+            .clone();
+        host.grants
+            .set(
+                "project",
+                &manifest.id,
+                &manifest.capabilities,
+                manifest.capabilities.iter().cloned().collect(),
+            )
+            .unwrap();
+        host.activate_bundled("project", &manifest.id).unwrap();
+        let value = host
+            .services
+            .call(
+                "com.example.consumer",
+                "worldbuilder.timeline.resolve-date",
+                1,
+                serde_json::json!({"date": "0042-03-15"}),
+                Duration::from_millis(100),
+            )
+            .unwrap();
+        assert_eq!(value["date"], "0042-03-15");
+        host.deactivate_bundled("project", &manifest.id);
+        assert_eq!(
+            host.services
+                .provider_health("worldbuilder.timeline.resolve-date", 1),
+            Some(ProviderHealth::Disabled)
+        );
     }
     #[test]
     fn undeclared_and_foreign_namespace_operations_are_rejected() {
@@ -3245,6 +3830,7 @@ mod tests {
                 manifest: app,
                 package_root: PathBuf::new(),
                 digest: "a".repeat(64),
+                embedded_wasm: None,
             })
             .unwrap();
         catalog
@@ -3252,6 +3838,7 @@ mod tests {
                 manifest: manifest("com.example.service", "service"),
                 package_root: PathBuf::new(),
                 digest: "b".repeat(64),
+                embedded_wasm: None,
             })
             .unwrap();
         assert_eq!(
@@ -3274,6 +3861,7 @@ mod tests {
                 manifest: catalog.get("com.example.app").unwrap().manifest.clone(),
                 package_root: PathBuf::new(),
                 digest: "a".repeat(64),
+                embedded_wasm: None,
             })
             .unwrap();
         cyclic
@@ -3281,6 +3869,7 @@ mod tests {
                 manifest: cycle,
                 package_root: PathBuf::new(),
                 digest: "b".repeat(64),
+                embedded_wasm: None,
             })
             .unwrap();
         assert!(DependencyResolver::resolve(&cyclic, "com.example.app").is_err());
@@ -3400,6 +3989,48 @@ mod tests {
     }
 
     #[test]
+    fn service_shutdown_quarantines_a_provider_that_ignores_cancellation() {
+        let mut services = ServiceRegistry::new(1024);
+        let started = Arc::new(AtomicBool::new(false));
+        let handler_started = started.clone();
+        services
+            .register(
+                "wedged",
+                "com.example.wedged",
+                1,
+                Arc::new(move |_request| {
+                    handler_started.store(true, Ordering::Release);
+                    thread::sleep(Duration::from_millis(75));
+                    Ok(serde_json::json!({"done": true}))
+                }),
+            )
+            .unwrap();
+        let caller = services.clone();
+        let worker = thread::spawn(move || {
+            caller.call(
+                "consumer",
+                "com.example.wedged",
+                1,
+                serde_json::json!({}),
+                Duration::from_millis(250),
+            )
+        });
+        for _ in 0..100 {
+            if started.load(Ordering::Acquire) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(started.load(Ordering::Acquire));
+        assert!(!services.deactivate_plugin("wedged", Duration::from_millis(5)));
+        assert_eq!(
+            services.provider_health("com.example.wedged", 1),
+            Some(ProviderHealth::Quarantined)
+        );
+        let _ = worker.join();
+    }
+
+    #[test]
     fn lifecycle_quarantines_after_three_failed_activations() {
         let mut lifecycle = LifecycleRegistry::default();
         for _ in 0..3 {
@@ -3483,6 +4114,7 @@ mod tests {
                     manifest: plugin.clone(),
                     package_root: PathBuf::new(),
                     digest: plugin.id.repeat(64).chars().take(64).collect(),
+                    embedded_wasm: None,
                 })
                 .unwrap();
             host.namespaces.register_manifest(&plugin).unwrap();
@@ -3544,6 +4176,10 @@ mod tests {
                 id: "refresh".into(),
                 title: "Refresh".into(),
                 action: None,
+                input: None,
+                output: None,
+                capabilities: vec![],
+                exposure: vec![],
             }]
         );
         host.deactivate_bundled("project", "com.example.one");
@@ -3555,6 +4191,98 @@ mod tests {
             .declarations
             .commands("project", "com.example.one")
             .is_empty());
+    }
+
+    #[test]
+    fn declared_host_commands_are_invokable_only_through_their_view() {
+        let mut host = host();
+        let entry = host.catalog.entries.get_mut("com.example.one").unwrap();
+        entry.manifest.commands[0].action = Some(CommandAction::RefreshView);
+        entry.manifest.commands[0].input = Some(worldbuilder_plugin_api::CommandSchema {
+            schema_type: worldbuilder_plugin_api::CommandValueType::Object,
+            properties: BTreeMap::from([(
+                "reason".into(),
+                worldbuilder_plugin_api::CommandProperty {
+                    value_type: worldbuilder_plugin_api::CommandValueType::String,
+                },
+            )]),
+            required: vec!["reason".into()],
+            additional_properties: false,
+        });
+        entry.manifest.commands[0].output = Some(worldbuilder_plugin_api::CommandSchema {
+            schema_type: worldbuilder_plugin_api::CommandValueType::Object,
+            properties: BTreeMap::from([(
+                "type".into(),
+                worldbuilder_plugin_api::CommandProperty {
+                    value_type: worldbuilder_plugin_api::CommandValueType::String,
+                },
+            )]),
+            required: vec!["type".into()],
+            additional_properties: false,
+        });
+        entry.manifest.commands[0].capabilities = vec!["entity.read".into()];
+        entry.manifest.commands[0].exposure = vec![worldbuilder_plugin_api::CommandExposure::View];
+        entry.manifest.views[0].components = vec![ViewComponent::Button {
+            id: "refresh-button".into(),
+            label: "Refresh".into(),
+            command: "refresh".into(),
+        }];
+        host.activate_bundled("project", "com.example.one").unwrap();
+        assert_eq!(
+            host.invoke_command_with_payload(
+                "project",
+                "com.example.one",
+                "overview",
+                "refresh",
+                serde_json::json!({"reason": "test"}),
+            )
+            .unwrap(),
+            CommandAction::RefreshView
+        );
+        assert!(host
+            .invoke_command_with_payload(
+                "project",
+                "com.example.one",
+                "overview",
+                "refresh",
+                serde_json::json!({}),
+            )
+            .is_err());
+        assert!(host
+            .invoke_command_with_payload(
+                "project",
+                "com.example.one",
+                "overview",
+                "refresh",
+                serde_json::json!({"reason": "test", "extra": true}),
+            )
+            .is_err());
+        assert!(host
+            .invoke_command("project", "com.example.one", "overview", "missing")
+            .is_err());
+    }
+
+    #[test]
+    fn broker_commands_are_not_exposed_as_host_view_buttons() {
+        let mut host = host();
+        let entry = host.catalog.entries.get_mut("com.example.one").unwrap();
+        entry.manifest.commands[0].action = Some(CommandAction::RefreshView);
+        entry.manifest.commands[0].exposure =
+            vec![worldbuilder_plugin_api::CommandExposure::Broker];
+        host.activate_bundled("project", "com.example.one").unwrap();
+        assert_eq!(
+            host.invoke_broker_command(
+                "project",
+                "com.example.one",
+                "refresh",
+                serde_json::json!({}),
+            )
+            .unwrap(),
+            CommandAction::RefreshView
+        );
+        assert!(host
+            .invoke_command("project", "com.example.one", "overview", "refresh")
+            .is_err());
     }
 
     #[test]

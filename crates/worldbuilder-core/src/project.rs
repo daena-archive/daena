@@ -796,6 +796,25 @@ impl ProjectStore {
         Ok(())
     }
 
+    pub fn relationship(&self, id: String) -> Result<Relationship, CoreError> {
+        self.connection
+            .query_row(
+                "SELECT id,source_id,target_id,relationship_type,metadata FROM relationships WHERE id=?1",
+                params![id],
+                |row| {
+                    Ok(Relationship {
+                        id: row.get(0)?,
+                        source_id: row.get(1)?,
+                        target_id: row.get(2)?,
+                        relationship_type: row.get(3)?,
+                        metadata: row.get(4)?,
+                    })
+                },
+            )
+            .optional()?
+            .ok_or_else(|| CoreError::NotFound("relationship not found".into()))
+    }
+
     pub fn list_relationships(&self, entity_id: String) -> Result<Vec<Relationship>, CoreError> {
         let mut statement = self.connection.prepare("SELECT id,source_id,target_id,relationship_type,metadata FROM relationships WHERE source_id=?1 OR target_id=?1")?;
         let rows = statement.query_map(params![entity_id], |row| {

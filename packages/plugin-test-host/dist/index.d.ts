@@ -30,11 +30,18 @@ export declare class FakePluginHost implements PluginRpcTransport {
     private readonly services;
     private nextEntity;
     private revoked;
+    private declarativeActive;
     constructor(options: FakePluginHostOptions);
     client(): PluginRpcClient;
     revoke(): void;
     seed(entity: EntityRecord): void;
     registerService(name: string, major: number, handler: ServiceHandler): void;
+    activateDeclarative(): void;
+    deactivateDeclarative(): void;
+    hostView(viewId: string): PluginManifest["views"][number];
+    invokeHostCommand(viewId: string, commandId: string, payload?: Record<string, unknown>): {
+        type: string;
+    };
     call(method: string, payload: unknown): Promise<unknown>;
     private bootstrap;
     private require;

@@ -10,7 +10,7 @@ export type FieldType = "text" | "number" | "boolean" | "date" | "enum" | "entit
 
 export interface Entrypoints { ui?: string; wasm?: string }
 export interface Dependency { version: string; required: boolean }
-export interface FieldDefinition { key: string; label: string; type: FieldType; required?: boolean; options?: string[]; entityTypes?: string[]; relationshipType?: string; targetEntityTypes?: string[] }
+export interface FieldDefinition { key: string; label: string; type: FieldType; required?: boolean; options?: string[]; entityTypes?: string[]; relationshipType?: string; targetEntityTypes?: string[]; shared?: boolean }
 export interface SchemaContribution { namespace: string; entityTypes: string[]; fields: FieldDefinition[] }
 export interface EntityTemplate { id: string; name: string; entityType: string; description?: string; icon?: string; fields: Record<string, unknown>; requiredFields?: string[]; document?: string }
 export type MigrationOperation =
@@ -28,7 +28,24 @@ export type ViewComponent =
   | { type: "button"; id: string; label: string; command: string };
 export interface View { id: string; title: string; components?: ViewComponent[] }
 export type CommandAction = { type: "refresh-view" };
-export interface Command { id: string; title: string; action?: CommandAction }
+export type CommandExposure = "view" | "broker";
+export type CommandValueType = "object" | "string" | "number" | "boolean" | "array" | "null";
+export interface CommandProperty { type: CommandValueType }
+export interface CommandSchema {
+  type: "object";
+  properties?: Record<string, CommandProperty>;
+  required?: string[];
+  additionalProperties?: boolean;
+}
+export interface Command {
+  id: string;
+  title: string;
+  action?: CommandAction;
+  input?: CommandSchema;
+  output?: CommandSchema;
+  capabilities?: string[];
+  exposure?: CommandExposure[];
+}
 export interface Service { name: string; major: number }
 export interface Event { name: string; version: number }
 export interface Services { provides: Service[]; consumes: Service[] }

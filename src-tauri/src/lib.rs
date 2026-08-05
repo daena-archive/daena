@@ -12,11 +12,11 @@ use worldbuilder_core::{
     Relationship, RelationshipInput, SaveDocument, SaveEntry,
 };
 use worldbuilder_plugin_api::{
-    MigrationOperation, PluginManifest, RpcRequest, RpcResponse, ViewComponent,
+    CommandAction, MigrationOperation, PluginManifest, RpcRequest, RpcResponse, ViewComponent,
 };
 use worldbuilder_plugin_host::{
-    plugin_window_label, webview_policy, ArchiveLimits, DependencyResolver, HostError, PluginHost,
-    ServiceRequest, VerificationPolicy,
+    plugin_window_label, webview_policy, ArchiveLimits, DependencyResolver, PluginHost,
+    VerificationPolicy, BUNDLED_TIMELINE_SERVICE_WASM,
 };
 
 type SharedCore = Arc<Mutex<CoreService>>;
@@ -865,6 +865,37 @@ async fn plugin_host_view_set_field(
     .await
 }
 
+#[tauri::command]
+fn plugin_host_invoke_command(
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    plugin_id: String,
+    view_id: Option<String>,
+    command_id: String,
+    payload: Option<serde_json::Value>,
+) -> Result<String, String> {
+    let project_id = state
+        .lock()
+        .map_err(|_| "core lock poisoned".to_string())?
+        .info()
+        .map(|info| info.root)
+        .ok_or_else(|| "project is not open".to_string())?;
+    let payload = payload.unwrap_or_else(|| serde_json::json!({}));
+    let host = plugins
+        .lock()
+        .map_err(|_| "plugin host lock poisoned".to_string())?;
+    let action = match view_id.as_deref() {
+        Some(view_id) => {
+            host.invoke_command_with_payload(&project_id, &plugin_id, view_id, &command_id, payload)
+        }
+        None => host.invoke_broker_command(&project_id, &plugin_id, &command_id, payload),
+    }
+    .map_err(|error| error.to_string())?;
+    Ok(match action {
+        CommandAction::RefreshView => "refresh-view".into(),
+    })
+}
+
 fn component_id_of(component: &ViewComponent) -> &str {
     match component {
         ViewComponent::Heading { id, .. }
@@ -969,6 +1000,22 @@ async fn plugin_rpc(
     state: tauri::State<'_, SharedPluginHost>,
     request: RpcRequest,
 ) -> Result<RpcResponse, String> {
+    let mut request = request;
+    if request.method == "relationship.delete" {
+        let id = payload_string(&request.payload, "id").map_err(|error| error.to_string())?;
+        let stored = with_core(core.clone(), move |core| {
+            core.project(trusted_shell())?.relationship(id)
+        })
+        .await?;
+        let object = request
+            .payload
+            .as_object_mut()
+            .ok_or_else(|| "relationship delete payload must be an object".to_string())?;
+        object.insert(
+            "__stored_relationship_type".into(),
+            serde_json::Value::String(stored.relationship_type),
+        );
+    }
     let origin = plugin_webview_identity(&window, None)?;
     let session = {
         let host = state
@@ -982,7 +1029,32 @@ async fn plugin_rpc(
     let plugin_id = session.plugin_id.clone();
     let method = request.method;
     let event_method = method.clone();
-    let payload = request.payload;
+    let mut payload = request.payload;
+    if method == "field.list" {
+        let namespace = payload
+            .get("namespace")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "field list payload requires namespace".to_string())?;
+        let shared_keys = {
+            let host = state
+                .lock()
+                .map_err(|_| "plugin host lock poisoned".to_string())?;
+            if host.namespaces.owner(namespace) == Some(plugin_id.as_str()) {
+                None
+            } else {
+                Some(host.namespaces.shared_field_keys(namespace))
+            }
+        };
+        if let Some(keys) = shared_keys {
+            payload
+                .as_object_mut()
+                .ok_or_else(|| "field list payload must be an object".to_string())?
+                .insert(
+                    "__shared_keys".into(),
+                    serde_json::to_value(keys).map_err(|error| error.to_string())?,
+                );
+        }
+    }
     let current_project = core
         .lock()
         .map_err(|_| "core lock poisoned".to_string())?
@@ -1168,32 +1240,23 @@ fn greet(name: &str) -> String {
 
 fn bundled_plugin_host() -> Result<PluginHost, String> {
     let mut host = PluginHost::new();
-    for manifest in [
-        include_str!("../../packages/modules/lore/manifest.json"),
-        include_str!("../../packages/modules/timeline/manifest.json"),
-        include_str!("../../packages/modules/writing/manifest.json"),
+    for (manifest, wasm) in [
+        (
+            include_str!("../../packages/modules/lore/manifest.json"),
+            None,
+        ),
+        (
+            include_str!("../../packages/modules/timeline/manifest.json"),
+            Some(BUNDLED_TIMELINE_SERVICE_WASM),
+        ),
+        (
+            include_str!("../../packages/modules/writing/manifest.json"),
+            None,
+        ),
     ] {
-        host.register_bundled_json(manifest)
+        host.register_bundled_json_with_wasm(manifest, wasm)
             .map_err(|error| error.to_string())?;
     }
-    host.services
-        .register(
-            "worldbuilder.timeline",
-            "worldbuilder.timeline.resolve-date",
-            1,
-            Arc::new(|request: ServiceRequest| {
-                if request.cancellation.is_cancelled() {
-                    return Err(HostError("timeline service call cancelled".into()));
-                }
-                let date = request
-                    .payload
-                    .get("date")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| HostError("timeline service requires date".into()))?;
-                Ok(serde_json::json!({"date": date}))
-            }),
-        )
-        .map_err(|error| error.to_string())?;
     Ok(host)
 }
 
@@ -2109,9 +2172,32 @@ fn dispatch_module_rpc(
             project.save_document(input)?;
             Ok(serde_json::Value::Null)
         }
-        "field.list" => {
-            serde_json::to_value(project.list_fields(payload_string(&payload, "entityId")?)?)
-                .map_err(|error| CoreError::Validation(error.to_string()))
+        "field.read" | "field.list" => {
+            let entity_id = payload_string(&payload, "entityId")?;
+            let namespace = payload_string(&payload, "namespace")?;
+            let shared_keys = payload
+                .get("__shared_keys")
+                .and_then(serde_json::Value::as_array)
+                .map(|keys| {
+                    keys.iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<std::collections::BTreeSet<_>>()
+                });
+            let mut fields = project
+                .list_fields(entity_id)?
+                .into_iter()
+                .filter(|field| field.namespace == namespace)
+                .filter(|field| {
+                    shared_keys
+                        .as_ref()
+                        .is_none_or(|keys| keys.contains(field.key.as_str()))
+                })
+                .collect::<Vec<_>>();
+            if method == "field.read" {
+                let key = payload_string(&payload, "key")?;
+                fields.retain(|field| field.key == key);
+            }
+            serde_json::to_value(fields).map_err(|error| CoreError::Validation(error.to_string()))
         }
         "field.set" => {
             let field = worldbuilder_core::FieldValue {
@@ -2699,6 +2785,7 @@ pub fn run() {
             plugin_unmount_webview,
             plugin_host_view_data,
             plugin_host_view_set_field,
+            plugin_host_invoke_command,
             plugin_close_webview,
             module_list_manifests,
             module_enable,

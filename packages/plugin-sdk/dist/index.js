@@ -187,6 +187,39 @@ export function isHostApiRange(value) {
 export function isPackagePath(value) {
     return value.length > 0 && !value.startsWith("/") && !value.includes("\\") && !value.split("/").some((part) => !part || part === ".." || part === ".");
 }
+function validateCommandSchema(value, label, errors) {
+    if (!isRecord(value)) {
+        errors.push(`${label} must be an object`);
+        return;
+    }
+    checkKeys(value, label, ["type", "properties", "required", "additionalProperties"], errors);
+    if (value.type !== "object")
+        errors.push(`${label} type must be object`);
+    if (value.properties !== undefined && !isRecord(value.properties))
+        errors.push(`${label} properties must be an object`);
+    if (value.required !== undefined && !Array.isArray(value.required))
+        errors.push(`${label} required must be an array`);
+    if (typeof value.additionalProperties !== "undefined" && typeof value.additionalProperties !== "boolean")
+        errors.push(`${label} additionalProperties must be boolean`);
+    if (Array.isArray(value.required) && isRecord(value.properties)) {
+        const required = new Set();
+        for (const key of value.required) {
+            if (typeof key !== "string" || !key.trim() || required.has(key) || !(key in value.properties))
+                errors.push(`${label} has invalid required property`);
+            required.add(key);
+        }
+    }
+    if (isRecord(value.properties))
+        for (const [key, property] of Object.entries(value.properties)) {
+            if (!isRecord(property)) {
+                errors.push(`${label} property ${key} must be an object`);
+                continue;
+            }
+            checkKeys(property, `${label} property`, ["type"], errors);
+            if (!["object", "string", "number", "boolean", "array", "null"].includes(String(property.type)))
+                errors.push(`${label} property ${key} has an invalid type`);
+        }
+}
 export function validatePluginManifest(manifest) {
     const errors = [];
     const knownManifestKeys = new Set(["manifestVersion", "id", "name", "version", "publisher", "hostApi", "kind", "entrypoints", "capabilities", "dependencies", "namespaces", "schemas", "templates", "views", "commands", "services", "events", "migrations"]);
@@ -270,7 +303,9 @@ export function validatePluginManifest(manifest) {
                         errors.push("schema fields must contain objects");
                         continue;
                     }
-                    checkKeys(field, "field", ["key", "label", "type", "required", "options", "entityTypes", "relationshipType", "targetEntityTypes"], errors);
+                    checkKeys(field, "field", ["key", "label", "type", "required", "options", "entityTypes", "relationshipType", "targetEntityTypes", "shared"], errors);
+                    if (field.shared !== undefined && typeof field.shared !== "boolean")
+                        errors.push(`field ${String(field.key)} shared must be boolean`);
                 }
         }
     if (Array.isArray(templates))
@@ -290,7 +325,28 @@ export function validatePluginManifest(manifest) {
                     errors.push(`${label} must contain objects`);
                     continue;
                 }
-                checkKeys(item, label.slice(0, -1), label === "views" ? ["id", "title", "components"] : ["id", "title", "action"], errors);
+                checkKeys(item, label.slice(0, -1), label === "views" ? ["id", "title", "components"] : ["id", "title", "action", "input", "output", "capabilities", "exposure"], errors);
+                if (label === "commands") {
+                    if (item.input !== undefined)
+                        validateCommandSchema(item.input, `command ${String(item.id)} input`, errors);
+                    if (item.output !== undefined)
+                        validateCommandSchema(item.output, `command ${String(item.id)} output`, errors);
+                    if (item.capabilities !== undefined) {
+                        if (!Array.isArray(item.capabilities))
+                            errors.push(`command ${String(item.id)} capabilities must be an array`);
+                        else
+                            for (const capability of item.capabilities) {
+                                if (typeof capability !== "string" || !Array.isArray(capabilities) || !capabilities.includes(capability))
+                                    errors.push(`command ${String(item.id)} requires an undeclared capability`);
+                            }
+                    }
+                    if (item.exposure !== undefined) {
+                        if (!Array.isArray(item.exposure))
+                            errors.push(`command ${String(item.id)} exposure must be an array`);
+                        else if (item.exposure.some((exposure) => !["view", "broker"].includes(String(exposure))))
+                            errors.push(`command ${String(item.id)} exposure is invalid`);
+                    }
+                }
                 if (label !== "views" || item.components === undefined)
                     continue;
                 if (!Array.isArray(item.components)) {
@@ -353,6 +409,20 @@ export function validatePluginManifest(manifest) {
             else
                 checkKeys(command.action, "command action", ["type"], errors);
         }
+    if (Array.isArray(commands)) {
+        const commandIds = new Set();
+        for (const command of commands)
+            if (isRecord(command)) {
+                if (typeof command.id !== "string" || commandIds.has(command.id))
+                    errors.push(`duplicate or invalid command id: ${String(command.id)}`);
+                commandIds.add(String(command.id));
+                if (Array.isArray(command.exposure)) {
+                    const exposures = new Set(command.exposure.map(String));
+                    if (exposures.size !== command.exposure.length)
+                        errors.push(`command ${String(command.id)} has duplicate exposure`);
+                }
+            }
+    }
     if (errors.length)
         return [...new Set(errors)];
     const entrypointRecord = entrypoints;
@@ -455,6 +525,8 @@ export function validatePluginManifest(manifest) {
                 const command = commands.find((candidate) => candidate.id === component.command);
                 if (!command?.action)
                     errors.push(`view ${view.id} button references a command without a host action`);
+                else if (command.exposure?.length && !command.exposure.includes("view"))
+                    errors.push(`view ${view.id} button references a command not exposed to views`);
             }
         }
     }

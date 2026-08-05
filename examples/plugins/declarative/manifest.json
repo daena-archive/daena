@@ -24,7 +24,14 @@
       { "type": "button", "id": "refresh", "label": "Refresh notes", "command": "refresh" }
     ]
   }],
-  "commands": [{ "id": "refresh", "title": "Refresh", "action": { "type": "refresh-view" } }],
+  "commands": [{
+    "id": "refresh",
+    "title": "Refresh",
+    "action": { "type": "refresh-view" },
+    "input": { "type": "object", "properties": {}, "required": [], "additionalProperties": false },
+    "output": { "type": "object", "properties": { "type": { "type": "string" } }, "required": ["type"], "additionalProperties": false },
+    "exposure": ["view"]
+  }],
   "services": { "provides": [], "consumes": [] },
   "events": { "publishes": [], "subscribes": [] },
   "migrations": [{ "id": "field-notes-v1", "from": 0, "to": 1, "recovery": "backup", "operations": [{ "kind": "create-namespace", "namespace": "field-notes" }] }]

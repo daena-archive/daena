@@ -200,7 +200,14 @@ plugin.
       { "type": "button", "id": "refresh", "label": "Refresh", "command": "refresh" }
     ]
   }],
-  "commands": [{ "id": "refresh", "title": "Refresh", "action": { "type": "refresh-view" } }]
+  "commands": [{
+    "id": "refresh",
+    "title": "Refresh",
+    "action": { "type": "refresh-view" },
+    "input": { "type": "object", "properties": {}, "required": [], "additionalProperties": false },
+    "output": { "type": "object", "properties": { "type": { "type": "string" } }, "required": ["type"], "additionalProperties": false },
+    "exposure": ["view"]
+  }]
 }
 ```
 
@@ -216,7 +223,14 @@ button can invoke only a declared host action; the current action is
 The host fetches data and applies field writes only after checking the active
 runtime, current project grant, source entity type, namespace, and manifest
 field declaration. Plugins do not receive a DOM handle, callback, or arbitrary
-component escape hatch.
+component escape hatch. Commands default to `view` exposure when `exposure` is
+omitted for compatibility. Phase 3 supports `view` exposure for host-rendered
+buttons and `broker` exposure for host-routed invocations; menu and keyboard
+shortcut surfaces are intentionally not part of this contract yet. Commands
+may declare a small object-shaped input/output schema and required
+capabilities. Rust validates the declared schema,
+exposure, capability grants, and payload before invoking the host-owned action;
+unknown input properties are rejected when `additionalProperties` is false.
 
 User-facing manifest views appear in the host sidebar after the plugin is
 enabled. Host-rendered views use the shared host renderer; sandboxed views use
@@ -251,6 +265,10 @@ the broker permits the operation.
 There is no generic `filesystem`, `shell`, `process`, `dialog`, `tauri`, or
 unrestricted `network` capability. Plugins never receive arbitrary local
 paths.
+
+Set `shared: true` on an owned schema field to export it read-only to other
+plugins. A reader still needs `field.read:shared`; the owning plugin retains
+the only write authority.
 
 ## 7. Build a sandboxed plugin
 
@@ -309,6 +327,14 @@ const events = await client.pollEvents("com.example.weather/forecast-updated", 1
 Services are versioned request/response contracts. Only one provider for a
 service major is active in a project. Calls have deadlines and return a typed
 provider-unavailable error when the provider is missing.
+
+WASM providers use the synchronous `wb.service.sync.v1` ABI. A provider exports
+`memory`, `alloc(i32) -> i32`, and `handle_json(i32, i32) -> i64`; the host writes
+UTF-8 JSON into allocated memory and decodes the returned `(len << 32) | ptr`
+value as UTF-8 JSON. Requests and responses are bounded by the broker payload
+limit. Background event loops are not supported; cancellation stops waiting at
+the broker boundary and the provider is drained or quarantined during lifecycle
+shutdown.
 
 ## 9. Migrations
 

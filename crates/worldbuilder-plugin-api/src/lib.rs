@@ -73,6 +73,10 @@ pub struct FieldDefinition {
     pub relationship_type: Option<String>,
     #[serde(rename = "targetEntityTypes")]
     pub target_entity_types: Option<Vec<String>>,
+    /// A shared field can be read by other plugins with `field.read:shared`,
+    /// but remains writable only by the namespace owner.
+    #[serde(default)]
+    pub shared: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -183,6 +187,48 @@ pub enum CommandAction {
     RefreshView,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
+pub enum CommandExposure {
+    View,
+    Broker,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CommandValueType {
+    Object,
+    String,
+    Number,
+    Boolean,
+    Array,
+    Null,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CommandProperty {
+    #[serde(rename = "type")]
+    pub value_type: CommandValueType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CommandSchema {
+    #[serde(rename = "type")]
+    pub schema_type: CommandValueType,
+    #[serde(default)]
+    pub properties: BTreeMap<String, CommandProperty>,
+    #[serde(default)]
+    pub required: Vec<String>,
+    #[serde(rename = "additionalProperties", default = "default_additional_properties")]
+    pub additional_properties: bool,
+}
+
+fn default_additional_properties() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Command {
@@ -190,6 +236,14 @@ pub struct Command {
     pub title: String,
     #[serde(default)]
     pub action: Option<CommandAction>,
+    #[serde(default)]
+    pub input: Option<CommandSchema>,
+    #[serde(default)]
+    pub output: Option<CommandSchema>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub exposure: Vec<CommandExposure>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -284,6 +338,65 @@ pub fn parse_manifest(json: &str) -> Result<PluginManifest, ContractError> {
         serde_json::from_str(json).map_err(|e| ContractError(format!("invalid manifest: {e}")))?;
     validate_manifest(&manifest)?;
     Ok(manifest)
+}
+
+pub fn command_exposes(command: &Command, exposure: CommandExposure) -> bool {
+    command.exposure.is_empty() && matches!(exposure, CommandExposure::View)
+        || command.exposure.iter().any(|candidate| *candidate == exposure)
+}
+
+pub fn validate_command_value(
+    schema: &CommandSchema,
+    value: &serde_json::Value,
+) -> Result<(), ContractError> {
+    if !matches!(schema.schema_type, CommandValueType::Object) {
+        return Err(ContractError(
+            "command schemas must have an object root".into(),
+        ));
+    }
+    let object = value
+        .as_object()
+        .ok_or_else(|| ContractError("command payload must be an object".into()))?;
+    for required in &schema.required {
+        if !schema.properties.contains_key(required) {
+            return Err(ContractError(format!(
+                "command schema requires an undeclared property: {required}"
+            )));
+        }
+        if !object.contains_key(required) {
+            return Err(ContractError(format!(
+                "command payload is missing required property: {required}"
+            )));
+        }
+    }
+    if !schema.additional_properties
+        && object
+            .keys()
+            .any(|key| !schema.properties.contains_key(key))
+    {
+        return Err(ContractError(
+            "command payload contains an undeclared property".into(),
+        ));
+    }
+    for (key, property) in &schema.properties {
+        let Some(value) = object.get(key) else {
+            continue;
+        };
+        let valid = match property.value_type {
+            CommandValueType::Object => value.is_object(),
+            CommandValueType::String => value.is_string(),
+            CommandValueType::Number => value.is_number(),
+            CommandValueType::Boolean => value.is_boolean(),
+            CommandValueType::Array => value.is_array(),
+            CommandValueType::Null => value.is_null(),
+        };
+        if !valid {
+            return Err(ContractError(format!(
+                "command property has the wrong type: {key}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError> {
@@ -484,6 +597,58 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
             }
         }
     }
+    let mut command_ids = BTreeSet::new();
+    for command in &manifest.commands {
+        if command.id.trim().is_empty() || command.title.trim().is_empty() {
+            return Err(ContractError("command id and title must not be empty".into()));
+        }
+        if !command_ids.insert(&command.id) {
+            return Err(ContractError(format!(
+                "duplicate command id: {}",
+                command.id
+            )));
+        }
+        let mut exposures = BTreeSet::new();
+        for exposure in &command.exposure {
+            if !exposures.insert(exposure) {
+                return Err(ContractError(format!(
+                    "command {} has duplicate exposure",
+                    command.id
+                )));
+            }
+        }
+        for capability in &command.capabilities {
+            if !manifest.capabilities.contains(capability) {
+                return Err(ContractError(format!(
+                    "command {} requires an undeclared capability: {}",
+                    command.id, capability
+                )));
+            }
+        }
+        for schema in [command.input.as_ref(), command.output.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            if !matches!(schema.schema_type, CommandValueType::Object) {
+                return Err(ContractError(format!(
+                    "command {} schema root must be object",
+                    command.id
+                )));
+            }
+            let required = schema.required.iter().collect::<BTreeSet<_>>();
+            if required.len() != schema.required.len()
+                || schema
+                    .required
+                    .iter()
+                    .any(|key| !schema.properties.contains_key(key))
+            {
+                return Err(ContractError(format!(
+                    "command {} schema has invalid required properties",
+                    command.id
+                )));
+            }
+        }
+    }
     let mut view_ids = BTreeSet::new();
     for view in &manifest.views {
         if view.id.trim().is_empty() || view.title.trim().is_empty() {
@@ -579,7 +744,10 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                             .commands
                             .iter()
                             .find(|candidate| candidate.id == *command)
-                            .is_some_and(|candidate| candidate.action.is_some());
+                            .is_some_and(|candidate| {
+                                candidate.action.is_some()
+                                    && command_exposes(candidate, CommandExposure::View)
+                            });
                         if !declared {
                             return Err(ContractError(format!(
                                 "view {} button references a command without a host action: {}",

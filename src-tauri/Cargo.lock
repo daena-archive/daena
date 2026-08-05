@@ -5927,6 +5927,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "wasmtime",
+ "wat",
  "worldbuilder-plugin-api",
  "zip",
 ]

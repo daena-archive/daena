@@ -115,6 +115,8 @@ export const project = {
     invoke<HostViewData>("plugin_host_view_data", { pluginId, viewId, selectedEntityId: selectedEntityId ?? null }),
   hostViewSetField: (pluginId: string, viewId: string, componentId: string, entityId: string, key: string, value: unknown) =>
     invoke<void>("plugin_host_view_set_field", { pluginId, viewId, componentId, entityId, key, value }),
+  hostViewInvokeCommand: (pluginId: string, viewId: string, commandId: string, payload?: Record<string, unknown>) =>
+    invoke<string>("plugin_host_invoke_command", { pluginId, viewId, commandId, payload: payload ?? {} }),
   closePluginWebview: (pluginId: string) => invoke<void>("plugin_close_webview", { pluginId }),
   installPlugin: (archive: string, allowUnsigned = false) =>
     invoke<InstalledPluginVersion>("plugin_install_package", { archive, allowUnsigned }),

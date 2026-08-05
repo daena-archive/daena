@@ -22,6 +22,7 @@ export interface FieldDefinition {
     entityTypes?: string[];
     relationshipType?: string;
     targetEntityTypes?: string[];
+    shared?: boolean;
 }
 export interface SchemaContribution {
     namespace: string;
@@ -103,10 +104,25 @@ export interface View {
 export type CommandAction = {
     type: "refresh-view";
 };
+export type CommandExposure = "view" | "broker";
+export type CommandValueType = "object" | "string" | "number" | "boolean" | "array" | "null";
+export interface CommandProperty {
+    type: CommandValueType;
+}
+export interface CommandSchema {
+    type: "object";
+    properties?: Record<string, CommandProperty>;
+    required?: string[];
+    additionalProperties?: boolean;
+}
 export interface Command {
     id: string;
     title: string;
     action?: CommandAction;
+    input?: CommandSchema;
+    output?: CommandSchema;
+    capabilities?: string[];
+    exposure?: CommandExposure[];
 }
 export interface Service {
     name: string;

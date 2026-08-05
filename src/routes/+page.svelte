@@ -1,14 +1,16 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { project, type Asset, type Entity, type Relationship, type ProjectModuleManifest, type ProjectInfo, type GitStatus, type GitLogEntry, type PluginAdminEntry, type PluginUpgradePlan } from "$lib/project/client";
-  import type { EntityTemplate, FieldDefinition, ModuleContext, ModuleId, UUID, ModuleManifest } from "../../packages/module-api/src/index";
+  import type { EntityTemplate, FieldDefinition, ModuleContext, ModuleId, UUID, ModuleManifest, WorldbuilderModule } from "../../packages/module-api/src/index";
   import { buildModuleContext } from "$lib/modules/context";
   import HostView from "$lib/plugins/HostView.svelte";
-import SandboxView from "$lib/plugins/SandboxView.svelte";
+  import SandboxView from "$lib/plugins/SandboxView.svelte";
+  import ProjectionView from "$lib/ProjectionView.svelte";
   import RelationshipPicker from "$lib/RelationshipPicker.svelte";
   import loreManifestJson from "../../packages/modules/lore/manifest.json";
   import timelineManifestJson from "../../packages/modules/timeline/manifest.json";
   import writingManifestJson from "../../packages/modules/writing/manifest.json";
+  import { projectionModule } from "$lib/modules/projections";
   import RichTextEditor from "$lib/editor/RichTextEditor.svelte";
   import { formatCalendarDate, isCompleteCalendarDate, parseCalendarDate, serializeCalendarDate, type CalendarDate } from "$lib/date";
 
@@ -58,6 +60,7 @@ import SandboxView from "$lib/plugins/SandboxView.svelte";
   let adminPlugins = $state<PluginAdminEntry[] | null>(null);
   let hostView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] } | null>(null);
   let sandboxView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] | null } | null>(null);
+  let projectionView = $state<{ title: string; module: WorldbuilderModule } | null>(null);
   let adminBusy = $state(false);
   let installing = $state(false);
   let installConsent = $state<{ path: string; message: string } | null>(null);
@@ -222,7 +225,38 @@ import SandboxView from "$lib/plugins/SandboxView.svelte";
 
   function sectionEnabled() { return modules.find((module) => module.id === activeModuleId())?.enabled ?? false; }
 
-  function openHostView(plugin: PluginAdminEntry, view: PluginAdminEntry["views"][number]) {
+  async function closeNativePluginWebviews() {
+    try {
+      await project.closeAllPluginWebviews();
+    } catch {
+      // The webview cleanup is best effort so browser previews remain usable.
+    }
+  }
+
+  async function leavePluginView() {
+    hostView = null;
+    sandboxView = null;
+    projectionView = null;
+    await closeNativePluginWebviews();
+  }
+
+  function pluginViewLabel(item: PluginNavigationItem) {
+    return item.plugin.name === item.view.title ? item.plugin.name : `${item.plugin.name} · ${item.view.title}`;
+  }
+
+  function workspaceNavigationActive(target: WorkspaceSection) {
+    return !hostView && !sandboxView && !projectionView && section === target;
+  }
+
+  function pluginNavigationActive(item: PluginNavigationItem) {
+    if (item.mode === "host") {
+      return hostView?.plugin.id === item.plugin.id && hostView.view.id === item.view.id;
+    }
+    return sandboxView?.plugin.id === item.plugin.id && sandboxView.view?.id === item.view.id;
+  }
+
+  async function openHostView(plugin: PluginAdminEntry, view: PluginAdminEntry["views"][number]) {
+    await closeNativePluginWebviews();
     hostView = { plugin, view };
     sandboxView = null;
     showPlugins = false;
@@ -244,9 +278,10 @@ import SandboxView from "$lib/plugins/SandboxView.svelte";
 
   async function openPluginView(item: PluginNavigationItem) {
     if (item.mode === "host") {
-      openHostView(item.plugin, item.view);
+      await openHostView(item.plugin, item.view);
       return;
     }
+    await closeNativePluginWebviews();
     hostView = null;
     sandboxView = { plugin: item.plugin, view: item.view };
     showPlugins = false;
@@ -285,18 +320,18 @@ import SandboxView from "$lib/plugins/SandboxView.svelte";
   }
 
   async function switchSection(next: WorkspaceSection) {
-    if (section === next || !(await flushAutoSave())) return;
-    hostView = null;
-    sandboxView = null;
+    if (!(await flushAutoSave())) return;
+    await leavePluginView();
+    if (section === next) return;
     section = next;
     clearSelection();
     query = "";
   }
 
   async function switchWritingView(next: WritingView) {
-    if (writingView === next || !(await flushAutoSave())) return;
-    hostView = null;
-    sandboxView = null;
+    if (!(await flushAutoSave())) return;
+    await leavePluginView();
+    if (writingView === next) return;
     writingView = next;
     clearSelection();
     query = "";
@@ -319,13 +354,10 @@ import SandboxView from "$lib/plugins/SandboxView.svelte";
   }
 
   function openProjection() {
-    const plugin = adminPlugins?.find((candidate) => candidate.id === activeModuleId());
-    if (!plugin) {
-      error = "The module UI is not available.";
-      return;
-    }
+    const projection = projectionModule(section === "lore" ? "lore" : "timeline");
     hostView = null;
-    sandboxView = { plugin, view: null };
+    sandboxView = null;
+    projectionView = projection;
   }
 
   function normalizeDocument(body: string, format?: string) {
@@ -472,6 +504,7 @@ import SandboxView from "$lib/plugins/SandboxView.svelte";
     showProjectMenu = false;
     if (!(await flushAutoSave())) return;
     try {
+      await leavePluginView();
       await project.close();
       clearSelection();
       projectInfo = null;
@@ -723,6 +756,7 @@ import SandboxView from "$lib/plugins/SandboxView.svelte";
   }
   async function openPlugins() {
     showPlugins = true;
+    await leavePluginView();
     adminPlugins = null;
     installSummary = null;
     deleteBackupPath = "";
@@ -923,7 +957,10 @@ import SandboxView from "$lib/plugins/SandboxView.svelte";
       if (request === searchRequest) error = friendlyError(cause);
     });
   });
-  onMount(loadRecentProjects);
+  onMount(() => {
+    loadRecentProjects();
+    void closeNativePluginWebviews();
+  });
 </script>
 
 <svelte:head><title>Worldbuilder Studio</title></svelte:head>
@@ -958,15 +995,15 @@ import SandboxView from "$lib/plugins/SandboxView.svelte";
       <button aria-expanded={showCreateForm} class="rail-create-button" onclick={toggleCreateForm}><span class="rail-icon">＋</span><span>New entry</span></button>
       <div class="rail-label">WORKSPACE</div>
       <nav class="workspace-nav" aria-label="Workspace sections">
-        <button aria-current={section === "lore" ? "page" : undefined} class:active={section === "lore"} class="rail-button" onclick={() => switchSection("lore")}><span class="rail-icon">✦</span><span>Lore library</span></button>
-        <button aria-current={section === "timeline" ? "page" : undefined} class:active={section === "timeline"} class="rail-button" onclick={() => switchSection("timeline")}><span class="rail-icon">◷</span><span>Timeline</span></button>
-        <button aria-current={section === "writing" ? "page" : undefined} class:active={section === "writing"} class="rail-button" onclick={() => switchSection("writing")}><span class="rail-icon">✎</span><span>Writing Studio</span></button>
+        <button aria-current={workspaceNavigationActive("lore") ? "page" : undefined} class:active={workspaceNavigationActive("lore")} class="rail-button" onclick={() => switchSection("lore")}><span class="rail-icon">✦</span><span>Lore library</span></button>
+        <button aria-current={workspaceNavigationActive("timeline") ? "page" : undefined} class:active={workspaceNavigationActive("timeline")} class="rail-button" onclick={() => switchSection("timeline")}><span class="rail-icon">◷</span><span>Timeline</span></button>
+        <button aria-current={workspaceNavigationActive("writing") ? "page" : undefined} class:active={workspaceNavigationActive("writing")} class="rail-button" onclick={() => switchSection("writing")}><span class="rail-icon">✎</span><span>Writing Studio</span></button>
       </nav>
       {#if pluginViews().length > 0}
         <div class="rail-label plugin-views-label">PLUGIN VIEWS</div>
         <nav class="workspace-nav" aria-label="Plugin views">
           {#each pluginViews() as item (item.key)}
-            <button class:active={item.mode === "host" && hostView?.plugin.id === item.plugin.id && hostView?.view.id === item.view.id} class="rail-button" title={`${item.plugin.name} · ${item.view.title}`} aria-current={item.mode === "host" && hostView?.plugin.id === item.plugin.id && hostView?.view.id === item.view.id ? "page" : undefined} aria-label={`Open ${item.plugin.name}: ${item.view.title}`} onclick={() => void openPluginView(item)}><span class="rail-icon">◇</span><span class="plugin-nav-title">{item.plugin.name} · {item.view.title}</span></button>
+            <button class:active={pluginNavigationActive(item)} class="rail-button" title={pluginViewLabel(item)} aria-current={pluginNavigationActive(item) ? "page" : undefined} aria-label={`Open ${item.plugin.name}: ${item.view.title}`} onclick={() => void openPluginView(item)}><span class="rail-icon">◇</span><span class="plugin-nav-title">{pluginViewLabel(item)}</span></button>
           {/each}
         </nav>
       {/if}
@@ -980,7 +1017,7 @@ import SandboxView from "$lib/plugins/SandboxView.svelte";
     <div class="rail-footer">v0.2 · local first</div>
   </aside>
 
-  <section class="app-main">
+  <section class:sandbox-active={Boolean(sandboxView)} class="app-main">
     <header class="topbar"><div class="breadcrumbs" aria-label="Breadcrumb"><span>Private studio</span><i>/</i><strong>{sectionLabel()}</strong>{#if section === "writing"}<i>/</i><span>{writingView === "manuscripts" ? "Manuscripts" : "Reference pages"}</span>{/if}{#if selected}<i>/</i><span>{selected.name}</span>{/if}</div><div class="top-actions">{#if ready}<label class="global-search"><span aria-hidden="true">⌕</span><input aria-label="Search your world" bind:value={globalQuery} placeholder="Search whole world" /></label><span class="sync-badge" title="Your work is stored locally"><span></span> Local</span>{/if}</div></header>
     {#if ready && globalQuery.trim()}<div class="search-modal" role="dialog" aria-label="World search results"><div class="search-modal-heading"><strong>Search results</strong><button class="quiet-button" aria-label="Close search" onclick={() => globalQuery = ""}>×</button></div>{#if searchMatches === null}<p class="search-state">Searching the whole world…</p>{:else if searchMatches.length === 0}<p class="search-state">No matches found.</p>{:else}<div class="search-results">{#each searchMatches as result}<button class="search-result" onclick={() => selectSearchResult(result)}><span class={`entity-glyph ${entityGlyphClass(result)}`}>{entityGlyph(result)}</span><span><strong>{result.name}</strong><small>{result.entity_type ?? "Uncategorized"}</small></span></button>{/each}</div>{/if}</div>{/if}
     {#if showCreateForm}{@const createOption = selectedCreateOption()}<div class="modal-backdrop"><form class="dialog create-dialog" onsubmit={createEntity}><div class="create-dialog-heading"><div><span class="panel-kicker">CREATE SOMETHING NEW</span><strong>Choose a starting point</strong><p>Templates set the shape of your new entry. You can fill in the details before it is saved.</p></div><button type="button" class="new-form-close" aria-label="Close create dialog" onclick={closeCreateForm}>×</button></div><div class="create-dialog-body"><aside class="create-template-panel"><div class="create-panel-label">TEMPLATES</div><div class="create-template-list">{#each createGroups() as group}<div class="create-template-group"><span>{group.module.name}</span>{#each group.options as option}<button type="button" class:selected={option.key === selectedCreateKey} class="create-template-card" onclick={() => selectCreateOption(option.key)}><span class="create-template-icon">{option.template.icon ?? option.template.name.slice(0, 1)}</span><span class="create-template-copy"><strong>{option.template.name}</strong><small>{option.template.description ?? option.template.entityType}</small></span><span class="create-template-check">{option.key === selectedCreateKey ? "✓" : ""}</span></button>{/each}</div>{/each}</div></aside><section class="create-form-panel">{#if createOption}<div class="create-form-title"><span class="panel-kicker">{createOption.module.name.toUpperCase()}</span><h2>{createOption.template.name}</h2><p>{createOption.template.description ?? `Create a new ${createOption.template.entityType}.`}</p></div><label class="create-input-field" for="new-entity"><span>Name <b>*</b></span><input id="new-entity" bind:value={name} placeholder={`e.g. ${createOption.template.name}`} autocomplete="off" /></label>{#each createFieldsFor(createOption) as item}<div class="create-input-field"><label for={`create-${item.field.key}`}><span>{item.field.label} {#if item.required}<b>*</b>{/if}</span></label>{#if item.field.type === "relationship"}<RelationshipPicker field={item.field} entities={entities} selectedIds={createRelationshipValues(item.field.key)} onChange={(ids) => setCreateRelationshipValues(item.field.key, ids)} />{:else if item.field.type === "text"}<textarea id={`create-${item.field.key}`} rows="3" value={String(createFieldValues[item.field.key] ?? "")} placeholder={`Add ${item.field.label.toLowerCase()}`} oninput={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLTextAreaElement).value)}></textarea>{:else if item.field.type === "number"}<input id={`create-${item.field.key}`} type="number" value={String(createFieldValues[item.field.key] ?? "")} placeholder={`Add ${item.field.label.toLowerCase()}`} oninput={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).value)} />{:else if item.field.type === "boolean"}<label class="create-checkbox" for={`create-${item.field.key}`}><input id={`create-${item.field.key}`} type="checkbox" checked={createFieldValues[item.field.key] === true} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).checked)} /><span>Yes</span></label>{:else if item.field.type === "enum"}<select id={`create-${item.field.key}`} value={String(createFieldValues[item.field.key] ?? "")} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}><option value="">Choose {item.field.label.toLowerCase()}</option>{#each item.field.options ?? [] as option}<option value={option}>{option}</option>{/each}</select>{:else if item.field.type === "entity-ref"}<select id={`create-${item.field.key}`} value={String(createFieldValues[item.field.key] ?? "")} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}><option value="">Choose an entity</option>{#each entities.filter((entity) => !entity.deleted) as entity}<option value={entity.id}>{entity.name} · {entity.entity_type ?? "Uncategorized"}</option>{/each}</select>{:else if item.field.type === "date"}{#if createDateForField(item.field.key) || createDateEditorOpen[item.field.key]}{@const date = createDateDraftForField(item.field.key) ?? { calendar: "gregorian", era: "CE", precision: "day" }}<div class="date-editor"><div class="date-fields"><label for={`create-${item.field.key}-year`}>Year<input id={`create-${item.field.key}-year`} aria-label={`${item.field.label} year`} type="number" min="1" value={date.year ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "year", (event.currentTarget as HTMLInputElement).value, 1)} /></label><label for={`create-${item.field.key}-month`}>Month<input id={`create-${item.field.key}-month`} aria-label={`${item.field.label} month`} type="number" min="1" max="12" value={date.month ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "month", (event.currentTarget as HTMLInputElement).value, 1, 12)} /></label><label for={`create-${item.field.key}-day`}>Day<input id={`create-${item.field.key}-day`} aria-label={`${item.field.label} day`} type="number" min="1" max="31" value={date.day ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "day", (event.currentTarget as HTMLInputElement).value, 1, 31)} /></label></div><small class="date-preview">{typeof date.year === "number" ? formatCalendarDate(date) : "Add a date"}</small><button class="date-clear" type="button" onclick={() => clearCreateDateField(item.field.key)}>Clear date</button></div>{:else}<button class="date-empty" type="button" onclick={() => openCreateDateEditor(item.field.key)}>Add a date</button>{/if}{/if}</div>{/each}{#if createOption.template.document}<label class="create-input-field" for="create-document"><span>Opening note</span><textarea id="create-document" rows="5" bind:value={createDocumentBody} placeholder="Add a first note or leave the template text as-is"></textarea></label>{/if}{:else}<div class="create-form-empty">Select a template to begin.</div>{/if}</section></div><div class="create-dialog-actions"><button type="button" class="quiet-button" onclick={closeCreateForm}>Cancel</button><button class="primary-button" type="submit" disabled={!name.trim() || !createOption}>Create {createOption?.template.name ?? "entry"}</button></div></form></div>{/if}
@@ -1180,11 +1217,15 @@ import SandboxView from "$lib/plugins/SandboxView.svelte";
     {/if}
     {#if !ready}
       <section class="welcome"><div class="welcome-copy"><span class="overline">A private place for impossible worlds</span><h1>Build the world<br /><em>behind the story.</em></h1><p>Shape characters, places, factions, and history in one calm, local-first studio.</p></div><div class="welcome-art"><div class="orb orb-one"></div><div class="orb orb-two"></div><div class="art-card"><span>ELDERMERE</span><strong>The sea remembers<br />what kingdoms forget.</strong><small>Fragments · 12</small></div></div></section>
+    {:else if projectionView}
+      {#key projectionView.title}
+        <ProjectionView title={projectionView.title} view={projectionView.module.views[0]} context={buildModuleContext(projectionView.module.manifest, projectInfo?.root ?? "")} onClose={() => projectionView = null} />
+      {/key}
     {:else if hostView}
       <div class="host-view-shell"><button class="quiet-button host-view-back" onclick={() => hostView = null}>Back to workspace</button><HostView plugin={hostView.plugin} view={hostView.view} /></div>
     {:else if sandboxView}
       {#key `${sandboxView.plugin.id}:${sandboxView.view?.id ?? "default"}`}
-        <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={`${sandboxView.plugin.name}${sandboxView.view ? ` · ${sandboxView.view.title}` : ""}`} onClose={() => sandboxView = null} />
+        <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={sandboxView.plugin.name} />
       {/key}
     {:else if !sectionEnabled()}
       <section class="disabled-state"><div class="disabled-icon">◌</div><span class="overline">Module unavailable</span><h1>{sectionLabel()} is resting.</h1><p>Your project data is safe. Re-enable this module to continue working in this workspace.</p><button class="primary-button" onclick={() => toggleModule(activeModuleId() as ModuleId)}>Enable {sectionLabel()}</button></section>
@@ -1239,7 +1280,7 @@ import SandboxView from "$lib/plugins/SandboxView.svelte";
   :global(body) { margin: 0; background: var(--canvas); color: var(--ink); font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
   :global(button), :global(input), :global(select) { font: inherit; }
   .studio-shell { min-height: 100vh; display: flex; } .rail { width: 248px; flex: 0 0 248px; display: flex; flex-direction: column; padding: 25px 15px 18px; background: #283a30; color: #eef0e9; } .startup-rail { padding-top: 34px; } .brand { display: flex; align-items: center; gap: 11px; padding: 0 10px 40px; } .rail:not(.startup-rail) .brand { padding-bottom: 20px; } .brand-mark { display: grid; place-items: center; width: 31px; height: 31px; border-radius: 9px; background: #d5ab6c; color: #2c4032; font: 700 18px Georgia, serif; } .brand strong, .brand small, .project-card strong, .recent-project strong, .recent-project small { display: block; } .brand strong { font-size: 14px; } .brand small, .recent-project small { margin-top: 3px; color: #aab9ad; font-size: 11px; } .rail-label { margin: 0 10px 9px; color: #819688; font-size: 10px; font-weight: 700; letter-spacing: .16em; } .recent-label { margin-top: 27px; } .rail-button { width: 100%; display: flex; align-items: center; gap: 11px; padding: 10px 11px; margin-bottom: 3px; border: 0; border-radius: 8px; background: transparent; color: #b9c8bc; text-align: left; cursor: pointer; } .rail-button:hover, .rail-button.active { background: #3b5243; color: #fff; } .startup-primary { margin-top: 8px; background: #d5ab6c; color: #2c4032; font-weight: 700; } .startup-primary:hover { background: #e1bc82; color: #2c4032; } .rail-icon { width: 18px; color: #d5ab6c; text-align: center; } .startup-primary .rail-icon { color: #2c4032; } .muted-button { color: #91a397; } .rail-spacer { flex: 1; } .rail-footer { padding: 17px 10px 0; color: #708476; font-size: 11px; } .project-switcher { margin-bottom: 18px; } .project-card { display: flex; align-items: center; width: 100%; gap: 10px; padding: 10px; border: 0; border-radius: 8px; background: transparent; color: #eef0e9; font: inherit; text-align: left; cursor: pointer; } .project-card:hover, .project-card.active { background: #3b5243; } .project-copy { min-width: 0; flex: 1; } .project-chevron { flex: 0 0 auto; color: #aab9ad; font-size: 16px; line-height: 1; transform: translateY(-3px); } .project-card strong, .recent-project strong { font-size: 13px; max-width: 185px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .project-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: #777f78; } .project-dot.online { background: #88c18e; box-shadow: 0 0 0 4px rgba(136,193,142,.12); } .recent-projects { display: grid; gap: 3px; } .recent-project { width: 100%; display: flex; align-items: flex-start; gap: 10px; padding: 10px; border: 0; border-radius: 8px; background: transparent; color: #eef0e9; text-align: left; cursor: pointer; } .recent-project:hover { background: #3b5243; } .recent-project small { overflow: hidden; max-width: 180px; text-overflow: ellipsis; white-space: nowrap; } .project-menu { margin: 3px 0 8px 8px; padding-left: 8px; border-left: 1px solid #486052; } .project-menu .rail-button { padding: 8px 9px; color: #aab9ad; font-size: 11px; } .module-menu { margin: 6px 8px 12px; padding: 8px 10px; border: 1px solid #486052; border-radius: 8px; background: #30483a; }
-  .app-main { min-width: 0; flex: 1; } .topbar { display: flex; align-items: center; justify-content: space-between; min-height: 58px; padding: 0 40px 0; border-bottom: 1px solid var(--line); background: rgba(255,254,250,.78); } .breadcrumbs, .top-actions { display: flex; align-items: center; gap: 10px; } .breadcrumbs { min-width: 0; color: var(--ink-faint); font-size: 12px; } .breadcrumbs strong { color: var(--ink-soft); } .breadcrumbs span:last-child { overflow: hidden; max-width: 180px; text-overflow: ellipsis; white-space: nowrap; } .breadcrumbs i { color: #d0ccc2; font-style: normal; } .global-search { display: flex; align-items: center; gap: 8px; width: 230px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink-faint); } .global-search input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 12px; } .sync-badge { color: var(--ink-faint); font-size: 10px; } .sync-badge { display: flex; align-items: center; gap: 6px; color: var(--ink-soft); } .sync-badge span { width: 6px; height: 6px; border-radius: 50%; background: #72a97a; }
+  .app-main { min-width: 0; flex: 1; } .app-main.sandbox-active { display: flex; min-height: 0; flex-direction: column; overflow: hidden; } .app-main.sandbox-active > .topbar { flex: 0 0 auto; } .topbar { display: flex; align-items: center; justify-content: space-between; min-height: 58px; padding: 0 40px 0; border-bottom: 1px solid var(--line); background: rgba(255,254,250,.78); } .breadcrumbs, .top-actions { display: flex; align-items: center; gap: 10px; } .breadcrumbs { min-width: 0; color: var(--ink-faint); font-size: 12px; } .breadcrumbs strong { color: var(--ink-soft); } .breadcrumbs span:last-child { overflow: hidden; max-width: 180px; text-overflow: ellipsis; white-space: nowrap; } .breadcrumbs i { color: #d0ccc2; font-style: normal; } .global-search { display: flex; align-items: center; gap: 8px; width: 230px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink-faint); } .global-search input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 12px; } .sync-badge { color: var(--ink-faint); font-size: 10px; } .sync-badge { display: flex; align-items: center; gap: 6px; color: var(--ink-soft); } .sync-badge span { width: 6px; height: 6px; border-radius: 50%; background: #72a97a; }
   .welcome, .disabled-state { max-width: 1080px; min-height: calc(100vh - 58px); margin: auto; padding: 10vh 7vw; display: flex; align-items: center; gap: 8vw; } .welcome-copy { flex: 1; } .overline, .panel-kicker { display: block; color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: .18em; } .welcome h1 { margin: 20px 0 18px; font: 500 clamp(48px, 6vw, 78px)/.98 var(--font-display); letter-spacing: -.04em; } .welcome h1 em { color: var(--accent); font-style: italic; } .welcome p { max-width: 380px; margin: 0; color: var(--ink-soft); font-size: 16px; line-height: 1.7; } .welcome-art { position: relative; width: 360px; height: 390px; } .orb { position: absolute; border-radius: 50%; } .orb-one { top: 16px; right: 15px; width: 275px; height: 275px; background: radial-gradient(circle at 33% 30%, #eed5a5, #c2794d 64%, #7b4d3f); box-shadow: 30px 35px 60px rgba(115,74,56,.22); } .orb-two { left: 10px; bottom: 36px; width: 140px; height: 140px; background: #365342; box-shadow: 14px 16px 30px rgba(45,71,54,.2); } .art-card { position: absolute; right: -10px; bottom: 0; width: 235px; padding: 22px; border: 1px solid rgba(255,255,255,.65); border-radius: 12px; background: rgba(255,254,250,.86); box-shadow: var(--shadow-lg); } .art-card span, .art-card small { display: block; color: var(--accent); font-size: 9px; font-weight: 800; letter-spacing: .16em; } .art-card strong { display: block; margin: 17px 0 27px; font: 500 20px/1.18 var(--font-display); } .art-card small { color: var(--ink-faint); font-weight: 500; letter-spacing: 0; }
   .primary-button, .quiet-button, .add-button { border: 0; border-radius: 8px; cursor: pointer; } .primary-button { padding: 10px 15px; background: var(--accent-dark); color: #fff; font-weight: 700; font-size: 12px; box-shadow: 0 5px 12px rgba(42,68,51,.14); } .primary-button:hover { background: #2b4535; } .primary-button:disabled { opacity: .55; cursor: wait; } .quiet-button { padding: 10px 12px; background: transparent; color: var(--ink-soft); font-size: 12px; } .quiet-button:hover { background: var(--surface-muted); color: var(--ink); }
   .workspace-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; padding: 42px 40px 25px; } .workspace-heading h1 { margin: 8px 0 4px; font: 500 38px/1 var(--font-display); } .workspace-heading p { margin: 0; color: var(--ink-soft); font-size: 13px; } .heading-actions { display: flex; gap: 7px; } .projection-bar { min-height: 42px; margin: 0 40px 15px; padding: 0 14px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,254,250,.72); } .projection-bar:empty { display: none; } .workspace-grid { display: grid; grid-template-columns: 245px minmax(360px, 1fr) 270px; gap: 14px; padding: 0 40px 40px; align-items: start; } .panel-surface, .editor-panel { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-sm); } .collection-panel, .inspector-panel { min-height: 650px; } .collection-panel { display: flex; flex-direction: column; } .panel-heading, .inspector-heading { display: flex; align-items: center; justify-content: space-between; padding: 18px 17px 12px; } .panel-heading strong { display: block; margin-top: 5px; font: 500 28px var(--font-display); }

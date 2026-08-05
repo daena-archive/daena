@@ -426,6 +426,10 @@ struct PluginWebviewBounds {
     y: f64,
     width: f64,
     height: f64,
+    #[serde(rename = "viewportWidth")]
+    viewport_width: f64,
+    #[serde(rename = "viewportHeight")]
+    viewport_height: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -445,15 +449,59 @@ impl PluginWebviewBounds {
             || !self.y.is_finite()
             || !self.width.is_finite()
             || !self.height.is_finite()
+            || !self.viewport_width.is_finite()
+            || !self.viewport_height.is_finite()
             || self.x < 0.0
             || self.y < 0.0
             || !(1.0..=10_000.0).contains(&self.width)
             || !(1.0..=10_000.0).contains(&self.height)
+            || !(1.0..=10_000.0).contains(&self.viewport_width)
+            || !(1.0..=10_000.0).contains(&self.viewport_height)
         {
             return Err("plugin webview bounds are invalid".into());
         }
         Ok(())
     }
+}
+
+fn scale_plugin_bounds(
+    bounds: PluginWebviewBounds,
+    native_viewport_width: f64,
+    native_viewport_height: f64,
+) -> PluginWebviewBounds {
+    let scale_x = native_viewport_width / bounds.viewport_width;
+    let scale_y = native_viewport_height / bounds.viewport_height;
+    PluginWebviewBounds {
+        x: bounds.x * scale_x,
+        y: bounds.y * scale_y,
+        width: bounds.width * scale_x,
+        height: bounds.height * scale_y,
+        viewport_width: native_viewport_width,
+        viewport_height: native_viewport_height,
+    }
+}
+
+fn native_plugin_bounds(
+    app: &tauri::AppHandle,
+    bounds: PluginWebviewBounds,
+) -> Result<PluginWebviewBounds, String> {
+    bounds.validate()?;
+    let main = app
+        .get_window("main")
+        .ok_or_else(|| "main window is not available".to_string())?;
+    let scale_factor = main.scale_factor().map_err(|error| error.to_string())?;
+    let native_size = main
+        .inner_size()
+        .map_err(|error| error.to_string())?
+        .to_logical::<f64>(scale_factor);
+    // `add_child` attaches the plugin webview to the main window's content
+    // view. The browser rectangle is also measured from that content view,
+    // so adding the title-bar/frame inset here would shift the child down a
+    // second time. Keep the coordinates in content-view space and only
+    // normalize for a scale-factor/viewport change.
+    let native_bounds = scale_plugin_bounds(bounds, native_size.width, native_size.height);
+    native_bounds.validate()?;
+    Ok(native_bounds)
 }
 
 fn plugin_webview_url(
@@ -481,7 +529,7 @@ async fn plugin_mount_webview(
     view_id: Option<String>,
     bounds: PluginWebviewBounds,
 ) -> Result<(), String> {
-    bounds.validate()?;
+    let bounds = native_plugin_bounds(&app, bounds)?;
     let project_id = state
         .lock()
         .map_err(|_| "core lock poisoned".to_string())?
@@ -617,7 +665,7 @@ async fn plugin_resize_webview(
     bounds: PluginWebviewBounds,
     plugin_id: String,
 ) -> Result<(), String> {
-    bounds.validate()?;
+    let bounds = native_plugin_bounds(&app, bounds)?;
     let label = plugin_window_label(&plugin_id);
     let webview = app
         .get_webview(&label)
@@ -910,6 +958,27 @@ fn component_id_of(component: &ViewComponent) -> &str {
 #[tauri::command]
 fn plugin_close_webview(app: tauri::AppHandle, plugin_id: String) -> Result<(), String> {
     close_plugin_webview(&app, &plugin_id);
+    Ok(())
+}
+
+#[tauri::command]
+fn plugin_close_all_webviews(app: tauri::AppHandle) -> Result<(), String> {
+    let labels: Vec<String> = app
+        .webviews()
+        .into_iter()
+        .filter_map(|(label, _)| label.starts_with("plugin:").then_some(label))
+        .collect();
+    for label in labels {
+        if let Ok(mut states) = embedded_webview_states().lock() {
+            states.remove(&label);
+        }
+        if let Some(webview) = app.get_webview(&label) {
+            let _ = webview.close();
+        }
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.close();
+        }
+    }
     Ok(())
 }
 
@@ -2787,6 +2856,7 @@ pub fn run() {
             plugin_host_view_set_field,
             plugin_host_invoke_command,
             plugin_close_webview,
+            plugin_close_all_webviews,
             module_list_manifests,
             module_enable,
             module_disable,
@@ -2879,6 +2949,25 @@ mod tests {
                 "{plugin_id} must use host-owned workspace navigation"
             );
         }
+    }
+
+    #[test]
+    fn plugin_webview_bounds_scale_with_native_viewport() {
+        let bounds = PluginWebviewBounds {
+            x: 248.0,
+            y: 58.0,
+            width: 800.0,
+            height: 624.0,
+            viewport_width: 1440.0,
+            viewport_height: 900.0,
+        };
+        let scaled = scale_plugin_bounds(bounds, 1200.0, 750.0);
+        assert!((scaled.x - 248.0 * 1200.0 / 1440.0).abs() < 1e-9);
+        assert!((scaled.y - 58.0 * 750.0 / 900.0).abs() < 1e-9);
+        assert!((scaled.width - 800.0 * 1200.0 / 1440.0).abs() < 1e-9);
+        assert!((scaled.height - 624.0 * 750.0 / 900.0).abs() < 1e-9);
+        assert_eq!(scaled.viewport_width, 1200.0);
+        assert_eq!(scaled.viewport_height, 750.0);
     }
 
     #[test]
@@ -2997,6 +3086,8 @@ mod tests {
             y: 58.0,
             width: 900.0,
             height: 700.0,
+            viewport_width: 1440.0,
+            viewport_height: 900.0,
         };
         assert!(valid.validate().is_ok());
 

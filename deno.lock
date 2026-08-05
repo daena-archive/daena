@@ -1015,14 +1015,14 @@
       "packages/plugin-cli": {
         "packageJson": {
           "dependencies": [
-            "npm:@worldbuilder/plugin-sdk@1.0.0"
+            "npm:@daena-archive/plugin-sdk@1.0.0"
           ]
         }
       },
       "packages/plugin-test-host": {
         "packageJson": {
           "dependencies": [
-            "npm:@worldbuilder/plugin-sdk@1.0.0"
+            "npm:@daena-archive/plugin-sdk@1.0.0"
           ]
         }
       }

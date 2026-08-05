@@ -13,7 +13,7 @@ app.innerHTML = `
       <div class="brand-lockup">
         <span class="brand-mark" aria-hidden="true">✦</span>
         <div>
-          <p class="eyebrow">Worldbuilder / Plugin example</p>
+<p class="eyebrow">Daena Archive / Plugin example</p>
           <h1>Ink Tools</h1>
         </div>
       </div>

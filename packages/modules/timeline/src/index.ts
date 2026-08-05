@@ -1,11 +1,11 @@
-import type { ModuleContext, WorldbuilderModule } from "../../../module-api/src/index";
+import type { ModuleContext, DaenaModule } from "../../../module-api/src/index";
 import type { ModuleManifest } from "../../../module-api/src/index";
 import { compareCalendarDates, formatCalendarDate } from "../../../../src/lib/date";
 import manifestJson from "../manifest.json";
 
 const manifest = manifestJson as unknown as ModuleManifest;
 
-export const timeline: WorldbuilderModule = {
+export const timeline: DaenaModule = {
   manifest,
   views: [{
     id: "timeline-events",

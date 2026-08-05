@@ -841,6 +841,57 @@ dependencies = [
 ]
 
 [[package]]
+name = "daena"
+version = "0.1.0"
+dependencies = [
+ "daena-core",
+ "daena-plugin-api",
+ "daena-plugin-host",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+]
+
+[[package]]
+name = "daena-core"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
+
+[[package]]
+name = "daena-plugin-api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "daena-plugin-host"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "daena-plugin-api",
+ "ed25519-dalek",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "wasmtime",
+ "wat",
+ "zip",
+]
+
+[[package]]
 name = "darling"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5879,57 +5930,6 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser 0.219.2",
-]
-
-[[package]]
-name = "worldbuilder"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "worldbuilder-core",
- "worldbuilder-plugin-api",
- "worldbuilder-plugin-host",
-]
-
-[[package]]
-name = "worldbuilder-core"
-version = "0.1.0"
-dependencies = [
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "uuid",
-]
-
-[[package]]
-name = "worldbuilder-plugin-api"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "worldbuilder-plugin-host"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "ed25519-dalek",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "wasmtime",
- "wat",
- "worldbuilder-plugin-api",
- "zip",
 ]
 
 [[package]]

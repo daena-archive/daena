@@ -9,7 +9,7 @@ import { FakePluginHost } from "../packages/plugin-test-host/dist/index.js";
 import { readZipArchive } from "../packages/plugin-cli/bin/zip.mjs";
 
 const workspace = resolve(import.meta.dirname, "..");
-const temporary = mkdtempSync(join(tmpdir(), "worldbuilder-plugin-declarative-"));
+const temporary = mkdtempSync(join(tmpdir(), "daena-plugin-declarative-"));
 try {
   const fixture = join(temporary, "field-notes");
   cpSync(join(workspace, "examples/plugins/declarative"), fixture, { recursive: true });

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://worldbuilder.app/schemas/plugin-rpc-v1.json",
-  "title": "Worldbuilder Plugin RPC v1",
+  "$id": "https://github.com/daena-archive/daena/schemas/plugin-rpc-v1.json",
+  "title": "Daena Archive Plugin RPC v1",
   "oneOf": [{ "$ref": "#/$defs/request" }, { "$ref": "#/$defs/response" }],
   "$defs": {
     "request": {

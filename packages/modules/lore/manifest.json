@@ -1,9 +1,9 @@
 {
   "manifestVersion": 1,
-  "id": "worldbuilder.lore",
+  "id": "daena.lore",
   "name": "Lore",
   "version": "0.1.0",
-  "publisher": "worldbuilder",
+  "publisher": "daena-archive",
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "sandboxed",
   "entrypoints": { "ui": "dist/ui/index.html" },

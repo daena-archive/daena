@@ -1,4 +1,4 @@
-import { type EntityRecord, type PluginManifest, type PluginRpcClient, type PluginRpcTransport } from "@worldbuilder/plugin-sdk";
+import { type EntityRecord, type PluginManifest, type PluginRpcClient, type PluginRpcTransport } from "@daena-archive/plugin-sdk";
 export interface FakePluginHostOptions {
     manifest: PluginManifest;
     projectId?: string;

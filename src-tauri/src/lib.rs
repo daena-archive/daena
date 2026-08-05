@@ -6,15 +6,15 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Deserialize;
 use tauri::Manager;
-use worldbuilder_core::{
+use daena_core::{
     Asset, AssetFileInput, AssetInput, AuthorityContext, CoreError, CoreService, CreateEntity,
     Entity, FieldValue, GitLogEntry, GitStatus, Migration, Operation, ProjectInfo, ProjectStore,
     Relationship, RelationshipInput, SaveDocument, SaveEntry,
 };
-use worldbuilder_plugin_api::{
+use daena_plugin_api::{
     CommandAction, MigrationOperation, PluginManifest, RpcRequest, RpcResponse, ViewComponent,
 };
-use worldbuilder_plugin_host::{
+use daena_plugin_host::{
     plugin_window_label, webview_policy, ArchiveLimits, DependencyResolver, PluginHost,
     VerificationPolicy, BUNDLED_TIMELINE_SERVICE_WASM,
 };
@@ -122,15 +122,15 @@ fn plugin_asset_response(
         (bytes, content_type)
     } else {
         let (bytes, content_type): (&[u8], &str) = match (plugin_id, path) {
-            ("worldbuilder.lore", "/dist/ui/index.html") => (
+            ("daena.lore", "/dist/ui/index.html") => (
                 include_bytes!("../plugin-assets/lore/index.html"),
                 "text/html",
             ),
-            ("worldbuilder.timeline", "/dist/ui/index.html") => (
+            ("daena.timeline", "/dist/ui/index.html") => (
                 include_bytes!("../plugin-assets/timeline/index.html"),
                 "text/html",
             ),
-            ("worldbuilder.writing", "/dist/ui/index.html") => (
+            ("daena.writing", "/dist/ui/index.html") => (
                 include_bytes!("../plugin-assets/writing/index.html"),
                 "text/html",
             ),
@@ -161,11 +161,11 @@ fn plugin_asset_response(
     };
     let manifest = package_manifest.cloned().or_else(|| {
         let manifest = match plugin_id {
-            "worldbuilder.lore" => include_str!("../../packages/modules/lore/manifest.json"),
-            "worldbuilder.timeline" => {
+            "daena.lore" => include_str!("../../packages/modules/lore/manifest.json"),
+            "daena.timeline" => {
                 include_str!("../../packages/modules/timeline/manifest.json")
             }
-            "worldbuilder.writing" => {
+            "daena.writing" => {
                 include_str!("../../packages/modules/writing/manifest.json")
             }
             _ => return None,
@@ -201,7 +201,7 @@ fn plugin_protocol_response(
     core: &SharedCore,
     plugins: &SharedPluginHost,
 ) -> tauri::http::Response<Vec<u8>> {
-    if request.body().len() > worldbuilder_plugin_host::runtime::MAX_RPC_BYTES {
+    if request.body().len() > daena_plugin_host::runtime::MAX_RPC_BYTES {
         return json_response(
             serde_json::json!({"error": "plugin protocol request exceeds payload limit"}),
             413,
@@ -280,7 +280,7 @@ fn plugin_protocol_response(
                             .runtime_entry(project_id, plugin_id)
                             .ok_or_else(|| "plugin was removed during bootstrap".to_string())?;
                         serde_json::to_value(PluginBootstrap {
-                            rpc_version: worldbuilder_plugin_api::RPC_VERSION,
+                            rpc_version: daena_plugin_api::RPC_VERSION,
                             session_id: session.id.clone(),
                             plugin_id: plugin_id.to_string(),
                             project_id: project_id.to_string(),
@@ -370,11 +370,11 @@ fn open_plugin_webview(
     let entry = host
         .runtime_entry(project_id, plugin_id)
         .ok_or_else(|| "plugin is not installed".to_string())?;
-    if entry.manifest.kind != worldbuilder_plugin_api::PluginKind::Sandboxed {
+    if entry.manifest.kind != daena_plugin_api::PluginKind::Sandboxed {
         return Err("only sandboxed plugins have UI webviews".into());
     }
     if host.lifecycle.state(project_id, plugin_id).state
-        != worldbuilder_plugin_api::LifecycleState::Active
+        != daena_plugin_api::LifecycleState::Active
     {
         return Err("plugin is not active".into());
     }
@@ -505,7 +505,7 @@ fn native_plugin_bounds(
 }
 
 fn plugin_webview_url(
-    policy: &worldbuilder_plugin_host::PluginWebviewPolicy,
+    policy: &daena_plugin_host::PluginWebviewPolicy,
     project_id: &str,
     view_id: Option<&str>,
 ) -> Result<tauri::WebviewUrl, String> {
@@ -543,11 +543,11 @@ async fn plugin_mount_webview(
         let entry = host
             .runtime_entry(&project_id, &plugin_id)
             .ok_or_else(|| "plugin is not installed".to_string())?;
-        if entry.manifest.kind != worldbuilder_plugin_api::PluginKind::Sandboxed {
+        if entry.manifest.kind != daena_plugin_api::PluginKind::Sandboxed {
             return Err("only sandboxed plugins have UI webviews".into());
         }
         if host.lifecycle.state(&project_id, &plugin_id).state
-            != worldbuilder_plugin_api::LifecycleState::Active
+            != daena_plugin_api::LifecycleState::Active
         {
             return Err("plugin is not active".into());
         }
@@ -1049,7 +1049,7 @@ fn plugin_bootstrap(
         .runtime_entry(&project_id, &plugin_id)
         .ok_or_else(|| "plugin was removed during bootstrap".to_string())?;
     Ok(PluginBootstrap {
-        rpc_version: worldbuilder_plugin_api::RPC_VERSION,
+        rpc_version: daena_plugin_api::RPC_VERSION,
         session_id: session.id.clone(),
         plugin_id,
         project_id,
@@ -1165,18 +1165,18 @@ async fn plugin_rpc(
     });
     match result {
         Ok(result) => Ok(RpcResponse {
-            rpc_version: worldbuilder_plugin_api::RPC_VERSION,
+            rpc_version: daena_plugin_api::RPC_VERSION,
             request_id,
             ok: true,
             result: Some(result),
             error: None,
         }),
         Err(error) => Ok(RpcResponse {
-            rpc_version: worldbuilder_plugin_api::RPC_VERSION,
+            rpc_version: daena_plugin_api::RPC_VERSION,
             request_id,
             ok: false,
             result: None,
-            error: Some(worldbuilder_plugin_api::RpcError {
+            error: Some(daena_plugin_api::RpcError {
                 code: "core.error".into(),
                 message: format!("plugin {plugin_id}: {error}"),
                 retryable: false,
@@ -1355,7 +1355,7 @@ fn core_migrations(
                         namespace, field, ..
                     } => Operation::AddField {
                         namespace: namespace.clone(),
-                        field: worldbuilder_core::FieldDefinition {
+                        field: daena_core::FieldDefinition {
                             key: field.key.clone(),
                             field_type: field.field_type.clone(),
                             required: field.required.unwrap_or(false),
@@ -1631,7 +1631,7 @@ async fn plugin_upgrade(
             let target = host.packages.get(&plugin_id, &version).ok_or_else(|| {
                 CoreError::Validation("target plugin version is not installed".into())
             })?;
-            let target_manifest = worldbuilder_plugin_api::parse_manifest(
+            let target_manifest = daena_plugin_api::parse_manifest(
                 &std::fs::read_to_string(target.root.join("manifest.json"))
                     .map_err(|error| CoreError::Validation(error.to_string()))?,
             )
@@ -2189,7 +2189,7 @@ fn dispatch_module_rpc(
                     CoreError::Validation(format!("invalid entity relationships: {error}"))
                 })?
                 .unwrap_or_default();
-            let input = worldbuilder_core::CreateEntry {
+            let input = daena_core::CreateEntry {
                 name: payload_string(&payload, "name")?,
                 entity_type: payload
                     .get("type")
@@ -2230,7 +2230,7 @@ fn dispatch_module_rpc(
                 .map_err(|error| CoreError::Validation(error.to_string()))
         }
         "document.save" => {
-            let input = worldbuilder_core::SaveDocument {
+            let input = daena_core::SaveDocument {
                 entity_id: payload_string(&payload, "entityId")?,
                 body: payload_string(&payload, "body")?,
                 format: payload
@@ -2269,7 +2269,7 @@ fn dispatch_module_rpc(
             serde_json::to_value(fields).map_err(|error| CoreError::Validation(error.to_string()))
         }
         "field.set" => {
-            let field = worldbuilder_core::FieldValue {
+            let field = daena_core::FieldValue {
                 entity_id: payload_string(&payload, "entityId")?,
                 namespace: payload_string(&payload, "namespace")?,
                 key: payload_string(&payload, "key")?,
@@ -2362,7 +2362,7 @@ fn publish_core_mutation_event(
         .map_err(|_| "plugin host lock poisoned".to_string())?
         .publish_core_event(
             project_id,
-            "worldbuilder.core/entity-changed",
+            "daena.core/entity-changed",
             1,
             serde_json::json!({"method": method, "result": result}),
         )
@@ -2523,19 +2523,7 @@ async fn project_open_default(
             operation: "create app data directory",
             source: error,
         })?;
-        let project_directory = directory.join("Worldbuilder");
-        let legacy_database = directory.join("worldbuilder.sqlite");
-        let project_database = project_directory.join("worldbuilder.sqlite");
-        if legacy_database.is_file() && !project_database.exists() {
-            std::fs::create_dir_all(&project_directory).map_err(|error| CoreError::Io {
-                operation: "create project directory",
-                source: error,
-            })?;
-            std::fs::copy(&legacy_database, &project_database).map_err(|error| CoreError::Io {
-                operation: "migrate legacy database",
-                source: error,
-            })?;
-        }
+        let project_directory = directory.join("Daena Archive");
         if let Some(previous_project) = core.info().map(|info| info.root) {
             plugins
                 .lock()
@@ -2629,7 +2617,7 @@ async fn project_save_entry(
 async fn project_list_documents(
     state: tauri::State<'_, SharedCore>,
     entity_id: String,
-) -> Result<Vec<worldbuilder_core::Document>, String> {
+) -> Result<Vec<daena_core::Document>, String> {
     with_core(state, move |core| {
         core.project(trusted_shell())?.list_documents(entity_id)
     })
@@ -2914,9 +2902,9 @@ mod tests {
     #[test]
     fn bundled_manifests_supply_generic_migrations() {
         let host = bundled_plugin_host().unwrap();
-        let lore = host.catalog.get("worldbuilder.lore").unwrap();
-        let timeline = host.catalog.get("worldbuilder.timeline").unwrap();
-        let writing = host.catalog.get("worldbuilder.writing").unwrap();
+        let lore = host.catalog.get("daena.lore").unwrap();
+        let timeline = host.catalog.get("daena.timeline").unwrap();
+        let writing = host.catalog.get("daena.writing").unwrap();
         assert_eq!(
             core_migration(&lore.manifest).unwrap().unwrap().id,
             "lore-v1"
@@ -2935,9 +2923,9 @@ mod tests {
     fn bundled_workspace_manifests_do_not_declare_duplicate_sidebar_views() {
         let host = bundled_plugin_host().unwrap();
         for plugin_id in [
-            "worldbuilder.lore",
-            "worldbuilder.timeline",
-            "worldbuilder.writing",
+            "daena.lore",
+            "daena.timeline",
+            "daena.writing",
         ] {
             assert!(
                 host.catalog
@@ -2989,20 +2977,20 @@ mod tests {
     #[test]
     fn bundled_plugin_protocol_serves_only_embedded_assets() {
         let request = tauri::http::Request::builder()
-            .uri("plugin://worldbuilder.lore/dist/ui/index.html")
+            .uri("plugin://daena.lore/dist/ui/index.html")
             .body(Vec::new())
             .unwrap();
-        let response = plugin_asset_response("worldbuilder.lore", &request, None, None);
+        let response = plugin_asset_response("daena.lore", &request, None, None);
         assert_eq!(response.status(), 200);
         assert_eq!(response.headers().get("Content-Type").unwrap(), "text/html");
         assert!(String::from_utf8_lossy(response.body()).contains("plugin.js"));
 
         let traversal = tauri::http::Request::builder()
-            .uri("plugin://worldbuilder.lore/../manifest.json")
+            .uri("plugin://daena.lore/../manifest.json")
             .body(Vec::new())
             .unwrap();
         assert_eq!(
-            plugin_asset_response("worldbuilder.lore", &traversal, None, None).status(),
+            plugin_asset_response("daena.lore", &traversal, None, None).status(),
             404
         );
     }
@@ -3010,7 +2998,7 @@ mod tests {
     #[test]
     fn installed_plugin_assets_are_served_from_the_verified_ui_root() {
         let root =
-            std::env::temp_dir().join(format!("worldbuilder-protocol-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("daena-protocol-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("dist/ui")).unwrap();
         std::fs::write(root.join("dist/ui/index.html"), b"installed plugin").unwrap();
@@ -3051,9 +3039,9 @@ mod tests {
     #[test]
     fn plugin_bootstrap_uses_camel_case_wire_fields() {
         let value = serde_json::to_value(PluginBootstrap {
-            rpc_version: worldbuilder_plugin_api::RPC_VERSION,
+            rpc_version: daena_plugin_api::RPC_VERSION,
             session_id: "session".into(),
-            plugin_id: "worldbuilder.lore".into(),
+            plugin_id: "daena.lore".into(),
             project_id: "project".into(),
             version: "0.1.0".into(),
             host_api: ">=1.0.0 <2.0.0".into(),

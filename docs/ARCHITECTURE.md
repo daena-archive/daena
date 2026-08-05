@@ -1,4 +1,4 @@
-# Worldbuilder version-one architecture
+# Daena Archive version-one architecture
 
 This document turns the MVP in `docs/PLAN.md` into the contract implemented by
 the host and bundled modules. The contract is intentionally small: the core
@@ -16,7 +16,7 @@ guide](./PLUGIN_SDK.md).
 ## Canonical data
 
 Each project is a portable directory containing `project.json`, the canonical
-`worldbuilder.sqlite` database, and an `assets/` tree divided into images,
+`daena.sqlite` database, and an `assets/` tree divided into images,
 videos, maps, and other files. JSON snapshots remain an interoperability and
 recovery format; optional Git operations are explicit user actions.
 
@@ -57,7 +57,7 @@ project database so reopening a project does not silently re-enable a module.
 
 ## Rust core boundary
 
-`crates/worldbuilder-core` owns the project store, SQLite schema, migrations,
+`crates/daena-core` owns the project store, SQLite schema, migrations,
 filesystem-backed assets, search, import/export, backup/restore, Git helpers,
 and module state. It exposes typed `CoreError` results and accepts an explicit
 `AuthorityContext`; Phase 1 currently provides only the trusted-shell authority.

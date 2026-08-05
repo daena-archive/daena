@@ -1,6 +1,6 @@
 # Plugin examples
 
-See the [definitive Worldbuilder plugin guide](../../docs/PLUGIN_SDK.md) for
+See the [definitive Daena Archive plugin guide](../../docs/PLUGIN_SDK.md) for
 the complete authoring and packaging workflow. These examples correspond to
 the guide's host-rendered declarative, sandboxed UI, and executable Wasm
 sections. The declarative Field Notes example opens a real host-component

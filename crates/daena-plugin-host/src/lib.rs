@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
-use worldbuilder_plugin_api::{
+use daena_plugin_api::{
     command_exposes, lifecycle_transition, parse_manifest, validate_command_value, Command,
     CommandAction, CommandExposure, LifecycleState, PluginManifest, RpcError, RpcRequest,
     RpcResponse, View, ViewComponent, RPC_VERSION,
@@ -2129,7 +2129,7 @@ impl PluginHost {
         payload: serde_json::Value,
     ) -> Result<PublishResult, HostError> {
         self.events
-            .publish(project_id, "worldbuilder.core", name, version, payload)
+            .publish(project_id, "daena.core", name, version, payload)
     }
     pub fn subscribe_event(
         &mut self,
@@ -2693,7 +2693,7 @@ fn validate_schema_resource(
 }
 
 fn field_value_matches(
-    field: &worldbuilder_plugin_api::FieldDefinition,
+    field: &daena_plugin_api::FieldDefinition,
     value: &serde_json::Value,
 ) -> bool {
     if value.is_null() {
@@ -2962,7 +2962,7 @@ fn rpc_error(code: &str, message: &str, retryable: bool) -> RpcError {
 mod tests {
     use super::*;
     use std::time::Duration;
-    use worldbuilder_plugin_api::{Entrypoints, PluginKind};
+    use daena_plugin_api::{Entrypoints, PluginKind};
 
     fn manifest(id: &str, namespace: &str) -> PluginManifest {
         PluginManifest {
@@ -2989,10 +2989,10 @@ mod tests {
             ],
             dependencies: BTreeMap::new(),
             namespaces: vec![namespace.into()],
-            schemas: vec![worldbuilder_plugin_api::SchemaContribution {
+            schemas: vec![daena_plugin_api::SchemaContribution {
                 namespace: namespace.into(),
                 entity_types: vec!["person".into()],
-                fields: vec![worldbuilder_plugin_api::FieldDefinition {
+                fields: vec![daena_plugin_api::FieldDefinition {
                     key: "summary".into(),
                     label: "Summary".into(),
                     field_type: "text".into(),
@@ -3005,12 +3005,12 @@ mod tests {
                 }],
             }],
             templates: vec![],
-            views: vec![worldbuilder_plugin_api::View {
+                views: vec![daena_plugin_api::View {
                 id: "overview".into(),
                 title: "Overview".into(),
                 components: vec![],
             }],
-            commands: vec![worldbuilder_plugin_api::Command {
+                commands: vec![daena_plugin_api::Command {
                 id: "refresh".into(),
                 title: "Refresh".into(),
                 action: None,
@@ -3019,16 +3019,16 @@ mod tests {
                 capabilities: vec![],
                 exposure: vec![],
             }],
-            services: worldbuilder_plugin_api::Services {
+                services: daena_plugin_api::Services {
                 provides: vec![],
-                consumes: vec![worldbuilder_plugin_api::Service {
+                consumes: vec![daena_plugin_api::Service {
                     name: "com.example.calculate".into(),
                     major: 1,
                 }],
             },
-            events: worldbuilder_plugin_api::Events {
-                publishes: vec![worldbuilder_plugin_api::Event {
-                    name: "worldbuilder.core/event".into(),
+            events: daena_plugin_api::Events {
+                publishes: vec![daena_plugin_api::Event {
+                    name: "daena.core/event".into(),
                     version: 1,
                 }],
                 subscribes: vec![],
@@ -3495,7 +3495,7 @@ mod tests {
         let mut provider = manifest("com.example.wasm-provider", "wasm-provider");
         provider.entrypoints.wasm = Some("dist/service.wasm".into());
         provider.capabilities = vec!["service.provide:com.example.wasm.count@1".into()];
-        provider.services.provides = vec![worldbuilder_plugin_api::Service {
+        provider.services.provides = vec![daena_plugin_api::Service {
             name: "com.example.wasm.count".into(),
             major: 1,
         }];
@@ -3541,7 +3541,7 @@ mod tests {
         .unwrap();
         let manifest = host
             .catalog
-            .get("worldbuilder.timeline")
+            .get("daena.timeline")
             .unwrap()
             .manifest
             .clone();
@@ -3558,7 +3558,7 @@ mod tests {
             .services
             .call(
                 "com.example.consumer",
-                "worldbuilder.timeline.resolve-date",
+                "daena.timeline.resolve-date",
                 1,
                 serde_json::json!({"date": "0042-03-15"}),
                 Duration::from_millis(100),
@@ -3568,7 +3568,7 @@ mod tests {
         host.deactivate_bundled("project", &manifest.id);
         assert_eq!(
             host.services
-                .provider_health("worldbuilder.timeline.resolve-date", 1),
+                .provider_health("daena.timeline.resolve-date", 1),
             Some(ProviderHealth::Disabled)
         );
     }
@@ -3721,7 +3721,7 @@ mod tests {
                 "com.example.one",
                 &entry.capabilities,
                 [
-                    "event.publish:worldbuilder.core/event@1".into(),
+                    "event.publish:daena.core/event@1".into(),
                     "service.call:com.example.calculate".into(),
                 ]
                 .into_iter()
@@ -3734,7 +3734,7 @@ mod tests {
         for (method, payload) in [
             (
                 "event.publish",
-                serde_json::json!({"type":"worldbuilder.core/event@1"}),
+                serde_json::json!({"type":"daena.core/event@1"}),
             ),
             (
                 "service.call",
@@ -3766,7 +3766,7 @@ mod tests {
             session_id: session.id,
             request_id: "wildcard-event".into(),
             method: "event.publish".into(),
-            payload: serde_json::json!({"type":"worldbuilder.core/event@1"}),
+            payload: serde_json::json!({"type":"daena.core/event@1"}),
         };
         assert!(host.rpc("plugin://one", &request).ok);
     }
@@ -3810,8 +3810,8 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(host.catalog.list().count(), 2);
-        assert!(host.catalog.get("worldbuilder.lore").is_some());
-        assert!(host.catalog.get("worldbuilder.timeline").is_some());
+        assert!(host.catalog.get("daena.lore").is_some());
+        assert!(host.catalog.get("daena.timeline").is_some());
     }
 
     #[test]
@@ -3820,7 +3820,7 @@ mod tests {
         let mut app = manifest("com.example.app", "app");
         app.dependencies.insert(
             "com.example.service".into(),
-            worldbuilder_plugin_api::Dependency {
+            daena_plugin_api::Dependency {
                 version: "^1.0.0".into(),
                 required: true,
             },
@@ -3850,7 +3850,7 @@ mod tests {
         let mut cycle = catalog.get("com.example.service").unwrap().manifest.clone();
         cycle.dependencies.insert(
             "com.example.app".into(),
-            worldbuilder_plugin_api::Dependency {
+            daena_plugin_api::Dependency {
                 version: "*".into(),
                 required: true,
             },
@@ -3878,12 +3878,12 @@ mod tests {
     #[test]
     fn event_bus_is_at_most_once_and_bounded_for_slow_subscribers() {
         let mut bus = EventBus::new(1, 1024);
-        bus.subscribe("project", "consumer", "worldbuilder.core/entity-changed", 1);
+        bus.subscribe("project", "consumer", "daena.core/entity-changed", 1);
         assert_eq!(
             bus.publish(
                 "project",
-                "worldbuilder.core",
-                "worldbuilder.core/entity-changed",
+                "daena.core",
+                "daena.core/entity-changed",
                 1,
                 serde_json::json!({"id": 1})
             )
@@ -3896,8 +3896,8 @@ mod tests {
         assert_eq!(
             bus.publish(
                 "project",
-                "worldbuilder.core",
-                "worldbuilder.core/entity-changed",
+                "daena.core",
+                "daena.core/entity-changed",
                 1,
                 serde_json::json!({"id": 2})
             )
@@ -3907,7 +3907,7 @@ mod tests {
                 dropped: 1
             }
         );
-        let events = bus.drain("project", "consumer", "worldbuilder.core/entity-changed", 1);
+        let events = bus.drain("project", "consumer", "daena.core/entity-changed", 1);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].payload["id"], 2);
         let mut limited = EventBus::new(1, 4);
@@ -4094,7 +4094,7 @@ mod tests {
         provider
             .services
             .provides
-            .push(worldbuilder_plugin_api::Service {
+            .push(daena_plugin_api::Service {
                 name: service_name.into(),
                 major: 1,
             });
@@ -4103,7 +4103,7 @@ mod tests {
         consumer
             .services
             .consumes
-            .push(worldbuilder_plugin_api::Service {
+            .push(daena_plugin_api::Service {
                 name: service_name.into(),
                 major: 1,
             });
@@ -4164,7 +4164,7 @@ mod tests {
         host.activate_bundled("project", "com.example.one").unwrap();
         assert_eq!(
             host.declarations.views("project", "com.example.one"),
-            vec![worldbuilder_plugin_api::View {
+            vec![daena_plugin_api::View {
                 id: "overview".into(),
                 title: "Overview".into(),
                 components: vec![],
@@ -4172,7 +4172,7 @@ mod tests {
         );
         assert_eq!(
             host.declarations.commands("project", "com.example.one"),
-            vec![worldbuilder_plugin_api::Command {
+            vec![daena_plugin_api::Command {
                 id: "refresh".into(),
                 title: "Refresh".into(),
                 action: None,
@@ -4198,30 +4198,30 @@ mod tests {
         let mut host = host();
         let entry = host.catalog.entries.get_mut("com.example.one").unwrap();
         entry.manifest.commands[0].action = Some(CommandAction::RefreshView);
-        entry.manifest.commands[0].input = Some(worldbuilder_plugin_api::CommandSchema {
-            schema_type: worldbuilder_plugin_api::CommandValueType::Object,
+        entry.manifest.commands[0].input = Some(daena_plugin_api::CommandSchema {
+            schema_type: daena_plugin_api::CommandValueType::Object,
             properties: BTreeMap::from([(
                 "reason".into(),
-                worldbuilder_plugin_api::CommandProperty {
-                    value_type: worldbuilder_plugin_api::CommandValueType::String,
+                daena_plugin_api::CommandProperty {
+                    value_type: daena_plugin_api::CommandValueType::String,
                 },
             )]),
             required: vec!["reason".into()],
             additional_properties: false,
         });
-        entry.manifest.commands[0].output = Some(worldbuilder_plugin_api::CommandSchema {
-            schema_type: worldbuilder_plugin_api::CommandValueType::Object,
+        entry.manifest.commands[0].output = Some(daena_plugin_api::CommandSchema {
+            schema_type: daena_plugin_api::CommandValueType::Object,
             properties: BTreeMap::from([(
                 "type".into(),
-                worldbuilder_plugin_api::CommandProperty {
-                    value_type: worldbuilder_plugin_api::CommandValueType::String,
+                daena_plugin_api::CommandProperty {
+                    value_type: daena_plugin_api::CommandValueType::String,
                 },
             )]),
             required: vec!["type".into()],
             additional_properties: false,
         });
         entry.manifest.commands[0].capabilities = vec!["entity.read".into()];
-        entry.manifest.commands[0].exposure = vec![worldbuilder_plugin_api::CommandExposure::View];
+        entry.manifest.commands[0].exposure = vec![daena_plugin_api::CommandExposure::View];
         entry.manifest.views[0].components = vec![ViewComponent::Button {
             id: "refresh-button".into(),
             label: "Refresh".into(),
@@ -4268,7 +4268,7 @@ mod tests {
         let entry = host.catalog.entries.get_mut("com.example.one").unwrap();
         entry.manifest.commands[0].action = Some(CommandAction::RefreshView);
         entry.manifest.commands[0].exposure =
-            vec![worldbuilder_plugin_api::CommandExposure::Broker];
+            vec![daena_plugin_api::CommandExposure::Broker];
         host.activate_bundled("project", "com.example.one").unwrap();
         assert_eq!(
             host.invoke_broker_command(
@@ -4294,7 +4294,7 @@ mod tests {
             .unwrap()
             .manifest
             .views[0]
-            .components = vec![worldbuilder_plugin_api::ViewComponent::EntityList {
+            .components = vec![daena_plugin_api::ViewComponent::EntityList {
             id: "people".into(),
             title: "People".into(),
             entity_type: "person".into(),
@@ -4338,13 +4338,13 @@ mod tests {
             .manifest
             .views[0]
             .components = vec![
-            worldbuilder_plugin_api::ViewComponent::EntityList {
+            daena_plugin_api::ViewComponent::EntityList {
                 id: "people".into(),
                 title: "People".into(),
                 entity_type: "person".into(),
                 limit: 10,
             },
-            worldbuilder_plugin_api::ViewComponent::FieldForm {
+            daena_plugin_api::ViewComponent::FieldForm {
                 id: "summary".into(),
                 title: "Summary".into(),
                 source: "people".into(),

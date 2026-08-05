@@ -111,7 +111,7 @@ export interface ModuleView {
   mount(element: HTMLElement, context: ModuleContext): () => void;
 }
 
-export interface WorldbuilderModule {
+export interface DaenaModule {
   manifest: ModuleManifest;
   views: ModuleView[];
   register?(context: ModuleContext): Promise<void>;

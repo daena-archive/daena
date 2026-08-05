@@ -6,7 +6,7 @@ import {
   type PluginRpcClient,
   type PluginRpcError,
   type PluginRpcTransport,
-} from "@worldbuilder/plugin-sdk";
+} from "@daena-archive/plugin-sdk";
 
 export interface FakePluginHostOptions {
   manifest: PluginManifest;

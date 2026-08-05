@@ -137,7 +137,7 @@ export const project = {
       options: {
         directory: false,
         multiple: false,
-        filters: [{ name: "Worldbuilder plugin", extensions: ["wbplugin"] }],
+      filters: [{ name: "Daena Archive plugin", extensions: ["wbplugin"] }],
       },
     }),
 };

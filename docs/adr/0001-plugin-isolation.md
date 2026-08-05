@@ -5,7 +5,7 @@
 
 ## Decision
 
-Worldbuilder supports declarative and sandboxed plugins. Arbitrary third-party
+Daena Archive supports declarative and sandboxed plugins. Arbitrary third-party
 JavaScript never runs in the trusted application webview. Sandboxed UI runs in
 an application-controlled origin without Tauri APIs, host DOM access, ambient
 filesystem, process, clipboard, dialog, shell, or unrestricted network access.
@@ -20,4 +20,3 @@ part of manifest version 1.
 The host must provide a brokered message boundary and restrictive CSP before
 third-party runtime installation is enabled. First-party modules must use the
 same public SDK and cannot rely on their bundled status for extra authority.
-

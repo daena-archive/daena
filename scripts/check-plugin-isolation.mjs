@@ -26,7 +26,7 @@ assert.match(tauriSource, /use_https_scheme\(true\)/);
 assert.match(tauriSource, /register_uri_scheme_protocol\("plugin"/);
 assert.doesNotMatch(
   tauriSource,
-  /register_uri_scheme_protocol\("plugin-worldbuilder-(?:lore|timeline)"/,
+/register_uri_scheme_protocol\("plugin-daena-(?:lore|timeline)"/,
   "plugin assets must use the shared broker protocol",
 );
 assert.match(tauriSource, /plugin_protocol_response\(/);

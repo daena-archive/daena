@@ -1,13 +1,13 @@
 {
   "manifestVersion": 1,
-  "id": "worldbuilder.timeline",
+  "id": "daena.timeline",
   "name": "Timeline",
   "version": "0.1.0",
-  "publisher": "worldbuilder",
+  "publisher": "daena-archive",
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "sandboxed",
   "entrypoints": { "ui": "dist/ui/index.html", "wasm": "dist/service.wasm" },
-  "capabilities": ["entity.read", "entity.write", "entity.delete", "document.read", "document.write", "field.read:self", "field.write:self", "relationship.read", "relationship.write", "asset.read:self", "asset.import", "search.query", "service.provide:worldbuilder.timeline.resolve-date@1"],
+  "capabilities": ["entity.read", "entity.write", "entity.delete", "document.read", "document.write", "field.read:self", "field.write:self", "relationship.read", "relationship.write", "asset.read:self", "asset.import", "search.query", "service.provide:daena.timeline.resolve-date@1"],
   "dependencies": {},
   "namespaces": ["timeline"],
   "schemas": [{
@@ -21,7 +21,7 @@
   "templates": [{ "id": "event", "name": "Timeline event", "entityType": "event", "description": "A moment, turning point, or span of history.", "icon": "E", "fields": { "startsAt": "", "endsAt": "" } }],
   "views": [],
   "commands": [],
-  "services": { "provides": [{ "name": "worldbuilder.timeline.resolve-date", "major": 1 }], "consumes": [] },
+  "services": { "provides": [{ "name": "daena.timeline.resolve-date", "major": 1 }], "consumes": [] },
   "events": { "publishes": [], "subscribes": [] },
   "migrations": [{ "id": "timeline-v1", "from": 0, "to": 1, "recovery": "backup", "operations": [{ "kind": "create-namespace", "namespace": "timeline" }] }]
 }

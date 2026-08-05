@@ -1,15 +1,15 @@
-# Worldbuilder plugins: the definitive authoring guide
+# Daena Archive plugins: the definitive authoring guide
 
 This is the canonical guide for creating, testing, packaging, installing, and
-maintaining Worldbuilder plugins. The short package READMEs and the Plugins
+maintaining Daena Archive plugins. The short package READMEs and the Plugins
 panel are entry points only; use this document for the complete contract.
 
 The public platform is provided by:
 
-- `@worldbuilder/plugin-sdk` — generated contract types, broker client, and
+- `@daena-archive/plugin-sdk` — generated contract types, broker client, and
   migration helpers;
-- `@worldbuilder/plugin-cli` — the `worldbuilder-plugin` authoring CLI; and
-- `@worldbuilder/plugin-test-host` — an in-memory broker and lifecycle test
+- `@daena-archive/plugin-cli` — the `daena-plugin` authoring CLI; and
+- `@daena-archive/plugin-test-host` — an in-memory broker and lifecycle test
   host.
 
 The normative contract is in [`schemas/plugin-manifest-v1.json`](../schemas/plugin-manifest-v1.json), [`schemas/plugin-rpc-v1.json`](../schemas/plugin-rpc-v1.json), and [`schemas/capability-registry-v1.json`](../schemas/capability-registry-v1.json). The architecture and security decisions are in [`PLUGIN_PLATFORM_PLAN.md`](PLUGIN_PLATFORM_PLAN.md).
@@ -45,15 +45,15 @@ After the packages are published, install the CLI and SDK in an external
 plugin project:
 
 ```sh
-npm install --save-dev @worldbuilder/plugin-cli
-npm install @worldbuilder/plugin-sdk
-npm install --save-dev @worldbuilder/plugin-test-host
+npm install --save-dev @daena-archive/plugin-cli
+npm install @daena-archive/plugin-sdk
+npm install --save-dev @daena-archive/plugin-test-host
 ```
 
 Then invoke the CLI as:
 
 ```sh
-npx worldbuilder-plugin --help
+npx daena-plugin --help
 ```
 
 The repository's build and verification commands are:
@@ -86,7 +86,7 @@ my-plugin/
         └── index.js
 ```
 
-The same command is available as `npx worldbuilder-plugin init` in an external
+The same command is available as `npx daena-plugin init` in an external
 project. Replace the generated UI with your built static bundle, then update
 the manifest with the contributions and capabilities the plugin actually
 needs.
@@ -95,7 +95,7 @@ needs.
 
 An existing plugin is any directory with a root `manifest.json` and all files
 referenced by `entrypoints.ui` or `entrypoints.wasm`. It does not need to live
-inside the Worldbuilder monorepo.
+inside the Daena Archive monorepo.
 
 Validate it before packaging:
 
@@ -279,7 +279,7 @@ host-provided broker transport with the framework-neutral SDK:
 import {
   createBrowserPluginRpcTransport,
   createPluginRpcClient,
-} from "@worldbuilder/plugin-sdk";
+} from "@daena-archive/plugin-sdk";
 
 const transport = createBrowserPluginRpcTransport();
 const client = createPluginRpcClient(transport);
@@ -346,7 +346,7 @@ import {
   createMigrationOperation,
   migration,
   validateMigrationChain,
-} from "@worldbuilder/plugin-sdk";
+} from "@daena-archive/plugin-sdk";
 
 const migrationV2 = migration({
   id: "weather-v2",
@@ -377,7 +377,7 @@ node scripts/plugin-cli.mjs migration validate path/to/my-plugin
 Use the test host for deterministic broker and lifecycle tests:
 
 ```ts
-import { FakePluginHost } from "@worldbuilder/plugin-test-host";
+import { FakePluginHost } from "@daena-archive/plugin-test-host";
 
 const host = new FakePluginHost({
   manifest,
@@ -422,7 +422,7 @@ checks archive paths, file limits, collisions, symlinks, manifest references,
 digests, signatures, compatibility, and unsigned-package consent before any
 plugin code executes.
 
-To install it in Worldbuilder:
+To install it in Daena Archive:
 
 1. Open the **Plugins** panel.
 2. Select **Install package…** and choose the `.wbplugin` file.

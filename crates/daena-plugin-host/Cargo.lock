@@ -339,6 +339,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "daena-plugin-api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "daena-plugin-host"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "daena-plugin-api",
+ "ed25519-dalek",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "wasmtime",
+ "wat",
+ "zip",
+]
+
+[[package]]
 name = "debugid"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1861,31 +1886,6 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser 0.219.2",
-]
-
-[[package]]
-name = "worldbuilder-plugin-api"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "worldbuilder-plugin-host"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "ed25519-dalek",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "wasmtime",
- "wat",
- "worldbuilder-plugin-api",
- "zip",
 ]
 
 [[package]]

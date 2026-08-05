@@ -971,10 +971,10 @@ mod tests {
     fn canonical_bundled_manifests_validate() {
         let lore = include_str!("../../../packages/modules/lore/manifest.json");
         let timeline = include_str!("../../../packages/modules/timeline/manifest.json");
-        assert_eq!(parse_manifest(lore).unwrap().id, "worldbuilder.lore");
+        assert_eq!(parse_manifest(lore).unwrap().id, "daena.lore");
         assert_eq!(
             parse_manifest(timeline).unwrap().id,
-            "worldbuilder.timeline"
+            "daena.timeline"
         );
     }
 

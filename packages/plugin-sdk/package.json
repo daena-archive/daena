@@ -1,7 +1,7 @@
 {
-  "name": "@worldbuilder/plugin-sdk",
+  "name": "@daena-archive/plugin-sdk",
   "version": "1.0.0",
-  "description": "Framework-neutral Worldbuilder plugin SDK",
+  "description": "Framework-neutral Daena Archive plugin SDK",
   "license": "Apache-2.0",
   "private": false,
   "type": "module",

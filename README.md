@@ -1,11 +1,11 @@
-# Worldbuilder
+# Daena Archive
 
-Worldbuilder is a local-first worldbuilding studio. Each world is stored in a portable project folder:
+Daena Archive is a local-first fiction-authoring studio. Each world is stored in a portable project folder:
 
 ```text
 My World/
 ├── project.json
-├── worldbuilder.sqlite
+├── daena.sqlite
 ├── .gitignore
 └── assets/
     ├── images/
@@ -23,16 +23,16 @@ Plugin authors should start with the [definitive plugin guide](docs/PLUGIN_SDK.m
 ### Windows
 
 ```bash
-docker build -f Dockerfile.windows -t worldbuilder-windows-builder .
+  docker build -f Dockerfile.windows -t daena-windows-builder .
 ```
 
 ```bash
 docker run --rm \
   -v "$PWD:/app" \
-  -v worldbuilder-deno-modules:/app/node_modules \
-  -v worldbuilder-deno-cache:/root/.cache/deno \
+  -v daena-deno-modules:/app/node_modules \
+  -v daena-deno-cache:/root/.cache/deno \
   -w /app \
-  worldbuilder-windows-builder \
+  daena-windows-builder \
   deno task --node-modules-dir=auto tauri build \
     --runner cargo-xwin \
     --target x86_64-pc-windows-msvc

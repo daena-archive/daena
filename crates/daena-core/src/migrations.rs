@@ -267,7 +267,7 @@ mod tests {
     fn migration() -> Migration {
         Migration {
             id: "lore-v1".into(),
-            module_id: "worldbuilder.lore".into(),
+            module_id: "daena.lore".into(),
             from: 0,
             to: 1,
             operations: vec![Operation::CreateNamespace {
@@ -301,7 +301,7 @@ mod tests {
         assert_eq!(
             connection
                 .query_row(
-                    "SELECT version FROM module_versions WHERE module_id='worldbuilder.lore'",
+                    "SELECT version FROM module_versions WHERE module_id='daena.lore'",
                     [],
                     |row| row.get::<_, i64>(0)
                 )
@@ -329,10 +329,10 @@ mod tests {
         assert!(apply(&mut connection, &missing).is_err());
 
         connection
-            .execute("INSERT INTO module_namespaces(module_id, namespace) VALUES ('worldbuilder.lore', 'lore')", [])
+            .execute("INSERT INTO module_namespaces(module_id, namespace) VALUES ('daena.lore', 'lore')", [])
             .unwrap();
         connection
-            .execute("INSERT INTO module_fields(module_id, namespace, key, field_type, required) VALUES ('worldbuilder.lore', 'lore', 'summary', 'text', 0)", [])
+            .execute("INSERT INTO module_fields(module_id, namespace, key, field_type, required) VALUES ('daena.lore', 'lore', 'summary', 'text', 0)", [])
             .unwrap();
         let duplicate = Migration {
             operations: vec![Operation::AddField {

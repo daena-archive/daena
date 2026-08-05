@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { project, type Asset, type Entity, type Relationship, type ProjectModuleManifest, type ProjectInfo, type GitStatus, type GitLogEntry, type PluginAdminEntry, type PluginUpgradePlan } from "$lib/project/client";
-  import type { EntityTemplate, FieldDefinition, ModuleContext, ModuleId, UUID, ModuleManifest, WorldbuilderModule } from "../../packages/module-api/src/index";
+  import type { EntityTemplate, FieldDefinition, ModuleContext, ModuleId, UUID, ModuleManifest, DaenaModule } from "../../packages/module-api/src/index";
   import { buildModuleContext } from "$lib/modules/context";
   import HostView from "$lib/plugins/HostView.svelte";
   import SandboxView from "$lib/plugins/SandboxView.svelte";
@@ -28,7 +28,7 @@
     mode: "host" | "webview";
   };
 
-  const recentProjectsKey = "worldbuilder.recent-projects";
+  const recentProjectsKey = "daena.recent-projects";
 
   let ready = $state(false);
   let error = $state("");
@@ -60,7 +60,7 @@
   let adminPlugins = $state<PluginAdminEntry[] | null>(null);
   let hostView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] } | null>(null);
   let sandboxView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] | null } | null>(null);
-  let projectionView = $state<{ title: string; module: WorldbuilderModule } | null>(null);
+  let projectionView = $state<{ title: string; module: DaenaModule } | null>(null);
   let adminBusy = $state(false);
   let installing = $state(false);
   let installConsent = $state<{ path: string; message: string } | null>(null);
@@ -100,7 +100,7 @@
     return () => document.body.classList.remove("modal-open");
   });
 
-  const activeModuleId = () => section === "lore" ? "worldbuilder.lore" : section === "timeline" ? "worldbuilder.timeline" : "worldbuilder.writing";
+  const activeModuleId = () => section === "lore" ? "daena.lore" : section === "timeline" ? "daena.timeline" : "daena.writing";
   const activeManifest = () => (section === "lore" ? loreManifestJson : section === "timeline" ? timelineManifestJson : writingManifestJson) as unknown as ModuleManifest;
   function fieldAppliesToEntity(field: FieldDefinition, entityType?: string | null) {
     return !field.entityTypes || !entityType || field.entityTypes.includes(entityType);
@@ -963,11 +963,11 @@
   });
 </script>
 
-<svelte:head><title>Worldbuilder Studio</title></svelte:head>
+<svelte:head><title>Daena Archive</title></svelte:head>
 
-<main class="studio-shell" aria-label="Worldbuilder Studio">
+<main class="studio-shell" aria-label="Daena Archive">
   <aside class:startup-rail={!ready} class="rail">
-    <div class="brand"><span class="brand-mark">W</span><div><strong>Worldbuilder</strong><small>Studio edition</small></div></div>
+    <div class="brand"><span class="brand-mark">D</span><div><strong>Daena Archive</strong><small>Fiction studio</small></div></div>
     {#if !ready}
       <div class="startup-actions">
         <button class="rail-button startup-primary" onclick={openProjectDirectory}><span class="rail-icon">↗</span><span>Open project folder</span></button>

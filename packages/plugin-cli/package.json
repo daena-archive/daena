@@ -1,10 +1,10 @@
 {
-  "name": "@worldbuilder/plugin-cli",
+  "name": "@daena-archive/plugin-cli",
   "version": "1.0.0",
-  "description": "Validate, package, and author Worldbuilder plugins",
+  "description": "Validate, package, and author Daena Archive plugins",
   "license": "Apache-2.0",
   "type": "module",
-  "bin": { "worldbuilder-plugin": "bin/worldbuilder-plugin.mjs" },
+  "bin": { "daena-plugin": "bin/daena-plugin.mjs" },
   "files": ["bin", "README.md"],
-  "dependencies": { "@worldbuilder/plugin-sdk": "1.0.0" }
+  "dependencies": { "@daena-archive/plugin-sdk": "1.0.0" }
 }

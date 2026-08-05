@@ -12,9 +12,9 @@ use std::time::Duration;
 use wasmtime::{
     Config, Engine, Instance, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc,
 };
-use worldbuilder_plugin_api::{PluginKind, PluginManifest, RpcRequest};
+use daena_plugin_api::{PluginKind, PluginManifest, RpcRequest};
 
-pub const HOST_ORIGIN: &str = "https://worldbuilder.local";
+pub const HOST_ORIGIN: &str = "https://daena.local";
 pub const MAX_RPC_BYTES: usize = 256 * 1024;
 pub const PLUGIN_PROTOCOL: &str = "plugin";
 /// Synchronous service ABI for packaged WASM providers. The module exports
@@ -461,7 +461,7 @@ impl WasmRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use worldbuilder_plugin_api::{Entrypoints, PluginKind};
+    use daena_plugin_api::{Entrypoints, PluginKind};
 
     fn manifest(kind: PluginKind) -> PluginManifest {
         PluginManifest {
@@ -483,11 +483,11 @@ mod tests {
             templates: vec![],
             views: vec![],
             commands: vec![],
-            services: worldbuilder_plugin_api::Services {
+            services: daena_plugin_api::Services {
                 provides: vec![],
                 consumes: vec![],
             },
-            events: worldbuilder_plugin_api::Events {
+            events: daena_plugin_api::Events {
                 publishes: vec![],
                 subscribes: vec![],
             },
@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn registry_starts_and_stops_packaged_wasm() {
-        let root = std::env::temp_dir().join(format!("worldbuilder-wasm-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("daena-wasm-{}", std::process::id()));
         let entrypoint = root.join("dist");
         std::fs::create_dir_all(&entrypoint).unwrap();
         let module =

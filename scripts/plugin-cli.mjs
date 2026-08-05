@@ -1,2 +1,2 @@
 #!/usr/bin/env node
-await import("../packages/plugin-cli/bin/worldbuilder-plugin.mjs");
+await import("../packages/plugin-cli/bin/daena-plugin.mjs");

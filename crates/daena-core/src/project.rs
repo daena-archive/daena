@@ -236,6 +236,10 @@ fn encode_field_value(value: &serde_json::Value) -> Result<String, CoreError> {
     serde_json::to_string(value).map_err(|error| CoreError::NotFound(error.to_string()))
 }
 
+fn project_database_path(root: &Path) -> PathBuf {
+    root.join("daena.sqlite")
+}
+
 pub struct ProjectStore {
     connection: Connection,
     root: Option<PathBuf>,
@@ -267,11 +271,11 @@ impl ProjectStore {
             let name = root
                 .file_name()
                 .and_then(|value| value.to_str())
-                .unwrap_or("Worldbuilder project");
+                .unwrap_or("Daena Archive project");
             let metadata = ProjectInfo {
                 name: name.to_string(),
                 root: ".".into(),
-                database: "worldbuilder.sqlite".into(),
+                database: "daena.sqlite".into(),
                 assets: "assets".into(),
             };
             let content = serde_json::to_string_pretty(&metadata)
@@ -283,11 +287,11 @@ impl ProjectStore {
         if !gitignore.exists() {
             std::fs::write(
                 &gitignore,
-                "worldbuilder.sqlite-wal\nworldbuilder.sqlite-shm\nworldbuilder.sqlite-journal\n",
+                "daena.sqlite-wal\ndaena.sqlite-shm\ndaena.sqlite-journal\n",
             )
             .map_err(|error| CoreError::NotFound(error.to_string()))?;
         }
-        Self::open_database(root.join("worldbuilder.sqlite"), Some(root.to_path_buf()))
+        Self::open_database(project_database_path(root), Some(root.to_path_buf()))
     }
 
     fn open_database(path: impl AsRef<Path>, root: Option<PathBuf>) -> Result<Self, CoreError> {
@@ -308,11 +312,10 @@ impl ProjectStore {
             name: root
                 .file_name()
                 .and_then(|value| value.to_str())
-                .unwrap_or("Worldbuilder project")
+                .unwrap_or("Daena Archive project")
                 .to_string(),
             root: root.to_string_lossy().to_string(),
-            database: root
-                .join("worldbuilder.sqlite")
+            database: project_database_path(root)
                 .to_string_lossy()
                 .to_string(),
             assets: root.join("assets").to_string_lossy().to_string(),
@@ -1126,7 +1129,7 @@ impl ProjectStore {
         let dir = dir.as_ref();
         std::fs::create_dir_all(dir).map_err(|e| CoreError::NotFound(e.to_string()))?;
         let timestamp = chrono_like_now();
-        let filename = format!("worldbuilder-backup-{}-{}.json", timestamp, Uuid::new_v4());
+        let filename = format!("daena-backup-{}-{}.json", timestamp, Uuid::new_v4());
         let path = dir.join(&filename);
         std::fs::write(&path, export).map_err(|e| CoreError::NotFound(e.to_string()))?;
         Ok(path.to_string_lossy().to_string())
@@ -1458,8 +1461,8 @@ impl ProjectStore {
         tx.execute("INSERT INTO relationships(id,source_id,target_id,relationship_type,metadata) VALUES (?1,?2,?3,?4,?5)", params![Uuid::new_v4().to_string(), silver_hand_id, lord_ashford_id, "led_by", "{}"])?;
         tx.execute("INSERT INTO relationships(id,source_id,target_id,relationship_type,metadata) VALUES (?1,?2,?3,?4,?5)", params![Uuid::new_v4().to_string(), silver_hand_id, eldermere_id, "based_in", "{}"])?;
         tx.execute("INSERT INTO relationships(id,source_id,target_id,relationship_type,metadata) VALUES (?1,?2,?3,?4,?5)", params![Uuid::new_v4().to_string(), highland_id, eldermere_id, "rooted_in", "{}"])?;
-        tx.execute("INSERT OR IGNORE INTO module_versions(module_id,version) VALUES ('worldbuilder.lore',1), ('worldbuilder.timeline',1)", [])?;
-        tx.execute("INSERT OR IGNORE INTO module_namespaces(module_id,namespace) VALUES ('worldbuilder.lore','lore'), ('worldbuilder.timeline','timeline')", [])?;
+        tx.execute("INSERT OR IGNORE INTO module_versions(module_id,version) VALUES ('daena.lore',1), ('daena.timeline',1)", [])?;
+        tx.execute("INSERT OR IGNORE INTO module_namespaces(module_id,namespace) VALUES ('daena.lore','lore'), ('daena.timeline','timeline')", [])?;
         tx.commit()?;
         self.rebuild_search()?;
         Ok(17)
@@ -1947,20 +1950,20 @@ mod tests {
             })
             .unwrap();
         source
-            .set_module_enabled("worldbuilder.lore".into(), false)
+            .set_module_enabled("daena.lore".into(), false)
             .unwrap();
         source
-            .set_module_package_version("worldbuilder.lore", Some("1.2.0"))
+            .set_module_package_version("daena.lore", Some("1.2.0"))
             .unwrap();
         let target = ProjectStore::in_memory().unwrap();
         target
             .import_json_with_mode(&source.export_json().unwrap(), false)
             .unwrap();
         assert_eq!(target.list_assets(entity.id).unwrap()[0].id, asset.id);
-        assert!(!target.is_module_enabled("worldbuilder.lore").unwrap());
+        assert!(!target.is_module_enabled("daena.lore").unwrap());
         assert_eq!(
             target
-                .module_package_version("worldbuilder.lore")
+                .module_package_version("daena.lore")
                 .unwrap()
                 .as_deref(),
             Some("1.2.0")
@@ -1971,10 +1974,10 @@ mod tests {
     fn seed_example_is_repeatable_after_modules_are_initialized() {
         let mut store = ProjectStore::in_memory().unwrap();
         store
-            .set_module_enabled("worldbuilder.lore".into(), true)
+            .set_module_enabled("daena.lore".into(), true)
             .unwrap();
         store
-            .set_module_enabled("worldbuilder.timeline".into(), true)
+            .set_module_enabled("daena.timeline".into(), true)
             .unwrap();
 
         assert_eq!(store.seed_example().unwrap(), 17);
@@ -1993,7 +1996,7 @@ mod tests {
             })
             .unwrap();
         let path =
-            std::env::temp_dir().join(format!("worldbuilder-restore-test-{}.json", Uuid::new_v4()));
+            std::env::temp_dir().join(format!("daena-restore-test-{}.json", Uuid::new_v4()));
         std::fs::write(&path, source.export_json().unwrap()).unwrap();
 
         let target = ProjectStore::in_memory().unwrap();
@@ -2015,7 +2018,7 @@ mod tests {
         let mut store = ProjectStore::in_memory().unwrap();
         let migration = crate::migrations::Migration {
             id: "timeline-v1".into(),
-            module_id: "worldbuilder.timeline".into(),
+            module_id: "daena.timeline".into(),
             from: 0,
             to: 1,
             operations: vec![crate::migrations::Operation::CreateNamespace {
@@ -2026,7 +2029,7 @@ mod tests {
         };
         store.apply_migration(&migration).unwrap();
         assert_eq!(
-            store.get_module_version("worldbuilder.timeline").unwrap(),
+            store.get_module_version("daena.timeline").unwrap(),
             1
         );
         let snapshot: serde_json::Value =
@@ -2041,14 +2044,14 @@ mod tests {
     #[test]
     fn plugin_backup_restores_schema_and_migration_history() {
         let directory =
-            std::env::temp_dir().join(format!("worldbuilder-plugin-backup-{}", Uuid::new_v4()));
+            std::env::temp_dir().join(format!("daena-plugin-backup-{}", Uuid::new_v4()));
         let mut store = ProjectStore::open_directory(&directory).unwrap();
         let backup = store
-            .create_plugin_backup("worldbuilder.timeline", Some("0.1.0"), Some("0.2.0"), 0)
+            .create_plugin_backup("daena.timeline", Some("0.1.0"), Some("0.2.0"), 0)
             .unwrap();
         assert_eq!(
             store
-                .latest_plugin_backup("worldbuilder.timeline", Some("0.1.0"), Some("0.2.0"),)
+                .latest_plugin_backup("daena.timeline", Some("0.1.0"), Some("0.2.0"),)
                 .unwrap()
                 .unwrap()
                 .id,
@@ -2056,7 +2059,7 @@ mod tests {
         );
         let migration = crate::migrations::Migration {
             id: "timeline-v1".into(),
-            module_id: "worldbuilder.timeline".into(),
+            module_id: "daena.timeline".into(),
             from: 0,
             to: 1,
             operations: vec![crate::migrations::Operation::CreateNamespace {
@@ -2068,12 +2071,12 @@ mod tests {
         store.apply_migration(&migration).unwrap();
         store.restore_plugin_backup(&backup).unwrap();
         assert_eq!(
-            store.get_module_version("worldbuilder.timeline").unwrap(),
+            store.get_module_version("daena.timeline").unwrap(),
             0
         );
         store.apply_migration(&migration).unwrap();
         assert_eq!(
-            store.get_module_version("worldbuilder.timeline").unwrap(),
+            store.get_module_version("daena.timeline").unwrap(),
             1
         );
         drop(store);
@@ -2085,7 +2088,7 @@ mod tests {
         let mut store = ProjectStore::in_memory().unwrap();
         let migration = crate::migrations::Migration {
             id: "lore-v1".into(),
-            module_id: "worldbuilder.lore".into(),
+            module_id: "daena.lore".into(),
             from: 0,
             to: 1,
             operations: vec![crate::migrations::Operation::CreateNamespace {
@@ -2095,12 +2098,12 @@ mod tests {
             package_digest: String::new(),
         };
         store.apply_migration(&migration).unwrap();
-        assert!(store.delete_plugin_data("worldbuilder.lore", "no").is_err());
+        assert!(store.delete_plugin_data("daena.lore", "no").is_err());
         let backup = store
-            .delete_plugin_data("worldbuilder.lore", "worldbuilder.lore")
+            .delete_plugin_data("daena.lore", "daena.lore")
             .unwrap();
         assert!(std::path::Path::new(&backup).is_file());
-        assert_eq!(store.get_module_version("worldbuilder.lore").unwrap(), 0);
+        assert_eq!(store.get_module_version("daena.lore").unwrap(), 0);
         std::fs::remove_file(backup).unwrap();
     }
 
@@ -2109,7 +2112,7 @@ mod tests {
         let mut store = ProjectStore::in_memory().unwrap();
         let first = crate::migrations::Migration {
             id: "lore-v1".into(),
-            module_id: "worldbuilder.lore".into(),
+            module_id: "daena.lore".into(),
             from: 0,
             to: 1,
             operations: vec![crate::migrations::Operation::CreateNamespace {
@@ -2120,7 +2123,7 @@ mod tests {
         };
         let second = crate::migrations::Migration {
             id: "lore-v2".into(),
-            module_id: "worldbuilder.lore".into(),
+            module_id: "daena.lore".into(),
             from: 1,
             to: 2,
             operations: vec![crate::migrations::Operation::AddField {
@@ -2135,16 +2138,16 @@ mod tests {
             package_digest: String::new(),
         };
         assert!(store.apply_migrations(&[first, second]).is_err());
-        assert_eq!(store.get_module_version("worldbuilder.lore").unwrap(), 0);
+        assert_eq!(store.get_module_version("daena.lore").unwrap(), 0);
     }
 
     #[test]
     fn directory_projects_create_portable_layout() {
-        let root = std::env::temp_dir().join(format!("worldbuilder-project-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("daena-project-{}", Uuid::new_v4()));
         let store = ProjectStore::open_directory(&root).unwrap();
         assert_eq!(store.info().unwrap().root, root.to_string_lossy());
         assert!(root.join("project.json").is_file());
-        assert!(root.join("worldbuilder.sqlite").is_file());
+        assert!(root.join("daena.sqlite").is_file());
         assert!(root.join("assets/images").is_dir());
         assert!(root.join("assets/videos").is_dir());
         assert!(root.join("assets/maps").is_dir());
@@ -2155,9 +2158,9 @@ mod tests {
 
     #[test]
     fn directory_assets_are_copied_and_hashed() {
-        let root = std::env::temp_dir().join(format!("worldbuilder-project-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("daena-project-{}", Uuid::new_v4()));
         let source =
-            std::env::temp_dir().join(format!("worldbuilder-asset-{}.txt", Uuid::new_v4()));
+            std::env::temp_dir().join(format!("daena-asset-{}.txt", Uuid::new_v4()));
         std::fs::write(&source, b"asset contents").unwrap();
         let store = ProjectStore::open_directory(&root).unwrap();
         let entity = store

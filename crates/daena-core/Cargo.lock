@@ -71,6 +71,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "daena-core"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -436,17 +447,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc1b4cb0cc549fcf58d7dfc081778139b3d283a081644e833e84682ad71cea24"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "worldbuilder-core"
-version = "0.1.0"
-dependencies = [
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "uuid",
 ]
 
 [[package]]

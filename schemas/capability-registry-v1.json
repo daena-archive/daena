@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://worldbuilder.app/schemas/capability-registry-v1.json",
+  "$id": "https://github.com/daena-archive/daena/schemas/capability-registry-v1.json",
   "version": 1,
   "capabilities": [
     { "id": "entity.read", "resource": "project.entities", "operations": ["read"] },

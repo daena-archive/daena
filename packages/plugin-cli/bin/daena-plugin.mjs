@@ -2,15 +2,15 @@
 
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import * as sdk from "@worldbuilder/plugin-sdk";
+import * as sdk from "@daena-archive/plugin-sdk";
 import { createZipArchive, readZipArchive } from "./zip.mjs";
 
 function usage() {
   console.error(`Usage:
-  worldbuilder-plugin validate <directory|archive>
-  worldbuilder-plugin package <directory> [--output file]
-  worldbuilder-plugin migration validate <directory>
-  worldbuilder-plugin init <directory> --id <plugin-id> [--name name]`);
+daena-plugin validate <directory|archive>
+daena-plugin package <directory> [--output file]
+daena-plugin migration validate <directory>
+daena-plugin init <directory> --id <plugin-id> [--name name]`);
 }
 
 function readManifest(directory) {

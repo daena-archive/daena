@@ -1,10 +1,10 @@
-import type { ModuleContext, WorldbuilderModule } from "../../../module-api/src/index";
+import type { ModuleContext, DaenaModule } from "../../../module-api/src/index";
 import type { ModuleManifest } from "../../../module-api/src/index";
 import manifestJson from "../manifest.json";
 
 const manifest = manifestJson as unknown as ModuleManifest;
 
-export const lore: WorldbuilderModule = {
+export const lore: DaenaModule = {
   manifest,
   views: [{
     id: "lore-entities",

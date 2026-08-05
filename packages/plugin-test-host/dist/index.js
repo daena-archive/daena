@@ -1,4 +1,4 @@
-import { assertValidPluginManifest, createPluginRpcClient, } from "@worldbuilder/plugin-sdk";
+import { assertValidPluginManifest, createPluginRpcClient, } from "@daena-archive/plugin-sdk";
 function failure(code, message, retryable = false, details) {
     return { code, message, retryable, details };
 }

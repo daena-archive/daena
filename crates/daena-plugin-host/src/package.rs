@@ -12,7 +12,7 @@ use std::fs;
 use std::io::{Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use worldbuilder_plugin_api::{parse_manifest, PluginManifest};
+use daena_plugin_api::{parse_manifest, PluginManifest};
 use zip::ZipArchive;
 
 const SIGNATURE_FILE: &str = "signature.json";
@@ -1079,13 +1079,13 @@ mod tests {
     fn migration_selection_is_contiguous_and_hashed() {
         let mut value: PluginManifest = parse_manifest(&manifest("1.0.0")).unwrap();
         value.namespaces.push("data".into());
-        value.migrations = vec![worldbuilder_plugin_api::Migration {
+        value.migrations = vec![daena_plugin_api::Migration {
             id: "v1".into(),
             from: 0,
             to: 1,
             recovery: "backup".into(),
             operations: vec![
-                worldbuilder_plugin_api::MigrationOperation::CreateNamespace {
+                daena_plugin_api::MigrationOperation::CreateNamespace {
                     namespace: "data".into(),
                 },
             ],

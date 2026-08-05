@@ -1,5 +1,5 @@
 [package]
-name = "worldbuilder"
+name = "daena"
 version = "0.1.0"
 license = "Apache-2.0"
 description = "A Tauri App"
@@ -12,7 +12,7 @@ edition = "2021"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "worldbuilder_lib"
+name = "daena_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -24,6 +24,6 @@ tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-worldbuilder-core = { path = "../crates/worldbuilder-core" }
-worldbuilder-plugin-api = { path = "../crates/worldbuilder-plugin-api" }
-worldbuilder-plugin-host = { path = "../crates/worldbuilder-plugin-host" }
+daena-core = { path = "../crates/daena-core" }
+daena-plugin-api = { path = "../crates/daena-plugin-api" }
+daena-plugin-host = { path = "../crates/daena-plugin-host" }

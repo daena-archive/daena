@@ -9,7 +9,7 @@ import { createZipArchive } from "../packages/plugin-cli/bin/zip.mjs";
 
 const workspace = resolve(import.meta.dirname, "..");
 const cli = join(workspace, "scripts/plugin-cli.mjs");
-const temporary = mkdtempSync(join(tmpdir(), "worldbuilder-plugin-cli-"));
+const temporary = mkdtempSync(join(tmpdir(), "daena-plugin-cli-"));
 try {
   const fixture = join(temporary, "fixture");
   cpSync(join(workspace, "examples/plugins/declarative"), fixture, { recursive: true });

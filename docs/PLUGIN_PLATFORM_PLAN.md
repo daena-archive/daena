@@ -3,7 +3,7 @@
 ## Status and purpose
 
 This document is the architecture decision and delivery plan for evolving
-Worldbuilder's build-time module system into a third-party plugin platform. It
+Daena Archive's build-time module system into a third-party plugin platform. It
 supersedes the runtime-extension assumptions in `ARCHITECTURE.md` and `PLAN.md`
 where those documents are less specific. It does not change the canonical
 project data model described there.
@@ -29,13 +29,13 @@ The target platform has one non-negotiable rule:
 
 ### 1. Extension classes and trust levels
 
-Worldbuilder will support three extension classes:
+Daena Archive will support three extension classes:
 
 1. **Declarative plugins** contribute schemas, templates, commands, menus, and
    projections expressed as data. They contain no executable plugin code and
    are the preferred extension type.
 2. **Sandboxed plugins** contain a UI bundle and, optionally, a background WASM
-   component. Their only access to Worldbuilder is a versioned, brokered API.
+   component. Their only access to Daena Archive is a versioned, brokered API.
 3. **Trusted native extensions** may be considered later for functionality that
    WASM cannot provide. They are out of scope for the first public platform and
    must be presented as equivalent to installing a native application, not as
@@ -200,7 +200,7 @@ migrations, licenses, and signature metadata.
 
 The installer performs these steps before any code executes:
 
-1. Copy the package into a staging directory owned by Worldbuilder.
+1. Copy the package into a staging directory owned by Daena Archive.
 2. Enforce compressed/uncompressed size, file-count, and path-length limits.
 3. Reject absolute paths, `..`, duplicate normalized paths, symlinks, hard
    links, device files, and case-colliding paths.
@@ -259,7 +259,7 @@ state when they need authoritative data. The broker enforces schema validation,
 payload limits, per-plugin queue limits, and rate limits. A slow subscriber
 cannot block the publisher or core transaction.
 
-Core events use the `worldbuilder.core` namespace and are emitted only after the
+Core events use the `daena.core` namespace and are emitted only after the
 corresponding database transaction commits. Event payloads contain stable IDs
 and minimal change metadata, not complete private records.
 
@@ -418,9 +418,9 @@ Refactor the backend into explicit boundaries:
 
 ```text
 crates/
-  worldbuilder-core/          # Project model and application services
-  worldbuilder-plugin-api/    # Manifest, RPC, capability, event/service types
-  worldbuilder-plugin-host/   # Catalog, resolver, sessions, broker, runtimes
+  daena-core/          # Project model and application services
+  daena-plugin-api/    # Manifest, RPC, capability, event/service types
+  daena-plugin-host/   # Catalog, resolver, sessions, broker, runtimes
 src-tauri/                    # Trusted Tauri adapter and application assembly
 packages/
   plugin-sdk/                 # Generated types and framework-neutral client
@@ -431,12 +431,12 @@ schemas/
   plugin-rpc-v1.json
 ```
 
-`worldbuilder-core` must not depend on Tauri or plugin runtime implementations.
+`daena-core` must not depend on Tauri or plugin runtime implementations.
 It exposes typed services for entities, documents, fields, relationships,
 assets, search, migrations, and project lifecycle. The Tauri shell adapter and
 plugin broker both call these services with different authority contexts.
 
-`worldbuilder-plugin-host` contains:
+`daena-plugin-host` contains:
 
 - `PluginCatalog` for installed packages and retained versions;
 - `ManifestValidator` and package verifier;
@@ -468,13 +468,13 @@ there are no handwritten duplicate contract types.
 
 ### Phase 1: Extract the Rust core
 
-Move project behavior out of Tauri command handlers into `worldbuilder-core`.
+Move project behavior out of Tauri command handlers into `daena-core`.
 Introduce an authority context on operations that require resource ownership,
 without yet changing trusted-shell behavior. Move blocking work off event-loop
 threads and establish typed core errors.
 
 **Exit gate:** Existing behavior and all current tests pass through the core
-service; `worldbuilder-core` has no Tauri dependency.
+service; `daena-core` has no Tauri dependency.
 
 ### Phase 2: Add catalog, identity, and authorization
 
@@ -609,7 +609,7 @@ refactoring implementation code:
 1. `schemas/plugin-manifest-v1.json`;
 2. `schemas/plugin-rpc-v1.json` and the common error envelope;
 3. the capability registry with request/resource mappings;
-4. Rust contract types in the proposed `worldbuilder-plugin-api` crate;
+4. Rust contract types in the proposed `daena-plugin-api` crate;
 5. generated TypeScript SDK types;
 6. canonical Lore and Timeline manifests; and
 7. ADRs for isolation, authority, packaging trust, and inter-plugin contracts.

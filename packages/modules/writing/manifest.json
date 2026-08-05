@@ -1,9 +1,9 @@
 {
   "manifestVersion": 1,
-  "id": "worldbuilder.writing",
+  "id": "daena.writing",
   "name": "Writing Studio",
   "version": "0.1.0",
-  "publisher": "worldbuilder",
+  "publisher": "daena-archive",
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "declarative",
   "entrypoints": { "ui": "dist/ui/index.html" },

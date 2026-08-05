@@ -14,7 +14,7 @@ plugins remain deferred until the bundled Lore and Timeline modules pass the
 broker-backed conversion gate.
 
 - The core owns project storage, stable IDs, migrations, entity links, assets, search indexing, compatibility backups, and permission-checked native operations.
-- A project is a portable directory: `project.json` describes the format, `worldbuilder.sqlite` is the canonical database, and `assets/` contains images, videos, maps, and other files. Git integration is optional and user-controlled.
+- A project is a portable directory: `project.json` describes the format, `daena.sqlite` is the canonical database, and `assets/` contains images, videos, maps, and other files. Git integration is optional and user-controlled.
 - The canonical model is an entity graph with documents: entities have prose documents, optional schema-defined fields, typed relationships, references, and assets.
 - Modules add meaning and presentation, not separate databases. A map pin, timeline event, and manuscript reference point to the same entity.
 - Module data is namespaced and preserved when a module is disabled or uninstalled. Views and indexes are rebuildable derived data.

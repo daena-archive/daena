@@ -84,7 +84,7 @@ async function start() {
   const entities = await client.call("entity.list", {});
   const relationships = (await Promise.all(entities.map((entity) => client.call("relationship.list", { entityId: entity.id })))).flat();
   status.textContent = "Ready to explore.";
-  if (pluginId === "worldbuilder.timeline") {
+  if (pluginId === "daena.timeline") {
     const events = await Promise.all(entities
       .filter((entity) => entity.entity_type === "event")
       .map(async (entity) => {

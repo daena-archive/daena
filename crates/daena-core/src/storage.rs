@@ -576,6 +576,9 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
         let mut names = BTreeSet::new();
         for entry in entries {
             let name = entry.file_name().to_string_lossy().into_owned();
+            if is_ignored_metadata_entry(&name) {
+                continue;
+            }
             if !names.insert(name.to_ascii_lowercase()) {
                 return Err(codec_error(
                     &entities_dir,
@@ -649,6 +652,9 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
                 let mut field_names = BTreeSet::new();
                 for entry in field_entries {
                     let filename = entry.file_name().to_string_lossy().into_owned();
+                    if is_ignored_metadata_entry(&filename) {
+                        continue;
+                    }
                     if !field_names.insert(filename.to_ascii_lowercase()) {
                         return Err(codec_error(&fields_dir, "path.case-collision", filename));
                     }
@@ -784,6 +790,9 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
         let mut plugin_paths = BTreeSet::new();
         for entry in entries {
             let filename = entry.file_name().to_string_lossy().into_owned();
+            if is_ignored_metadata_entry(&filename) {
+                continue;
+            }
             if !filename.ends_with(".json") {
                 return Err(codec_error(
                     &plugins_dir,
@@ -1103,6 +1112,12 @@ fn codec_error(path: &Path, code: &str, detail: impl std::fmt::Display) -> CoreE
     CoreError::Validation(format!("{} [{code}] {detail}", path.display()))
 }
 
+fn is_ignored_metadata_entry(name: &str) -> bool {
+    name.eq_ignore_ascii_case(".ds_store")
+        || name.eq_ignore_ascii_case("thumbs.db")
+        || name.eq_ignore_ascii_case("desktop.ini")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1176,6 +1191,21 @@ mod tests {
         let manifest = ProjectManifest::new("Test");
         write_json(&path, &manifest).unwrap();
         assert_eq!(read_json::<ProjectManifest>(&path).unwrap(), manifest);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn canonical_scan_ignores_os_metadata_entries() {
+        let root = std::env::temp_dir().join(format!("daena-metadata-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("entities")).unwrap();
+        fs::create_dir_all(root.join("plugins")).unwrap();
+        fs::write(root.join("entities/.DS_Store"), b"metadata").unwrap();
+        fs::write(root.join("plugins/Thumbs.db"), b"metadata").unwrap();
+        write_json(&root.join("project.json"), &ProjectManifest::new("Test")).unwrap();
+
+        let canonical = read_canonical_project(&root).unwrap();
+        assert!(canonical.snapshot.entities.is_empty());
+        assert!(canonical.snapshot.modules.is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 }

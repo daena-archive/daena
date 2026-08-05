@@ -945,6 +945,18 @@
       error = "Example world seeded.";
     } catch (cause) { error = friendlyError(cause); }
   }
+  async function rebuildSearchIndex() {
+    const request = ++searchRequest;
+    try {
+      await project.rebuildSearch();
+      const term = globalQuery.trim();
+      if (!term || request !== searchRequest) return;
+      const matches = await project.search(term);
+      if (request === searchRequest) searchMatches = matches;
+    } catch (cause) {
+      if (request === searchRequest) error = friendlyError(cause);
+    }
+  }
   $effect(() => {
     const term = globalQuery.trim();
     if (!ready || !term) {
@@ -987,7 +999,7 @@
         {#if showProjectMenu}
           <div class="project-menu" role="menu">
             <button class="rail-button" role="menuitem" onclick={openProjectDirectory}><span class="rail-icon">↗</span><span>Open another folder</span></button>
-            <button class="rail-button" role="menuitem" onclick={() => { void project.rebuildSearch().catch((cause) => error = friendlyError(cause)); }}><span class="rail-icon">⌕</span><span>Rebuild index</span></button>
+            <button class="rail-button" role="menuitem" onclick={() => void rebuildSearchIndex()}><span class="rail-icon">⌕</span><span>Rebuild index</span></button>
             <button class="rail-button" role="menuitem" onclick={seedExample}><span class="rail-icon">✣</span><span>Seed example</span></button>
             <button class="rail-button" role="menuitem" onclick={closeProject}><span class="rail-icon">×</span><span>Close project</span></button>
           </div>

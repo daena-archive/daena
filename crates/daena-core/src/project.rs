@@ -454,9 +454,6 @@ impl ProjectStore {
               CREATE TABLE IF NOT EXISTS module_fields(module_id TEXT NOT NULL, namespace TEXT NOT NULL, key TEXT NOT NULL, field_type TEXT NOT NULL, required INTEGER NOT NULL, PRIMARY KEY(module_id, namespace, key));
               CREATE TABLE IF NOT EXISTS entity_fields(entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(entity_id, namespace, key));
              CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, filename TEXT NOT NULL, content_hash TEXT NOT NULL, size INTEGER NOT NULL, mime_type TEXT NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL);")?;
-        self.connection.execute_batch("CREATE VIRTUAL TABLE IF NOT EXISTS world_search USING fts5(entity_id UNINDEXED, content);
-             CREATE TRIGGER IF NOT EXISTS entities_search_insert AFTER INSERT ON entities BEGIN INSERT INTO world_search(entity_id, content) VALUES (new.id, new.name || ' ' || COALESCE(new.entity_type, '')); END;
-             CREATE TRIGGER IF NOT EXISTS documents_search_insert AFTER INSERT ON documents BEGIN INSERT INTO world_search(entity_id, content) VALUES (new.entity_id, new.body); END;")?;
         self.connection.execute_batch("CREATE TABLE IF NOT EXISTS migration_history(module_id TEXT NOT NULL, migration_id TEXT NOT NULL, from_version INTEGER NOT NULL, to_version INTEGER NOT NULL, checksum TEXT NOT NULL, package_digest TEXT NOT NULL DEFAULT '', applied_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(module_id, migration_id)); CREATE TABLE IF NOT EXISTS plugin_backups(id TEXT PRIMARY KEY, module_id TEXT NOT NULL, from_package_version TEXT, to_package_version TEXT, data_version INTEGER NOT NULL, path TEXT NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL);")?;
         let _ = self.connection.execute(
             "ALTER TABLE migration_history ADD COLUMN package_digest TEXT NOT NULL DEFAULT ''",
@@ -466,6 +463,7 @@ impl ProjectStore {
             "ALTER TABLE migration_history ADD COLUMN applied_at TEXT NOT NULL DEFAULT ''",
             [],
         );
+        self.rebuild_search()?;
         Ok(())
     }
 
@@ -838,7 +836,7 @@ impl ProjectStore {
         }
         let terms = query
             .split_whitespace()
-            .map(|term| format!("\"{}\"", term.replace('"', "")))
+            .map(|term| format!("\"{}\"*", term.replace('"', "")))
             .collect::<Vec<_>>()
             .join(" AND ");
         let mut statement = self.connection.prepare("SELECT e.id,e.name,e.entity_type,e.deleted,e.created_at,e.updated_at FROM entities e JOIN (SELECT entity_id, MIN(rowid) AS rank FROM world_search WHERE world_search MATCH ?1 GROUP BY entity_id) s ON s.entity_id=e.id WHERE e.deleted=0 ORDER BY s.rank LIMIT 100")?;
@@ -1299,14 +1297,19 @@ impl ProjectStore {
              DROP TRIGGER IF EXISTS entities_search_update;
              DROP TRIGGER IF EXISTS documents_search_insert;
              DROP TRIGGER IF EXISTS documents_search_update;
+             DROP TRIGGER IF EXISTS entity_fields_search_insert;
+             DROP TRIGGER IF EXISTS entity_fields_search_update;
              DROP TABLE IF EXISTS world_search;
              CREATE VIRTUAL TABLE world_search USING fts5(entity_id UNINDEXED, content);
              INSERT INTO world_search(entity_id, content) SELECT id, name || ' ' || COALESCE(entity_type, '') FROM entities WHERE deleted=0;
-             INSERT INTO world_search(entity_id, content) SELECT entity_id, body FROM documents;
+             INSERT INTO world_search(entity_id, content) SELECT documents.entity_id, documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE entities.deleted=0;
+             INSERT INTO world_search(entity_id, content) SELECT entity_fields.entity_id, entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entities.deleted=0;
              CREATE TRIGGER entities_search_insert AFTER INSERT ON entities BEGIN INSERT INTO world_search(entity_id, content) SELECT new.id, new.name || ' ' || COALESCE(new.entity_type, '') WHERE new.deleted=0; END;
-             CREATE TRIGGER entities_search_update AFTER UPDATE OF name, entity_type, deleted ON entities BEGIN DELETE FROM world_search WHERE entity_id = old.id; INSERT INTO world_search(entity_id, content) SELECT new.id, new.name || ' ' || COALESCE(new.entity_type, '') WHERE new.deleted=0; INSERT INTO world_search(entity_id, content) SELECT entity_id, body FROM documents WHERE entity_id = new.id AND new.deleted=0; END;
+             CREATE TRIGGER entities_search_update AFTER UPDATE OF name, entity_type, deleted ON entities BEGIN DELETE FROM world_search WHERE entity_id = old.id; INSERT INTO world_search(entity_id, content) SELECT new.id, new.name || ' ' || COALESCE(new.entity_type, '') WHERE new.deleted=0; INSERT INTO world_search(entity_id, content) SELECT documents.entity_id, documents.body FROM documents WHERE documents.entity_id = new.id AND new.deleted=0; INSERT INTO world_search(entity_id, content) SELECT entity_fields.entity_id, entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields WHERE entity_fields.entity_id = new.id AND new.deleted=0; END;
              CREATE TRIGGER documents_search_insert AFTER INSERT ON documents BEGIN INSERT INTO world_search(entity_id, content) VALUES (new.entity_id, new.body); END;
-             CREATE TRIGGER documents_search_update AFTER UPDATE OF body ON documents BEGIN DELETE FROM world_search WHERE entity_id = old.entity_id; INSERT INTO world_search(entity_id, content) SELECT id, name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = new.entity_id AND deleted=0; INSERT INTO world_search(entity_id, content) SELECT entity_id, body FROM documents WHERE entity_id = new.entity_id; END;"
+             CREATE TRIGGER documents_search_update AFTER UPDATE OF body ON documents BEGIN DELETE FROM world_search WHERE entity_id = old.entity_id; INSERT INTO world_search(entity_id, content) SELECT id, name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = new.entity_id AND deleted=0; INSERT INTO world_search(entity_id, content) SELECT documents.entity_id, documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE documents.entity_id = new.entity_id AND entities.deleted=0; INSERT INTO world_search(entity_id, content) SELECT entity_fields.entity_id, entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entity_fields.entity_id = new.entity_id AND entities.deleted=0; END;
+             CREATE TRIGGER entity_fields_search_insert AFTER INSERT ON entity_fields BEGIN DELETE FROM world_search WHERE entity_id = new.entity_id; INSERT INTO world_search(entity_id, content) SELECT id, name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = new.entity_id AND deleted=0; INSERT INTO world_search(entity_id, content) SELECT documents.entity_id, documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE documents.entity_id = new.entity_id AND entities.deleted=0; INSERT INTO world_search(entity_id, content) SELECT entity_fields.entity_id, entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entity_fields.entity_id = new.entity_id AND entities.deleted=0; END;
+             CREATE TRIGGER entity_fields_search_update AFTER UPDATE OF namespace, key, value ON entity_fields BEGIN DELETE FROM world_search WHERE entity_id = new.entity_id; INSERT INTO world_search(entity_id, content) SELECT id, name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = new.entity_id AND deleted=0; INSERT INTO world_search(entity_id, content) SELECT documents.entity_id, documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE documents.entity_id = new.entity_id AND entities.deleted=0; INSERT INTO world_search(entity_id, content) SELECT entity_fields.entity_id, entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entity_fields.entity_id = new.entity_id AND entities.deleted=0; END;"
         )?;
         Ok(())
     }
@@ -1700,6 +1703,21 @@ mod tests {
     }
 
     #[test]
+    fn search_matches_prefixes() {
+        let store = ProjectStore::in_memory().unwrap();
+        store
+            .create_entity(CreateEntity {
+                name: "Amulet".into(),
+                entity_type: Some("artifact".into()),
+            })
+            .unwrap();
+
+        let matches = store.search("Am".into()).unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].name, "Amulet");
+    }
+
+    #[test]
     fn create_entry_writes_template_content_atomically() {
         let store = ProjectStore::in_memory().unwrap();
         let entity = store
@@ -1898,6 +1916,73 @@ mod tests {
             "Second"
         );
         assert_eq!(store.list_fields(entity.id).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn opening_and_updating_rebuilds_search_for_documents_and_fields() {
+        let path = std::env::temp_dir().join(format!(
+            "daena-search-test-{}.sqlite",
+            Uuid::new_v4()
+        ));
+        {
+            let store = ProjectStore::open(&path).unwrap();
+            let entity = store
+                .create_entity(CreateEntity {
+                    name: "Search target".into(),
+                    entity_type: Some("place".into()),
+                })
+                .unwrap();
+            store
+                .save_document(SaveDocument {
+                    entity_id: entity.id.clone(),
+                    body: "old prose".into(),
+                    format: Some("plain-text".into()),
+                })
+                .unwrap();
+            store
+                .set_field(FieldValue {
+                    entity_id: entity.id,
+                    namespace: "lore".into(),
+                    key: "summary".into(),
+                    value: serde_json::json!("old field"),
+                })
+                .unwrap();
+            store
+                .connection
+                .execute("DELETE FROM world_search", [])
+                .unwrap();
+        }
+
+        let store = ProjectStore::open(&path).unwrap();
+        let entity = store.search("old prose".into()).unwrap();
+        assert_eq!(entity.len(), 1);
+        let field_match = store.search("old field".into()).unwrap();
+        assert_eq!(field_match.len(), 1);
+
+        let entity_id = entity[0].id.clone();
+        store
+            .save_document(SaveDocument {
+                entity_id: entity_id.clone(),
+                body: "new prose".into(),
+                format: Some("plain-text".into()),
+            })
+            .unwrap();
+        assert!(store.search("old prose".into()).unwrap().is_empty());
+        assert_eq!(store.search("new prose".into()).unwrap().len(), 1);
+
+        store
+            .set_field(FieldValue {
+                entity_id,
+                namespace: "lore".into(),
+                key: "summary".into(),
+                value: serde_json::json!("new field"),
+            })
+            .unwrap();
+        assert!(store.search("old field".into()).unwrap().is_empty());
+        assert_eq!(store.search("new field".into()).unwrap().len(), 1);
+
+        drop(store);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

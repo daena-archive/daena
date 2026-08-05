@@ -135,6 +135,52 @@ pub struct Migration {
 pub struct View {
     pub id: String,
     pub title: String,
+    #[serde(default)]
+    pub components: Vec<ViewComponent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ViewComponent {
+    Heading {
+        id: String,
+        text: String,
+    },
+    Text {
+        id: String,
+        text: String,
+    },
+    EntityList {
+        id: String,
+        title: String,
+        #[serde(rename = "entityType")]
+        entity_type: String,
+        limit: u32,
+    },
+    EntityDetail {
+        id: String,
+        title: String,
+        source: String,
+    },
+    FieldForm {
+        id: String,
+        title: String,
+        source: String,
+        namespace: String,
+        fields: Vec<String>,
+        editable: bool,
+    },
+    Button {
+        id: String,
+        label: String,
+        command: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum CommandAction {
+    RefreshView,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -142,6 +188,8 @@ pub struct View {
 pub struct Command {
     pub id: String,
     pub title: String,
+    #[serde(default)]
+    pub action: Option<CommandAction>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -436,6 +484,204 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
             }
         }
     }
+    let mut view_ids = BTreeSet::new();
+    for view in &manifest.views {
+        if view.id.trim().is_empty() || view.title.trim().is_empty() {
+            return Err(ContractError("view id and title must not be empty".into()));
+        }
+        if !view_ids.insert(&view.id) {
+            return Err(ContractError(format!("duplicate view id: {}", view.id)));
+        }
+        let mut component_ids = BTreeSet::new();
+        let mut list_entity_types = BTreeMap::new();
+        for component in &view.components {
+            let (id, requires_entity_read, requires_field_read, requires_field_write) =
+                match component {
+                    ViewComponent::Heading { id, text } | ViewComponent::Text { id, text } => {
+                        if text.trim().is_empty() {
+                            return Err(ContractError(format!(
+                                "view {} contains an empty text component",
+                                view.id
+                            )));
+                        }
+                        (id, false, false, false)
+                    }
+                    ViewComponent::EntityList {
+                        id,
+                        title,
+                        entity_type,
+                        limit,
+                    } => {
+                        if title.trim().is_empty() {
+                            return Err(ContractError(format!(
+                                "view {} contains an entity list without a title",
+                                view.id
+                            )));
+                        }
+                        if *limit == 0 || *limit > 100 {
+                            return Err(ContractError(format!(
+                                "view {} entity list limit must be between 1 and 100",
+                                view.id
+                            )));
+                        }
+                        if !entity_types.contains(entity_type) {
+                            return Err(ContractError(format!(
+                                "view {} lists undeclared entity type: {}",
+                                view.id, entity_type
+                            )));
+                        }
+                        list_entity_types.insert(id.clone(), entity_type.clone());
+                        (id, true, false, false)
+                    }
+                    ViewComponent::EntityDetail { id, title, source } => {
+                        if title.trim().is_empty() || source.trim().is_empty() {
+                            return Err(ContractError(format!(
+                                "view {} entity detail requires title and source",
+                                view.id
+                            )));
+                        }
+                        (id, true, false, false)
+                    }
+                    ViewComponent::FieldForm {
+                        id,
+                        title,
+                        source,
+                        namespace,
+                        fields: form_fields,
+                        editable,
+                    } => {
+                        if title.trim().is_empty()
+                            || source.trim().is_empty()
+                            || namespace.trim().is_empty()
+                            || form_fields.is_empty()
+                        {
+                            return Err(ContractError(format!(
+                                "view {} field form is incomplete",
+                                view.id
+                            )));
+                        }
+                        if form_fields.iter().any(|field| field.trim().is_empty()) {
+                            return Err(ContractError(format!(
+                                "view {} field form contains an empty field",
+                                view.id
+                            )));
+                        }
+                        (id, false, true, *editable)
+                    }
+                    ViewComponent::Button { id, label, command } => {
+                        if label.trim().is_empty() || command.trim().is_empty() {
+                            return Err(ContractError(format!(
+                                "view {} button requires label and command",
+                                view.id
+                            )));
+                        }
+                        let declared = manifest
+                            .commands
+                            .iter()
+                            .find(|candidate| candidate.id == *command)
+                            .is_some_and(|candidate| candidate.action.is_some());
+                        if !declared {
+                            return Err(ContractError(format!(
+                                "view {} button references a command without a host action: {}",
+                                view.id, command
+                            )));
+                        }
+                        (id, false, false, false)
+                    }
+                };
+            if id.trim().is_empty() || !component_ids.insert(id) {
+                return Err(ContractError(format!(
+                    "view {} contains a duplicate or empty component id",
+                    view.id
+                )));
+            }
+            if requires_entity_read
+                && !manifest
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == "entity.read")
+            {
+                return Err(ContractError(format!(
+                    "view {} entity list requires entity.read",
+                    view.id
+                )));
+            }
+            if requires_field_read
+                && !manifest
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == "field.read:self")
+            {
+                return Err(ContractError(format!(
+                    "view {} field form requires field.read:self",
+                    view.id
+                )));
+            }
+            if requires_field_write
+                && !manifest
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == "field.write:self")
+            {
+                return Err(ContractError(format!(
+                    "view {} editable field form requires field.write:self",
+                    view.id
+                )));
+            }
+        }
+        for component in &view.components {
+            match component {
+                ViewComponent::EntityDetail { source, .. } => {
+                    if !list_entity_types.contains_key(source) {
+                        return Err(ContractError(format!(
+                            "view {} references an unknown entity list: {}",
+                            view.id, source
+                        )));
+                    }
+                }
+                ViewComponent::FieldForm {
+                    source,
+                    namespace,
+                    fields: form_fields,
+                    ..
+                } => {
+                    if !list_entity_types.contains_key(source) {
+                        return Err(ContractError(format!(
+                            "view {} references an unknown entity list: {}",
+                            view.id, source
+                        )));
+                    }
+                    if !namespaces.contains(namespace) {
+                        return Err(ContractError(format!(
+                            "view {} field form uses an unowned namespace: {}",
+                            view.id, namespace
+                        )));
+                    }
+                    let entity_type = list_entity_types.get(source).expect("source validated");
+                    for field_key in form_fields {
+                        let (schema, field) = fields.get(field_key).ok_or_else(|| {
+                            ContractError(format!(
+                                "view {} field form uses an undeclared field: {}",
+                                view.id, field_key
+                            ))
+                        })?;
+                        if schema.namespace != *namespace
+                            || field
+                                .entity_types
+                                .as_ref()
+                                .is_some_and(|types| !types.contains(entity_type))
+                        {
+                            return Err(ContractError(format!(
+                                "view {} field form field is outside its source schema: {}",
+                                view.id, field_key
+                            )));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
     let mut current = 0;
     let mut migrations = manifest.migrations.iter().collect::<Vec<_>>();
     migrations.sort_by_key(|migration| migration.from);
@@ -626,6 +872,53 @@ mod tests {
 
         let mut manifest = parse_manifest(json).unwrap();
         manifest.schemas[0].fields[3].target_entity_types = Some(vec!["unknown".into()]);
+        assert!(validate_manifest(&manifest).is_err());
+    }
+
+    #[test]
+    fn host_components_are_schema_and_capability_bound() {
+        let json = include_str!("../../../examples/plugins/declarative/manifest.json");
+        let mut manifest = parse_manifest(json).unwrap();
+        assert_eq!(manifest.views[0].components.len(), 6);
+
+        let list_index = manifest.views[0]
+            .components
+            .iter()
+            .position(|component| matches!(component, ViewComponent::EntityList { .. }))
+            .unwrap();
+        manifest.views[0].components[list_index] = ViewComponent::EntityList {
+            id: "notes".into(),
+            title: "Notes".into(),
+            entity_type: "unknown".into(),
+            limit: 10,
+        };
+        assert!(validate_manifest(&manifest).is_err());
+
+        manifest.views[0].components[list_index] = ViewComponent::EntityList {
+            id: "notes".into(),
+            title: "Notes".into(),
+            entity_type: "note".into(),
+            limit: 10,
+        };
+        manifest
+            .capabilities
+            .retain(|capability| capability != "entity.read");
+        assert!(validate_manifest(&manifest).is_err());
+
+        let mut manifest = parse_manifest(json).unwrap();
+        let form = manifest.views[0]
+            .components
+            .iter_mut()
+            .find_map(|component| match component {
+                ViewComponent::FieldForm { fields, .. } => Some(fields),
+                _ => None,
+            })
+            .unwrap();
+        form[0] = "undeclared".into();
+        assert!(validate_manifest(&manifest).is_err());
+
+        let mut manifest = parse_manifest(json).unwrap();
+        manifest.commands[0].action = None;
         assert!(validate_manifest(&manifest).is_err());
     }
 

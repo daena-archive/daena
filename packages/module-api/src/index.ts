@@ -1,4 +1,4 @@
-export type { PluginManifest, FieldDefinition, SchemaContribution, EntityTemplate, Migration, MigrationOperation, View, Command, Service, Event, Services, Events } from "../../plugin-sdk/src/generated";
+export type { PluginManifest, FieldDefinition, SchemaContribution, EntityTemplate, Migration, MigrationOperation, View, ViewComponent, Command, CommandAction, Service, Event, Services, Events } from "../../plugin-sdk/src/generated";
 import type { PluginManifest, Migration } from "../../plugin-sdk/src/generated";
 
 export type UUID = string & { readonly __brand: "UUID" };

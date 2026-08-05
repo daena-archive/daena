@@ -7,13 +7,24 @@
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "declarative",
   "entrypoints": { "ui": "dist/ui/index.html" },
-  "capabilities": ["entity.read", "entity.write", "field.write:self"],
+  "capabilities": ["entity.read", "entity.write", "field.read:self", "field.write:self"],
   "dependencies": {},
   "namespaces": ["field-notes"],
   "schemas": [{ "namespace": "field-notes", "entityTypes": ["note"], "fields": [{ "key": "color", "label": "Color", "type": "enum", "options": ["amber", "blue", "green"] }] }],
   "templates": [{ "id": "note", "name": "Field note", "entityType": "note", "fields": { "color": "amber" } }],
-  "views": [{ "id": "notes", "title": "Field Notes" }],
-  "commands": [],
+  "views": [{
+    "id": "notes",
+    "title": "Field Notes",
+    "components": [
+      { "type": "heading", "id": "intro", "text": "Field Notes" },
+      { "type": "text", "id": "description", "text": "A quiet place to review the notes captured in this project." },
+      { "type": "entity-list", "id": "recent-notes", "title": "Recent notes", "entityType": "note", "limit": 10 },
+      { "type": "entity-detail", "id": "selected-note", "title": "Selected note", "source": "recent-notes" },
+      { "type": "field-form", "id": "note-fields", "title": "Note color", "source": "recent-notes", "namespace": "field-notes", "fields": ["color"], "editable": true },
+      { "type": "button", "id": "refresh", "label": "Refresh notes", "command": "refresh" }
+    ]
+  }],
+  "commands": [{ "id": "refresh", "title": "Refresh", "action": { "type": "refresh-view" } }],
   "services": { "provides": [], "consumes": [] },
   "events": { "publishes": [], "subscribes": [] },
   "migrations": [{ "id": "field-notes-v1", "from": 0, "to": 1, "recovery": "backup", "operations": [{ "kind": "create-namespace", "namespace": "field-notes" }] }]

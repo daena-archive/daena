@@ -7,14 +7,27 @@
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "sandboxed",
   "entrypoints": { "ui": "dist/ui/index.html" },
-  "capabilities": ["entity.read", "entity.write"],
+  "capabilities": ["entity.read", "entity.write", "field.read:self", "field.write:self"],
   "dependencies": {},
-  "namespaces": [],
-  "schemas": [],
+  "namespaces": ["ink-tools"],
+  "schemas": [{
+    "namespace": "ink-tools",
+    "entityTypes": ["scratch-note"],
+    "fields": [
+      { "key": "body", "label": "Note", "type": "text" },
+      { "key": "motif", "label": "Motif", "type": "enum", "options": ["amber", "moss", "ink", "rose"] }
+    ]
+  }],
   "templates": [],
   "views": [{ "id": "ink-tools", "title": "Ink Tools" }],
   "commands": [],
   "services": { "provides": [], "consumes": [] },
   "events": { "publishes": [], "subscribes": [] },
-  "migrations": []
+  "migrations": [{
+    "id": "ink-tools-v1",
+    "from": 0,
+    "to": 1,
+    "recovery": "backup",
+    "operations": [{ "kind": "create-namespace", "namespace": "ink-tools" }]
+  }]
 }

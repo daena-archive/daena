@@ -19,8 +19,16 @@ export type MigrationOperation =
   | { kind: "rename-field"; namespace: string; from: string; to: string }
   | { kind: "drop-field"; namespace: string; key: string };
 export interface Migration { id: string; from: number; to: number; recovery: "backup" | "preserve-data"; operations: MigrationOperation[] }
-export interface View { id: string; title: string }
-export interface Command { id: string; title: string }
+export type ViewComponent =
+  | { type: "heading"; id: string; text: string }
+  | { type: "text"; id: string; text: string }
+  | { type: "entity-list"; id: string; title: string; entityType: string; limit: number }
+  | { type: "entity-detail"; id: string; title: string; source: string }
+  | { type: "field-form"; id: string; title: string; source: string; namespace: string; fields: string[]; editable: boolean }
+  | { type: "button"; id: string; label: string; command: string };
+export interface View { id: string; title: string; components?: ViewComponent[] }
+export type CommandAction = { type: "refresh-view" };
+export interface Command { id: string; title: string; action?: CommandAction }
 export interface Service { name: string; major: number }
 export interface Event { name: string; version: number }
 export interface Services { provides: Service[]; consumes: Service[] }

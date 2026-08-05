@@ -300,7 +300,18 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
   }
   for (const [label, list] of [["views", views], ["commands", commands]] as const) if (Array.isArray(list)) for (const item of list) {
     if (!isRecord(item)) { errors.push(`${label} must contain objects`); continue; }
-    checkKeys(item, label.slice(0, -1), ["id", "title"], errors);
+    checkKeys(item, label.slice(0, -1), label === "views" ? ["id", "title", "components"] : ["id", "title", "action"], errors);
+    if (label !== "views" || item.components === undefined) continue;
+    if (!Array.isArray(item.components)) { errors.push("view components must be an array"); continue; }
+    for (const component of item.components) {
+      if (!isRecord(component) || typeof component.type !== "string") { errors.push("view components must contain typed objects"); continue; }
+      if (component.type === "heading" || component.type === "text") checkKeys(component, "view component", ["type", "id", "text"], errors);
+      else if (component.type === "entity-list") checkKeys(component, "view component", ["type", "id", "title", "entityType", "limit"], errors);
+      else if (component.type === "entity-detail") checkKeys(component, "view component", ["type", "id", "title", "source"], errors);
+      else if (component.type === "field-form") checkKeys(component, "view component", ["type", "id", "title", "source", "namespace", "fields", "editable"], errors);
+      else if (component.type === "button") checkKeys(component, "view component", ["type", "id", "label", "command"], errors);
+      else errors.push(`unknown view component type: ${component.type}`);
+    }
   }
   if (isRecord(services)) {
     checkKeys(services, "services", ["provides", "consumes"], errors);
@@ -318,6 +329,11 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
     if (!isRecord(item)) { errors.push("migrations must contain objects"); continue; }
     checkKeys(item, "migration", ["id", "from", "to", "recovery", "operations"], errors);
     if (!Array.isArray(item.operations)) errors.push("migration operations must be an array");
+  }
+  if (Array.isArray(commands)) for (const command of commands) {
+    if (!isRecord(command) || command.action === undefined) continue;
+    if (!isRecord(command.action) || command.action.type !== "refresh-view") errors.push(`command ${String(command.id)} has an unsupported action`);
+    else checkKeys(command.action, "command action", ["type"], errors);
   }
   if (errors.length) return [...new Set(errors)];
   const entrypointRecord = entrypoints as { ui?: unknown; wasm?: unknown };
@@ -355,6 +371,37 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
       else if (field.entityTypes && !field.entityTypes.includes(template.entityType)) errors.push(`template ${template.id} uses an inapplicable field: ${key}`);
     }
     for (const key of template.requiredFields ?? []) if (!fields.has(key)) errors.push(`template ${template.id} requires undeclared field: ${key}`);
+  }
+  const viewIds = new Set<string>();
+  for (const view of views as PluginManifest["views"]) {
+    if (viewIds.has(view.id)) errors.push(`duplicate view id: ${view.id}`);
+    viewIds.add(view.id);
+    const componentIds = new Set<string>();
+    for (const component of view.components ?? []) {
+      if (componentIds.has(component.id)) errors.push(`duplicate view component id: ${component.id}`);
+      componentIds.add(component.id);
+      if (component.type === "entity-list") {
+        if (!entityTypes.has(component.entityType)) errors.push(`view ${view.id} lists an unknown entity type`);
+        if (!capabilityList.includes("entity.read")) errors.push(`view ${view.id} entity list requires entity.read`);
+        if (!Number.isInteger(component.limit) || component.limit < 1 || component.limit > 100) errors.push(`view ${view.id} entity list limit is invalid`);
+      } else if (component.type === "entity-detail") {
+        if (!view.components?.some((candidate) => candidate.type === "entity-list" && candidate.id === component.source)) errors.push(`view ${view.id} detail references an unknown entity list`);
+        if (!capabilityList.includes("entity.read")) errors.push(`view ${view.id} entity detail requires entity.read`);
+      } else if (component.type === "field-form") {
+        const source = view.components?.find((candidate): candidate is Extract<NonNullable<PluginManifest["views"][number]["components"]>[number], { type: "entity-list" }> => candidate.type === "entity-list" && candidate.id === component.source);
+        if (!source) errors.push(`view ${view.id} form references an unknown entity list`);
+        if (!owned.has(component.namespace)) errors.push(`view ${view.id} form uses an unowned namespace`);
+        for (const key of component.fields) {
+          const field = fields.get(key);
+          if (!field || field.entityTypes?.length && source && !field.entityTypes.includes(source.entityType)) errors.push(`view ${view.id} form uses an invalid field: ${key}`);
+        }
+        if (!capabilityList.includes("field.read:self")) errors.push(`view ${view.id} field form requires field.read:self`);
+        if (component.editable && !capabilityList.includes("field.write:self")) errors.push(`view ${view.id} editable form requires field.write:self`);
+      } else if (component.type === "button") {
+        const command = (commands as PluginManifest["commands"]).find((candidate) => candidate.id === component.command);
+        if (!command?.action) errors.push(`view ${view.id} button references a command without a host action`);
+      }
+    }
   }
   errors.push(...validateMigrationChain(migrations as PluginManifest["migrations"], namespaceList));
   return [...new Set(errors)];

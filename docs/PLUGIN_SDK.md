@@ -179,6 +179,54 @@ Templates provide initial values for declared fields and may include an
 opening document. They cannot introduce fields or entity types that the
 schema does not declare.
 
+### Host-rendered views
+
+Both bundled and third-party plugins may declare a host-rendered view. The
+view is a JSON component tree; it is not executable HTML or JavaScript. The
+same host component allowlist and Rust authorization rules apply to every
+plugin.
+
+```json
+{
+  "views": [{
+    "id": "notes",
+    "title": "Field Notes",
+    "components": [
+      { "type": "heading", "id": "intro", "text": "Field Notes" },
+      { "type": "text", "id": "help", "text": "Review notes captured in this project." },
+      { "type": "entity-list", "id": "recent", "title": "Recent notes", "entityType": "note", "limit": 10 },
+      { "type": "entity-detail", "id": "selected", "title": "Selected note", "source": "recent" },
+      { "type": "field-form", "id": "note-fields", "title": "Note color", "source": "recent", "namespace": "field-notes", "fields": ["color"], "editable": true },
+      { "type": "button", "id": "refresh", "label": "Refresh", "command": "refresh" }
+    ]
+  }],
+  "commands": [{ "id": "refresh", "title": "Refresh", "action": { "type": "refresh-view" } }]
+}
+```
+
+The component set is deliberately small: `heading`, `text`, `entity-list`,
+`entity-detail`, `field-form`, and `button`. An entity list is the selection
+source for detail/forms and may reference only an entity type declared by the
+plugin; it requires `entity.read`. A detail component shows the selected
+entity. A field form may reference only fields declared in an owned namespace,
+requires `field.read:self`, and requires `field.write:self` when editable. A
+button can invoke only a declared host action; the current action is
+`refresh-view`.
+
+The host fetches data and applies field writes only after checking the active
+runtime, current project grant, source entity type, namespace, and manifest
+field declaration. Plugins do not receive a DOM handle, callback, or arbitrary
+component escape hatch.
+
+User-facing manifest views appear in the host sidebar after the plugin is
+enabled. Host-rendered views use the shared host renderer; sandboxed views use
+an isolated child webview embedded in the workspace. The child webview keeps
+its own plugin origin, CSP, initialization policy, and broker session; plugin
+JavaScript still never runs in the host DOM. The plugin library remains the
+management surface for installation, consent, upgrades, rollback, and
+disablement. Built-in Lore, Timeline, and Writing navigation is also host-owned,
+so it is not duplicated by empty module manifests.
+
 ## 6. Capabilities and broker access
 
 Capabilities are deny-by-default. A manifest requests them; the user/project

@@ -15,7 +15,7 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 use worldbuilder_plugin_api::{
     lifecycle_transition, parse_manifest, Command, LifecycleState, PluginManifest, RpcError,
-    RpcRequest, RpcResponse, View, RPC_VERSION,
+    RpcRequest, RpcResponse, View, ViewComponent, RPC_VERSION,
 };
 
 pub mod package;
@@ -1682,6 +1682,58 @@ impl PluginHost {
         }
         self.catalog.get(plugin_id).cloned()
     }
+
+    /// Return a host-rendered view only when the plugin is active and its
+    /// manifest/grants authorize every data component used by that view.
+    pub fn host_view(
+        &self,
+        project_id: &str,
+        plugin_id: &str,
+        view_id: &str,
+    ) -> Result<View, HostError> {
+        if self.lifecycle.state(project_id, plugin_id).state != LifecycleState::Active {
+            return Err(HostError("plugin is not active".into()));
+        }
+        let entry = self
+            .runtime_entry(project_id, plugin_id)
+            .ok_or_else(|| HostError("plugin is not installed".into()))?;
+        let view = entry
+            .manifest
+            .views
+            .iter()
+            .find(|view| view.id == view_id)
+            .cloned()
+            .ok_or_else(|| HostError("plugin host view is not declared".into()))?;
+        let grants = self.grants.get(project_id, plugin_id);
+        for component in &view.components {
+            match component {
+                ViewComponent::EntityList { .. } | ViewComponent::EntityDetail { .. }
+                    if !grants.iter().any(|grant| grant == "entity.read") =>
+                {
+                    return Err(HostError(
+                        "host entity view requires an entity.read grant".into(),
+                    ));
+                }
+                ViewComponent::FieldForm { editable: true, .. }
+                    if !grants.iter().any(|grant| grant == "field.write:self") =>
+                {
+                    return Err(HostError(
+                        "host editable field form requires a field.write:self grant".into(),
+                    ));
+                }
+                ViewComponent::FieldForm { .. }
+                    if !grants.iter().any(|grant| grant == "field.read:self") =>
+                {
+                    return Err(HostError(
+                        "host field form requires a field.read:self grant".into(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        Ok(view)
+    }
+
     pub fn bootstrap(
         &mut self,
         plugin_id: &str,
@@ -2525,10 +2577,12 @@ mod tests {
             views: vec![worldbuilder_plugin_api::View {
                 id: "overview".into(),
                 title: "Overview".into(),
+                components: vec![],
             }],
             commands: vec![worldbuilder_plugin_api::Command {
                 id: "refresh".into(),
                 title: "Refresh".into(),
+                action: None,
             }],
             services: worldbuilder_plugin_api::Services {
                 provides: vec![],
@@ -3481,6 +3535,7 @@ mod tests {
             vec![worldbuilder_plugin_api::View {
                 id: "overview".into(),
                 title: "Overview".into(),
+                components: vec![],
             }]
         );
         assert_eq!(
@@ -3488,6 +3543,7 @@ mod tests {
             vec![worldbuilder_plugin_api::Command {
                 id: "refresh".into(),
                 title: "Refresh".into(),
+                action: None,
             }]
         );
         host.deactivate_bundled("project", "com.example.one");
@@ -3499,5 +3555,119 @@ mod tests {
             .declarations
             .commands("project", "com.example.one")
             .is_empty());
+    }
+
+    #[test]
+    fn host_views_require_active_runtime_and_granted_data_capability() {
+        let mut host = host();
+        host.catalog
+            .entries
+            .get_mut("com.example.one")
+            .unwrap()
+            .manifest
+            .views[0]
+            .components = vec![worldbuilder_plugin_api::ViewComponent::EntityList {
+            id: "people".into(),
+            title: "People".into(),
+            entity_type: "person".into(),
+            limit: 10,
+        }];
+
+        host.activate_bundled("project", "com.example.one").unwrap();
+        assert_eq!(
+            host.host_view("project", "com.example.one", "overview")
+                .unwrap()
+                .components
+                .len(),
+            1
+        );
+
+        host.grants
+            .set(
+                "project",
+                "com.example.one",
+                &host
+                    .catalog
+                    .get("com.example.one")
+                    .unwrap()
+                    .manifest
+                    .capabilities,
+                BTreeSet::new(),
+            )
+            .unwrap();
+        assert!(host
+            .host_view("project", "com.example.one", "overview")
+            .is_err());
+    }
+
+    #[test]
+    fn host_field_forms_require_read_and_write_grants() {
+        let mut host = host();
+        host.catalog
+            .entries
+            .get_mut("com.example.one")
+            .unwrap()
+            .manifest
+            .views[0]
+            .components = vec![
+            worldbuilder_plugin_api::ViewComponent::EntityList {
+                id: "people".into(),
+                title: "People".into(),
+                entity_type: "person".into(),
+                limit: 10,
+            },
+            worldbuilder_plugin_api::ViewComponent::FieldForm {
+                id: "summary".into(),
+                title: "Summary".into(),
+                source: "people".into(),
+                namespace: "one".into(),
+                fields: vec!["summary".into()],
+                editable: true,
+            },
+        ];
+        host.activate_bundled("project", "com.example.one").unwrap();
+
+        host.grants
+            .set(
+                "project",
+                "com.example.one",
+                &["entity.read".into(), "field.read:self".into()],
+                BTreeSet::new(),
+            )
+            .unwrap();
+        assert!(host
+            .host_view("project", "com.example.one", "overview")
+            .is_err());
+
+        host.grants
+            .set(
+                "project",
+                "com.example.one",
+                &[
+                    "entity.read".into(),
+                    "field.read:self".into(),
+                    "field.write:self".into(),
+                ],
+                [
+                    "entity.read".to_string(),
+                    "field.read:self".to_string(),
+                    "field.write:self".to_string(),
+                ]
+                .into_iter()
+                .collect(),
+            )
+            .unwrap();
+        assert_eq!(
+            host.grants.get("project", "com.example.one"),
+            [
+                "entity.read".to_string(),
+                "field.read:self".to_string(),
+                "field.write:self".to_string()
+            ]
+            .into_iter()
+            .collect()
+        );
+        let result = host.host_view("project", "com.example.one", "overview");
+        assert!(result.is_ok(), "host view failed: {:?}", result.err());
     }
 }

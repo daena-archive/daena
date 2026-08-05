@@ -3,7 +3,8 @@
   import { project, type Asset, type Entity, type Relationship, type ProjectModuleManifest, type ProjectInfo, type GitStatus, type GitLogEntry, type PluginAdminEntry, type PluginUpgradePlan } from "$lib/project/client";
   import type { EntityTemplate, FieldDefinition, ModuleContext, ModuleId, UUID, ModuleManifest } from "../../packages/module-api/src/index";
   import { buildModuleContext } from "$lib/modules/context";
-  import PluginViewLauncher from "$lib/modules/PluginViewLauncher.svelte";
+  import HostView from "$lib/plugins/HostView.svelte";
+import SandboxView from "$lib/plugins/SandboxView.svelte";
   import RelationshipPicker from "$lib/RelationshipPicker.svelte";
   import loreManifestJson from "../../packages/modules/lore/manifest.json";
   import timelineManifestJson from "../../packages/modules/timeline/manifest.json";
@@ -18,6 +19,12 @@
   type CreateOption = { key: string; module: InstalledModule; template: EntityTemplate };
   type CreateGroup = { module: InstalledModule; options: CreateOption[] };
   type CreateField = { namespace: string; field: FieldDefinition; required: boolean };
+  type PluginNavigationItem = {
+    plugin: PluginAdminEntry;
+    view: PluginAdminEntry["views"][number];
+    key: string;
+    mode: "host" | "webview";
+  };
 
   const recentProjectsKey = "worldbuilder.recent-projects";
 
@@ -49,6 +56,8 @@
   let documentRevision = 0;
   let showPlugins = $state(false);
   let adminPlugins = $state<PluginAdminEntry[] | null>(null);
+  let hostView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] } | null>(null);
+  let sandboxView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] | null } | null>(null);
   let adminBusy = $state(false);
   let installing = $state(false);
   let installConsent = $state<{ path: string; message: string } | null>(null);
@@ -61,7 +70,6 @@
   let deleteInput = $state("");
   let deleteBusy = $state(false);
   let deleteBackupPath = $state("");
-  let projectionRevision = $state(0);
   let projectInfo = $state<ProjectInfo | null>(null);
   let gitStatus = $state<GitStatus | null>(null);
   let gitLog = $state<GitLogEntry[]>([]);
@@ -75,7 +83,6 @@
   let showCreateForm = $state(false);
   let showCommitForm = $state(false);
   let commitMessage = $state("");
-  let showProjection = $state(false);
   let dateEditorOpen = $state<Record<string, boolean>>({});
 
   const toastDurationMs = 3500;
@@ -215,18 +222,34 @@
 
   function sectionEnabled() { return modules.find((module) => module.id === activeModuleId())?.enabled ?? false; }
 
-  const hostWorkspacePluginIds = new Set(["worldbuilder.lore", "worldbuilder.timeline", "worldbuilder.writing"]);
+  function openHostView(plugin: PluginAdminEntry, view: PluginAdminEntry["views"][number]) {
+    hostView = { plugin, view };
+    sandboxView = null;
+    showPlugins = false;
+  }
+
   function pluginViews() {
     return (adminPlugins ?? [])
-      .filter((plugin) => plugin.enabled && plugin.kind === "sandboxed" && plugin.lifecycle.state === "active" && !hostWorkspacePluginIds.has(plugin.id))
-      .flatMap((plugin) => plugin.views.map((view) => ({ plugin, view, key: `${plugin.id}:${view.id}` })))
+      .filter((plugin) => plugin.enabled && plugin.lifecycle.state === "active")
+      .flatMap((plugin) => plugin.views
+        .filter((view) => plugin.kind === "sandboxed" || (view.components?.length ?? 0) > 0)
+        .map((view) => ({
+          plugin,
+          view,
+          key: `${plugin.id}:${view.id}`,
+          mode: plugin.kind === "sandboxed" ? "webview" : "host",
+        } satisfies PluginNavigationItem)))
       .sort((left, right) => left.view.title.localeCompare(right.view.title));
   }
 
-  async function openPluginView(pluginId: string, viewId: string) {
-    try {
-      await project.openPluginWebview(pluginId, viewId);
-    } catch (cause) { error = friendlyError(cause); }
+  async function openPluginView(item: PluginNavigationItem) {
+    if (item.mode === "host") {
+      openHostView(item.plugin, item.view);
+      return;
+    }
+    hostView = null;
+    sandboxView = { plugin: item.plugin, view: item.view };
+    showPlugins = false;
   }
 
   function visibleEntities() {
@@ -254,7 +277,8 @@
     section = entity.entity_type === "event" ? "timeline" : entity.entity_type === "manuscript" || entity.entity_type === "reference-page" ? "writing" : "lore";
     if (entity.entity_type === "reference-page") writingView = "reference";
     if (entity.entity_type === "manuscript") writingView = "manuscripts";
-    showProjection = false;
+    hostView = null;
+    sandboxView = null;
     globalQuery = "";
     query = "";
     await selectEntity(entity);
@@ -262,14 +286,17 @@
 
   async function switchSection(next: WorkspaceSection) {
     if (section === next || !(await flushAutoSave())) return;
+    hostView = null;
+    sandboxView = null;
     section = next;
     clearSelection();
     query = "";
-    showProjection = false;
   }
 
   async function switchWritingView(next: WritingView) {
     if (writingView === next || !(await flushAutoSave())) return;
+    hostView = null;
+    sandboxView = null;
     writingView = next;
     clearSelection();
     query = "";
@@ -292,8 +319,13 @@
   }
 
   function openProjection() {
-    showProjection = true;
-    projectionRevision += 1;
+    const plugin = adminPlugins?.find((candidate) => candidate.id === activeModuleId());
+    if (!plugin) {
+      error = "The module UI is not available.";
+      return;
+    }
+    hostView = null;
+    sandboxView = { plugin, view: null };
   }
 
   function normalizeDocument(body: string, format?: string) {
@@ -444,6 +476,8 @@
       clearSelection();
       projectInfo = null;
       adminPlugins = null;
+      hostView = null;
+      sandboxView = null;
       gitStatus = null;
       gitLog = [];
       ready = false;
@@ -831,6 +865,8 @@
       await project.disableModule(plugin.id);
       modules = await project.listModuleManifests();
       await refreshAdmin();
+      if (hostView?.plugin.id === plugin.id) hostView = null;
+      if (sandboxView?.plugin.id === plugin.id) sandboxView = null;
     } catch (cause) { error = friendlyError(cause); }
   }
   function capabilityLabel(capability: string) {
@@ -927,10 +963,10 @@
         <button aria-current={section === "writing" ? "page" : undefined} class:active={section === "writing"} class="rail-button" onclick={() => switchSection("writing")}><span class="rail-icon">✎</span><span>Writing Studio</span></button>
       </nav>
       {#if pluginViews().length > 0}
-        <div class="rail-label plugin-views-label">PLUGINS</div>
+        <div class="rail-label plugin-views-label">PLUGIN VIEWS</div>
         <nav class="workspace-nav" aria-label="Plugin views">
           {#each pluginViews() as item (item.key)}
-            <button class="rail-button" title={`${item.plugin.name} · ${item.view.title}`} aria-label={`Open ${item.plugin.name}: ${item.view.title}`} onclick={() => void openPluginView(item.plugin.id, item.view.id)}><span class="rail-icon">◇</span><span>{item.view.title}</span></button>
+            <button class:active={item.mode === "host" && hostView?.plugin.id === item.plugin.id && hostView?.view.id === item.view.id} class="rail-button" title={`${item.plugin.name} · ${item.view.title}`} aria-current={item.mode === "host" && hostView?.plugin.id === item.plugin.id && hostView?.view.id === item.view.id ? "page" : undefined} aria-label={`Open ${item.plugin.name}: ${item.view.title}`} onclick={() => void openPluginView(item)}><span class="rail-icon">◇</span><span class="plugin-nav-title">{item.plugin.name} · {item.view.title}</span></button>
           {/each}
         </nav>
       {/if}
@@ -954,7 +990,7 @@
       <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) showPlugins = false; }} onkeydown={(event) => { if (event.key === "Escape") showPlugins = false; }}>
         <div class="dialog plugins-dialog">
           <div class="new-form-heading plugins-heading"><div><span class="panel-kicker">PLUGIN LIBRARY</span><strong>Plugins</strong></div><button type="button" class="new-form-close" onclick={() => showPlugins = false}>×</button></div>
-          <p class="plugins-intro">Sandboxed extensions that power this project. Every install, upgrade, and rollback is verified and reversible.</p>
+          <p class="plugins-intro">Extensions that power this project. Every install, upgrade, and rollback is verified and reversible.</p>
           <div class="plugins-toolbar">
             <button class="primary-button" disabled={installing || adminBusy} onclick={installFromPicker}>{installing ? "Installing…" : "Install package…"}</button>
             <span class="muted-note">{adminBusy ? "Refreshing…" : ""}</span>
@@ -1144,11 +1180,16 @@
     {/if}
     {#if !ready}
       <section class="welcome"><div class="welcome-copy"><span class="overline">A private place for impossible worlds</span><h1>Build the world<br /><em>behind the story.</em></h1><p>Shape characters, places, factions, and history in one calm, local-first studio.</p></div><div class="welcome-art"><div class="orb orb-one"></div><div class="orb orb-two"></div><div class="art-card"><span>ELDERMERE</span><strong>The sea remembers<br />what kingdoms forget.</strong><small>Fragments · 12</small></div></div></section>
+    {:else if hostView}
+      <div class="host-view-shell"><button class="quiet-button host-view-back" onclick={() => hostView = null}>Back to workspace</button><HostView plugin={hostView.plugin} view={hostView.view} /></div>
+    {:else if sandboxView}
+      {#key `${sandboxView.plugin.id}:${sandboxView.view?.id ?? "default"}`}
+        <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={`${sandboxView.plugin.name}${sandboxView.view ? ` · ${sandboxView.view.title}` : ""}`} onClose={() => sandboxView = null} />
+      {/key}
     {:else if !sectionEnabled()}
       <section class="disabled-state"><div class="disabled-icon">◌</div><span class="overline">Module unavailable</span><h1>{sectionLabel()} is resting.</h1><p>Your project data is safe. Re-enable this module to continue working in this workspace.</p><button class="primary-button" onclick={() => toggleModule(activeModuleId() as ModuleId)}>Enable {sectionLabel()}</button></section>
     {:else}
       <div class="workspace-heading"><div><span class="overline">{section === "lore" ? "WORLD BIBLE" : section === "timeline" ? "CHRONOLOGY" : "DRAFTING DESK"}</span><h1>{sectionLabel()}</h1><p>{section === "lore" ? "A living reference for every person, place, and power." : section === "timeline" ? "Events, eras, and the threads that connect them." : writingView === "manuscripts" ? "Draft stories, essays, and other long-form work." : "Build the pages, notes, and references behind the story."}</p></div><div class="heading-actions">{#if section !== "writing"}<button class="quiet-button" onclick={openProjection}>Open {section === "lore" ? "graph" : "timeline"} ↗</button>{/if}</div></div>
-      {#if showProjection}{#key projectionRevision}<div class="projection-bar"><PluginViewLauncher pluginId={activeModuleId()} /></div>{/key}{/if}
       <section class="workspace-grid">
         <aside class="collection-panel panel-surface">
           <div class="panel-heading">
@@ -1297,6 +1338,7 @@
   :global(button), :global(input), :global(select) { -webkit-tap-highlight-color: transparent; }
   :global(button:focus-visible), :global(input:focus-visible), :global(select:focus-visible) { outline: 3px solid rgba(180, 119, 63, .28); outline-offset: 2px; }
   .workspace-nav { display: grid; gap: 3px; }
+  .plugin-nav-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rail-button { transition: background .16s ease, color .16s ease, transform .16s ease; }
   .rail-button:active, .primary-button:active { transform: translateY(1px); }
   .rail { position: sticky; top: 0; align-self: flex-start; height: 100vh; max-height: 100vh; overflow-y: auto; overscroll-behavior: contain; }
@@ -1449,6 +1491,7 @@
   }
 
   .rail:not(.startup-rail) .brand { padding-bottom: 8px; }
+  .host-view-back { margin: 24px 40px 0; }
   .collection-list { flex: 1; }
   .list-empty { display: grid; align-content: center; justify-items: start; min-height: 100%; padding: 36px 18px 42px; text-align: left; }
   .list-empty .empty-mark { display: grid; place-items: center; width: 42px; height: 42px; margin-bottom: 18px; border-radius: 13px; background: #f2e4d2; color: var(--accent); font-size: 19px; }

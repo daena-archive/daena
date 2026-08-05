@@ -99,12 +99,90 @@
     "view": {
       "type": "object", "additionalProperties": false,
       "required": ["id", "title"],
-      "properties": { "id": { "type": "string", "minLength": 1 }, "title": { "type": "string", "minLength": 1 } }
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "components": { "type": "array", "items": { "$ref": "#/$defs/viewComponent" }, "maxItems": 32 }
+      }
+    },
+    "viewComponent": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["type", "id", "text"],
+          "properties": {
+            "type": { "const": "heading" },
+            "id": { "type": "string", "minLength": 1 },
+            "text": { "type": "string", "minLength": 1, "maxLength": 240 }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["type", "id", "text"],
+          "properties": {
+            "type": { "const": "text" },
+            "id": { "type": "string", "minLength": 1 },
+            "text": { "type": "string", "minLength": 1, "maxLength": 2000 }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["type", "id", "title", "entityType", "limit"],
+          "properties": {
+            "type": { "const": "entity-list" },
+            "id": { "type": "string", "minLength": 1 },
+            "title": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "entityType": { "type": "string", "minLength": 1 },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["type", "id", "title", "source"],
+          "properties": {
+            "type": { "const": "entity-detail" },
+            "id": { "type": "string", "minLength": 1 },
+            "title": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "source": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["type", "id", "title", "source", "namespace", "fields", "editable"],
+          "properties": {
+            "type": { "const": "field-form" },
+            "id": { "type": "string", "minLength": 1 },
+            "title": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "source": { "type": "string", "minLength": 1 },
+            "namespace": { "$ref": "#/$defs/namespace" },
+            "fields": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1, "uniqueItems": true },
+            "editable": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["type", "id", "label", "command"],
+          "properties": {
+            "type": { "const": "button" },
+            "id": { "type": "string", "minLength": 1 },
+            "label": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "command": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
     },
     "command": {
       "type": "object", "additionalProperties": false,
       "required": ["id", "title"],
-      "properties": { "id": { "type": "string", "minLength": 1 }, "title": { "type": "string", "minLength": 1 } }
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "action": {
+          "type": "object", "additionalProperties": false,
+          "required": ["type"],
+          "properties": { "type": { "const": "refresh-view" } }
+        }
+      }
     },
     "service": {
       "type": "object", "additionalProperties": false,

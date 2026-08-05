@@ -1,15 +1,19 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
+use std::collections::BTreeMap;
 use std::path::{Component, Path};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
+use serde::Deserialize;
 use tauri::Manager;
 use worldbuilder_core::{
     Asset, AssetFileInput, AssetInput, AuthorityContext, CoreError, CoreService, CreateEntity,
     Entity, FieldValue, GitLogEntry, GitStatus, Migration, Operation, ProjectInfo, ProjectStore,
     Relationship, RelationshipInput, SaveDocument, SaveEntry,
 };
-use worldbuilder_plugin_api::{MigrationOperation, PluginManifest, RpcRequest, RpcResponse};
+use worldbuilder_plugin_api::{
+    MigrationOperation, PluginManifest, RpcRequest, RpcResponse, ViewComponent,
+};
 use worldbuilder_plugin_host::{
     plugin_window_label, webview_policy, ArchiveLimits, DependencyResolver, HostError, PluginHost,
     ServiceRequest, VerificationPolicy,
@@ -403,9 +407,256 @@ fn open_plugin_webview(
 }
 
 fn close_plugin_webview(app: &tauri::AppHandle, plugin_id: &str) {
-    if let Some(window) = app.get_webview_window(&plugin_window_label(plugin_id)) {
+    let label = plugin_window_label(plugin_id);
+    if let Ok(mut states) = embedded_webview_states().lock() {
+        states.remove(&label);
+    }
+    if let Some(webview) = app.get_webview(&label) {
+        let _ = webview.close();
+    }
+    if let Some(window) = app.get_webview_window(&label) {
         let _ = window.close();
     }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PluginWebviewBounds {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EmbeddedPluginWebviewState {
+    bounds: PluginWebviewBounds,
+    ready: bool,
+}
+
+fn embedded_webview_states() -> &'static Mutex<BTreeMap<String, EmbeddedPluginWebviewState>> {
+    static STATES: OnceLock<Mutex<BTreeMap<String, EmbeddedPluginWebviewState>>> = OnceLock::new();
+    STATES.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+impl PluginWebviewBounds {
+    fn validate(&self) -> Result<(), String> {
+        if !self.x.is_finite()
+            || !self.y.is_finite()
+            || !self.width.is_finite()
+            || !self.height.is_finite()
+            || self.x < 0.0
+            || self.y < 0.0
+            || !(1.0..=10_000.0).contains(&self.width)
+            || !(1.0..=10_000.0).contains(&self.height)
+        {
+            return Err("plugin webview bounds are invalid".into());
+        }
+        Ok(())
+    }
+}
+
+fn plugin_webview_url(
+    policy: &worldbuilder_plugin_host::PluginWebviewPolicy,
+    project_id: &str,
+    view_id: Option<&str>,
+) -> Result<tauri::WebviewUrl, String> {
+    let mut url = format!("{}?project={}", policy.url, percent_encode(project_id));
+    if let Some(view_id) = view_id {
+        url.push_str("&view=");
+        url.push_str(&percent_encode(view_id));
+    }
+    Ok(tauri::WebviewUrl::External(
+        url.parse()
+            .map_err(|error| format!("invalid plugin URL: {error}"))?,
+    ))
+}
+
+#[tauri::command]
+async fn plugin_mount_webview(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    plugin_id: String,
+    view_id: Option<String>,
+    bounds: PluginWebviewBounds,
+) -> Result<(), String> {
+    bounds.validate()?;
+    let project_id = state
+        .lock()
+        .map_err(|_| "core lock poisoned".to_string())?
+        .info()
+        .map(|info| info.root)
+        .ok_or_else(|| "project is not open".to_string())?;
+    let (policy, url) = {
+        let host = plugins
+            .lock()
+            .map_err(|_| "plugin host lock poisoned".to_string())?;
+        let entry = host
+            .runtime_entry(&project_id, &plugin_id)
+            .ok_or_else(|| "plugin is not installed".to_string())?;
+        if entry.manifest.kind != worldbuilder_plugin_api::PluginKind::Sandboxed {
+            return Err("only sandboxed plugins have UI webviews".into());
+        }
+        if host.lifecycle.state(&project_id, &plugin_id).state
+            != worldbuilder_plugin_api::LifecycleState::Active
+        {
+            return Err("plugin is not active".into());
+        }
+        let policy = webview_policy(&entry.manifest)
+            .ok_or_else(|| "plugin has no UI entrypoint".to_string())?;
+        validate_plugin_view(&entry.manifest, view_id.as_deref())?;
+        let url = plugin_webview_url(&policy, &project_id, view_id.as_deref())?;
+        (policy, url)
+    };
+    let label = policy.label.clone();
+
+    // Only one embedded plugin view occupies the workspace. Do not close a
+    // legacy external plugin window with the same identity.
+    for (other_label, webview) in app.webviews() {
+        if other_label.starts_with("plugin:")
+            && other_label != label
+            && app.get_webview_window(&other_label).is_none()
+        {
+            if let Ok(mut states) = embedded_webview_states().lock() {
+                states.remove(&other_label);
+            }
+            let _ = webview.close();
+        }
+    }
+
+    let position = tauri::LogicalPosition::new(bounds.x, bounds.y);
+    let size = tauri::LogicalSize::new(bounds.width, bounds.height);
+    if let Some(window) = app.get_webview_window(&label) {
+        window.close().map_err(|error| error.to_string())?;
+    }
+    if let Some(webview) = app.get_webview(&label) {
+        let ready = embedded_webview_states()
+            .lock()
+            .map(|mut states| {
+                let state = states
+                    .entry(label.clone())
+                    .or_insert(EmbeddedPluginWebviewState {
+                        bounds,
+                        ready: true,
+                    });
+                state.bounds = bounds;
+                state.ready
+            })
+            .map_err(|_| "embedded webview state lock poisoned".to_string())?;
+        if !ready {
+            return Ok(());
+        }
+        webview
+            .set_position(position)
+            .map_err(|error| error.to_string())?;
+        webview.set_size(size).map_err(|error| error.to_string())?;
+        webview.set_focus().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    let main = app
+        .get_window("main")
+        .ok_or_else(|| "main window is not available".to_string())?;
+    let builder = tauri::WebviewBuilder::new(label.clone(), url)
+        .use_https_scheme(true)
+        .initialization_script(
+            "Object.defineProperty(window, '__TAURI_INTERNALS__', { value: undefined, configurable: false });",
+        )
+        .on_page_load(move |webview, payload| {
+            if matches!(
+                payload.event(),
+                tauri::webview::PageLoadEvent::Finished
+            ) {
+                let bounds = embedded_webview_states()
+                    .lock()
+                    .ok()
+                    .and_then(|mut states| {
+                        let state = states.get_mut(webview.label())?;
+                        state.ready = true;
+                        Some(state.bounds)
+                    });
+                if let Some(bounds) = bounds {
+                    let _ = webview.set_position(tauri::LogicalPosition::new(bounds.x, bounds.y));
+                    let _ = webview.set_size(tauri::LogicalSize::new(bounds.width, bounds.height));
+                    let _ = webview.show();
+                }
+            }
+        });
+    // Keep the child effectively invisible until its first document has
+    // painted. Showing a newly-created native webview at its final bounds can
+    // expose its platform background for a frame, which appears as a flash.
+    {
+        let mut states = embedded_webview_states()
+            .lock()
+            .map_err(|_| "embedded webview state lock poisoned".to_string())?;
+        states.insert(
+            label.clone(),
+            EmbeddedPluginWebviewState {
+                bounds,
+                ready: false,
+            },
+        );
+    }
+    if let Err(error) = main.add_child(
+        builder,
+        tauri::LogicalPosition::new(0.0, 0.0),
+        tauri::LogicalSize::new(1.0, 1.0),
+    ) {
+        if let Ok(mut states) = embedded_webview_states().lock() {
+            states.remove(&label);
+        }
+        return Err(error.to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn plugin_resize_webview(
+    app: tauri::AppHandle,
+    bounds: PluginWebviewBounds,
+    plugin_id: String,
+) -> Result<(), String> {
+    bounds.validate()?;
+    let label = plugin_window_label(&plugin_id);
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| "embedded plugin webview is not mounted".to_string())?;
+    let ready = embedded_webview_states()
+        .lock()
+        .map(|mut states| {
+            let state = states.entry(label).or_insert(EmbeddedPluginWebviewState {
+                bounds,
+                ready: true,
+            });
+            state.bounds = bounds;
+            state.ready
+        })
+        .map_err(|_| "embedded webview state lock poisoned".to_string())?;
+    if !ready {
+        return Ok(());
+    }
+    webview
+        .set_position(tauri::LogicalPosition::new(bounds.x, bounds.y))
+        .map_err(|error| error.to_string())?;
+    webview
+        .set_size(tauri::LogicalSize::new(bounds.width, bounds.height))
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn plugin_unmount_webview(app: tauri::AppHandle, plugin_id: String) -> Result<(), String> {
+    let label = plugin_window_label(&plugin_id);
+    if let Ok(mut states) = embedded_webview_states().lock() {
+        states.remove(&label);
+    }
+    if let Some(webview) = app.get_webview(&label) {
+        if app.get_webview_window(&label).is_none() {
+            webview.close().map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_plugin_view(manifest: &PluginManifest, view_id: Option<&str>) -> Result<(), String> {
@@ -437,6 +688,192 @@ fn plugin_open_webview(
         .lock()
         .map_err(|_| "plugin host lock poisoned".to_string())?;
     open_plugin_webview(&app, &plugin_id, &project_id, &host, view_id.as_deref())
+}
+
+#[tauri::command]
+async fn plugin_host_view_data(
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    plugin_id: String,
+    view_id: String,
+    selected_entity_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let project_id = state
+        .lock()
+        .map_err(|_| "core lock poisoned".to_string())?
+        .info()
+        .map(|info| info.root)
+        .ok_or_else(|| "project is not open".to_string())?;
+    let view = plugins
+        .lock()
+        .map_err(|_| "plugin host lock poisoned".to_string())?
+        .host_view(&project_id, &plugin_id, &view_id)
+        .map_err(|error| error.to_string())?;
+
+    with_core(state, move |core| {
+        let project = core.project(trusted_shell())?;
+        let all_entities = project.list_entities()?;
+        let mut lists = serde_json::Map::new();
+        let mut list_entity_types = BTreeMap::new();
+        for component in &view.components {
+            if let ViewComponent::EntityList {
+                id,
+                entity_type,
+                limit,
+                ..
+            } = component
+            {
+                let entities = all_entities
+                    .iter()
+                    .filter(|entity| {
+                        !entity.deleted
+                            && entity.entity_type.as_deref() == Some(entity_type.as_str())
+                    })
+                    .take(*limit as usize)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                lists.insert(
+                    id.clone(),
+                    serde_json::to_value(entities)
+                        .map_err(|error| CoreError::Validation(error.to_string()))?,
+                );
+                list_entity_types.insert(id.clone(), entity_type.clone());
+            }
+        }
+
+        let selected = selected_entity_id.as_deref().and_then(|id| {
+            all_entities.iter().find(|entity| {
+                !entity.deleted
+                    && entity.id == id
+                    && entity.entity_type.as_ref().is_some_and(|entity_type| {
+                        list_entity_types
+                            .values()
+                            .any(|listed| listed == entity_type)
+                    })
+            })
+        });
+        let selected_id = selected.map(|entity| entity.id.as_str());
+        let mut fields = serde_json::Map::new();
+        if let Some(selected_id) = selected_id {
+            for component in &view.components {
+                if let ViewComponent::FieldForm {
+                    source,
+                    namespace,
+                    fields: requested_fields,
+                    ..
+                } = component
+                {
+                    let Some(source_type) = list_entity_types.get(source) else {
+                        continue;
+                    };
+                    let Some(selected_entity) = selected else {
+                        continue;
+                    };
+                    if selected_entity.entity_type.as_deref() != Some(source_type.as_str()) {
+                        continue;
+                    }
+                    for field in project.list_fields(selected_id.to_string())? {
+                        if field.namespace == *namespace && requested_fields.contains(&field.key) {
+                            fields.insert(field.key, field.value);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(serde_json::json!({
+            "lists": lists,
+            "selected": selected,
+            "fields": fields,
+        }))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn plugin_host_view_set_field(
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    plugin_id: String,
+    view_id: String,
+    component_id: String,
+    entity_id: String,
+    key: String,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    let project_id = state
+        .lock()
+        .map_err(|_| "core lock poisoned".to_string())?
+        .info()
+        .map(|info| info.root)
+        .ok_or_else(|| "project is not open".to_string())?;
+    let view = plugins
+        .lock()
+        .map_err(|_| "plugin host lock poisoned".to_string())?
+        .host_view(&project_id, &plugin_id, &view_id)
+        .map_err(|error| error.to_string())?;
+    let Some(ViewComponent::FieldForm {
+        source,
+        namespace,
+        fields,
+        editable: true,
+        ..
+    }) = view
+        .components
+        .iter()
+        .find(|component| component_id == component_id_of(component))
+    else {
+        return Err("host field form is not declared or is read-only".into());
+    };
+    if !fields.iter().any(|field| field == &key) {
+        return Err("field is not declared by the host field form".into());
+    }
+    let source_type = view
+        .components
+        .iter()
+        .find_map(|component| match component {
+            ViewComponent::EntityList {
+                id, entity_type, ..
+            } if id == source => Some(entity_type.as_str()),
+            _ => None,
+        })
+        .ok_or_else(|| "host field form source is invalid".to_string())?
+        .to_owned();
+    let namespace = namespace.clone();
+    with_core(state, move |core| {
+        let project = core.project(trusted_shell())?;
+        let entity = project
+            .list_entities()?
+            .into_iter()
+            .find(|entity| entity.id == entity_id && !entity.deleted);
+        if entity
+            .as_ref()
+            .and_then(|entity| entity.entity_type.as_deref())
+            != Some(source_type.as_str())
+        {
+            return Err(CoreError::NotFound(
+                "entity is outside the host view source".into(),
+            ));
+        }
+        project.set_field(FieldValue {
+            entity_id,
+            namespace,
+            key,
+            value,
+        })
+    })
+    .await
+}
+
+fn component_id_of(component: &ViewComponent) -> &str {
+    match component {
+        ViewComponent::Heading { id, .. }
+        | ViewComponent::Text { id, .. }
+        | ViewComponent::EntityList { id, .. }
+        | ViewComponent::EntityDetail { id, .. }
+        | ViewComponent::FieldForm { id, .. }
+        | ViewComponent::Button { id, .. } => id,
+    }
 }
 
 #[tauri::command]
@@ -2257,6 +2694,11 @@ pub fn run() {
             plugin_bootstrap,
             plugin_rpc,
             plugin_open_webview,
+            plugin_mount_webview,
+            plugin_resize_webview,
+            plugin_unmount_webview,
+            plugin_host_view_data,
+            plugin_host_view_set_field,
             plugin_close_webview,
             module_list_manifests,
             module_enable,
@@ -2459,5 +2901,37 @@ mod tests {
         assert!(validate_plugin_view(&manifest, None).is_ok());
         assert!(validate_plugin_view(&manifest, Some("ink-tools")).is_ok());
         assert!(validate_plugin_view(&manifest, Some("missing-view")).is_err());
+    }
+
+    #[test]
+    fn embedded_plugin_bounds_are_finite_and_bounded() {
+        let valid = PluginWebviewBounds {
+            x: 0.0,
+            y: 58.0,
+            width: 900.0,
+            height: 700.0,
+        };
+        assert!(valid.validate().is_ok());
+
+        for invalid in [
+            PluginWebviewBounds {
+                x: -1.0,
+                ..valid.clone()
+            },
+            PluginWebviewBounds {
+                y: f64::NAN,
+                ..valid.clone()
+            },
+            PluginWebviewBounds {
+                width: 0.0,
+                ..valid.clone()
+            },
+            PluginWebviewBounds {
+                height: 10_001.0,
+                ..valid.clone()
+            },
+        ] {
+            assert!(invalid.validate().is_err());
+        }
     }
 }

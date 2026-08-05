@@ -44,6 +44,11 @@ export interface PluginAdminEntry extends ProjectModuleManifest {
   dependencyState: DependencyState;
 }
 export interface PluginAdminView { plugins: PluginAdminEntry[]; }
+export interface HostViewData {
+  lists: Record<string, Entity[]>;
+  selected: Entity | null;
+  fields: Record<string, unknown>;
+}
 export interface PluginUpgradePlan {
   pluginId: string;
   fromVersion: string | null;
@@ -101,6 +106,15 @@ export const project = {
   adminView: () => invoke<PluginAdminView>("plugin_admin_view"),
   openPluginWebview: (pluginId: string, viewId?: string) =>
     invoke<void>("plugin_open_webview", { pluginId, viewId }),
+  mountPluginWebview: (pluginId: string, viewId: string | undefined, bounds: { x: number; y: number; width: number; height: number }) =>
+    invoke<void>("plugin_mount_webview", { pluginId, viewId, bounds }),
+  resizePluginWebview: (pluginId: string, bounds: { x: number; y: number; width: number; height: number }) =>
+    invoke<void>("plugin_resize_webview", { pluginId, bounds }),
+  unmountPluginWebview: (pluginId: string) => invoke<void>("plugin_unmount_webview", { pluginId }),
+  hostViewData: (pluginId: string, viewId: string, selectedEntityId?: string) =>
+    invoke<HostViewData>("plugin_host_view_data", { pluginId, viewId, selectedEntityId: selectedEntityId ?? null }),
+  hostViewSetField: (pluginId: string, viewId: string, componentId: string, entityId: string, key: string, value: unknown) =>
+    invoke<void>("plugin_host_view_set_field", { pluginId, viewId, componentId, entityId, key, value }),
   closePluginWebview: (pluginId: string) => invoke<void>("plugin_close_webview", { pluginId }),
   installPlugin: (archive: string, allowUnsigned = false) =>
     invoke<InstalledPluginVersion>("plugin_install_package", { archive, allowUnsigned }),

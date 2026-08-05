@@ -13,7 +13,7 @@ export interface Document { id: string; entity_id: string; format: string; body:
 export interface FieldValue { entity_id: string; namespace: string; key: string; value: unknown; }
 export interface Relationship { id: string; source_id: string; target_id: string; relationship_type: string; metadata: string; }
 export interface Asset { id: string; entity_id: string; namespace: string; filename: string; content_hash: string; size: number; mime_type: string; path: string; created_at: string; }
-export interface ProjectInfo { name: string; root: string; database: string; assets: string; }
+export interface ProjectInfo { name: string; root: string; index_status: string; assets: string; }
 export interface GitStatus { repository: boolean; branch: string | null; changes: string[]; }
 export interface GitLogEntry { hash: string; date: string; subject: string; }
 export type { ModuleManifest };

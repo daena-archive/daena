@@ -20,8 +20,8 @@ then turning insight into stories.
   attachments.
 - First-party Lore, Timeline, and Writing Studio modules that share the same
   project data instead of maintaining isolated copies.
-- Portable, local project folders with SQLite storage, JSON snapshots for
-  recovery, and optional Git integration.
+- Portable, local project folders with Markdown and JSON canonical data, a
+  disposable SQLite index, and optional Git integration.
 - A brokered plugin platform with declarative and sandboxed extension support.
 
 ## Project format
@@ -31,7 +31,9 @@ Each project is a self-contained directory:
 ```text
 My World/
 ├── project.json
-├── daena.sqlite
+├── entities/
+├── plugins/
+├── .daena/
 ├── .gitignore
 └── assets/
     ├── images/
@@ -40,9 +42,11 @@ My World/
     └── files/
 ```
 
-Files attached through the UI are copied into the project and recorded with a
-SHA-256 hash. Git can be initialized, inspected, and committed from the
-project menu. JSON snapshots are used internally for backups and recovery.
+`project.json`, entity records, and Markdown documents are canonical project
+data. `.daena/` contains the disposable local index and recovery state; it can
+be deleted and rebuilt without deleting project content. Files attached through
+the UI are copied into the project and recorded with a SHA-256 hash. Git can be
+initialized, inspected, and committed from the project menu.
 
 ## Development
 

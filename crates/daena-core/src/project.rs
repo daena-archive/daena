@@ -206,7 +206,7 @@ pub struct ProjectSnapshot {
 pub struct ProjectInfo {
     pub name: String,
     pub root: String,
-    pub database: String,
+    pub index_status: String,
     pub assets: String,
 }
 
@@ -237,7 +237,7 @@ fn encode_field_value(value: &serde_json::Value) -> Result<String, CoreError> {
 }
 
 fn project_database_path(root: &Path) -> PathBuf {
-    root.join("daena.sqlite")
+    root.join(".daena/index.sqlite")
 }
 
 pub struct ProjectStore {
@@ -251,13 +251,33 @@ impl ProjectStore {
         if path.is_dir() {
             return Self::open_directory(path);
         }
-        let root = path.parent().map(Path::to_path_buf);
-        Self::open_database(path, root)
+        Err(CoreError::Validation(
+            "project storage must be opened from a directory".into(),
+        ))
     }
 
     pub fn open_directory(path: impl AsRef<Path>) -> Result<Self, CoreError> {
         let root = path.as_ref();
         std::fs::create_dir_all(root).map_err(|error| CoreError::NotFound(error.to_string()))?;
+        if root.join("daena.sqlite").exists() {
+            return Err(CoreError::Validation(
+                "legacy daena.sqlite projects are not supported by format version 2".into(),
+            ));
+        }
+        let index_path = project_database_path(root);
+        let index_existed = index_path.exists();
+        for directory in [
+            "entities",
+            "plugins",
+            ".daena",
+            ".daena/transactions",
+            ".daena/backups",
+            ".daena/conflicts",
+            ".daena/local",
+        ] {
+            std::fs::create_dir_all(root.join(directory))
+                .map_err(|error| CoreError::NotFound(error.to_string()))?;
+        }
         std::fs::create_dir_all(root.join("assets/images"))
             .map_err(|error| CoreError::NotFound(error.to_string()))?;
         std::fs::create_dir_all(root.join("assets/videos"))
@@ -272,26 +292,52 @@ impl ProjectStore {
                 .file_name()
                 .and_then(|value| value.to_str())
                 .unwrap_or("Daena Archive project");
-            let metadata = ProjectInfo {
-                name: name.to_string(),
-                root: ".".into(),
-                database: "daena.sqlite".into(),
-                assets: "assets".into(),
-            };
-            let content = serde_json::to_string_pretty(&metadata)
-                .map_err(|error| CoreError::NotFound(error.to_string()))?;
-            std::fs::write(&metadata_path, format!("{content}\n"))
-                .map_err(|error| CoreError::NotFound(error.to_string()))?;
+            let metadata = crate::storage::ProjectManifest::new(name);
+            metadata.validate(&metadata_path)?;
+            crate::storage::write_json(&metadata_path, &metadata)?;
+        } else {
+            let metadata =
+                crate::storage::read_json::<crate::storage::ProjectManifest>(&metadata_path)?;
+            metadata.validate(&metadata_path)?;
         }
         let gitignore = root.join(".gitignore");
-        if !gitignore.exists() {
-            std::fs::write(
-                &gitignore,
-                "daena.sqlite-wal\ndaena.sqlite-shm\ndaena.sqlite-journal\n",
-            )
-            .map_err(|error| CoreError::NotFound(error.to_string()))?;
+        let required_gitignore = [".daena/", "daena.sqlite", "daena.sqlite-*"];
+        let existing_gitignore = if gitignore.exists() {
+            std::fs::read_to_string(&gitignore)
+                .map_err(|error| CoreError::NotFound(error.to_string()))?
+        } else {
+            String::new()
+        };
+        let mut gitignore_content = existing_gitignore.clone();
+        for pattern in required_gitignore {
+            if !existing_gitignore.lines().any(|line| line.trim() == pattern) {
+                if !gitignore_content.is_empty() && !gitignore_content.ends_with('\n') {
+                    gitignore_content.push('\n');
+                }
+                gitignore_content.push_str(pattern);
+                gitignore_content.push('\n');
+            }
         }
-        Self::open_database(project_database_path(root), Some(root.to_path_buf()))
+        if gitignore_content != existing_gitignore {
+            std::fs::write(&gitignore, gitignore_content)
+                .map_err(|error| CoreError::NotFound(error.to_string()))?;
+        }
+        let store = Self::open_database(&index_path, Some(root.to_path_buf()))?;
+        if directory_has_canonical_entities(root) {
+            let canonical = crate::storage::read_canonical_project(root)?;
+            canonical
+                .manifest
+                .validate(&root.join("project.json"))?;
+            let payload = serde_json::to_string(&canonical.snapshot)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?;
+            store.import_json_with_mode(&payload, true)?;
+        } else if index_existed && store.entity_count()? > 0 {
+            return Err(CoreError::Validation(
+                "disposable index contains data but canonical entity files are missing".into(),
+            ));
+        }
+        store.sync_canonical()?;
+        Ok(store)
     }
 
     fn open_database(path: impl AsRef<Path>, root: Option<PathBuf>) -> Result<Self, CoreError> {
@@ -302,6 +348,25 @@ impl ProjectStore {
         Ok(store)
     }
 
+    fn entity_count(&self) -> Result<i64, CoreError> {
+        self.connection
+            .query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))
+            .map_err(CoreError::Database)
+    }
+
+    fn sync_canonical(&self) -> Result<(), CoreError> {
+        let Some(root) = self.root.as_deref() else {
+            return Ok(());
+        };
+        let manifest_path = root.join("project.json");
+        let manifest: crate::storage::ProjectManifest =
+            crate::storage::read_json(&manifest_path)?;
+        manifest.validate(&manifest_path)?;
+        let snapshot: ProjectSnapshot = serde_json::from_str(&self.export_json()?)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        crate::storage::write_canonical_project(root, &manifest, &snapshot)
+    }
+
     pub fn in_memory() -> Result<Self, CoreError> {
         Self::open_database(":memory:", None)
     }
@@ -309,15 +374,18 @@ impl ProjectStore {
     pub fn info(&self) -> Option<ProjectInfo> {
         let root = self.root.as_ref()?;
         Some(ProjectInfo {
-            name: root
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("Daena Archive project")
-                .to_string(),
+            name: crate::storage::read_json::<crate::storage::ProjectManifest>(
+                &root.join("project.json"),
+            )
+            .map(|manifest| manifest.name)
+            .unwrap_or_else(|_| {
+                root.file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("Daena Archive project")
+                    .to_string()
+            }),
             root: root.to_string_lossy().to_string(),
-            database: project_database_path(root)
-                .to_string_lossy()
-                .to_string(),
+            index_status: "ready".into(),
             assets: root.join("assets").to_string_lossy().to_string(),
         })
     }
@@ -479,6 +547,7 @@ impl ProjectStore {
             params![id, input.name.trim(), entity_type, now],
         )?;
         self.rebuild_search()?;
+        self.sync_canonical()?;
         Ok(Entity {
             id,
             name: input.name.trim().into(),
@@ -573,6 +642,7 @@ impl ProjectStore {
         }
         transaction.commit()?;
         self.rebuild_search()?;
+        self.sync_canonical()?;
         Ok(Entity {
             id,
             name: input.name.trim().into(),
@@ -620,6 +690,7 @@ impl ProjectStore {
         let now = chrono_like_now();
         if self.connection.execute("UPDATE entities SET name=COALESCE(?2,name), entity_type=COALESCE(?3,entity_type), updated_at=?4 WHERE id=?1 AND deleted=0", params![id, name, entity_type, now])? == 0 { return Err(CoreError::NotFound("entity not found".into())); }
         self.rebuild_search()?;
+        self.sync_canonical()?;
         self.connection.query_row("SELECT id,name,entity_type,deleted,created_at,updated_at FROM entities WHERE id=?1", params![id], |row| Ok(Entity { id: row.get(0)?, name: row.get(1)?, entity_type: row.get(2)?, deleted: row.get::<_, i64>(3)? != 0, created_at: row.get(4)?, updated_at: row.get(5)? })).map_err(Into::into)
     }
 
@@ -632,6 +703,7 @@ impl ProjectStore {
             return Err(CoreError::NotFound("entity not found".into()));
         }
         self.rebuild_search()?;
+        self.sync_canonical()?;
         Ok(())
     }
 
@@ -702,6 +774,7 @@ impl ProjectStore {
         }
         transaction.commit()?;
         self.rebuild_search()?;
+        self.sync_canonical()?;
         Ok(())
     }
 
@@ -737,6 +810,8 @@ impl ProjectStore {
         }
         let value = encode_field_value(&field.value)?;
         self.connection.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value", params![field.entity_id, field.namespace, field.key, value])?;
+        self.rebuild_search()?;
+        self.sync_canonical()?;
         Ok(())
     }
     pub fn list_fields(&self, entity_id: String) -> Result<Vec<FieldValue>, CoreError> {
@@ -777,6 +852,7 @@ impl ProjectStore {
         let id = Uuid::new_v4().to_string();
         let metadata = input.metadata.unwrap_or_else(|| "{}".into());
         self.connection.execute("INSERT INTO relationships(id,source_id,target_id,relationship_type,metadata) VALUES (?1,?2,?3,?4,?5)", params![id, input.source_id, input.target_id, input.relationship_type, metadata])?;
+        self.sync_canonical()?;
         Ok(Relationship {
             id,
             source_id: input.source_id,
@@ -794,6 +870,7 @@ impl ProjectStore {
         {
             return Err(CoreError::NotFound("relationship not found".into()));
         }
+        self.sync_canonical()?;
         Ok(())
     }
 
@@ -1001,6 +1078,7 @@ impl ProjectStore {
         }
         transaction.commit()?;
         self.rebuild_search()?;
+        self.sync_canonical()?;
         Ok(snapshot.entities.len())
     }
 
@@ -1022,6 +1100,7 @@ impl ProjectStore {
             "INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
             params![id, input.entity_id, input.namespace, input.filename, input.content_hash, input.size, input.mime_type, input.path, now],
         )?;
+        self.sync_canonical()?;
         Ok(Asset {
             id,
             entity_id: input.entity_id,
@@ -1146,7 +1225,7 @@ impl ProjectStore {
             ));
         }
         let root = self.project_root()?.to_path_buf();
-        let directory = root.join("backups").join("plugins");
+        let directory = root.join(".daena").join("backups").join("plugins");
         std::fs::create_dir_all(&directory)
             .map_err(|error| CoreError::NotFound(error.to_string()))?;
         let created_at = chrono_like_now();
@@ -1288,6 +1367,7 @@ impl ProjectStore {
             params![plugin_id],
         )?;
         transaction.commit()?;
+        self.sync_canonical()?;
         Ok(backup)
     }
 
@@ -1530,6 +1610,7 @@ impl ProjectStore {
         tx.execute("INSERT OR IGNORE INTO module_namespaces(module_id,namespace) VALUES ('daena.lore','lore'), ('daena.timeline','timeline')", [])?;
         tx.commit()?;
         self.rebuild_search()?;
+        self.sync_canonical()?;
         Ok(25)
     }
 
@@ -1580,6 +1661,7 @@ impl ProjectStore {
             "INSERT INTO module_state(module_id, enabled) VALUES (?1, ?2) ON CONFLICT(module_id) DO UPDATE SET enabled=excluded.enabled",
             params![module_id, enabled as i64],
         )?;
+        self.sync_canonical()?;
         Ok(())
     }
 
@@ -1619,6 +1701,7 @@ impl ProjectStore {
                 )?;
             }
         }
+        self.sync_canonical()?;
         Ok(())
     }
 
@@ -1662,16 +1745,32 @@ impl ProjectStore {
                 };
             }
         }
+        self.rebuild_search()?;
+        self.sync_canonical()?;
         Ok(backup)
     }
 }
 
-fn chrono_like_now() -> String {
+pub(crate) fn chrono_like_now() -> String {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
         .to_string()
+}
+
+fn directory_has_canonical_entities(root: &Path) -> bool {
+    let has_entities = std::fs::read_dir(root.join("entities"))
+        .map(|entries| entries.flatten().any(|entry| entry.path().is_dir()))
+        .unwrap_or(false);
+    let has_plugin_state = std::fs::read_dir(root.join("plugins"))
+        .map(|entries| {
+            entries.flatten().any(|entry| {
+                entry.path().extension().and_then(|extension| extension.to_str()) == Some("json")
+            })
+        })
+        .unwrap_or(false);
+    has_entities || has_plugin_state
 }
 
 fn digest_bytes(bytes: &[u8]) -> String {
@@ -1684,6 +1783,36 @@ fn digest_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    fn canonical_files(root: &Path) -> BTreeMap<String, Vec<u8>> {
+        fn visit(root: &Path, current: &Path, files: &mut BTreeMap<String, Vec<u8>>) {
+            for entry in std::fs::read_dir(current).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.file_name().and_then(|name| name.to_str()) == Some(".daena") {
+                    continue;
+                }
+                if path.is_dir() {
+                    visit(root, &path, files);
+                } else {
+                    let relative = path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+                    if relative == "project.json"
+                        || relative.starts_with("entities/")
+                        || relative.starts_with("plugins/")
+                        || relative.starts_with("assets/")
+                    {
+                        files.insert(relative, std::fs::read(path).unwrap());
+                    }
+                }
+            }
+        }
+
+        let mut files = BTreeMap::new();
+        visit(root, root, &mut files);
+        files
+    }
+
     #[test]
     fn creates_entities_and_rejects_empty_names() {
         let store = ProjectStore::in_memory().unwrap();
@@ -1700,6 +1829,18 @@ mod tests {
                 entity_type: None
             })
             .is_err());
+    }
+
+    #[test]
+    fn file_backed_project_paths_are_rejected() {
+        let path = std::env::temp_dir().join(format!("daena-legacy-{}.sqlite", Uuid::new_v4()));
+        std::fs::write(&path, b"legacy database placeholder").unwrap();
+        let error = match ProjectStore::open(&path) {
+            Ok(_) => panic!("file-backed project paths must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("opened from a directory"));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -1920,12 +2061,9 @@ mod tests {
 
     #[test]
     fn opening_and_updating_rebuilds_search_for_documents_and_fields() {
-        let path = std::env::temp_dir().join(format!(
-            "daena-search-test-{}.sqlite",
-            Uuid::new_v4()
-        ));
+        let path = std::env::temp_dir().join(format!("daena-search-test-{}", Uuid::new_v4()));
         {
-            let store = ProjectStore::open(&path).unwrap();
+            let store = ProjectStore::open_directory(&path).unwrap();
             let entity = store
                 .create_entity(CreateEntity {
                     name: "Search target".into(),
@@ -1953,7 +2091,7 @@ mod tests {
                 .unwrap();
         }
 
-        let store = ProjectStore::open(&path).unwrap();
+        let store = ProjectStore::open_directory(&path).unwrap();
         let entity = store.search("old prose".into()).unwrap();
         assert_eq!(entity.len(), 1);
         let field_match = store.search("old field".into()).unwrap();
@@ -1982,7 +2120,7 @@ mod tests {
         assert_eq!(store.search("new field".into()).unwrap().len(), 1);
 
         drop(store);
-        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
@@ -2309,7 +2447,19 @@ mod tests {
         let store = ProjectStore::open_directory(&root).unwrap();
         assert_eq!(store.info().unwrap().root, root.to_string_lossy());
         assert!(root.join("project.json").is_file());
-        assert!(root.join("daena.sqlite").is_file());
+        assert!(root.join(".daena/index.sqlite").is_file());
+        assert!(root.join("entities").is_dir());
+        assert!(root.join("plugins").is_dir());
+        let manifest = crate::storage::read_json::<crate::storage::ProjectManifest>(
+            &root.join("project.json"),
+        )
+        .unwrap();
+        assert_eq!(manifest.format_version, 2);
+        assert_eq!(manifest.name, root.file_name().unwrap().to_string_lossy());
+        assert_eq!(
+            std::fs::read_to_string(root.join(".gitignore")).unwrap(),
+            ".daena/\ndaena.sqlite\ndaena.sqlite-*\n"
+        );
         assert!(root.join("assets/images").is_dir());
         assert!(root.join("assets/videos").is_dir());
         assert!(root.join("assets/maps").is_dir());
@@ -2347,7 +2497,85 @@ mod tests {
         assert!(asset.path.starts_with("assets/files/"));
         assert!(root.join(&asset.path).is_file());
         drop(store);
+        std::fs::remove_dir_all(root.join(".daena")).unwrap();
+        let reopened = ProjectStore::open_directory(&root).unwrap();
+        assert_eq!(reopened.list_assets(asset.entity_id).unwrap().len(), 1);
+        drop(reopened);
         std::fs::remove_file(source).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn canonical_files_survive_disposable_index_deletion() {
+        let root = std::env::temp_dir().join(format!("daena-canonical-{}", Uuid::new_v4()));
+        let mut first = ProjectStore::open_directory(&root).unwrap();
+        let source = first
+            .create_entity(CreateEntity {
+                name: "Source".into(),
+                entity_type: Some("place".into()),
+            })
+            .unwrap();
+        let target = first
+            .create_entity(CreateEntity {
+                name: "Target".into(),
+                entity_type: Some("place".into()),
+            })
+            .unwrap();
+        first
+            .apply_migration(&crate::migrations::Migration {
+                id: "notes-v1".into(),
+                module_id: "com.example.notes".into(),
+                from: 0,
+                to: 1,
+                operations: vec![crate::migrations::Operation::CreateNamespace {
+                    namespace: "notes".into(),
+                }],
+                recovery: "backup".into(),
+                package_digest: "sha256:test".into(),
+            })
+            .unwrap();
+        first
+            .save_document(SaveDocument {
+                entity_id: source.id.clone(),
+                body: "# Canonical prose".into(),
+                format: Some("rich-text".into()),
+            })
+            .unwrap();
+        first
+            .set_field(FieldValue {
+                entity_id: source.id.clone(),
+                namespace: "notes".into(),
+                key: "summary".into(),
+                value: serde_json::json!("stored in files"),
+            })
+            .unwrap();
+        first
+            .create_relationship(RelationshipInput {
+                source_id: source.id.clone(),
+                target_id: target.id,
+                relationship_type: "located-in".into(),
+                metadata: None,
+            })
+            .unwrap();
+        drop(first);
+
+        assert!(root.join("entities").join(&source.id).join("entity.json").is_file());
+        assert!(root.join("entities").join(&source.id).join("document.md").is_file());
+        assert!(root.join("plugins/com.example.notes.json").is_file());
+        let canonical_before = canonical_files(&root);
+        std::fs::remove_dir_all(root.join(".daena")).unwrap();
+
+        let reopened = ProjectStore::open_directory(&root).unwrap();
+        assert_eq!(canonical_files(&root), canonical_before);
+        let entities = reopened.list_entities().unwrap();
+        assert_eq!(entities.len(), 2);
+        assert_eq!(
+            reopened.list_documents(source.id.clone()).unwrap()[0].body,
+            "# Canonical prose\n"
+        );
+        assert_eq!(reopened.list_fields(source.id.clone()).unwrap().len(), 1);
+        assert_eq!(reopened.list_relationships(source.id).unwrap().len(), 1);
+        drop(reopened);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

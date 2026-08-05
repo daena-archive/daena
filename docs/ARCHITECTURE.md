@@ -15,10 +15,12 @@ guide](./PLUGIN_SDK.md).
 
 ## Canonical data
 
-Each project is a portable directory containing `project.json`, the canonical
-`daena.sqlite` database, and an `assets/` tree divided into images,
-videos, maps, and other files. JSON snapshots remain an interoperability and
-recovery format; optional Git operations are explicit user actions.
+Each project is a portable directory containing `project.json`, canonical
+entity/document files, a disposable `.daena/index.sqlite` derived index, and
+an `assets/` tree divided into images, videos, maps, and other files. Optional
+Git operations are explicit user actions. The version-2 format is being
+introduced incrementally; the filesystem repository and full index rebuild are
+the next storage phases.
 
 Every entity has an immutable UUID, a
 display name, an optional type, timestamps, and a soft-delete marker. Prose is

@@ -329,7 +329,10 @@ mod tests {
         assert!(apply(&mut connection, &missing).is_err());
 
         connection
-            .execute("INSERT INTO module_namespaces(module_id, namespace) VALUES ('daena.lore', 'lore')", [])
+            .execute(
+                "INSERT INTO module_namespaces(module_id, namespace) VALUES ('daena.lore', 'lore')",
+                [],
+            )
             .unwrap();
         connection
             .execute("INSERT INTO module_fields(module_id, namespace, key, field_type, required) VALUES ('daena.lore', 'lore', 'summary', 'text', 0)", [])

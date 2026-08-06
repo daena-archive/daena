@@ -1,11 +1,11 @@
 use crate::error::CoreError;
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +51,8 @@ pub struct Entity {
     pub deleted: bool,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub revision: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +75,8 @@ pub struct Document {
     pub format: String,
     pub body: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub revision: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldValue {
@@ -80,6 +84,8 @@ pub struct FieldValue {
     pub namespace: String,
     pub key: String,
     pub value: serde_json::Value,
+    #[serde(default)]
+    pub revision: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +103,8 @@ pub struct Relationship {
     pub target_id: String,
     pub relationship_type: String,
     pub metadata: String,
+    #[serde(default)]
+    pub revision: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +138,8 @@ pub struct Asset {
     pub mime_type: String,
     pub path: String,
     pub created_at: String,
+    #[serde(default)]
+    pub revision: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,6 +253,7 @@ fn project_database_path(root: &Path) -> PathBuf {
 pub struct ProjectStore {
     connection: Connection,
     root: Option<PathBuf>,
+    pending_asset_imports: Mutex<BTreeMap<String, Vec<u8>>>,
 }
 
 impl ProjectStore {
@@ -285,6 +296,7 @@ impl ProjectStore {
             .map_err(|error| CoreError::NotFound(error.to_string()))?;
         std::fs::create_dir_all(root.join("assets/files"))
             .map_err(|error| CoreError::NotFound(error.to_string()))?;
+        crate::transactions::recover_transactions(root)?;
         let metadata_path = root.join("project.json");
         if !metadata_path.exists() {
             let name = root
@@ -309,7 +321,10 @@ impl ProjectStore {
         };
         let mut gitignore_content = existing_gitignore.clone();
         for pattern in required_gitignore {
-            if !existing_gitignore.lines().any(|line| line.trim() == pattern) {
+            if !existing_gitignore
+                .lines()
+                .any(|line| line.trim() == pattern)
+            {
                 if !gitignore_content.is_empty() && !gitignore_content.ends_with('\n') {
                     gitignore_content.push('\n');
                 }
@@ -371,7 +386,11 @@ impl ProjectStore {
     fn open_database(path: impl AsRef<Path>, root: Option<PathBuf>) -> Result<Self, CoreError> {
         let connection = Connection::open(path)?;
         connection.pragma_update(None, "foreign_keys", true)?;
-        let store = Self { connection, root };
+        let store = Self {
+            connection,
+            root,
+            pending_asset_imports: Mutex::new(BTreeMap::new()),
+        };
         store.initialize()?;
         Ok(store)
     }
@@ -410,9 +429,9 @@ impl ProjectStore {
                 "index integrity check failed: {integrity}"
             )));
         }
-        let actual: usize = self
-            .connection
-            .query_row("SELECT COUNT(*) FROM source_files", [], |row| row.get(0))?;
+        let actual: usize =
+            self.connection
+                .query_row("SELECT COUNT(*) FROM source_files", [], |row| row.get(0))?;
         if actual != source_count {
             return Err(CoreError::Validation(format!(
                 "index source count mismatch: expected {source_count}, found {actual}"
@@ -453,17 +472,290 @@ impl ProjectStore {
         Ok(())
     }
 
+    fn revision_for_entity(&self, entity_id: &str) -> Result<String, CoreError> {
+        let entity = self.connection.query_row(
+            "SELECT id,name,entity_type,deleted,created_at,updated_at FROM entities WHERE id=?1",
+            params![entity_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            },
+        )?;
+        let documents = self
+            .connection
+            .prepare(
+                "SELECT id,format,body,updated_at FROM documents WHERE entity_id=?1 ORDER BY id",
+            )?
+            .query_map(params![entity_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let fields = self
+            .connection
+            .prepare("SELECT namespace,key,value FROM entity_fields WHERE entity_id=?1 ORDER BY namespace,key")?
+            .query_map(params![entity_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let relationships = self
+            .connection
+            .prepare("SELECT id,source_id,target_id,relationship_type,metadata FROM relationships WHERE source_id=?1 OR target_id=?1 ORDER BY id")?
+            .query_map(params![entity_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let assets = self
+            .connection
+            .prepare("SELECT id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets WHERE entity_id=?1 ORDER BY id")?
+            .query_map(params![entity_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let source_hashes = self.canonical_source_hashes(&format!("entities/{entity_id}/%"))?;
+        revision_digest(&(
+            entity,
+            documents,
+            fields,
+            relationships,
+            assets,
+            source_hashes,
+        ))
+    }
+
+    fn revision_for_document(&self, id: &str) -> Result<String, CoreError> {
+        let value = self.connection.query_row(
+            "SELECT id,entity_id,format,body,updated_at FROM documents WHERE id=?1",
+            params![id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )?;
+        let source_hashes =
+            self.canonical_source_hashes(&format!("entities/{}/document.md", value.1))?;
+        revision_digest(&(value, source_hashes))
+    }
+
+    fn revision_for_field(&self, field: &FieldValue) -> Result<String, CoreError> {
+        let source_hashes =
+            self.canonical_source_hashes(&format!("entities/{}/fields/%", field.entity_id))?;
+        revision_digest(&(
+            &field.entity_id,
+            &field.namespace,
+            &field.key,
+            encode_field_value(&field.value)?,
+            source_hashes,
+        ))
+    }
+
+    fn revision_for_relationship(&self, id: &str) -> Result<String, CoreError> {
+        let value = self.connection.query_row(
+            "SELECT id,source_id,target_id,relationship_type,metadata FROM relationships WHERE id=?1",
+            params![id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )?;
+        let source_hashes =
+            self.canonical_source_hashes(&format!("entities/{}/relationships.json", value.1))?;
+        revision_digest(&(value, source_hashes))
+    }
+
+    fn revision_for_asset(&self, id: &str) -> Result<String, CoreError> {
+        let value = self.connection.query_row(
+            "SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets WHERE id=?1",
+            params![id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                ))
+            },
+        )?;
+        let source_hashes = self.canonical_source_hashes(&value.7)?;
+        revision_digest(&(value, source_hashes))
+    }
+
+    fn canonical_source_hashes(&self, pattern: &str) -> Result<Vec<(String, String)>, CoreError> {
+        if self.root.is_none() {
+            return Ok(Vec::new());
+        }
+        self.connection
+            .prepare(
+                "SELECT path,content_hash FROM source_files WHERE path=?1 OR path LIKE ?1 ORDER BY path",
+            )?
+            .query_map(params![pattern], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(CoreError::from)
+    }
+
     fn sync_canonical(&self) -> Result<(), CoreError> {
+        let request_id = Uuid::new_v4().to_string();
+        self.sync_canonical_with_request_id(&request_id, None)
+    }
+
+    fn sync_canonical_with_request_id(
+        &self,
+        request_id: &str,
+        result: Option<&serde_json::Value>,
+    ) -> Result<(), CoreError> {
+        let outcome = self.sync_canonical_with_request_id_inner(request_id, result);
+        if outcome.is_err() {
+            if let Some(root) = self.root.as_deref() {
+                if let Ok(canonical) = crate::storage::FilesystemRepository::open(root)
+                    .and_then(|repository| repository.scan())
+                {
+                    if let Ok(payload) = serde_json::to_string(&canonical.snapshot) {
+                        let _ = self.import_json_with_mode_and_sync(&payload, true, false);
+                    }
+                }
+            }
+        }
+        outcome
+    }
+
+    fn sync_canonical_with_request_id_inner(
+        &self,
+        request_id: &str,
+        result: Option<&serde_json::Value>,
+    ) -> Result<(), CoreError> {
         let Some(root) = self.root.as_deref() else {
             return Ok(());
         };
         let manifest_path = root.join("project.json");
-        let manifest: crate::storage::ProjectManifest =
-            crate::storage::read_json(&manifest_path)?;
+        let manifest: crate::storage::ProjectManifest = crate::storage::read_json(&manifest_path)?;
         manifest.validate(&manifest_path)?;
         let snapshot: ProjectSnapshot = serde_json::from_str(&self.export_json_inner()?)
             .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        crate::storage::write_canonical_project(root, &manifest, &snapshot)?;
+        let canonical = crate::storage::FilesystemRepository::open(root)?.scan()?;
+        let mut transaction = match crate::transactions::FileTransaction::begin(root, request_id)? {
+            crate::transactions::TransactionStart::Ready(transaction) => transaction,
+            crate::transactions::TransactionStart::AlreadyCommitted => {
+                return Err(CoreError::Conflict(
+                    "generated transaction request ID was already committed".into(),
+                ));
+            }
+        };
+        let staging_root = transaction.staging_root();
+        std::fs::create_dir_all(&staging_root).map_err(|error| CoreError::Io {
+            operation: "create canonical transaction staging root",
+            source: error,
+        })?;
+        for source in &canonical.sources {
+            let source_path = crate::storage::normalized_project_path(root, &source.path)?;
+            let staged_path = crate::storage::normalized_project_path(&staging_root, &source.path)?;
+            if let Some(parent) = staged_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| CoreError::Io {
+                    operation: "create canonical transaction staging parent",
+                    source: error,
+                })?;
+            }
+            std::fs::copy(&source_path, &staged_path).map_err(|error| CoreError::Io {
+                operation: "copy canonical data into transaction staging",
+                source: error,
+            })?;
+        }
+        let pending_assets = self
+            .pending_asset_imports
+            .lock()
+            .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
+            .clone();
+        for (relative_path, bytes) in &pending_assets {
+            let staged_path =
+                crate::storage::normalized_project_path(&staging_root, relative_path)?;
+            if let Some(parent) = staged_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| CoreError::Io {
+                    operation: "create staged asset parent",
+                    source: error,
+                })?;
+            }
+            std::fs::write(&staged_path, bytes).map_err(|error| CoreError::Io {
+                operation: "write staged asset import",
+                source: error,
+            })?;
+        }
+        crate::storage::write_canonical_project(&staging_root, &manifest, &snapshot)?;
+        let staged = crate::storage::FilesystemRepository::open(&staging_root)?.scan()?;
+        let staged_paths = staged
+            .sources
+            .iter()
+            .map(|source| source.path.clone())
+            .collect::<BTreeSet<_>>();
+        for source in &staged.sources {
+            let path = crate::storage::normalized_project_path(&staging_root, &source.path)?;
+            let bytes = std::fs::read(&path).map_err(|error| CoreError::Io {
+                operation: "read staged canonical data",
+                source: error,
+            })?;
+            transaction.stage_bytes(&source.path, &bytes)?;
+        }
+        for source in &canonical.sources {
+            if !staged_paths.contains(&source.path) {
+                transaction.stage_remove(&source.path)?;
+            }
+        }
+        if let Some(result) = result {
+            transaction.commit_with_result(result)?;
+        } else {
+            transaction.commit()?;
+        }
+        if !pending_assets.is_empty() {
+            let mut pending = self
+                .pending_asset_imports
+                .lock()
+                .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?;
+            for path in pending_assets.keys() {
+                pending.remove(path);
+            }
+        }
         let canonical = crate::storage::FilesystemRepository::open(root)?.scan()?;
         self.replace_source_index(&canonical.sources)?;
         self.rebuild_search()?;
@@ -497,6 +789,48 @@ impl ProjectStore {
         self.root
             .as_deref()
             .ok_or_else(|| CoreError::NotFound("project is not directory-backed".into()))
+    }
+
+    fn request_id(&self, request_id: Option<&str>) -> Result<String, CoreError> {
+        let request_id = request_id
+            .map(str::to_owned)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        Uuid::parse_str(&request_id)
+            .map_err(|_| CoreError::Validation("mutation request ID must be a UUID".into()))?;
+        Ok(request_id)
+    }
+
+    fn committed_mutation<T: DeserializeOwned>(
+        &self,
+        request_id: Option<&str>,
+    ) -> Result<Option<T>, CoreError> {
+        let Some(request_id) = request_id else {
+            return Ok(None);
+        };
+        let Some(root) = self.root.as_deref() else {
+            return Ok(None);
+        };
+        let Some(result) = crate::transactions::committed_result(root, request_id)? else {
+            return Ok(None);
+        };
+        serde_json::from_value(result)
+            .map(Some)
+            .map_err(|error| CoreError::Serialization(error.to_string()))
+    }
+
+    fn ensure_expected_revision(
+        expected: Option<&str>,
+        actual: String,
+        record: &str,
+    ) -> Result<(), CoreError> {
+        if let Some(expected) = expected {
+            if expected != actual {
+                return Err(CoreError::Conflict(format!(
+                    "{record} revision conflict: expected {expected}, current {actual}"
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn run_git(&self, args: &[&str]) -> Result<std::process::Output, CoreError> {
@@ -645,6 +979,18 @@ impl ProjectStore {
     }
 
     pub fn create_entity(&self, input: CreateEntity) -> Result<Entity, CoreError> {
+        self.create_entity_with_request(input, None)
+    }
+
+    pub fn create_entity_with_request(
+        &self,
+        input: CreateEntity,
+        request_id: Option<&str>,
+    ) -> Result<Entity, CoreError> {
+        if let Some(mut entity) = self.committed_mutation::<Entity>(request_id)? {
+            entity.revision = self.revision_for_entity(&entity.id)?;
+            return Ok(entity);
+        }
         if input.name.trim().is_empty() {
             return Err(CoreError::NotFound("entity name cannot be empty".into()));
         }
@@ -656,7 +1002,19 @@ impl ProjectStore {
             params![id, input.name.trim(), entity_type, now],
         )?;
         self.rebuild_search()?;
-        self.sync_canonical()?;
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&Entity {
+            id: id.clone(),
+            name: input.name.trim().into(),
+            entity_type: entity_type.clone(),
+            deleted: false,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            revision: String::new(),
+        })
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        self.sync_canonical_with_request_id(&request_id, Some(&result))?;
+        let revision = self.revision_for_entity(&id)?;
         Ok(Entity {
             id,
             name: input.name.trim().into(),
@@ -664,10 +1022,23 @@ impl ProjectStore {
             deleted: false,
             created_at: now.clone(),
             updated_at: now,
+            revision,
         })
     }
 
     pub fn create_entry(&self, input: CreateEntry) -> Result<Entity, CoreError> {
+        self.create_entry_with_request(input, None)
+    }
+
+    pub fn create_entry_with_request(
+        &self,
+        input: CreateEntry,
+        request_id: Option<&str>,
+    ) -> Result<Entity, CoreError> {
+        if let Some(mut entity) = self.committed_mutation::<Entity>(request_id)? {
+            entity.revision = self.revision_for_entity(&entity.id)?;
+            return Ok(entity);
+        }
         if input.name.trim().is_empty() {
             return Err(CoreError::NotFound("entity name cannot be empty".into()));
         }
@@ -751,7 +1122,19 @@ impl ProjectStore {
         }
         transaction.commit()?;
         self.rebuild_search()?;
-        self.sync_canonical()?;
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&Entity {
+            id: id.clone(),
+            name: input.name.trim().into(),
+            entity_type: entity_type.clone(),
+            deleted: false,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            revision: String::new(),
+        })
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        self.sync_canonical_with_request_id(&request_id, Some(&result))?;
+        let revision = self.revision_for_entity(&id)?;
         Ok(Entity {
             id,
             name: input.name.trim().into(),
@@ -759,6 +1142,7 @@ impl ProjectStore {
             deleted: false,
             created_at: now.clone(),
             updated_at: now,
+            revision,
         })
     }
 
@@ -781,9 +1165,14 @@ impl ProjectStore {
                 deleted: row.get::<_, i64>(3)? != 0,
                 created_at: row.get(4)?,
                 updated_at: row.get(5)?,
+                revision: String::new(),
             })
         })?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        let mut entities = rows.collect::<Result<Vec<_>, _>>()?;
+        for entity in &mut entities {
+            entity.revision = self.revision_for_entity(&entity.id)?;
+        }
+        Ok(entities)
     }
 
     pub fn update_entity(
@@ -792,6 +1181,29 @@ impl ProjectStore {
         name: Option<String>,
         entity_type: Option<String>,
     ) -> Result<Entity, CoreError> {
+        self.update_entity_with_options(id, name, entity_type, None, None)
+    }
+
+    pub fn update_entity_with_options(
+        &self,
+        id: String,
+        name: Option<String>,
+        entity_type: Option<String>,
+        expected_revision: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Result<Entity, CoreError> {
+        if let Some(mut entity) = self.committed_mutation::<Entity>(request_id)? {
+            entity.revision = self.revision_for_entity(&entity.id)?;
+            return Ok(entity);
+        }
+        if self.root.is_some() {
+            self.ensure_source_index_current()?;
+        }
+        Self::ensure_expected_revision(
+            expected_revision,
+            self.revision_for_entity(&id)?,
+            "entity",
+        )?;
         if let Some(value) = &name {
             if value.trim().is_empty() {
                 return Err(CoreError::NotFound("entity name cannot be empty".into()));
@@ -800,11 +1212,53 @@ impl ProjectStore {
         let now = chrono_like_now();
         if self.connection.execute("UPDATE entities SET name=COALESCE(?2,name), entity_type=COALESCE(?3,entity_type), updated_at=?4 WHERE id=?1 AND deleted=0", params![id, name, entity_type, now])? == 0 { return Err(CoreError::NotFound("entity not found".into())); }
         self.rebuild_search()?;
-        self.sync_canonical()?;
-        self.connection.query_row("SELECT id,name,entity_type,deleted,created_at,updated_at FROM entities WHERE id=?1", params![id], |row| Ok(Entity { id: row.get(0)?, name: row.get(1)?, entity_type: row.get(2)?, deleted: row.get::<_, i64>(3)? != 0, created_at: row.get(4)?, updated_at: row.get(5)? })).map_err(Into::into)
+        let mut entity = self.connection.query_row(
+            "SELECT id,name,entity_type,deleted,created_at,updated_at FROM entities WHERE id=?1",
+            params![id],
+            |row| {
+                Ok(Entity {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    entity_type: row.get(2)?,
+                    deleted: row.get::<_, i64>(3)? != 0,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                    revision: String::new(),
+                })
+            },
+        )?;
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&entity)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        self.sync_canonical_with_request_id(&request_id, Some(&result))?;
+        entity.revision = self.revision_for_entity(&entity.id)?;
+        Ok(entity)
     }
 
     pub fn delete_entity(&self, id: String) -> Result<(), CoreError> {
+        self.delete_entity_with_options(id, None, None)
+    }
+
+    pub fn delete_entity_with_options(
+        &self,
+        id: String,
+        expected_revision: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        if self
+            .committed_mutation::<serde_json::Value>(request_id)?
+            .is_some()
+        {
+            return Ok(());
+        }
+        if self.root.is_some() {
+            self.ensure_source_index_current()?;
+        }
+        Self::ensure_expected_revision(
+            expected_revision,
+            self.revision_for_entity(&id)?,
+            "entity",
+        )?;
         if self.connection.execute(
             "UPDATE entities SET deleted=1, updated_at=?2 WHERE id=?1 AND deleted=0",
             params![id, chrono_like_now()],
@@ -813,18 +1267,47 @@ impl ProjectStore {
             return Err(CoreError::NotFound("entity not found".into()));
         }
         self.rebuild_search()?;
-        self.sync_canonical()?;
+        let request_id = self.request_id(request_id)?;
+        self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
         Ok(())
     }
 
     pub fn save_document(&self, input: SaveDocument) -> Result<(), CoreError> {
-        self.save_entry(SaveEntry {
-            document: input,
-            fields: Vec::new(),
-        })
+        self.save_document_with_options(input, None, None)
+    }
+
+    pub fn save_document_with_options(
+        &self,
+        input: SaveDocument,
+        expected_revision: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        self.save_entry_with_options(
+            SaveEntry {
+                document: input,
+                fields: Vec::new(),
+            },
+            expected_revision,
+            request_id,
+        )
     }
 
     pub fn save_entry(&self, input: SaveEntry) -> Result<(), CoreError> {
+        self.save_entry_with_options(input, None, None)
+    }
+
+    pub fn save_entry_with_options(
+        &self,
+        input: SaveEntry,
+        expected_revision: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        if self
+            .committed_mutation::<serde_json::Value>(request_id)?
+            .is_some()
+        {
+            return Ok(());
+        }
         let document = input.document;
         let format = document.format.unwrap_or_else(|| "markdown".into());
         if format != "markdown" && format != "plain-text" && format != "rich-text" {
@@ -840,6 +1323,26 @@ impl ProjectStore {
             .optional()?;
         if exists.is_none() {
             return Err(CoreError::NotFound("entity not found".into()));
+        }
+        let current_document_id: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT id FROM documents WHERE entity_id=?1 ORDER BY updated_at DESC LIMIT 1",
+                params![document.entity_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(expected_revision) = expected_revision {
+            let Some(document_id) = current_document_id.as_deref() else {
+                return Err(CoreError::Conflict(
+                    "document revision conflict: document does not exist".into(),
+                ));
+            };
+            Self::ensure_expected_revision(
+                Some(expected_revision),
+                self.revision_for_document(document_id)?,
+                "document",
+            )?;
         }
         let encoded_fields = input
             .fields
@@ -858,6 +1361,36 @@ impl ProjectStore {
                 Ok((field, encode_field_value(&field.value)?))
             })
             .collect::<Result<Vec<_>, CoreError>>()?;
+        for (field, _) in &encoded_fields {
+            if field.revision.is_empty() {
+                continue;
+            }
+            let current: Option<String> = self
+                .connection
+                .query_row(
+                    "SELECT value FROM entity_fields WHERE entity_id=?1 AND namespace=?2 AND key=?3",
+                    params![field.entity_id, field.namespace, field.key],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(current) = current else {
+                return Err(CoreError::Conflict(
+                    "field revision conflict: field does not exist".into(),
+                ));
+            };
+            let current_field = FieldValue {
+                entity_id: field.entity_id.clone(),
+                namespace: field.namespace.clone(),
+                key: field.key.clone(),
+                value: decode_field_value(current),
+                revision: String::new(),
+            };
+            Self::ensure_expected_revision(
+                Some(&field.revision),
+                self.revision_for_field(&current_field)?,
+                "field",
+            )?;
+        }
         let now = chrono_like_now();
         let document_id: Option<String> = self
             .connection
@@ -884,7 +1417,8 @@ impl ProjectStore {
         }
         transaction.commit()?;
         self.rebuild_search()?;
-        self.sync_canonical()?;
+        let request_id = self.request_id(request_id)?;
+        self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
         Ok(())
     }
 
@@ -902,11 +1436,30 @@ impl ProjectStore {
                 format: row.get(2)?,
                 body: row.get(3)?,
                 updated_at: row.get(4)?,
+                revision: String::new(),
             })
         })?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        let mut documents = rows.collect::<Result<Vec<_>, _>>()?;
+        for document in &mut documents {
+            document.revision = self.revision_for_document(&document.id)?;
+        }
+        Ok(documents)
     }
     pub fn set_field(&self, field: FieldValue) -> Result<(), CoreError> {
+        self.set_field_with_request(field, None)
+    }
+
+    pub fn set_field_with_request(
+        &self,
+        field: FieldValue,
+        request_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        if self
+            .committed_mutation::<serde_json::Value>(request_id)?
+            .is_some()
+        {
+            return Ok(());
+        }
         let exists: Option<String> = self
             .connection
             .query_row(
@@ -923,10 +1476,38 @@ impl ProjectStore {
                 "field namespace and key are required".into(),
             ));
         }
+        if !field.revision.is_empty() {
+            let current: Option<String> = self
+                .connection
+                .query_row(
+                    "SELECT value FROM entity_fields WHERE entity_id=?1 AND namespace=?2 AND key=?3",
+                    params![field.entity_id, field.namespace, field.key],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(current) = current else {
+                return Err(CoreError::Conflict(
+                    "field revision conflict: field does not exist".into(),
+                ));
+            };
+            let current_field = FieldValue {
+                entity_id: field.entity_id.clone(),
+                namespace: field.namespace.clone(),
+                key: field.key.clone(),
+                value: decode_field_value(current),
+                revision: String::new(),
+            };
+            Self::ensure_expected_revision(
+                Some(&field.revision),
+                self.revision_for_field(&current_field)?,
+                "field",
+            )?;
+        }
         let value = encode_field_value(&field.value)?;
         self.connection.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value", params![field.entity_id, field.namespace, field.key, value])?;
         self.rebuild_search()?;
-        self.sync_canonical()?;
+        let request_id = self.request_id(request_id)?;
+        self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
         Ok(())
     }
     pub fn list_fields(&self, entity_id: String) -> Result<Vec<FieldValue>, CoreError> {
@@ -945,12 +1526,39 @@ impl ProjectStore {
                 namespace: r.get(1)?,
                 key: r.get(2)?,
                 value: decode_field_value(value),
+                revision: String::new(),
             })
         })?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        let mut fields = rows.collect::<Result<Vec<_>, _>>()?;
+        for field in &mut fields {
+            field.revision = self.revision_for_field(field)?;
+        }
+        Ok(fields)
     }
 
     pub fn create_relationship(&self, input: RelationshipInput) -> Result<Relationship, CoreError> {
+        self.create_relationship_with_options(input, None, None)
+    }
+
+    pub fn create_relationship_with_request(
+        &self,
+        input: RelationshipInput,
+        request_id: Option<&str>,
+    ) -> Result<Relationship, CoreError> {
+        self.create_relationship_with_options(input, None, request_id)
+    }
+
+    pub fn create_relationship_with_options(
+        &self,
+        input: RelationshipInput,
+        expected_revision: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Result<Relationship, CoreError> {
+        if let Some(relationship) = self.committed_mutation::<Relationship>(request_id)? {
+            let mut relationship = relationship;
+            relationship.revision = self.revision_for_relationship(&relationship.id)?;
+            return Ok(relationship);
+        }
         for entity_id in [&input.source_id, &input.target_id] {
             let exists: Option<String> = self
                 .connection
@@ -969,20 +1577,57 @@ impl ProjectStore {
                 "relationship type cannot be empty".into(),
             ));
         }
+        Self::ensure_expected_revision(
+            expected_revision,
+            self.revision_for_entity(&input.source_id)?,
+            "relationship source entity",
+        )?;
         let id = Uuid::new_v4().to_string();
         let metadata = input.metadata.unwrap_or_else(|| "{}".into());
         self.connection.execute("INSERT INTO relationships(id,source_id,target_id,relationship_type,metadata) VALUES (?1,?2,?3,?4,?5)", params![id, input.source_id, input.target_id, input.relationship_type, metadata])?;
-        self.sync_canonical()?;
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&Relationship {
+            id: id.clone(),
+            source_id: input.source_id.clone(),
+            target_id: input.target_id.clone(),
+            relationship_type: input.relationship_type.clone(),
+            metadata: metadata.clone(),
+            revision: String::new(),
+        })
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        self.sync_canonical_with_request_id(&request_id, Some(&result))?;
+        let revision = self.revision_for_relationship(&id)?;
         Ok(Relationship {
             id,
             source_id: input.source_id,
             target_id: input.target_id,
             relationship_type: input.relationship_type,
             metadata,
+            revision,
         })
     }
 
     pub fn delete_relationship(&self, id: String) -> Result<(), CoreError> {
+        self.delete_relationship_with_options(id, None, None)
+    }
+
+    pub fn delete_relationship_with_options(
+        &self,
+        id: String,
+        expected_revision: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        if self
+            .committed_mutation::<serde_json::Value>(request_id)?
+            .is_some()
+        {
+            return Ok(());
+        }
+        Self::ensure_expected_revision(
+            expected_revision,
+            self.revision_for_relationship(&id)?,
+            "relationship",
+        )?;
         if self
             .connection
             .execute("DELETE FROM relationships WHERE id=?1", params![id])?
@@ -990,7 +1635,8 @@ impl ProjectStore {
         {
             return Err(CoreError::NotFound("relationship not found".into()));
         }
-        self.sync_canonical()?;
+        let request_id = self.request_id(request_id)?;
+        self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
         Ok(())
     }
 
@@ -1007,11 +1653,16 @@ impl ProjectStore {
                         target_id: row.get(2)?,
                         relationship_type: row.get(3)?,
                         metadata: row.get(4)?,
+                        revision: String::new(),
                     })
                 },
             )
             .optional()?
             .ok_or_else(|| CoreError::NotFound("relationship not found".into()))
+            .and_then(|mut relationship| {
+                relationship.revision = self.revision_for_relationship(&relationship.id)?;
+                Ok(relationship)
+            })
     }
 
     pub fn list_relationships(&self, entity_id: String) -> Result<Vec<Relationship>, CoreError> {
@@ -1019,7 +1670,10 @@ impl ProjectStore {
         self.list_relationships_unchecked(entity_id)
     }
 
-    fn list_relationships_unchecked(&self, entity_id: String) -> Result<Vec<Relationship>, CoreError> {
+    fn list_relationships_unchecked(
+        &self,
+        entity_id: String,
+    ) -> Result<Vec<Relationship>, CoreError> {
         let mut statement = self.connection.prepare("SELECT id,source_id,target_id,relationship_type,metadata FROM relationships WHERE source_id=?1 OR target_id=?1")?;
         let rows = statement.query_map(params![entity_id], |row| {
             Ok(Relationship {
@@ -1028,9 +1682,14 @@ impl ProjectStore {
                 target_id: row.get(2)?,
                 relationship_type: row.get(3)?,
                 metadata: row.get(4)?,
+                revision: String::new(),
             })
         })?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        let mut relationships = rows.collect::<Result<Vec<_>, _>>()?;
+        for relationship in &mut relationships {
+            relationship.revision = self.revision_for_relationship(&relationship.id)?;
+        }
+        Ok(relationships)
     }
 
     pub fn search(&self, query: String) -> Result<Vec<Entity>, CoreError> {
@@ -1052,9 +1711,14 @@ impl ProjectStore {
                 deleted: row.get::<_, i64>(3)? != 0,
                 created_at: row.get(4)?,
                 updated_at: row.get(5)?,
+                revision: String::new(),
             })
         })?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        let mut entities = rows.collect::<Result<Vec<_>, _>>()?;
+        for entity in &mut entities {
+            entity.revision = self.revision_for_entity(&entity.id)?;
+        }
+        Ok(entities)
     }
 
     pub fn export_json(&self) -> Result<String, CoreError> {
@@ -1142,6 +1806,7 @@ impl ProjectStore {
         .map_err(|error| CoreError::NotFound(error.to_string()))
     }
 
+    #[allow(dead_code)]
     fn import_json_with_mode(&self, payload: &str, replace: bool) -> Result<usize, CoreError> {
         self.import_json_with_mode_and_sync(payload, replace, true)
     }
@@ -1151,6 +1816,16 @@ impl ProjectStore {
         payload: &str,
         replace: bool,
         sync_canonical: bool,
+    ) -> Result<usize, CoreError> {
+        self.import_json_with_mode_and_sync_with_request(payload, replace, sync_canonical, None)
+    }
+
+    fn import_json_with_mode_and_sync_with_request(
+        &self,
+        payload: &str,
+        replace: bool,
+        sync_canonical: bool,
+        request_id: Option<&str>,
     ) -> Result<usize, CoreError> {
         let snapshot: ProjectSnapshot = serde_json::from_str(payload)
             .map_err(|error| CoreError::NotFound(error.to_string()))?;
@@ -1220,12 +1895,34 @@ impl ProjectStore {
         transaction.commit()?;
         self.rebuild_search()?;
         if sync_canonical {
-            self.sync_canonical()?;
+            let request_id = self.request_id(request_id)?;
+            self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
         }
         Ok(snapshot.entities.len())
     }
 
     pub fn register_asset(&self, input: AssetInput) -> Result<Asset, CoreError> {
+        self.register_asset_with_options(input, None, None)
+    }
+
+    pub fn register_asset_with_request(
+        &self,
+        input: AssetInput,
+        request_id: Option<&str>,
+    ) -> Result<Asset, CoreError> {
+        self.register_asset_with_options(input, None, request_id)
+    }
+
+    pub fn register_asset_with_options(
+        &self,
+        input: AssetInput,
+        expected_revision: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Result<Asset, CoreError> {
+        if let Some(mut asset) = self.committed_mutation::<Asset>(request_id)? {
+            asset.revision = self.revision_for_asset(&asset.id)?;
+            return Ok(asset);
+        }
         let exists: Option<String> = self
             .connection
             .query_row(
@@ -1237,13 +1934,33 @@ impl ProjectStore {
         if exists.is_none() {
             return Err(CoreError::NotFound("entity not found".into()));
         }
+        Self::ensure_expected_revision(
+            expected_revision,
+            self.revision_for_entity(&input.entity_id)?,
+            "asset entity",
+        )?;
         let id = Uuid::new_v4().to_string();
         let now = chrono_like_now();
         self.connection.execute(
             "INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
             params![id, input.entity_id, input.namespace, input.filename, input.content_hash, input.size, input.mime_type, input.path, now],
         )?;
-        self.sync_canonical()?;
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&Asset {
+            id: id.clone(),
+            entity_id: input.entity_id.clone(),
+            namespace: input.namespace.clone(),
+            filename: input.filename.clone(),
+            content_hash: input.content_hash.clone(),
+            size: input.size,
+            mime_type: input.mime_type.clone(),
+            path: input.path.clone(),
+            created_at: now.clone(),
+            revision: String::new(),
+        })
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        self.sync_canonical_with_request_id(&request_id, Some(&result))?;
+        let revision = self.revision_for_asset(&id)?;
         Ok(Asset {
             id,
             entity_id: input.entity_id,
@@ -1254,11 +1971,28 @@ impl ProjectStore {
             mime_type: input.mime_type,
             path: input.path,
             created_at: now,
+            revision,
         })
     }
 
     pub fn register_asset_file(&self, input: AssetFileInput) -> Result<Asset, CoreError> {
-        let root = self.project_root()?.to_path_buf();
+        self.register_asset_file_with_options(input, None, None)
+    }
+
+    pub fn register_asset_file_with_request(
+        &self,
+        input: AssetFileInput,
+        request_id: Option<&str>,
+    ) -> Result<Asset, CoreError> {
+        self.register_asset_file_with_options(input, None, request_id)
+    }
+
+    pub fn register_asset_file_with_options(
+        &self,
+        input: AssetFileInput,
+        expected_revision: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Result<Asset, CoreError> {
         let source = Path::new(&input.source_path);
         let metadata =
             std::fs::metadata(source).map_err(|error| CoreError::NotFound(error.to_string()))?;
@@ -1286,40 +2020,32 @@ impl ProjectStore {
         } else {
             "files"
         };
-        let destination_dir = root.join("assets").join(category);
-        std::fs::create_dir_all(&destination_dir)
-            .map_err(|error| CoreError::NotFound(error.to_string()))?;
-        let destination = destination_dir.join(format!("{}-{}", Uuid::new_v4(), filename));
-        std::fs::copy(source, &destination)
-            .map_err(|error| CoreError::NotFound(error.to_string()))?;
-        let mut reader = BufReader::new(
-            std::fs::File::open(source).map_err(|error| CoreError::NotFound(error.to_string()))?,
+        let bytes =
+            std::fs::read(source).map_err(|error| CoreError::NotFound(error.to_string()))?;
+        let relative_path = format!("assets/{category}/{}-{}", Uuid::new_v4(), filename);
+        self.pending_asset_imports
+            .lock()
+            .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
+            .insert(relative_path.clone(), bytes.clone());
+        let result = self.register_asset_with_options(
+            AssetInput {
+                entity_id: input.entity_id,
+                namespace: input.namespace,
+                filename: filename.into(),
+                content_hash: format!("sha256:{:x}", Sha256::digest(&bytes)),
+                size: bytes.len() as i64,
+                mime_type: input.mime_type,
+                path: relative_path,
+            },
+            expected_revision,
+            request_id,
         );
-        let mut hasher = Sha256::new();
-        let mut buffer = [0_u8; 64 * 1024];
-        loop {
-            let count = reader
-                .read(&mut buffer)
-                .map_err(|error| CoreError::NotFound(error.to_string()))?;
-            if count == 0 {
-                break;
+        if result.is_err() {
+            if let Ok(mut pending) = self.pending_asset_imports.lock() {
+                pending.retain(|_, value| value != &bytes);
             }
-            hasher.update(&buffer[..count]);
         }
-        let relative_path = destination
-            .strip_prefix(root)
-            .unwrap_or(&destination)
-            .to_string_lossy()
-            .replace('\\', "/");
-        self.register_asset(AssetInput {
-            entity_id: input.entity_id,
-            namespace: input.namespace,
-            filename: filename.into(),
-            content_hash: format!("sha256:{:x}", hasher.finalize()),
-            size: metadata.len() as i64,
-            mime_type: input.mime_type,
-            path: relative_path,
-        })
+        result
     }
 
     pub fn list_assets(&self, entity_id: String) -> Result<Vec<Asset>, CoreError> {
@@ -1340,9 +2066,14 @@ impl ProjectStore {
                 mime_type: row.get(6)?,
                 path: row.get(7)?,
                 created_at: row.get(8)?,
+                revision: String::new(),
             })
         })?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        let mut assets = rows.collect::<Result<Vec<_>, _>>()?;
+        for asset in &mut assets {
+            asset.revision = self.revision_for_asset(&asset.id)?;
+        }
+        Ok(assets)
     }
 
     pub fn backup(&self) -> Result<String, CoreError> {
@@ -1367,15 +2098,32 @@ impl ProjectStore {
         to_package_version: Option<&str>,
         data_version: i64,
     ) -> Result<PluginBackup, CoreError> {
+        self.create_plugin_backup_with_request(
+            module_id,
+            from_package_version,
+            to_package_version,
+            data_version,
+            None,
+        )
+    }
+
+    pub fn create_plugin_backup_with_request(
+        &self,
+        module_id: &str,
+        from_package_version: Option<&str>,
+        to_package_version: Option<&str>,
+        data_version: i64,
+        request_id: Option<&str>,
+    ) -> Result<PluginBackup, CoreError> {
+        if let Some(backup) = self.committed_mutation::<PluginBackup>(request_id)? {
+            return Ok(backup);
+        }
         if module_id.trim().is_empty() {
             return Err(CoreError::Validation(
                 "plugin backup requires a module ID".into(),
             ));
         }
         let root = self.project_root()?.to_path_buf();
-        let directory = root.join(".daena").join("backups").join("plugins");
-        std::fs::create_dir_all(&directory)
-            .map_err(|error| CoreError::NotFound(error.to_string()))?;
         let created_at = chrono_like_now();
         let backup_id = Uuid::new_v4().to_string();
         let safe_module = module_id
@@ -1388,12 +2136,11 @@ impl ProjectStore {
                 }
             })
             .collect::<String>();
-        let path = directory.join(format!(
-            "plugin-{safe_module}-{created_at}-{backup_id}.json"
-        ));
+        let relative_path =
+            format!(".daena/backups/plugins/plugin-{safe_module}-{created_at}-{backup_id}.json");
+        let path = root.join(&relative_path);
         let payload = self.export_json()?;
         let content_hash = digest_bytes(payload.as_bytes());
-        std::fs::write(&path, payload).map_err(|error| CoreError::NotFound(error.to_string()))?;
         let backup = PluginBackup {
             id: backup_id,
             module_id: module_id.into(),
@@ -1404,12 +2151,27 @@ impl ProjectStore {
             content_hash,
             created_at,
         };
+        let request_id = self.request_id(request_id)?;
+        let mut transaction = match crate::transactions::FileTransaction::begin(&root, &request_id)?
+        {
+            crate::transactions::TransactionStart::Ready(transaction) => transaction,
+            crate::transactions::TransactionStart::AlreadyCommitted => {
+                return self
+                    .committed_mutation::<PluginBackup>(Some(&request_id))?
+                    .ok_or_else(|| {
+                        CoreError::Conflict("backup request was already committed".into())
+                    });
+            }
+        };
+        transaction.stage_bytes(&relative_path, payload.as_bytes())?;
+        let result = serde_json::to_value(&backup)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        transaction.commit_with_result(&result)?;
         let result = self.connection.execute(
             "INSERT INTO plugin_backups(id,module_id,from_package_version,to_package_version,data_version,path,content_hash,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             params![backup.id, backup.module_id, backup.from_package_version, backup.to_package_version, backup.data_version, backup.path, backup.content_hash, backup.created_at],
         );
         if let Err(error) = result {
-            let _ = std::fs::remove_file(&path);
             return Err(error.into());
         }
         Ok(backup)
@@ -1443,6 +2205,14 @@ impl ProjectStore {
     }
 
     pub fn restore_plugin_backup(&self, backup: &PluginBackup) -> Result<(), CoreError> {
+        self.restore_plugin_backup_with_request(backup, None)
+    }
+
+    pub fn restore_plugin_backup_with_request(
+        &self,
+        backup: &PluginBackup,
+        request_id: Option<&str>,
+    ) -> Result<(), CoreError> {
         let payload = std::fs::read(&backup.path)
             .map_err(|error| CoreError::NotFound(format!("read plugin backup: {error}")))?;
         if digest_bytes(&payload) != backup.content_hash {
@@ -1450,9 +2220,12 @@ impl ProjectStore {
                 "plugin backup integrity check failed".into(),
             ));
         }
-        self.restore_payload(std::str::from_utf8(&payload).map_err(|error| {
-            CoreError::Validation(format!("plugin backup is not UTF-8: {error}"))
-        })?)
+        self.restore_payload_with_request(
+            std::str::from_utf8(&payload).map_err(|error| {
+                CoreError::Validation(format!("plugin backup is not UTF-8: {error}"))
+            })?,
+            request_id,
+        )
     }
 
     pub fn restore(&self, path: String) -> Result<(), CoreError> {
@@ -1463,7 +2236,22 @@ impl ProjectStore {
     }
 
     pub fn restore_payload(&self, payload: &str) -> Result<(), CoreError> {
-        self.import_json_with_mode(payload, true)?;
+        self.restore_payload_with_request(payload, None)?;
+        Ok(())
+    }
+
+    pub fn restore_payload_with_request(
+        &self,
+        payload: &str,
+        request_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        if self
+            .committed_mutation::<serde_json::Value>(request_id)?
+            .is_some()
+        {
+            return Ok(());
+        }
+        self.import_json_with_mode_and_sync_with_request(payload, true, true, request_id)?;
         Ok(())
     }
 
@@ -1475,6 +2263,18 @@ impl ProjectStore {
         plugin_id: &str,
         confirmation: &str,
     ) -> Result<String, CoreError> {
+        self.delete_plugin_data_with_request(plugin_id, confirmation, None)
+    }
+
+    pub fn delete_plugin_data_with_request(
+        &self,
+        plugin_id: &str,
+        confirmation: &str,
+        request_id: Option<&str>,
+    ) -> Result<String, CoreError> {
+        if let Some(backup) = self.committed_mutation::<String>(request_id)? {
+            return Ok(backup);
+        }
         if plugin_id.trim().is_empty() || confirmation != plugin_id {
             return Err(CoreError::Unauthorized {
                 operation: "confirm plugin data deletion",
@@ -1515,7 +2315,10 @@ impl ProjectStore {
             params![plugin_id],
         )?;
         transaction.commit()?;
-        self.sync_canonical()?;
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&backup)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        self.sync_canonical_with_request_id(&request_id, Some(&result))?;
         Ok(backup)
     }
 
@@ -1715,8 +2518,14 @@ impl ProjectStore {
         tx.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,'lore','region',?2)", params![glass_coast_id, "Western shore"])?;
         tx.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,'lore','climate',?2)", params![glass_coast_id, "Stormy and bright"])?;
         tx.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,'lore','population',?2)", params![glass_coast_id, "4200"])?;
-        tx.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,'lore','goal',?2)", params![silver_hand_id, "Protect the realm's roads and rulers"])?;
-        tx.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,'lore','goal',?2)", params![ember_court_id, "Preserve the old fire rites"])?;
+        tx.execute(
+            "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,'lore','goal',?2)",
+            params![silver_hand_id, "Protect the realm's roads and rulers"],
+        )?;
+        tx.execute(
+            "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,'lore','goal',?2)",
+            params![ember_court_id, "Preserve the old fire rites"],
+        )?;
         tx.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,'lore','values',?2)", params![highland_id, "Honor, craft, and ancestral songs"])?;
         tx.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,'lore','language',?2)", params![highland_id, "High Cant"])?;
         tx.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,'lore','values',?2)", params![riverborn_id, "Adaptability, memory, and hospitality"])?;
@@ -1731,7 +2540,10 @@ impl ProjectStore {
         tx.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,'lore','population',?2)", params![lantern_marsh_id, "2300"])?;
         tx.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,'lore','occupation',?2)", params![elian_rook_id, "Coast patrol captain"])?;
         tx.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,'lore','occupation',?2)", params![sera_ashdown_id, "Archivist and fire-rite scholar"])?;
-        tx.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,'lore','goal',?2)", params![tidewatch_id, "Keep the coast's signal network alive"])?;
+        tx.execute(
+            "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,'lore','goal',?2)",
+            params![tidewatch_id, "Keep the coast's signal network alive"],
+        )?;
         tx.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,'lore','material',?2)", params![crown_salt_id, "Silver, pearl, and black coral"])?;
         tx.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,'lore','values',?2)", params![coastfolk_id, "Reciprocity, remembrance, and safe passage"])?;
         tx.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,'lore','language',?2)", params![coastfolk_id, "Coastal Sign"])?;
@@ -1803,6 +2615,21 @@ impl ProjectStore {
     }
 
     pub fn set_module_enabled(&self, module_id: String, enabled: bool) -> Result<(), CoreError> {
+        self.set_module_enabled_with_request(module_id, enabled, None)
+    }
+
+    pub fn set_module_enabled_with_request(
+        &self,
+        module_id: String,
+        enabled: bool,
+        request_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        if self
+            .committed_mutation::<serde_json::Value>(request_id)?
+            .is_some()
+        {
+            return Ok(());
+        }
         self.connection.execute(
             "INSERT OR IGNORE INTO module_versions(module_id,version) VALUES (?1,0)",
             params![module_id],
@@ -1811,7 +2638,8 @@ impl ProjectStore {
             "INSERT INTO module_state(module_id, enabled) VALUES (?1, ?2) ON CONFLICT(module_id) DO UPDATE SET enabled=excluded.enabled",
             params![module_id, enabled as i64],
         )?;
-        self.sync_canonical()?;
+        let request_id = self.request_id(request_id)?;
+        self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
         Ok(())
     }
 
@@ -1834,6 +2662,21 @@ impl ProjectStore {
         module_id: &str,
         package_version: Option<&str>,
     ) -> Result<(), CoreError> {
+        self.set_module_package_version_with_request(module_id, package_version, None)
+    }
+
+    pub fn set_module_package_version_with_request(
+        &self,
+        module_id: &str,
+        package_version: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        if self
+            .committed_mutation::<serde_json::Value>(request_id)?
+            .is_some()
+        {
+            return Ok(());
+        }
         match package_version {
             Some(version) => {
                 self.connection.execute(
@@ -1852,7 +2695,8 @@ impl ProjectStore {
                 )?;
             }
         }
-        self.sync_canonical()?;
+        let request_id = self.request_id(request_id)?;
+        self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
         Ok(())
     }
 
@@ -1872,7 +2716,7 @@ impl ProjectStore {
         &mut self,
         migration: &crate::migrations::Migration,
     ) -> Result<(), CoreError> {
-        self.apply_migrations(std::slice::from_ref(migration))
+        self.apply_migrations_with_request(std::slice::from_ref(migration), None)
             .map(|_| ())
     }
 
@@ -1883,6 +2727,17 @@ impl ProjectStore {
         &mut self,
         migrations: &[crate::migrations::Migration],
     ) -> Result<String, CoreError> {
+        self.apply_migrations_with_request(migrations, None)
+    }
+
+    pub fn apply_migrations_with_request(
+        &mut self,
+        migrations: &[crate::migrations::Migration],
+        request_id: Option<&str>,
+    ) -> Result<String, CoreError> {
+        if let Some(backup) = self.committed_mutation::<String>(request_id)? {
+            return Ok(backup);
+        }
         let backup = self
             .backup()
             .map_err(|error| CoreError::Validation(error.to_string()))?;
@@ -1898,7 +2753,10 @@ impl ProjectStore {
             }
         }
         self.rebuild_search()?;
-        self.sync_canonical()?;
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&backup)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        self.sync_canonical_with_request_id(&request_id, Some(&result))?;
         Ok(backup)
     }
 }
@@ -1918,6 +2776,12 @@ fn digest_bytes(bytes: &[u8]) -> String {
         .collect()
 }
 
+fn revision_digest<T: Serialize>(value: &T) -> Result<String, CoreError> {
+    let bytes =
+        serde_json::to_vec(value).map_err(|error| CoreError::Serialization(error.to_string()))?;
+    Ok(format!("sha256:{}", digest_bytes(&bytes)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1934,7 +2798,11 @@ mod tests {
                 if path.is_dir() {
                     visit(root, &path, files);
                 } else {
-                    let relative = path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+                    let relative = path
+                        .strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/");
                     if relative == "project.json"
                         || relative.starts_with("entities/")
                         || relative.starts_with("plugins/")
@@ -1967,6 +2835,89 @@ mod tests {
                 entity_type: None
             })
             .is_err());
+    }
+
+    #[test]
+    fn directory_mutations_return_revisions_and_replay_requests() {
+        let root = std::env::temp_dir().join(format!("daena-revision-{}", Uuid::new_v4()));
+        let store = ProjectStore::open_directory(&root).unwrap();
+        let request_id = Uuid::new_v4().to_string();
+        let first = store
+            .create_entity_with_request(
+                CreateEntity {
+                    name: "Revisioned entity".into(),
+                    entity_type: Some("place".into()),
+                },
+                Some(&request_id),
+            )
+            .unwrap();
+        let replay = store
+            .create_entity_with_request(
+                CreateEntity {
+                    name: "This must not duplicate".into(),
+                    entity_type: None,
+                },
+                Some(&request_id),
+            )
+            .unwrap();
+        assert_eq!(first.id, replay.id);
+        assert!(!first.revision.is_empty());
+        assert_eq!(store.list_entities().unwrap().len(), 1);
+
+        let conflict = store.update_entity_with_options(
+            first.id.clone(),
+            Some("Changed concurrently".into()),
+            None,
+            Some("sha256:stale"),
+            Some(&Uuid::new_v4().to_string()),
+        );
+        assert!(matches!(conflict, Err(CoreError::Conflict(_))));
+        let updated = store
+            .update_entity_with_options(
+                first.id.clone(),
+                Some("Changed safely".into()),
+                None,
+                Some(&first.revision),
+                Some(&Uuid::new_v4().to_string()),
+            )
+            .unwrap();
+        assert_ne!(first.revision, updated.revision);
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn asset_file_import_is_committed_with_canonical_metadata() {
+        let root = std::env::temp_dir().join(format!("daena-asset-{}", Uuid::new_v4()));
+        let source = root.with_extension("source.bin");
+        std::fs::write(&source, b"asset bytes").unwrap();
+        let store = ProjectStore::open_directory(&root).unwrap();
+        let entity = store
+            .create_entity(CreateEntity {
+                name: "Asset owner".into(),
+                entity_type: None,
+            })
+            .unwrap();
+        let asset = store
+            .register_asset_file(AssetFileInput {
+                entity_id: entity.id.clone(),
+                namespace: "core".into(),
+                source_path: source.to_string_lossy().into_owned(),
+                filename: "sample.bin".into(),
+                mime_type: "application/octet-stream".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            std::fs::read(root.join(&asset.path)).unwrap(),
+            b"asset bytes"
+        );
+        assert_eq!(
+            store.list_assets(entity.id).unwrap()[0].revision,
+            asset.revision
+        );
+        drop(store);
+        std::fs::remove_file(source).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2179,6 +3130,7 @@ mod tests {
                 namespace: "lore".into(),
                 key: "summary".into(),
                 value: serde_json::json!("A port"),
+                revision: String::new(),
             })
             .unwrap();
         store
@@ -2187,6 +3139,7 @@ mod tests {
                 namespace: "timeline".into(),
                 key: "startsAt".into(),
                 value: serde_json::json!("0010-01-01"),
+                revision: String::new(),
             })
             .unwrap();
         assert_eq!(store.list_documents(entity.id.clone()).unwrap().len(), 1);
@@ -2221,6 +3174,7 @@ mod tests {
                     namespace: "lore".into(),
                     key: "summary".into(),
                     value: serde_json::json!("old field"),
+                    revision: String::new(),
                 })
                 .unwrap();
             store
@@ -2252,6 +3206,7 @@ mod tests {
                 namespace: "lore".into(),
                 key: "summary".into(),
                 value: serde_json::json!("new field"),
+                revision: String::new(),
             })
             .unwrap();
         assert!(store.search("old field".into()).unwrap().is_empty());
@@ -2276,6 +3231,7 @@ mod tests {
                 namespace: "test".into(),
                 key: "count".into(),
                 value: serde_json::json!(42),
+                revision: String::new(),
             })
             .unwrap();
         store
@@ -2284,6 +3240,7 @@ mod tests {
                 namespace: "test".into(),
                 key: "published".into(),
                 value: serde_json::json!(true),
+                revision: String::new(),
             })
             .unwrap();
         let fields = store.list_fields(entity.id).unwrap();
@@ -2315,6 +3272,7 @@ mod tests {
                 namespace: "test".into(),
                 key: "value".into(),
                 value: serde_json::json!("invalid"),
+                revision: String::new(),
             }],
         });
         assert!(result.is_err());
@@ -2396,9 +3354,7 @@ mod tests {
     #[test]
     fn seed_example_is_repeatable_after_modules_are_initialized() {
         let mut store = ProjectStore::in_memory().unwrap();
-        store
-            .set_module_enabled("daena.lore".into(), true)
-            .unwrap();
+        store.set_module_enabled("daena.lore".into(), true).unwrap();
         store
             .set_module_enabled("daena.timeline".into(), true)
             .unwrap();
@@ -2433,8 +3389,7 @@ mod tests {
                 entity_type: None,
             })
             .unwrap();
-        let path =
-            std::env::temp_dir().join(format!("daena-restore-test-{}.json", Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("daena-restore-test-{}.json", Uuid::new_v4()));
         std::fs::write(&path, source.export_json().unwrap()).unwrap();
 
         let target = ProjectStore::in_memory().unwrap();
@@ -2466,10 +3421,7 @@ mod tests {
             package_digest: "sha256:test-package".into(),
         };
         store.apply_migration(&migration).unwrap();
-        assert_eq!(
-            store.get_module_version("daena.timeline").unwrap(),
-            1
-        );
+        assert_eq!(store.get_module_version("daena.timeline").unwrap(), 1);
         let snapshot: serde_json::Value =
             serde_json::from_str(&store.export_json().unwrap()).unwrap();
         let history = &snapshot["migration_history"][0];
@@ -2508,15 +3460,9 @@ mod tests {
         };
         store.apply_migration(&migration).unwrap();
         store.restore_plugin_backup(&backup).unwrap();
-        assert_eq!(
-            store.get_module_version("daena.timeline").unwrap(),
-            0
-        );
+        assert_eq!(store.get_module_version("daena.timeline").unwrap(), 0);
         store.apply_migration(&migration).unwrap();
-        assert_eq!(
-            store.get_module_version("daena.timeline").unwrap(),
-            1
-        );
+        assert_eq!(store.get_module_version("daena.timeline").unwrap(), 1);
         drop(store);
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -2609,8 +3555,7 @@ mod tests {
     #[test]
     fn directory_assets_are_copied_and_hashed() {
         let root = std::env::temp_dir().join(format!("daena-project-{}", Uuid::new_v4()));
-        let source =
-            std::env::temp_dir().join(format!("daena-asset-{}.txt", Uuid::new_v4()));
+        let source = std::env::temp_dir().join(format!("daena-asset-{}.txt", Uuid::new_v4()));
         std::fs::write(&source, b"asset contents").unwrap();
         let store = ProjectStore::open_directory(&root).unwrap();
         let entity = store
@@ -2685,6 +3630,7 @@ mod tests {
                 namespace: "notes".into(),
                 key: "summary".into(),
                 value: serde_json::json!("stored in files"),
+                revision: String::new(),
             })
             .unwrap();
         first
@@ -2695,8 +3641,16 @@ mod tests {
                 metadata: None,
             })
             .unwrap();
-        assert!(root.join("entities").join(&source.id).join("entity.json").is_file());
-        assert!(root.join("entities").join(&source.id).join("document.md").is_file());
+        assert!(root
+            .join("entities")
+            .join(&source.id)
+            .join("entity.json")
+            .is_file());
+        assert!(root
+            .join("entities")
+            .join(&source.id)
+            .join("document.md")
+            .is_file());
         assert!(root.join("plugins/com.example.notes.json").is_file());
         let canonical_before = canonical_files(&root);
         let search_before = first
@@ -2739,7 +3693,13 @@ mod tests {
             "# Canonical prose\n"
         );
         assert_eq!(reopened.list_fields(source.id.clone()).unwrap().len(), 1);
-        assert_eq!(reopened.list_relationships(source.id.clone()).unwrap().len(), 1);
+        assert_eq!(
+            reopened
+                .list_relationships(source.id.clone())
+                .unwrap()
+                .len(),
+            1
+        );
         let search_after = reopened
             .search("Canonical prose".into())
             .unwrap()

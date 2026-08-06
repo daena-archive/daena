@@ -4,8 +4,6 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use serde::Deserialize;
-use tauri::Manager;
 use daena_core::{
     Asset, AssetFileInput, AssetInput, AuthorityContext, CoreError, CoreService, CreateEntity,
     Entity, FieldValue, GitLogEntry, GitStatus, Migration, Operation, ProjectInfo, ProjectStore,
@@ -18,6 +16,8 @@ use daena_plugin_host::{
     plugin_window_label, webview_policy, ArchiveLimits, DependencyResolver, PluginHost,
     VerificationPolicy, BUNDLED_TIMELINE_SERVICE_WASM,
 };
+use serde::Deserialize;
+use tauri::Manager;
 
 type SharedCore = Arc<Mutex<CoreService>>;
 type SharedPluginHost = Arc<Mutex<PluginHost>>;
@@ -338,8 +338,13 @@ fn plugin_protocol_response(
                     )?
                 } else {
                     let mut core = core.lock().map_err(|_| "core lock poisoned".to_string())?;
-                    dispatch_module_rpc(&mut core, &request.method, request.payload)
-                        .map_err(|error| error.to_string())?
+                    dispatch_module_rpc(
+                        &mut core,
+                        &request.method,
+                        request.payload,
+                        Some(&request_id),
+                    )
+                    .map_err(|error| error.to_string())?
                 };
                 Ok(
                     serde_json::json!({"rpcVersion": 1, "requestId": request_id, "ok": true, "result": value}),
@@ -373,8 +378,7 @@ fn open_plugin_webview(
     if entry.manifest.kind != daena_plugin_api::PluginKind::Sandboxed {
         return Err("only sandboxed plugins have UI webviews".into());
     }
-    if host.lifecycle.state(project_id, plugin_id).state
-        != daena_plugin_api::LifecycleState::Active
+    if host.lifecycle.state(project_id, plugin_id).state != daena_plugin_api::LifecycleState::Active
     {
         return Err("plugin is not active".into());
     }
@@ -839,6 +843,7 @@ async fn plugin_host_view_data(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn plugin_host_view_set_field(
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
@@ -908,6 +913,7 @@ async fn plugin_host_view_set_field(
             namespace,
             key,
             value,
+            revision: String::new(),
         })
     })
     .await
@@ -965,8 +971,8 @@ fn plugin_close_webview(app: tauri::AppHandle, plugin_id: String) -> Result<(), 
 fn plugin_close_all_webviews(app: tauri::AppHandle) -> Result<(), String> {
     let labels: Vec<String> = app
         .webviews()
-        .into_iter()
-        .filter_map(|(label, _)| label.starts_with("plugin:").then_some(label))
+        .into_keys()
+        .filter_map(|label| label.starts_with("plugin:").then_some(label))
         .collect();
     for label in labels {
         if let Ok(mut states) = embedded_webview_states().lock() {
@@ -1145,6 +1151,7 @@ async fn plugin_rpc(
         )
     } else {
         let project_id = session.project_id;
+        let request_id_for_dispatch = request_id.clone();
         with_core(core, move |core| {
             let current_project = core
                 .info()
@@ -1155,7 +1162,7 @@ async fn plugin_rpc(
                     operation: "access another project",
                 });
             }
-            dispatch_module_rpc(core, &method, payload)
+            dispatch_module_rpc(core, &method, payload, Some(&request_id_for_dispatch))
         })
         .await
     };
@@ -2140,6 +2147,12 @@ fn payload_string(payload: &serde_json::Value, key: &str) -> Result<String, Core
         .ok_or_else(|| CoreError::Validation(format!("plugin RPC payload requires {key}")))
 }
 
+fn optional_payload_string(payload: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| payload.get(*key).and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
+}
+
 fn payload_value<T: serde::de::DeserializeOwned>(
     payload: &serde_json::Value,
 ) -> Result<T, CoreError> {
@@ -2151,6 +2164,7 @@ fn dispatch_module_rpc(
     core: &mut CoreService,
     method: &str,
     payload: serde_json::Value,
+    request_id: Option<&str>,
 ) -> Result<serde_json::Value, CoreError> {
     let project = core.project_mut(AuthorityContext::plugin())?;
     match method {
@@ -2199,7 +2213,7 @@ fn dispatch_module_rpc(
                 fields,
                 relationships,
             };
-            serde_json::to_value(project.create_entry(input)?)
+            serde_json::to_value(project.create_entry_with_request(input, request_id)?)
                 .map_err(|error| CoreError::Validation(error.to_string()))
         }
         "entity.update" => {
@@ -2218,11 +2232,31 @@ fn dispatch_module_rpc(
                     }
                 })
                 .map(str::to_owned);
-            serde_json::to_value(project.update_entity(id, name, entity_type)?)
-                .map_err(|error| CoreError::Validation(error.to_string()))
+            serde_json::to_value(
+                project.update_entity_with_options(
+                    id,
+                    name,
+                    entity_type,
+                    optional_payload_string(
+                        &payload,
+                        &["expectedRevision", "expected_revision", "revision"],
+                    )
+                    .as_deref(),
+                    request_id,
+                )?,
+            )
+            .map_err(|error| CoreError::Validation(error.to_string()))
         }
         "entity.delete" => {
-            project.delete_entity(payload_string(&payload, "id")?)?;
+            project.delete_entity_with_options(
+                payload_string(&payload, "id")?,
+                optional_payload_string(
+                    &payload,
+                    &["expectedRevision", "expected_revision", "revision"],
+                )
+                .as_deref(),
+                request_id,
+            )?;
             Ok(serde_json::Value::Null)
         }
         "document.list" => {
@@ -2238,7 +2272,15 @@ fn dispatch_module_rpc(
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned),
             };
-            project.save_document(input)?;
+            project.save_document_with_options(
+                input,
+                optional_payload_string(
+                    &payload,
+                    &["expectedRevision", "expected_revision", "revision"],
+                )
+                .as_deref(),
+                request_id,
+            )?;
             Ok(serde_json::Value::Null)
         }
         "field.read" | "field.list" => {
@@ -2277,8 +2319,9 @@ fn dispatch_module_rpc(
                     .get("value")
                     .cloned()
                     .unwrap_or(serde_json::Value::Null),
+                revision: optional_payload_string(&payload, &["revision"]).unwrap_or_default(),
             };
-            project.set_field(field)?;
+            project.set_field_with_request(field, request_id)?;
             Ok(serde_json::Value::Null)
         }
         "relationship.list" => {
@@ -2287,11 +2330,29 @@ fn dispatch_module_rpc(
         }
         "relationship.create" => {
             let input: RelationshipInput = payload_value(&payload)?;
-            serde_json::to_value(project.create_relationship(input)?)
-                .map_err(|error| CoreError::Validation(error.to_string()))
+            serde_json::to_value(
+                project.create_relationship_with_options(
+                    input,
+                    optional_payload_string(
+                        &payload,
+                        &["expectedRevision", "expected_revision", "revision"],
+                    )
+                    .as_deref(),
+                    request_id,
+                )?,
+            )
+            .map_err(|error| CoreError::Validation(error.to_string()))
         }
         "relationship.delete" => {
-            project.delete_relationship(payload_string(&payload, "id")?)?;
+            project.delete_relationship_with_options(
+                payload_string(&payload, "id")?,
+                optional_payload_string(
+                    &payload,
+                    &["expectedRevision", "expected_revision", "revision"],
+                )
+                .as_deref(),
+                request_id,
+            )?;
             Ok(serde_json::Value::Null)
         }
         "asset.list" => {
@@ -2301,8 +2362,18 @@ fn dispatch_module_rpc(
         }
         "asset.register" => {
             let input: AssetInput = payload_value(&payload)?;
-            serde_json::to_value(project.register_asset(input)?)
-                .map_err(|error| CoreError::Validation(error.to_string()))
+            serde_json::to_value(
+                project.register_asset_with_options(
+                    input,
+                    optional_payload_string(
+                        &payload,
+                        &["expectedRevision", "expected_revision", "revision"],
+                    )
+                    .as_deref(),
+                    request_id,
+                )?,
+            )
+            .map_err(|error| CoreError::Validation(error.to_string()))
         }
         "search.query" => serde_json::to_value(project.search(payload_string(&payload, "query")?)?)
             .map_err(|error| CoreError::Validation(error.to_string())),
@@ -2331,7 +2402,7 @@ async fn trusted_module_rpc(
         .ok_or_else(|| "project is not open".to_string())?;
     let event_method = method.clone();
     let result = with_core(state, move |core| {
-        dispatch_module_rpc(core, &method, payload)
+        dispatch_module_rpc(core, &method, payload, None)
     })
     .await?;
     publish_core_mutation_event(plugins.inner(), &project_id, &event_method, &result)?;
@@ -2543,9 +2614,11 @@ async fn project_open_default(
 async fn project_create_entity(
     state: tauri::State<'_, SharedCore>,
     input: CreateEntity,
+    request_id: Option<String>,
 ) -> Result<Entity, String> {
     with_core(state, move |core| {
-        core.project(trusted_shell())?.create_entity(input)
+        core.project(trusted_shell())?
+            .create_entity_with_request(input, request_id.as_deref())
     })
     .await
 }
@@ -2572,10 +2645,17 @@ async fn project_update_entity(
     id: String,
     name: Option<String>,
     entity_type: Option<String>,
+    expected_revision: Option<String>,
+    request_id: Option<String>,
 ) -> Result<Entity, String> {
     with_core(state, move |core| {
-        core.project(trusted_shell())?
-            .update_entity(id, name, entity_type)
+        core.project(trusted_shell())?.update_entity_with_options(
+            id,
+            name,
+            entity_type,
+            expected_revision.as_deref(),
+            request_id.as_deref(),
+        )
     })
     .await
 }
@@ -2584,9 +2664,15 @@ async fn project_update_entity(
 async fn project_delete_entity(
     state: tauri::State<'_, SharedCore>,
     id: String,
+    expected_revision: Option<String>,
+    request_id: Option<String>,
 ) -> Result<(), String> {
     with_core(state, move |core| {
-        core.project(trusted_shell())?.delete_entity(id)
+        core.project(trusted_shell())?.delete_entity_with_options(
+            id,
+            expected_revision.as_deref(),
+            request_id.as_deref(),
+        )
     })
     .await
 }
@@ -2595,9 +2681,15 @@ async fn project_delete_entity(
 async fn project_save_document(
     state: tauri::State<'_, SharedCore>,
     input: SaveDocument,
+    expected_revision: Option<String>,
+    request_id: Option<String>,
 ) -> Result<(), String> {
     with_core(state, move |core| {
-        core.project(trusted_shell())?.save_document(input)
+        core.project(trusted_shell())?.save_document_with_options(
+            input,
+            expected_revision.as_deref(),
+            request_id.as_deref(),
+        )
     })
     .await
 }
@@ -2606,9 +2698,15 @@ async fn project_save_document(
 async fn project_save_entry(
     state: tauri::State<'_, SharedCore>,
     input: SaveEntry,
+    expected_revision: Option<String>,
+    request_id: Option<String>,
 ) -> Result<(), String> {
     with_core(state, move |core| {
-        core.project(trusted_shell())?.save_entry(input)
+        core.project(trusted_shell())?.save_entry_with_options(
+            input,
+            expected_revision.as_deref(),
+            request_id.as_deref(),
+        )
     })
     .await
 }
@@ -2628,9 +2726,11 @@ async fn project_list_documents(
 async fn project_set_field(
     state: tauri::State<'_, SharedCore>,
     field: FieldValue,
+    request_id: Option<String>,
 ) -> Result<(), String> {
     with_core(state, move |core| {
-        core.project(trusted_shell())?.set_field(field)
+        core.project(trusted_shell())?
+            .set_field_with_request(field, request_id.as_deref())
     })
     .await
 }
@@ -2650,9 +2750,16 @@ async fn project_list_fields(
 async fn project_create_relationship(
     state: tauri::State<'_, SharedCore>,
     input: RelationshipInput,
+    expected_revision: Option<String>,
+    request_id: Option<String>,
 ) -> Result<Relationship, String> {
     with_core(state, move |core| {
-        core.project(trusted_shell())?.create_relationship(input)
+        core.project(trusted_shell())?
+            .create_relationship_with_options(
+                input,
+                expected_revision.as_deref(),
+                request_id.as_deref(),
+            )
     })
     .await
 }
@@ -2672,9 +2779,15 @@ async fn project_list_relationships(
 async fn project_register_asset(
     state: tauri::State<'_, SharedCore>,
     input: AssetInput,
+    expected_revision: Option<String>,
+    request_id: Option<String>,
 ) -> Result<Asset, String> {
     with_core(state, move |core| {
-        core.project(trusted_shell())?.register_asset(input)
+        core.project(trusted_shell())?.register_asset_with_options(
+            input,
+            expected_revision.as_deref(),
+            request_id.as_deref(),
+        )
     })
     .await
 }
@@ -2683,9 +2796,16 @@ async fn project_register_asset(
 async fn project_register_asset_file(
     state: tauri::State<'_, SharedCore>,
     input: AssetFileInput,
+    expected_revision: Option<String>,
+    request_id: Option<String>,
 ) -> Result<Asset, String> {
     with_core(state, move |core| {
-        core.project(trusted_shell())?.register_asset_file(input)
+        core.project(trusted_shell())?
+            .register_asset_file_with_options(
+                input,
+                expected_revision.as_deref(),
+                request_id.as_deref(),
+            )
     })
     .await
 }
@@ -2728,9 +2848,11 @@ async fn project_restore(state: tauri::State<'_, SharedCore>, path: String) -> R
 async fn project_restore_payload(
     state: tauri::State<'_, SharedCore>,
     payload: String,
+    request_id: Option<String>,
 ) -> Result<(), String> {
     with_core(state, move |core| {
-        core.project(trusted_shell())?.restore_payload(&payload)
+        core.project(trusted_shell())?
+            .restore_payload_with_request(&payload, request_id.as_deref())
     })
     .await
 }
@@ -2922,11 +3044,7 @@ mod tests {
     #[test]
     fn bundled_workspace_manifests_do_not_declare_duplicate_sidebar_views() {
         let host = bundled_plugin_host().unwrap();
-        for plugin_id in [
-            "daena.lore",
-            "daena.timeline",
-            "daena.writing",
-        ] {
+        for plugin_id in ["daena.lore", "daena.timeline", "daena.writing"] {
             assert!(
                 host.catalog
                     .get(plugin_id)
@@ -2966,11 +3084,12 @@ mod tests {
             &mut core,
             "entity.create",
             serde_json::json!({"name": "Broker Entity", "type": "person"}),
+            None,
         )
         .unwrap();
         assert_eq!(created["name"], "Broker Entity");
         let entities =
-            dispatch_module_rpc(&mut core, "entity.list", serde_json::json!({})).unwrap();
+            dispatch_module_rpc(&mut core, "entity.list", serde_json::json!({}), None).unwrap();
         assert_eq!(entities.as_array().unwrap().len(), 1);
     }
 
@@ -2997,8 +3116,7 @@ mod tests {
 
     #[test]
     fn installed_plugin_assets_are_served_from_the_verified_ui_root() {
-        let root =
-            std::env::temp_dir().join(format!("daena-protocol-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("daena-protocol-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("dist/ui")).unwrap();
         std::fs::write(root.join("dist/ui/index.html"), b"installed plugin").unwrap();
@@ -3080,21 +3198,18 @@ mod tests {
         assert!(valid.validate().is_ok());
 
         for invalid in [
-            PluginWebviewBounds {
-                x: -1.0,
-                ..valid.clone()
-            },
+            PluginWebviewBounds { x: -1.0, ..valid },
             PluginWebviewBounds {
                 y: f64::NAN,
-                ..valid.clone()
+                ..valid
             },
             PluginWebviewBounds {
                 width: 0.0,
-                ..valid.clone()
+                ..valid
             },
             PluginWebviewBounds {
                 height: 10_001.0,
-                ..valid.clone()
+                ..valid
             },
         ] {
             assert!(invalid.validate().is_err());

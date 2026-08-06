@@ -563,8 +563,8 @@
         }
         return [key, String(value ?? "")];
       }));
-      relationships = (await context.relationships.list(entity.id as UUID)).map((relationship) => ({ id: relationship.id, source_id: relationship.sourceId, target_id: relationship.targetId, relationship_type: relationship.type, metadata: JSON.stringify(relationship.metadata) }));
-      assets = (await context.assets.list(entity.id as UUID)).map((asset) => ({ id: asset.id, entity_id: asset.entityId, namespace: asset.namespace, filename: asset.filename, content_hash: asset.contentHash, size: asset.size, mime_type: asset.mimeType, path: asset.path, created_at: asset.createdAt }));
+      relationships = (await context.relationships.list(entity.id as UUID)).map((relationship) => ({ id: relationship.id, source_id: relationship.sourceId, target_id: relationship.targetId, relationship_type: relationship.type, metadata: JSON.stringify(relationship.metadata), revision: "" }));
+      assets = (await context.assets.list(entity.id as UUID)).map((asset) => ({ id: asset.id, entity_id: asset.entityId, namespace: asset.namespace, filename: asset.filename, content_hash: asset.contentHash, size: asset.size, mime_type: asset.mimeType, path: asset.path, created_at: asset.createdAt, revision: "" }));
       savedAt = "";
     } catch (cause) { error = friendlyError(cause); }
   }
@@ -612,7 +612,7 @@
       showCreateForm = false;
       resetCreateFields(null);
       await loadEntities();
-      await selectEntity({ id: created.id, name: created.name, entity_type: created.type, deleted: created.deleted, created_at: created.createdAt, updated_at: created.updatedAt });
+      await selectEntity({ id: created.id, name: created.name, entity_type: created.type, deleted: created.deleted, created_at: created.createdAt, updated_at: created.updatedAt, revision: "" });
     } catch (cause) { error = friendlyError(cause); }
   }
 
@@ -658,7 +658,7 @@
         document: { entity_id: entityId, body, format: "rich-text" },
         fields: definitionsForSave.map((definition) => {
           const value = fieldsSnapshot[definition.key] ?? "";
-          return { entity_id: entityId, namespace: activeManifest()?.schemas[0]?.namespace ?? activeModuleId(), key: definition.key, value: definition.type === "date" && value ? parseCalendarDate(value) ?? value : value };
+          return { entity_id: entityId, namespace: activeManifest()?.schemas[0]?.namespace ?? activeModuleId(), key: definition.key, value: definition.type === "date" && value ? parseCalendarDate(value) ?? value : value, revision: "" };
         }),
       });
       if (selected?.id === entityId && documentRevision === revision) {

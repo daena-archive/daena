@@ -671,6 +671,7 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
                 deleted: entity_file.deleted,
                 created_at: entity_file.created_at.clone(),
                 updated_at: entity_file.updated_at.clone(),
+                revision: String::new(),
             });
             let document_path =
                 normalized_project_path(root, &format!("entities/{name}/document.md"))?;
@@ -693,6 +694,7 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
                     body: String::from_utf8(body)
                         .map_err(|error| codec_error(&document_path, "markdown.utf8", error))?,
                     updated_at: entity_file.updated_at.clone(),
+                    revision: String::new(),
                 });
             } else if document_path.exists() {
                 return Err(codec_error(
@@ -747,6 +749,7 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
                             namespace: namespace.into(),
                             key,
                             value,
+                            revision: String::new(),
                         });
                     }
                     field_owners.push((plugin_id.to_string(), namespace.to_string()));
@@ -786,6 +789,7 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
                         target_id: relationship.target_id,
                         relationship_type: relationship.relationship_type,
                         metadata: canonical_json_string(&relationship.metadata)?,
+                        revision: String::new(),
                     });
                 }
             }
@@ -845,6 +849,7 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
                         mime_type: asset.mime_type,
                         path: asset.path,
                         created_at: asset.created_at,
+                        revision: String::new(),
                     });
                 }
             }
@@ -986,7 +991,11 @@ fn validate_canonical_layout(root: &Path) -> Result<(), CoreError> {
             Err(error) => return Err(codec_error(&path, "path.read", error)),
         };
         if metadata.file_type().is_symlink() {
-            return Err(codec_error(&path, "path.symlink", "canonical paths cannot cross symlinks"));
+            return Err(codec_error(
+                &path,
+                "path.symlink",
+                "canonical paths cannot cross symlinks",
+            ));
         }
     }
 
@@ -994,16 +1003,31 @@ fn validate_canonical_layout(root: &Path) -> Result<(), CoreError> {
         if metadata.is_dir() {
             validate_entity_directory(root, relative)
         } else {
-            Err(codec_error(relative, "entity.directory", "entity entry must be a directory"))
+            Err(codec_error(
+                relative,
+                "entity.directory",
+                "entity entry must be a directory",
+            ))
         }
     })?;
     validate_canonical_directory(root, "plugins", |relative, metadata| {
         if !metadata.is_file() {
-            return Err(codec_error(relative, "plugins.file", "plugin state entries must be files"));
+            return Err(codec_error(
+                relative,
+                "plugins.file",
+                "plugin state entries must be files",
+            ));
         }
-        let name = relative.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+        let name = relative
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
         if !name.ends_with(".json") {
-            return Err(codec_error(relative, "plugins.file", "plugin state files must use .json"));
+            return Err(codec_error(
+                relative,
+                "plugins.file",
+                "plugin state files must use .json",
+            ));
         }
         Ok(())
     })?;
@@ -1026,7 +1050,11 @@ where
         Err(error) => return Err(codec_error(&directory, "directory.read", error)),
     };
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err(codec_error(&directory, "path.symlink", "canonical directory must be a real directory"));
+        return Err(codec_error(
+            &directory,
+            "path.symlink",
+            "canonical directory must be a real directory",
+        ));
     }
     let mut entries = fs::read_dir(&directory)
         .map_err(|error| codec_error(&directory, "directory.read", error))?
@@ -1042,7 +1070,11 @@ where
         let metadata = fs::symlink_metadata(&entry_path)
             .map_err(|error| codec_error(&entry_path, "path.read", error))?;
         if metadata.file_type().is_symlink() {
-            return Err(codec_error(&entry_path, "path.symlink", "canonical paths cannot cross symlinks"));
+            return Err(codec_error(
+                &entry_path,
+                "path.symlink",
+                "canonical paths cannot cross symlinks",
+            ));
         }
         validate_entry(&entry_path, &metadata)?;
     }
@@ -1050,10 +1082,19 @@ where
 }
 
 fn validate_entity_directory(root: &Path, entity_dir: &Path) -> Result<(), CoreError> {
-    let name = entity_dir.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+    let name = entity_dir
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
     validate_component(name, entity_dir, "entity.directory")?;
     Uuid::parse_str(name).map_err(|error| codec_error(entity_dir, "entity.directory", error))?;
-    let allowed = ["entity.json", "document.md", "fields", "relationships.json", "assets.json"];
+    let allowed = [
+        "entity.json",
+        "document.md",
+        "fields",
+        "relationships.json",
+        "assets.json",
+    ];
     let mut entries = fs::read_dir(entity_dir)
         .map_err(|error| codec_error(entity_dir, "entity.read", error))?
         .collect::<Result<Vec<_>, _>>()
@@ -1065,20 +1106,36 @@ fn validate_entity_directory(root: &Path, entity_dir: &Path) -> Result<(), CoreE
             continue;
         }
         if !allowed.contains(&name.as_str()) {
-            return Err(codec_error(&entry.path(), "entity.path", "unknown entry in entity directory"));
+            return Err(codec_error(
+                &entry.path(),
+                "entity.path",
+                "unknown entry in entity directory",
+            ));
         }
         let metadata = fs::symlink_metadata(entry.path())
             .map_err(|error| codec_error(&entry.path(), "path.read", error))?;
         if metadata.file_type().is_symlink() {
-            return Err(codec_error(&entry.path(), "path.symlink", "canonical paths cannot cross symlinks"));
+            return Err(codec_error(
+                &entry.path(),
+                "path.symlink",
+                "canonical paths cannot cross symlinks",
+            ));
         }
         if name == "fields" {
             if !metadata.is_dir() {
-                return Err(codec_error(&entry.path(), "fields.directory", "fields must be a directory"));
+                return Err(codec_error(
+                    &entry.path(),
+                    "fields.directory",
+                    "fields must be a directory",
+                ));
             }
             validate_fields_directory(&entry.path())?;
         } else if !metadata.is_file() {
-            return Err(codec_error(&entry.path(), "entity.file", "entity records must be files"));
+            return Err(codec_error(
+                &entry.path(),
+                "entity.file",
+                "entity records must be files",
+            ));
         }
     }
     let _ = root;
@@ -1103,7 +1160,11 @@ fn validate_fields_directory(directory: &Path) -> Result<(), CoreError> {
         let metadata = fs::symlink_metadata(entry.path())
             .map_err(|error| codec_error(&entry.path(), "path.read", error))?;
         if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(codec_error(&entry.path(), "fields.file", "field entries must be regular files"));
+            return Err(codec_error(
+                &entry.path(),
+                "fields.file",
+                "field entries must be regular files",
+            ));
         }
     }
     Ok(())
@@ -1117,20 +1178,28 @@ fn validate_asset_directory(root: &Path, relative: &Path) -> Result<(), CoreErro
         Err(error) => return Err(codec_error(&directory, "assets.read", error)),
     };
     if metadata.file_type().is_symlink() {
-        return Err(codec_error(&directory, "path.symlink", "asset directories cannot be symlinks"));
+        return Err(codec_error(
+            &directory,
+            "path.symlink",
+            "asset directories cannot be symlinks",
+        ));
     }
     if metadata.is_file() {
         return Ok(());
     }
-    for entry in fs::read_dir(&directory)
-        .map_err(|error| codec_error(&directory, "assets.read", error))?
+    for entry in
+        fs::read_dir(&directory).map_err(|error| codec_error(&directory, "assets.read", error))?
     {
         let entry = entry.map_err(|error| codec_error(&directory, "assets.read", error))?;
         let path = entry.path();
         let metadata = fs::symlink_metadata(&path)
             .map_err(|error| codec_error(&path, "assets.read", error))?;
         if metadata.file_type().is_symlink() {
-            return Err(codec_error(&path, "path.symlink", "asset paths cannot cross symlinks"));
+            return Err(codec_error(
+                &path,
+                "path.symlink",
+                "asset paths cannot cross symlinks",
+            ));
         }
         let child = relative.join(entry.file_name());
         if metadata.is_dir() {
@@ -1151,15 +1220,25 @@ fn collect_canonical_sources(root: &Path) -> Result<Vec<CanonicalSource>, CoreEr
         }
     }
     paths.sort_by(|left, right| {
-        left.strip_prefix(root).unwrap().cmp(right.strip_prefix(root).unwrap())
+        left.strip_prefix(root)
+            .unwrap()
+            .cmp(right.strip_prefix(root).unwrap())
     });
-    paths.into_iter()
+    paths
+        .into_iter()
         .map(|path| {
-            let bytes = fs::read(&path).map_err(|error| codec_error(&path, "source.read", error))?;
-            let relative = path.strip_prefix(root).map_err(|error| codec_error(&path, "source.path", error))?;
+            let bytes =
+                fs::read(&path).map_err(|error| codec_error(&path, "source.read", error))?;
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|error| codec_error(&path, "source.path", error))?;
             let path = relative.to_string_lossy().replace('\\', "/");
             let format_version = PROJECT_FORMAT_VERSION;
-            Ok(CanonicalSource { path, content_hash: digest_bytes(&bytes), format_version })
+            Ok(CanonicalSource {
+                path,
+                content_hash: digest_bytes(&bytes),
+                format_version,
+            })
         })
         .collect()
 }
@@ -1179,7 +1258,11 @@ fn collect_files(root: &Path, directory: &Path, paths: &mut Vec<PathBuf>) -> Res
         let metadata = fs::symlink_metadata(&path)
             .map_err(|error| codec_error(&path, "source.read", error))?;
         if metadata.file_type().is_symlink() {
-            return Err(codec_error(&path, "path.symlink", "canonical paths cannot cross symlinks"));
+            return Err(codec_error(
+                &path,
+                "path.symlink",
+                "canonical paths cannot cross symlinks",
+            ));
         }
         if metadata.is_dir() {
             collect_files(root, &path, paths)?;

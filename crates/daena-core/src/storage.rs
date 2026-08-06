@@ -150,6 +150,56 @@ pub struct CanonicalMigration {
 pub struct CanonicalProject {
     pub manifest: ProjectManifest,
     pub snapshot: ProjectSnapshot,
+    pub sources: Vec<CanonicalSource>,
+}
+
+/// A canonical file that was part of a successful project scan.
+///
+/// The disposable index stores these rows verbatim.  Keeping the source path
+/// and hash beside derived data makes it possible to explain where an index
+/// row came from and prevents a database-only interpretation of a project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalSource {
+    pub path: String,
+    pub content_hash: String,
+    pub format_version: u32,
+}
+
+/// Filesystem-backed repository boundary for canonical project data.
+///
+/// The repository owns the scan and codec; callers receive a validated
+/// snapshot and its source manifest, never a database connection or an
+/// arbitrary filesystem handle.
+#[derive(Debug, Clone)]
+pub struct FilesystemRepository {
+    root: PathBuf,
+}
+
+impl FilesystemRepository {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, CoreError> {
+        let root = path.as_ref();
+        let metadata = fs::symlink_metadata(root)
+            .map_err(|error| codec_error(root, "repository.open", error))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(codec_error(
+                root,
+                "repository.root",
+                "repository root must be a real directory",
+            ));
+        }
+        validate_canonical_layout(root)?;
+        Ok(Self {
+            root: root.to_path_buf(),
+        })
+    }
+
+    pub fn scan(&self) -> Result<CanonicalProject, CoreError> {
+        read_canonical_project(&self.root)
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
 }
 
 impl PluginStateFile {
@@ -557,6 +607,7 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
     let manifest_path = root.join("project.json");
     let manifest: ProjectManifest = read_json(&manifest_path)?;
     manifest.validate(&manifest_path)?;
+    validate_canonical_layout(root)?;
     let entities_dir = normalized_project_path(root, "entities")?;
     let mut entities = Vec::new();
     let mut documents = Vec::new();
@@ -564,6 +615,7 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
     let mut relationships = Vec::new();
     let mut assets = Vec::new();
     let mut entity_ids = BTreeSet::new();
+    let mut document_ids = BTreeSet::new();
     let mut relationship_ids = BTreeSet::new();
     let mut asset_ids = BTreeSet::new();
     let mut field_owners = Vec::new();
@@ -623,6 +675,14 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
             let document_path =
                 normalized_project_path(root, &format!("entities/{name}/document.md"))?;
             if let Some(document_ref) = entity_file.document {
+                validate_uuid(&entity_file_path, "entity.document.id", &document_ref.id)?;
+                if !document_ids.insert(document_ref.id.clone()) {
+                    return Err(codec_error(
+                        &entity_file_path,
+                        "document.duplicate-id",
+                        "document IDs must be globally unique",
+                    ));
+                }
                 let bytes = fs::read(&document_path)
                     .map_err(|error| codec_error(&document_path, "markdown.read", error))?;
                 let body = canonical_markdown_bytes(&document_path, &bytes)?;
@@ -740,6 +800,20 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
                     if !asset_ids.insert(asset.id.clone()) {
                         return Err(codec_error(&assets_path, "asset.duplicate-id", asset.id));
                     }
+                    if asset.size < 0 {
+                        return Err(codec_error(
+                            &assets_path,
+                            "asset.size",
+                            "asset size cannot be negative",
+                        ));
+                    }
+                    if asset.filename.trim().is_empty() {
+                        return Err(codec_error(
+                            &assets_path,
+                            "asset.filename",
+                            "asset filename cannot be empty",
+                        ));
+                    }
                     let asset_path = normalized_project_path(root, &asset.path)?;
                     if !asset.path.starts_with("assets/") || !asset_path.is_file() {
                         return Err(codec_error(
@@ -750,6 +824,16 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
                     }
                     if digest_file(&asset_path)? != asset.content_hash {
                         return Err(codec_error(&assets_path, "asset.hash", asset.path));
+                    }
+                    let actual_size = fs::metadata(&asset_path)
+                        .map_err(|error| codec_error(&asset_path, "asset.size", error))?
+                        .len();
+                    if actual_size != asset.size as u64 {
+                        return Err(codec_error(
+                            &assets_path,
+                            "asset.size",
+                            format!("declared {}, found {actual_size}", asset.size),
+                        ));
                     }
                     assets.push(Asset {
                         id: asset.id,
@@ -874,6 +958,7 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
     migration_history.sort_by(|left, right| {
         (&left.module_id, &left.migration_id).cmp(&(&right.module_id, &right.migration_id))
     });
+    let sources = collect_canonical_sources(root)?;
     Ok(CanonicalProject {
         manifest,
         snapshot: ProjectSnapshot {
@@ -888,7 +973,222 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
             module_fields: Vec::new(),
             migration_history,
         },
+        sources,
     })
+}
+
+fn validate_canonical_layout(root: &Path) -> Result<(), CoreError> {
+    for relative in ["project.json", "entities", "plugins", "assets"] {
+        let path = root.join(relative);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(codec_error(&path, "path.read", error)),
+        };
+        if metadata.file_type().is_symlink() {
+            return Err(codec_error(&path, "path.symlink", "canonical paths cannot cross symlinks"));
+        }
+    }
+
+    validate_canonical_directory(root, "entities", |relative, metadata| {
+        if metadata.is_dir() {
+            validate_entity_directory(root, relative)
+        } else {
+            Err(codec_error(relative, "entity.directory", "entity entry must be a directory"))
+        }
+    })?;
+    validate_canonical_directory(root, "plugins", |relative, metadata| {
+        if !metadata.is_file() {
+            return Err(codec_error(relative, "plugins.file", "plugin state entries must be files"));
+        }
+        let name = relative.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+        if !name.ends_with(".json") {
+            return Err(codec_error(relative, "plugins.file", "plugin state files must use .json"));
+        }
+        Ok(())
+    })?;
+    validate_asset_directory(root, Path::new("assets"))?;
+    Ok(())
+}
+
+fn validate_canonical_directory<F>(
+    root: &Path,
+    relative: &str,
+    validate_entry: F,
+) -> Result<(), CoreError>
+where
+    F: Fn(&Path, &fs::Metadata) -> Result<(), CoreError>,
+{
+    let directory = root.join(relative);
+    let metadata = match fs::symlink_metadata(&directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(codec_error(&directory, "directory.read", error)),
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(codec_error(&directory, "path.symlink", "canonical directory must be a real directory"));
+    }
+    let mut entries = fs::read_dir(&directory)
+        .map_err(|error| codec_error(&directory, "directory.read", error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| codec_error(&directory, "directory.read", error))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if is_ignored_metadata_entry(&name) {
+            continue;
+        }
+        let entry_path = directory.join(&name);
+        let metadata = fs::symlink_metadata(&entry_path)
+            .map_err(|error| codec_error(&entry_path, "path.read", error))?;
+        if metadata.file_type().is_symlink() {
+            return Err(codec_error(&entry_path, "path.symlink", "canonical paths cannot cross symlinks"));
+        }
+        validate_entry(&entry_path, &metadata)?;
+    }
+    Ok(())
+}
+
+fn validate_entity_directory(root: &Path, entity_dir: &Path) -> Result<(), CoreError> {
+    let name = entity_dir.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+    validate_component(name, entity_dir, "entity.directory")?;
+    Uuid::parse_str(name).map_err(|error| codec_error(entity_dir, "entity.directory", error))?;
+    let allowed = ["entity.json", "document.md", "fields", "relationships.json", "assets.json"];
+    let mut entries = fs::read_dir(entity_dir)
+        .map_err(|error| codec_error(entity_dir, "entity.read", error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| codec_error(entity_dir, "entity.read", error))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if is_ignored_metadata_entry(&name) {
+            continue;
+        }
+        if !allowed.contains(&name.as_str()) {
+            return Err(codec_error(&entry.path(), "entity.path", "unknown entry in entity directory"));
+        }
+        let metadata = fs::symlink_metadata(entry.path())
+            .map_err(|error| codec_error(&entry.path(), "path.read", error))?;
+        if metadata.file_type().is_symlink() {
+            return Err(codec_error(&entry.path(), "path.symlink", "canonical paths cannot cross symlinks"));
+        }
+        if name == "fields" {
+            if !metadata.is_dir() {
+                return Err(codec_error(&entry.path(), "fields.directory", "fields must be a directory"));
+            }
+            validate_fields_directory(&entry.path())?;
+        } else if !metadata.is_file() {
+            return Err(codec_error(&entry.path(), "entity.file", "entity records must be files"));
+        }
+    }
+    let _ = root;
+    Ok(())
+}
+
+fn validate_fields_directory(directory: &Path) -> Result<(), CoreError> {
+    let mut entries = fs::read_dir(directory)
+        .map_err(|error| codec_error(directory, "fields.read", error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| codec_error(directory, "fields.read", error))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    let mut names = BTreeSet::new();
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if is_ignored_metadata_entry(&name) {
+            continue;
+        }
+        if !names.insert(name.to_ascii_lowercase()) {
+            return Err(codec_error(directory, "path.case-collision", name));
+        }
+        let metadata = fs::symlink_metadata(entry.path())
+            .map_err(|error| codec_error(&entry.path(), "path.read", error))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(codec_error(&entry.path(), "fields.file", "field entries must be regular files"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_asset_directory(root: &Path, relative: &Path) -> Result<(), CoreError> {
+    let directory = root.join(relative);
+    let metadata = match fs::symlink_metadata(&directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(codec_error(&directory, "assets.read", error)),
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(codec_error(&directory, "path.symlink", "asset directories cannot be symlinks"));
+    }
+    if metadata.is_file() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(&directory)
+        .map_err(|error| codec_error(&directory, "assets.read", error))?
+    {
+        let entry = entry.map_err(|error| codec_error(&directory, "assets.read", error))?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| codec_error(&path, "assets.read", error))?;
+        if metadata.file_type().is_symlink() {
+            return Err(codec_error(&path, "path.symlink", "asset paths cannot cross symlinks"));
+        }
+        let child = relative.join(entry.file_name());
+        if metadata.is_dir() {
+            validate_asset_directory(root, &child)?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_canonical_sources(root: &Path) -> Result<Vec<CanonicalSource>, CoreError> {
+    let mut paths = Vec::new();
+    for relative in ["project.json", "entities", "plugins", "assets"] {
+        let path = root.join(relative);
+        if path.is_dir() {
+            collect_files(root, &path, &mut paths)?;
+        } else if path.is_file() && relative == "project.json" {
+            paths.push(path);
+        }
+    }
+    paths.sort_by(|left, right| {
+        left.strip_prefix(root).unwrap().cmp(right.strip_prefix(root).unwrap())
+    });
+    paths.into_iter()
+        .map(|path| {
+            let bytes = fs::read(&path).map_err(|error| codec_error(&path, "source.read", error))?;
+            let relative = path.strip_prefix(root).map_err(|error| codec_error(&path, "source.path", error))?;
+            let path = relative.to_string_lossy().replace('\\', "/");
+            let format_version = PROJECT_FORMAT_VERSION;
+            Ok(CanonicalSource { path, content_hash: digest_bytes(&bytes), format_version })
+        })
+        .collect()
+}
+
+fn collect_files(root: &Path, directory: &Path, paths: &mut Vec<PathBuf>) -> Result<(), CoreError> {
+    let mut entries = fs::read_dir(directory)
+        .map_err(|error| codec_error(directory, "source.read", error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| codec_error(directory, "source.read", error))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if is_ignored_metadata_entry(&name) {
+            continue;
+        }
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| codec_error(&path, "source.read", error))?;
+        if metadata.file_type().is_symlink() {
+            return Err(codec_error(&path, "path.symlink", "canonical paths cannot cross symlinks"));
+        }
+        if metadata.is_dir() {
+            collect_files(root, &path, paths)?;
+        } else if metadata.is_file() {
+            let _ = root;
+            paths.push(path);
+        }
+    }
+    Ok(())
 }
 
 pub fn normalized_project_path(root: &Path, relative: &str) -> Result<PathBuf, CoreError> {
@@ -1207,5 +1507,22 @@ mod tests {
         assert!(canonical.snapshot.entities.is_empty());
         assert!(canonical.snapshot.modules.is_empty());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repository_rejects_symlinked_canonical_directories_before_creation() {
+        let root = std::env::temp_dir().join(format!("daena-symlink-root-{}", Uuid::new_v4()));
+        let outside = std::env::temp_dir().join(format!("daena-symlink-target-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("assets")).unwrap();
+
+        let error = FilesystemRepository::open(&root).unwrap_err();
+        assert!(error.to_string().contains("[path.symlink]"));
+        assert!(!outside.join("images").exists());
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
     }
 }

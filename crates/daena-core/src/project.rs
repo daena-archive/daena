@@ -2,7 +2,7 @@ use crate::error::CoreError;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -264,8 +264,7 @@ impl ProjectStore {
                 "legacy daena.sqlite projects are not supported by format version 2".into(),
             ));
         }
-        let index_path = project_database_path(root);
-        let index_existed = index_path.exists();
+        let repository = crate::storage::FilesystemRepository::open(root)?;
         for directory in [
             "entities",
             "plugins",
@@ -322,22 +321,51 @@ impl ProjectStore {
             std::fs::write(&gitignore, gitignore_content)
                 .map_err(|error| CoreError::NotFound(error.to_string()))?;
         }
-        let store = Self::open_database(&index_path, Some(root.to_path_buf()))?;
-        if directory_has_canonical_entities(root) {
-            let canonical = crate::storage::read_canonical_project(root)?;
-            canonical
-                .manifest
-                .validate(&root.join("project.json"))?;
-            let payload = serde_json::to_string(&canonical.snapshot)
-                .map_err(|error| CoreError::Serialization(error.to_string()))?;
-            store.import_json_with_mode(&payload, true)?;
-        } else if index_existed && store.entity_count()? > 0 {
-            return Err(CoreError::Validation(
-                "disposable index contains data but canonical entity files are missing".into(),
-            ));
+        let canonical = repository.scan()?;
+        Self::rebuild_directory_index(root, &canonical)
+    }
+
+    fn rebuild_directory_index(
+        root: &Path,
+        canonical: &crate::storage::CanonicalProject,
+    ) -> Result<Self, CoreError> {
+        let index_path = project_database_path(root);
+        let next_path = root.join(".daena/index.sqlite.next");
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let path = PathBuf::from(format!("{}{}", next_path.display(), suffix));
+            if path.exists() {
+                std::fs::remove_file(&path).map_err(|error| CoreError::Io {
+                    operation: "remove stale index rebuild",
+                    source: error,
+                })?;
+            }
         }
-        store.sync_canonical()?;
-        Ok(store)
+
+        let store = Self::open_database(&next_path, Some(root.to_path_buf()))?;
+        let payload = serde_json::to_string(&canonical.snapshot)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        store.import_json_with_mode_and_sync(&payload, true, false)?;
+        store.replace_source_index(&canonical.sources)?;
+        store.rebuild_search()?;
+        store.verify_index(canonical.sources.len())?;
+        store.connection.execute_batch(
+            "PRAGMA wal_checkpoint(TRUNCATE);
+             PRAGMA journal_mode=DELETE;",
+        )?;
+        drop(store);
+
+        // Both paths are in .daena, so rename is atomic on the supported
+        // local filesystems.  The old index is never opened or modified while
+        // the new database is being built.
+        std::fs::rename(&next_path, &index_path).map_err(|error| CoreError::Io {
+            operation: "replace disposable index",
+            source: error,
+        })?;
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let path = PathBuf::from(format!("{}{}", index_path.display(), suffix));
+            let _ = std::fs::remove_file(path);
+        }
+        Self::open_database(&index_path, Some(root.to_path_buf()))
     }
 
     fn open_database(path: impl AsRef<Path>, root: Option<PathBuf>) -> Result<Self, CoreError> {
@@ -348,10 +376,81 @@ impl ProjectStore {
         Ok(store)
     }
 
-    fn entity_count(&self) -> Result<i64, CoreError> {
-        self.connection
-            .query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))
-            .map_err(CoreError::Database)
+    fn replace_source_index(
+        &self,
+        sources: &[crate::storage::CanonicalSource],
+    ) -> Result<(), CoreError> {
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute("DELETE FROM source_files", [])?;
+        for source in sources {
+            transaction.execute(
+                "INSERT INTO source_files(path,content_hash,format_version,logical_revision) VALUES (?1,?2,?3,?2)",
+                params![source.path, source.content_hash, source.format_version],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn verify_index(&self, source_count: usize) -> Result<(), CoreError> {
+        let foreign_key_error: Option<String> = self
+            .connection
+            .query_row("PRAGMA foreign_key_check", [], |row| row.get(0))
+            .optional()?;
+        if let Some(error) = foreign_key_error {
+            return Err(CoreError::Validation(format!(
+                "index foreign-key check failed: {error}"
+            )));
+        }
+        let integrity: String = self
+            .connection
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+        if integrity != "ok" {
+            return Err(CoreError::Validation(format!(
+                "index integrity check failed: {integrity}"
+            )));
+        }
+        let actual: usize = self
+            .connection
+            .query_row("SELECT COUNT(*) FROM source_files", [], |row| row.get(0))?;
+        if actual != source_count {
+            return Err(CoreError::Validation(format!(
+                "index source count mismatch: expected {source_count}, found {actual}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn ensure_source_index_current(&self) -> Result<(), CoreError> {
+        let Some(root) = self.root.as_deref() else {
+            return Ok(());
+        };
+        let canonical = crate::storage::FilesystemRepository::open(root)?.scan()?;
+        let expected = canonical
+            .sources
+            .into_iter()
+            .map(|source| (source.path, (source.content_hash, source.format_version)))
+            .collect::<BTreeMap<_, _>>();
+        let mut actual = BTreeMap::new();
+        let mut statement = self
+            .connection
+            .prepare("SELECT path,content_hash,format_version FROM source_files")?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (row.get::<_, String>(1)?, row.get::<_, u32>(2)?),
+            ))
+        })?;
+        for row in rows {
+            let (path, source) = row?;
+            actual.insert(path, source);
+        }
+        if actual != expected {
+            return Err(CoreError::Validation(
+                "disposable index is stale relative to canonical source files".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn sync_canonical(&self) -> Result<(), CoreError> {
@@ -362,9 +461,13 @@ impl ProjectStore {
         let manifest: crate::storage::ProjectManifest =
             crate::storage::read_json(&manifest_path)?;
         manifest.validate(&manifest_path)?;
-        let snapshot: ProjectSnapshot = serde_json::from_str(&self.export_json()?)
+        let snapshot: ProjectSnapshot = serde_json::from_str(&self.export_json_inner()?)
             .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        crate::storage::write_canonical_project(root, &manifest, &snapshot)
+        crate::storage::write_canonical_project(root, &manifest, &snapshot)?;
+        let canonical = crate::storage::FilesystemRepository::open(root)?.scan()?;
+        self.replace_source_index(&canonical.sources)?;
+        self.rebuild_search()?;
+        self.verify_index(canonical.sources.len())
     }
 
     pub fn in_memory() -> Result<Self, CoreError> {
@@ -513,7 +616,13 @@ impl ProjectStore {
              );
              CREATE INDEX IF NOT EXISTS entities_name_idx ON entities(name);
              CREATE INDEX IF NOT EXISTS relationships_source_idx ON relationships(source_id);
-             CREATE INDEX IF NOT EXISTS relationships_target_idx ON relationships(target_id);"
+             CREATE INDEX IF NOT EXISTS relationships_target_idx ON relationships(target_id);
+             CREATE TABLE IF NOT EXISTS source_files (
+               path TEXT PRIMARY KEY,
+               content_hash TEXT NOT NULL,
+               format_version INTEGER NOT NULL,
+               logical_revision TEXT NOT NULL
+             );"
         )?;
         self.connection.execute_batch("CREATE TABLE IF NOT EXISTS module_versions(module_id TEXT PRIMARY KEY, version INTEGER NOT NULL DEFAULT 0);
               CREATE TABLE IF NOT EXISTS module_state(module_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1);
@@ -654,6 +763,7 @@ impl ProjectStore {
     }
 
     pub fn list_entities(&self) -> Result<Vec<Entity>, CoreError> {
+        self.ensure_source_index_current()?;
         self.list_entities_where("WHERE deleted=0")
     }
 
@@ -779,6 +889,11 @@ impl ProjectStore {
     }
 
     pub fn list_documents(&self, entity_id: String) -> Result<Vec<Document>, CoreError> {
+        self.ensure_source_index_current()?;
+        self.list_documents_unchecked(entity_id)
+    }
+
+    fn list_documents_unchecked(&self, entity_id: String) -> Result<Vec<Document>, CoreError> {
         let mut statement = self.connection.prepare("SELECT id,entity_id,format,body,updated_at FROM documents WHERE entity_id=?1 ORDER BY updated_at DESC")?;
         let rows = statement.query_map(params![entity_id], |row| {
             Ok(Document {
@@ -815,6 +930,11 @@ impl ProjectStore {
         Ok(())
     }
     pub fn list_fields(&self, entity_id: String) -> Result<Vec<FieldValue>, CoreError> {
+        self.ensure_source_index_current()?;
+        self.list_fields_unchecked(entity_id)
+    }
+
+    fn list_fields_unchecked(&self, entity_id: String) -> Result<Vec<FieldValue>, CoreError> {
         let mut s = self.connection.prepare(
             "SELECT entity_id,namespace,key,value FROM entity_fields WHERE entity_id=?1",
         )?;
@@ -875,6 +995,7 @@ impl ProjectStore {
     }
 
     pub fn relationship(&self, id: String) -> Result<Relationship, CoreError> {
+        self.ensure_source_index_current()?;
         self.connection
             .query_row(
                 "SELECT id,source_id,target_id,relationship_type,metadata FROM relationships WHERE id=?1",
@@ -894,6 +1015,11 @@ impl ProjectStore {
     }
 
     pub fn list_relationships(&self, entity_id: String) -> Result<Vec<Relationship>, CoreError> {
+        self.ensure_source_index_current()?;
+        self.list_relationships_unchecked(entity_id)
+    }
+
+    fn list_relationships_unchecked(&self, entity_id: String) -> Result<Vec<Relationship>, CoreError> {
         let mut statement = self.connection.prepare("SELECT id,source_id,target_id,relationship_type,metadata FROM relationships WHERE source_id=?1 OR target_id=?1")?;
         let rows = statement.query_map(params![entity_id], |row| {
             Ok(Relationship {
@@ -908,6 +1034,7 @@ impl ProjectStore {
     }
 
     pub fn search(&self, query: String) -> Result<Vec<Entity>, CoreError> {
+        self.ensure_source_index_current()?;
         if query.trim().is_empty() {
             return self.list_entities();
         }
@@ -931,16 +1058,21 @@ impl ProjectStore {
     }
 
     pub fn export_json(&self) -> Result<String, CoreError> {
+        self.ensure_source_index_current()?;
+        self.export_json_inner()
+    }
+
+    fn export_json_inner(&self) -> Result<String, CoreError> {
         let entities = self.list_all_entities()?;
         let mut documents = Vec::new();
         let mut fields = Vec::new();
         let mut assets = Vec::new();
         let mut relationships = Vec::new();
         for entity in &entities {
-            documents.extend(self.list_documents(entity.id.clone())?);
-            fields.extend(self.list_fields(entity.id.clone())?);
-            assets.extend(self.list_assets(entity.id.clone())?);
-            relationships.extend(self.list_relationships(entity.id.clone())?);
+            documents.extend(self.list_documents_unchecked(entity.id.clone())?);
+            fields.extend(self.list_fields_unchecked(entity.id.clone())?);
+            assets.extend(self.list_assets_unchecked(entity.id.clone())?);
+            relationships.extend(self.list_relationships_unchecked(entity.id.clone())?);
         }
         relationships.sort_by(|a, b| a.id.cmp(&b.id));
         relationships.dedup_by(|a, b| a.id == b.id);
@@ -1011,6 +1143,15 @@ impl ProjectStore {
     }
 
     fn import_json_with_mode(&self, payload: &str, replace: bool) -> Result<usize, CoreError> {
+        self.import_json_with_mode_and_sync(payload, replace, true)
+    }
+
+    fn import_json_with_mode_and_sync(
+        &self,
+        payload: &str,
+        replace: bool,
+        sync_canonical: bool,
+    ) -> Result<usize, CoreError> {
         let snapshot: ProjectSnapshot = serde_json::from_str(payload)
             .map_err(|error| CoreError::NotFound(error.to_string()))?;
         if snapshot.format_version != current_snapshot_version() {
@@ -1078,7 +1219,9 @@ impl ProjectStore {
         }
         transaction.commit()?;
         self.rebuild_search()?;
-        self.sync_canonical()?;
+        if sync_canonical {
+            self.sync_canonical()?;
+        }
         Ok(snapshot.entities.len())
     }
 
@@ -1180,6 +1323,11 @@ impl ProjectStore {
     }
 
     pub fn list_assets(&self, entity_id: String) -> Result<Vec<Asset>, CoreError> {
+        self.ensure_source_index_current()?;
+        self.list_assets_unchecked(entity_id)
+    }
+
+    fn list_assets_unchecked(&self, entity_id: String) -> Result<Vec<Asset>, CoreError> {
         let mut statement = self.connection.prepare("SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets WHERE entity_id=?1 ORDER BY created_at")?;
         let rows = statement.query_map(params![entity_id], |row| {
             Ok(Asset {
@@ -1380,10 +1528,10 @@ impl ProjectStore {
              DROP TRIGGER IF EXISTS entity_fields_search_insert;
              DROP TRIGGER IF EXISTS entity_fields_search_update;
              DROP TABLE IF EXISTS world_search;
-             CREATE VIRTUAL TABLE world_search USING fts5(entity_id UNINDEXED, content);
-             INSERT INTO world_search(entity_id, content) SELECT id, name || ' ' || COALESCE(entity_type, '') FROM entities WHERE deleted=0;
-             INSERT INTO world_search(entity_id, content) SELECT documents.entity_id, documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE entities.deleted=0;
-             INSERT INTO world_search(entity_id, content) SELECT entity_fields.entity_id, entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entities.deleted=0;
+             CREATE VIRTUAL TABLE world_search USING fts5(entity_id UNINDEXED, source_path UNINDEXED, source_hash UNINDEXED, content);
+             INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT e.id, COALESCE(sf.path, 'entities/' || e.id || '/entity.json'), COALESCE(sf.content_hash, ''), e.name || ' ' || COALESCE(e.entity_type, '') FROM entities e LEFT JOIN source_files sf ON sf.path = 'entities/' || e.id || '/entity.json' WHERE e.deleted=0;
+             INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT d.entity_id, COALESCE(sf.path, 'entities/' || d.entity_id || '/document.md'), COALESCE(sf.content_hash, ''), d.body FROM documents d JOIN entities e ON e.id = d.entity_id LEFT JOIN source_files sf ON sf.path = 'entities/' || d.entity_id || '/document.md' WHERE e.deleted=0;
+             INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT f.entity_id, COALESCE(sf.path, ''), COALESCE(sf.content_hash, ''), f.namespace || ' ' || f.key || ' ' || f.value FROM entity_fields f JOIN entities e ON e.id = f.entity_id LEFT JOIN source_files sf ON sf.path LIKE 'entities/' || f.entity_id || '/fields/%.json' WHERE e.deleted=0;
              CREATE TRIGGER entities_search_insert AFTER INSERT ON entities BEGIN INSERT INTO world_search(entity_id, content) SELECT new.id, new.name || ' ' || COALESCE(new.entity_type, '') WHERE new.deleted=0; END;
              CREATE TRIGGER entities_search_update AFTER UPDATE OF name, entity_type, deleted ON entities BEGIN DELETE FROM world_search WHERE entity_id = old.id; INSERT INTO world_search(entity_id, content) SELECT new.id, new.name || ' ' || COALESCE(new.entity_type, '') WHERE new.deleted=0; INSERT INTO world_search(entity_id, content) SELECT documents.entity_id, documents.body FROM documents WHERE documents.entity_id = new.id AND new.deleted=0; INSERT INTO world_search(entity_id, content) SELECT entity_fields.entity_id, entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields WHERE entity_fields.entity_id = new.id AND new.deleted=0; END;
              CREATE TRIGGER documents_search_insert AFTER INSERT ON documents BEGIN INSERT INTO world_search(entity_id, content) VALUES (new.entity_id, new.body); END;
@@ -1615,6 +1763,7 @@ impl ProjectStore {
     }
 
     pub fn get_module_version(&self, module_id: &str) -> Result<i64, CoreError> {
+        self.ensure_source_index_current()?;
         self.connection
             .query_row(
                 "SELECT COALESCE(version, 0) FROM module_versions WHERE module_id=?1",
@@ -1632,6 +1781,7 @@ impl ProjectStore {
     }
 
     pub fn module_states(&self) -> Result<Vec<ModuleState>, CoreError> {
+        self.ensure_source_index_current()?;
         let mut statement = self.connection.prepare("SELECT m.module_id, COALESCE(s.enabled, 1), m.version, p.package_version FROM module_versions m LEFT JOIN module_state s ON s.module_id = m.module_id LEFT JOIN module_package_versions p ON p.module_id = m.module_id ORDER BY m.module_id")?;
         let rows = statement.query_map([], |row| {
             Ok(ModuleState {
@@ -1666,6 +1816,7 @@ impl ProjectStore {
     }
 
     pub fn is_module_enabled(&self, module_id: &str) -> Result<bool, CoreError> {
+        self.ensure_source_index_current()?;
         Ok(self
             .connection
             .query_row(
@@ -1706,6 +1857,7 @@ impl ProjectStore {
     }
 
     pub fn module_package_version(&self, module_id: &str) -> Result<Option<String>, CoreError> {
+        self.ensure_source_index_current()?;
         self.connection
             .query_row(
                 "SELECT package_version FROM module_package_versions WHERE module_id=?1",
@@ -1757,20 +1909,6 @@ pub(crate) fn chrono_like_now() -> String {
         .unwrap_or_default()
         .as_secs()
         .to_string()
-}
-
-fn directory_has_canonical_entities(root: &Path) -> bool {
-    let has_entities = std::fs::read_dir(root.join("entities"))
-        .map(|entries| entries.flatten().any(|entry| entry.path().is_dir()))
-        .unwrap_or(false);
-    let has_plugin_state = std::fs::read_dir(root.join("plugins"))
-        .map(|entries| {
-            entries.flatten().any(|entry| {
-                entry.path().extension().and_then(|extension| extension.to_str()) == Some("json")
-            })
-        })
-        .unwrap_or(false);
-    has_entities || has_plugin_state
 }
 
 fn digest_bytes(bytes: &[u8]) -> String {
@@ -2557,12 +2695,39 @@ mod tests {
                 metadata: None,
             })
             .unwrap();
-        drop(first);
-
         assert!(root.join("entities").join(&source.id).join("entity.json").is_file());
         assert!(root.join("entities").join(&source.id).join("document.md").is_file());
         assert!(root.join("plugins/com.example.notes.json").is_file());
         let canonical_before = canonical_files(&root);
+        let search_before = first
+            .search("Canonical prose".into())
+            .unwrap()
+            .into_iter()
+            .map(|entity| entity.id)
+            .collect::<Vec<_>>();
+        let source_count_before: i64 = first
+            .connection
+            .query_row("SELECT COUNT(*) FROM source_files", [], |row| row.get(0))
+            .unwrap();
+        let source_hash: String = first
+            .connection
+            .query_row(
+                "SELECT content_hash FROM source_files WHERE path=?1",
+                params![format!("entities/{}/document.md", source.id)],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            source_hash,
+            format!(
+                "sha256:{}",
+                digest_bytes(
+                    &std::fs::read(root.join("entities").join(&source.id).join("document.md"))
+                        .unwrap()
+                )
+            )
+        );
+        drop(first);
         std::fs::remove_dir_all(root.join(".daena")).unwrap();
 
         let reopened = ProjectStore::open_directory(&root).unwrap();
@@ -2574,7 +2739,23 @@ mod tests {
             "# Canonical prose\n"
         );
         assert_eq!(reopened.list_fields(source.id.clone()).unwrap().len(), 1);
-        assert_eq!(reopened.list_relationships(source.id).unwrap().len(), 1);
+        assert_eq!(reopened.list_relationships(source.id.clone()).unwrap().len(), 1);
+        let search_after = reopened
+            .search("Canonical prose".into())
+            .unwrap()
+            .into_iter()
+            .map(|entity| entity.id)
+            .collect::<Vec<_>>();
+        assert_eq!(search_after, search_before);
+        let source_count_after: i64 = reopened
+            .connection
+            .query_row("SELECT COUNT(*) FROM source_files", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(source_count_after, source_count_before);
+        assert!(!root.join(".daena/index.sqlite.next").exists());
+        let document_path = root.join("entities").join(&source.id).join("document.md");
+        std::fs::write(&document_path, b"# External change\n").unwrap();
+        assert!(reopened.search("Canonical prose".into()).is_err());
         drop(reopened);
         std::fs::remove_dir_all(root).unwrap();
     }

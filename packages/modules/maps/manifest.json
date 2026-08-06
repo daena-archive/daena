@@ -15,11 +15,12 @@
     "entityTypes": ["daena.maps:map"],
     "fields": [
       { "key": "map", "label": "Map descriptor", "type": "text", "entityTypes": ["daena.maps:map"] },
-      { "key": "locations", "label": "Location references", "type": "text" }
+      { "key": "locations", "label": "Location references", "type": "text" },
+      { "key": "layers", "label": "Semantic layer definitions", "type": "text", "entityTypes": ["daena.maps:map"] }
     ]
   }],
   "templates": [{ "id": "map", "name": "Map", "entityType": "daena.maps:map", "fields": { "map": null } }],
-  "views": [],
+  "views": [{ "id": "map-workspace", "title": "Maps", "components": [] }],
   "commands": [],
   "services": { "provides": [{ "name": "daena.maps.navigation", "major": 1 }], "consumes": [] },
   "events": { "publishes": [], "subscribes": [{ "name": "entity.changed", "version": 1 }, { "name": "field.changed", "version": 1 }, { "name": "relationship.changed", "version": 1 }, { "name": "asset.changed", "version": 1 }] },

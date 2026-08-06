@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path};
+use std::io::{Cursor, Read};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -29,6 +30,7 @@ type SharedBinaryTransfers = Arc<Mutex<BinaryTransferManager>>;
 
 const MAX_ASSET_TRANSFER_BYTES: usize = 64 * 1024 * 1024;
 const ASSET_TRANSFER_TTL: Duration = Duration::from_secs(60);
+const BUNDLED_FMG_ARCHIVE: &[u8] = include_bytes!("../plugin-assets/maps/fmg-v1.119.zip");
 
 #[derive(Default)]
 struct BinaryTransferManager {
@@ -186,14 +188,16 @@ impl BinaryTransferManager {
         }
     }
 
-    fn complete_upload(&mut self, token: &str, plugin_id: &str) -> Result<(), String> {
+    fn complete_upload(&mut self, token: &str, plugin_id: &str, session_id: &str) -> Result<(), String> {
         let Some(transfer) = self.transfers.remove(token) else {
             return Err("asset upload handle is invalid or expired".into());
         };
         match transfer {
             BinaryTransfer::Upload {
-                plugin_id: owner, ..
-            } if owner == plugin_id => Ok(()),
+                plugin_id: owner,
+                session_id: expected_session,
+                ..
+            } if owner == plugin_id && expected_session == session_id => Ok(()),
             other => {
                 self.transfers.insert(token.into(), other);
                 Err("asset upload handle is not valid for this plugin".into())
@@ -305,6 +309,40 @@ fn percent_encode(value: &str) -> String {
         .collect()
 }
 
+fn bundled_maps_asset(path: &str) -> Option<(Vec<u8>, &'static str)> {
+    let relative = if path == "/dist/ui/index.html" {
+        "index.html"
+    } else {
+        path.strip_prefix("/dist/ui/fmg/")?
+    };
+    if relative.is_empty()
+        || relative.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return None;
+    }
+    let mut archive = zip::ZipArchive::new(Cursor::new(BUNDLED_FMG_ARCHIVE)).ok()?;
+    let mut file = archive.by_name(relative).ok()?;
+    if file.is_dir() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let content_type = match Path::new(relative).extension().and_then(|value| value.to_str()) {
+        Some("html") => "text/html",
+        Some("js") | Some("mjs") => "text/javascript",
+        Some("css") => "text/css",
+        Some("json") | Some("webmanifest") => "application/json",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("woff") => "font/woff",
+        Some("woff2") => "font/woff2",
+        _ => "application/octet-stream",
+    };
+    Some((bytes, content_type))
+}
+
 fn plugin_asset_response(
     plugin_id: &str,
     request: &tauri::http::Request<Vec<u8>>,
@@ -392,6 +430,16 @@ fn plugin_asset_response(
         };
         (bytes, content_type)
     } else {
+        if plugin_id == "daena.maps" {
+            if let Some((bytes, content_type)) = bundled_maps_asset(path) {
+                (bytes, content_type)
+            } else {
+                return tauri::http::Response::builder()
+                    .status(404)
+                    .body(Vec::new())
+                    .unwrap();
+            }
+        } else {
         let (bytes, content_type): (&[u8], &str) = match (plugin_id, path) {
             ("daena.lore", "/dist/ui/index.html") => (
                 include_bytes!("../plugin-assets/lore/index.html"),
@@ -429,6 +477,7 @@ fn plugin_asset_response(
             }
         };
         (bytes.to_vec(), content_type)
+        }
     };
     let manifest = package_manifest.cloned().or_else(|| {
         let manifest = match plugin_id {
@@ -766,6 +815,9 @@ fn dispatch_binary_asset_rpc(
             if bytes.len() > MAX_ASSET_TRANSFER_BYTES {
                 return Err("asset exceeds host transfer limit".into());
             }
+            if asset.size < 0 || asset.size as usize != bytes.len() {
+                return Err("asset metadata size does not match its bytes".into());
+            }
             let token = manager.token(BinaryTransfer::Read {
                 plugin_id: session.plugin_id.clone(),
                 session_id: session.id.clone(),
@@ -788,13 +840,14 @@ fn dispatch_binary_asset_rpc(
             if namespace != Some(asset.namespace.as_str()) {
                 return Err("asset namespace does not match the owned asset".into());
             }
-            let size = payload
+            let size_value = payload
                 .get("size")
                 .and_then(serde_json::Value::as_u64)
-                .ok_or_else(|| "size is required".to_string())? as usize;
-            if size > MAX_ASSET_TRANSFER_BYTES {
+                .ok_or_else(|| "size is required".to_string())?;
+            if size_value > MAX_ASSET_TRANSFER_BYTES as u64 {
                 return Err("asset exceeds host transfer limit".into());
             }
+            let size = size_value as usize;
             let mime_type = payload
                 .get("mimeType")
                 .and_then(serde_json::Value::as_str)
@@ -845,7 +898,7 @@ fn dispatch_binary_asset_rpc(
             let mut manager = transfers
                 .lock()
                 .map_err(|_| "asset transfer state is unavailable".to_string())?;
-            manager.complete_upload(token, &session.plugin_id)?;
+            manager.complete_upload(token, &session.plugin_id, &session.id)?;
             serde_json::to_value(asset).map_err(|e| e.to_string())
         }
         "asset.transfer.cancel" => {
@@ -886,6 +939,14 @@ fn open_plugin_webview(
         return Ok(());
     }
     let mut url = format!("{}?project={}", policy.url, percent_encode(project_id));
+    if policy.url.contains("daena.maps") {
+        // FMG uses this explicit host marker to disable browser-only
+        // integrations such as its ServiceWorker and OpenWidget import.
+        url.push_str("&daena=1");
+    }
+    if policy.url.starts_with("plugin://daena.maps/") {
+        url.push_str("&daena=1");
+    }
     if let Some(view_id) = view_id {
         url.push_str("&view=");
         url.push_str(&percent_encode(view_id));
@@ -1007,8 +1068,18 @@ fn plugin_webview_url(
     policy: &daena_plugin_host::PluginWebviewPolicy,
     project_id: &str,
     view_id: Option<&str>,
+    bounds: PluginWebviewBounds,
 ) -> Result<tauri::WebviewUrl, String> {
-    let mut url = format!("{}?project={}", policy.url, percent_encode(project_id));
+    let mut url = format!(
+        "{}?project={}&width={}&height={}",
+        policy.url,
+        percent_encode(project_id),
+        bounds.width,
+        bounds.height
+    );
+    if policy.url.contains("daena.maps") {
+        url.push_str("&daena=1");
+    }
     if let Some(view_id) = view_id {
         url.push_str("&view=");
         url.push_str(&percent_encode(view_id));
@@ -1053,7 +1124,7 @@ async fn plugin_mount_webview(
         let policy = webview_policy(&entry.manifest)
             .ok_or_else(|| "plugin has no UI entrypoint".to_string())?;
         validate_plugin_view(&entry.manifest, view_id.as_deref())?;
-        let url = plugin_webview_url(&policy, &project_id, view_id.as_deref())?;
+        let url = plugin_webview_url(&policy, &project_id, view_id.as_deref(), bounds)?;
         (policy, url)
     };
     let label = policy.label.clone();
@@ -1962,6 +2033,21 @@ async fn module_enable(
             .info()
             .map(|info| info.root)
             .ok_or(CoreError::ProjectNotOpen)?;
+        if project.is_module_enabled(&id)? {
+            let granted_capabilities = granted_capabilities.ok_or(CoreError::Unauthorized {
+                operation: "explicit plugin capability review",
+            })?;
+            let mut host = plugins
+                .lock()
+                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+            host.grant_capabilities(
+                &project_id,
+                &id,
+                granted_capabilities.into_iter().collect(),
+            )
+            .map_err(|error| CoreError::Validation(error.to_string()))?;
+            return Ok(());
+        }
         let (manifest, package_digest) = {
             let mut host = plugins
                 .lock()
@@ -3765,6 +3851,36 @@ mod tests {
     }
 
     #[test]
+    fn maps_webview_url_overrides_hidden_bootstrap_dimensions() {
+        let manifest: PluginManifest = serde_json::from_str(include_str!(
+            "../../packages/modules/maps/manifest.json"
+        ))
+        .unwrap();
+        let policy = webview_policy(&manifest).unwrap();
+        let url = plugin_webview_url(
+            &policy,
+            "project",
+            None,
+            PluginWebviewBounds {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+            },
+        )
+        .unwrap();
+        let tauri::WebviewUrl::External(url) = url else {
+            panic!("plugin webview must use an external custom-protocol URL");
+        };
+        let query = url.query().unwrap();
+        assert!(query.contains("width=800"));
+        assert!(query.contains("height=600"));
+        assert!(query.contains("daena=1"));
+    }
+
+    #[test]
     fn broker_dispatch_uses_plugin_project_authority() {
         let mut core = CoreService::new();
         core.open_memory(AuthorityContext::trusted_shell()).unwrap();
@@ -3858,8 +3974,17 @@ mod tests {
         assert_eq!(bytes, b"abc");
         assert_eq!(revision, "revision");
         assert!(manager
-            .prepare_upload(&upload, "maps", "session", "other-project", "sha256:placeholder")
+            .prepare_upload(
+                &upload,
+                "maps",
+                "session",
+                "other-project",
+                "sha256:placeholder"
+            )
             .is_err());
+        assert!(manager.complete_upload(&upload, "maps", "other-session").is_err());
+        assert!(manager.complete_upload(&upload, "maps", "session").is_ok());
+        assert!(manager.complete_upload(&upload, "maps", "session").is_err());
     }
 
     #[test]
@@ -3881,6 +4006,60 @@ mod tests {
             plugin_asset_response("daena.lore", &traversal, None, None).status(),
             404
         );
+    }
+
+    #[test]
+    fn bundled_maps_shell_is_deterministic_and_provider_fail_closed() {
+        let request = tauri::http::Request::builder()
+            .uri("plugin://daena.maps/dist/ui/index.html")
+            .body(Vec::new())
+            .unwrap();
+        let response = plugin_asset_response("daena.maps", &request, None, None);
+        let body = String::from_utf8(response.body().clone()).unwrap();
+        assert_eq!(response.status(), 200);
+        assert!(body.contains("Azgaar's Fantasy Map Generator"));
+        assert!(body.contains("daena-bridge.js"));
+        assert!(body.find("<script defer src=\"daena-bridge.js\">").unwrap()
+            < body.find("<script type=\"module\"").unwrap());
+        assert!(body.contains("rel=\"stylesheet\"\n      href=\"index.css?v=1.113.1\""));
+        assert!(!body.contains("rel=\"preload\""));
+        assert_eq!(response.headers().get("Content-Security-Policy").unwrap(), "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'");
+
+        let bridge = tauri::http::Request::builder()
+            .uri("plugin://daena.maps/dist/ui/fmg/daena-bridge.js")
+            .body(Vec::new())
+            .unwrap();
+        let bridge_response = plugin_asset_response("daena.maps", &bridge, None, None);
+        assert_eq!(bridge_response.status(), 200);
+        let bridge_body = String::from_utf8_lossy(bridge_response.body());
+        assert!(bridge_body.contains("asset.replace.begin"));
+        assert!(bridge_body.contains("Daena Maps provider startup failed"));
+
+        let bootstrap = tauri::http::Request::builder()
+            .uri("plugin://daena.maps/dist/ui/fmg/daena-inline-bootstrap.js")
+            .body(Vec::new())
+            .unwrap();
+        let bootstrap_response = plugin_asset_response("daena.maps", &bootstrap, None, None);
+        assert_eq!(bootstrap_response.status(), 200);
+        assert!(String::from_utf8_lossy(bootstrap_response.body())
+            .contains("element.style.cssText"));
+
+        let main = tauri::http::Request::builder()
+            .uri("plugin://daena.maps/dist/ui/fmg/main.js")
+            .body(Vec::new())
+            .unwrap();
+        let main_response = plugin_asset_response("daena.maps", &main, None, None);
+        assert_eq!(main_response.status(), 200);
+        let main_body = String::from_utf8_lossy(main_response.body());
+        assert!(main_body.contains("function toggleAssistant()"));
+        assert!(main_body.contains("if (DAENA_HOST) return;"));
+        assert!(!main_body.contains("openwidget.min.js"));
+
+        let missing = tauri::http::Request::builder()
+            .uri("plugin://daena.maps/dist/ui/fmg/not-present.js")
+            .body(Vec::new())
+            .unwrap();
+        assert_eq!(plugin_asset_response("daena.maps", &missing, None, None).status(), 404);
     }
 
     #[test]

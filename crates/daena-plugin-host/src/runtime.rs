@@ -86,9 +86,15 @@ pub fn webview_policy(manifest: &PluginManifest) -> Option<PluginWebviewPolicy> 
         protocol,
         url: format!("{origin}/{entrypoint}"),
         origin,
-        // No inline/eval code, no network, no frames, no form submission, and
-        // no parent/opener access. Static assets are served by the host only.
-        csp: "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'".into(),
+        // FMG uses inline style attributes and data-backed icon fonts. Permit
+        // those local resources while keeping scripts, network, frames,
+        // objects, forms, and parent access denied. All source I/O remains
+        // brokered.
+        csp: if manifest.id == "daena.maps" {
+            "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'"
+        } else {
+            "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        }.into(),
         entrypoint,
     })
 }

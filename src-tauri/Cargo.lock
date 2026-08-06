@@ -854,6 +854,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "uuid",
+ "zip",
 ]
 
 [[package]]

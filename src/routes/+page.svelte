@@ -69,6 +69,7 @@
   let sandboxView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] | null } | null>(null);
   let projectionView = $state<{ title: string; module: DaenaModule } | null>(null);
   let adminBusy = $state(false);
+  let pluginActionId = $state<string | null>(null);
   let installing = $state(false);
   let installConsent = $state<{ path: string; message: string } | null>(null);
   let installSummary = $state<{ id: string; version: string; signed: boolean; digest: string } | null>(null);
@@ -972,13 +973,19 @@
         `Enable ${plugin.name} with these requested capabilities?\n\n${plugin.capabilities.map(capabilityLabel).join("\n") || "No capabilities requested."}`,
         "Enable plugin",
         async () => {
-          await project.enableModule(plugin.id, plugin.capabilities);
-          modules = await project.listModuleManifests();
-          await refreshAdmin();
+          pluginActionId = plugin.id;
+          try {
+            await project.enableModule(plugin.id, plugin.capabilities);
+            modules = await project.listModuleManifests();
+            await refreshAdmin();
+          } finally {
+            pluginActionId = null;
+          }
         },
       );
       return;
     }
+    pluginActionId = plugin.id;
     try {
       await project.disableModule(plugin.id);
       modules = await project.listModuleManifests();
@@ -986,6 +993,24 @@
       if (hostView?.plugin.id === plugin.id) hostView = null;
       if (sandboxView?.plugin.id === plugin.id) sandboxView = null;
     } catch (cause) { error = friendlyError(cause); }
+    finally { pluginActionId = null; }
+  }
+  async function reviewPluginCapabilities(plugin: PluginAdminEntry) {
+    askConfirm(
+      "Review plugin capabilities",
+      `Update ${plugin.name} with these requested capabilities?\n\n${plugin.capabilities.map(capabilityLabel).join("\n") || "No capabilities requested."}`,
+      "Update capabilities",
+      async () => {
+        pluginActionId = plugin.id;
+        try {
+          await project.enableModule(plugin.id, plugin.capabilities);
+          await refreshAdmin();
+          modules = await project.listModuleManifests();
+        } finally {
+          pluginActionId = null;
+        }
+      },
+    );
   }
   function capabilityLabel(capability: string) {
     const labels: Record<string, string> = {
@@ -1132,7 +1157,7 @@
           <div class="new-form-heading plugins-heading"><div><span class="panel-kicker">PLUGIN LIBRARY</span><strong>Plugins</strong></div><button type="button" class="new-form-close" onclick={() => showPlugins = false}>×</button></div>
           <p class="plugins-intro">Extensions that power this project. Every install, upgrade, and rollback is verified and reversible.</p>
           <div class="plugins-toolbar">
-            <button class="primary-button" disabled={installing || adminBusy} onclick={installFromPicker}>{installing ? "Installing…" : "Install package…"}</button>
+            <button type="button" class="primary-button" disabled={installing || adminBusy} onclick={() => void installFromPicker()}>{installing ? "Installing…" : "Install package…"}</button>
             <span class="muted-note">{adminBusy ? "Refreshing…" : ""}</span>
           </div>
           {#if installSummary}
@@ -1170,7 +1195,8 @@
                     <p class="plugin-error" title={plugin.lifecycle.lastError}>Last failure: {plugin.lifecycle.lastError}</p>
                   {/if}
                   <div class="plugin-actions">
-                    <button class:on={plugin.enabled} class="plugin-toggle" onclick={() => togglePluginEnabled(plugin)} disabled={adminBusy}>{plugin.enabled ? "Disable" : "Enable"}</button>
+                    <button type="button" class:on={plugin.enabled} class="plugin-toggle" onclick={() => void togglePluginEnabled(plugin)} disabled={adminBusy || pluginActionId !== null}>{pluginActionId === plugin.id ? "Working…" : plugin.enabled ? "Disable" : "Enable"}</button>
+                    {#if plugin.enabled}<button type="button" class="quiet-button" onclick={() => void reviewPluginCapabilities(plugin)} disabled={adminBusy || pluginActionId !== null}>Review capabilities</button>{/if}
                     {#if selectedUninstallableVersion(plugin)}
                       <button
                         class="quiet-button"
@@ -1294,7 +1320,7 @@
         </div></div>
       {/if}
       {#if confirmAction}
-        <div class="modal-backdrop"><div class="dialog" role="alertdialog" aria-modal="true">
+        <div class="modal-backdrop plugin-confirm-modal"><div class="dialog" role="alertdialog" aria-modal="true">
           <div class="new-form-heading"><div><span class="panel-kicker">CONFIRM ACTION</span><strong>{confirmAction.title}</strong></div><button type="button" class="new-form-close" onclick={() => confirmAction = null}>×</button></div>
           <p class="dialog-body-copy">{confirmAction.message}</p>
           <div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => confirmAction = null}>Cancel</button><button type="button" class="primary-button" onclick={runConfirm} disabled={confirmBusy}>{confirmBusy ? "Working…" : confirmAction.confirmLabel}</button></div>
@@ -1460,6 +1486,7 @@
   .new-form-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 14px; }
   .new-form-actions .quiet-button { padding: 9px 10px; }
   .modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 20px; background: rgba(37, 37, 31, .28); }
+  .plugin-confirm-modal { z-index: 30; }
   .dialog { width: min(440px, 100%); margin: 0; padding: 22px; border: 1px solid #e3d9ca; border-radius: 14px; background: var(--surface); box-shadow: 0 22px 70px rgba(37, 37, 31, .2); }
   .dialog .new-form-heading { margin-bottom: 18px; }
   .dialog .new-form-heading strong { font-size: 23px; }

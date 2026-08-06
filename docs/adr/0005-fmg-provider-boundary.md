@@ -1,6 +1,6 @@
 # ADR 0005: FMG provider boundary and binary transport
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-06
 
 ## Context

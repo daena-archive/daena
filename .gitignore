@@ -11,3 +11,4 @@ vite.config.ts.timestamp-*
 .vscode/
 .codebase-memory/
 crates/**/target/
+/src-tauri/plugin-assets/maps/fmg-v1.119.zip

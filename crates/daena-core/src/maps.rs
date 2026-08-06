@@ -309,6 +309,37 @@ pub fn validate_field(
             validity(&validity_value, "location.validity")?;
         }
         Ok(())
+    } else if key == "layers" {
+        let object = value
+            .as_object()
+            .ok_or_else(|| invalid("layers must be an object"))?;
+        if object.keys().any(|key| !matches!(key.as_str(), "schemaVersion" | "layers"))
+            || object.get("schemaVersion").and_then(Value::as_i64) != Some(1)
+        {
+            return Err(invalid("layers must contain schemaVersion 1 and layers only"));
+        }
+        let layers = object
+            .get("layers")
+            .and_then(Value::as_array)
+            .ok_or_else(|| invalid("layers.layers must be an array"))?;
+        let mut ids = BTreeSet::new();
+        for layer in layers {
+            let layer = layer
+                .as_object()
+                .ok_or_else(|| invalid("each layer must be an object"))?;
+            if layer.keys().any(|key| !matches!(key.as_str(), "id" | "name" | "order" | "defaultVisible" | "style" | "selector"))
+                || !ids.insert(layer.get("id").and_then(Value::as_str).unwrap_or_default().to_owned())
+                || Uuid::parse_str(layer.get("id").and_then(Value::as_str).unwrap_or_default()).is_err()
+                || layer.get("name").and_then(Value::as_str).is_none_or(|name| name.trim().is_empty() || name.len() > 128)
+                || layer.get("order").and_then(Value::as_i64).is_none()
+                || layer.get("defaultVisible").and_then(Value::as_bool).is_none()
+                || !layer.get("style").is_some_and(Value::is_object)
+                || !layer.get("selector").is_some_and(Value::is_object)
+            {
+                return Err(invalid("layer definition is invalid"));
+            }
+        }
+        Ok(())
     } else {
         Ok(())
     }

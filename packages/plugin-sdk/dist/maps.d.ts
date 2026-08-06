@@ -53,6 +53,18 @@ export interface MapLocationsField {
     schemaVersion: 1;
     locations: readonly MapLocationReference[];
 }
+export interface MapLayerDefinition {
+    id: string;
+    name: string;
+    order: number;
+    defaultVisible: boolean;
+    style: Readonly<Record<string, unknown>>;
+    selector: Readonly<Record<string, unknown>>;
+}
+export interface MapLayersField {
+    schemaVersion: 1;
+    layers: readonly MapLayerDefinition[];
+}
 export interface MapNavigationService {
     openMap(input: {
         mapEntityId: string;

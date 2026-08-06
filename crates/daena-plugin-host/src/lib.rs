@@ -2411,15 +2411,23 @@ impl PluginHost {
         )?;
         let capabilities =
             required_capabilities(&request.method, &request.payload, session, &self.namespaces)?;
-        if !capabilities.iter().all(|capability| {
-            session
-                .grants
-                .iter()
-                .any(|grant| capability_matches(grant, capability))
-        }) {
+        // Grants are project state, not session state. A webview can remain
+        // mounted while the shell refreshes consent; authorize against the
+        // current persisted decision instead of a stale bootstrap snapshot.
+        let grants = self.grants.get(&session.project_id, &session.plugin_id);
+        let missing = capabilities
+            .iter()
+            .filter(|capability| {
+                !grants
+                    .iter()
+                    .any(|grant| capability_matches(grant, capability))
+            })
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
             return Err(rpc_error(
                 "capability.denied",
-                "operation is not granted",
+                format!("operation is not granted: {}", missing.join(", ")),
                 false,
             ));
         }
@@ -2963,7 +2971,7 @@ fn ensure_owned_namespace(
     Ok(())
 }
 
-fn rpc_error(code: &str, message: &str, retryable: bool) -> RpcError {
+fn rpc_error(code: impl Into<String>, message: impl Into<String>, retryable: bool) -> RpcError {
     RpcError {
         code: code.into(),
         message: message.into(),

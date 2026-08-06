@@ -1716,6 +1716,41 @@ impl ProjectStore {
         Ok(entity)
     }
 
+    /// Creates the minimum canonical shape required before the map provider opens.
+    /// The provider fills the empty source asset with its first generated map on load.
+    pub fn create_map(&self, name: String) -> Result<Entity, CoreError> {
+        let entity = self.create_entity(CreateEntity {
+            name,
+            entity_type: Some(crate::maps::MAP_ENTITY_TYPE.into()),
+        })?;
+        let source_path = std::env::temp_dir().join(format!("daena-map-{}.map", entity.id));
+        std::fs::write(&source_path, [])
+            .map_err(|error| CoreError::Io { operation: "create map source", source: error })?;
+        let asset = self.register_asset_file(AssetFileInput {
+            entity_id: entity.id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            source_path: source_path.to_string_lossy().into_owned(),
+            filename: "map.map".into(),
+            mime_type: "application/x-fmg-map".into(),
+        });
+        let _ = std::fs::remove_file(&source_path);
+        let asset = asset?;
+        self.set_field(FieldValue {
+            entity_id: entity.id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            key: "map".into(),
+            value: serde_json::json!({
+                "schemaVersion": 1,
+                "provider": {"id": "azgaar-fmg", "adapterVersion": 1, "sourceFormat": "fmg-map"},
+                "sourceAssetId": asset.id,
+                "previewAssetId": null,
+                "defaultView": {"center": [0.5, 0.5], "zoom": 1}
+            }),
+            revision: String::new(),
+        })?;
+        Ok(entity)
+    }
+
     pub fn delete_entity(&self, id: String) -> Result<(), CoreError> {
         self.delete_entity_with_options(id, None, None)
     }
@@ -4789,6 +4824,185 @@ mod tests {
         assert!(reopened.search("Canonical prose".into()).is_err());
         drop(reopened);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn create_map_writes_owned_empty_source_and_valid_descriptor() {
+        let root = std::env::temp_dir().join(format!("daena-create-map-{}", Uuid::new_v4()));
+        let store = ProjectStore::open_directory(&root).unwrap();
+        let map = store.create_map("New map".into()).unwrap();
+        assert_eq!(map.entity_type.as_deref(), Some(crate::maps::MAP_ENTITY_TYPE));
+        let asset = store.list_assets(map.id.clone()).unwrap().pop().unwrap();
+        assert_eq!(asset.namespace, crate::maps::MAP_NAMESPACE);
+        assert_eq!(asset.size, 0);
+        assert_eq!(std::fs::metadata(root.join(&asset.path)).unwrap().len(), 0);
+        let field = store
+            .list_fields(map.id.clone())
+            .unwrap()
+            .into_iter()
+            .find(|field| field.namespace == crate::maps::MAP_NAMESPACE && field.key == "map")
+            .unwrap();
+        assert_eq!(field.value["sourceAssetId"], asset.id);
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn map_entities_and_locations_survive_disposable_index_rebuild() {
+        let root = std::env::temp_dir().join(format!("daena-maps-canonical-{}", Uuid::new_v4()));
+        let source_a = std::env::temp_dir().join(format!("daena-map-a-{}.map", Uuid::new_v4()));
+        let source_b = std::env::temp_dir().join(format!("daena-map-b-{}.map", Uuid::new_v4()));
+        std::fs::write(&source_a, b"map-a-source").unwrap();
+        std::fs::write(&source_b, b"map-b-source").unwrap();
+
+        let store = ProjectStore::open_directory(&root).unwrap();
+        let map_a = store
+            .create_entity(CreateEntity {
+                name: "World map".into(),
+                entity_type: Some(crate::maps::MAP_ENTITY_TYPE.into()),
+            })
+            .unwrap();
+        let map_b = store
+            .create_entity(CreateEntity {
+                name: "Regional map".into(),
+                entity_type: Some(crate::maps::MAP_ENTITY_TYPE.into()),
+            })
+            .unwrap();
+        let place = store
+            .create_entity(CreateEntity {
+                name: "Old Harbor".into(),
+                entity_type: Some("place".into()),
+            })
+            .unwrap();
+        let asset_a = store
+            .register_asset_file(AssetFileInput {
+                entity_id: map_a.id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                source_path: source_a.to_string_lossy().into_owned(),
+                filename: "world.map".into(),
+                mime_type: "application/x-fmg-map".into(),
+            })
+            .unwrap();
+        let asset_b = store
+            .register_asset_file(AssetFileInput {
+                entity_id: map_b.id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                source_path: source_b.to_string_lossy().into_owned(),
+                filename: "regional.map".into(),
+                mime_type: "application/x-fmg-map".into(),
+            })
+            .unwrap();
+
+        for (map, asset) in [(&map_a, &asset_a), (&map_b, &asset_b)] {
+            store
+                .set_field(FieldValue {
+                    entity_id: map.id.clone(),
+                    namespace: crate::maps::MAP_NAMESPACE.into(),
+                    key: "map".into(),
+                    value: serde_json::json!({
+                        "schemaVersion": 1,
+                        "provider": {"id": "azgaar-fmg", "adapterVersion": 1, "sourceFormat": "fmg-map"},
+                        "sourceAssetId": asset.id,
+                        "previewAssetId": null,
+                        "defaultView": {"center": [0.5, 0.5], "zoom": 1}
+                    }),
+                    revision: String::new(),
+                })
+                .unwrap();
+        }
+
+        let location_a = Uuid::new_v4().to_string();
+        let location_b = Uuid::new_v4().to_string();
+        store
+            .set_field(FieldValue {
+                entity_id: place.id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "locations".into(),
+                value: serde_json::json!({
+                    "schemaVersion": 1,
+                    "locations": [
+                        {
+                            "id": location_a,
+                            "mapEntityId": map_a.id,
+                            "role": "birthplace",
+                            "label": "Old Harbor",
+                            "anchor": {"kind": "provider-feature", "provider": "azgaar-fmg", "featureKind": "burg", "featureId": "42", "fallbackPoint": [0.613, 0.428]},
+                            "validity": {"from": null, "to": null}
+                        },
+                        {
+                            "id": location_b,
+                            "mapEntityId": map_b.id,
+                            "role": "trade-port",
+                            "label": "Regional harbor",
+                            "anchor": {"kind": "point", "point": [0.2, 0.8]},
+                            "validity": {"from": null, "to": null}
+                        }
+                    ]
+                }),
+                revision: String::new(),
+            })
+            .unwrap();
+
+        let canonical_before = canonical_files(&root);
+        let projection_before = store.map_locations_for_entity(place.id.clone()).unwrap();
+        assert_eq!(projection_before.len(), 2);
+        assert!(projection_before
+            .iter()
+            .all(|location| location["resolution"] == "resolved"));
+        let anchor_kinds = projection_before
+            .iter()
+            .map(|location| location["anchorKind"].as_str().unwrap())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(anchor_kinds, BTreeSet::from(["point", "provider-feature"]));
+        drop(store);
+        std::fs::remove_dir_all(root.join(".daena")).unwrap();
+
+        let rebuilt = ProjectStore::open_directory(&root).unwrap();
+        assert_eq!(canonical_files(&root), canonical_before);
+        assert_eq!(
+            rebuilt
+                .list_entities()
+                .unwrap()
+                .into_iter()
+                .filter(|entity| entity.entity_type.as_deref() == Some(crate::maps::MAP_ENTITY_TYPE))
+                .count(),
+            2
+        );
+        assert_eq!(rebuilt.map_locations_for_entity(place.id).unwrap(), projection_before);
+        drop(rebuilt);
+        std::fs::remove_file(source_a).unwrap();
+        std::fs::remove_file(source_b).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn map_locations_reject_dangling_maps_and_invalid_geometry() {
+        let store = ProjectStore::in_memory().unwrap();
+        let place = store
+            .create_entity(CreateEntity {
+                name: "Unbound place".into(),
+                entity_type: Some("place".into()),
+            })
+            .unwrap();
+        let invalid = store.set_field(FieldValue {
+            entity_id: place.id,
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            key: "locations".into(),
+            value: serde_json::json!({
+                "schemaVersion": 1,
+                "locations": [{
+                    "id": Uuid::new_v4(),
+                    "mapEntityId": Uuid::new_v4(),
+                    "role": "origin",
+                    "label": "Nowhere",
+                    "anchor": {"kind": "point", "point": [1.5, 0.5]},
+                    "validity": {"from": null, "to": null}
+                }]
+            }),
+            revision: String::new(),
+        });
+        assert!(invalid.is_err());
+        assert!(invalid.unwrap_err().to_string().contains("maps:"));
     }
 
     #[test]

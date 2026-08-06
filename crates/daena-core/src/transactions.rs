@@ -772,6 +772,47 @@ mod tests {
     }
 
     #[test]
+    fn map_asset_recovery_never_mixes_source_bytes_and_metadata() {
+        for failure in [
+            FailurePoint::AfterJournal,
+            FailurePoint::AfterReplacement(0),
+            FailurePoint::AfterReplacement(1),
+            FailurePoint::AfterReceipt,
+        ] {
+            let root = test_root("recovery-map-asset");
+            let source = root.join("assets/maps/world.map");
+            let metadata = root.join("entities/map/asset.json");
+            fs::create_dir_all(source.parent().unwrap()).unwrap();
+            fs::create_dir_all(metadata.parent().unwrap()).unwrap();
+            fs::write(&source, b"old-map-source").unwrap();
+            fs::write(&metadata, br#"{"contentHash":"old-hash","size":15}"#).unwrap();
+
+            let request_id = Uuid::new_v4().to_string();
+            let mut transaction = match FileTransaction::begin(&root, &request_id).unwrap() {
+                TransactionStart::Ready(transaction) => transaction,
+                TransactionStart::AlreadyCommitted => panic!("request is unexpectedly committed"),
+            };
+            transaction.stage_bytes("assets/maps/world.map", b"new-map-source").unwrap();
+            transaction
+                .stage_bytes(
+                    "entities/map/asset.json",
+                    br#"{"contentHash":"new-hash","size":15}"#,
+                )
+                .unwrap();
+            transaction.commit_with_failure(failure).unwrap_err();
+            drop(transaction);
+
+            recover_transactions(&root).unwrap();
+            assert_eq!(fs::read(source).unwrap(), b"new-map-source");
+            assert_eq!(
+                fs::read_to_string(metadata).unwrap(),
+                r#"{"contentHash":"new-hash","size":15}"#
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn incomplete_staging_without_a_journal_is_discarded() {
         let root = test_root("staging-cleanup");
         let directory = root.join(TRANSACTION_ROOT).join(Uuid::new_v4().to_string());

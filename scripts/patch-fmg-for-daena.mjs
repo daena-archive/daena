@@ -61,12 +61,60 @@ writeFileSync(mainPath, main);
 
 const bridgePath = join(dist, "daena-bridge.js");
 let bridgeSource = readFileSync(bridgePath, "utf8");
+if (!bridgeSource.includes('const requestedMapEntityId = params.get("mapEntityId");')) {
+  bridgeSource = bridgeSource.replace(
+    '  const projectId = params.get("project");',
+    '  const projectId = params.get("project");\n  const requestedMapEntityId = params.get("mapEntityId");',
+  );
+}
+bridgeSource = bridgeSource.replace(
+  '  const requestedMapEntityId = params.get("mapEntityId");\n  const requestedMapEntityId = params.get("mapEntityId");',
+  '  const requestedMapEntityId = params.get("mapEntityId");',
+);
+if (!bridgeSource.includes("function showDiagnostic")) {
+  bridgeSource = bridgeSource.replace(
+    '  const requestedMapEntityId = params.get("mapEntityId");',
+    '  const requestedMapEntityId = params.get("mapEntityId");\n\n  function showDiagnostic(error) {\n    const message = error instanceof Error ? error.message : String(error);\n    let panel = document.getElementById("daena-map-diagnostic");\n    if (!panel) { panel = document.createElement("div"); panel.id = "daena-map-diagnostic"; panel.style.cssText = "position:fixed;z-index:2147483647;left:16px;right:16px;bottom:16px;padding:12px 16px;border:1px solid #d97706;border-radius:8px;background:#fffbeb;color:#78350f;font:14px system-ui,sans-serif;box-shadow:0 4px 18px #0003"; document.body.appendChild(panel); }\n    panel.textContent = `Daena Maps: ${message}`;\n  }',
+  );
+}
+bridgeSource = bridgeSource.replace(
+  '  async function firstMapAsset() {\n    const maps = await rpc("entity.list", {entityType: "daena.maps:map"});\n    for (const map of maps) {\n      const field = await rpc("field.read", {entityId: map.id, namespace: "daena.maps", key: "map"});\n      const descriptor = Array.isArray(field) ? field[0]?.value : field?.value ?? field;\n      if (descriptor?.sourceAssetId) return {mapId: map.id, assetId: descriptor.sourceAssetId};\n    }\n    return null;\n  }',
+  '  async function firstMapAsset() {\n    const maps = await rpc("entity.list", {entityType: "daena.maps:map"});\n    for (const map of maps) {\n      if (requestedMapEntityId && map.id !== requestedMapEntityId) continue;\n      const field = await rpc("field.read", {entityId: map.id, namespace: "daena.maps", key: "map"});\n      const descriptor = Array.isArray(field) ? field[0]?.value : field?.value ?? field;\n      if (descriptor?.sourceAssetId) return {mapId: map.id, assetId: descriptor.sourceAssetId};\n    }\n    if (requestedMapEntityId) throw new Error(`requested map is unavailable: ${requestedMapEntityId}`);\n    return null;\n  }',
+);
 if (!bridgeSource.includes("Daena Maps provider startup failed")) {
   bridgeSource = bridgeSource.replace(
     "})();",
-    '})().catch(error => { console.error("Daena Maps provider startup failed:", error); window.generateMapOnLoad?.(); });',
+    '})().catch(error => { console.error("Daena Maps provider startup failed:", error); if (!new URLSearchParams(location.search).get("mapEntityId")) window.generateMapOnLoad?.(); });',
   );
 }
+bridgeSource = bridgeSource.replace(
+  '})().catch(error => { console.error("Daena Maps provider startup failed:", error); window.generateMapOnLoad?.(); });',
+  '})().catch(error => { console.error("Daena Maps provider startup failed:", error); if (!new URLSearchParams(location.search).get("mapEntityId")) window.generateMapOnLoad?.(); });',
+);
+bridgeSource = bridgeSource.replace(
+  '  const source = await loadAsset(mapAsset.assetId);\n  const asset = {mapId: mapAsset.mapId, assetId: mapAsset.assetId, revision: metadata.revision, contentHash: metadata.contentHash};',
+  '  const asset = {mapId: mapAsset.mapId, assetId: mapAsset.assetId, revision: metadata.revision, contentHash: metadata.contentHash};\n  const source = metadata.size === 0 ? null : await loadAsset(mapAsset.assetId);',
+);
+bridgeSource = bridgeSource.replace(
+  '  await window.daenaMapProvider.load(source);',
+  '  if (source === null) {\n    if (typeof window.generateMapOnLoad !== "function") throw new Error("new map source is empty and FMG generation is unavailable");\n    await window.generateMapOnLoad();\n    await saveAsset(asset);\n  } else {\n    await window.daenaMapProvider.load(source);\n  }',
+);
+bridgeSource = bridgeSource.replace(
+  '  window.saveMap = method => method === "machine" || method === "dropbox" || method === "storage" ? saveAsset(asset) : originalSave?.(method);\n  window.addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void saveAsset(asset); } });',
+  '  window.saveMap = method => method === "machine" || method === "dropbox" || method === "storage" ? saveAsset(asset).catch(error => { showDiagnostic(error); throw error; }) : originalSave?.(method);\n  window.addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void saveAsset(asset).catch(showDiagnostic); } });',
+);
+bridgeSource = bridgeSource.replace(
+  '})().catch(error => { console.error("Daena Maps provider startup failed:", error); if (!new URLSearchParams(location.search).get("mapEntityId")) window.generateMapOnLoad?.(); });',
+  '})().catch(error => { console.error("Daena Maps provider startup failed:", error); showDiagnostic(error); if (!new URLSearchParams(location.search).get("mapEntityId")) window.generateMapOnLoad?.(); });',
+);
+bridgeSource = bridgeSource.replace(
+  'mimeType: "application/octet-stream"',
+  'mimeType: "application/x-fmg-map"',
+);
+bridgeSource = bridgeSource.replace(
+  '  const requestedMapEntityId = params.get("mapEntityId");\n  const requestedMapEntityId = params.get("mapEntityId");',
+  '  const requestedMapEntityId = params.get("mapEntityId");',
+);
 writeFileSync(bridgePath, bridgeSource);
 
 const bootstrapPath = join(dist, "daena-inline-bootstrap.js");

@@ -105,6 +105,7 @@ export const project = {
       input: { name, entity_type: entityType || null },
       request_id: requestId(options),
     }),
+  createMap: (name = "Untitled map") => invoke<Entity>("project_create_map", { name }),
   updateEntity: (id: string, name?: string | null, entityType?: string | null, options?: MutationOptions) =>
     invoke<Entity>("project_update_entity", { id, name: name ?? null, entity_type: entityType ?? null, expected_revision: options?.expectedRevision ?? null, request_id: requestId(options) }),
   listDocuments: (entityId: string) => invoke<Document[]>("project_list_documents", { entityId }),
@@ -131,8 +132,8 @@ export const project = {
   adminView: () => invoke<PluginAdminView>("plugin_admin_view"),
   openPluginWebview: (pluginId: string, viewId?: string) =>
     invoke<void>("plugin_open_webview", { pluginId, viewId }),
-  mountPluginWebview: (pluginId: string, viewId: string | undefined, bounds: { x: number; y: number; width: number; height: number; viewportWidth: number; viewportHeight: number }) =>
-    invoke<void>("plugin_mount_webview", { pluginId, viewId, bounds }),
+  mountPluginWebview: (pluginId: string, viewId: string | undefined, bounds: { x: number; y: number; width: number; height: number; viewportWidth: number; viewportHeight: number }, mapEntityId?: string) =>
+    invoke<void>("plugin_mount_webview", { pluginId, viewId, mapEntityId, bounds }),
   resizePluginWebview: (pluginId: string, bounds: { x: number; y: number; width: number; height: number; viewportWidth: number; viewportHeight: number }) =>
     invoke<void>("plugin_resize_webview", { pluginId, bounds }),
   unmountPluginWebview: (pluginId: string) => invoke<void>("plugin_unmount_webview", { pluginId }),

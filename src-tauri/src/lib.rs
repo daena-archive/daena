@@ -1068,6 +1068,7 @@ fn plugin_webview_url(
     policy: &daena_plugin_host::PluginWebviewPolicy,
     project_id: &str,
     view_id: Option<&str>,
+    map_entity_id: Option<&str>,
     bounds: PluginWebviewBounds,
 ) -> Result<tauri::WebviewUrl, String> {
     let mut url = format!(
@@ -1084,6 +1085,10 @@ fn plugin_webview_url(
         url.push_str("&view=");
         url.push_str(&percent_encode(view_id));
     }
+    if let Some(map_entity_id) = map_entity_id {
+        url.push_str("&mapEntityId=");
+        url.push_str(&percent_encode(map_entity_id));
+    }
     Ok(tauri::WebviewUrl::External(
         url.parse()
             .map_err(|error| format!("invalid plugin URL: {error}"))?,
@@ -1097,6 +1102,7 @@ async fn plugin_mount_webview(
     plugins: tauri::State<'_, SharedPluginHost>,
     plugin_id: String,
     view_id: Option<String>,
+    map_entity_id: Option<String>,
     bounds: PluginWebviewBounds,
 ) -> Result<(), String> {
     let bounds = native_plugin_bounds(&app, bounds)?;
@@ -1124,7 +1130,13 @@ async fn plugin_mount_webview(
         let policy = webview_policy(&entry.manifest)
             .ok_or_else(|| "plugin has no UI entrypoint".to_string())?;
         validate_plugin_view(&entry.manifest, view_id.as_deref())?;
-        let url = plugin_webview_url(&policy, &project_id, view_id.as_deref(), bounds)?;
+        let url = plugin_webview_url(
+            &policy,
+            &project_id,
+            view_id.as_deref(),
+            map_entity_id.as_deref(),
+            bounds,
+        )?;
         (policy, url)
     };
     let label = policy.label.clone();
@@ -3388,6 +3400,14 @@ async fn project_create_entity(
 }
 
 #[tauri::command]
+async fn project_create_map(
+    state: tauri::State<'_, SharedCore>,
+    name: String,
+) -> Result<Entity, String> {
+    with_core(state, move |core| core.project(trusted_shell())?.create_map(name)).await
+}
+
+#[tauri::command]
 async fn project_list_entities(state: tauri::State<'_, SharedCore>) -> Result<Vec<Entity>, String> {
     with_core(state, |core| core.project(trusted_shell())?.list_entities()).await
 }
@@ -3765,6 +3785,7 @@ pub fn run() {
             project_open_memory,
             project_open_default,
             project_create_entity,
+            project_create_map,
             project_list_entities,
             project_search,
             project_update_entity,
@@ -3861,6 +3882,7 @@ mod tests {
             &policy,
             "project",
             None,
+            None,
             PluginWebviewBounds {
                 x: 0.0,
                 y: 0.0,
@@ -3878,6 +3900,28 @@ mod tests {
         assert!(query.contains("width=800"));
         assert!(query.contains("height=600"));
         assert!(query.contains("daena=1"));
+
+        let map_url = plugin_webview_url(
+            &policy,
+            "project",
+            Some("map-workspace"),
+            Some("018f89df-b93e-7ad0-a07f-08b1441d1550"),
+            PluginWebviewBounds {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
+                viewport_width: 800.0,
+                viewport_height: 600.0,
+            },
+        )
+        .unwrap();
+        let tauri::WebviewUrl::External(map_url) = map_url else {
+            panic!("plugin webview must use an external custom-protocol URL");
+        };
+        let map_query = map_url.query().unwrap();
+        assert!(map_query.contains("view=map-workspace"));
+        assert!(map_query.contains("mapEntityId=018f89df-b93e-7ad0-a07f-08b1441d1550"));
     }
 
     #[test]
@@ -4033,6 +4077,12 @@ mod tests {
         assert_eq!(bridge_response.status(), 200);
         let bridge_body = String::from_utf8_lossy(bridge_response.body());
         assert!(bridge_body.contains("asset.replace.begin"));
+        assert!(bridge_body.contains("requestedMapEntityId"));
+        assert!(bridge_body.contains("requested map is unavailable"));
+        assert!(bridge_body.contains("metadata.size === 0"));
+        assert!(bridge_body.contains("daena-map-diagnostic"));
+        assert!(bridge_body.contains("asset.replace.commit"));
+        assert!(bridge_body.contains("!new URLSearchParams(location.search).get(\"mapEntityId\")"));
         assert!(bridge_body.contains("Daena Maps provider startup failed"));
 
         let bootstrap = tauri::http::Request::builder()

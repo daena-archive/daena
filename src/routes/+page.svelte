@@ -296,6 +296,23 @@
     showPlugins = false;
   }
 
+  async function createMap() {
+    if (projectDiagnostics.length > 0) return;
+    try {
+      const created = await project.createMap();
+      await loadEntities();
+      selected = created;
+      fields = {};
+      relationships = [];
+      assets = [];
+      const mapView = pluginViews().find((item) => item.plugin.id === "daena.maps");
+      if (!mapView) throw new Error("The Maps plugin view is not available");
+      await openPluginView(mapView);
+    } catch (cause) {
+      error = friendlyError(cause);
+    }
+  }
+
   function visibleEntities() {
     const term = query.trim().toLowerCase();
     return entities.filter((entity) => {
@@ -1131,7 +1148,10 @@
         <div class="rail-label plugin-views-label">PLUGIN VIEWS</div>
         <nav class="workspace-nav" aria-label="Plugin views">
           {#each pluginViews() as item (item.key)}
-            <button class:active={pluginNavigationActive(item)} class="rail-button" title={pluginViewLabel(item)} aria-current={pluginNavigationActive(item) ? "page" : undefined} aria-label={`Open ${item.plugin.name}: ${item.view.title}`} onclick={() => void openPluginView(item)}><span class="rail-icon">◇</span><span class="plugin-nav-title">{pluginViewLabel(item)}</span></button>
+            <div class="plugin-nav-row">
+              <button class:active={pluginNavigationActive(item)} class="rail-button" title={pluginViewLabel(item)} aria-current={pluginNavigationActive(item) ? "page" : undefined} aria-label={`Open ${item.plugin.name}: ${item.view.title}`} onclick={() => void openPluginView(item)}><span class="rail-icon">◇</span><span class="plugin-nav-title">{pluginViewLabel(item)}</span></button>
+              {#if item.plugin.id === "daena.maps"}<button class="plugin-new-button" title="Create a new map" aria-label="Create a new map" onclick={() => void createMap()}>＋</button>{/if}
+            </div>
           {/each}
         </nav>
       {/if}
@@ -1353,8 +1373,8 @@
     {:else if hostView}
       <div class="host-view-shell"><button class="quiet-button host-view-back" onclick={() => hostView = null}>Back to workspace</button><HostView plugin={hostView.plugin} view={hostView.view} /></div>
     {:else if sandboxView}
-      {#key `${sandboxView.plugin.id}:${sandboxView.view?.id ?? "default"}`}
-        <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={sandboxView.plugin.name} />
+      {#key `${sandboxView.plugin.id}:${sandboxView.view?.id ?? "default"}:${sandboxView.plugin.id === "daena.maps" && selected?.entity_type === "daena.maps:map" ? selected.id : ""}`}
+        <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={sandboxView.plugin.name} mapEntityId={sandboxView.plugin.id === "daena.maps" && selected?.entity_type === "daena.maps:map" ? selected.id : undefined} />
       {/key}
     {:else if !sectionEnabled()}
       <section class="disabled-state"><div class="disabled-icon">◌</div><span class="overline">Module unavailable</span><h1>{sectionLabel()} is resting.</h1><p>Your project data is safe. Re-enable this module to continue working in this workspace.</p><button class="primary-button" onclick={() => toggleModule(activeModuleId() as ModuleId)}>Enable {sectionLabel()}</button></section>

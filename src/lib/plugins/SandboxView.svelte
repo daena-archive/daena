@@ -6,7 +6,8 @@
     pluginId,
     viewId,
     title,
-  }: { pluginId: string; viewId?: string; title: string } = $props();
+    mapEntityId,
+  }: { pluginId: string; viewId?: string; title: string; mapEntityId?: string } = $props();
 
   let container = $state<HTMLElement | null>(null);
   let hostMounted = $state(false);
@@ -52,7 +53,7 @@
       if (!alive) return;
       const bounds = currentBounds();
       if (!bounds) throw new Error("sandbox view container is unavailable");
-      await project.mountPluginWebview(pluginId, viewId, bounds);
+      await project.mountPluginWebview(pluginId, viewId, bounds, mapEntityId);
       if (alive) {
         hostMounted = true;
         scheduleResize();

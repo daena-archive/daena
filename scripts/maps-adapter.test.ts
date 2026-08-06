@@ -42,6 +42,17 @@ Deno.test("Maps asset diagnostics are stable", () => {
   if (diagnosticForAssetState("conflict").code !== "asset-conflict") throw new Error("conflict diagnostic changed");
 });
 
+Deno.test("Maps bridge does not generate an FMG prompt after startup failure", async () => {
+  const bridge = await Deno.readTextFile(new URL("./fmg-bridge-template.js", import.meta.url));
+  if (!bridge.includes("window.daenaMapDiagnostic?.(error)")) throw new Error("startup failure is not reported");
+  if (bridge.includes("window.daenaMapDiagnostic?.(error); if (!new URLSearchParams(location.search).get(\"mapEntityId\")) window.generateMapOnLoad?.()")) {
+    throw new Error("startup failure still falls through to FMG generation");
+  }
+  if (!bridge.includes("if (!mapAsset) { await window.generateMapOnLoad?.(); return; }")) {
+    throw new Error("empty-map generation path changed unexpectedly");
+  }
+});
+
 Deno.test("provider contract fixture round-trips and does not retarget selectors", async () => {
   const adapter = new JsonProviderAdapter();
   const events: string[] = [];

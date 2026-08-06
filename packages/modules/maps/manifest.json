@@ -7,11 +7,11 @@
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "sandboxed",
   "entrypoints": { "ui": "dist/ui/index.html" },
-  "capabilities": ["entity.read", "entity.write", "field.read:self", "field.write:self", "relationship.read", "relationship.write", "asset.read:self", "asset.write:self", "search.query", "service.provide:daena.maps.navigation", "event.subscribe:entity.changed", "event.subscribe:field.changed", "event.subscribe:relationship.changed", "event.subscribe:asset.changed"],
+  "capabilities": ["entity.read", "entity.write", "field.read:self", "field.write:self", "relationship.read", "relationship.write", "asset.read:self", "asset.write:self", "search.query", "service.provide:daena.maps/navigation@1", "event.subscribe:daena.core/entity-changed@1"],
   "dependencies": {},
-  "namespaces": ["daena.maps"],
+  "namespaces": ["maps"],
   "schemas": [{
-    "namespace": "daena.maps",
+    "namespace": "maps",
     "entityTypes": ["daena.maps:map"],
     "fields": [
       { "key": "map", "label": "Map descriptor", "type": "text", "entityTypes": ["daena.maps:map"] },
@@ -21,8 +21,8 @@
   }],
   "templates": [{ "id": "map", "name": "Map", "entityType": "daena.maps:map", "fields": { "map": null } }],
   "views": [{ "id": "map-workspace", "title": "Maps", "components": [] }],
-  "commands": [],
-  "services": { "provides": [{ "name": "daena.maps.navigation", "major": 1 }], "consumes": [] },
-  "events": { "publishes": [], "subscribes": [{ "name": "entity.changed", "version": 1 }, { "name": "field.changed", "version": 1 }, { "name": "relationship.changed", "version": 1 }, { "name": "asset.changed", "version": 1 }] },
-  "migrations": [{ "id": "maps-v1", "from": 0, "to": 1, "recovery": "backup", "operations": [{ "kind": "create-namespace", "namespace": "daena.maps" }] }]
+  "commands": [{ "id": "capture-anchor", "title": "Capture map anchor", "action": { "type": "refresh-view" }, "exposure": ["view"] }, { "id": "reconcile-links", "title": "Reconcile linked locations", "action": { "type": "refresh-view" }, "exposure": ["view"] }],
+  "services": { "provides": [{ "name": "daena.maps/navigation", "major": 1 }], "consumes": [] },
+  "events": { "publishes": [], "subscribes": [{ "name": "daena.core/entity-changed", "version": 1 }] },
+  "migrations": [{ "id": "maps-v1", "from": 0, "to": 1, "recovery": "backup", "operations": [{ "kind": "create-namespace", "namespace": "maps" }] }]
 }

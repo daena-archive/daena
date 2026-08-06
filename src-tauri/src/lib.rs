@@ -309,11 +309,43 @@ fn percent_encode(value: &str) -> String {
         .collect()
 }
 
+fn sanitize_bundled_maps_html(bytes: Vec<u8>) -> Vec<u8> {
+    let html = match String::from_utf8(bytes) {
+        Ok(html) => html,
+        Err(error) => return error.into_bytes(),
+    };
+    let Some(start) = html.find("<script async src=\"https://www.googletagmanager.com/gtag/js") else {
+        return html.into_bytes();
+    };
+    let Some(external_end) = html[start..].find("</script>") else {
+        return html.into_bytes();
+    };
+    let after_external = start + external_end + "</script>".len();
+    let Some(inline_start_offset) = html[after_external..].find("<script>") else {
+        return html.into_bytes();
+    };
+    let inline_start = after_external + inline_start_offset;
+    let Some(inline_end_offset) = html[inline_start..].find("</script>") else {
+        return html.into_bytes();
+    };
+    let after_inline = inline_start + inline_end_offset + "</script>".len();
+    format!("{}{}", &html[..start], &html[after_inline..]).into_bytes()
+}
+
 fn bundled_maps_asset(path: &str) -> Option<(Vec<u8>, &'static str)> {
     let relative = if path == "/dist/ui/index.html" {
         "index.html"
+    } else if let Some(relative) = path.strip_prefix("/dist/ui/fmg/") {
+        relative
+    } else if let Some(relative) = path.strip_prefix("/dist/ui/") {
+        // Keep serving archives generated before the base-href rewrite. The
+        // entrypoint historically emitted relative and absolute FMG URLs,
+        // which resolve here instead of under /dist/ui/fmg/.
+        relative
+    } else if let Some(relative) = path.strip_prefix("/Fantasy-Map-Generator/") {
+        relative
     } else {
-        path.strip_prefix("/dist/ui/fmg/")?
+        return None;
     };
     if relative.is_empty()
         || relative.split('/').any(|part| part.is_empty() || part == "." || part == "..")
@@ -327,6 +359,9 @@ fn bundled_maps_asset(path: &str) -> Option<(Vec<u8>, &'static str)> {
     }
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).ok()?;
+    if relative == "index.html" {
+        bytes = sanitize_bundled_maps_html(bytes);
+    }
     let content_type = match Path::new(relative).extension().and_then(|value| value.to_str()) {
         Some("html") => "text/html",
         Some("js") | Some("mjs") => "text/javascript",
@@ -2159,7 +2194,7 @@ async fn module_disable(
     }
     let plugins = plugins.inner().clone();
     with_core(state, move |core| {
-        let project = core.project(trusted_shell())?;
+        let project = core.project_mut(trusted_shell())?;
         let project_id = project
             .info()
             .map(|info| info.root)
@@ -3560,6 +3595,79 @@ async fn project_list_relationships(
 }
 
 #[tauri::command]
+async fn project_list_map_locations(
+    state: tauri::State<'_, SharedCore>,
+    entity_id: String,
+) -> Result<Vec<daena_core::maps::LocationReference>, String> {
+    with_core(state, move |core| core.project(trusted_shell())?.map_locations(entity_id)).await
+}
+
+#[tauri::command]
+async fn project_upsert_map_location(
+    state: tauri::State<'_, SharedCore>,
+    entity_id: String,
+    location: daena_core::maps::LocationReference,
+    request_id: Option<String>,
+) -> Result<(), String> {
+    with_core(state, move |core| core.project(trusted_shell())?.upsert_map_location(entity_id, location, request_id.as_deref())).await
+}
+
+#[tauri::command]
+async fn project_unlink_map_location(
+    state: tauri::State<'_, SharedCore>,
+    entity_id: String,
+    location_id: String,
+    request_id: Option<String>,
+) -> Result<(), String> {
+    with_core(state, move |core| core.project(trusted_shell())?.unlink_map_location(entity_id, location_id, request_id.as_deref())).await
+}
+
+/// Versioned host handoff for the public `daena.maps/navigation@1` service.
+/// The service resolves canonical links before asking the shell to mount Maps;
+/// provider availability remains a concern of the child webview.
+#[tauri::command]
+async fn maps_navigation(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SharedCore>,
+    operation: String,
+    map_entity_id: Option<String>,
+    entity_id: Option<String>,
+    link_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let operation_for_core = operation.clone();
+    let target = with_core(state, move |core| {
+        let project = core.project(trusted_shell())?;
+        match operation_for_core.as_str() {
+            "openMap" => {
+                let id = map_entity_id.clone().ok_or_else(|| daena_core::CoreError::Validation("map-unavailable: mapEntityId is required".into()))?;
+                let exists = project.list_entities()?.into_iter().any(|entity| entity.id == id && entity.entity_type.as_deref() == Some(daena_core::maps::MAP_ENTITY_TYPE));
+                if !exists { return Err(daena_core::CoreError::NotFound("map-unavailable".into())); }
+                Ok(serde_json::json!({"mapEntityId": id, "linkId": link_id}))
+            }
+            "focusEntity" => {
+                let id = entity_id.clone().ok_or_else(|| daena_core::CoreError::Validation("not-on-map: entityId is required".into()))?;
+                let locations = project.map_locations(id)?;
+                let location = locations.into_iter().find(|location| map_entity_id.as_deref().is_none_or(|map| map == location.map_entity_id)).ok_or_else(|| daena_core::CoreError::NotFound("not-on-map".into()))?;
+                Ok(serde_json::json!({"mapEntityId": location.map_entity_id, "linkId": location.id}))
+            }
+            "listLocations" => {
+                let id = entity_id.ok_or_else(|| daena_core::CoreError::Validation("entityId is required".into()))?;
+                Ok(serde_json::to_value(project.map_locations(id)?).map_err(|error| daena_core::CoreError::Serialization(error.to_string()))?)
+            }
+            "setDate" | "showResults" => Ok(serde_json::json!({"accepted": true})),
+            _ => Err(daena_core::CoreError::Validation("unsupported daena.maps/navigation@1 operation".into())),
+        }
+    }).await?;
+    if matches!(operation.as_str(), "openMap" | "focusEntity") {
+        let map_id = target.get("mapEntityId").and_then(serde_json::Value::as_str).ok_or_else(|| "map-unavailable".to_string())?;
+        app.emit("maps-navigation", serde_json::json!({"mapEntityId": map_id, "linkId": target.get("linkId")})).map_err(|error| error.to_string())?;
+        Ok(serde_json::json!({"version": 1, "mapEntityId": map_id, "linkId": target.get("linkId")}))
+    } else {
+        Ok(serde_json::json!({"version": 1, "result": target}))
+    }
+}
+
+#[tauri::command]
 async fn project_register_asset(
     state: tauri::State<'_, SharedCore>,
     input: AssetInput,
@@ -3797,6 +3905,10 @@ pub fn run() {
             project_list_fields,
             project_create_relationship,
             project_list_relationships,
+            project_list_map_locations,
+            project_upsert_map_location,
+            project_unlink_map_location,
+            maps_navigation,
             project_register_asset,
             project_register_asset_file,
             project_list_assets,
@@ -4063,6 +4175,8 @@ mod tests {
         assert_eq!(response.status(), 200);
         assert!(body.contains("Azgaar's Fantasy Map Generator"));
         assert!(body.contains("daena-bridge.js"));
+        assert!(!body.contains("googletagmanager.com"));
+        assert!(!body.contains("dataLayer"));
         assert!(body.find("<script defer src=\"daena-bridge.js\">").unwrap()
             < body.find("<script type=\"module\"").unwrap());
         assert!(body.contains("rel=\"stylesheet\"\n      href=\"index.css?v=1.113.1\""));
@@ -4110,6 +4224,18 @@ mod tests {
             .body(Vec::new())
             .unwrap();
         assert_eq!(plugin_asset_response("daena.maps", &missing, None, None).status(), 404);
+
+        for path in [
+            "/dist/ui/index.css",
+            "/dist/ui/manifest.webmanifest",
+            "/Fantasy-Map-Generator/index-B5l1uyn4.js",
+        ] {
+            let request = tauri::http::Request::builder()
+                .uri(format!("plugin://daena.maps{path}"))
+                .body(Vec::new())
+                .unwrap();
+            assert_eq!(plugin_asset_response("daena.maps", &request, None, None).status(), 200, "{path}");
+        }
     }
 
     #[test]

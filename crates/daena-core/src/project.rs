@@ -2917,11 +2917,28 @@ impl ProjectStore {
         Ok(())
     }
 
+    fn provider_feature_resolution(&self, map_entity_id: &str, feature_kind: Option<&str>, feature_id: Option<&str>) -> &'static str {
+        let (Some(feature_kind), Some(feature_id)) = (feature_kind, feature_id) else { return "resolved"; };
+        let source_path: Option<String> = self.connection.query_row(
+            "SELECT a.path FROM entity_fields f JOIN assets a ON a.id=json_extract(f.value, '$.sourceAssetId') WHERE f.entity_id=?1 AND f.namespace=?2 AND f.key='map'",
+            rusqlite::params![map_entity_id, crate::maps::MAP_NAMESPACE], |row| row.get(0)).optional().ok().flatten();
+        let Some(source_path) = source_path else { return "unresolved"; };
+        let source_path = self
+            .root
+            .as_ref()
+            .map(|root| root.join(&source_path))
+            .unwrap_or_else(|| PathBuf::from(source_path));
+        let Ok(bytes) = std::fs::read(source_path) else { return "unresolved"; };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return "resolved"; };
+        let Some(features) = value.get("features").and_then(serde_json::Value::as_array) else { return "resolved"; };
+        if features.iter().any(|feature| feature.get("kind").and_then(serde_json::Value::as_str) == Some(feature_kind) && feature.get("id").and_then(serde_json::Value::as_str) == Some(feature_id)) { "resolved" } else { "unresolved" }
+    }
+
     fn rebuild_maps_projection(&self) -> Result<(), CoreError> {
         self.connection
             .execute_batch("DELETE FROM map_projection; DELETE FROM map_location_projection;")?;
-        let mut maps = self.connection.prepare("SELECT e.id, json_extract(f.value, '$.provider.id'), json_extract(f.value, '$.sourceAssetId'), a.path, a.content_hash FROM entities e JOIN entity_fields f ON f.entity_id=e.id AND f.namespace='daena.maps' AND f.key='map' LEFT JOIN assets a ON a.id=json_extract(f.value, '$.sourceAssetId') WHERE e.entity_type='daena.maps:map' AND e.deleted=0")?;
-        let rows = maps.query_map([], |row| {
+        let mut maps = self.connection.prepare("SELECT e.id, json_extract(f.value, '$.provider.id'), json_extract(f.value, '$.sourceAssetId'), a.path, a.content_hash FROM entities e JOIN entity_fields f ON f.entity_id=e.id AND f.namespace=?1 AND f.key='map' LEFT JOIN assets a ON a.id=json_extract(f.value, '$.sourceAssetId') WHERE e.entity_type='daena.maps:map' AND e.deleted=0")?;
+        let rows = maps.query_map([crate::maps::MAP_NAMESPACE], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, Option<String>>(1)?.unwrap_or_default(),
@@ -2934,8 +2951,8 @@ impl ProjectStore {
             let (id, provider, asset, path, hash) = row?;
             self.connection.execute("INSERT INTO map_projection(map_entity_id,provider,source_asset_id,source_path,source_hash) VALUES (?1,?2,?3,?4,?5)", rusqlite::params![id, provider, asset, path, hash])?;
         }
-        let mut locations = self.connection.prepare("SELECT f.entity_id, json_each.value FROM entity_fields f, json_each(json_extract(f.value, '$.locations')) WHERE f.namespace='daena.maps' AND f.key='locations'")?;
-        let rows = locations.query_map([], |row| {
+        let mut locations = self.connection.prepare("SELECT f.entity_id, json_each.value FROM entity_fields f, json_each(json_extract(f.value, '$.locations')) WHERE f.namespace=?1 AND f.key='locations'")?;
+        let rows = locations.query_map([crate::maps::MAP_NAMESPACE], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
         for row in rows {
@@ -2975,7 +2992,8 @@ impl ProjectStore {
                     .unwrap_or((None, None, None, None)),
                 _ => (None, None, None, None),
             };
-            self.connection.execute("INSERT INTO map_location_projection(location_id,entity_id,map_entity_id,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)", rusqlite::params![location.get("id").and_then(serde_json::Value::as_str).unwrap_or_default(), entity_id, location.get("mapEntityId").and_then(serde_json::Value::as_str).unwrap_or_default(), location.get("role").and_then(serde_json::Value::as_str).unwrap_or_default(), kind, anchor.get("provider").and_then(serde_json::Value::as_str), anchor.get("featureKind").and_then(serde_json::Value::as_str), anchor.get("featureId").and_then(serde_json::Value::as_str), bounds.0, bounds.1, bounds.2, bounds.3, location.pointer("/validity/from").filter(|v| !v.is_null()).map(ToString::to_string), location.pointer("/validity/to").filter(|v| !v.is_null()).map(ToString::to_string), "resolved"])?;
+            let resolution = if kind == "provider-feature" { self.provider_feature_resolution(location.get("mapEntityId").and_then(serde_json::Value::as_str).unwrap_or_default(), anchor.get("featureKind").and_then(serde_json::Value::as_str), anchor.get("featureId").and_then(serde_json::Value::as_str)) } else { "resolved" };
+            self.connection.execute("INSERT INTO map_location_projection(location_id,entity_id,map_entity_id,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)", rusqlite::params![location.get("id").and_then(serde_json::Value::as_str).unwrap_or_default(), entity_id, location.get("mapEntityId").and_then(serde_json::Value::as_str).unwrap_or_default(), location.get("role").and_then(serde_json::Value::as_str).unwrap_or_default(), kind, anchor.get("provider").and_then(serde_json::Value::as_str), anchor.get("featureKind").and_then(serde_json::Value::as_str), anchor.get("featureId").and_then(serde_json::Value::as_str), bounds.0, bounds.1, bounds.2, bounds.3, location.pointer("/validity/from").filter(|v| !v.is_null()).map(ToString::to_string), location.pointer("/validity/to").filter(|v| !v.is_null()).map(ToString::to_string), resolution])?;
         }
         Ok(())
     }
@@ -2988,6 +3006,55 @@ impl ProjectStore {
         let mut statement = self.connection.prepare("SELECT location_id,map_entity_id,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution FROM map_location_projection WHERE entity_id=?1 ORDER BY location_id")?;
         let rows = statement.query_map(rusqlite::params![entity_id], |row| Ok(serde_json::json!({"id":row.get::<_,String>(0)?,"mapEntityId":row.get::<_,String>(1)?,"role":row.get::<_,String>(2)?,"anchorKind":row.get::<_,String>(3)?,"provider":row.get::<_,Option<String>>(4)?,"featureKind":row.get::<_,Option<String>>(5)?,"featureId":row.get::<_,Option<String>>(6)?,"bounds":[row.get::<_,Option<f64>>(7)?,row.get::<_,Option<f64>>(8)?,row.get::<_,Option<f64>>(9)?,row.get::<_,Option<f64>>(10)?],"validity":{"from":row.get::<_,Option<String>>(11)?,"to":row.get::<_,Option<String>>(12)?},"resolution":row.get::<_,String>(13)?})))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
+    }
+
+    /// Returns the canonical location references owned by an entity.  The
+    /// disposable projection is intentionally not used for mutation: the
+    /// JSON field remains the source of truth and is rewritten atomically.
+    pub fn map_locations(&self, entity_id: String) -> Result<Vec<crate::maps::LocationReference>, CoreError> {
+        let field = self
+            .list_fields(entity_id)?
+            .into_iter()
+            .find(|field| field.namespace == crate::maps::MAP_NAMESPACE && field.key == "locations");
+        let Some(field) = field else { return Ok(Vec::new()); };
+        let object = field.value.as_object().ok_or_else(|| CoreError::Serialization("maps.locations is not an object".into()))?;
+        let locations = object.get("locations").and_then(serde_json::Value::as_array).ok_or_else(|| CoreError::Serialization("maps.locations is not an array".into()))?;
+        locations.iter().cloned().map(|value| serde_json::from_value(value).map_err(|error| CoreError::Serialization(error.to_string()))).collect()
+    }
+
+    pub fn upsert_map_location(
+        &self,
+        entity_id: String,
+        location: crate::maps::LocationReference,
+        request_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        let mut locations = self.map_locations(entity_id.clone())?;
+        if let Some(existing) = locations.iter_mut().find(|item| item.id == location.id) {
+            *existing = location;
+        } else {
+            locations.push(location);
+        }
+        self.set_field_with_request(FieldValue {
+            entity_id,
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            key: "locations".into(),
+            value: serde_json::json!({"schemaVersion": 1, "locations": locations}),
+            revision: String::new(),
+        }, request_id)
+    }
+
+    pub fn unlink_map_location(&self, entity_id: String, location_id: String, request_id: Option<&str>) -> Result<(), CoreError> {
+        let mut locations = self.map_locations(entity_id.clone())?;
+        let before = locations.len();
+        locations.retain(|location| location.id != location_id);
+        if locations.len() == before { return Err(CoreError::NotFound("map location not found".into())); }
+        self.set_field_with_request(FieldValue {
+            entity_id,
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            key: "locations".into(),
+            value: serde_json::json!({"schemaVersion": 1, "locations": locations}),
+            revision: String::new(),
+        }, request_id)
     }
 
     pub fn latest_plugin_backup(
@@ -4023,6 +4090,22 @@ mod tests {
         );
         drop(store);
         std::fs::remove_file(source).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn disabled_module_survives_directory_reopen() {
+        let root = std::env::temp_dir().join(format!("daena-disabled-module-{}", Uuid::new_v4()));
+        let store = ProjectStore::open_directory(&root).unwrap();
+        store
+            .set_module_enabled("daena.lore".into(), false)
+            .unwrap();
+        assert!(!store.is_module_enabled("daena.lore").unwrap());
+        drop(store);
+
+        let reopened = ProjectStore::open_directory(&root).unwrap();
+        assert!(!reopened.is_module_enabled("daena.lore").unwrap());
+        drop(reopened);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -5079,7 +5162,7 @@ mod tests {
         let asset = store
             .register_asset(AssetInput {
                 entity_id: entity.id.clone(),
-                namespace: "daena.maps".into(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
                 filename: "world.map".into(),
                 content_hash: "sha256:old".into(),
                 size: 3,

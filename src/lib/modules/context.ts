@@ -15,6 +15,7 @@ import type {
 } from "../../../packages/module-api/src/index";
 import { invoke } from "@tauri-apps/api/core";
 import { createPluginRpcClient } from "../../../packages/plugin-sdk/src/index";
+import type { MapLocationReference } from "../../../packages/plugin-sdk/src/maps";
 
 interface RawEntity { id: string; name: string; entity_type: string | null; deleted: boolean; created_at: string; updated_at: string; revision: string }
 interface RawDocument { id: string; entity_id: string; format: string; body: string; updated_at: string; revision: string }
@@ -297,6 +298,13 @@ export function buildModuleContext(
       checkCapability(manifest, "search.query");
       const entities = await rpc.call<RawEntity[]>("search.query", { query });
       return entities.map(toEntitySummary);
+    },
+    maps: {
+      openMap: async (input) => { await invoke("maps_navigation", { operation: "openMap", map_entity_id: input.mapEntityId, link_id: input.linkId ?? null, entity_id: null }); },
+      focusEntity: async (input) => { await invoke("maps_navigation", { operation: "focusEntity", map_entity_id: input.mapEntityId ?? null, entity_id: input.entityId, link_id: null }); },
+      setDate: async (input) => { await invoke("maps_navigation", { operation: "setDate", map_entity_id: null, entity_id: null, link_id: null, date: input.date }); },
+      showResults: async (input) => { await invoke("maps_navigation", { operation: "showResults", map_entity_id: input.mapEntityId ?? null, entity_id: null, link_id: null, entity_ids: input.entityIds }); },
+      listLocations: async (input) => await invoke<readonly MapLocationReference[]>("project_list_map_locations", { entityId: input.entityId }),
     },
   };
 }

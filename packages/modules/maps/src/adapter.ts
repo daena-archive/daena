@@ -141,6 +141,7 @@ type BrowserProvider = {
   load: (source: Uint8Array) => Promise<void>;
   serialize: () => Promise<Uint8Array> | Uint8Array;
   listFeatures?: (query?: FeatureQuery) => Promise<ProviderFeature[]>;
+  captureSelection?: () => Promise<MapAnchor | null>;
   resolveAnchor?: (value: MapAnchor) => Promise<{ resolved: boolean; point: NormalizedPoint | null }>;
   focus?: (value: MapAnchor) => Promise<void>;
   setSemanticOverlay?: (frame: OverlayFrame) => Promise<void>;
@@ -160,7 +161,7 @@ export class FmgBrowserAdapter implements MapProviderAdapter {
   async load(source: Uint8Array): Promise<LoadedMap> { await this.provider.load(source); return { provider: FMG_PROVIDER, sourceHash: await digest(source), dirty: false }; }
   async serialize(): Promise<Uint8Array> { return this.provider.serialize(); }
   async listFeatures(query?: FeatureQuery): Promise<ProviderFeature[]> { return this.provider.listFeatures?.(query) ?? []; }
-  async captureSelection(): Promise<MapAnchor | null> { return null; }
+  async captureSelection(): Promise<MapAnchor | null> { return this.provider.captureSelection?.() ?? null; }
   async resolveAnchor(value: MapAnchor): Promise<{ resolved: boolean; point: NormalizedPoint | null }> { return this.provider.resolveAnchor?.(value) ?? { resolved: false, point: null }; }
   async focus(value: MapAnchor): Promise<void> { await this.provider.focus?.(value); }
   async setSemanticOverlay(frame: OverlayFrame): Promise<void> { await this.provider.setSemanticOverlay?.(frame); }

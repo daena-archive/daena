@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   const logoUrl = "/branding/logo.png";
-  import { project, type Asset, type Entity, type Relationship, type ProjectModuleManifest, type ProjectInfo, type GitStatus, type GitPreflight, type GitLogEntry, type PluginAdminEntry, type PluginUpgradePlan, type ExternalChangeReport } from "$lib/project/client";
+import { project, type Asset, type Entity, type Relationship, type MapLocation, type ProjectModuleManifest, type ProjectInfo, type GitStatus, type GitPreflight, type GitLogEntry, type PluginAdminEntry, type PluginUpgradePlan, type ExternalChangeReport } from "$lib/project/client";
   import type { EntityTemplate, FieldDefinition, ModuleContext, ModuleId, UUID, ModuleManifest, DaenaModule } from "../../packages/module-api/src/index";
   import { buildModuleContext } from "$lib/modules/context";
   import HostView from "$lib/plugins/HostView.svelte";
@@ -43,6 +43,7 @@
   let fields = $state<Record<string, string>>({});
   let relationships = $state<Relationship[]>([]);
   let assets = $state<Asset[]>([]);
+  let mapLocations = $state<MapLocation[]>([]);
   let modules = $state<InstalledModule[]>([]);
   let query = $state("");
   let globalQuery = $state("");
@@ -305,6 +306,7 @@
       fields = {};
       relationships = [];
       assets = [];
+      mapLocations = [];
       const mapView = pluginViews().find((item) => item.plugin.id === "daena.maps");
       if (!mapView) throw new Error("The Maps plugin view is not available");
       await openPluginView(mapView);
@@ -589,7 +591,56 @@
     }));
     relationships = (await context.relationships.list(entity.id as UUID)).map((relationship) => ({ id: relationship.id, source_id: relationship.sourceId, target_id: relationship.targetId, relationship_type: relationship.type, metadata: JSON.stringify(relationship.metadata), revision: "" }));
     assets = (await context.assets.list(entity.id as UUID)).map((asset) => ({ id: asset.id, entity_id: asset.entityId, namespace: asset.namespace, filename: asset.filename, content_hash: asset.contentHash, size: asset.size, mime_type: asset.mimeType, path: asset.path, created_at: asset.createdAt, revision: "" }));
+    mapLocations = await project.listMapLocations(entity.id);
     savedAt = "";
+  }
+
+  async function openMapLocation(location: MapLocation) {
+    try { await project.mapsNavigation("openMap", { mapEntityId: location.mapEntityId, linkId: location.id }); }
+    catch (cause) { error = friendlyError(cause); }
+  }
+
+  async function unlinkMapLocation(location: MapLocation) {
+    if (!selected || !confirm(`Unlink ${location.label || "this location"}? The entity and map feature will remain.`)) return;
+    try { await project.unlinkMapLocation(selected.id, location.id); mapLocations = await project.listMapLocations(selected.id); }
+    catch (cause) { error = friendlyError(cause); }
+  }
+
+  async function editMapLocation(location: MapLocation) {
+    if (!selected) return;
+    const role = prompt("Edit location role", location.role)?.trim();
+    if (!role) return;
+    const validityText = prompt("Validity JSON (use null bounds for unbounded)", JSON.stringify(location.validity));
+    if (validityText === null) return;
+    let validity: MapLocation["validity"];
+    try { validity = JSON.parse(validityText) as MapLocation["validity"]; } catch { error = "Validity must be valid JSON with from and to fields."; return; }
+    try { await project.upsertMapLocation(selected.id, { ...location, role, validity }); mapLocations = await project.listMapLocations(selected.id); }
+    catch (cause) { error = friendlyError(cause); }
+  }
+
+  async function rebindMapLocation(location: MapLocation) {
+    if (!selected) return;
+    const raw = prompt("Rebind to normalized point x,y (0..1)", "0.5,0.5") ?? "";
+    const [x, y] = raw.split(",").map(Number);
+    if (![x, y].every((value) => Number.isFinite(value) && value >= 0 && value <= 1)) { error = "Use normalized coordinates such as 0.5,0.5."; return; }
+    try { await project.upsertMapLocation(selected.id, { ...location, anchor: { kind: "point", point: [x, y] } }); mapLocations = await project.listMapLocations(selected.id); }
+    catch (cause) { error = friendlyError(cause); }
+  }
+
+  async function linkEntityToMap() {
+    if (!selected) return;
+    const maps = entities.filter((entity) => entity.entity_type === "daena.maps:map");
+    if (maps.length === 0) { error = "Create or enable a Maps map before linking a location."; return; }
+    const map = maps[0];
+    const role = prompt("Role for this map location", "story-location")?.trim();
+    if (!role) return;
+    const raw = prompt("Normalized point x,y (0..1)", "0.5,0.5") ?? "";
+    const [x, y] = raw.split(",").map(Number);
+    if (![x, y].every((value) => Number.isFinite(value) && value >= 0 && value <= 1)) { error = "Use normalized coordinates such as 0.5,0.5."; return; }
+    try {
+      await project.upsertMapLocation(selected.id, { id: crypto.randomUUID(), mapEntityId: map.id, role, label: selected.name, anchor: { kind: "point", point: [x, y] }, validity: { from: null, to: null } });
+      mapLocations = await project.listMapLocations(selected.id);
+    } catch (cause) { error = friendlyError(cause); }
   }
 
   async function selectEntity(entity: Entity) {
@@ -856,6 +907,14 @@
     } catch (cause) { error = friendlyError(cause); }
     finally { adminBusy = false; }
   }
+  function setAdminPluginEnabled(id: string, enabled: boolean) {
+    if (!adminPlugins) return;
+    adminPlugins = adminPlugins.map((plugin) =>
+      plugin.id === id
+        ? { ...plugin, enabled, runtimeRunning: enabled ? plugin.runtimeRunning : false }
+        : plugin,
+    );
+  }
   async function openPlugins() {
     showPlugins = true;
     await leavePluginView();
@@ -1006,6 +1065,7 @@
     try {
       await project.disableModule(plugin.id);
       modules = await project.listModuleManifests();
+      setAdminPluginEnabled(plugin.id, false);
       await refreshAdmin();
       if (hostView?.plugin.id === plugin.id) hostView = null;
       if (sandboxView?.plugin.id === plugin.id) sandboxView = null;
@@ -1104,7 +1164,19 @@
     void closeNativePluginWebviews();
     let unlisten: (() => void) | undefined;
     void listen<ExternalChangeReport>("project-external-change", (event) => void handleExternalChange(event.payload)).then((cleanup) => { unlisten = cleanup; }).catch(() => {});
-    return () => unlisten?.();
+    let unlistenMaps: (() => void) | undefined;
+    void listen<{ mapEntityId: string; linkId?: string }>("maps-navigation", async (event) => {
+      try {
+        if (!entities.length) await loadEntities();
+        const map = entities.find((entity) => entity.id === event.payload.mapEntityId);
+        const item = pluginViews().find((candidate) => candidate.plugin.id === "daena.maps");
+        if (!map || !item) throw new Error("map-unavailable: enable the Maps module to open this location");
+        selected = map;
+        await loadSelectedState(map);
+        await openPluginView(item);
+      } catch (cause) { error = friendlyError(cause); }
+    }).then((cleanup) => { unlistenMaps = cleanup; }).catch(() => {});
+    return () => { unlisten?.(); unlistenMaps?.(); };
   });
 </script>
 
@@ -1393,6 +1465,7 @@
           </div>
         </aside>
 
+        {#if selected}<section class="map-contribution panel-surface" aria-label="Maps contribution"><div class="section-title"><h3>Maps</h3><span>{mapLocations.length}</span></div><p>Shared locations remain on the entity even when Maps is disabled.</p><button class="quiet-button" type="button" onclick={() => void linkEntityToMap()}>＋ Link location</button>{#if mapLocations.length === 0}<small>No map links yet.</small>{:else}{#each mapLocations as location (location.id)}<div class="map-location-row"><div><strong>{location.label || location.role}</strong><small>{location.role} · {location.mapEntityId.slice(0, 8)}</small></div><div><button class="quiet-button" type="button" onclick={() => void openMapLocation(location)}>Show on map</button><button class="quiet-button" type="button" onclick={() => void editMapLocation(location)}>Edit</button><button class="quiet-button" type="button" onclick={() => void rebindMapLocation(location)}>Rebind</button><button class="quiet-button" type="button" onclick={() => void unlinkMapLocation(location)}>Unlink</button></div></div>{/each}{/if}</section>{/if}
         <article class:editor-fullscreen={editorFullscreen} class="editor-panel">
           <div class="editor-header">
             <div>

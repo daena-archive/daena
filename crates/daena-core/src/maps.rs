@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 pub const MAP_ENTITY_TYPE: &str = "daena.maps:map";
-pub const MAP_NAMESPACE: &str = "daena.maps";
+pub const MAP_NAMESPACE: &str = "maps";
 pub const FMG_PROVIDER: &str = "azgaar-fmg";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

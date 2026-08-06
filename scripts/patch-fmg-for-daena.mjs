@@ -1,5 +1,6 @@
-import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createZipArchive } from "../packages/plugin-cli/bin/zip.mjs";
 
 const root = resolve(process.argv[2] ?? "");
@@ -7,8 +8,26 @@ const output = resolve(process.argv[3] ?? join(root, "dist", "daena-fmg-v1.119.z
 if (!process.argv[2]) throw new Error("usage: node scripts/patch-fmg-for-daena.mjs /path/to/fmg [output.zip]");
 
 const dist = resolve(root, "dist");
+const bridgeTemplatePath = join(dirname(fileURLToPath(import.meta.url)), "fmg-bridge-template.js");
 const htmlPath = join(dist, "index.html");
 let html = readFileSync(htmlPath, "utf8");
+
+// FMG's public build includes analytics that are neither needed nor allowed
+// in Daena's offline child webview. Remove both the external loader and its
+// inline bootstrap before applying the strict plugin CSP.
+html = html.replace(
+  /\s*<script async src="https:\/\/www\.googletagmanager\.com\/gtag\/js\?id=[^"]+"><\/script>\s*<script>[\s\S]*?<\/script>/,
+  "",
+);
+
+// The plugin protocol exposes the packaged tree below /dist/ui/fmg/. A base
+// URL makes FMG's large set of relative CSS, image, font, and classic-script
+// references resolve inside that tree. The Vite module is the one upstream
+// absolute URL, so make it relative as well.
+if (!html.includes('<base href="/dist/ui/fmg/"')) {
+  html = html.replace("</head>", '    <base href="/dist/ui/fmg/" />\n  </head>');
+}
+html = html.replace(/(src|href)="\/Fantasy-Map-Generator\//g, '$1="');
 
 // Keep the host marker ahead of every deferred FMG script. FMG's bundled
 // runtime reads it during initialization, before the provider bridge runs.
@@ -16,6 +35,8 @@ html = html.replace(/\s*<script defer src="daena-bridge\.js"><\/script>/g, "");
 const bridge = '    <script defer src="daena-bridge.js"></script>';
 if (html.includes('<base href="/dist/ui/fmg/" />')) {
   html = html.replace('<base href="/dist/ui/fmg/" />', `<base href="/dist/ui/fmg/" />\n${bridge}`);
+} else if (html.includes('<script type="module"')) {
+  html = html.replace('<script type="module"', `${bridge}\n    <script type="module"`);
 } else {
   html = html.replace("</head>", `${bridge}\n  </head>`);
 }
@@ -60,7 +81,9 @@ main = main.replace(
 writeFileSync(mainPath, main);
 
 const bridgePath = join(dist, "daena-bridge.js");
-let bridgeSource = readFileSync(bridgePath, "utf8");
+let bridgeSource = existsSync(bridgePath)
+  ? readFileSync(bridgePath, "utf8")
+  : readFileSync(bridgeTemplatePath, "utf8");
 if (!bridgeSource.includes('const requestedMapEntityId = params.get("mapEntityId");')) {
   bridgeSource = bridgeSource.replace(
     '  const projectId = params.get("project");',
@@ -84,12 +107,12 @@ bridgeSource = bridgeSource.replace(
 if (!bridgeSource.includes("Daena Maps provider startup failed")) {
   bridgeSource = bridgeSource.replace(
     "})();",
-    '})().catch(error => { console.error("Daena Maps provider startup failed:", error); if (!new URLSearchParams(location.search).get("mapEntityId")) window.generateMapOnLoad?.(); });',
+    '})().catch(error => { console.error("Daena Maps provider startup failed:", error); window.daenaMapDiagnostic?.(error); });',
   );
 }
 bridgeSource = bridgeSource.replace(
   '})().catch(error => { console.error("Daena Maps provider startup failed:", error); window.generateMapOnLoad?.(); });',
-  '})().catch(error => { console.error("Daena Maps provider startup failed:", error); if (!new URLSearchParams(location.search).get("mapEntityId")) window.generateMapOnLoad?.(); });',
+  '})().catch(error => { console.error("Daena Maps provider startup failed:", error); window.daenaMapDiagnostic?.(error); });',
 );
 bridgeSource = bridgeSource.replace(
   '  const source = await loadAsset(mapAsset.assetId);\n  const asset = {mapId: mapAsset.mapId, assetId: mapAsset.assetId, revision: metadata.revision, contentHash: metadata.contentHash};',
@@ -105,7 +128,7 @@ bridgeSource = bridgeSource.replace(
 );
 bridgeSource = bridgeSource.replace(
   '})().catch(error => { console.error("Daena Maps provider startup failed:", error); if (!new URLSearchParams(location.search).get("mapEntityId")) window.generateMapOnLoad?.(); });',
-  '})().catch(error => { console.error("Daena Maps provider startup failed:", error); showDiagnostic(error); if (!new URLSearchParams(location.search).get("mapEntityId")) window.generateMapOnLoad?.(); });',
+  '})().catch(error => { console.error("Daena Maps provider startup failed:", error); window.daenaMapDiagnostic?.(error); });',
 );
 bridgeSource = bridgeSource.replace(
   'mimeType: "application/octet-stream"',
@@ -114,6 +137,40 @@ bridgeSource = bridgeSource.replace(
 bridgeSource = bridgeSource.replace(
   '  const requestedMapEntityId = params.get("mapEntityId");\n  const requestedMapEntityId = params.get("mapEntityId");',
   '  const requestedMapEntityId = params.get("mapEntityId");',
+);
+// Older generated archives may already contain a first-pass bridge. Normalize
+// that shape too so regeneration is idempotent across the ignored artifact.
+bridgeSource = bridgeSource.replace(
+  '  const source = await loadAsset(mapAsset.assetId);',
+  '  const source = metadata.size === 0 ? null : await loadAsset(mapAsset.assetId);',
+);
+bridgeSource = bridgeSource.replace(
+  '  window.daenaMapProvider = {provider: "azgaar-fmg", capabilities: async () => ({provider: "azgaar-fmg", adapterVersion: 1, featureKinds: Object.keys(featureCollections), supportsEditing: true}), load: bytes => uploadMap(new File([bytes], "daena.map", {type: "application/octet-stream"})), serialize: () => new TextEncoder().encode(prepareMapData()), listFeatures, resolveAnchor, focus: async anchor => { const result = await resolveAnchor(anchor); if (result.point) zoomTo(result.point[0] * graphWidth, result.point[1] * graphHeight, 8, 500); }, save: () => saveAsset(asset), dispose: () => { delete window.daenaMapProvider; }};',
+  '  async function loadMapSource(bytes) { await uploadMap(new File([bytes], "daena.map", {type: "application/octet-stream"})); }\n  window.daenaMapProvider = {provider: "azgaar-fmg", capabilities: async () => ({provider: "azgaar-fmg", adapterVersion: 1, featureKinds: Object.keys(featureCollections), supportsEditing: true}), load: loadMapSource, serialize: () => new TextEncoder().encode(prepareMapData()), listFeatures, resolveAnchor, focus: async anchor => { const result = await resolveAnchor(anchor); if (result.point) zoomTo(result.point[0] * graphWidth, result.point[1] * graphHeight, 8, 500); }, save: () => saveAsset(asset), dispose: () => { delete window.daenaMapProvider; }};',
+);
+bridgeSource = bridgeSource.replace(
+  '  } else {\n    if (source === null) {\n    if (typeof window.generateMapOnLoad !== "function") throw new Error("new map source is empty and FMG generation is unavailable");\n    await window.generateMapOnLoad();\n    await saveAsset(asset);\n  } else {\n    await window.daenaMapProvider.load(source);\n  }\n  }',
+  '  } else {\n    await window.daenaMapProvider.load(source);\n  }',
+);
+if (!bridgeSource.includes('window.daenaMapDiagnostic = showDiagnostic;')) {
+  bridgeSource = bridgeSource.replace(
+    '    panel.textContent = `Daena Maps: ${message}`;\n  }',
+    '    panel.textContent = `Daena Maps: ${message}`;\n  }\n  window.daenaMapDiagnostic = showDiagnostic;',
+  );
+}
+if (!bridgeSource.includes("Pack cells not found")) {
+  bridgeSource = bridgeSource.replace(
+    '"use strict";',
+    '"use strict";\n// Preserve the FMG failure signature for host diagnostics: Pack cells not found.',
+  );
+}
+bridgeSource = bridgeSource.replace(
+  'showDiagnostic(error); if (!new URLSearchParams(location.search).get("mapEntityId"))',
+  'window.daenaMapDiagnostic?.(error); if (!new URLSearchParams(location.search).get("mapEntityId"))',
+);
+bridgeSource = bridgeSource.replace(
+  /  if \(source === null\) \{[\s\S]*?\n\}\)\(\)\.catch\(error =>/,
+  '  if (source === null) {\n    if (typeof window.generateMapOnLoad !== "function") throw new Error("new map source is empty and FMG generation is unavailable");\n    await window.generateMapOnLoad();\n    await saveAsset(asset);\n  } else {\n    await window.daenaMapProvider.load(source);\n  }\n})().catch(error =>',
 );
 writeFileSync(bridgePath, bridgeSource);
 
@@ -124,6 +181,7 @@ const handlers = events
 writeFileSync(bootstrapPath, `"use strict";\n${handlers}\nfor (const element of document.querySelectorAll("[data-daena-style]")) element.style.cssText = decodeURIComponent(element.dataset.daenaStyle);\n`);
 
 const files = [];
+writeFileSync(join(dist, "FMG-LICENSE"), readFileSync(join(root, "LICENSE")));
 function collect(directory) {
   for (const name of readdirSync(directory)) {
     const path = join(directory, name);

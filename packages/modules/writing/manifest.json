@@ -7,7 +7,7 @@
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "declarative",
   "entrypoints": { "ui": "dist/ui/index.html" },
-  "capabilities": ["entity.read", "entity.write", "entity.delete", "document.read", "document.write", "field.read:self", "field.write:self", "relationship.read", "relationship.write", "asset.read:self", "asset.import", "search.query"],
+  "capabilities": ["entity.read", "entity.write", "entity.delete", "document.read", "document.write", "field.read:self", "field.write:self", "relationship.read", "relationship.write", "asset.read:self", "asset.import", "search.query", "service.call:daena.maps/navigation"],
   "dependencies": {},
   "namespaces": ["writing"],
   "schemas": [{
@@ -26,8 +26,8 @@
     { "id": "reference-page", "name": "Reference page", "entityType": "reference-page", "description": "A freeform wiki page for ideas, research, and world notes.", "icon": "R", "fields": { "category": "other", "aliases": "" }, "document": "Add the facts, links, and notes for this page." }
   ],
   "views": [],
-  "commands": [],
-  "services": { "provides": [], "consumes": [] },
+  "commands": [{ "id": "show-on-map", "title": "Show reference on map", "action": { "type": "refresh-view" }, "exposure": ["view"] }],
+  "services": { "provides": [], "consumes": [{ "name": "daena.maps/navigation", "major": 1 }] },
   "events": { "publishes": [], "subscribes": [] },
   "migrations": [{ "id": "writing-v1", "from": 0, "to": 1, "recovery": "backup", "operations": [{ "kind": "create-namespace", "namespace": "writing" }] }]
 }

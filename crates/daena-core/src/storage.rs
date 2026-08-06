@@ -126,12 +126,18 @@ pub struct CanonicalAsset {
 pub struct PluginStateFile {
     pub plugin_id: String,
     pub namespaces: Vec<String>,
+    #[serde(default = "default_plugin_enabled")]
+    pub enabled: bool,
     pub data_version: i64,
     pub schema_version: i64,
     pub schema_checksum: String,
     pub selected_package_version: Option<String>,
     pub migrations: Vec<CanonicalMigration>,
     pub preserved_state: serde_json::Value,
+}
+
+fn default_plugin_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -622,6 +628,7 @@ pub fn write_canonical_project(
         let state = PluginStateFile {
             plugin_id,
             namespaces,
+            enabled: module.map(|module| module.enabled).unwrap_or(true),
             data_version: module.map(|module| module.version).unwrap_or_default(),
             schema_version: module.map(|module| module.version).unwrap_or_default(),
             schema_checksum,
@@ -948,7 +955,7 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
             }
             modules.push(ModuleState {
                 module_id: plugin_id.into(),
-                enabled: true,
+                enabled: state.enabled,
                 version: state.data_version,
                 package_version: state.selected_package_version,
             });

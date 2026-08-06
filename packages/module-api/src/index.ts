@@ -1,5 +1,6 @@
 export type { PluginManifest, FieldDefinition, SchemaContribution, EntityTemplate, Migration, MigrationOperation, View, ViewComponent, Command, CommandAction, Service, Event, Services, Events } from "../../plugin-sdk/src/generated";
 import type { PluginManifest, Migration } from "../../plugin-sdk/src/generated";
+import type { MapNavigationService } from "../../plugin-sdk/src/maps";
 
 export type UUID = string & { readonly __brand: "UUID" };
 export type ModuleId = string & { readonly __brand: "ModuleId" };
@@ -121,6 +122,7 @@ export interface ModuleContext {
     register(input: Omit<AssetRecord, "id" | "createdAt" | "revision" | "entityId"> & { entityId: UUID }, options?: MutationOptions): Promise<AssetRecord>;
   };
   search(query: string): Promise<EntitySummary[]>;
+  maps: MapNavigationService;
 }
 
 export interface ModuleView {

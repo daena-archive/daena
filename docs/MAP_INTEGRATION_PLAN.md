@@ -1,4 +1,4 @@
-# Daena Maps and Fantasy Map Generator Implementation Plan
+# Daena Maps Provider Integration Plan
 
 ## Status and purpose
 
@@ -10,9 +10,14 @@ subordinate to the project-wide contracts in [`PLAN.md`](./PLAN.md),
 [`PLAIN_TEXT_STORAGE_PLAN.md`](./PLAIN_TEXT_STORAGE_PLAN.md).
 
 The plan integrates Azgaar's Fantasy Map Generator (FMG) as Daena's first map
-provider. FMG remains authoritative for geographic creation, editing, and
-rendering. Daena owns stable map identity, entity links, semantic overlays,
-search projections, navigation, and temporal/story context.
+provider and adds [Watabou's Procgen Arcana](https://watabou.github.io/) as a
+planned family of detail-map generators. FMG remains authoritative for
+large-scale geographic creation, editing, and rendering. Watabou providers may
+generate cities, villages, caves/glades, dungeons, dwellings, and regional
+realms when their individual persistence and licensing constraints have passed
+the provider spike. Daena owns stable map identity, entity links, semantic
+overlays, search projections, navigation, and temporal/story context across
+all providers.
 
 The first release is successful when an author can create or open an FMG map
 entirely offline, save it as canonical project content, link an FMG feature or
@@ -35,7 +40,8 @@ storage or identity system. The main gaps are:
 
 1. a provider-neutral map and location-reference schema;
 2. a bounded binary asset read/replace channel for sandboxed plugins;
-3. a stable adapter around FMG's internal model and UI lifecycle;
+3. stable adapters around FMG and each approved Watabou generator's internal
+   model and UI lifecycle;
 4. contextual commands/services for opening and focusing a map view;
 5. derived spatial, layer, and temporal projections in the disposable index; and
 6. packaged desktop tests for the real child-webview boundary.
@@ -117,6 +123,38 @@ exposing FMG internals to the host shell.
 The host sends only provider-neutral intents such as `open map`, `focus link`,
 `show entity`, `set date`, and `apply result set`. The FMG adapter resolves
 those intents into provider-specific selection and viewport operations.
+
+### 6. Watabou generators provide linked detail maps
+
+[Watabou's Procgen Arcana](https://watabou.github.io/) is a collection of
+separate generators, not one interchangeable source format. Daena treats each
+approved generator as its own provider adapter under a shared `watabou-*`
+family. The initial candidates are:
+
+- Medieval Fantasy City Generator for city and district maps;
+- Village Generator for villages and small settlements;
+- Cave/Glade Generator for caves, caverns, and natural clearings;
+- One Page Dungeon Generator for dungeons; and
+- Dwellings for buildings and floor plans.
+
+Perilous Shores may later complement FMG for realm or regional maps, but it is
+not required for the initial detail-map slice.
+
+Watabou output fits Daena's normal map hierarchy: an FMG burg links to a shared
+city entity, that entity may have a `daena.maps:detail-map` relationship to a
+Watabou city map, and a building or dungeon entity may link to a still more
+detailed map. Provider-specific IDs, seeds, tags, permalinks, JSON, or other
+state stay inside the provider descriptor or opaque source asset; Daena entity
+identity and semantic links remain provider-neutral.
+
+No generator is bundled or framed from the public website by default. A
+generator must first pass a source, license, offline-build, Content Security
+Policy, export/import, deterministic-regeneration, and adapter-hook review. An
+image or SVG export is a valid canonical map source when editable round-trip
+state is unavailable, but the UI must label that map as generated/static rather
+than promise lossless editing. Runtime dependence on `watabou.github.io`,
+cross-origin framing, or unrestricted network access is not acceptable for the
+offline desktop product.
 
 ## Canonical domain model
 
@@ -499,6 +537,34 @@ entities; toggling or rebuilding layers does not change canonical provider
 source; structured queries return the same entity IDs before and after index
 rebuild and highlight the correct active-map subset.
 
+### Phase 5A: Watabou detail-map generators
+
+- Inventory the city, village, cave/glade, dungeon, and dwelling generators
+  independently; record source availability, license/redistribution terms,
+  build inputs, runtime dependencies, supported exports, imports, seeds or
+  permalinks, and stable selection/focus hooks.
+- Prove the hierarchy flow from an FMG feature to a shared place entity and from
+  that entity to a Watabou-generated detail map without duplicating identity.
+- Select the first generator by author value and adapter feasibility. City and
+  village are preferred, but neither is committed until editable persistence
+  and redistribution are verified.
+- Add a provider descriptor and adapter only for the selected generator. Reuse
+  the existing map entity, asset, anchor, navigation, and lifecycle contracts;
+  do not add generator-specific core tables or host APIs.
+- Package approved code and notices locally with a deny-by-default CSP. If
+  bundling is not permitted, support an explicit external-generator workflow
+  that imports exported PNG/SVG/JSON without granting the plugin network or
+  filesystem access.
+- Add rendered desktop checks for generation, import/save/reopen, map hierarchy
+  navigation, resize/focus behavior, offline operation, and truthful static vs
+  editable capability labels.
+
+**Exit gate:** At least one Watabou detail-map provider works offline in the
+packaged Tauri app or through the reviewed external-export workflow; its
+canonical artifact survives restart and disposable-index rebuild; hierarchy
+navigation preserves shared entity identity; and the implementation complies
+with the selected generator's verified license and persistence capabilities.
+
 ### Phase 6: Temporal and story integration
 
 - Consume Timeline's optional date/service contract and expose a host-owned
@@ -599,7 +665,7 @@ Tauri child-webview verification.
 
 The following do not block the first shippable slice:
 
-- providers other than FMG;
+- providers other than FMG and the planned Watabou detail-map family;
 - automatic conversion between providers;
 - continuous live synchronization with a separately running FMG instance;
 - automatic temporal mutation of FMG-native terrain or borders;

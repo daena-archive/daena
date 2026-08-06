@@ -2,12 +2,14 @@
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::thread;
+use std::time::Duration;
 
 use daena_core::{
     Asset, AssetFileInput, AssetInput, AuthorityContext, CoreError, CoreService, CreateEntity,
-    Entity, FieldValue, GitLogEntry, GitStatus, Migration, Operation, ProjectInfo, ProjectStore,
-    Relationship, RelationshipInput, SaveDocument, SaveEntry,
+    Entity, ExternalChangeReport, FieldValue, GitLogEntry, GitStatus, Migration, Operation,
+    ProjectInfo, ProjectStore, Relationship, RelationshipInput, SaveDocument, SaveEntry,
 };
 use daena_plugin_api::{
     CommandAction, MigrationOperation, PluginManifest, RpcRequest, RpcResponse, ViewComponent,
@@ -17,10 +19,84 @@ use daena_plugin_host::{
     VerificationPolicy, BUNDLED_TIMELINE_SERVICE_WASM,
 };
 use serde::Deserialize;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 type SharedCore = Arc<Mutex<CoreService>>;
 type SharedPluginHost = Arc<Mutex<PluginHost>>;
+
+#[derive(Default)]
+struct ProjectWatcher {
+    stop: Option<mpsc::Sender<()>>,
+}
+
+type SharedProjectWatcher = Arc<Mutex<ProjectWatcher>>;
+
+fn stop_project_watcher(watcher: &SharedProjectWatcher) -> Result<(), String> {
+    let mut watcher = watcher
+        .lock()
+        .map_err(|_| "project watcher lock poisoned".to_string())?;
+    if let Some(stop) = watcher.stop.take() {
+        let _ = stop.send(());
+    }
+    Ok(())
+}
+
+fn start_project_watcher(
+    app: &tauri::AppHandle,
+    state: &SharedCore,
+    watcher: &SharedProjectWatcher,
+) -> Result<(), String> {
+    stop_project_watcher(watcher)?;
+    state
+        .lock()
+        .map_err(|_| "core lock poisoned".to_string())?
+        .info()
+        .ok_or_else(|| "project is not open".to_string())?;
+    let (stop, receiver) = mpsc::channel();
+    watcher
+        .lock()
+        .map_err(|_| "project watcher lock poisoned".to_string())?
+        .stop = Some(stop);
+    let app = app.clone();
+    let state = state.clone();
+    thread::spawn(move || {
+        let mut last_report = String::new();
+        let mut pending_report: Option<ExternalChangeReport> = None;
+        loop {
+            if receiver.recv_timeout(Duration::from_millis(500)).is_ok() {
+                break;
+            }
+            let report = state.lock().ok().and_then(|core| {
+                core.project(AuthorityContext::trusted_shell())
+                    .ok()
+                    .and_then(|project| project.reconcile_external_changes().ok())
+            });
+            let Some(report) = report else { continue };
+            if report.changed {
+                pending_report = Some(report);
+                continue;
+            }
+            let report = if !report.diagnostics.is_empty() {
+                pending_report = None;
+                report
+            } else if let Some(pending) = pending_report.take() {
+                pending
+            } else {
+                last_report.clear();
+                continue;
+            };
+            let Ok(serialized) = serde_json::to_string(&report) else {
+                continue;
+            };
+            if serialized == last_report {
+                continue;
+            }
+            last_report = serialized;
+            let _ = app.emit("project-external-change", report);
+        }
+    });
+    Ok(())
+}
 
 fn percent_encode(value: &str) -> String {
     value
@@ -2443,12 +2519,15 @@ fn publish_core_mutation_event(
 
 #[tauri::command]
 async fn project_open(
+    app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
+    watcher: tauri::State<'_, SharedProjectWatcher>,
     path: String,
 ) -> Result<(), String> {
     let plugins = plugins.inner().clone();
-    with_core(state, move |core| {
+    let core = state.inner().clone();
+    let result = with_core(state, move |core| {
         if let Some(previous_project) = core.info().map(|info| info.root) {
             plugins
                 .lock()
@@ -2462,17 +2541,24 @@ async fn project_open(
             .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
         sync_project_usage(project, &mut host)
     })
-    .await
+    .await;
+    if result.is_ok() {
+        start_project_watcher(&app, &core, watcher.inner())?;
+    }
+    result
 }
 
 #[tauri::command]
 async fn project_open_directory(
+    app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
+    watcher: tauri::State<'_, SharedProjectWatcher>,
     path: String,
 ) -> Result<ProjectInfo, String> {
     let plugins = plugins.inner().clone();
-    with_core(state, move |core| {
+    let core = state.inner().clone();
+    let result = with_core(state, move |core| {
         if let Some(previous_project) = core.info().map(|info| info.root) {
             plugins
                 .lock()
@@ -2486,17 +2572,24 @@ async fn project_open_directory(
         sync_project_usage(core.project(trusted_shell())?, &mut host)?;
         Ok(info)
     })
-    .await
+    .await;
+    if result.is_ok() {
+        start_project_watcher(&app, &core, watcher.inner())?;
+    }
+    result
 }
 
 #[tauri::command]
 async fn project_new(
+    app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
+    watcher: tauri::State<'_, SharedProjectWatcher>,
     path: String,
 ) -> Result<ProjectInfo, String> {
     let plugins = plugins.inner().clone();
-    with_core(state, move |core| {
+    let core = state.inner().clone();
+    let result = with_core(state, move |core| {
         if let Some(previous_project) = core.info().map(|info| info.root) {
             plugins
                 .lock()
@@ -2510,7 +2603,11 @@ async fn project_new(
         sync_project_usage(core.project(trusted_shell())?, &mut host)?;
         Ok(info)
     })
-    .await
+    .await;
+    if result.is_ok() {
+        start_project_watcher(&app, &core, watcher.inner())?;
+    }
+    result
 }
 
 #[tauri::command]
@@ -2518,7 +2615,9 @@ async fn project_close(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
+    watcher: tauri::State<'_, SharedProjectWatcher>,
 ) -> Result<(), String> {
+    stop_project_watcher(watcher.inner())?;
     let plugins = plugins.inner().clone();
     with_core(state, move |core| {
         let project_id = core.info().map(|info| info.root);
@@ -2548,6 +2647,29 @@ async fn project_info(state: tauri::State<'_, SharedCore>) -> Result<Option<Proj
 }
 
 #[tauri::command]
+async fn project_reconcile_external_changes(
+    state: tauri::State<'_, SharedCore>,
+) -> Result<ExternalChangeReport, String> {
+    with_core(state, |core| {
+        core.project(trusted_shell())?.reconcile_external_changes()
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_save_recovery_copy(
+    state: tauri::State<'_, SharedCore>,
+    entity_id: String,
+    body: String,
+) -> Result<String, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .save_recovery_copy(&entity_id, &body)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn project_git_status(state: tauri::State<'_, SharedCore>) -> Result<GitStatus, String> {
     with_core(state, |core| core.project(trusted_shell())?.git_status()).await
 }
@@ -2574,7 +2696,11 @@ async fn project_git_commit(
 }
 
 #[tauri::command]
-async fn project_open_memory(state: tauri::State<'_, SharedCore>) -> Result<(), String> {
+async fn project_open_memory(
+    state: tauri::State<'_, SharedCore>,
+    watcher: tauri::State<'_, SharedProjectWatcher>,
+) -> Result<(), String> {
+    stop_project_watcher(watcher.inner())?;
     with_core(state, |core| core.open_memory(trusted_shell())).await
 }
 
@@ -2583,13 +2709,15 @@ async fn project_open_default(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
+    watcher: tauri::State<'_, SharedProjectWatcher>,
 ) -> Result<(), String> {
     let directory = app
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
     let plugins = plugins.inner().clone();
-    with_core(state, move |core| {
+    let core = state.inner().clone();
+    let result = with_core(state, move |core| {
         std::fs::create_dir_all(&directory).map_err(|error| CoreError::Io {
             operation: "create app data directory",
             source: error,
@@ -2607,7 +2735,11 @@ async fn project_open_default(
             .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
         sync_project_usage(core.project(trusted_shell())?, &mut host)
     })
-    .await
+    .await;
+    if result.is_ok() {
+        start_project_watcher(&app, &core, watcher.inner())?;
+    }
+    result
 }
 
 #[tauri::command]
@@ -2919,6 +3051,7 @@ pub fn run() {
     let protocol_core = core.clone();
     let protocol_plugins = plugins.clone();
     let startup_plugins = plugins.clone();
+    let watcher = Arc::new(Mutex::new(ProjectWatcher::default()));
     tauri::Builder::default()
         .setup(move |app| {
             let app_data = app
@@ -2954,6 +3087,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(core)
         .manage(plugins)
+        .manage(watcher)
         .invoke_handler(tauri::generate_handler![
             greet,
             plugin_bootstrap,
@@ -2984,6 +3118,8 @@ pub fn run() {
             project_new,
             project_close,
             project_info,
+            project_reconcile_external_changes,
+            project_save_recovery_copy,
             project_git_status,
             project_git_init,
             project_git_log,

@@ -234,6 +234,13 @@ pub struct GitLogEntry {
     pub subject: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalChangeReport {
+    pub changed: bool,
+    pub paths: Vec<String>,
+    pub diagnostics: Vec<String>,
+}
+
 fn current_snapshot_version() -> u32 {
     1
 }
@@ -244,6 +251,19 @@ fn decode_field_value(value: String) -> serde_json::Value {
 
 fn encode_field_value(value: &serde_json::Value) -> Result<String, CoreError> {
     serde_json::to_string(value).map_err(|error| CoreError::NotFound(error.to_string()))
+}
+
+fn validate_document_format(format: Option<&str>, directory_backed: bool) -> Result<(), CoreError> {
+    let format = format.unwrap_or("markdown");
+    if directory_backed && format != "markdown" {
+        return Err(CoreError::Validation(
+            "directory-backed projects require Markdown documents".into(),
+        ));
+    }
+    if format != "markdown" && format != "plain-text" && format != "rich-text" {
+        return Err(CoreError::NotFound("unsupported document format".into()));
+    }
+    Ok(())
 }
 
 fn project_database_path(root: &Path) -> PathBuf {
@@ -470,6 +490,116 @@ impl ProjectStore {
             ));
         }
         Ok(())
+    }
+
+    fn indexed_source_hashes(&self) -> Result<BTreeMap<String, String>, CoreError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT path,content_hash FROM source_files ORDER BY path")?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<Result<BTreeMap<_, _>, _>>()
+            .map_err(CoreError::from)
+    }
+
+    /// Reconcile canonical files after an external filesystem change.
+    ///
+    /// The scanner is deliberately authoritative here: a valid snapshot is
+    /// imported into the disposable index, while an invalid snapshot is only
+    /// reported and never replaces the last valid projection.
+    pub fn reconcile_external_changes(&self) -> Result<ExternalChangeReport, CoreError> {
+        let Some(root) = self.root.as_deref() else {
+            return Ok(ExternalChangeReport {
+                changed: false,
+                paths: Vec::new(),
+                diagnostics: Vec::new(),
+            });
+        };
+        let git_unmerged = self.git_unmerged_paths();
+        if !git_unmerged.is_empty() {
+            return Ok(ExternalChangeReport {
+                changed: false,
+                paths: git_unmerged.clone(),
+                diagnostics: git_unmerged
+                    .iter()
+                    .map(|path| format!("git.unmerged: {path}"))
+                    .collect(),
+            });
+        }
+        let previous = self.indexed_source_hashes()?;
+        let repository = crate::storage::FilesystemRepository::open(root)?;
+        let canonical = match repository.scan() {
+            Ok(canonical) => canonical,
+            Err(error) => {
+                return Ok(ExternalChangeReport {
+                    changed: false,
+                    paths: Vec::new(),
+                    diagnostics: vec![error.to_string()],
+                });
+            }
+        };
+        let current = canonical
+            .sources
+            .iter()
+            .map(|source| (source.path.clone(), source.content_hash.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let paths = previous
+            .keys()
+            .chain(current.keys())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter(|path| previous.get(*path) != current.get(*path))
+            .cloned()
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            return Ok(ExternalChangeReport {
+                changed: false,
+                paths,
+                diagnostics: Vec::new(),
+            });
+        }
+
+        let payload = serde_json::to_string(&canonical.snapshot)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        self.import_json_with_mode_and_sync(&payload, true, false)?;
+        self.replace_source_index(&canonical.sources)?;
+        self.rebuild_search()?;
+        self.verify_index(canonical.sources.len())?;
+        Ok(ExternalChangeReport {
+            changed: true,
+            paths,
+            diagnostics: Vec::new(),
+        })
+    }
+
+    pub fn save_recovery_copy(&self, entity_id: &str, body: &str) -> Result<String, CoreError> {
+        let Some(root) = self.root.as_deref() else {
+            return Err(CoreError::Validation(
+                "recovery copies require a directory-backed project".into(),
+            ));
+        };
+        uuid::Uuid::parse_str(entity_id)
+            .map_err(|error| CoreError::Validation(format!("invalid entity ID: {error}")))?;
+        let conflicts = root.join(".daena/conflicts");
+        std::fs::create_dir_all(&conflicts).map_err(|error| CoreError::Io {
+            operation: "create recovery copy directory",
+            source: error,
+        })?;
+        let path = conflicts.join(format!(
+            "{}-{}-{}.md",
+            chrono_like_now(),
+            entity_id,
+            Uuid::new_v4()
+        ));
+        let bytes = crate::storage::canonical_markdown(body).into_bytes();
+        std::fs::write(&path, bytes).map_err(|error| CoreError::Io {
+            operation: "write recovery copy",
+            source: error,
+        })?;
+        Ok(path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/"))
     }
 
     fn revision_for_entity(&self, entity_id: &str) -> Result<String, CoreError> {
@@ -869,7 +999,12 @@ impl ProjectStore {
                     .to_string()
             }),
             root: root.to_string_lossy().to_string(),
-            index_status: "ready".into(),
+            index_status: if self.ensure_source_index_current().is_ok() {
+                "ready"
+            } else {
+                "diagnostic"
+            }
+            .into(),
             assets: root.join("assets").to_string_lossy().to_string(),
         })
     }
@@ -929,6 +1064,30 @@ impl ProjectStore {
             .current_dir(root)
             .output()
             .map_err(|error| CoreError::NotFound(format!("git is unavailable: {error}")))
+    }
+
+    fn git_unmerged_paths(&self) -> Vec<String> {
+        let Ok(status) = self.git_status() else {
+            return Vec::new();
+        };
+        if !status.repository {
+            return Vec::new();
+        }
+        status
+            .changes
+            .into_iter()
+            .filter_map(|change| {
+                let bytes = change.as_bytes();
+                if bytes.len() < 4 {
+                    return None;
+                }
+                let unmerged = matches!(
+                    &bytes[..2],
+                    b"DD" | b"AU" | b"UD" | b"UA" | b"DU" | b"AA" | b"UU"
+                );
+                unmerged.then(|| change[3..].trim().to_string())
+            })
+            .collect()
     }
 
     pub fn git_status(&self) -> Result<GitStatus, CoreError> {
@@ -1004,6 +1163,14 @@ impl ProjectStore {
                 "project is not a git repository".into(),
             ));
         }
+        let report = self.reconcile_external_changes()?;
+        if !report.diagnostics.is_empty() {
+            return Err(CoreError::Conflict(format!(
+                "cannot commit while canonical diagnostics remain: {}",
+                report.diagnostics.join("; ")
+            )));
+        }
+        self.ensure_source_index_current()?;
         let add = self.run_git(&["add", "--all"])?;
         if !add.status.success() {
             return Err(CoreError::NotFound(
@@ -1129,6 +1296,13 @@ impl ProjectStore {
         input: CreateEntry,
         request_id: Option<&str>,
     ) -> Result<Entity, CoreError> {
+        validate_document_format(
+            input
+                .document
+                .as_ref()
+                .and_then(|document| document.format.as_deref()),
+            self.root.is_some(),
+        )?;
         if self.root.is_some() {
             return self.repository_first_mutation(request_id, move |projection, request_id| {
                 projection.create_entry_with_request(input, Some(request_id))
@@ -1147,9 +1321,7 @@ impl ProjectStore {
             .and_then(|document| document.format.as_deref())
             .unwrap_or("markdown")
             .to_owned();
-        if format != "markdown" && format != "plain-text" && format != "rich-text" {
-            return Err(CoreError::NotFound("unsupported document format".into()));
-        }
+        validate_document_format(Some(&format), false)?;
         let encoded_fields = input
             .fields
             .iter()
@@ -1417,6 +1589,7 @@ impl ProjectStore {
         expected_revision: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<(), CoreError> {
+        validate_document_format(input.document.format.as_deref(), self.root.is_some())?;
         if self.root.is_some() {
             return self.repository_first_mutation(request_id, move |projection, request_id| {
                 projection.save_entry_with_options(input, expected_revision, Some(request_id))
@@ -1430,9 +1603,7 @@ impl ProjectStore {
         }
         let document = input.document;
         let format = document.format.unwrap_or_else(|| "markdown".into());
-        if format != "markdown" && format != "plain-text" && format != "rich-text" {
-            return Err(CoreError::NotFound("unsupported document format".into()));
-        }
+        validate_document_format(Some(&format), false)?;
         let exists: Option<String> = self
             .connection
             .query_row(
@@ -3108,6 +3279,138 @@ mod tests {
     }
 
     #[test]
+    fn external_markdown_edits_refresh_clean_index_and_invalid_edits_preserve_it() {
+        let root = std::env::temp_dir().join(format!("daena-external-{}", Uuid::new_v4()));
+        let store = ProjectStore::open_directory(&root).unwrap();
+        let entity = store
+            .create_entity(CreateEntity {
+                name: "Watched record".into(),
+                entity_type: Some("place".into()),
+            })
+            .unwrap();
+        store
+            .save_document(SaveDocument {
+                entity_id: entity.id.clone(),
+                body: "Before\n".into(),
+                format: Some("markdown".into()),
+            })
+            .unwrap();
+
+        std::fs::write(
+            root.join("entities").join(&entity.id).join("document.md"),
+            "# After\n",
+        )
+        .unwrap();
+        let report = store.reconcile_external_changes().unwrap();
+        assert!(report.changed);
+        assert!(report
+            .paths
+            .iter()
+            .any(|path| path == &format!("entities/{}/document.md", entity.id)));
+        assert_eq!(
+            store.list_documents(entity.id.clone()).unwrap()[0].body,
+            "# After\n"
+        );
+
+        std::fs::write(
+            root.join("entities").join(&entity.id).join("entity.json"),
+            "{not valid json",
+        )
+        .unwrap();
+        let invalid = store.reconcile_external_changes().unwrap();
+        assert!(!invalid.changed);
+        assert!(!invalid.diagnostics.is_empty());
+        assert_eq!(store.info().unwrap().index_status, "diagnostic");
+        assert_eq!(
+            store.list_documents_unchecked(entity.id).unwrap()[0].body,
+            "# After\n"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_copy_is_markdown_and_stays_outside_canonical_sources() {
+        let root = std::env::temp_dir().join(format!("daena-recovery-{}", Uuid::new_v4()));
+        let store = ProjectStore::open_directory(&root).unwrap();
+        let entity = store
+            .create_entity(CreateEntity {
+                name: "Recovery record".into(),
+                entity_type: None,
+            })
+            .unwrap();
+        let path = store
+            .save_recovery_copy(&entity.id, "Draft\r\nwithout final newline")
+            .unwrap();
+        assert!(path.starts_with(".daena/conflicts/") && path.ends_with(".md"));
+        assert_eq!(
+            std::fs::read_to_string(root.join(&path)).unwrap(),
+            "Draft\nwithout final newline\n"
+        );
+        assert!(!store
+            .canonical_source_hashes(".daena/conflicts/%")
+            .unwrap()
+            .iter()
+            .any(|(source, _)| source.contains("conflicts")));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn git_unmerged_canonical_files_are_diagnostic_before_scanning() {
+        let root = std::env::temp_dir().join(format!("daena-git-conflict-{}", Uuid::new_v4()));
+        let store = ProjectStore::open_directory(&root).unwrap();
+        let run_git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            output
+        };
+        assert!(run_git(&["init", "-q"]).status.success());
+        assert!(run_git(&["config", "user.email", "tests@daena.local"])
+            .status
+            .success());
+        assert!(run_git(&["config", "user.name", "Daena tests"])
+            .status
+            .success());
+        assert!(run_git(&["config", "commit.gpgsign", "false"])
+            .status
+            .success());
+        assert!(run_git(&["add", "--all"]).status.success());
+        let base_commit = run_git(&["commit", "-qm", "base"]);
+        assert!(
+            base_commit.status.success(),
+            "base commit failed: {}",
+            String::from_utf8_lossy(&base_commit.stderr)
+        );
+        assert!(run_git(&["checkout", "-qb", "feature"]).status.success());
+
+        let mut manifest: crate::storage::ProjectManifest =
+            crate::storage::read_json(&root.join("project.json")).unwrap();
+        manifest.name = "Feature project".into();
+        crate::storage::write_json(&root.join("project.json"), &manifest).unwrap();
+        assert!(run_git(&["add", "project.json"]).status.success());
+        assert!(run_git(&["commit", "-qm", "feature"]).status.success());
+        assert!(run_git(&["checkout", "-q", "-"]).status.success());
+
+        manifest.name = "Main project".into();
+        crate::storage::write_json(&root.join("project.json"), &manifest).unwrap();
+        assert!(run_git(&["add", "project.json"]).status.success());
+        assert!(run_git(&["commit", "-qm", "main"]).status.success());
+        assert!(!run_git(&["merge", "feature"]).status.success());
+
+        let report = store.reconcile_external_changes().unwrap();
+        assert_eq!(report.paths, vec!["project.json"]);
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.starts_with("git.unmerged: project.json")));
+        let commit = store.git_commit("must not commit unresolved merge".into());
+        assert!(matches!(commit, Err(CoreError::Conflict(_))));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn directory_mutations_return_revisions_and_replay_requests() {
         let root = std::env::temp_dir().join(format!("daena-revision-{}", Uuid::new_v4()));
         let store = ProjectStore::open_directory(&root).unwrap();
@@ -3476,7 +3779,7 @@ mod tests {
                 .save_document(SaveDocument {
                     entity_id: entity.id.clone(),
                     body: "old prose".into(),
-                    format: Some("plain-text".into()),
+                    format: Some("markdown".into()),
                 })
                 .unwrap();
             store
@@ -3505,7 +3808,7 @@ mod tests {
             .save_document(SaveDocument {
                 entity_id: entity_id.clone(),
                 body: "new prose".into(),
-                format: Some("plain-text".into()),
+                format: Some("markdown".into()),
             })
             .unwrap();
         assert!(store.search("old prose".into()).unwrap().is_empty());
@@ -3932,7 +4235,7 @@ mod tests {
             .save_document(SaveDocument {
                 entity_id: source.id.clone(),
                 body: "# Canonical prose".into(),
-                format: Some("rich-text".into()),
+                format: Some("markdown".into()),
             })
             .unwrap();
         first

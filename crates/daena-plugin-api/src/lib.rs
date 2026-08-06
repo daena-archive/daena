@@ -342,7 +342,7 @@ pub fn parse_manifest(json: &str) -> Result<PluginManifest, ContractError> {
 
 pub fn command_exposes(command: &Command, exposure: CommandExposure) -> bool {
     command.exposure.is_empty() && matches!(exposure, CommandExposure::View)
-        || command.exposure.iter().any(|candidate| *candidate == exposure)
+        || command.exposure.contains(&exposure)
 }
 
 pub fn validate_command_value(

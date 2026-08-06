@@ -439,6 +439,16 @@ complete previous state or the complete new state after recovery.
 - Add filesystem watching, conflict state, diagnostics, recovery copies, and
   UI reconciliation.
 
+The Phase 4 implementation uses a deterministic supported Markdown subset in
+the rich editor. Tauri runs a debounced background filesystem watcher over the
+directory-backed project and reconciles valid source changes into SQLite only
+after the canonical scan succeeds. Invalid scans remain diagnostic-only; the
+last valid projection is not presented as healthy, and a changed document with
+an unsaved draft is surfaced as a conflict. Draft recovery copies are written
+below `.daena/conflicts/` and are never included in canonical scans. Git-
+unmerged canonical files are reported before scanning, and the built-in commit
+path refuses to proceed while those diagnostics remain.
+
 Exit gate: supported rich editing round-trips through Markdown, external clean
 edits refresh live, and conflicting edits never overwrite an unsaved draft.
 

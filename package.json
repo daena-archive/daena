@@ -20,6 +20,7 @@
     "test:plugin-declarative": "node scripts/plugin-declarative.test.mjs",
     "test:plugin-cli": "node scripts/plugin-cli.test.mjs",
     "test:plugin-transport": "node scripts/plugin-transport.test.mjs",
+    "test:markdown": "node --experimental-strip-types scripts/markdown-fixtures.test.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri"
   },

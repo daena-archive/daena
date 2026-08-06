@@ -15,6 +15,7 @@ export interface FieldValue { entity_id: string; namespace: string; key: string;
 export interface Relationship { id: string; source_id: string; target_id: string; relationship_type: string; metadata: string; revision: string; }
 export interface Asset { id: string; entity_id: string; namespace: string; filename: string; content_hash: string; size: number; mime_type: string; path: string; created_at: string; revision: string; }
 export interface ProjectInfo { name: string; root: string; index_status: string; assets: string; }
+export interface ExternalChangeReport { changed: boolean; paths: string[]; diagnostics: string[]; }
 export interface GitStatus { repository: boolean; branch: string | null; changes: string[]; }
 export interface GitLogEntry { hash: string; date: string; subject: string; }
 export type { ModuleManifest };
@@ -73,6 +74,8 @@ export const project = {
   create: (path: string) => invoke<ProjectInfo>("project_new", { path }),
   close: () => invoke<void>("project_close"),
   info: () => invoke<ProjectInfo | null>("project_info"),
+  reconcileExternalChanges: () => invoke<ExternalChangeReport>("project_reconcile_external_changes"),
+  saveRecoveryCopy: (entityId: string, body: string) => invoke<string>("project_save_recovery_copy", { entityId, body }),
   gitStatus: () => invoke<GitStatus>("project_git_status"),
   gitInit: () => invoke<GitStatus>("project_git_init"),
   gitLog: () => invoke<GitLogEntry[]>("project_git_log"),
@@ -88,7 +91,7 @@ export const project = {
   updateEntity: (id: string, name?: string | null, entityType?: string | null, options?: MutationOptions) =>
     invoke<Entity>("project_update_entity", { id, name: name ?? null, entity_type: entityType ?? null, expected_revision: options?.expectedRevision ?? null, request_id: requestId(options) }),
   listDocuments: (entityId: string) => invoke<Document[]>("project_list_documents", { entityId }),
-  saveDocument: (entityId: string, body: string, format: "markdown" | "plain-text" | "rich-text" = "rich-text", options?: MutationOptions) => invoke<void>("project_save_document", { input: { entity_id: entityId, body, format }, expected_revision: options?.expectedRevision ?? null, request_id: requestId(options) }),
+  saveDocument: (entityId: string, body: string, format: "markdown" | "plain-text" | "rich-text" = "markdown", options?: MutationOptions) => invoke<void>("project_save_document", { input: { entity_id: entityId, body, format }, expected_revision: options?.expectedRevision ?? null, request_id: requestId(options) }),
   saveEntry: (input: { document: { entity_id: string; body: string; format?: "markdown" | "plain-text" | "rich-text" }; fields: FieldValue[] }, options?: MutationOptions) => invoke<void>("project_save_entry", { input, expected_revision: options?.expectedRevision ?? null, request_id: requestId(options) }),
   listFields: (entityId: string) => invoke<FieldValue[]>("project_list_fields", { entityId }),
   setField: (field: FieldValue, options?: MutationOptions) => invoke<void>("project_set_field", { field, request_id: requestId(options) }),

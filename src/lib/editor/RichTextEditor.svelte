@@ -17,17 +17,19 @@
   import Underline from "@tiptap/extension-underline";
   import { UndoRedo } from "@tiptap/extensions";
   import { onMount } from "svelte";
+  import { htmlToMarkdown, markdownToHtml } from "$lib/editor/markdown";
 
   export let value = "";
   export let placeholder = "Start writing…";
   export let onChange: (value: string) => void = () => {};
+  export let editable = true;
   export let fullscreen = false;
   export let onFullscreenChange: (value: boolean) => void = () => {};
 
   let editorElement: HTMLDivElement;
   let editor: Editor | null = null;
   let editorState: Editor | null = null;
-  let currentHtml = "";
+  let currentMarkdown = "";
   let editorText = "";
   let isFullscreen = false;
   $: wordCountValue = editorText.trim() ? editorText.trim().split(/\s+/).length : 0;
@@ -43,7 +45,8 @@
       for (const attribute of [...element.attributes]) {
         const name = attribute.name.toLowerCase();
         const content = attribute.value.trim().toLowerCase();
-        if (name.startsWith("on") || name === "style" || ((name === "href" || name === "src") && content.startsWith("javascript:"))) element.removeAttribute(attribute.name);
+        if (name.startsWith("on") || ((name === "href" || name === "src") && content.startsWith("javascript:"))) element.removeAttribute(attribute.name);
+        if (name === "style" && !/^text-align\s*:\s*(?:left|center|right)\s*;?$/i.test(attribute.value.trim())) element.removeAttribute(attribute.name);
       }
     }
     return template.innerHTML;
@@ -52,8 +55,8 @@
   function emitChange() {
     if (!editor) return;
     editorText = editor.view.dom.textContent ?? "";
-    currentHtml = editor.getHTML();
-    onChange(currentHtml);
+    currentMarkdown = htmlToMarkdown(editor.getHTML());
+    onChange(currentMarkdown);
   }
 
   function run(command: (currentEditor: Editor) => boolean) {
@@ -146,7 +149,8 @@
         TextAlign.configure({ types: ["heading", "paragraph"], alignments: ["left", "center", "right"] }),
         UndoRedo,
       ],
-      content: sanitizeHtml(value),
+      content: sanitizeHtml(markdownToHtml(value)),
+      editable,
       editorProps: {
         attributes: {
           "aria-label": "Document editor",
@@ -161,7 +165,7 @@
       },
     });
     editorState = editor;
-    currentHtml = editor.getHTML();
+    currentMarkdown = htmlToMarkdown(editor.getHTML());
     editorText = editor.view.dom.textContent ?? "";
     const initialTextFrame = requestAnimationFrame(() => {
       editorText = editor?.view.dom.textContent ?? "";
@@ -174,12 +178,13 @@
     };
   });
 
-  $: if (editor && !editor.isFocused && value !== currentHtml) {
-    const nextHtml = sanitizeHtml(value);
+  $: if (editor && !editor.isFocused && value !== currentMarkdown) {
+    const nextHtml = sanitizeHtml(markdownToHtml(value));
     if (nextHtml !== editor.getHTML()) editor.commands.setContent(nextHtml, { emitUpdate: false });
-    currentHtml = editor.getHTML();
+    currentMarkdown = htmlToMarkdown(editor.getHTML());
     editorText = editor.view.dom.textContent ?? "";
   }
+  $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
 </script>
 
 <div class="editor-shell">
@@ -251,7 +256,7 @@
     <span class="status-separator">·</span>
     <span>{characterCountValue} {characterCountValue === 1 ? "character" : "characters"}</span>
     <span class="status-spacer"></span>
-    <span class="editor-mode">Rich text</span>
+    <span class="editor-mode">Markdown</span>
   </div>
 </div>
 

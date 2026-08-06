@@ -16,6 +16,8 @@ use daena_plugin_api::{parse_manifest, PluginManifest};
 use zip::ZipArchive;
 
 const SIGNATURE_FILE: &str = "signature.json";
+type PackageFiles = Vec<(String, Vec<u8>)>;
+type PackageTree = (PackageFiles, BTreeSet<String>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageError(pub String);
@@ -500,7 +502,7 @@ fn verify_installed(
 fn read_package_tree(
     root: &Path,
     limits: ArchiveLimits,
-) -> Result<(Vec<(String, Vec<u8>)>, BTreeSet<String>), PackageError> {
+) -> Result<PackageTree, PackageError> {
     let mut files = Vec::new();
     let mut names = BTreeSet::new();
     let mut folded = BTreeSet::new();

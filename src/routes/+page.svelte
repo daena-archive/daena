@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
   const logoUrl = "/branding/logo.png";
-  import { project, type Asset, type Entity, type Relationship, type ProjectModuleManifest, type ProjectInfo, type GitStatus, type GitLogEntry, type PluginAdminEntry, type PluginUpgradePlan } from "$lib/project/client";
+  import { project, type Asset, type Entity, type Relationship, type ProjectModuleManifest, type ProjectInfo, type GitStatus, type GitLogEntry, type PluginAdminEntry, type PluginUpgradePlan, type ExternalChangeReport } from "$lib/project/client";
   import type { EntityTemplate, FieldDefinition, ModuleContext, ModuleId, UUID, ModuleManifest, DaenaModule } from "../../packages/module-api/src/index";
   import { buildModuleContext } from "$lib/modules/context";
   import HostView from "$lib/plugins/HostView.svelte";
@@ -13,6 +14,7 @@
   import writingManifestJson from "../../packages/modules/writing/manifest.json";
   import { projectionModule } from "$lib/modules/projections";
   import RichTextEditor from "$lib/editor/RichTextEditor.svelte";
+  import { htmlToMarkdown } from "$lib/editor/markdown";
   import { formatCalendarDate, isCompleteCalendarDate, parseCalendarDate, serializeCalendarDate, type CalendarDate } from "$lib/date";
 
   type InstalledModule = ProjectModuleManifest;
@@ -57,6 +59,10 @@
   let hasUnsavedChanges = $state(false);
   let autoSaveTimer: number | null = null;
   let documentRevision = 0;
+  let loadedDocumentRevision = "";
+  let documentConflict = $state<{ paths: string[]; diagnostics: string[] } | null>(null);
+  let conflictDiskBody = $state("");
+  let projectDiagnostics = $state<string[]>([]);
   let showPlugins = $state(false);
   let adminPlugins = $state<PluginAdminEntry[] | null>(null);
   let hostView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] } | null>(null);
@@ -362,9 +368,8 @@
   }
 
   function normalizeDocument(body: string, format?: string) {
-    if (format === "rich-text") return body;
-    const escaped = body.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-    return escaped.split("\n").map((line) => line ? `<p>${line}</p>` : "").join("");
+    if (format === "rich-text") return htmlToMarkdown(body);
+    return body;
   }
 
   function dateForField(key: string) {
@@ -379,6 +384,7 @@
     markEntryDirty();
   }
   function updateDateField(key: string, patch: Partial<CalendarDate>) {
+    if (projectDiagnostics.length > 0) return;
     const current = dateForField(key) ?? { calendar: "gregorian", era: "CE", year: 1, month: 1, day: 1, precision: "day" };
     const next = { ...current, ...patch } as CalendarDate;
     if (patch.precision === "year") { delete next.month; delete next.day; }
@@ -400,7 +406,7 @@
     markEntryDirty();
   }
 
-  function wordCount() { return documentBody.replace(/<[^>]*>/g, " ").trim().split(/\s+/).filter(Boolean).length; }
+  function wordCount() { return documentBody.replace(/[`*_>#\[\]()]/g, " ").trim().split(/\s+/).filter(Boolean).length; }
   function cancelAutoSave() {
     if (autoSaveTimer !== null) {
       window.clearTimeout(autoSaveTimer);
@@ -422,6 +428,7 @@
     scheduleAutoSave();
   }
   function updateDocumentBody(value: string) {
+    if (projectDiagnostics.length > 0) return;
     documentBody = value;
     markEntryDirty();
   }
@@ -540,37 +547,103 @@
     return saveDocument();
   }
 
+  async function loadSelectedState(entity: Entity) {
+    const context = contextFor();
+    const record = await context.entities.get(entity.id as UUID);
+    const document = record?.documents[0];
+    documentBody = normalizeDocument(document?.body ?? "", document?.format);
+    loadedDocumentRevision = (await project.listDocuments(entity.id))[0]?.revision ?? "";
+    const values = await context.fields.list(entity.id as UUID);
+    dateEditorOpen = {};
+    fields = Object.fromEntries(Object.entries(values).map(([key, value]) => {
+      const definition = definitions().find((candidate) => candidate.key === key);
+      if (definition?.type === "date") {
+        const date = parseCalendarDate(value);
+        const normalized = date ? serializeCalendarDate(date) : "";
+        if (normalized === "1" || normalized === "1-1" || normalized === "1-1-1") return [key, ""];
+        return [key, date ? serializeCalendarDate(date) : String(value ?? "")];
+      }
+      return [key, String(value ?? "")];
+    }));
+    relationships = (await context.relationships.list(entity.id as UUID)).map((relationship) => ({ id: relationship.id, source_id: relationship.sourceId, target_id: relationship.targetId, relationship_type: relationship.type, metadata: JSON.stringify(relationship.metadata), revision: "" }));
+    assets = (await context.assets.list(entity.id as UUID)).map((asset) => ({ id: asset.id, entity_id: asset.entityId, namespace: asset.namespace, filename: asset.filename, content_hash: asset.contentHash, size: asset.size, mime_type: asset.mimeType, path: asset.path, created_at: asset.createdAt, revision: "" }));
+    savedAt = "";
+  }
+
   async function selectEntity(entity: Entity) {
     if (selected?.id === entity.id) return;
     if (!(await flushAutoSave())) return;
     editorFullscreen = false;
     selected = entity;
     hasUnsavedChanges = false;
+    documentConflict = null;
+    documentRevision = 0;
     error = "";
     try {
-      const context = contextFor();
-      const record = await context.entities.get(entity.id as UUID);
-      documentBody = normalizeDocument(record?.documents[0]?.body ?? "", record?.documents[0]?.format);
-      const values = await context.fields.list(entity.id as UUID);
-      dateEditorOpen = {};
-      fields = Object.fromEntries(Object.entries(values).map(([key, value]) => {
-        const definition = definitions().find((candidate) => candidate.key === key);
-        if (definition?.type === "date") {
-          const date = parseCalendarDate(value);
-          const normalized = date ? serializeCalendarDate(date) : "";
-          if (normalized === "1" || normalized === "1-1" || normalized === "1-1-1") return [key, ""];
-          return [key, date ? serializeCalendarDate(date) : String(value ?? "")];
-        }
-        return [key, String(value ?? "")];
-      }));
-      relationships = (await context.relationships.list(entity.id as UUID)).map((relationship) => ({ id: relationship.id, source_id: relationship.sourceId, target_id: relationship.targetId, relationship_type: relationship.type, metadata: JSON.stringify(relationship.metadata), revision: "" }));
-      assets = (await context.assets.list(entity.id as UUID)).map((asset) => ({ id: asset.id, entity_id: asset.entityId, namespace: asset.namespace, filename: asset.filename, content_hash: asset.contentHash, size: asset.size, mime_type: asset.mimeType, path: asset.path, created_at: asset.createdAt, revision: "" }));
-      savedAt = "";
+      await loadSelectedState(entity);
+    } catch (cause) { error = friendlyError(cause); }
+  }
+
+  async function reloadSelectedFromDisk() {
+    if (!selected) return;
+    const current = entities.find((entity) => entity.id === selected?.id) ?? selected;
+    selected = current;
+    await loadSelectedState(current);
+    hasUnsavedChanges = false;
+    documentRevision = 0;
+    documentConflict = null;
+    conflictDiskBody = "";
+    savedAt = "";
+  }
+
+  async function handleExternalChange(report: ExternalChangeReport) {
+    if (report.diagnostics.length > 0) {
+      projectDiagnostics = report.diagnostics;
+      documentConflict = { paths: report.paths, diagnostics: report.diagnostics };
+      return;
+    }
+    if (!report.changed) return;
+    projectDiagnostics = [];
+    await loadEntities();
+    const selectedId = selected?.id;
+    const overlapsSelected = Boolean(selectedId && report.paths.some((path) => path === "project.json" || path.startsWith(`entities/${selectedId}/`)));
+    if (!overlapsSelected) return;
+    if (hasUnsavedChanges) {
+      documentConflict = { paths: report.paths, diagnostics: [] };
+      conflictDiskBody = normalizeDocument((await project.listDocuments(selectedId!))[0]?.body ?? "", "markdown");
+      return;
+    }
+    try { await reloadSelectedFromDisk(); }
+    catch (cause) { error = friendlyError(cause); }
+  }
+
+  async function reloadConflict() {
+    try { await reloadSelectedFromDisk(); }
+    catch (cause) { error = friendlyError(cause); }
+  }
+
+  async function overwriteConflict() {
+    if (!selected) return;
+    try {
+      const documents = await project.listDocuments(selected.id);
+      loadedDocumentRevision = documents[0]?.revision ?? "";
+      documentConflict = null;
+      conflictDiskBody = "";
+      if (!(await saveDocument())) documentConflict = { paths: [], diagnostics: ["The draft could not be written as a new revision."] };
+    } catch (cause) { documentConflict = { paths: [], diagnostics: [friendlyError(cause)] }; }
+  }
+
+  async function saveConflictRecoveryCopy() {
+    if (!selected) return;
+    try {
+      const path = await project.saveRecoveryCopy(selected.id, documentBody);
+      error = `Draft saved as ${path}`;
     } catch (cause) { error = friendlyError(cause); }
   }
 
   async function createEntity(event: SubmitEvent) {
     event.preventDefault();
+    if (projectDiagnostics.length > 0) return;
     const option = selectedCreateOption();
     if (!name.trim() || !option || !option.module.enabled) return;
     try {
@@ -603,7 +676,7 @@
         type: option.template.entityType,
         fields: fieldsForCreate,
         relationships: relationshipsForCreate,
-        document: createDocumentBody.trim() ? { body: normalizeDocument(createDocumentBody.trim()), format: "rich-text" } : undefined,
+        document: createDocumentBody.trim() ? { body: createDocumentBody.trim(), format: "markdown" } : undefined,
       });
       section = option.template.entityType === "event" ? "timeline" : option.template.entityType === "manuscript" || option.template.entityType === "reference-page" ? "writing" : "lore";
       if (option.template.entityType === "manuscript") writingView = "manuscripts";
@@ -641,11 +714,12 @@
   }
 
   function updateField(key: string, event: Event) {
+    if (projectDiagnostics.length > 0) return;
     fields = { ...fields, [key]: (event.currentTarget as HTMLInputElement).value };
     markEntryDirty();
   }
   async function saveDocument(): Promise<boolean> {
-    if (!selected || !sectionEnabled()) return false;
+    if (!selected || !sectionEnabled() || documentConflict || projectDiagnostics.length > 0) return false;
     cancelAutoSave();
     const entityId = selected.id;
     const body = documentBody;
@@ -655,12 +729,14 @@
     isSaving = true;
     try {
       await project.saveEntry({
-        document: { entity_id: entityId, body, format: "rich-text" },
+        document: { entity_id: entityId, body, format: "markdown" },
         fields: definitionsForSave.map((definition) => {
           const value = fieldsSnapshot[definition.key] ?? "";
           return { entity_id: entityId, namespace: activeManifest()?.schemas[0]?.namespace ?? activeModuleId(), key: definition.key, value: definition.type === "date" && value ? parseCalendarDate(value) ?? value : value, revision: "" };
         }),
-      });
+      }, { expectedRevision: loadedDocumentRevision || undefined });
+      const documents = await project.listDocuments(entityId);
+      loadedDocumentRevision = documents[0]?.revision ?? "";
       if (selected?.id === entityId && documentRevision === revision) {
         hasUnsavedChanges = false;
         savedAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -672,6 +748,7 @@
     } finally { isSaving = false; }
   }
   async function archiveSelected() {
+    if (projectDiagnostics.length > 0) return;
     if (!(await flushAutoSave())) return;
     if (!selected || !confirm(`Archive ${selected.name}?`)) return;
     try { await contextFor().entities.delete(selected.id as UUID); clearSelection(); await loadEntities(); } catch (cause) { error = friendlyError(cause); }
@@ -683,6 +760,7 @@
       .map((relationship) => relationship.target_id);
   }
   async function updateRelationshipField(definition: FieldDefinition, targetIds: string[]) {
+    if (projectDiagnostics.length > 0) return;
     if (!selected || !definition.relationshipType) return;
     const desired = new Set(targetIds);
     const current = relationships.filter((relationship) => relationship.source_id === selected!.id && relationship.relationship_type === definition.relationshipType);
@@ -709,6 +787,7 @@
     return extension === "png" ? "image/png" : extension === "jpg" || extension === "jpeg" ? "image/jpeg" : extension === "gif" ? "image/gif" : extension === "mp4" ? "video/mp4" : extension === "webm" ? "video/webm" : "application/octet-stream";
   }
   async function attachAsset() {
+    if (projectDiagnostics.length > 0) return;
     if (!selected) return;
     try {
       const selection = await project.pickFile();
@@ -934,6 +1013,10 @@
     relationships = [];
     assets = [];
     savedAt = "";
+    loadedDocumentRevision = "";
+    documentConflict = null;
+    conflictDiskBody = "";
+    projectDiagnostics = [];
     showCreateForm = false;
   }
   async function seedExample() {
@@ -973,6 +1056,9 @@
   onMount(() => {
     loadRecentProjects();
     void closeNativePluginWebviews();
+    let unlisten: (() => void) | undefined;
+    void listen<ExternalChangeReport>("project-external-change", (event) => void handleExternalChange(event.payload)).then((cleanup) => { unlisten = cleanup; }).catch(() => {});
+    return () => unlisten?.();
   });
 </script>
 
@@ -1243,6 +1329,7 @@
     {:else if !sectionEnabled()}
       <section class="disabled-state"><div class="disabled-icon">◌</div><span class="overline">Module unavailable</span><h1>{sectionLabel()} is resting.</h1><p>Your project data is safe. Re-enable this module to continue working in this workspace.</p><button class="primary-button" onclick={() => toggleModule(activeModuleId() as ModuleId)}>Enable {sectionLabel()}</button></section>
     {:else}
+      {#if projectDiagnostics.length}<div class="project-diagnostics" role="alert"><strong>Canonical source diagnostics</strong>{#each projectDiagnostics as diagnostic}<span>{diagnostic}</span>{/each}<small>Editing is read-only until the source files are valid again.</small></div>{/if}
       <div class="workspace-heading"><div><span class="overline">{section === "lore" ? "WORLD BIBLE" : section === "timeline" ? "CHRONOLOGY" : "DRAFTING DESK"}</span><h1>{sectionLabel()}</h1><p>{section === "lore" ? "A living reference for every person, place, and power." : section === "timeline" ? "Events, eras, and the threads that connect them." : writingView === "manuscripts" ? "Draft stories, essays, and other long-form work." : "Build the pages, notes, and references behind the story."}</p></div><div class="heading-actions">{#if section !== "writing"}<button class="quiet-button" onclick={openProjection}>Open {section === "lore" ? "graph" : "timeline"} ↗</button>{/if}</div></div>
       <section class="workspace-grid">
         <aside class="collection-panel panel-surface">
@@ -1269,7 +1356,15 @@
             {/if}
           </div>
           {#if selected}
-            <RichTextEditor value={documentBody} fullscreen={editorFullscreen} onChange={updateDocumentBody} onFullscreenChange={setEditorFullscreen} placeholder={section === "writing" ? writingView === "manuscripts" ? "Write your manuscript…" : "Write this reference page…" : "Write the canonical story of this entry…"} />
+            {#if documentConflict}
+              <div class="document-conflict" role="alert">
+                <strong>{documentConflict.diagnostics.length ? "Canonical source needs attention" : "This draft changed on disk"}</strong>
+                <p>{documentConflict.diagnostics.length ? documentConflict.diagnostics[0] : "Your unsaved draft is preserved. Choose how to reconcile it before saving."}</p>
+                {#if !documentConflict.diagnostics.length}<details class="conflict-compare"><summary>Compare with disk</summary><pre>{conflictDiskBody}</pre></details>{/if}
+                <div class="conflict-actions"><button class="quiet-button" type="button" onclick={reloadConflict}>Reload disk</button><button class="quiet-button" type="button" onclick={overwriteConflict} disabled={documentConflict.diagnostics.length > 0}>Overwrite as new revision</button><button class="quiet-button" type="button" onclick={saveConflictRecoveryCopy}>Save recovery copy</button></div>
+              </div>
+            {/if}
+            <RichTextEditor value={documentBody} editable={projectDiagnostics.length === 0} fullscreen={editorFullscreen} onChange={updateDocumentBody} onFullscreenChange={setEditorFullscreen} placeholder={section === "writing" ? writingView === "manuscripts" ? "Write your manuscript…" : "Write this reference page…" : "Write the canonical story of this entry…"} />
             <div class="editor-footer">
               <span>{wordCount()} words</span>
               <div><button class="quiet-button" onclick={archiveSelected}>Archive</button></div>
@@ -1297,7 +1392,7 @@
   .welcome, .disabled-state { max-width: 1080px; min-height: calc(100vh - 58px); margin: auto; padding: 10vh 7vw; display: flex; align-items: center; gap: 8vw; } .welcome-copy { flex: 1; } .overline, .panel-kicker { display: block; color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: .18em; } .welcome h1 { margin: 20px 0 18px; font: 500 clamp(48px, 6vw, 78px)/.98 var(--font-display); letter-spacing: -.04em; } .welcome h1 em { color: var(--accent); font-style: italic; } .welcome p { max-width: 380px; margin: 0; color: var(--ink-soft); font-size: 16px; line-height: 1.7; } .welcome-art { position: relative; width: 360px; height: 390px; } .orb { position: absolute; border-radius: 50%; } .orb-one { top: 16px; right: 15px; width: 275px; height: 275px; background: radial-gradient(circle at 33% 30%, #eed5a5, #c2794d 64%, #7b4d3f); box-shadow: 30px 35px 60px rgba(115,74,56,.22); } .orb-two { left: 10px; bottom: 36px; width: 140px; height: 140px; background: #365342; box-shadow: 14px 16px 30px rgba(45,71,54,.2); } .art-card { position: absolute; right: -10px; bottom: 0; width: 235px; padding: 22px; border: 1px solid rgba(255,255,255,.65); border-radius: 12px; background: rgba(255,254,250,.86); box-shadow: var(--shadow-lg); } .art-card span, .art-card small { display: block; color: var(--accent); font-size: 9px; font-weight: 800; letter-spacing: .16em; } .art-card strong { display: block; margin: 17px 0 27px; font: 500 20px/1.18 var(--font-display); } .art-card small { color: var(--ink-faint); font-weight: 500; letter-spacing: 0; }
   .primary-button, .quiet-button, .add-button { border: 0; border-radius: 8px; cursor: pointer; } .primary-button { padding: 10px 15px; background: var(--accent-dark); color: #fff; font-weight: 700; font-size: 12px; box-shadow: 0 5px 12px rgba(42,68,51,.14); } .primary-button:hover { background: #2b4535; } .primary-button:disabled { opacity: .55; cursor: wait; } .quiet-button { padding: 10px 12px; background: transparent; color: var(--ink-soft); font-size: 12px; } .quiet-button:hover { background: var(--surface-muted); color: var(--ink); }
   .workspace-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; padding: 42px 40px 25px; } .workspace-heading h1 { margin: 8px 0 4px; font: 500 38px/1 var(--font-display); } .workspace-heading p { margin: 0; color: var(--ink-soft); font-size: 13px; } .heading-actions { display: flex; gap: 7px; } .projection-bar { min-height: 42px; margin: 0 40px 15px; padding: 0 14px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,254,250,.72); } .projection-bar:empty { display: none; } .workspace-grid { display: grid; grid-template-columns: 245px minmax(360px, 1fr) 270px; gap: 14px; padding: 0 40px 40px; align-items: start; } .panel-surface, .editor-panel { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-sm); } .collection-panel, .inspector-panel { min-height: 650px; } .collection-panel { display: flex; flex-direction: column; } .panel-heading, .inspector-heading { display: flex; align-items: center; justify-content: space-between; padding: 18px 17px 12px; } .panel-heading strong { display: block; margin-top: 5px; font: 500 28px var(--font-display); }
-  .editor-panel { min-height: 650px; padding: 24px 25px 18px; } .editor-header { display: flex; align-items: flex-start; justify-content: space-between; min-height: 72px; } .editor-header h2 { margin: 8px 0 0; font: 500 28px/1.1 var(--font-display); } .editor-status { color: var(--ink-faint); font-size: 11px; } .saving-dot, .saved-dot { display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: #d6a35f; } .saved-dot { width: auto; height: auto; margin: 0 4px 0 0; color: #6fa276; background: transparent; } .editor-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 14px; color: var(--ink-faint); font-size: 11px; } .editor-footer div { display: flex; gap: 4px; } .editor-empty { display: grid; place-items: center; min-height: 500px; padding: 30px; text-align: center; } .empty-mark, .disabled-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 16px; background: #f2e4d2; color: var(--accent); font-size: 23px; } .editor-empty h3 { margin: 18px 0 6px; font: 500 23px var(--font-display); } .editor-empty p, .disabled-state p { max-width: 280px; margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
+  .project-diagnostics { display: grid; gap: 5px; margin: 0 25px 14px; padding: 12px 14px; border: 1px solid #e2b48c; border-radius: 9px; background: #fff5e9; color: #765a39; font-size: 11px; } .project-diagnostics strong { font-size: 12px; } .project-diagnostics small { margin-top: 3px; color: #9a7957; } .editor-panel { min-height: 650px; padding: 24px 25px 18px; } .editor-header { display: flex; align-items: flex-start; justify-content: space-between; min-height: 72px; } .editor-header h2 { margin: 8px 0 0; font: 500 28px/1.1 var(--font-display); } .editor-status { color: var(--ink-faint); font-size: 11px; } .saving-dot, .saved-dot { display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: #d6a35f; } .saved-dot { width: auto; height: auto; margin: 0 4px 0 0; color: #6fa276; background: transparent; } .document-conflict { margin: -4px 0 16px; padding: 13px 14px; border: 1px solid #e2b48c; border-radius: 9px; background: #fff5e9; color: #765a39; } .document-conflict strong { font-size: 12px; } .document-conflict p { margin: 5px 0 10px; font-size: 11px; line-height: 1.5; } .conflict-compare { margin: 8px 0 10px; padding: 8px 10px; border: 1px solid #ead7c2; border-radius: 7px; background: #fffaf3; } .conflict-compare summary { cursor: pointer; font-size: 11px; font-weight: 700; } .conflict-compare pre { max-height: 180px; margin: 8px 0 0; overflow: auto; white-space: pre-wrap; font: 11px/1.5 ui-monospace, monospace; } .conflict-actions { display: flex; flex-wrap: wrap; gap: 6px; } .editor-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 14px; color: var(--ink-faint); font-size: 11px; } .editor-footer div { display: flex; gap: 4px; } .editor-empty { display: grid; place-items: center; min-height: 500px; padding: 30px; text-align: center; } .empty-mark, .disabled-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 16px; background: #f2e4d2; color: var(--accent); font-size: 23px; } .editor-empty h3 { margin: 18px 0 6px; font: 500 23px var(--font-display); } .editor-empty p, .disabled-state p { max-width: 280px; margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
   .date-editor { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fcf8f1; } .date-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; } .date-fields label { display: grid; gap: 4px; color: var(--ink-faint); font-size: 9px; font-weight: 700; text-transform: uppercase; } .date-fields input { min-width: 0; width: 100%; padding: 8px 6px; border: 1px solid var(--line); border-radius: 7px; background: var(--canvas); color: var(--ink); font-size: 11px; } .date-fields input:focus { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180,119,63,.1); outline: 0; } .date-preview { color: var(--accent); font-size: 10px; font-weight: 700; } .date-clear, .date-empty { width: fit-content; padding: 0; border: 0; background: transparent; color: var(--ink-faint); font-size: 10px; cursor: pointer; } .date-empty { padding: 8px 10px; border: 1px dashed #d3c0a9; border-radius: 7px; color: var(--accent); } .inspector-heading { border-bottom: 1px solid var(--line); } .inspector-heading strong { display: block; margin-top: 7px; font: 500 20px var(--font-display); } .inspector-type { padding: 4px 7px; border-radius: 5px; background: #f2e4d2; color: var(--accent); font-size: 9px; font-weight: 800; text-transform: uppercase; } .inspector-section { padding: 18px 16px; border-bottom: 1px solid var(--line); } .inspector-section h3, .section-title h3 { margin: 0; color: var(--ink-soft); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; } .property-field { display: block; margin-top: 14px; } .property-field span { display: block; margin-bottom: 5px; color: var(--ink-soft); font-size: 10px; } .property-field b { margin-left: 3px; color: var(--accent); } .property-field input { width: 100%; padding: 8px 9px; border: 1px solid var(--line); border-radius: 7px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 11px; } .property-field input:focus { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180,119,63,.1); } .section-title { display: flex; align-items: center; justify-content: space-between; } .section-title span { color: var(--ink-faint); font-size: 11px; } .asset-row strong, .asset-row small { display: block; } .asset-row strong { font-size: 10px; } .asset-row small { margin-top: 3px; color: var(--ink-faint); font-size: 9px; } .drop-zone { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 12px; padding: 16px 8px; border: 1px dashed #d3c0a9; border-radius: 8px; background: #fcf8f1; color: var(--accent); text-align: center; cursor: pointer; } .drop-zone span { font-size: 22px; } .drop-zone strong { color: var(--ink-soft); font-size: 10px; } .drop-zone small { color: var(--ink-faint); font-size: 9px; } .asset-row { display: flex; align-items: center; gap: 8px; margin-top: 9px; } .asset-icon { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 6px; background: #ede9e0; color: var(--accent); }
   .disabled-state { display: grid; min-height: calc(100vh - 58px); place-content: center; justify-items: center; padding: 40px; text-align: center; } .disabled-state h1 { margin: 12px 0 10px; font: 500 42px var(--font-display); } .disabled-state p { margin-bottom: 24px; } .toast { position: fixed; right: 24px; bottom: 24px; z-index: 60; max-width: 430px; padding: 13px 14px; border: 1px solid #e5d4ba; border-radius: 9px; background: #fff8ed; box-shadow: var(--shadow-lg); color: #765a39; font-size: 12px; } .toast button { margin-left: 10px; border: 0; background: none; color: inherit; cursor: pointer; font-size: 17px; } .inspector-empty { display: grid; place-items: center; min-height: 240px; padding: 30px; color: var(--ink-faint); text-align: center; font-size: 10px; } .inspector-empty p { max-width: 170px; margin-top: 13px; line-height: 1.6; }
   @media (max-width: 1180px) { .workspace-grid { grid-template-columns: 220px minmax(320px, 1fr); } .inspector-panel { grid-column: 1 / -1; min-height: auto; display: grid; grid-template-columns: repeat(3, 1fr); } .inspector-heading { grid-column: 1 / -1; } .inspector-section { border-right: 1px solid var(--line); border-bottom: 0; } }

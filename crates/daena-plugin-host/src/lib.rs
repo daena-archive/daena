@@ -286,6 +286,7 @@ pub struct GrantStore {
 }
 
 mod grant_store_format {
+    use super::CapabilityGrants;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -304,7 +305,7 @@ mod grant_store_format {
     }
 
     pub fn serialize<S>(
-        grants: &BTreeMap<(String, String), BTreeSet<String>>,
+        grants: &CapabilityGrants,
         serializer: S,
     ) -> Result<S::Ok, S::Error>
     where
@@ -323,7 +324,7 @@ mod grant_store_format {
 
     pub fn deserialize<'de, D>(
         deserializer: D,
-    ) -> Result<BTreeMap<(String, String), BTreeSet<String>>, D::Error>
+    ) -> Result<CapabilityGrants, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -889,6 +890,8 @@ pub struct ServiceRequest {
 
 pub type ServiceHandler =
     Arc<dyn Fn(ServiceRequest) -> Result<serde_json::Value, HostError> + Send + Sync>;
+type CapabilityGrants = BTreeMap<(String, String), BTreeSet<String>>;
+type InFlightCalls = Arc<(Mutex<BTreeMap<(String, u64), CancellationToken>>, Condvar)>;
 
 #[derive(Clone)]
 struct ServiceProvider {
@@ -915,7 +918,7 @@ struct ServiceKey {
 pub struct ServiceRegistry {
     providers: BTreeMap<ServiceKey, ServiceProvider>,
     payload_limit: usize,
-    in_flight: Arc<(Mutex<BTreeMap<(String, u64), CancellationToken>>, Condvar)>,
+    in_flight: InFlightCalls,
     next_call: Arc<AtomicU64>,
 }
 

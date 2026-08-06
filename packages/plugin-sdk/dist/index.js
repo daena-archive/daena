@@ -1,4 +1,5 @@
 export * from "./generated.js";
+export * from "./maps.js";
 export class PluginRpcException extends Error {
     code;
     retryable;
@@ -126,7 +127,7 @@ export function createBrowserPluginRpcTransport(options = {}) {
         if (method === "plugin.bootstrap")
             return bootstrap();
         await ensureSession();
-        const requestId = suppliedRequestId ?? `${pluginId}-${++sequence}`;
+        const requestId = suppliedRequestId ?? (globalThis.crypto?.randomUUID?.() ?? `${pluginId}-${++sequence}`);
         const value = await post({
             op: "rpc",
             request: { rpcVersion: 1, sessionId, requestId, method, payload },
@@ -188,12 +189,27 @@ export function createPluginRpcClient(transport) {
         subscribeEvent: (name, version) => callTransport(transport, "event.subscribe", { type: qualified(name, version) }),
         pollEvents: (name, version) => callTransport(transport, "event.poll", { type: qualified(name, version) }),
         callService: (name, major, payload, deadlineMs = 5000) => callTransport(transport, "service.call", { name, major, payload, deadlineMs }),
+        beginAssetRead: (assetId, namespace) => callTransport(transport, "asset.read.begin", { assetId, namespace }),
+        beginAssetReplace: (input, options) => callTransport(transport, "asset.replace.begin", input, options?.requestId),
+        commitAssetReplace: (handle, contentHash, options) => callTransport(transport, "asset.replace.commit", { handle, contentHash }, options?.requestId),
+        cancelAssetTransfer: (handle) => callTransport(transport, "asset.transfer.cancel", { handle }),
     };
+}
+export async function uploadAssetChunks(transfer, bytes, fetcher = globalThis.fetch) {
+    if (bytes.length > 64 * 1024 * 1024)
+        throw new Error("asset exceeds SDK transfer limit");
+    for (let offset = 0, chunk = 0; offset < bytes.length || (bytes.length === 0 && chunk === 0); offset += transfer.maxChunkBytes, chunk += 1) {
+        const response = await fetcher(`${transfer.url.replace(/\/0\?/, `/${chunk}?`)}`, { method: "PUT", body: bytes.slice(offset, offset + transfer.maxChunkBytes) });
+        if (!response.ok)
+            throw new Error(`asset upload failed: ${response.status}`);
+        if (bytes.length === 0)
+            break;
+    }
 }
 const knownCapabilities = new Set([
     "entity.read", "entity.write", "entity.delete", "document.read", "document.write",
     "field.read:self", "field.read:shared", "field.write:self", "relationship.read",
-    "relationship.write", "asset.read:self", "asset.import", "search.query",
+    "relationship.write", "asset.read:self", "asset.write:self", "asset.import", "search.query",
     "event.publish:<type>", "event.subscribe:<type>", "service.provide:<name>", "service.call:<name>",
 ]);
 export function isPluginIdentifier(value) {

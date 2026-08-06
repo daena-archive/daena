@@ -128,6 +128,14 @@ pub struct AssetFileInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetReplaceInput {
+    pub asset_id: String,
+    pub content_hash: String,
+    pub size: i64,
+    pub mime_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Asset {
     pub id: String,
     pub entity_id: String,
@@ -1407,7 +1415,11 @@ impl ProjectStore {
               CREATE TABLE IF NOT EXISTS module_namespaces(module_id TEXT NOT NULL, namespace TEXT NOT NULL, PRIMARY KEY(module_id, namespace));
               CREATE TABLE IF NOT EXISTS module_fields(module_id TEXT NOT NULL, namespace TEXT NOT NULL, key TEXT NOT NULL, field_type TEXT NOT NULL, required INTEGER NOT NULL, PRIMARY KEY(module_id, namespace, key));
               CREATE TABLE IF NOT EXISTS entity_fields(entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(entity_id, namespace, key));
-             CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, filename TEXT NOT NULL, content_hash TEXT NOT NULL, size INTEGER NOT NULL, mime_type TEXT NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL);")?;
+             CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, filename TEXT NOT NULL, content_hash TEXT NOT NULL, size INTEGER NOT NULL, mime_type TEXT NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS map_projection (map_entity_id TEXT PRIMARY KEY, provider TEXT NOT NULL, source_asset_id TEXT NOT NULL, source_path TEXT, source_hash TEXT);
+             CREATE TABLE IF NOT EXISTS map_location_projection (location_id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, map_entity_id TEXT NOT NULL, role TEXT NOT NULL, anchor_kind TEXT NOT NULL, provider TEXT, feature_kind TEXT, feature_id TEXT, min_x REAL, min_y REAL, max_x REAL, max_y REAL, valid_from TEXT, valid_to TEXT, resolution TEXT NOT NULL);
+             CREATE INDEX IF NOT EXISTS map_location_entity_idx ON map_location_projection(entity_id);
+             CREATE INDEX IF NOT EXISTS map_location_map_idx ON map_location_projection(map_entity_id);")?;
         self.connection.execute_batch("CREATE TABLE IF NOT EXISTS migration_history(module_id TEXT NOT NULL, migration_id TEXT NOT NULL, from_version INTEGER NOT NULL, to_version INTEGER NOT NULL, checksum TEXT NOT NULL, package_digest TEXT NOT NULL DEFAULT '', applied_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(module_id, migration_id)); CREATE TABLE IF NOT EXISTS plugin_backups(id TEXT PRIMARY KEY, module_id TEXT NOT NULL, from_package_version TEXT, to_package_version TEXT, data_version INTEGER NOT NULL, path TEXT NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL);")?;
         let _ = self.connection.execute(
             "ALTER TABLE migration_history ADD COLUMN package_digest TEXT NOT NULL DEFAULT ''",
@@ -1958,6 +1970,14 @@ impl ProjectStore {
             return Err(CoreError::NotFound(
                 "field namespace and key are required".into(),
             ));
+        }
+        if field.namespace == crate::maps::MAP_NAMESPACE {
+            crate::maps::validate_field(
+                &self.connection,
+                &field.entity_id,
+                &field.key,
+                &field.value,
+            )?;
         }
         if !field.revision.is_empty() {
             let current: Option<String> = self
@@ -2564,6 +2584,99 @@ impl ProjectStore {
         self.list_assets_unchecked(entity_id)
     }
 
+    pub fn asset(&self, asset_id: String) -> Result<Asset, CoreError> {
+        self.ensure_source_index_current()?;
+        self.asset_unchecked(&asset_id)
+    }
+
+    fn asset_unchecked(&self, asset_id: &str) -> Result<Asset, CoreError> {
+        let mut asset = self
+            .connection
+            .query_row(
+                "SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets WHERE id=?1",
+                params![asset_id],
+                |row| {
+                    Ok(Asset {
+                        id: row.get(0)?,
+                        entity_id: row.get(1)?,
+                        namespace: row.get(2)?,
+                        filename: row.get(3)?,
+                        content_hash: row.get(4)?,
+                        size: row.get(5)?,
+                        mime_type: row.get(6)?,
+                        path: row.get(7)?,
+                        created_at: row.get(8)?,
+                        revision: String::new(),
+                    })
+                },
+            )
+            .optional()?
+            .ok_or_else(|| CoreError::NotFound("asset not found".into()))?;
+        asset.revision = self.revision_for_asset(&asset.id)?;
+        Ok(asset)
+    }
+
+    pub fn replace_asset_bytes_with_request(
+        &self,
+        input: AssetReplaceInput,
+        bytes: Vec<u8>,
+        expected_revision: &str,
+        request_id: Option<&str>,
+    ) -> Result<Asset, CoreError> {
+        if self.root.is_some() {
+            return self.repository_first_mutation(request_id, move |projection, request_id| {
+                projection.replace_asset_bytes_with_request(
+                    input,
+                    bytes,
+                    expected_revision,
+                    Some(request_id),
+                )
+            });
+        }
+        if let Some(mut asset) = self.committed_mutation::<Asset>(request_id)? {
+            asset.revision = self.revision_for_asset(&asset.id)?;
+            return Ok(asset);
+        }
+        if input.size < 0 || input.size as usize != bytes.len() {
+            return Err(CoreError::Validation(
+                "asset replacement size does not match declared size".into(),
+            ));
+        }
+        let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+        if input.content_hash != digest {
+            return Err(CoreError::Validation(
+                "asset replacement content hash does not match bytes".into(),
+            ));
+        }
+        let mut asset = self.asset_unchecked(&input.asset_id)?;
+        Self::ensure_expected_revision(Some(expected_revision), asset.revision.clone(), "asset")?;
+        if input.mime_type.trim().is_empty() {
+            return Err(CoreError::Validation(
+                "asset replacement MIME type is required".into(),
+            ));
+        }
+        self.pending_asset_imports
+            .lock()
+            .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
+            .insert(asset.path.clone(), bytes);
+        self.connection.execute(
+            "UPDATE assets SET content_hash=?1,size=?2,mime_type=?3 WHERE id=?4",
+            params![
+                input.content_hash,
+                input.size,
+                input.mime_type,
+                input.asset_id
+            ],
+        )?;
+        let request_id = self.request_id(request_id)?;
+        self.sync_canonical_with_request_id(&request_id, None)?;
+        asset.content_hash = input.content_hash;
+        asset.size = input.size;
+        asset.mime_type = input.mime_type;
+        asset.revision = self.revision_for_asset(&asset.id)?;
+        Ok(asset)
+    }
+
     fn list_assets_unchecked(&self, entity_id: String) -> Result<Vec<Asset>, CoreError> {
         let mut statement = self.connection.prepare("SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets WHERE entity_id=?1 ORDER BY created_at")?;
         let rows = statement.query_map(params![entity_id], |row| {
@@ -2765,7 +2878,81 @@ impl ProjectStore {
             "INSERT OR IGNORE INTO plugin_backups(id,module_id,from_package_version,to_package_version,data_version,path,content_hash,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             params![backup.id, backup.module_id, backup.from_package_version, backup.to_package_version, backup.data_version, backup.path, backup.content_hash, backup.created_at],
         )?;
+        self.rebuild_maps_projection()?;
         Ok(())
+    }
+
+    fn rebuild_maps_projection(&self) -> Result<(), CoreError> {
+        self.connection
+            .execute_batch("DELETE FROM map_projection; DELETE FROM map_location_projection;")?;
+        let mut maps = self.connection.prepare("SELECT e.id, json_extract(f.value, '$.provider.id'), json_extract(f.value, '$.sourceAssetId'), a.path, a.content_hash FROM entities e JOIN entity_fields f ON f.entity_id=e.id AND f.namespace='daena.maps' AND f.key='map' LEFT JOIN assets a ON a.id=json_extract(f.value, '$.sourceAssetId') WHERE e.entity_type='daena.maps:map' AND e.deleted=0")?;
+        let rows = maps.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, provider, asset, path, hash) = row?;
+            self.connection.execute("INSERT INTO map_projection(map_entity_id,provider,source_asset_id,source_path,source_hash) VALUES (?1,?2,?3,?4,?5)", rusqlite::params![id, provider, asset, path, hash])?;
+        }
+        let mut locations = self.connection.prepare("SELECT f.entity_id, json_each.value FROM entity_fields f, json_each(json_extract(f.value, '$.locations')) WHERE f.namespace='daena.maps' AND f.key='locations'")?;
+        let rows = locations.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (entity_id, raw) = row?;
+            let location: serde_json::Value =
+                serde_json::from_str(&raw).map_err(|e| CoreError::Serialization(e.to_string()))?;
+            let anchor = location.get("anchor").cloned().unwrap_or_default();
+            let kind = anchor
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            let bounds = match kind {
+                "point" => {
+                    bounds_for_points(anchor.get("point").and_then(serde_json::Value::as_array))
+                }
+                "provider-feature" => bounds_for_points(
+                    anchor
+                        .get("fallbackPoint")
+                        .and_then(serde_json::Value::as_array),
+                ),
+                "path" => {
+                    bounds_for_points(anchor.get("points").and_then(serde_json::Value::as_array))
+                }
+                "area" => anchor
+                    .get("rings")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|rings| {
+                        bounds_for_points(Some(
+                            &rings
+                                .iter()
+                                .filter_map(serde_json::Value::as_array)
+                                .flatten()
+                                .cloned()
+                                .collect::<Vec<_>>(),
+                        ))
+                    })
+                    .unwrap_or((None, None, None, None)),
+                _ => (None, None, None, None),
+            };
+            self.connection.execute("INSERT INTO map_location_projection(location_id,entity_id,map_entity_id,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)", rusqlite::params![location.get("id").and_then(serde_json::Value::as_str).unwrap_or_default(), entity_id, location.get("mapEntityId").and_then(serde_json::Value::as_str).unwrap_or_default(), location.get("role").and_then(serde_json::Value::as_str).unwrap_or_default(), kind, anchor.get("provider").and_then(serde_json::Value::as_str), anchor.get("featureKind").and_then(serde_json::Value::as_str), anchor.get("featureId").and_then(serde_json::Value::as_str), bounds.0, bounds.1, bounds.2, bounds.3, location.pointer("/validity/from").filter(|v| !v.is_null()).map(ToString::to_string), location.pointer("/validity/to").filter(|v| !v.is_null()).map(ToString::to_string), "resolved"])?;
+        }
+        Ok(())
+    }
+
+    pub fn map_locations_for_entity(
+        &self,
+        entity_id: String,
+    ) -> Result<Vec<serde_json::Value>, CoreError> {
+        self.ensure_source_index_current()?;
+        let mut statement = self.connection.prepare("SELECT location_id,map_entity_id,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution FROM map_location_projection WHERE entity_id=?1 ORDER BY location_id")?;
+        let rows = statement.query_map(rusqlite::params![entity_id], |row| Ok(serde_json::json!({"id":row.get::<_,String>(0)?,"mapEntityId":row.get::<_,String>(1)?,"role":row.get::<_,String>(2)?,"anchorKind":row.get::<_,String>(3)?,"provider":row.get::<_,Option<String>>(4)?,"featureKind":row.get::<_,Option<String>>(5)?,"featureId":row.get::<_,Option<String>>(6)?,"bounds":[row.get::<_,Option<f64>>(7)?,row.get::<_,Option<f64>>(8)?,row.get::<_,Option<f64>>(9)?,row.get::<_,Option<f64>>(10)?],"validity":{"from":row.get::<_,Option<String>>(11)?,"to":row.get::<_,Option<String>>(12)?},"resolution":row.get::<_,String>(13)?})))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
     }
 
     pub fn latest_plugin_backup(
@@ -2948,6 +3135,7 @@ impl ProjectStore {
              CREATE TRIGGER entity_fields_search_insert AFTER INSERT ON entity_fields BEGIN DELETE FROM world_search WHERE entity_id = new.entity_id; INSERT INTO world_search(entity_id, content) SELECT id, name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = new.entity_id AND deleted=0; INSERT INTO world_search(entity_id, content) SELECT documents.entity_id, documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE documents.entity_id = new.entity_id AND entities.deleted=0; INSERT INTO world_search(entity_id, content) SELECT entity_fields.entity_id, entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entity_fields.entity_id = new.entity_id AND entities.deleted=0; END;
              CREATE TRIGGER entity_fields_search_update AFTER UPDATE OF namespace, key, value ON entity_fields BEGIN DELETE FROM world_search WHERE entity_id = new.entity_id; INSERT INTO world_search(entity_id, content) SELECT id, name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = new.entity_id AND deleted=0; INSERT INTO world_search(entity_id, content) SELECT documents.entity_id, documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE documents.entity_id = new.entity_id AND entities.deleted=0; INSERT INTO world_search(entity_id, content) SELECT entity_fields.entity_id, entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entity_fields.entity_id = new.entity_id AND entities.deleted=0; END;"
         )?;
+        self.rebuild_maps_projection()?;
         Ok(())
     }
 
@@ -3408,6 +3596,32 @@ fn revision_digest<T: Serialize>(value: &T) -> Result<String, CoreError> {
     let bytes =
         serde_json::to_vec(value).map_err(|error| CoreError::Serialization(error.to_string()))?;
     Ok(format!("sha256:{}", digest_bytes(&bytes)))
+}
+
+fn bounds_for_points(
+    points: Option<&Vec<serde_json::Value>>,
+) -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>) {
+    let points = points.into_iter().flatten().collect::<Vec<_>>();
+    let coordinates = points
+        .iter()
+        .filter_map(|point| Some((point.get(0)?.as_f64()?, point.get(1)?.as_f64()?)))
+        .collect::<Vec<_>>();
+    if coordinates.is_empty() {
+        return (None, None, None, None);
+    }
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (
+        coordinates[0].0,
+        coordinates[0].1,
+        coordinates[0].0,
+        coordinates[0].1,
+    );
+    for (x, y) in coordinates {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    (Some(min_x), Some(min_y), Some(max_x), Some(max_y))
 }
 
 #[cfg(test)]
@@ -4637,5 +4851,81 @@ mod tests {
         drop(rebuilt);
         std::fs::remove_dir_all(root).unwrap();
         std::fs::remove_dir_all(clone).unwrap();
+    }
+
+    #[test]
+    fn asset_replacement_rejects_wrong_hash_size_and_revision() {
+        let store = ProjectStore::in_memory().unwrap();
+        let entity = store
+            .create_entity(CreateEntity {
+                name: "Map source".into(),
+                entity_type: Some("daena.maps:map".into()),
+            })
+            .unwrap();
+        let asset = store
+            .register_asset(AssetInput {
+                entity_id: entity.id.clone(),
+                namespace: "daena.maps".into(),
+                filename: "world.map".into(),
+                content_hash: "sha256:old".into(),
+                size: 3,
+                mime_type: "application/octet-stream".into(),
+                path: "assets/maps/world.map".into(),
+            })
+            .unwrap();
+        let correct_hash = format!("sha256:{:x}", Sha256::digest(b"new"));
+        assert!(store
+            .replace_asset_bytes_with_request(
+                AssetReplaceInput {
+                    asset_id: asset.id.clone(),
+                    content_hash: "sha256:wrong".into(),
+                    size: 3,
+                    mime_type: "application/octet-stream".into(),
+                },
+                b"new".to_vec(),
+                &asset.revision,
+                None,
+            )
+            .is_err());
+        assert!(store
+            .replace_asset_bytes_with_request(
+                AssetReplaceInput {
+                    asset_id: asset.id.clone(),
+                    content_hash: correct_hash.clone(),
+                    size: 4,
+                    mime_type: "application/octet-stream".into(),
+                },
+                b"new".to_vec(),
+                &asset.revision,
+                None,
+            )
+            .is_err());
+        let replaced = store
+            .replace_asset_bytes_with_request(
+                AssetReplaceInput {
+                    asset_id: asset.id.clone(),
+                    content_hash: correct_hash,
+                    size: 3,
+                    mime_type: "application/octet-stream".into(),
+                },
+                b"new".to_vec(),
+                &asset.revision,
+                None,
+            )
+            .unwrap();
+        assert_ne!(replaced.revision, asset.revision);
+        assert!(store
+            .replace_asset_bytes_with_request(
+                AssetReplaceInput {
+                    asset_id: asset.id,
+                    content_hash: replaced.content_hash,
+                    size: 3,
+                    mime_type: replaced.mime_type,
+                },
+                b"new".to_vec(),
+                "stale-revision",
+                None,
+            )
+            .is_err());
     }
 }

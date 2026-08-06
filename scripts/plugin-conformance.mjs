@@ -12,6 +12,7 @@ const fixturePaths = [
   "packages/modules/lore/manifest.json",
   "packages/modules/timeline/manifest.json",
   "packages/modules/writing/manifest.json",
+  "packages/modules/maps/manifest.json",
 ];
 let brokerChecks = 0;
 let manifest;

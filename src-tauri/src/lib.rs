@@ -1,21 +1,23 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Component, Path};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use daena_core::{
-    Asset, AssetFileInput, AssetInput, AuthorityContext, CoreError, CoreService, CreateEntity,
-    Entity, ExternalChangeReport, FieldValue, GitLogEntry, GitPreflight, GitStatus, Migration,
-    Operation, ProjectInfo, ProjectStore, Relationship, RelationshipInput, SaveDocument, SaveEntry,
+    Asset, AssetFileInput, AssetInput, AssetReplaceInput, AuthorityContext, CoreError, CoreService,
+    CreateEntity, Entity, ExternalChangeReport, FieldValue, GitLogEntry, GitPreflight, GitStatus,
+    Migration, Operation, ProjectInfo, ProjectStore, Relationship, RelationshipInput, SaveDocument,
+    SaveEntry,
 };
 use daena_plugin_api::{
     CommandAction, MigrationOperation, PluginManifest, RpcRequest, RpcResponse, ViewComponent,
 };
 use daena_plugin_host::{
-    plugin_window_label, webview_policy, ArchiveLimits, DependencyResolver, PluginHost,
+    plugin_window_label, webview_policy, ArchiveLimits, DependencyResolver, PluginHost, Session,
     VerificationPolicy, BUNDLED_TIMELINE_SERVICE_WASM,
 };
 use serde::Deserialize;
@@ -23,6 +25,199 @@ use tauri::{Emitter, Manager};
 
 type SharedCore = Arc<Mutex<CoreService>>;
 type SharedPluginHost = Arc<Mutex<PluginHost>>;
+type SharedBinaryTransfers = Arc<Mutex<BinaryTransferManager>>;
+
+const MAX_ASSET_TRANSFER_BYTES: usize = 64 * 1024 * 1024;
+const ASSET_TRANSFER_TTL: Duration = Duration::from_secs(60);
+
+#[derive(Default)]
+struct BinaryTransferManager {
+    transfers: BTreeMap<String, BinaryTransfer>,
+}
+
+enum BinaryTransfer {
+    Read {
+        plugin_id: String,
+        session_id: String,
+        bytes: Vec<u8>,
+        mime_type: String,
+        expires_at: Instant,
+    },
+    Upload {
+        plugin_id: String,
+        session_id: String,
+        project_id: String,
+        asset_id: String,
+        expected_revision: String,
+        mime_type: String,
+        declared_size: usize,
+        next_chunk: u64,
+        bytes: Vec<u8>,
+        expires_at: Instant,
+    },
+}
+
+impl BinaryTransferManager {
+    fn cleanup(&mut self) {
+        let now = Instant::now();
+        self.transfers.retain(|_, transfer| match transfer {
+            BinaryTransfer::Read { expires_at, .. } | BinaryTransfer::Upload { expires_at, .. } => {
+                *expires_at > now
+            }
+        });
+    }
+
+    fn token(&mut self, transfer: BinaryTransfer) -> String {
+        self.cleanup();
+        let token = uuid::Uuid::new_v4().to_string();
+        self.transfers.insert(token.clone(), transfer);
+        token
+    }
+
+    fn take_read(
+        &mut self,
+        token: &str,
+        plugin_id: &str,
+        session_id: &str,
+    ) -> Result<(Vec<u8>, String), String> {
+        self.cleanup();
+        let Some(transfer) = self.transfers.remove(token) else {
+            return Err("asset read handle is invalid or expired".into());
+        };
+        match transfer {
+            BinaryTransfer::Read {
+                plugin_id: owner,
+                session_id: expected_session,
+                bytes,
+                mime_type,
+                ..
+            } if owner == plugin_id && expected_session == session_id => Ok((bytes, mime_type)),
+            other => {
+                self.transfers.insert(token.into(), other);
+                Err("asset read handle is not valid for this plugin".into())
+            }
+        }
+    }
+
+    fn append_upload(
+        &mut self,
+        token: &str,
+        plugin_id: &str,
+        session_id: &str,
+        chunk: u64,
+        body: &[u8],
+    ) -> Result<usize, String> {
+        self.cleanup();
+        let transfer = self
+            .transfers
+            .get_mut(token)
+            .ok_or_else(|| "asset upload handle is invalid or expired".to_string())?;
+        let BinaryTransfer::Upload {
+            plugin_id: owner,
+            session_id: expected_session,
+            next_chunk,
+            declared_size,
+            bytes,
+            ..
+        } = transfer
+        else {
+            return Err("asset handle is not an upload handle".into());
+        };
+        if owner != plugin_id || expected_session != session_id {
+            return Err("asset upload handle is not valid for this plugin session".into());
+        }
+        if *next_chunk != chunk {
+            return Err("asset upload chunks must be sequential".into());
+        }
+        if body.len() > daena_plugin_host::runtime::MAX_RPC_BYTES
+            || bytes.len().saturating_add(body.len()) > *declared_size
+            || bytes.len().saturating_add(body.len()) > MAX_ASSET_TRANSFER_BYTES
+        {
+            return Err("asset upload exceeds its declared or host limit".into());
+        }
+        bytes.extend_from_slice(body);
+        *next_chunk += 1;
+        Ok(bytes.len())
+    }
+
+    fn prepare_upload(
+        &mut self,
+        token: &str,
+        plugin_id: &str,
+        session_id: &str,
+        project_id: &str,
+        content_hash: &str,
+    ) -> Result<(AssetReplaceInput, Vec<u8>, String), String> {
+        self.cleanup();
+        let transfer = self
+            .transfers
+            .get(token)
+            .ok_or_else(|| "asset upload handle is invalid or expired".to_string())?;
+        match transfer {
+            BinaryTransfer::Upload {
+                plugin_id: owner,
+                session_id: expected_session,
+                project_id: expected_project,
+                asset_id,
+                expected_revision,
+                mime_type,
+                declared_size,
+                bytes,
+                ..
+            } if owner == plugin_id
+                && expected_session == session_id
+                && expected_project == project_id =>
+            {
+                if bytes.len() != *declared_size {
+                    return Err("asset upload is incomplete".into());
+                }
+                Ok((
+                    AssetReplaceInput {
+                        asset_id: asset_id.clone(),
+                        content_hash: content_hash.into(),
+                        size: *declared_size as i64,
+                        mime_type: mime_type.clone(),
+                    },
+                    bytes.clone(),
+                    expected_revision.clone(),
+                ))
+            }
+            _ => Err("asset upload handle is not valid for this session or project".into()),
+        }
+    }
+
+    fn complete_upload(&mut self, token: &str, plugin_id: &str) -> Result<(), String> {
+        let Some(transfer) = self.transfers.remove(token) else {
+            return Err("asset upload handle is invalid or expired".into());
+        };
+        match transfer {
+            BinaryTransfer::Upload {
+                plugin_id: owner, ..
+            } if owner == plugin_id => Ok(()),
+            other => {
+                self.transfers.insert(token.into(), other);
+                Err("asset upload handle is not valid for this plugin".into())
+            }
+        }
+    }
+
+    fn cancel(&mut self, token: &str, plugin_id: &str) -> Result<(), String> {
+        self.cleanup();
+        let Some(transfer) = self.transfers.get(token) else {
+            return Ok(());
+        };
+        let owner = match transfer {
+            BinaryTransfer::Read { plugin_id, .. } | BinaryTransfer::Upload { plugin_id, .. } => {
+                plugin_id
+            }
+        };
+        if owner != plugin_id {
+            return Err("asset handle is not valid for this plugin".into());
+        }
+        self.transfers.remove(token);
+        Ok(())
+    }
+}
 
 #[derive(Default)]
 struct ProjectWatcher {
@@ -244,6 +439,7 @@ fn plugin_asset_response(
             "daena.writing" => {
                 include_str!("../../packages/modules/writing/manifest.json")
             }
+            "daena.maps" => include_str!("../../packages/modules/maps/manifest.json"),
             _ => return None,
         };
         serde_json::from_str::<PluginManifest>(manifest).ok()
@@ -262,6 +458,75 @@ fn plugin_asset_response(
         .unwrap()
 }
 
+fn binary_asset_response(
+    plugin_id: &str,
+    request: &tauri::http::Request<Vec<u8>>,
+    transfers: &SharedBinaryTransfers,
+) -> Option<tauri::http::Response<Vec<u8>>> {
+    let path = request.uri().path();
+    let mut parts = path.split('/');
+    if parts.next() != Some("") || parts.next() != Some("__asset") {
+        return None;
+    }
+    let token = parts.next().unwrap_or_default();
+    let session_id = request
+        .uri()
+        .query()
+        .and_then(|query| {
+            query
+                .split('&')
+                .find_map(|part| part.strip_prefix("sessionId="))
+        })
+        .unwrap_or_default();
+    if token.is_empty() {
+        return Some(json_response(
+            serde_json::json!({"error":"asset handle is required"}),
+            400,
+        ));
+    }
+    let mut manager = match transfers.lock() {
+        Ok(manager) => manager,
+        Err(_) => {
+            return Some(json_response(
+                serde_json::json!({"error":"asset transfer state is unavailable"}),
+                500,
+            ))
+        }
+    };
+    if request.method().as_str() == "GET" && parts.next().is_none() {
+        return Some(match manager.take_read(token, plugin_id, session_id) {
+            Ok((bytes, mime_type)) => tauri::http::Response::builder()
+                .status(200)
+                .header("Content-Type", mime_type)
+                .header("Content-Length", bytes.len().to_string())
+                .body(bytes)
+                .unwrap(),
+            Err(error) => json_response(serde_json::json!({"error":error}), 404),
+        });
+    }
+    if request.method().as_str() == "PUT" {
+        let chunk = parts.next().and_then(|value| value.parse::<u64>().ok());
+        return Some(match chunk {
+            Some(chunk) => {
+                match manager.append_upload(token, plugin_id, session_id, chunk, request.body()) {
+                    Ok(received) => {
+                        json_response(serde_json::json!({"received":received,"chunk":chunk}), 200)
+                    }
+                    Err(error) => json_response(serde_json::json!({"error":error}), 409),
+                }
+            }
+            None => json_response(
+                serde_json::json!({"error":"asset upload chunk index is required"}),
+                400,
+            ),
+        });
+    }
+    Some(json_response(
+        serde_json::json!({"error":"unsupported asset transfer request"}),
+        405,
+    ))
+}
+
 fn json_response(value: serde_json::Value, status: u16) -> tauri::http::Response<Vec<u8>> {
     tauri::http::Response::builder()
         .status(status)
@@ -276,6 +541,7 @@ fn plugin_protocol_response(
     request: &tauri::http::Request<Vec<u8>>,
     core: &SharedCore,
     plugins: &SharedPluginHost,
+    transfers: &SharedBinaryTransfers,
 ) -> tauri::http::Response<Vec<u8>> {
     if request.body().len() > daena_plugin_host::runtime::MAX_RPC_BYTES {
         return json_response(
@@ -297,6 +563,9 @@ fn plugin_protocol_response(
         );
     }
     if request.uri().path() != "/__rpc" {
+        if let Some(response) = binary_asset_response(plugin_id, request, transfers) {
+            return response;
+        }
         let project_id = core
             .lock()
             .ok()
@@ -405,6 +674,21 @@ fn plugin_protocol_response(
                 }
                 let value = if matches!(
                     request.method.as_str(),
+                    "asset.read.begin"
+                        | "asset.replace.begin"
+                        | "asset.replace.commit"
+                        | "asset.transfer.cancel"
+                ) {
+                    dispatch_binary_asset_rpc(
+                        core,
+                        transfers,
+                        &session,
+                        &request.method,
+                        request.payload,
+                        Some(&request_id),
+                    )?
+                } else if matches!(
+                    request.method.as_str(),
                     "event.subscribe" | "event.poll" | "event.publish" | "service.call"
                 ) {
                     dispatch_host_rpc(
@@ -440,6 +724,139 @@ fn plugin_protocol_response(
     match result {
         Ok(value) => json_response(value, 200),
         Err(error) => json_response(serde_json::json!({"error": error}), 400),
+    }
+}
+
+fn dispatch_binary_asset_rpc(
+    core: &SharedCore,
+    transfers: &SharedBinaryTransfers,
+    session: &Session,
+    method: &str,
+    payload: serde_json::Value,
+    request_id: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let project = core.lock().map_err(|_| "core lock poisoned".to_string())?;
+    let project = project
+        .project(AuthorityContext::plugin())
+        .map_err(|e| e.to_string())?;
+    let asset_id = payload.get("assetId").and_then(serde_json::Value::as_str);
+    let namespace = payload.get("namespace").and_then(serde_json::Value::as_str);
+    let mut manager = transfers
+        .lock()
+        .map_err(|_| "asset transfer state is unavailable".to_string())?;
+    match method {
+        "asset.read.begin" => {
+            let asset = project
+                .asset(
+                    asset_id
+                        .ok_or_else(|| "assetId is required".to_string())?
+                        .into(),
+                )
+                .map_err(|e| e.to_string())?;
+            if namespace != Some(asset.namespace.as_str()) {
+                return Err("asset namespace does not match the owned asset".into());
+            }
+            let root = project
+                .info()
+                .ok_or_else(|| "directory-backed project is required".to_string())?
+                .root;
+            let path = daena_core::normalized_project_path(Path::new(&root), &asset.path)
+                .map_err(|e| e.to_string())?;
+            let bytes = fs::read(path).map_err(|e| format!("read asset: {e}"))?;
+            if bytes.len() > MAX_ASSET_TRANSFER_BYTES {
+                return Err("asset exceeds host transfer limit".into());
+            }
+            let token = manager.token(BinaryTransfer::Read {
+                plugin_id: session.plugin_id.clone(),
+                session_id: session.id.clone(),
+                bytes,
+                mime_type: asset.mime_type.clone(),
+                expires_at: Instant::now() + ASSET_TRANSFER_TTL,
+            });
+            Ok(
+                serde_json::json!({"handle":token,"url":format!("plugin://{}/__asset/{}?sessionId={}", session.plugin_id, token, session.id),"size":asset.size,"contentHash":asset.content_hash,"mimeType":asset.mime_type,"revision":asset.revision}),
+            )
+        }
+        "asset.replace.begin" => {
+            let asset = project
+                .asset(
+                    asset_id
+                        .ok_or_else(|| "assetId is required".to_string())?
+                        .into(),
+                )
+                .map_err(|e| e.to_string())?;
+            if namespace != Some(asset.namespace.as_str()) {
+                return Err("asset namespace does not match the owned asset".into());
+            }
+            let size = payload
+                .get("size")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "size is required".to_string())? as usize;
+            if size > MAX_ASSET_TRANSFER_BYTES {
+                return Err("asset exceeds host transfer limit".into());
+            }
+            let mime_type = payload
+                .get("mimeType")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "mimeType is required".to_string())?;
+            let expected_revision = payload
+                .get("expectedRevision")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "expectedRevision is required".to_string())?;
+            if expected_revision != asset.revision {
+                return Err("asset revision conflict".into());
+            }
+            let token = manager.token(BinaryTransfer::Upload {
+                plugin_id: session.plugin_id.clone(),
+                session_id: session.id.clone(),
+                project_id: session.project_id.clone(),
+                asset_id: asset.id,
+                expected_revision: expected_revision.into(),
+                mime_type: mime_type.into(),
+                declared_size: size,
+                next_chunk: 0,
+                bytes: Vec::with_capacity(size.min(MAX_ASSET_TRANSFER_BYTES)),
+                expires_at: Instant::now() + ASSET_TRANSFER_TTL,
+            });
+            Ok(
+                serde_json::json!({"handle":token,"url":format!("plugin://{}/__asset/{}/0?sessionId={}", session.plugin_id, token, session.id),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
+            )
+        }
+        "asset.replace.commit" => {
+            let token = payload
+                .get("handle")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "handle is required".to_string())?;
+            let content_hash = payload
+                .get("contentHash")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "contentHash is required".to_string())?;
+            let (input, bytes, expected_revision) = manager.prepare_upload(
+                token,
+                &session.plugin_id,
+                &session.id,
+                &session.project_id,
+                content_hash,
+            )?;
+            drop(manager);
+            let asset = project
+                .replace_asset_bytes_with_request(input, bytes, &expected_revision, request_id)
+                .map_err(|e| e.to_string())?;
+            let mut manager = transfers
+                .lock()
+                .map_err(|_| "asset transfer state is unavailable".to_string())?;
+            manager.complete_upload(token, &session.plugin_id)?;
+            serde_json::to_value(asset).map_err(|e| e.to_string())
+        }
+        "asset.transfer.cancel" => {
+            let token = payload
+                .get("handle")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "handle is required".to_string())?;
+            manager.cancel(token, &session.plugin_id)?;
+            Ok(serde_json::Value::Null)
+        }
+        _ => Err("unknown binary asset operation".into()),
     }
 }
 
@@ -1407,6 +1824,10 @@ fn bundled_plugin_host() -> Result<PluginHost, String> {
             include_str!("../../packages/modules/writing/manifest.json"),
             None,
         ),
+        (
+            include_str!("../../packages/modules/maps/manifest.json"),
+            None,
+        ),
     ] {
         host.register_bundled_json_with_wasm(manifest, wasm)
             .map_err(|error| error.to_string())?;
@@ -2291,6 +2712,19 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
             ],
             &[],
         ),
+        "asset.read.begin" => (&["assetId", "namespace"], &[]),
+        "asset.replace.begin" => (
+            &[
+                "assetId",
+                "namespace",
+                "expectedRevision",
+                "size",
+                "mimeType",
+            ],
+            &[],
+        ),
+        "asset.replace.commit" => (&["handle", "contentHash"], &[]),
+        "asset.transfer.cancel" => (&["handle"], &[]),
         "search.query" => (&["query"], &[]),
         "event.publish" => (&["type", "payload"], &[]),
         "event.subscribe" | "event.poll" => (&["type"], &[]),
@@ -3162,6 +3596,8 @@ pub fn run() {
     ));
     let protocol_core = core.clone();
     let protocol_plugins = plugins.clone();
+    let transfers = Arc::new(Mutex::new(BinaryTransferManager::default()));
+    let protocol_transfers = transfers.clone();
     let startup_plugins = plugins.clone();
     let watcher = Arc::new(Mutex::new(ProjectWatcher::default()));
     tauri::Builder::default()
@@ -3193,12 +3629,14 @@ pub fn run() {
                 &request,
                 &protocol_core,
                 &protocol_plugins,
+                &protocol_transfers,
             )
         })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(core)
         .manage(plugins)
+        .manage(transfers)
         .manage(watcher)
         .invoke_handler(tauri::generate_handler![
             greet,
@@ -3349,6 +3787,79 @@ mod tests {
         )
         .unwrap_err();
         assert!(missing_revision.to_string().contains("expectedRevision"));
+    }
+
+    #[test]
+    fn binary_transfer_handles_are_bound_one_use_and_chunk_ordered() {
+        let mut manager = BinaryTransferManager::default();
+        let expired = manager.token(BinaryTransfer::Read {
+            plugin_id: "maps".into(),
+            session_id: "session".into(),
+            bytes: b"expired".to_vec(),
+            mime_type: "application/octet-stream".into(),
+            expires_at: Instant::now() - Duration::from_secs(1),
+        });
+        assert!(manager.take_read(&expired, "maps", "session").is_err());
+        let read = manager.token(BinaryTransfer::Read {
+            plugin_id: "maps".into(),
+            session_id: "session".into(),
+            bytes: b"map".to_vec(),
+            mime_type: "application/octet-stream".into(),
+            expires_at: Instant::now() + ASSET_TRANSFER_TTL,
+        });
+        assert!(manager.take_read(&read, "other", "session").is_err());
+        assert!(manager.take_read(&read, "maps", "other-session").is_err());
+        assert_eq!(
+            manager.take_read(&read, "maps", "session").unwrap().0,
+            b"map"
+        );
+        assert!(manager.take_read(&read, "maps", "session").is_err());
+
+        let upload = manager.token(BinaryTransfer::Upload {
+            plugin_id: "maps".into(),
+            session_id: "session".into(),
+            project_id: "project".into(),
+            asset_id: "asset".into(),
+            expected_revision: "revision".into(),
+            mime_type: "application/octet-stream".into(),
+            declared_size: 3,
+            next_chunk: 0,
+            bytes: Vec::new(),
+            expires_at: Instant::now() + ASSET_TRANSFER_TTL,
+        });
+        assert!(manager
+            .append_upload(&upload, "other", "session", 0, b"a")
+            .is_err());
+        assert!(manager
+            .append_upload(&upload, "maps", "other-session", 0, b"a")
+            .is_err());
+        assert!(manager
+            .append_upload(&upload, "maps", "session", 1, b"a")
+            .is_err());
+        assert_eq!(
+            manager
+                .append_upload(&upload, "maps", "session", 0, b"ab")
+                .unwrap(),
+            2
+        );
+        assert!(manager
+            .append_upload(&upload, "maps", "session", 1, b"cd")
+            .is_err());
+        assert_eq!(
+            manager
+                .append_upload(&upload, "maps", "session", 1, b"c")
+                .unwrap(),
+            3
+        );
+        let (input, bytes, revision) = manager
+            .prepare_upload(&upload, "maps", "session", "project", "sha256:placeholder")
+            .unwrap();
+        assert_eq!(input.asset_id, "asset");
+        assert_eq!(bytes, b"abc");
+        assert_eq!(revision, "revision");
+        assert!(manager
+            .prepare_upload(&upload, "maps", "session", "other-project", "sha256:placeholder")
+            .is_err());
     }
 
     #[test]

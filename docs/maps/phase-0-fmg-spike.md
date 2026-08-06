@@ -1,0 +1,74 @@
+# FMG Phase 0 spike record
+
+- Status: review required; no public Daena contract has changed.
+- FMG source: `Azgaar/Fantasy-Map-Generator` tag `v1.119`
+- Pinned commit: `3430c22204f60baa412d4657ca2f9d00c270eda9`
+- License: MIT; retain `LICENSE` verbatim in every bundled package.
+- Fixture: upstream `tests/fixtures/demo.map`, SHA-256
+  `f1ab797dcf7e2a383b0753e965342c374e86c6ce1db666ea2a4abc8122504799`
+
+## Reproducible build observation
+
+From a clean checkout at the pinned commit, Node `v26.6.0` and npm `11.18.0`:
+
+```sh
+npm ci
+npm run build --offline
+```
+
+The build completed with Vite `7.3.2`, producing a 27 MiB `dist/` tree. The
+fixture is 4.1 MiB. The build warns that many non-module scripts and styles are
+left as runtime-relative URLs; `dist/` must therefore be packaged as a complete
+static tree, not just Vite's hashed files. These are source/build observations,
+not yet host limits or performance budgets.
+
+`npm ci --offline` before an initial dependency acquisition failed because the
+local cache lacked `ws-8.19.0.tgz`. The delivery build needs a vendored package
+cache or a locked builder image; a first-install network is not an acceptable
+runtime dependency.
+
+## Runtime and adapter boundary
+
+The spike must use a Maps-owned adapter with exactly these operations:
+
+| Intent | Pinned upstream hook | Status |
+| --- | --- | --- |
+| load source bytes | `uploadMap(file)` in `public/modules/io/load.js` | wrapper required |
+| serialize source bytes | `prepareMapData()` in `public/modules/io/save.js` | wrapper required |
+| focus coordinates | `zoomTo(x, y, z, duration)` in `public/main.js` | wrapper required |
+| select a burg | `pack.burgs[id]` + `editBurg(id)` | adapter-only selector |
+| select a state | `pack.states[id]` + state editor | adapter-only selector |
+| select a river | `pack.rivers[id]` + `editRiver(id)` | adapter-only selector |
+
+These upstream functions and the `pack` global are not a public API. The
+wrapper must expose a narrow module API and prevent Daena code from accessing
+them directly. It must replace browser download, IndexedDB autosave, Dropbox,
+AI, service-worker registration, and URL-loading paths with inert or
+host-mediated behavior. The small maintained patch is expected to export the
+adapter hooks and add a save callback; no patch has been accepted yet.
+
+Stable initial selectors are `burg`, `state`, and `river` numeric `i` values,
+each paired with a normalized fallback point. They become unresolved when the
+corresponding record is removed, when an upstream conversion changes its `i`,
+or after topology-changing regeneration/import operations. Never retarget by
+name, ordinal position, or proximity alone.
+
+## Automated spike check
+
+Run `node scripts/fmg-phase0-check.mjs /path/to/pinned-fmg`. It rejects an
+unpinned source version, a partial static output, and a non-representative
+fixture, then records fixture/compressed sizes. This is intentionally separate
+from the public plugin conformance suite.
+
+## Remaining exit-gate evidence
+
+This record intentionally does **not** claim Phase 0 complete. A packaged
+Tauri development build still has to prove, in a real child webview: offline
+boot; load/edit/serialize/reload of the fixture; selection and viewport focus;
+no network or Tauri globals; cleanup on close; and representative load/save
+time, memory, and compressed-input expansion measurements.
+
+The candidate contract for review is
+[`maps-contract-v1.schema.json`](./maps-contract-v1.schema.json). It is a
+documentation-only draft and must not be copied into `schemas/` or a plugin
+manifest before review.

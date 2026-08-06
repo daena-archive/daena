@@ -330,6 +330,24 @@ export interface BrokerMethodPayloads {
         path: string;
         expectedRevision: string;
     };
+    "asset.read.begin": {
+        assetId: string;
+        namespace: string;
+    };
+    "asset.replace.begin": {
+        assetId: string;
+        namespace: string;
+        expectedRevision: string;
+        size: number;
+        mimeType: string;
+    };
+    "asset.replace.commit": {
+        handle: string;
+        contentHash: string;
+    };
+    "asset.transfer.cancel": {
+        handle: string;
+    };
     "search.query": {
         query: string;
     };

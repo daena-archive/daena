@@ -1,0 +1,27 @@
+{
+  "manifestVersion": 1,
+  "id": "daena.maps",
+  "name": "Maps",
+  "version": "0.1.0",
+  "publisher": "daena-archive",
+  "hostApi": ">=1.0.0 <2.0.0",
+  "kind": "sandboxed",
+  "entrypoints": { "ui": "dist/ui/index.html" },
+  "capabilities": ["entity.read", "entity.write", "field.read:self", "field.write:self", "relationship.read", "relationship.write", "asset.read:self", "asset.write:self", "search.query", "service.provide:daena.maps.navigation", "event.subscribe:entity.changed", "event.subscribe:field.changed", "event.subscribe:relationship.changed", "event.subscribe:asset.changed"],
+  "dependencies": {},
+  "namespaces": ["daena.maps"],
+  "schemas": [{
+    "namespace": "daena.maps",
+    "entityTypes": ["daena.maps:map"],
+    "fields": [
+      { "key": "map", "label": "Map descriptor", "type": "text", "entityTypes": ["daena.maps:map"] },
+      { "key": "locations", "label": "Location references", "type": "text" }
+    ]
+  }],
+  "templates": [{ "id": "map", "name": "Map", "entityType": "daena.maps:map", "fields": { "map": null } }],
+  "views": [],
+  "commands": [],
+  "services": { "provides": [{ "name": "daena.maps.navigation", "major": 1 }], "consumes": [] },
+  "events": { "publishes": [], "subscribes": [{ "name": "entity.changed", "version": 1 }, { "name": "field.changed", "version": 1 }, { "name": "relationship.changed", "version": 1 }, { "name": "asset.changed", "version": 1 }] },
+  "migrations": [{ "id": "maps-v1", "from": 0, "to": 1, "recovery": "backup", "operations": [{ "kind": "create-namespace", "namespace": "daena.maps" }] }]
+}

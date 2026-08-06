@@ -2605,7 +2605,12 @@ fn validate_schema_resource(
                 ));
             }
         }
-        "asset.read" | "asset.list" | "asset.import" | "asset.register" => {
+        "asset.read"
+        | "asset.list"
+        | "asset.import"
+        | "asset.register"
+        | "asset.read.begin"
+        | "asset.replace.begin" => {
             let namespace = payload
                 .get("namespace")
                 .and_then(serde_json::Value::as_str)
@@ -2843,10 +2848,16 @@ fn required_capabilities(
             ensure_owned_namespace(payload, session, namespaces)?;
             Ok(vec!["asset.import".into()])
         }
-        "asset.read" | "asset.list" => {
+        "asset.read" | "asset.list" | "asset.read.begin" => {
             ensure_owned_namespace(payload, session, namespaces)?;
             Ok(vec!["asset.read:self".into()])
         }
+        "asset.replace.begin" => {
+            ensure_owned_namespace(payload, session, namespaces)?;
+            Ok(vec!["asset.write:self".into()])
+        }
+        "asset.replace.commit" => Ok(vec!["asset.write:self".into()]),
+        "asset.transfer.cancel" => Ok(Vec::new()),
         "field.read" | "field.list" | "field.write" | "field.set" => {
             let namespace = payload
                 .get("namespace")

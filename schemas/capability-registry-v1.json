@@ -14,6 +14,7 @@
     { "id": "relationship.read", "resource": "project.relationships", "operations": ["read"] },
     { "id": "relationship.write", "resource": "project.relationships", "operations": ["create"] },
     { "id": "asset.read:self", "resource": "plugin.assets", "operations": ["read-metadata"] },
+    { "id": "asset.write:self", "resource": "plugin.assets", "operations": ["replace"] },
     { "id": "asset.import", "resource": "host.file-picker", "operations": ["import"], "confirmation": "interactive" },
     { "id": "search.query", "resource": "project.search", "operations": ["query"] },
     { "id": "event.publish:<type>", "resource": "declared.event", "operations": ["publish"] },

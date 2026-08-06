@@ -125,6 +125,10 @@ export interface BrokerMethodPayloads {
   "relationship.delete": { id: string; expectedRevision: string };
   "asset.list": { entityId: string };
   "asset.register": { entity_id: string; namespace: string; filename: string; content_hash: string; size: number; mime_type: string; path: string; expectedRevision: string };
+  "asset.read.begin": { assetId: string; namespace: string };
+  "asset.replace.begin": { assetId: string; namespace: string; expectedRevision: string; size: number; mimeType: string };
+  "asset.replace.commit": { handle: string; contentHash: string };
+  "asset.transfer.cancel": { handle: string };
   "search.query": { query: string };
 }
 export type BrokerMethod = keyof BrokerMethodPayloads;

@@ -1,5 +1,6 @@
 import type { EntityRecord, Event, Migration, MigrationAuthoringOptions, MigrationOperation, PluginManifest, PluginRpcError, PluginBootstrap, Service, MutationOptions } from "./generated.js";
 export * from "./generated.js";
+export * from "./maps.js";
 export interface PluginRpcTransport {
     call(method: string, payload: unknown, requestId?: string): Promise<unknown>;
 }
@@ -28,6 +29,31 @@ export interface PluginRpcClient {
     subscribeEvent(name: string, version: number): Promise<void>;
     pollEvents<T = unknown>(name: string, version: number): Promise<T[]>;
     callService<T = unknown>(name: string, major: number, payload: unknown, deadlineMs?: number): Promise<T>;
+    beginAssetRead(assetId: string, namespace: string): Promise<AssetReadHandle>;
+    beginAssetReplace(input: AssetReplaceRequest, options?: MutationOptions): Promise<AssetReplaceHandle>;
+    commitAssetReplace(handle: string, contentHash: string, options?: MutationOptions): Promise<unknown>;
+    cancelAssetTransfer(handle: string): Promise<void>;
+}
+export interface AssetReadHandle {
+    handle: string;
+    url: string;
+    size: number;
+    contentHash: string;
+    mimeType: string;
+    revision: string;
+}
+export interface AssetReplaceRequest {
+    assetId: string;
+    namespace: string;
+    expectedRevision: string;
+    size: number;
+    mimeType: string;
+}
+export interface AssetReplaceHandle {
+    handle: string;
+    url: string;
+    maxChunkBytes: number;
+    expiresInMs: number;
 }
 export declare class PluginRpcException extends Error {
     readonly code: string;
@@ -45,6 +71,7 @@ export declare class PluginRpcException extends Error {
 export declare function createBrowserPluginRpcTransport(options?: BrowserPluginRpcTransportOptions): PluginRpcTransport;
 /** Framework-neutral SDK boundary. The host owns identity and authorization. */
 export declare function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcClient;
+export declare function uploadAssetChunks(transfer: AssetReplaceHandle, bytes: Uint8Array, fetcher?: typeof globalThis.fetch): Promise<void>;
 export declare function isPluginIdentifier(value: string): boolean;
 export declare function isSemanticVersion(value: string): boolean;
 export declare function isHostApiRange(value: string): boolean;

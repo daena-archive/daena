@@ -1,0 +1,6 @@
+{
+  "name": "@daena-archive/maps",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./dist/index.js" }
+}

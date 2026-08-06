@@ -19,6 +19,7 @@ pub const KNOWN_CAPABILITIES: &[&str] = &[
     "relationship.read",
     "relationship.write",
     "asset.read:self",
+    "asset.write:self",
     "asset.import",
     "search.query",
     "event.publish:<type>",

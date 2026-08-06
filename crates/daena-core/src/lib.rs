@@ -1,5 +1,6 @@
 mod authority;
 mod error;
+pub mod maps;
 mod migrations;
 mod project;
 mod storage;
@@ -9,11 +10,11 @@ pub use authority::{Authority, AuthorityContext};
 pub use error::CoreError;
 pub use migrations::{FieldDefinition, Migration, Operation};
 pub use project::{
-    Asset, AssetFileInput, AssetInput, CreateEntity, CreateEntry, CreateEntryDocument,
-    CreateEntryField, Document, Entity, ExternalChangeReport, FieldValue, GitLogEntry,
-    GitPreflight, GitStatus, MigrationHistoryEntry, ModuleField, ModuleNamespace, ModuleState,
-    PluginBackup, ProjectInfo, ProjectSnapshot, ProjectStore, Relationship, RelationshipInput,
-    SaveDocument, SaveEntry,
+    Asset, AssetFileInput, AssetInput, AssetReplaceInput, CreateEntity, CreateEntry,
+    CreateEntryDocument, CreateEntryField, Document, Entity, ExternalChangeReport, FieldValue,
+    GitLogEntry, GitPreflight, GitStatus, MigrationHistoryEntry, ModuleField, ModuleNamespace,
+    ModuleState, PluginBackup, ProjectInfo, ProjectSnapshot, ProjectStore, Relationship,
+    RelationshipInput, SaveDocument, SaveEntry,
 };
 pub use storage::{
     canonical_json_bytes, canonical_markdown, canonical_markdown_bytes, normalized_project_path,

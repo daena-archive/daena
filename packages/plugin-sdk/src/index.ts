@@ -13,6 +13,7 @@ import type {
 } from "./generated.js";
 
 export * from "./generated.js";
+export * from "./maps.js";
 
 export interface PluginRpcTransport {
   call(method: string, payload: unknown, requestId?: string): Promise<unknown>;
@@ -44,6 +45,34 @@ export interface PluginRpcClient {
   subscribeEvent(name: string, version: number): Promise<void>;
   pollEvents<T = unknown>(name: string, version: number): Promise<T[]>;
   callService<T = unknown>(name: string, major: number, payload: unknown, deadlineMs?: number): Promise<T>;
+  beginAssetRead(assetId: string, namespace: string): Promise<AssetReadHandle>;
+  beginAssetReplace(input: AssetReplaceRequest, options?: MutationOptions): Promise<AssetReplaceHandle>;
+  commitAssetReplace(handle: string, contentHash: string, options?: MutationOptions): Promise<unknown>;
+  cancelAssetTransfer(handle: string): Promise<void>;
+}
+
+export interface AssetReadHandle {
+  handle: string;
+  url: string;
+  size: number;
+  contentHash: string;
+  mimeType: string;
+  revision: string;
+}
+
+export interface AssetReplaceRequest {
+  assetId: string;
+  namespace: string;
+  expectedRevision: string;
+  size: number;
+  mimeType: string;
+}
+
+export interface AssetReplaceHandle {
+  handle: string;
+  url: string;
+  maxChunkBytes: number;
+  expiresInMs: number;
 }
 
 export class PluginRpcException extends Error {
@@ -175,7 +204,7 @@ export function createBrowserPluginRpcTransport(options: BrowserPluginRpcTranspo
   async function call(method: string, payload: unknown, suppliedRequestId?: string): Promise<unknown> {
     if (method === "plugin.bootstrap") return bootstrap();
     await ensureSession();
-    const requestId = suppliedRequestId ?? `${pluginId}-${++sequence}`;
+    const requestId = suppliedRequestId ?? (globalThis.crypto?.randomUUID?.() ?? `${pluginId}-${++sequence}`);
     const value = await post({
       op: "rpc",
       request: { rpcVersion: 1, sessionId, requestId, method, payload },
@@ -238,13 +267,30 @@ export function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcC
     subscribeEvent: (name, version) => callTransport<void>(transport, "event.subscribe", { type: qualified(name, version) }),
     pollEvents: <T>(name: string, version: number) => callTransport<T[]>(transport, "event.poll", { type: qualified(name, version) }),
     callService: <T>(name: string, major: number, payload: unknown, deadlineMs = 5000) => callTransport<T>(transport, "service.call", { name, major, payload, deadlineMs }),
+    beginAssetRead: (assetId, namespace) => callTransport<AssetReadHandle>(transport, "asset.read.begin", { assetId, namespace }),
+    beginAssetReplace: (input, options) => callTransport<AssetReplaceHandle>(transport, "asset.replace.begin", input, options?.requestId),
+    commitAssetReplace: (handle, contentHash, options) => callTransport<unknown>(transport, "asset.replace.commit", { handle, contentHash }, options?.requestId),
+    cancelAssetTransfer: (handle) => callTransport<void>(transport, "asset.transfer.cancel", { handle }),
   };
+}
+
+export async function uploadAssetChunks(
+  transfer: AssetReplaceHandle,
+  bytes: Uint8Array,
+  fetcher: typeof globalThis.fetch = globalThis.fetch,
+): Promise<void> {
+  if (bytes.length > 64 * 1024 * 1024) throw new Error("asset exceeds SDK transfer limit");
+  for (let offset = 0, chunk = 0; offset < bytes.length || (bytes.length === 0 && chunk === 0); offset += transfer.maxChunkBytes, chunk += 1) {
+    const response = await fetcher(`${transfer.url.replace(/\/0\?/, `/${chunk}?`)}`, { method: "PUT", body: bytes.slice(offset, offset + transfer.maxChunkBytes) });
+    if (!response.ok) throw new Error(`asset upload failed: ${response.status}`);
+    if (bytes.length === 0) break;
+  }
 }
 
 const knownCapabilities = new Set([
   "entity.read", "entity.write", "entity.delete", "document.read", "document.write",
   "field.read:self", "field.read:shared", "field.write:self", "relationship.read",
-  "relationship.write", "asset.read:self", "asset.import", "search.query",
+  "relationship.write", "asset.read:self", "asset.write:self", "asset.import", "search.query",
   "event.publish:<type>", "event.subscribe:<type>", "service.provide:<name>", "service.call:<name>",
 ]);
 

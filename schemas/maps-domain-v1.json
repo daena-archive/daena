@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/daena-archive/daena/schemas/maps-domain-v1.json",
+  "title": "Daena Maps provider-neutral domain v1",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/map" },
+    { "$ref": "#/$defs/locations" }
+  ],
+  "$defs": {
+    "uuid": { "type": "string", "format": "uuid" },
+    "point": { "type": "array", "prefixItems": [{ "type": "number", "minimum": 0, "maximum": 1 }, { "type": "number", "minimum": 0, "maximum": 1 }], "items": false },
+    "date": { "type": ["object", "null"], "additionalProperties": false, "properties": { "calendar": { "const": "gregorian" }, "era": { "enum": ["BCE", "CE"] }, "year": { "type": "integer" }, "month": { "type": "integer", "minimum": 1, "maximum": 12 }, "day": { "type": "integer", "minimum": 1, "maximum": 31 }, "precision": { "enum": ["year", "month", "day"] } } },
+    "anchor": { "oneOf": [
+      { "type": "object", "additionalProperties": false, "required": ["kind", "point"], "properties": { "kind": { "const": "point" }, "point": { "$ref": "#/$defs/point" } } },
+      { "type": "object", "additionalProperties": false, "required": ["kind", "provider", "featureKind", "featureId", "fallbackPoint"], "properties": { "kind": { "const": "provider-feature" }, "provider": { "const": "azgaar-fmg" }, "featureKind": { "enum": ["burg", "state", "province", "river", "marker"] }, "featureId": { "type": "string", "minLength": 1 }, "fallbackPoint": { "$ref": "#/$defs/point" } } },
+      { "type": "object", "additionalProperties": false, "required": ["kind", "points"], "properties": { "kind": { "const": "path" }, "points": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/point" } } } },
+      { "type": "object", "additionalProperties": false, "required": ["kind", "rings"], "properties": { "kind": { "const": "area" }, "rings": { "type": "array", "minItems": 1, "items": { "type": "array", "minItems": 4, "items": { "$ref": "#/$defs/point" } } } } }
+    ] },
+    "map": { "type": "object", "additionalProperties": false, "required": ["schemaVersion", "provider", "sourceAssetId", "previewAssetId", "defaultView"], "properties": { "schemaVersion": { "const": 1 }, "provider": { "type": "object", "additionalProperties": false, "required": ["id", "adapterVersion", "sourceFormat"], "properties": { "id": { "const": "azgaar-fmg" }, "adapterVersion": { "const": 1 }, "sourceFormat": { "const": "fmg-map" } } }, "sourceAssetId": { "$ref": "#/$defs/uuid" }, "previewAssetId": { "anyOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] }, "defaultView": { "type": "object", "additionalProperties": false, "required": ["center", "zoom"], "properties": { "center": { "$ref": "#/$defs/point" }, "zoom": { "type": "number", "exclusiveMinimum": 0 } } } } },
+    "locations": { "type": "object", "additionalProperties": false, "required": ["schemaVersion", "locations"], "properties": { "schemaVersion": { "const": 1 }, "locations": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["id", "mapEntityId", "role", "label", "anchor", "validity"], "properties": { "id": { "$ref": "#/$defs/uuid" }, "mapEntityId": { "$ref": "#/$defs/uuid" }, "role": { "type": "string", "minLength": 1, "maxLength": 128 }, "label": { "type": "string", "maxLength": 256 }, "anchor": { "$ref": "#/$defs/anchor" }, "validity": { "type": "object", "additionalProperties": false, "required": ["from", "to"], "properties": { "from": { "$ref": "#/$defs/date" }, "to": { "$ref": "#/$defs/date" } } } } } } }
+  }
+}

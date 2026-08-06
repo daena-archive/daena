@@ -12,6 +12,18 @@ if (manifestSchema.$id !== "https://github.com/daena-archive/daena/schemas/plugi
 if (rpcSchema.$id !== "https://github.com/daena-archive/daena/schemas/plugin-rpc-v1.json") throw new Error("RPC schema id mismatch");
 if (errorSchema.$id !== "https://github.com/daena-archive/daena/schemas/plugin-error-v1.json") throw new Error("error schema id mismatch");
 if (capabilityRegistry.version !== 1 || capabilityRegistry.deniedByDefault.length === 0) throw new Error("capability registry is incomplete");
+const rpcMethods = Object.entries(rpcSchema["x-methods"] ?? {});
+const requestSchema = rpcSchema.$defs?.request;
+if (rpcMethods.length < 20 || !requestSchema?.properties?.method?.enum || !Array.isArray(requestSchema.allOf)) {
+  throw new Error("RPC method schema is incomplete");
+}
+for (const [method, contract] of rpcMethods) {
+  if (!contract.payload || !rpcSchema.$defs[contract.payload]) throw new Error(`${method}: missing payload definition`);
+  if (!requestSchema.properties.method.enum.includes(method)) throw new Error(`${method}: missing method enum entry`);
+  if (!requestSchema.allOf.some((condition) => condition.if?.properties?.method?.const === method)) {
+    throw new Error(`${method}: missing request payload condition`);
+  }
+}
 
 for (const name of ["lore", "timeline", "writing"]) {
   const manifest = await readJson(`packages/modules/${name}/manifest.json`);

@@ -35,13 +35,15 @@ export class FakePluginHost implements PluginRpcTransport {
   readonly manifest: PluginManifest;
   readonly projectId: string;
   readonly sessionId: string;
-  readonly calls: Array<{ method: string; payload: unknown }> = [];
+  readonly calls: Array<{ method: string; payload: unknown; requestId?: string }> = [];
   private readonly grants: Set<string>;
   private readonly entities = new Map<string, EntityRecord>();
+  private readonly committedRequests = new Map<string, { method: string; result: unknown }>();
   private readonly queues = new Map<string, unknown[]>();
   private readonly subscriptions = new Set<string>();
   private readonly services = new Map<string, ServiceHandler>();
   private nextEntity = 1;
+  private nextRevision = 1;
   private revoked = false;
   private declarativeActive = false;
 
@@ -90,11 +92,17 @@ export class FakePluginHost implements PluginRpcTransport {
     return { type: command.action.type };
   }
 
-  async call(method: string, payload: unknown): Promise<unknown> {
-    this.calls.push({ method, payload: structuredClone(payload) });
+  async call(method: string, payload: unknown, requestId?: string): Promise<unknown> {
+    this.calls.push({ method, payload: structuredClone(payload), requestId });
     if (this.revoked) throw failure("session-revoked", "plugin session has been revoked");
+    const replay = requestId ? this.committedRequests.get(requestId) : undefined;
+    if (replay) {
+      if (replay.method !== method) throw failure("request-id-reuse", "request ID was already used for another method");
+      return structuredClone(replay.result);
+    }
     try {
-      switch (method) {
+      const result = await (async () => {
+        switch (method) {
         case "plugin.bootstrap": return this.bootstrap();
         case "entity.list": this.require("entity.read"); return this.list(payload);
         case "entity.create": this.require("entity.write"); return this.create(payload);
@@ -105,7 +113,12 @@ export class FakePluginHost implements PluginRpcTransport {
         case "event.poll": this.requireDynamic("event.subscribe", payload); return this.poll(payload);
         case "service.call": this.requireDynamic("service.call", payload); return await this.callService(payload);
         default: throw failure("unknown-method", `unsupported plugin method: ${method}`);
+        }
+      })();
+      if (requestId && ["entity.create", "entity.update", "entity.delete"].includes(method)) {
+        this.committedRequests.set(requestId, { method, result: structuredClone(result) });
       }
+      return result;
     } catch (error) {
       if (isPluginRpcError(error)) throw error;
       throw failure("host-error", error instanceof Error ? error.message : String(error));
@@ -143,26 +156,49 @@ export class FakePluginHost implements PluginRpcTransport {
   }
 
   private create(payload: unknown): EntityRecord {
-    const value = payload as { entityType?: unknown; fields?: unknown; document?: unknown };
-    if (typeof value.entityType !== "string" || !value.fields || typeof value.fields !== "object") throw failure("invalid-payload", "entity.create requires entityType and fields");
-    const entity: EntityRecord = { id: `${this.manifest.id}:${this.nextEntity++}`, entityType: value.entityType, fields: structuredClone(value.fields as Record<string, unknown>) };
-    if (typeof value.document === "string") entity.document = value.document;
+    const value = payload as { name?: unknown; type?: unknown };
+    if (typeof value.name !== "string" || !value.name.trim()) throw failure("invalid-payload", "entity.create requires name");
+    const entity: EntityRecord = {
+      id: `${this.manifest.id}:${this.nextEntity++}`,
+      name: value.name,
+      entityType: typeof value.type === "string" ? value.type : null,
+      deleted: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      revision: this.revision(),
+    };
     this.entities.set(entity.id, entity);
     return structuredClone(entity);
   }
 
   private update(payload: unknown): EntityRecord {
-    const value = payload as { id?: unknown; fields?: unknown; document?: unknown };
-    if (typeof value.id !== "string" || !this.entities.has(value.id) || !value.fields || typeof value.fields !== "object") throw failure("not-found", "entity does not exist");
+    const value = payload as { id?: unknown; name?: unknown; type?: unknown; expectedRevision?: unknown };
+    if (typeof value.id !== "string" || !this.entities.has(value.id)) throw failure("not-found", "entity does not exist");
     const entity = this.entities.get(value.id)!;
-    entity.fields = { ...entity.fields, ...structuredClone(value.fields as Record<string, unknown>) };
-    if (typeof value.document === "string") entity.document = value.document;
+    this.checkRevision(entity, value.expectedRevision);
+    if (typeof value.name === "string") entity.name = value.name;
+    if (typeof value.type === "string") entity.entityType = value.type;
+    entity.updatedAt = new Date().toISOString();
+    entity.revision = this.revision();
     return structuredClone(entity);
   }
 
   private remove(payload: unknown): void {
-    const id = (payload as { id?: unknown }).id;
-    if (typeof id !== "string" || !this.entities.delete(id)) throw failure("not-found", "entity does not exist");
+    const value = payload as { id?: unknown; expectedRevision?: unknown };
+    const id = value.id;
+    const entity = typeof id === "string" ? this.entities.get(id) : undefined;
+    if (!entity) throw failure("not-found", "entity does not exist");
+    this.checkRevision(entity, value.expectedRevision);
+    this.entities.delete(id as string);
+  }
+
+  private revision(): string {
+    return `revision-${this.nextRevision++}`;
+  }
+
+  private checkRevision(entity: EntityRecord, expected: unknown): void {
+    if (typeof expected !== "string" || !expected) throw failure("revision-required", "expectedRevision is required");
+    if (expected !== entity.revision) throw failure("revision-conflict", "entity revision does not match");
   }
 
   private publish(payload: unknown): void {

@@ -92,10 +92,42 @@ export interface PluginBootstrap {
 
 export interface EntityRecord {
   id: string;
-  entityType: string;
-  fields: Record<string, unknown>;
-  document?: string;
+  name: string;
+  entityType: string | null;
+  deleted: boolean;
+  createdAt: string;
+  updatedAt: string;
+  revision: string;
 }
+
+export interface MutationOptions { expectedRevision?: string; requestId?: string }
+export interface RevisionedEntityPayload { id: string; expectedRevision: string }
+export interface RevisionedDocumentPayload { entityId: string; body: string; format?: string; expectedRevision: string }
+export interface RevisionedFieldPayload { entityId: string; namespace: string; key: string; value: unknown; expectedRevision: string }
+export interface RevisionedRelationshipPayload { id: string; expectedRevision: string }
+export interface RevisionedAssetPayload { entityId: string; namespace: string; filename: string; contentHash: string; size: number; mimeType: string; path: string; expectedRevision: string }
+export interface EntityCreateDocument { body: string; format?: string }
+export interface EntityCreateField { namespace: string; key: string; value: unknown }
+export interface EntityCreateRelationship { relationship_type: string; target_ids: string[] }
+export interface BrokerMethodPayloads {
+  "entity.list": { entityType?: string };
+  "entity.get": { id: string };
+  "entity.create": { name: string; type?: string | null; fields?: EntityCreateField[]; relationships?: EntityCreateRelationship[]; document?: EntityCreateDocument };
+  "entity.update": { id: string; name?: string | null; type?: string | null; expectedRevision: string };
+  "entity.delete": { id: string; expectedRevision: string };
+  "document.list": { entityId: string };
+  "document.save": { entityId: string; body: string; format?: string; expectedRevision: string };
+  "field.read": { entityId: string; namespace: string; key: string };
+  "field.list": { entityId: string; namespace: string };
+  "field.set": { entityId: string; namespace: string; key: string; value: unknown; expectedRevision: string };
+  "relationship.list": { entityId: string };
+  "relationship.create": { source_id: string; target_id: string; relationship_type: string; metadata?: string; expectedRevision: string };
+  "relationship.delete": { id: string; expectedRevision: string };
+  "asset.list": { entityId: string };
+  "asset.register": { entity_id: string; namespace: string; filename: string; content_hash: string; size: number; mime_type: string; path: string; expectedRevision: string };
+  "search.query": { query: string };
+}
+export type BrokerMethod = keyof BrokerMethodPayloads;
 
 export interface MigrationAuthoringOptions {
   recovery?: Migration["recovery"];

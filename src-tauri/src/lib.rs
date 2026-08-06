@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use daena_core::{
     Asset, AssetFileInput, AssetInput, AuthorityContext, CoreError, CoreService, CreateEntity,
-    Entity, ExternalChangeReport, FieldValue, GitLogEntry, GitStatus, Migration, Operation,
-    ProjectInfo, ProjectStore, Relationship, RelationshipInput, SaveDocument, SaveEntry,
+    Entity, ExternalChangeReport, FieldValue, GitLogEntry, GitPreflight, GitStatus, Migration,
+    Operation, ProjectInfo, ProjectStore, Relationship, RelationshipInput, SaveDocument, SaveEntry,
 };
 use daena_plugin_api::{
     CommandAction, MigrationOperation, PluginManifest, RpcRequest, RpcResponse, ViewComponent,
@@ -393,6 +393,8 @@ fn plugin_protocol_response(
                     .map_err(|_| "plugin host lock poisoned".to_string())?
                     .authorize_rpc(webview_label, &request)
                     .map_err(|error| error.message)?;
+                validate_broker_payload(&request.method, &request.payload)
+                    .map_err(|error| error.to_string())?;
                 let current_project = core
                     .lock()
                     .map_err(|_| "core lock poisoned".to_string())?
@@ -2229,11 +2231,91 @@ fn optional_payload_string(payload: &serde_json::Value, keys: &[&str]) -> Option
         .map(str::to_owned)
 }
 
+fn required_payload_string(
+    payload: &serde_json::Value,
+    keys: &[&str],
+    label: &str,
+) -> Result<String, CoreError> {
+    optional_payload_string(payload, keys).ok_or_else(|| {
+        CoreError::Conflict(format!("revision-aware broker mutation requires {label}"))
+    })
+}
+
 fn payload_value<T: serde::de::DeserializeOwned>(
     payload: &serde_json::Value,
 ) -> Result<T, CoreError> {
     serde_json::from_value(payload.clone())
         .map_err(|error| CoreError::Validation(format!("invalid plugin RPC payload: {error}")))
+}
+
+fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<(), CoreError> {
+    let object = payload.as_object().ok_or_else(|| {
+        CoreError::Validation(format!("plugin RPC payload for {method} must be an object"))
+    })?;
+    let (required, optional): (&[&str], &[&str]) = match method {
+        "entity.list" => (&[], &["entityType"]),
+        "entity.get" => (&["id"], &[]),
+        "entity.create" => (&["name"], &["type", "fields", "relationships", "document"]),
+        "entity.update" => (&["id", "expectedRevision"], &["name", "type"]),
+        "entity.delete" => (&["id", "expectedRevision"], &[]),
+        "document.list" => (&["entityId"], &[]),
+        "document.save" => (&["entityId", "body", "expectedRevision"], &["format"]),
+        "field.read" => (&["entityId", "namespace", "key"], &[]),
+        "field.list" => (&["entityId", "namespace"], &[]),
+        "field.set" => (
+            &["entityId", "namespace", "key", "value", "expectedRevision"],
+            &[],
+        ),
+        "relationship.list" => (&["entityId"], &[]),
+        "relationship.create" => (
+            &[
+                "source_id",
+                "target_id",
+                "relationship_type",
+                "expectedRevision",
+            ],
+            &["metadata"],
+        ),
+        "relationship.delete" => (&["id", "expectedRevision"], &["relationship_type"]),
+        "asset.list" => (&["entityId"], &["namespace"]),
+        "asset.register" => (
+            &[
+                "entity_id",
+                "namespace",
+                "filename",
+                "content_hash",
+                "size",
+                "mime_type",
+                "path",
+                "expectedRevision",
+            ],
+            &[],
+        ),
+        "search.query" => (&["query"], &[]),
+        "event.publish" => (&["type", "payload"], &[]),
+        "event.subscribe" | "event.poll" => (&["type"], &[]),
+        "service.call" => (&["name", "major", "payload"], &["deadlineMs"]),
+        _ => {
+            return Err(CoreError::Validation(format!(
+                "unknown plugin RPC method: {method}"
+            )));
+        }
+    };
+    for key in required {
+        if !object.contains_key(*key) {
+            return Err(CoreError::Validation(format!(
+                "plugin RPC payload for {method} requires {key}"
+            )));
+        }
+    }
+    for key in object.keys() {
+        if !required.contains(&key.as_str()) && !optional.contains(&key.as_str()) {
+            return Err(CoreError::Validation(format!(
+                "plugin RPC payload for {method} contains unknown key {key}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn dispatch_module_rpc(
@@ -2242,10 +2324,22 @@ fn dispatch_module_rpc(
     payload: serde_json::Value,
     request_id: Option<&str>,
 ) -> Result<serde_json::Value, CoreError> {
+    validate_broker_payload(method, &payload)?;
     let project = core.project_mut(AuthorityContext::plugin())?;
     match method {
-        "entity.list" => serde_json::to_value(project.list_entities()?)
-            .map_err(|error| CoreError::Validation(error.to_string())),
+        "entity.list" => {
+            let entity_type = payload
+                .get("entityType")
+                .and_then(serde_json::Value::as_str);
+            let entities = project
+                .list_entities()?
+                .into_iter()
+                .filter(|entity| {
+                    entity_type.is_none_or(|kind| entity.entity_type.as_deref() == Some(kind))
+                })
+                .collect::<Vec<_>>();
+            serde_json::to_value(entities).map_err(|error| CoreError::Validation(error.to_string()))
+        }
         "entity.get" => {
             let id = payload_string(&payload, "id")?;
             let entity = project
@@ -2308,29 +2402,29 @@ fn dispatch_module_rpc(
                     }
                 })
                 .map(str::to_owned);
-            serde_json::to_value(
-                project.update_entity_with_options(
-                    id,
-                    name,
-                    entity_type,
-                    optional_payload_string(
-                        &payload,
-                        &["expectedRevision", "expected_revision", "revision"],
-                    )
-                    .as_deref(),
-                    request_id,
-                )?,
-            )
+            let expected_revision = required_payload_string(
+                &payload,
+                &["expectedRevision", "expected_revision", "revision"],
+                "expectedRevision",
+            )?;
+            serde_json::to_value(project.update_entity_with_options(
+                id,
+                name,
+                entity_type,
+                Some(&expected_revision),
+                request_id,
+            )?)
             .map_err(|error| CoreError::Validation(error.to_string()))
         }
         "entity.delete" => {
+            let expected_revision = required_payload_string(
+                &payload,
+                &["expectedRevision", "expected_revision", "revision"],
+                "expectedRevision",
+            )?;
             project.delete_entity_with_options(
                 payload_string(&payload, "id")?,
-                optional_payload_string(
-                    &payload,
-                    &["expectedRevision", "expected_revision", "revision"],
-                )
-                .as_deref(),
+                Some(&expected_revision),
                 request_id,
             )?;
             Ok(serde_json::Value::Null)
@@ -2340,6 +2434,11 @@ fn dispatch_module_rpc(
                 .map_err(|error| CoreError::Validation(error.to_string()))
         }
         "document.save" => {
+            let expected_revision = required_payload_string(
+                &payload,
+                &["expectedRevision", "expected_revision", "revision"],
+                "expectedRevision",
+            )?;
             let input = daena_core::SaveDocument {
                 entity_id: payload_string(&payload, "entityId")?,
                 body: payload_string(&payload, "body")?,
@@ -2348,15 +2447,7 @@ fn dispatch_module_rpc(
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned),
             };
-            project.save_document_with_options(
-                input,
-                optional_payload_string(
-                    &payload,
-                    &["expectedRevision", "expected_revision", "revision"],
-                )
-                .as_deref(),
-                request_id,
-            )?;
+            project.save_document_with_options(input, Some(&expected_revision), request_id)?;
             Ok(serde_json::Value::Null)
         }
         "field.read" | "field.list" => {
@@ -2395,7 +2486,11 @@ fn dispatch_module_rpc(
                     .get("value")
                     .cloned()
                     .unwrap_or(serde_json::Value::Null),
-                revision: optional_payload_string(&payload, &["revision"]).unwrap_or_default(),
+                revision: required_payload_string(
+                    &payload,
+                    &["expectedRevision", "expected_revision", "revision"],
+                    "expectedRevision",
+                )?,
             };
             project.set_field_with_request(field, request_id)?;
             Ok(serde_json::Value::Null)
@@ -2405,28 +2500,28 @@ fn dispatch_module_rpc(
                 .map_err(|error| CoreError::Validation(error.to_string()))
         }
         "relationship.create" => {
+            let expected_revision = required_payload_string(
+                &payload,
+                &["expectedRevision", "expected_revision", "revision"],
+                "expectedRevision",
+            )?;
             let input: RelationshipInput = payload_value(&payload)?;
-            serde_json::to_value(
-                project.create_relationship_with_options(
-                    input,
-                    optional_payload_string(
-                        &payload,
-                        &["expectedRevision", "expected_revision", "revision"],
-                    )
-                    .as_deref(),
-                    request_id,
-                )?,
-            )
+            serde_json::to_value(project.create_relationship_with_options(
+                input,
+                Some(&expected_revision),
+                request_id,
+            )?)
             .map_err(|error| CoreError::Validation(error.to_string()))
         }
         "relationship.delete" => {
+            let expected_revision = required_payload_string(
+                &payload,
+                &["expectedRevision", "expected_revision", "revision"],
+                "expectedRevision",
+            )?;
             project.delete_relationship_with_options(
                 payload_string(&payload, "id")?,
-                optional_payload_string(
-                    &payload,
-                    &["expectedRevision", "expected_revision", "revision"],
-                )
-                .as_deref(),
+                Some(&expected_revision),
                 request_id,
             )?;
             Ok(serde_json::Value::Null)
@@ -2437,18 +2532,17 @@ fn dispatch_module_rpc(
             serde_json::to_value(assets).map_err(|error| CoreError::Validation(error.to_string()))
         }
         "asset.register" => {
+            let expected_revision = required_payload_string(
+                &payload,
+                &["expectedRevision", "expected_revision", "revision"],
+                "expectedRevision",
+            )?;
             let input: AssetInput = payload_value(&payload)?;
-            serde_json::to_value(
-                project.register_asset_with_options(
-                    input,
-                    optional_payload_string(
-                        &payload,
-                        &["expectedRevision", "expected_revision", "revision"],
-                    )
-                    .as_deref(),
-                    request_id,
-                )?,
-            )
+            serde_json::to_value(project.register_asset_with_options(
+                input,
+                Some(&expected_revision),
+                request_id,
+            )?)
             .map_err(|error| CoreError::Validation(error.to_string()))
         }
         "search.query" => serde_json::to_value(project.search(payload_string(&payload, "query")?)?)
@@ -2468,6 +2562,7 @@ async fn trusted_module_rpc(
     plugins: tauri::State<'_, SharedPluginHost>,
     method: String,
     payload: serde_json::Value,
+    request_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let project_id = state
         .inner()
@@ -2478,7 +2573,7 @@ async fn trusted_module_rpc(
         .ok_or_else(|| "project is not open".to_string())?;
     let event_method = method.clone();
     let result = with_core(state, move |core| {
-        dispatch_module_rpc(core, &method, payload, None)
+        dispatch_module_rpc(core, &method, payload, request_id.as_deref())
     })
     .await?;
     publish_core_mutation_event(plugins.inner(), &project_id, &event_method, &result)?;
@@ -2672,6 +2767,23 @@ async fn project_save_recovery_copy(
 #[tauri::command]
 async fn project_git_status(state: tauri::State<'_, SharedCore>) -> Result<GitStatus, String> {
     with_core(state, |core| core.project(trusted_shell())?.git_status()).await
+}
+
+#[tauri::command]
+async fn project_git_preflight(
+    state: tauri::State<'_, SharedCore>,
+) -> Result<GitPreflight, String> {
+    with_core(state, |core| core.project(trusted_shell())?.git_preflight()).await
+}
+
+#[tauri::command]
+async fn project_git_staging_preview(
+    state: tauri::State<'_, SharedCore>,
+) -> Result<GitPreflight, String> {
+    with_core(state, |core| {
+        core.project(trusted_shell())?.git_staging_preview()
+    })
+    .await
 }
 
 #[tauri::command]
@@ -3121,6 +3233,8 @@ pub fn run() {
             project_reconcile_external_changes,
             project_save_recovery_copy,
             project_git_status,
+            project_git_preflight,
+            project_git_staging_preview,
             project_git_init,
             project_git_log,
             project_git_commit,
@@ -3227,6 +3341,14 @@ mod tests {
         let entities =
             dispatch_module_rpc(&mut core, "entity.list", serde_json::json!({}), None).unwrap();
         assert_eq!(entities.as_array().unwrap().len(), 1);
+        let missing_revision = dispatch_module_rpc(
+            &mut core,
+            "entity.update",
+            serde_json::json!({"id": created["id"]}),
+            None,
+        )
+        .unwrap_err();
+        assert!(missing_revision.to_string().contains("expectedRevision"));
     }
 
     #[test]

@@ -2,23 +2,104 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/daena-archive/daena/schemas/plugin-rpc-v1.json",
   "title": "Daena Archive Plugin RPC v1",
+  "x-methods": {
+    "entity.list": { "requestId": "envelope", "payload": "entityListPayload" },
+    "entity.get": { "requestId": "envelope", "payload": "entityGetPayload" },
+    "entity.create": { "requestId": "envelope", "payload": "entityCreatePayload", "expectedRevision": false },
+    "entity.update": { "requestId": "envelope", "payload": "entityUpdatePayload", "requiredPayload": ["id", "expectedRevision"] },
+    "entity.delete": { "requestId": "envelope", "payload": "entityDeletePayload", "requiredPayload": ["id", "expectedRevision"] },
+    "document.list": { "requestId": "envelope", "payload": "documentListPayload" },
+    "document.save": { "requestId": "envelope", "payload": "documentSavePayload", "requiredPayload": ["entityId", "body", "expectedRevision"] },
+    "field.read": { "requestId": "envelope", "payload": "fieldReadPayload" },
+    "field.list": { "requestId": "envelope", "payload": "fieldListPayload" },
+    "field.set": { "requestId": "envelope", "payload": "fieldSetPayload", "requiredPayload": ["entityId", "namespace", "key", "value", "expectedRevision"] },
+    "relationship.list": { "requestId": "envelope", "payload": "relationshipListPayload" },
+    "relationship.create": { "requestId": "envelope", "payload": "relationshipCreatePayload", "requiredPayload": ["source_id", "target_id", "relationship_type", "expectedRevision"] },
+    "relationship.delete": { "requestId": "envelope", "payload": "relationshipDeletePayload", "requiredPayload": ["id", "expectedRevision"] },
+    "asset.list": { "requestId": "envelope", "payload": "assetListPayload" },
+    "asset.register": { "requestId": "envelope", "payload": "assetRegisterPayload", "requiredPayload": ["entity_id", "namespace", "filename", "content_hash", "size", "mime_type", "path", "expectedRevision"] },
+    "search.query": { "requestId": "envelope", "payload": "searchQueryPayload" },
+    "event.publish": { "requestId": "envelope", "payload": "eventPublishPayload" },
+    "event.subscribe": { "requestId": "envelope", "payload": "eventTypePayload" },
+    "event.poll": { "requestId": "envelope", "payload": "eventTypePayload" },
+    "service.call": { "requestId": "envelope", "payload": "serviceCallPayload" }
+  },
   "oneOf": [{ "$ref": "#/$defs/request" }, { "$ref": "#/$defs/response" }],
   "$defs": {
     "request": {
-      "type": "object", "additionalProperties": false,
+      "type": "object",
+      "additionalProperties": false,
       "required": ["rpcVersion", "sessionId", "requestId", "method", "payload"],
       "properties": {
-        "rpcVersion": { "const": 1 }, "sessionId": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "requestId": { "type": "string", "minLength": 1, "maxLength": 128 }, "method": { "type": "string", "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9-]*)+$" },
+        "rpcVersion": { "const": 1 },
+        "sessionId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "method": {
+          "enum": [
+            "entity.list", "entity.get", "entity.create", "entity.update", "entity.delete",
+            "document.list", "document.save", "field.read", "field.list", "field.set",
+            "relationship.list", "relationship.create", "relationship.delete", "asset.list",
+            "asset.register", "search.query", "event.publish", "event.subscribe", "event.poll",
+            "service.call"
+          ]
+        },
         "payload": {}
-      }
+      },
+      "allOf": [
+        { "if": { "properties": { "method": { "const": "entity.list" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/entityListPayload" } } } },
+        { "if": { "properties": { "method": { "const": "entity.get" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/entityGetPayload" } } } },
+        { "if": { "properties": { "method": { "const": "entity.create" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/entityCreatePayload" } } } },
+        { "if": { "properties": { "method": { "const": "entity.update" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/entityUpdatePayload" } } } },
+        { "if": { "properties": { "method": { "const": "entity.delete" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/entityDeletePayload" } } } },
+        { "if": { "properties": { "method": { "const": "document.list" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/documentListPayload" } } } },
+        { "if": { "properties": { "method": { "const": "document.save" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/documentSavePayload" } } } },
+        { "if": { "properties": { "method": { "const": "field.read" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/fieldReadPayload" } } } },
+        { "if": { "properties": { "method": { "const": "field.list" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/fieldListPayload" } } } },
+        { "if": { "properties": { "method": { "const": "field.set" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/fieldSetPayload" } } } },
+        { "if": { "properties": { "method": { "const": "relationship.list" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/relationshipListPayload" } } } },
+        { "if": { "properties": { "method": { "const": "relationship.create" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/relationshipCreatePayload" } } } },
+        { "if": { "properties": { "method": { "const": "relationship.delete" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/relationshipDeletePayload" } } } },
+        { "if": { "properties": { "method": { "const": "asset.list" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/assetListPayload" } } } },
+        { "if": { "properties": { "method": { "const": "asset.register" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/assetRegisterPayload" } } } },
+        { "if": { "properties": { "method": { "const": "search.query" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/searchQueryPayload" } } } },
+        { "if": { "properties": { "method": { "const": "event.publish" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/eventPublishPayload" } } } },
+        { "if": { "properties": { "method": { "const": "event.subscribe" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/eventTypePayload" } } } },
+        { "if": { "properties": { "method": { "const": "event.poll" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/eventTypePayload" } } } },
+        { "if": { "properties": { "method": { "const": "service.call" } } }, "then": { "properties": { "payload": { "$ref": "#/$defs/serviceCallPayload" } } } }
+      ]
     },
+    "entityListPayload": { "type": "object", "additionalProperties": false, "properties": { "entityType": { "type": "string", "minLength": 1 } } },
+    "entityGetPayload": { "type": "object", "additionalProperties": false, "required": ["id"], "properties": { "id": { "type": "string", "minLength": 1 } } },
+    "entityCreateField": { "type": "object", "additionalProperties": false, "required": ["namespace", "key", "value"], "properties": { "namespace": { "type": "string", "minLength": 1 }, "key": { "type": "string", "minLength": 1 }, "value": {} } },
+    "entityCreateRelationship": { "type": "object", "additionalProperties": false, "required": ["relationship_type", "target_ids"], "properties": { "relationship_type": { "type": "string", "minLength": 1 }, "target_ids": { "type": "array", "items": { "type": "string", "minLength": 1 } } } },
+    "entityCreateDocument": { "type": "object", "additionalProperties": false, "required": ["body"], "properties": { "body": { "type": "string" }, "format": { "type": "string" } } },
+    "entityCreatePayload": { "type": "object", "additionalProperties": false, "required": ["name"], "properties": { "name": { "type": "string", "minLength": 1 }, "type": { "type": ["string", "null"] }, "fields": { "type": "array", "items": { "$ref": "#/$defs/entityCreateField" } }, "relationships": { "type": "array", "items": { "$ref": "#/$defs/entityCreateRelationship" } }, "document": { "$ref": "#/$defs/entityCreateDocument" } } },
+    "entityUpdatePayload": { "type": "object", "additionalProperties": false, "required": ["id", "expectedRevision"], "properties": { "id": { "type": "string", "minLength": 1 }, "name": { "type": ["string", "null"] }, "type": { "type": ["string", "null"] }, "expectedRevision": { "type": "string", "minLength": 1 } } },
+    "entityDeletePayload": { "type": "object", "additionalProperties": false, "required": ["id", "expectedRevision"], "properties": { "id": { "type": "string", "minLength": 1 }, "expectedRevision": { "type": "string", "minLength": 1 } } },
+    "documentListPayload": { "type": "object", "additionalProperties": false, "required": ["entityId"], "properties": { "entityId": { "type": "string", "minLength": 1 } } },
+    "documentSavePayload": { "type": "object", "additionalProperties": false, "required": ["entityId", "body", "expectedRevision"], "properties": { "entityId": { "type": "string", "minLength": 1 }, "body": { "type": "string" }, "format": { "type": "string" }, "expectedRevision": { "type": "string", "minLength": 1 } } },
+    "fieldReadPayload": { "type": "object", "additionalProperties": false, "required": ["entityId", "namespace", "key"], "properties": { "entityId": { "type": "string", "minLength": 1 }, "namespace": { "type": "string", "minLength": 1 }, "key": { "type": "string", "minLength": 1 } } },
+    "fieldListPayload": { "type": "object", "additionalProperties": false, "required": ["entityId", "namespace"], "properties": { "entityId": { "type": "string", "minLength": 1 }, "namespace": { "type": "string", "minLength": 1 } } },
+    "fieldSetPayload": { "type": "object", "additionalProperties": false, "required": ["entityId", "namespace", "key", "value", "expectedRevision"], "properties": { "entityId": { "type": "string", "minLength": 1 }, "namespace": { "type": "string", "minLength": 1 }, "key": { "type": "string", "minLength": 1 }, "value": {}, "expectedRevision": { "type": "string", "minLength": 1 } } },
+    "relationshipListPayload": { "type": "object", "additionalProperties": false, "required": ["entityId"], "properties": { "entityId": { "type": "string", "minLength": 1 } } },
+    "relationshipCreatePayload": { "type": "object", "additionalProperties": false, "required": ["source_id", "target_id", "relationship_type", "expectedRevision"], "properties": { "source_id": { "type": "string", "minLength": 1 }, "target_id": { "type": "string", "minLength": 1 }, "relationship_type": { "type": "string", "minLength": 1 }, "metadata": { "type": "string" }, "expectedRevision": { "type": "string", "minLength": 1 } } },
+    "relationshipDeletePayload": { "type": "object", "additionalProperties": false, "required": ["id", "expectedRevision"], "properties": { "id": { "type": "string", "minLength": 1 }, "relationship_type": { "type": "string" }, "expectedRevision": { "type": "string", "minLength": 1 } } },
+    "assetListPayload": { "type": "object", "additionalProperties": false, "required": ["entityId"], "properties": { "entityId": { "type": "string", "minLength": 1 }, "namespace": { "type": "string", "minLength": 1 } } },
+    "assetRegisterPayload": { "type": "object", "additionalProperties": false, "required": ["entity_id", "namespace", "filename", "content_hash", "size", "mime_type", "path", "expectedRevision"], "properties": { "entity_id": { "type": "string", "minLength": 1 }, "namespace": { "type": "string", "minLength": 1 }, "filename": { "type": "string", "minLength": 1 }, "content_hash": { "type": "string", "minLength": 1 }, "size": { "type": "integer", "minimum": 0 }, "mime_type": { "type": "string", "minLength": 1 }, "path": { "type": "string", "minLength": 1 }, "expectedRevision": { "type": "string", "minLength": 1 } } },
+    "searchQueryPayload": { "type": "object", "additionalProperties": false, "required": ["query"], "properties": { "query": { "type": "string" } } },
+    "eventTypePayload": { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "type": "string", "minLength": 1 } } },
+    "eventPublishPayload": { "type": "object", "additionalProperties": false, "required": ["type", "payload"], "properties": { "type": { "type": "string", "minLength": 1 }, "payload": {} } },
+    "serviceCallPayload": { "type": "object", "additionalProperties": false, "required": ["name", "major", "payload"], "properties": { "name": { "type": "string", "minLength": 1 }, "major": { "type": "integer", "minimum": 1 }, "payload": {}, "deadlineMs": { "type": "integer", "minimum": 1 } } },
     "response": {
-      "type": "object", "additionalProperties": false,
+      "type": "object",
+      "additionalProperties": false,
       "required": ["rpcVersion", "requestId", "ok"],
       "properties": {
-        "rpcVersion": { "const": 1 }, "requestId": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "ok": { "type": "boolean" }, "result": {}, "error": { "$ref": "#/$defs/error" }
+        "rpcVersion": { "const": 1 },
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "ok": { "type": "boolean" },
+        "result": {},
+        "error": { "$ref": "#/$defs/error" }
       },
       "allOf": [
         { "if": { "properties": { "ok": { "const": true } } }, "then": { "required": ["result"], "not": { "required": ["error"] } } },
@@ -26,12 +107,14 @@
       ]
     },
     "error": {
-      "type": "object", "additionalProperties": false,
+      "type": "object",
+      "additionalProperties": false,
       "required": ["code", "message", "retryable"],
       "properties": {
         "code": { "type": "string", "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9-]*)+$" },
         "message": { "type": "string", "minLength": 1, "maxLength": 512 },
-        "retryable": { "type": "boolean" }, "details": {}
+        "retryable": { "type": "boolean" },
+        "details": {}
       }
     }
   }

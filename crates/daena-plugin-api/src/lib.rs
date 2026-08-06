@@ -221,7 +221,10 @@ pub struct CommandSchema {
     pub properties: BTreeMap<String, CommandProperty>,
     #[serde(default)]
     pub required: Vec<String>,
-    #[serde(rename = "additionalProperties", default = "default_additional_properties")]
+    #[serde(
+        rename = "additionalProperties",
+        default = "default_additional_properties"
+    )]
     pub additional_properties: bool,
 }
 
@@ -310,6 +313,12 @@ pub struct RpcRequest {
     pub request_id: String,
     pub method: String,
     pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MutationOptions {
+    pub expected_revision: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -600,7 +609,9 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
     let mut command_ids = BTreeSet::new();
     for command in &manifest.commands {
         if command.id.trim().is_empty() || command.title.trim().is_empty() {
-            return Err(ContractError("command id and title must not be empty".into()));
+            return Err(ContractError(
+                "command id and title must not be empty".into(),
+            ));
         }
         if !command_ids.insert(&command.id) {
             return Err(ContractError(format!(
@@ -972,10 +983,7 @@ mod tests {
         let lore = include_str!("../../../packages/modules/lore/manifest.json");
         let timeline = include_str!("../../../packages/modules/timeline/manifest.json");
         assert_eq!(parse_manifest(lore).unwrap().id, "daena.lore");
-        assert_eq!(
-            parse_manifest(timeline).unwrap().id,
-            "daena.timeline"
-        );
+        assert_eq!(parse_manifest(timeline).unwrap().id, "daena.timeline");
     }
 
     #[test]

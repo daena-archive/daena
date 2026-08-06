@@ -13,10 +13,12 @@ export class FakePluginHost {
     calls = [];
     grants;
     entities = new Map();
+    committedRequests = new Map();
     queues = new Map();
     subscriptions = new Set();
     services = new Map();
     nextEntity = 1;
+    nextRevision = 1;
     revoked = false;
     declarativeActive = false;
     constructor(options) {
@@ -63,39 +65,51 @@ export class FakePluginHost {
             throw new Error("declarative command does not accept input");
         return { type: command.action.type };
     }
-    async call(method, payload) {
-        this.calls.push({ method, payload: structuredClone(payload) });
+    async call(method, payload, requestId) {
+        this.calls.push({ method, payload: structuredClone(payload), requestId });
         if (this.revoked)
             throw failure("session-revoked", "plugin session has been revoked");
+        const replay = requestId ? this.committedRequests.get(requestId) : undefined;
+        if (replay) {
+            if (replay.method !== method)
+                throw failure("request-id-reuse", "request ID was already used for another method");
+            return structuredClone(replay.result);
+        }
         try {
-            switch (method) {
-                case "plugin.bootstrap": return this.bootstrap();
-                case "entity.list":
-                    this.require("entity.read");
-                    return this.list(payload);
-                case "entity.create":
-                    this.require("entity.write");
-                    return this.create(payload);
-                case "entity.update":
-                    this.require("entity.write");
-                    return this.update(payload);
-                case "entity.delete":
-                    this.require("entity.delete");
-                    return this.remove(payload);
-                case "event.publish":
-                    this.requireDynamic("event.publish", payload);
-                    return this.publish(payload);
-                case "event.subscribe":
-                    this.requireDynamic("event.subscribe", payload);
-                    return this.subscribe(payload);
-                case "event.poll":
-                    this.requireDynamic("event.subscribe", payload);
-                    return this.poll(payload);
-                case "service.call":
-                    this.requireDynamic("service.call", payload);
-                    return await this.callService(payload);
-                default: throw failure("unknown-method", `unsupported plugin method: ${method}`);
+            const result = await (async () => {
+                switch (method) {
+                    case "plugin.bootstrap": return this.bootstrap();
+                    case "entity.list":
+                        this.require("entity.read");
+                        return this.list(payload);
+                    case "entity.create":
+                        this.require("entity.write");
+                        return this.create(payload);
+                    case "entity.update":
+                        this.require("entity.write");
+                        return this.update(payload);
+                    case "entity.delete":
+                        this.require("entity.delete");
+                        return this.remove(payload);
+                    case "event.publish":
+                        this.requireDynamic("event.publish", payload);
+                        return this.publish(payload);
+                    case "event.subscribe":
+                        this.requireDynamic("event.subscribe", payload);
+                        return this.subscribe(payload);
+                    case "event.poll":
+                        this.requireDynamic("event.subscribe", payload);
+                        return this.poll(payload);
+                    case "service.call":
+                        this.requireDynamic("service.call", payload);
+                        return await this.callService(payload);
+                    default: throw failure("unknown-method", `unsupported plugin method: ${method}`);
+                }
+            })();
+            if (requestId && ["entity.create", "entity.update", "entity.delete"].includes(method)) {
+                this.committedRequests.set(requestId, { method, result: structuredClone(result) });
             }
+            return result;
         }
         catch (error) {
             if (isPluginRpcError(error))
@@ -132,28 +146,51 @@ export class FakePluginHost {
     }
     create(payload) {
         const value = payload;
-        if (typeof value.entityType !== "string" || !value.fields || typeof value.fields !== "object")
-            throw failure("invalid-payload", "entity.create requires entityType and fields");
-        const entity = { id: `${this.manifest.id}:${this.nextEntity++}`, entityType: value.entityType, fields: structuredClone(value.fields) };
-        if (typeof value.document === "string")
-            entity.document = value.document;
+        if (typeof value.name !== "string" || !value.name.trim())
+            throw failure("invalid-payload", "entity.create requires name");
+        const entity = {
+            id: `${this.manifest.id}:${this.nextEntity++}`,
+            name: value.name,
+            entityType: typeof value.type === "string" ? value.type : null,
+            deleted: false,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            revision: this.revision(),
+        };
         this.entities.set(entity.id, entity);
         return structuredClone(entity);
     }
     update(payload) {
         const value = payload;
-        if (typeof value.id !== "string" || !this.entities.has(value.id) || !value.fields || typeof value.fields !== "object")
+        if (typeof value.id !== "string" || !this.entities.has(value.id))
             throw failure("not-found", "entity does not exist");
         const entity = this.entities.get(value.id);
-        entity.fields = { ...entity.fields, ...structuredClone(value.fields) };
-        if (typeof value.document === "string")
-            entity.document = value.document;
+        this.checkRevision(entity, value.expectedRevision);
+        if (typeof value.name === "string")
+            entity.name = value.name;
+        if (typeof value.type === "string")
+            entity.entityType = value.type;
+        entity.updatedAt = new Date().toISOString();
+        entity.revision = this.revision();
         return structuredClone(entity);
     }
     remove(payload) {
-        const id = payload.id;
-        if (typeof id !== "string" || !this.entities.delete(id))
+        const value = payload;
+        const id = value.id;
+        const entity = typeof id === "string" ? this.entities.get(id) : undefined;
+        if (!entity)
             throw failure("not-found", "entity does not exist");
+        this.checkRevision(entity, value.expectedRevision);
+        this.entities.delete(id);
+    }
+    revision() {
+        return `revision-${this.nextRevision++}`;
+    }
+    checkRevision(entity, expected) {
+        if (typeof expected !== "string" || !expected)
+            throw failure("revision-required", "expectedRevision is required");
+        if (expected !== entity.revision)
+            throw failure("revision-conflict", "entity revision does not match");
     }
     publish(payload) {
         const value = payload;

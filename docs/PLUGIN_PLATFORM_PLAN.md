@@ -12,12 +12,17 @@ Plugin authors should use the [definitive plugin authoring guide](PLUGIN_SDK.md)
 for the current manifest, SDK, testing, packaging, installation, and lifecycle
 workflow. This plan remains the architectural record and phase authority.
 
-The current implementation is a useful contract prototype, but it is not a
-security boundary. Bundled TypeScript modules run in the main webview,
-capability checks run in frontend code, Rust commands do not know which module
-called them, and the two available module manifests are hardcoded separately in
-Rust and TypeScript. Runtime installation must not be added on top of that
-model.
+The canonical-storage Phase 5 contract is now reflected across this platform:
+broker reads carry opaque revisions, mutable calls require `expectedRevision`,
+the RPC envelope owns retry `requestId`s, and the host administration view
+reports lifecycle, selection, grants, installed versions, rollback state, and
+dependency resolution from Rust-owned state.
+
+The current implementation uses Rust-owned broker authority for plugin
+identity, capabilities, sessions, revisions, request IDs, and project data.
+Bundled and third-party plugin UIs run in isolated webviews and communicate
+through the versioned RPC contract. Frontend checks remain advisory; the Rust
+broker is the enforcement boundary.
 
 The target platform has one non-negotiable rule:
 
@@ -367,7 +372,8 @@ SDK feature discovery; it must not infer support from application version.
 RPC methods and data structures are explicitly versioned. Unknown methods and
 fields fail closed unless that schema marks them extensible. Deprecated APIs
 remain available for at least one host major release, with diagnostics during
-development and packaging.
+development and packaging. Revision conflicts are typed broker failures rather
+than best-effort overwrites; request IDs are retained for retryable mutations.
 
 Stored data version is independent of package and host API versions. Downgrades
 are allowed only when the target package declares compatibility with the

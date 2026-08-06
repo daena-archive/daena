@@ -22,13 +22,16 @@ export declare class FakePluginHost implements PluginRpcTransport {
     readonly calls: Array<{
         method: string;
         payload: unknown;
+        requestId?: string;
     }>;
     private readonly grants;
     private readonly entities;
+    private readonly committedRequests;
     private readonly queues;
     private readonly subscriptions;
     private readonly services;
     private nextEntity;
+    private nextRevision;
     private revoked;
     private declarativeActive;
     constructor(options: FakePluginHostOptions);
@@ -42,7 +45,7 @@ export declare class FakePluginHost implements PluginRpcTransport {
     invokeHostCommand(viewId: string, commandId: string, payload?: Record<string, unknown>): {
         type: string;
     };
-    call(method: string, payload: unknown): Promise<unknown>;
+    call(method: string, payload: unknown, requestId?: string): Promise<unknown>;
     private bootstrap;
     private require;
     private requireDynamic;
@@ -50,6 +53,8 @@ export declare class FakePluginHost implements PluginRpcTransport {
     private create;
     private update;
     private remove;
+    private revision;
+    private checkRevision;
     private publish;
     private subscribe;
     private poll;

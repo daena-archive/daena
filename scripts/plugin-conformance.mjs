@@ -43,4 +43,24 @@ assert.deepEqual(lifecycle.snapshot(manifest.id), {
 });
 lifecycle.deleteData(manifest.id);
 assert.equal(lifecycle.snapshot(manifest.id).dataPresent, false);
+
+const revisionHost = new FakePluginHost({
+  manifest,
+  grants: ["entity.read", "entity.write", "entity.delete"],
+});
+const revisionClient = revisionHost.client();
+const created = await revisionClient.createEntity("Revisioned note", "note", { requestId: "revisioned-create" });
+const replayed = await revisionClient.createEntity("This must not duplicate", "note", { requestId: "revisioned-create" });
+assert.equal(replayed.id, created.id);
+const updated = await revisionClient.updateEntity(created.id, "Updated note", "note", {
+  expectedRevision: created.revision,
+});
+assert.notEqual(updated.revision, created.revision);
+await assert.rejects(
+  revisionClient.updateEntity(created.id, "Stale note", "note", {
+    expectedRevision: created.revision,
+  }),
+  (error) => error?.code === "revision-conflict",
+);
+await revisionClient.deleteEntity(created.id, { expectedRevision: updated.revision });
 console.log(`plugin conformance passed (${brokerChecks} broker checks across ${fixturePaths.length} fixtures + lifecycle install/enable/upgrade/rollback/uninstall checks)`);

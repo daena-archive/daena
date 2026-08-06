@@ -225,6 +225,10 @@ pub struct GitStatus {
     pub repository: bool,
     pub branch: Option<String>,
     pub changes: Vec<String>,
+    #[serde(default)]
+    pub canonical_changes: Vec<String>,
+    #[serde(default)]
+    pub staged_canonical_changes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,6 +236,17 @@ pub struct GitLogEntry {
     pub hash: String,
     pub date: String,
     pub subject: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GitPreflight {
+    pub ready: bool,
+    pub diagnostics: Vec<String>,
+    pub canonical_paths: Vec<String>,
+    pub asset_paths: Vec<String>,
+    pub staging_paths: Vec<String>,
+    pub staged_paths: Vec<String>,
+    pub unmerged_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1090,6 +1105,61 @@ impl ProjectStore {
             .collect()
     }
 
+    fn git_status_entries(&self) -> Result<Vec<(u8, u8, String)>, CoreError> {
+        let output = self.run_git(&["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
+        if !output.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+        let mut entries = Vec::new();
+        let mut records = output.stdout.split(|byte| *byte == 0);
+        while let Some(record) = records.next() {
+            if record.len() < 4 || record[2] != b' ' {
+                continue;
+            }
+            let index_status = record[0];
+            let worktree_status = record[1];
+            let mut path = String::from_utf8_lossy(&record[3..]).into_owned();
+            if matches!(index_status, b'R' | b'C') || matches!(worktree_status, b'R' | b'C') {
+                if let Some(new_path) = records.next() {
+                    path = String::from_utf8_lossy(new_path).into_owned();
+                }
+            }
+            if !path.is_empty() {
+                entries.push((index_status, worktree_status, path));
+            }
+        }
+        Ok(entries)
+    }
+
+    fn git_staged_paths(&self) -> Result<Vec<String>, CoreError> {
+        let output = self.run_git(&["diff", "--cached", "--name-only", "-z"])?;
+        if !output.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+        Ok(output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(|path| String::from_utf8_lossy(path).into_owned())
+            .collect())
+    }
+
+    fn is_canonical_git_path(path: &str) -> bool {
+        path == "project.json"
+            || path == ".gitignore"
+            || path.starts_with("entities/")
+            || path.starts_with("plugins/")
+            || path.starts_with("assets/")
+    }
+
+    fn is_asset_git_path(path: &str) -> bool {
+        path.starts_with("assets/")
+    }
+
     pub fn git_status(&self) -> Result<GitStatus, CoreError> {
         let repository = self.run_git(&["rev-parse", "--is-inside-work-tree"])?;
         if !repository.status.success() {
@@ -1097,20 +1167,37 @@ impl ProjectStore {
                 repository: false,
                 branch: None,
                 changes: Vec::new(),
+                canonical_changes: Vec::new(),
+                staged_canonical_changes: Vec::new(),
             });
         }
         let branch = self.run_git(&["branch", "--show-current"])?;
-        let changes = self
-            .run_git(&["status", "--short"])?
-            .stdout
-            .split(|byte| *byte == b'\n')
-            .filter(|line| !line.is_empty())
-            .map(|line| String::from_utf8_lossy(line).to_string())
+        let entries = self.git_status_entries()?;
+        let changes = entries
+            .iter()
+            .map(|(index_status, worktree_status, path)| {
+                format!(
+                    "{}{} {}",
+                    *index_status as char, *worktree_status as char, path
+                )
+            })
+            .collect::<Vec<_>>();
+        let canonical_changes = entries
+            .iter()
+            .filter(|(_, _, path)| Self::is_canonical_git_path(path))
+            .map(|(_, _, path)| path.clone())
+            .collect::<Vec<_>>();
+        let staged_canonical_changes = self
+            .git_staged_paths()?
+            .into_iter()
+            .filter(|path| Self::is_canonical_git_path(path))
             .collect();
         Ok(GitStatus {
             repository: true,
             branch: Some(String::from_utf8_lossy(&branch.stdout).trim().to_string()),
             changes,
+            canonical_changes,
+            staged_canonical_changes,
         })
     }
 
@@ -1154,32 +1241,132 @@ impl ProjectStore {
             .collect())
     }
 
+    pub fn git_preflight(&self) -> Result<GitPreflight, CoreError> {
+        let status = self.git_status()?;
+        if !status.repository {
+            return Ok(GitPreflight {
+                ready: false,
+                diagnostics: vec!["project is not a git repository".into()],
+                canonical_paths: Vec::new(),
+                asset_paths: Vec::new(),
+                staging_paths: Vec::new(),
+                staged_paths: Vec::new(),
+                unmerged_paths: Vec::new(),
+            });
+        }
+
+        let root = self.project_root()?;
+        crate::transactions::recover_transactions(root)?;
+        let entries = self.git_status_entries()?;
+        let staged_paths = self.git_staged_paths()?;
+        let mut diagnostics = Vec::new();
+        let unmerged_paths = entries
+            .iter()
+            .filter(|(index_status, worktree_status, _)| {
+                matches!(
+                    (*index_status, *worktree_status),
+                    (b'D', b'D')
+                        | (b'A', b'U')
+                        | (b'U', b'D')
+                        | (b'U', b'A')
+                        | (b'D', b'U')
+                        | (b'A', b'A')
+                        | (b'U', b'U')
+                )
+            })
+            .map(|(_, _, path)| path.clone())
+            .collect::<Vec<_>>();
+        if !unmerged_paths.is_empty() {
+            diagnostics.extend(
+                unmerged_paths
+                    .iter()
+                    .map(|path| format!("git.unmerged: {path}")),
+            );
+        }
+
+        let report = self.reconcile_external_changes()?;
+        diagnostics.extend(report.diagnostics);
+        if diagnostics.is_empty() {
+            if let Err(error) = self.ensure_source_index_current() {
+                diagnostics.push(format!("index.stale: {error}"));
+            }
+        }
+
+        let noncanonical_staged = staged_paths
+            .iter()
+            .filter(|path| !Self::is_canonical_git_path(path))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !noncanonical_staged.is_empty() {
+            diagnostics.push(format!(
+                "git.noncanonical-staged: {}",
+                noncanonical_staged.join(", ")
+            ));
+        }
+
+        let canonical_paths = entries
+            .iter()
+            .filter(|(_, _, path)| Self::is_canonical_git_path(path))
+            .map(|(_, _, path)| path.clone())
+            .chain(
+                staged_paths
+                    .iter()
+                    .filter(|path| Self::is_canonical_git_path(path))
+                    .cloned(),
+            )
+            .collect::<BTreeSet<_>>();
+        let mut canonical_paths = canonical_paths.iter().cloned().collect::<Vec<_>>();
+        let asset_paths = canonical_paths
+            .iter()
+            .filter(|path| Self::is_asset_git_path(path))
+            .cloned()
+            .collect::<Vec<_>>();
+        let staging_paths = canonical_paths.clone();
+        canonical_paths.shrink_to_fit();
+
+        Ok(GitPreflight {
+            ready: diagnostics.is_empty(),
+            diagnostics,
+            canonical_paths,
+            asset_paths,
+            staging_paths,
+            staged_paths,
+            unmerged_paths,
+        })
+    }
+
+    pub fn git_staging_preview(&self) -> Result<GitPreflight, CoreError> {
+        self.git_preflight()
+    }
+
     pub fn git_commit(&self, message: String) -> Result<GitStatus, CoreError> {
         if message.trim().is_empty() {
             return Err(CoreError::NotFound("commit message cannot be empty".into()));
         }
-        if !self.git_status()?.repository {
-            return Err(CoreError::NotFound(
-                "project is not a git repository".into(),
-            ));
-        }
-        let report = self.reconcile_external_changes()?;
-        if !report.diagnostics.is_empty() {
+        let preflight = self.git_preflight()?;
+        if !preflight.ready {
             return Err(CoreError::Conflict(format!(
                 "cannot commit while canonical diagnostics remain: {}",
-                report.diagnostics.join("; ")
+                preflight.diagnostics.join("; ")
             )));
         }
-        self.ensure_source_index_current()?;
-        let add = self.run_git(&["add", "--all"])?;
+        if preflight.staging_paths.is_empty() {
+            return Err(CoreError::Git(
+                "no canonical project changes to commit".into(),
+            ));
+        }
+        let mut add_args = vec!["add".to_string(), "--all".to_string(), "--".to_string()];
+        add_args.extend(preflight.staging_paths.iter().cloned());
+        let add_args = add_args.iter().map(String::as_str).collect::<Vec<_>>();
+        let add = self.run_git(&add_args)?;
         if !add.status.success() {
-            return Err(CoreError::NotFound(
+            return Err(CoreError::Git(
                 String::from_utf8_lossy(&add.stderr).trim().into(),
             ));
         }
         let commit = self.run_git(&["commit", "-m", message.trim()])?;
         if !commit.status.success() {
-            return Err(CoreError::NotFound(
+            return Err(CoreError::Git(
                 String::from_utf8_lossy(&commit.stderr).trim().into(),
             ));
         }
@@ -3411,6 +3598,62 @@ mod tests {
     }
 
     #[test]
+    fn git_preflight_lists_only_canonical_paths_and_rejects_staged_unrelated_files() {
+        let root = std::env::temp_dir().join(format!("daena-git-preview-{}", Uuid::new_v4()));
+        let store = ProjectStore::open_directory(&root).unwrap();
+        let run_git = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap()
+        };
+        assert!(run_git(&["init", "-q"]).status.success());
+        assert!(run_git(&["config", "user.email", "tests@daena.local"])
+            .status
+            .success());
+        assert!(run_git(&["config", "user.name", "Daena tests"])
+            .status
+            .success());
+        assert!(run_git(&["config", "commit.gpgsign", "false"])
+            .status
+            .success());
+        assert!(run_git(&["add", "--all"]).status.success());
+        assert!(run_git(&["commit", "-qm", "base"]).status.success());
+
+        store
+            .create_entity(CreateEntity {
+                name: "Preview entity".into(),
+                entity_type: Some("place".into()),
+            })
+            .unwrap();
+        let preview = store.git_staging_preview().unwrap();
+        assert!(preview.ready);
+        assert!(preview
+            .staging_paths
+            .iter()
+            .any(|path| path.starts_with("entities/") && path.ends_with("/entity.json")));
+        assert!(preview
+            .staging_paths
+            .iter()
+            .all(|path| ProjectStore::is_canonical_git_path(path)));
+
+        std::fs::write(root.join("README.md"), "unrelated\n").unwrap();
+        assert!(run_git(&["add", "README.md"]).status.success());
+        let rejected = store.git_preflight().unwrap();
+        assert!(!rejected.ready);
+        assert!(rejected
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.starts_with("git.noncanonical-staged:")));
+        assert!(rejected
+            .staging_paths
+            .iter()
+            .all(|path| { ProjectStore::is_canonical_git_path(path) }));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn directory_mutations_return_revisions_and_replay_requests() {
         let root = std::env::temp_dir().join(format!("daena-revision-{}", Uuid::new_v4()));
         let store = ProjectStore::open_directory(&root).unwrap();
@@ -4332,5 +4575,67 @@ mod tests {
         assert!(reopened.search("Canonical prose".into()).is_err());
         drop(reopened);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fresh_git_clone_rebuilds_its_ignored_index() {
+        let root = std::env::temp_dir().join(format!("daena-git-clone-source-{}", Uuid::new_v4()));
+        let clone = std::env::temp_dir().join(format!("daena-git-clone-copy-{}", Uuid::new_v4()));
+        let store = ProjectStore::open_directory(&root).unwrap();
+        let entity = store
+            .create_entity(CreateEntity {
+                name: "Cloned canonical entry".into(),
+                entity_type: Some("place".into()),
+            })
+            .unwrap();
+        drop(store);
+
+        let run_git = |cwd: &Path, args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .unwrap()
+        };
+        assert!(run_git(&root, &["init", "-q"]).status.success());
+        assert!(
+            run_git(&root, &["config", "user.email", "tests@daena.local"])
+                .status
+                .success()
+        );
+        assert!(run_git(&root, &["config", "user.name", "Daena tests"])
+            .status
+            .success());
+        assert!(run_git(&root, &["config", "commit.gpgsign", "false"])
+            .status
+            .success());
+        assert!(run_git(&root, &["add", "--all"]).status.success());
+        assert!(run_git(&root, &["commit", "-qm", "canonical project"])
+            .status
+            .success());
+        let clone_output = Command::new("git")
+            .args([
+                "clone",
+                "--quiet",
+                root.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(clone_output.status.success());
+        assert!(!clone.join(".daena").exists());
+
+        let reopened = ProjectStore::open_directory(&clone).unwrap();
+        assert_eq!(reopened.list_entities().unwrap()[0].id, entity.id);
+        drop(reopened);
+        std::fs::remove_dir_all(clone.join(".daena")).unwrap();
+        let rebuilt = ProjectStore::open_directory(&clone).unwrap();
+        assert_eq!(
+            rebuilt.list_entities().unwrap()[0].name,
+            "Cloned canonical entry"
+        );
+        drop(rebuilt);
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(clone).unwrap();
     }
 }

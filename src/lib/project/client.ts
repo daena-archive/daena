@@ -16,7 +16,22 @@ export interface Relationship { id: string; source_id: string; target_id: string
 export interface Asset { id: string; entity_id: string; namespace: string; filename: string; content_hash: string; size: number; mime_type: string; path: string; created_at: string; revision: string; }
 export interface ProjectInfo { name: string; root: string; index_status: string; assets: string; }
 export interface ExternalChangeReport { changed: boolean; paths: string[]; diagnostics: string[]; }
-export interface GitStatus { repository: boolean; branch: string | null; changes: string[]; }
+export interface GitStatus {
+  repository: boolean;
+  branch: string | null;
+  changes: string[];
+  canonical_changes: string[];
+  staged_canonical_changes: string[];
+}
+export interface GitPreflight {
+  ready: boolean;
+  diagnostics: string[];
+  canonical_paths: string[];
+  asset_paths: string[];
+  staging_paths: string[];
+  staged_paths: string[];
+  unmerged_paths: string[];
+}
 export interface GitLogEntry { hash: string; date: string; subject: string; }
 export type { ModuleManifest };
 export type ProjectModuleManifest = ModuleManifest & { enabled: boolean };
@@ -77,6 +92,8 @@ export const project = {
   reconcileExternalChanges: () => invoke<ExternalChangeReport>("project_reconcile_external_changes"),
   saveRecoveryCopy: (entityId: string, body: string) => invoke<string>("project_save_recovery_copy", { entityId, body }),
   gitStatus: () => invoke<GitStatus>("project_git_status"),
+  gitPreflight: () => invoke<GitPreflight>("project_git_preflight"),
+  gitStagingPreview: () => invoke<GitPreflight>("project_git_staging_preview"),
   gitInit: () => invoke<GitStatus>("project_git_init"),
   gitLog: () => invoke<GitLogEntry[]>("project_git_log"),
   gitCommit: (message: string) => invoke<GitStatus>("project_git_commit", { message }),

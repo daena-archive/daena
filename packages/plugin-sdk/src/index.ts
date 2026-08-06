@@ -9,12 +9,13 @@ import type {
   PluginRpcError,
   PluginBootstrap,
   Service,
+  MutationOptions,
 } from "./generated.js";
 
 export * from "./generated.js";
 
 export interface PluginRpcTransport {
-  call(method: string, payload: unknown): Promise<unknown>;
+  call(method: string, payload: unknown, requestId?: string): Promise<unknown>;
 }
 
 export interface BrowserPluginRpcTransportOptions {
@@ -33,12 +34,12 @@ export interface BrowserPluginRpcTransportOptions {
 }
 
 export interface PluginRpcClient {
-  call<T>(method: string, payload: unknown): Promise<T>;
+  call<T>(method: string, payload: unknown, requestId?: string): Promise<T>;
   bootstrap(): Promise<PluginBootstrap>;
   listEntities(entityType?: string): Promise<EntityRecord[]>;
-  createEntity(entityType: string, fields: Record<string, unknown>, document?: string): Promise<EntityRecord>;
-  updateEntity(id: string, fields: Record<string, unknown>, document?: string): Promise<EntityRecord>;
-  deleteEntity(id: string): Promise<void>;
+  createEntity(name: string, entityType?: string, options?: MutationOptions): Promise<EntityRecord>;
+  updateEntity(id: string, name?: string, entityType?: string | null, options?: MutationOptions): Promise<EntityRecord>;
+  deleteEntity(id: string, options?: MutationOptions): Promise<void>;
   publishEvent(name: string, version: number, payload: unknown): Promise<void>;
   subscribeEvent(name: string, version: number): Promise<void>;
   pollEvents<T = unknown>(name: string, version: number): Promise<T[]>;
@@ -63,9 +64,9 @@ function qualified(name: string, version: number): string {
   return `${name}@${version}`;
 }
 
-async function callTransport<T>(transport: PluginRpcTransport, method: string, payload: unknown): Promise<T> {
+async function callTransport<T>(transport: PluginRpcTransport, method: string, payload: unknown, requestId?: string): Promise<T> {
   try {
-    return await transport.call(method, payload) as T;
+    return await transport.call(method, payload, requestId) as T;
   } catch (error) {
     if (isRpcError(error)) throw new PluginRpcException(error);
     throw error;
@@ -171,10 +172,10 @@ export function createBrowserPluginRpcTransport(options: BrowserPluginRpcTranspo
     await handshake;
   }
 
-  async function call(method: string, payload: unknown): Promise<unknown> {
+  async function call(method: string, payload: unknown, suppliedRequestId?: string): Promise<unknown> {
     if (method === "plugin.bootstrap") return bootstrap();
     await ensureSession();
-    const requestId = `${pluginId}-${++sequence}`;
+    const requestId = suppliedRequestId ?? `${pluginId}-${++sequence}`;
     const value = await post({
       op: "rpc",
       request: { rpcVersion: 1, sessionId, requestId, method, payload },
@@ -197,6 +198,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function normalizeEntity(value: unknown): EntityRecord {
+  if (!isRecord(value) || typeof value.id !== "string" || typeof value.name !== "string" ||
+    typeof value.deleted !== "boolean" || typeof value.revision !== "string") {
+    throw rpcFailure("transport.protocol", "broker returned an invalid entity record");
+  }
+  const entityType = value.entityType ?? value.entity_type;
+  const createdAt = value.createdAt ?? value.created_at;
+  const updatedAt = value.updatedAt ?? value.updated_at;
+  if ((entityType !== null && typeof entityType !== "string") || typeof createdAt !== "string" || typeof updatedAt !== "string") {
+    throw rpcFailure("transport.protocol", "broker returned an invalid entity record");
+  }
+  return {
+    id: value.id,
+    name: value.name,
+    entityType: entityType as string | null,
+    deleted: value.deleted,
+    createdAt,
+    updatedAt,
+    revision: value.revision,
+  };
+}
+
 function checkKeys(value: Record<string, unknown>, label: string, allowed: string[], errors: string[]): void {
   const known = new Set(allowed);
   for (const key of Object.keys(value)) if (!known.has(key)) errors.push(`unknown ${label} key: ${key}`);
@@ -205,12 +228,12 @@ function checkKeys(value: Record<string, unknown>, label: string, allowed: strin
 /** Framework-neutral SDK boundary. The host owns identity and authorization. */
 export function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcClient {
   return {
-    call: <T>(method: string, payload: unknown) => callTransport<T>(transport, method, payload),
+    call: <T>(method: string, payload: unknown, requestId?: string) => callTransport<T>(transport, method, payload, requestId),
     bootstrap: () => callTransport<PluginBootstrap>(transport, "plugin.bootstrap", {}),
-    listEntities: (entityType?: string) => callTransport<EntityRecord[]>(transport, "entity.list", entityType ? { entityType } : {}),
-    createEntity: (entityType, fields, document) => callTransport<EntityRecord>(transport, "entity.create", { entityType, fields, document }),
-    updateEntity: (id, fields, document) => callTransport<EntityRecord>(transport, "entity.update", { id, fields, document }),
-    deleteEntity: (id) => callTransport<void>(transport, "entity.delete", { id }),
+    listEntities: async (entityType?: string) => (await callTransport<unknown[]>(transport, "entity.list", entityType ? { entityType } : {})).map(normalizeEntity),
+    createEntity: async (name, entityType, options) => normalizeEntity(await callTransport<unknown>(transport, "entity.create", { name, type: entityType ?? null }, options?.requestId)),
+    updateEntity: async (id, name, entityType, options) => normalizeEntity(await callTransport<unknown>(transport, "entity.update", { id, name: name ?? null, type: entityType ?? null, expectedRevision: options?.expectedRevision }, options?.requestId)),
+    deleteEntity: (id, options) => callTransport<void>(transport, "entity.delete", { id, expectedRevision: options?.expectedRevision }, options?.requestId),
     publishEvent: (name, version, payload) => callTransport<void>(transport, "event.publish", { type: qualified(name, version), payload }),
     subscribeEvent: (name, version) => callTransport<void>(transport, "event.subscribe", { type: qualified(name, version) }),
     pollEvents: <T>(name: string, version: number) => callTransport<T[]>(transport, "event.poll", { type: qualified(name, version) }),

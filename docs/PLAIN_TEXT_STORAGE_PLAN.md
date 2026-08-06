@@ -461,6 +461,15 @@ edits refresh live, and conflicting edits never overwrite an unsaved draft.
   and the example project so files are canonical and SQLite is explicitly
   derived.
 
+The Phase 5 Git boundary exposes a typed preflight/staging preview. It recovers
+pending transactions, validates the current canonical scan and source-index
+hashes, rejects unmerged files and pre-staged noncanonical work, and reports
+the exact canonical paths and asset paths that the explicit commit action will
+stage. The broker and generated SDK contracts carry canonical revisions on
+reads; mutable calls require `expectedRevision`, while the RPC envelope keeps
+the retry `requestId` authoritative. Bundled modules, the in-memory plugin
+test host, and administration view use the same contract.
+
 Exit gate: bundled and third-party test plugins use only revision-aware broker
 APIs, and a fresh Git clone opens after rebuilding its ignored index.
 

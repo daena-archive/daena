@@ -12,12 +12,12 @@ revocation state. Plugin requests do not provide an authoritative caller ID.
 
 Every broker method validates the session, payload, capability, and resource
 scope before calling a core service. TypeScript checks are developer feedback,
-never enforcement.
+never enforcement. Canonical reads carry an opaque revision. Rust requires that
+revision for every mutable broker operation and binds retryable operations to
+the envelope request ID before entering the repository-first core boundary.
 
 ## Consequences
 
-The existing frontend `ModuleContext` is transitional. It must become a
-broker-backed SDK client during later phases and must not gain direct access to
-the trusted project client. Session revocation is required for disablement,
+The frontend `ModuleContext` and public SDK are broker-backed clients and must
+not gain direct access to the trusted project client. Session revocation is required for disablement,
 upgrade, uninstall, project close, and application restart.
-

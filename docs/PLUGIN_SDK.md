@@ -63,6 +63,8 @@ npm run build:plugin-sdk
 npm run build:plugin-examples
 npm run test:plugin-cli
 npm run test:plugin-conformance
+npm run test:plugin-transport
+npm run check
 ```
 
 ## 3. Create a plugin
@@ -286,6 +288,27 @@ const client = createPluginRpcClient(transport);
 const bootstrap = await client.bootstrap();
 const entries = await client.listEntities("forecast");
 ```
+
+Mutable broker calls are revision-aware. Use the revision returned by a read
+and pass it back on the mutation; the SDK transport supplies a request ID for
+retry-safe operations.
+
+```ts
+const [entry] = await client.listEntities("forecast");
+const updated = await client.updateEntity(
+  entry.id,
+  "Evening forecast",
+  "forecast",
+  { expectedRevision: entry.revision },
+);
+```
+
+Entity updates change the entry name/type; document and namespaced field
+mutations use the corresponding `document.save` and `field.set` broker
+payloads, each with that record's own revision. Stale revisions fail with a
+typed `revision-conflict` error. Do not retry a mutation with a newly observed
+revision unless the user or plugin has explicitly decided how to merge the
+change.
 
 `createBrowserPluginRpcTransport` reads the host-assigned plugin ID from the
 webview document and the current project ID from its URL, then performs the

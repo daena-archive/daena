@@ -9,9 +9,9 @@ The product will use a Rust/Tauri host with a Svelte 5, TypeScript, and Vite fro
 ## Architecture
 
 The public plugin-platform contract and its phased migration plan are defined
-in [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md). Runtime-installable
-plugins remain deferred until the bundled Lore and Timeline modules pass the
-broker-backed conversion gate.
+in [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md). Bundled modules and
+runtime-installable plugins share the broker-backed contract, including
+revision-aware mutations and host-owned administration state.
 
 - The core owns project storage, stable IDs, migrations, entity links, assets, search indexing, compatibility backups, and permission-checked native operations.
 - A project is a portable directory: `project.json`, entity metadata, Markdown documents, structured JSON, and native assets are canonical; `.daena/index.sqlite` is disposable derived state. Git integration is optional and user-controlled.
@@ -19,6 +19,8 @@ broker-backed conversion gate.
 - Modules add meaning and presentation, not separate databases. A map pin, timeline event, and manuscript reference point to the same entity.
 - Module data is namespaced and preserved when a module is disabled or uninstalled. Views and indexes are rebuildable derived data.
 - The TypeScript module API is framework-neutral: modules register schemas, routes, commands, views, migrations, and capability requirements; UI views mount into a host element and return a cleanup handle.
+- Built-in Git commits expose a typed preflight and exact canonical staging preview. They never stage unrelated work, unresolved merges, or a stale/invalid canonical index.
+- Broker reads expose opaque canonical revisions. Updates, deletes, document saves, field and relationship mutations, and asset registration require the observed revision; retryable mutations retain request IDs across Rust, SDK, bundled modules, and the test host.
 - Svelte is the official first-party implementation choice, but modules are not required to expose Svelte components.
 
 ## MVP

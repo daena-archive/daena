@@ -8,17 +8,19 @@ import type {
   EntityCreateInput,
   DocumentRecord,
   AssetRecord,
+  FieldRecord,
   Relationship,
   UUID,
+  MutationOptions,
 } from "../../../packages/module-api/src/index";
 import { invoke } from "@tauri-apps/api/core";
 import { createPluginRpcClient } from "../../../packages/plugin-sdk/src/index";
 
-interface RawEntity { id: string; name: string; entity_type: string | null; deleted: boolean; created_at: string; updated_at: string }
-interface RawDocument { id: string; entity_id: string; format: string; body: string; updated_at: string }
-interface RawField { entity_id: string; namespace: string; key: string; value: unknown }
-interface RawRelationship { id: string; source_id: string; target_id: string; relationship_type: string; metadata: string }
-interface RawAsset { id: string; entity_id: string; namespace: string; filename: string; content_hash: string; size: number; mime_type: string; path: string; created_at: string }
+interface RawEntity { id: string; name: string; entity_type: string | null; deleted: boolean; created_at: string; updated_at: string; revision: string }
+interface RawDocument { id: string; entity_id: string; format: string; body: string; updated_at: string; revision: string }
+interface RawField { entity_id: string; namespace: string; key: string; value: unknown; revision: string }
+interface RawRelationship { id: string; source_id: string; target_id: string; relationship_type: string; metadata: string; revision: string }
+interface RawAsset { id: string; entity_id: string; namespace: string; filename: string; content_hash: string; size: number; mime_type: string; path: string; created_at: string; revision: string }
 
 function toUUID(id: string): UUID {
   return id as UUID;
@@ -30,6 +32,7 @@ function toEntityRecord(e: RawEntity): EntityRecord {
     name: e.name,
     type: e.entity_type,
     deleted: e.deleted,
+    revision: e.revision,
     createdAt: e.created_at,
     updatedAt: e.updated_at,
     documents: [],
@@ -43,6 +46,7 @@ function toEntitySummary(e: RawEntity): EntitySummary {
     name: e.name,
     type: e.entity_type,
     deleted: e.deleted,
+    revision: e.revision,
   };
 }
 
@@ -53,6 +57,7 @@ function toDocumentRecord(d: RawDocument): DocumentRecord {
     format: d.format as DocumentRecord["format"],
     body: d.body,
     updatedAt: d.updated_at,
+    revision: d.revision,
   };
 }
 
@@ -63,6 +68,7 @@ function toRelationship(r: RawRelationship): Relationship {
     targetId: toUUID(r.target_id),
     type: r.relationship_type,
     metadata: JSON.parse(r.metadata || "{}"),
+    revision: r.revision,
   };
 }
 
@@ -77,6 +83,7 @@ function toAsset(asset: RawAsset): AssetRecord {
     mimeType: asset.mime_type,
     path: asset.path,
     createdAt: asset.created_at,
+    revision: asset.revision,
   };
 }
 
@@ -151,7 +158,11 @@ export function buildModuleContext(
 ): ModuleContext {
   void projectId;
   const rpc = createPluginRpcClient({
-    call: (method, payload) => invoke("trusted_module_rpc", { method, payload }),
+    call: (method, payload, requestId) => invoke("trusted_module_rpc", {
+      method,
+      payload,
+      requestId: requestId ?? crypto.randomUUID(),
+    }),
   });
   return {
     module: manifest,
@@ -178,7 +189,7 @@ export function buildModuleContext(
         );
         return filtered.slice(0, query?.limit ?? filtered.length).map(toEntitySummary);
       },
-      create: async (input: EntityCreateInput) => {
+      create: async (input: EntityCreateInput, options?: MutationOptions) => {
         checkCapability(manifest, "entity.write");
         if (input.document) checkCapability(manifest, "document.write");
         const fields = input.fields ? createFields(manifest, input.fields, input.type) : undefined;
@@ -189,17 +200,18 @@ export function buildModuleContext(
           fields,
           relationships,
           document: input.document,
-        });
+          expectedRevision: undefined,
+        }, options?.requestId);
         return toEntityRecord(entity);
       },
-      update: async (id: UUID, patch: { name?: string; type?: string | null }) => {
+      update: async (id: UUID, patch: { name?: string; type?: string | null }, options?: MutationOptions) => {
         checkCapability(manifest, "entity.write");
-        const entity = await rpc.call<RawEntity>("entity.update", { id, name: patch.name ?? null, type: patch.type ?? null });
+        const entity = await rpc.call<RawEntity>("entity.update", { id, name: patch.name ?? null, type: patch.type ?? null, expectedRevision: options?.expectedRevision }, options?.requestId);
         return toEntityRecord(entity);
       },
-      delete: async (id: UUID) => {
+      delete: async (id: UUID, options?: MutationOptions) => {
         checkCapability(manifest, "entity.delete");
-        await rpc.call<null>("entity.delete", { id });
+        await rpc.call<null>("entity.delete", { id, expectedRevision: options?.expectedRevision }, options?.requestId);
       },
     },
     documents: {
@@ -207,9 +219,9 @@ export function buildModuleContext(
         entityId: UUID;
         body: string;
         format?: DocumentRecord["format"];
-      }) => {
+      }, options?: MutationOptions) => {
         checkCapability(manifest, "document.write");
-        await rpc.call<null>("document.save", input);
+        await rpc.call<null>("document.save", { ...input, expectedRevision: options?.expectedRevision }, options?.requestId);
         const docs = await rpc.call<RawDocument[]>("document.list", { entityId: input.entityId });
         return docs.map(toDocumentRecord)[0] ?? null;
       },
@@ -221,10 +233,18 @@ export function buildModuleContext(
         const fields = await rpc.call<RawField[]>("field.list", { entityId, namespace });
         return Object.fromEntries(fields.filter((field) => !namespace || field.namespace === namespace).map((field) => [field.key, field.value]));
       },
-      set: async (entityId: UUID, key: string, value: unknown) => {
+      listRecords: async (entityId: UUID): Promise<FieldRecord[]> => {
+        checkCapability(manifest, "field.read:self");
+        const namespace = manifest.schemas[0]?.namespace;
+        const fields = await rpc.call<RawField[]>("field.list", { entityId, namespace });
+        return fields
+          .filter((field) => !namespace || field.namespace === namespace)
+          .map((field) => ({ entityId: toUUID(field.entity_id), namespace: field.namespace, key: field.key, value: field.value, revision: field.revision }));
+      },
+      set: async (entityId: UUID, key: string, value: unknown, options?: MutationOptions) => {
         checkCapability(manifest, "field.write:self");
         const namespace = validateField(manifest, key, value);
-        await rpc.call<null>("field.set", { entityId, namespace, key, value });
+        await rpc.call<null>("field.set", { entityId, namespace, key, value, expectedRevision: options?.expectedRevision }, options?.requestId);
       },
     },
     relationships: {
@@ -233,22 +253,23 @@ export function buildModuleContext(
         const rels = await rpc.call<RawRelationship[]>("relationship.list", { entityId });
         return rels.map(toRelationship);
       },
-      create: async (input: Omit<Relationship, "id">) => {
+      create: async (input: Omit<Relationship, "id" | "revision">, options?: MutationOptions) => {
         checkCapability(manifest, "relationship.write");
         const rel = await rpc.call<RawRelationship>("relationship.create", {
           source_id: input.sourceId,
           target_id: input.targetId,
           relationship_type: input.type,
           metadata: JSON.stringify(input.metadata ?? {}),
-        });
+          expectedRevision: options?.expectedRevision,
+        }, options?.requestId);
         return toRelationship(rel);
       },
-      delete: async (id: UUID, relationshipType: string) => {
+      delete: async (id: UUID, relationshipType: string, options?: MutationOptions) => {
         checkCapability(manifest, "relationship.write");
         if (!manifest.schemas.some((schema) => schema.fields.some((field) => field.relationshipType === relationshipType))) {
           throw new Error(`Module ${manifest.id} does not declare relationship type: ${relationshipType}`);
         }
-        await rpc.call<null>("relationship.delete", { id, relationship_type: relationshipType });
+        await rpc.call<null>("relationship.delete", { id, relationship_type: relationshipType, expectedRevision: options?.expectedRevision }, options?.requestId);
       },
     },
     assets: {
@@ -257,7 +278,7 @@ export function buildModuleContext(
         const namespace = manifest.schemas[0]?.namespace;
         return (await rpc.call<RawAsset[]>("asset.list", { entityId, namespace })).filter((asset) => manifest.schemas.some((schema) => schema.namespace === asset.namespace)).map(toAsset);
       },
-      register: async (input) => {
+      register: async (input, options?: MutationOptions) => {
         checkCapability(manifest, "asset.import");
         if (!manifest.schemas.some((schema) => schema.namespace === input.namespace)) throw new Error(`Module ${manifest.id} does not own namespace: ${input.namespace}`);
         return toAsset(await rpc.call<RawAsset>("asset.register", {
@@ -268,7 +289,8 @@ export function buildModuleContext(
           size: input.size,
           mime_type: input.mimeType,
           path: input.path,
-        }));
+          expectedRevision: options?.expectedRevision,
+        }, options?.requestId));
       },
     },
     search: async (query: string) => {

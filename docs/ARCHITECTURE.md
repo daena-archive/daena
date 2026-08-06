@@ -4,11 +4,10 @@ This document turns the MVP in `docs/PLAN.md` into the contract implemented by
 the host and bundled modules. The contract is intentionally small: the core
 owns durable data and modules own meaning and presentation.
 
-The third-party plugin platform contract is defined in
+The plugin platform contract is defined in
 [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md). Its Phase 0 schemas,
-Rust API types, generated SDK types, and ADRs are authoritative for future
-runtime plugins; this document describes the current bundled-module behavior
-until the later conversion phases are complete.
+Rust API types, generated SDK types, broker transport, bundled modules, test
+host, and ADRs are the shared authority for bundled and runtime plugins.
 
 For creating or packaging a plugin, use the [definitive plugin authoring
 guide](./PLUGIN_SDK.md).
@@ -17,10 +16,13 @@ guide](./PLUGIN_SDK.md).
 
 Each project is a portable directory containing `project.json`, canonical
 entity/document files, a disposable `.daena/index.sqlite` derived index, and
-an `assets/` tree divided into images, videos, maps, and other files. Optional
-Git operations are explicit user actions. The version-2 format is being
-introduced incrementally; the filesystem repository and full index rebuild are
-the next storage phases.
+an `assets/` tree divided into images, videos, maps, and other files. Git
+operations are explicit user actions. Before a built-in commit, the Rust core
+recovers pending file transactions, scans and validates canonical sources,
+checks the disposable index against current source hashes, rejects unmerged
+files and pre-staged noncanonical paths, and returns an exact staging preview
+of `project.json`, entity/plugin records, and assets. Only those previewed
+paths are staged; `.daena/` and SQLite files remain ignored derived state.
 
 Every entity has an immutable UUID, a
 display name, an optional type, timestamps, and a soft-delete marker. Prose is

@@ -10,6 +10,7 @@ export interface EntitySummary {
   name: string;
   type: string | null;
   deleted: boolean;
+  revision: string;
 }
 
 export interface EntityRecord extends EntitySummary {
@@ -25,6 +26,7 @@ export interface DocumentRecord {
   format: "markdown" | "plain-text" | "rich-text";
   body: string;
   updatedAt: string;
+  revision: string;
 }
 
 export interface Relationship {
@@ -33,6 +35,7 @@ export interface Relationship {
   targetId: UUID;
   type: string;
   metadata: Record<string, unknown>;
+  revision: string;
 }
 
 export interface AssetRecord {
@@ -45,6 +48,20 @@ export interface AssetRecord {
   mimeType: string;
   path: string;
   createdAt: string;
+  revision: string;
+}
+
+export interface MutationOptions {
+  expectedRevision?: string;
+  requestId?: string;
+}
+
+export interface FieldRecord {
+  entityId: UUID;
+  namespace: string;
+  key: string;
+  value: unknown;
+  revision: string;
 }
 
 export interface EntityQuery {
@@ -82,25 +99,26 @@ export interface ModuleContext {
   entities: {
     get(id: UUID): Promise<EntityRecord | null>;
     list(query?: EntityQuery): Promise<EntitySummary[]>;
-    create(input: EntityCreateInput): Promise<EntityRecord>;
-    update(id: UUID, patch: { name?: string; type?: string | null }): Promise<EntityRecord>;
-    delete(id: UUID): Promise<void>;
+    create(input: EntityCreateInput, options?: MutationOptions): Promise<EntityRecord>;
+    update(id: UUID, patch: { name?: string; type?: string | null }, options?: MutationOptions): Promise<EntityRecord>;
+    delete(id: UUID, options?: MutationOptions): Promise<void>;
   };
   documents: {
-    save(input: { entityId: UUID; body: string; format?: DocumentRecord["format"] }): Promise<DocumentRecord>;
+    save(input: { entityId: UUID; body: string; format?: DocumentRecord["format"] }, options?: MutationOptions): Promise<DocumentRecord>;
   };
   fields: {
     list(entityId: UUID): Promise<Record<string, unknown>>;
-    set(entityId: UUID, key: string, value: unknown): Promise<void>;
+    listRecords(entityId: UUID): Promise<FieldRecord[]>;
+    set(entityId: UUID, key: string, value: unknown, options?: MutationOptions): Promise<void>;
   };
   relationships: {
     list(entityId: UUID): Promise<Relationship[]>;
-    create(input: Omit<Relationship, "id">): Promise<Relationship>;
-    delete(id: UUID, relationshipType: string): Promise<void>;
+    create(input: Omit<Relationship, "id" | "revision">, options?: MutationOptions): Promise<Relationship>;
+    delete(id: UUID, relationshipType: string, options?: MutationOptions): Promise<void>;
   };
   assets: {
     list(entityId: UUID): Promise<AssetRecord[]>;
-    register(input: Omit<AssetRecord, "id" | "createdAt" | "entityId"> & { entityId: UUID }): Promise<AssetRecord>;
+    register(input: Omit<AssetRecord, "id" | "createdAt" | "revision" | "entityId"> & { entityId: UUID }, options?: MutationOptions): Promise<AssetRecord>;
   };
   search(query: string): Promise<EntitySummary[]>;
 }

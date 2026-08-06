@@ -31,7 +31,15 @@ function fakeFetch() {
         rpcVersion: 1,
         requestId: body.request.requestId,
         ok: true,
-        result: [{ id: "entity-1" }],
+        result: [{
+          id: "entity-1",
+          name: "Entity 1",
+          entity_type: "place",
+          deleted: false,
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+          revision: "revision-1",
+        }],
       });
     }
     return response(200, {
@@ -52,7 +60,15 @@ const client = createPluginRpcClient(createBrowserPluginRpcTransport({
 }));
 const bootstrap = await client.bootstrap();
 assert.equal(bootstrap.sessionId, "session-1");
-assert.deepEqual(await client.listEntities(), [{ id: "entity-1" }]);
+assert.deepEqual(await client.listEntities(), [{
+  id: "entity-1",
+  name: "Entity 1",
+  entityType: "place",
+  deleted: false,
+  createdAt: "2026-01-01T00:00:00Z",
+  updatedAt: "2026-01-01T00:00:00Z",
+  revision: "revision-1",
+}]);
 assert.equal(first.bootstrapCount, 1);
 assert.equal(first.calls[1].request.sessionId, "session-1");
 assert.equal(first.calls[1].request.requestId, "com.example.plugin-1");

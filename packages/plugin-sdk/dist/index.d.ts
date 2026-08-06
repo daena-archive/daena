@@ -1,7 +1,7 @@
-import type { EntityRecord, Event, Migration, MigrationAuthoringOptions, MigrationOperation, PluginManifest, PluginRpcError, PluginBootstrap, Service } from "./generated.js";
+import type { EntityRecord, Event, Migration, MigrationAuthoringOptions, MigrationOperation, PluginManifest, PluginRpcError, PluginBootstrap, Service, MutationOptions } from "./generated.js";
 export * from "./generated.js";
 export interface PluginRpcTransport {
-    call(method: string, payload: unknown): Promise<unknown>;
+    call(method: string, payload: unknown, requestId?: string): Promise<unknown>;
 }
 export interface BrowserPluginRpcTransportOptions {
     /** Host-assigned package identity. Defaults to `body[data-plugin]`. */
@@ -18,12 +18,12 @@ export interface BrowserPluginRpcTransportOptions {
     maxResponseBytes?: number;
 }
 export interface PluginRpcClient {
-    call<T>(method: string, payload: unknown): Promise<T>;
+    call<T>(method: string, payload: unknown, requestId?: string): Promise<T>;
     bootstrap(): Promise<PluginBootstrap>;
     listEntities(entityType?: string): Promise<EntityRecord[]>;
-    createEntity(entityType: string, fields: Record<string, unknown>, document?: string): Promise<EntityRecord>;
-    updateEntity(id: string, fields: Record<string, unknown>, document?: string): Promise<EntityRecord>;
-    deleteEntity(id: string): Promise<void>;
+    createEntity(name: string, entityType?: string, options?: MutationOptions): Promise<EntityRecord>;
+    updateEntity(id: string, name?: string, entityType?: string | null, options?: MutationOptions): Promise<EntityRecord>;
+    deleteEntity(id: string, options?: MutationOptions): Promise<void>;
     publishEvent(name: string, version: number, payload: unknown): Promise<void>;
     subscribeEvent(name: string, version: number): Promise<void>;
     pollEvents<T = unknown>(name: string, version: number): Promise<T[]>;

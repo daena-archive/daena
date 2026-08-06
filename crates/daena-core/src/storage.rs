@@ -292,6 +292,24 @@ pub fn write_canonical_project(
         ));
     }
 
+    // The caller writes into transaction staging, which starts as a copy of
+    // the current canonical tree. Remove records absent from the proposed
+    // snapshot here so replacement/restore mutations cannot leave stale
+    // entity or plugin files behind.
+    if entities_root.exists() {
+        for entry in fs::read_dir(&entities_root)
+            .map_err(|error| codec_error(&entities_root, "entities.read", error))?
+        {
+            let entry =
+                entry.map_err(|error| codec_error(&entities_root, "entities.read", error))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !is_ignored_metadata_entry(&name) && !entity_ids.contains(&name) {
+                fs::remove_dir_all(entry.path())
+                    .map_err(|error| codec_error(&entities_root, "entity.remove", error))?;
+            }
+        }
+    }
+
     let namespace_owners = namespace_owners(snapshot)?;
     let mut field_files: BTreeMap<(String, String, String), FieldsFile> = BTreeMap::new();
     for field in &snapshot.fields {
@@ -538,6 +556,19 @@ pub fn write_canonical_project(
     }
     for migration in &snapshot.migration_history {
         plugin_ids.insert(migration.module_id.clone());
+    }
+    if plugins_root.exists() {
+        for entry in fs::read_dir(&plugins_root)
+            .map_err(|error| codec_error(&plugins_root, "plugins.read", error))?
+        {
+            let entry = entry.map_err(|error| codec_error(&plugins_root, "plugins.read", error))?;
+            let filename = entry.file_name().to_string_lossy().into_owned();
+            let plugin_id = filename.strip_suffix(".json").unwrap_or_default();
+            if !is_ignored_metadata_entry(&filename) && !plugin_ids.contains(plugin_id) {
+                fs::remove_file(entry.path())
+                    .map_err(|error| codec_error(&plugins_root, "plugin.remove", error))?;
+            }
+        }
     }
     for plugin_id in plugin_ids {
         validate_component(&plugin_id, &manifest_path, "plugin.id")?;

@@ -744,6 +744,34 @@ mod tests {
     }
 
     #[test]
+    fn recovery_never_leaves_a_mixed_remove_and_replace_mutation() {
+        for failure in [
+            FailurePoint::AfterJournal,
+            FailurePoint::AfterReplacement(0),
+            FailurePoint::AfterReplacement(1),
+            FailurePoint::AfterReceipt,
+        ] {
+            let root = test_root("recovery-remove-replace");
+            fs::write(root.join("removed.txt"), b"old").unwrap();
+            fs::write(root.join("changed.txt"), b"old").unwrap();
+            let request_id = Uuid::new_v4().to_string();
+            let mut transaction = match FileTransaction::begin(&root, &request_id).unwrap() {
+                TransactionStart::Ready(transaction) => transaction,
+                TransactionStart::AlreadyCommitted => panic!("request is unexpectedly committed"),
+            };
+            transaction.stage_remove("removed.txt").unwrap();
+            transaction.stage_bytes("changed.txt", b"new").unwrap();
+            transaction.commit_with_failure(failure).unwrap_err();
+            drop(transaction);
+
+            recover_transactions(&root).unwrap();
+            assert!(!root.join("removed.txt").exists());
+            assert_eq!(fs::read(root.join("changed.txt")).unwrap(), b"new");
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn incomplete_staging_without_a_journal_is_discarded() {
         let root = test_root("staging-cleanup");
         let directory = root.join(TRANSACTION_ROOT).join(Uuid::new_v4().to_string());

@@ -542,14 +542,15 @@ impl ProjectStore {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         let source_hashes = self.canonical_source_hashes(&format!("entities/{entity_id}/%"))?;
-        revision_digest(&(
+        let revision = revision_digest(&(
             entity,
             documents,
             fields,
             relationships,
             assets,
             source_hashes,
-        ))
+        ))?;
+        Ok(revision)
     }
 
     fn revision_for_document(&self, id: &str) -> Result<String, CoreError> {
@@ -625,9 +626,6 @@ impl ProjectStore {
     }
 
     fn canonical_source_hashes(&self, pattern: &str) -> Result<Vec<(String, String)>, CoreError> {
-        if self.root.is_none() {
-            return Ok(Vec::new());
-        }
         self.connection
             .prepare(
                 "SELECT path,content_hash FROM source_files WHERE path=?1 OR path LIKE ?1 ORDER BY path",
@@ -647,19 +645,7 @@ impl ProjectStore {
         request_id: &str,
         result: Option<&serde_json::Value>,
     ) -> Result<(), CoreError> {
-        let outcome = self.sync_canonical_with_request_id_inner(request_id, result);
-        if outcome.is_err() {
-            if let Some(root) = self.root.as_deref() {
-                if let Ok(canonical) = crate::storage::FilesystemRepository::open(root)
-                    .and_then(|repository| repository.scan())
-                {
-                    if let Ok(payload) = serde_json::to_string(&canonical.snapshot) {
-                        let _ = self.import_json_with_mode_and_sync(&payload, true, false);
-                    }
-                }
-            }
-        }
-        outcome
+        self.sync_canonical_with_request_id_inner(request_id, result)
     }
 
     fn sync_canonical_with_request_id_inner(
@@ -675,6 +661,33 @@ impl ProjectStore {
         manifest.validate(&manifest_path)?;
         let snapshot: ProjectSnapshot = serde_json::from_str(&self.export_json_inner()?)
             .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let pending_assets = self
+            .pending_asset_imports
+            .lock()
+            .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
+            .clone();
+        self.commit_canonical_snapshot(
+            root,
+            &snapshot,
+            request_id,
+            result,
+            &pending_assets,
+            &BTreeMap::new(),
+        )
+    }
+
+    fn commit_canonical_snapshot(
+        &self,
+        root: &Path,
+        snapshot: &ProjectSnapshot,
+        request_id: &str,
+        result: Option<&serde_json::Value>,
+        pending_assets: &BTreeMap<String, Vec<u8>>,
+        additional_files: &BTreeMap<String, Vec<u8>>,
+    ) -> Result<(), CoreError> {
+        let manifest_path = root.join("project.json");
+        let manifest: crate::storage::ProjectManifest = crate::storage::read_json(&manifest_path)?;
+        manifest.validate(&manifest_path)?;
         let canonical = crate::storage::FilesystemRepository::open(root)?.scan()?;
         let mut transaction = match crate::transactions::FileTransaction::begin(root, request_id)? {
             crate::transactions::TransactionStart::Ready(transaction) => transaction,
@@ -703,12 +716,7 @@ impl ProjectStore {
                 source: error,
             })?;
         }
-        let pending_assets = self
-            .pending_asset_imports
-            .lock()
-            .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
-            .clone();
-        for (relative_path, bytes) in &pending_assets {
+        for (relative_path, bytes) in pending_assets {
             let staged_path =
                 crate::storage::normalized_project_path(&staging_root, relative_path)?;
             if let Some(parent) = staged_path.parent() {
@@ -722,7 +730,10 @@ impl ProjectStore {
                 source: error,
             })?;
         }
-        crate::storage::write_canonical_project(&staging_root, &manifest, &snapshot)?;
+        for (target, bytes) in additional_files {
+            transaction.stage_bytes(target, bytes)?;
+        }
+        crate::storage::write_canonical_project(&staging_root, &manifest, snapshot)?;
         let staged = crate::storage::FilesystemRepository::open(&staging_root)?.scan()?;
         let staged_paths = staged
             .sources
@@ -757,9 +768,87 @@ impl ProjectStore {
             }
         }
         let canonical = crate::storage::FilesystemRepository::open(root)?.scan()?;
+        let payload = serde_json::to_string(&canonical.snapshot)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        // The journal is the commit point.  Only after it succeeds do we
+        // replace the disposable projection with a fresh interpretation of
+        // the canonical files.
+        self.import_json_with_mode_and_sync(&payload, true, false)?;
         self.replace_source_index(&canonical.sources)?;
         self.rebuild_search()?;
         self.verify_index(canonical.sources.len())
+    }
+
+    fn repository_first_mutation<T, F>(
+        &self,
+        request_id: Option<&str>,
+        operation: F,
+    ) -> Result<T, CoreError>
+    where
+        T: Serialize + DeserializeOwned,
+        F: FnOnce(&mut ProjectStore, &str) -> Result<T, CoreError>,
+    {
+        let Some(root) = self.root.as_deref() else {
+            return Err(CoreError::Validation(
+                "repository-first mutation requires a directory-backed project".into(),
+            ));
+        };
+        if let Some(result) = self.committed_mutation::<T>(request_id)? {
+            return self.refresh_mutation_revision(result);
+        }
+        let request_id = self.request_id(request_id)?;
+        let canonical = crate::storage::FilesystemRepository::open(root)?.scan()?;
+        let mut projection = Self::open_database(":memory:", None)?;
+        let payload = serde_json::to_string(&canonical.snapshot)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        projection.import_json_with_mode_and_sync(&payload, true, false)?;
+        projection.replace_source_index(&canonical.sources)?;
+        let result = operation(&mut projection, &request_id)?;
+        let snapshot: ProjectSnapshot = serde_json::from_str(&projection.export_json_inner()?)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let pending_assets = projection
+            .pending_asset_imports
+            .lock()
+            .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
+            .clone();
+        let result_value = serde_json::to_value(&result)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        self.commit_canonical_snapshot(
+            root,
+            &snapshot,
+            &request_id,
+            Some(&result_value),
+            &pending_assets,
+            &BTreeMap::new(),
+        )?;
+        self.refresh_mutation_revision(result)
+    }
+
+    fn refresh_mutation_revision<T>(&self, result: T) -> Result<T, CoreError>
+    where
+        T: Serialize + DeserializeOwned,
+    {
+        let mut value = serde_json::to_value(result)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let Some(object) = value.as_object_mut() else {
+            return serde_json::from_value(value)
+                .map_err(|error| CoreError::Serialization(error.to_string()));
+        };
+        let Some(id) = object.get("id").and_then(serde_json::Value::as_str) else {
+            return serde_json::from_value(value)
+                .map_err(|error| CoreError::Serialization(error.to_string()));
+        };
+        let revision = if object.contains_key("source_id") {
+            self.revision_for_relationship(id)?
+        } else if object.contains_key("path") && object.contains_key("content_hash") {
+            self.revision_for_asset(id)?
+        } else if object.contains_key("entity_id") && object.contains_key("format") {
+            self.revision_for_document(id)?
+        } else {
+            self.revision_for_entity(id)?
+        };
+        object.insert("revision".into(), serde_json::Value::String(revision));
+        serde_json::from_value(value).map_err(|error| CoreError::Serialization(error.to_string()))
     }
 
     pub fn in_memory() -> Result<Self, CoreError> {
@@ -987,6 +1076,11 @@ impl ProjectStore {
         input: CreateEntity,
         request_id: Option<&str>,
     ) -> Result<Entity, CoreError> {
+        if self.root.is_some() {
+            return self.repository_first_mutation(request_id, move |projection, request_id| {
+                projection.create_entity_with_request(input, Some(request_id))
+            });
+        }
         if let Some(mut entity) = self.committed_mutation::<Entity>(request_id)? {
             entity.revision = self.revision_for_entity(&entity.id)?;
             return Ok(entity);
@@ -1035,6 +1129,11 @@ impl ProjectStore {
         input: CreateEntry,
         request_id: Option<&str>,
     ) -> Result<Entity, CoreError> {
+        if self.root.is_some() {
+            return self.repository_first_mutation(request_id, move |projection, request_id| {
+                projection.create_entry_with_request(input, Some(request_id))
+            });
+        }
         if let Some(mut entity) = self.committed_mutation::<Entity>(request_id)? {
             entity.revision = self.revision_for_entity(&entity.id)?;
             return Ok(entity);
@@ -1192,6 +1291,17 @@ impl ProjectStore {
         expected_revision: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<Entity, CoreError> {
+        if self.root.is_some() {
+            return self.repository_first_mutation(request_id, move |projection, request_id| {
+                projection.update_entity_with_options(
+                    id,
+                    name,
+                    entity_type,
+                    expected_revision,
+                    Some(request_id),
+                )
+            });
+        }
         if let Some(mut entity) = self.committed_mutation::<Entity>(request_id)? {
             entity.revision = self.revision_for_entity(&entity.id)?;
             return Ok(entity);
@@ -1245,6 +1355,11 @@ impl ProjectStore {
         expected_revision: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<(), CoreError> {
+        if self.root.is_some() {
+            return self.repository_first_mutation(request_id, move |projection, request_id| {
+                projection.delete_entity_with_options(id, expected_revision, Some(request_id))
+            });
+        }
         if self
             .committed_mutation::<serde_json::Value>(request_id)?
             .is_some()
@@ -1302,6 +1417,11 @@ impl ProjectStore {
         expected_revision: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<(), CoreError> {
+        if self.root.is_some() {
+            return self.repository_first_mutation(request_id, move |projection, request_id| {
+                projection.save_entry_with_options(input, expected_revision, Some(request_id))
+            });
+        }
         if self
             .committed_mutation::<serde_json::Value>(request_id)?
             .is_some()
@@ -1454,6 +1574,11 @@ impl ProjectStore {
         field: FieldValue,
         request_id: Option<&str>,
     ) -> Result<(), CoreError> {
+        if self.root.is_some() {
+            return self.repository_first_mutation(request_id, move |projection, request_id| {
+                projection.set_field_with_request(field, Some(request_id))
+            });
+        }
         if self
             .committed_mutation::<serde_json::Value>(request_id)?
             .is_some()
@@ -1554,6 +1679,15 @@ impl ProjectStore {
         expected_revision: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<Relationship, CoreError> {
+        if self.root.is_some() {
+            return self.repository_first_mutation(request_id, move |projection, request_id| {
+                projection.create_relationship_with_options(
+                    input,
+                    expected_revision,
+                    Some(request_id),
+                )
+            });
+        }
         if let Some(relationship) = self.committed_mutation::<Relationship>(request_id)? {
             let mut relationship = relationship;
             relationship.revision = self.revision_for_relationship(&relationship.id)?;
@@ -1617,6 +1751,11 @@ impl ProjectStore {
         expected_revision: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<(), CoreError> {
+        if self.root.is_some() {
+            return self.repository_first_mutation(request_id, move |projection, request_id| {
+                projection.delete_relationship_with_options(id, expected_revision, Some(request_id))
+            });
+        }
         if self
             .committed_mutation::<serde_json::Value>(request_id)?
             .is_some()
@@ -1919,6 +2058,11 @@ impl ProjectStore {
         expected_revision: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<Asset, CoreError> {
+        if self.root.is_some() {
+            return self.repository_first_mutation(request_id, move |projection, request_id| {
+                projection.register_asset_with_options(input, expected_revision, Some(request_id))
+            });
+        }
         if let Some(mut asset) = self.committed_mutation::<Asset>(request_id)? {
             asset.revision = self.revision_for_asset(&asset.id)?;
             return Ok(asset);
@@ -1993,6 +2137,15 @@ impl ProjectStore {
         expected_revision: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<Asset, CoreError> {
+        if self.root.is_some() {
+            return self.repository_first_mutation(request_id, move |projection, request_id| {
+                projection.register_asset_file_with_options(
+                    input,
+                    expected_revision,
+                    Some(request_id),
+                )
+            });
+        }
         let source = Path::new(&input.source_path);
         let metadata =
             std::fs::metadata(source).map_err(|error| CoreError::NotFound(error.to_string()))?;
@@ -2115,6 +2268,15 @@ impl ProjectStore {
         data_version: i64,
         request_id: Option<&str>,
     ) -> Result<PluginBackup, CoreError> {
+        if self.root.is_some() {
+            return self.create_plugin_backup_repository_first(
+                module_id,
+                from_package_version,
+                to_package_version,
+                data_version,
+                request_id,
+            );
+        }
         if let Some(backup) = self.committed_mutation::<PluginBackup>(request_id)? {
             return Ok(backup);
         }
@@ -2175,6 +2337,77 @@ impl ProjectStore {
             return Err(error.into());
         }
         Ok(backup)
+    }
+
+    fn create_plugin_backup_repository_first(
+        &self,
+        module_id: &str,
+        from_package_version: Option<&str>,
+        to_package_version: Option<&str>,
+        data_version: i64,
+        request_id: Option<&str>,
+    ) -> Result<PluginBackup, CoreError> {
+        if let Some(backup) = self.committed_mutation::<PluginBackup>(request_id)? {
+            self.insert_plugin_backup_index(&backup)?;
+            return Ok(backup);
+        }
+        if module_id.trim().is_empty() {
+            return Err(CoreError::Validation(
+                "plugin backup requires a module ID".into(),
+            ));
+        }
+        let root = self.project_root()?.to_path_buf();
+        let canonical = crate::storage::FilesystemRepository::open(&root)?.scan()?;
+        let payload = serde_json::to_vec_pretty(&canonical.snapshot)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let created_at = chrono_like_now();
+        let backup_id = Uuid::new_v4().to_string();
+        let safe_module = module_id
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                    character
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        let relative_path =
+            format!(".daena/backups/plugins/plugin-{safe_module}-{created_at}-{backup_id}.json");
+        let backup = PluginBackup {
+            id: backup_id,
+            module_id: module_id.into(),
+            from_package_version: from_package_version.map(str::to_owned),
+            to_package_version: to_package_version.map(str::to_owned),
+            data_version,
+            path: root.join(&relative_path).to_string_lossy().into_owned(),
+            content_hash: digest_bytes(&payload),
+            created_at,
+        };
+        let request_id = self.request_id(request_id)?;
+        let mut additional_files = BTreeMap::new();
+        additional_files.insert(relative_path, payload);
+        self.commit_canonical_snapshot(
+            &root,
+            &canonical.snapshot,
+            &request_id,
+            Some(
+                &serde_json::to_value(&backup)
+                    .map_err(|error| CoreError::Serialization(error.to_string()))?,
+            ),
+            &BTreeMap::new(),
+            &additional_files,
+        )?;
+        self.insert_plugin_backup_index(&backup)?;
+        Ok(backup)
+    }
+
+    fn insert_plugin_backup_index(&self, backup: &PluginBackup) -> Result<(), CoreError> {
+        self.connection.execute(
+            "INSERT OR IGNORE INTO plugin_backups(id,module_id,from_package_version,to_package_version,data_version,path,content_hash,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![backup.id, backup.module_id, backup.from_package_version, backup.to_package_version, backup.data_version, backup.path, backup.content_hash, backup.created_at],
+        )?;
+        Ok(())
     }
 
     pub fn latest_plugin_backup(
@@ -2245,6 +2478,12 @@ impl ProjectStore {
         payload: &str,
         request_id: Option<&str>,
     ) -> Result<(), CoreError> {
+        if self.root.is_some() {
+            let payload = payload.to_owned();
+            return self.repository_first_mutation(request_id, move |projection, request_id| {
+                projection.restore_payload_with_request(&payload, Some(request_id))
+            });
+        }
         if self
             .committed_mutation::<serde_json::Value>(request_id)?
             .is_some()
@@ -2272,6 +2511,15 @@ impl ProjectStore {
         confirmation: &str,
         request_id: Option<&str>,
     ) -> Result<String, CoreError> {
+        if self.root.is_some() {
+            return self.repository_first_mutation(request_id, move |projection, request_id| {
+                projection.delete_plugin_data_with_request(
+                    plugin_id,
+                    confirmation,
+                    Some(request_id),
+                )
+            });
+        }
         if let Some(backup) = self.committed_mutation::<String>(request_id)? {
             return Ok(backup);
         }
@@ -2624,6 +2872,11 @@ impl ProjectStore {
         enabled: bool,
         request_id: Option<&str>,
     ) -> Result<(), CoreError> {
+        if self.root.is_some() {
+            return self.repository_first_mutation(request_id, move |projection, request_id| {
+                projection.set_module_enabled_with_request(module_id, enabled, Some(request_id))
+            });
+        }
         if self
             .committed_mutation::<serde_json::Value>(request_id)?
             .is_some()
@@ -2671,6 +2924,17 @@ impl ProjectStore {
         package_version: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<(), CoreError> {
+        if self.root.is_some() {
+            let module_id = module_id.to_owned();
+            let package_version = package_version.map(str::to_owned);
+            return self.repository_first_mutation(request_id, move |projection, request_id| {
+                projection.set_module_package_version_with_request(
+                    &module_id,
+                    package_version.as_deref(),
+                    Some(request_id),
+                )
+            });
+        }
         if self
             .committed_mutation::<serde_json::Value>(request_id)?
             .is_some()
@@ -2735,6 +2999,12 @@ impl ProjectStore {
         migrations: &[crate::migrations::Migration],
         request_id: Option<&str>,
     ) -> Result<String, CoreError> {
+        if self.root.is_some() {
+            let migrations = migrations.to_vec();
+            return self.repository_first_mutation(request_id, move |projection, request_id| {
+                projection.apply_migrations_with_request(&migrations, Some(request_id))
+            });
+        }
         if let Some(backup) = self.committed_mutation::<String>(request_id)? {
             return Ok(backup);
         }
@@ -2883,6 +3153,47 @@ mod tests {
             .unwrap();
         assert_ne!(first.revision, updated.revision);
         drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn directory_mutations_treat_canonical_files_as_authority_over_a_stale_index() {
+        let root = std::env::temp_dir().join(format!("daena-canonical-first-{}", Uuid::new_v4()));
+        let store = ProjectStore::open_directory(&root).unwrap();
+        let entity = store
+            .create_entity(CreateEntity {
+                name: "Canonical name".into(),
+                entity_type: None,
+            })
+            .unwrap();
+
+        // Simulate a stale disposable projection. A repository-first update
+        // must seed its proposal from canonical files, not this SQLite row.
+        store
+            .connection
+            .execute(
+                "UPDATE entities SET name='SQLite-only name' WHERE id=?1",
+                params![entity.id],
+            )
+            .unwrap();
+        let updated = store
+            .update_entity_with_options(
+                entity.id.clone(),
+                Some("Canonical update".into()),
+                None,
+                None,
+                Some(&Uuid::new_v4().to_string()),
+            )
+            .unwrap();
+        assert_eq!(updated.name, "Canonical update");
+
+        drop(store);
+        let reopened = ProjectStore::open_directory(&root).unwrap();
+        assert_eq!(
+            reopened.list_entities().unwrap()[0].name,
+            "Canonical update"
+        );
+        drop(reopened);
         std::fs::remove_dir_all(root).unwrap();
     }
 

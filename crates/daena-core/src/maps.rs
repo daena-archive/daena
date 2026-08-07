@@ -151,6 +151,24 @@ fn date(value: &Value, label: &str) -> Result<(), CoreError> {
     Ok(())
 }
 
+fn date_lower_bound(value: &Value) -> (i64, i64, i64) {
+    let era = value.get("era").and_then(Value::as_str).unwrap_or("CE");
+    let year = value.get("year").and_then(Value::as_i64).unwrap_or(0);
+    let signed_year = if era == "BCE" { -year } else { year };
+    let month = value.get("month").and_then(Value::as_i64).unwrap_or(1);
+    let day = value.get("day").and_then(Value::as_i64).unwrap_or(1);
+    (signed_year, month, day)
+}
+
+fn date_upper_bound(value: &Value) -> (i64, i64, i64) {
+    let era = value.get("era").and_then(Value::as_str).unwrap_or("CE");
+    let year = value.get("year").and_then(Value::as_i64).unwrap_or(0);
+    let signed_year = if era == "BCE" { -year } else { year };
+    let month = value.get("month").and_then(Value::as_i64).unwrap_or(12);
+    let day = value.get("day").and_then(Value::as_i64).unwrap_or(31);
+    (signed_year, month, day)
+}
+
 fn validity(value: &Value, label: &str) -> Result<(), CoreError> {
     let object = value
         .as_object()
@@ -158,11 +176,18 @@ fn validity(value: &Value, label: &str) -> Result<(), CoreError> {
     if object.len() != 2 || !object.contains_key("from") || !object.contains_key("to") {
         return Err(invalid(format!("{label} must contain only from and to")));
     }
-    if let Some(from) = object.get("from").filter(|v| !v.is_null()) {
+    let from_val = object.get("from").filter(|v| !v.is_null());
+    let to_val = object.get("to").filter(|v| !v.is_null());
+    if let Some(from) = from_val {
         date(from, &format!("{label}.from"))?;
     }
-    if let Some(to) = object.get("to").filter(|v| !v.is_null()) {
+    if let Some(to) = to_val {
         date(to, &format!("{label}.to"))?;
+    }
+    if let (Some(from), Some(to)) = (from_val, to_val) {
+        if date_lower_bound(from) > date_upper_bound(to) {
+            return Err(invalid(format!("{label}.from cannot be after {label}.to")));
+        }
     }
     Ok(())
 }
@@ -381,5 +406,16 @@ mod tests {
         let incomplete_month =
             serde_json::json!({"calendar":"gregorian","era":"CE","year":42,"precision":"month"});
         assert!(date(&incomplete_month, "date").is_err());
+    }
+
+    #[test]
+    fn rejects_inverted_validity_date_bounds() {
+        let from_late = serde_json::json!({"calendar":"gregorian","era":"CE","year":2025,"precision":"year"});
+        let to_early = serde_json::json!({"calendar":"gregorian","era":"CE","year":2020,"precision":"year"});
+        let inverted = serde_json::json!({"from": from_late, "to": to_early});
+        assert!(validity(&inverted, "validity").is_err());
+
+        let valid = serde_json::json!({"from": to_early, "to": from_late});
+        assert!(validity(&valid, "validity").is_ok());
     }
 }

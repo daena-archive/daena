@@ -1569,7 +1569,7 @@ impl ProjectStore {
               CREATE TABLE IF NOT EXISTS entity_fields(entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(entity_id, namespace, key));
              CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, filename TEXT NOT NULL, content_hash TEXT NOT NULL, size INTEGER NOT NULL, mime_type TEXT NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS map_projection (map_entity_id TEXT PRIMARY KEY, provider TEXT NOT NULL, source_asset_id TEXT NOT NULL, source_path TEXT, source_hash TEXT);
-             CREATE TABLE IF NOT EXISTS map_location_projection (location_id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, map_entity_id TEXT NOT NULL, role TEXT NOT NULL, anchor_kind TEXT NOT NULL, provider TEXT, feature_kind TEXT, feature_id TEXT, min_x REAL, min_y REAL, max_x REAL, max_y REAL, valid_from TEXT, valid_to TEXT, resolution TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS map_location_projection (location_id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, map_entity_id TEXT NOT NULL, label TEXT, role TEXT NOT NULL, anchor_kind TEXT NOT NULL, provider TEXT, feature_kind TEXT, feature_id TEXT, min_x REAL, min_y REAL, max_x REAL, max_y REAL, valid_from TEXT, valid_to TEXT, resolution TEXT NOT NULL);
              CREATE INDEX IF NOT EXISTS map_location_entity_idx ON map_location_projection(entity_id);
              CREATE INDEX IF NOT EXISTS map_location_map_idx ON map_location_projection(map_entity_id);")?;
         self.connection.execute_batch("CREATE TABLE IF NOT EXISTS migration_history(module_id TEXT NOT NULL, migration_id TEXT NOT NULL, from_version INTEGER NOT NULL, to_version INTEGER NOT NULL, checksum TEXT NOT NULL, package_digest TEXT NOT NULL DEFAULT '', applied_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(module_id, migration_id)); CREATE TABLE IF NOT EXISTS plugin_backups(id TEXT PRIMARY KEY, module_id TEXT NOT NULL, from_package_version TEXT, to_package_version TEXT, data_version INTEGER NOT NULL, path TEXT NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL);")?;
@@ -1579,6 +1579,10 @@ impl ProjectStore {
         );
         let _ = self.connection.execute(
             "ALTER TABLE migration_history ADD COLUMN applied_at TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        let _ = self.connection.execute(
+            "ALTER TABLE map_location_projection ADD COLUMN label TEXT",
             [],
         );
         self.rebuild_search()?;
@@ -1731,6 +1735,14 @@ impl ProjectStore {
             )?;
         }
         for (field, value) in encoded_fields {
+            if field.namespace == crate::maps::MAP_NAMESPACE {
+                crate::maps::validate_field(
+                    &transaction,
+                    &id,
+                    &field.key,
+                    &field.value,
+                )?;
+            }
             transaction.execute(
                 "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
                 params![id, field.namespace, field.key, value],
@@ -2038,6 +2050,16 @@ impl ProjectStore {
                 Ok((field, encode_field_value(&field.value)?))
             })
             .collect::<Result<Vec<_>, CoreError>>()?;
+        for (field, _) in &encoded_fields {
+            if field.namespace == crate::maps::MAP_NAMESPACE {
+                crate::maps::validate_field(
+                    &self.connection,
+                    &field.entity_id,
+                    &field.key,
+                    &field.value,
+                )?;
+            }
+        }
         for (field, _) in &encoded_fields {
             if field.revision.is_empty() {
                 continue;
@@ -3082,7 +3104,7 @@ impl ProjectStore {
             .unwrap_or_else(|| PathBuf::from(source_path));
         let Ok(bytes) = std::fs::read(source_path) else { return "unresolved"; };
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return "resolved"; };
-        let Some(features) = value.get("features").and_then(serde_json::Value::as_array) else { return "resolved"; };
+        let Some(features) = value.get("features").and_then(serde_json::Value::as_array) else { return "unresolved"; };
         if features.iter().any(|feature| feature.get("kind").and_then(serde_json::Value::as_str) == Some(feature_kind) && feature.get("id").and_then(serde_json::Value::as_str) == Some(feature_id)) { "resolved" } else { "unresolved" }
     }
 
@@ -3145,7 +3167,7 @@ impl ProjectStore {
                 _ => (None, None, None, None),
             };
             let resolution = if kind == "provider-feature" { self.provider_feature_resolution(location.get("mapEntityId").and_then(serde_json::Value::as_str).unwrap_or_default(), anchor.get("featureKind").and_then(serde_json::Value::as_str), anchor.get("featureId").and_then(serde_json::Value::as_str)) } else { "resolved" };
-            self.connection.execute("INSERT INTO map_location_projection(location_id,entity_id,map_entity_id,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)", rusqlite::params![location.get("id").and_then(serde_json::Value::as_str).unwrap_or_default(), entity_id, location.get("mapEntityId").and_then(serde_json::Value::as_str).unwrap_or_default(), location.get("role").and_then(serde_json::Value::as_str).unwrap_or_default(), kind, anchor.get("provider").and_then(serde_json::Value::as_str), anchor.get("featureKind").and_then(serde_json::Value::as_str), anchor.get("featureId").and_then(serde_json::Value::as_str), bounds.0, bounds.1, bounds.2, bounds.3, location.pointer("/validity/from").filter(|v| !v.is_null()).map(ToString::to_string), location.pointer("/validity/to").filter(|v| !v.is_null()).map(ToString::to_string), resolution])?;
+            self.connection.execute("INSERT INTO map_location_projection(location_id,entity_id,map_entity_id,label,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)", rusqlite::params![location.get("id").and_then(serde_json::Value::as_str).unwrap_or_default(), entity_id, location.get("mapEntityId").and_then(serde_json::Value::as_str).unwrap_or_default(), location.get("label").and_then(serde_json::Value::as_str), location.get("role").and_then(serde_json::Value::as_str).unwrap_or_default(), kind, anchor.get("provider").and_then(serde_json::Value::as_str), anchor.get("featureKind").and_then(serde_json::Value::as_str), anchor.get("featureId").and_then(serde_json::Value::as_str), bounds.0, bounds.1, bounds.2, bounds.3, location.pointer("/validity/from").filter(|v| !v.is_null()).map(ToString::to_string), location.pointer("/validity/to").filter(|v| !v.is_null()).map(ToString::to_string), resolution])?;
         }
         Ok(())
     }
@@ -3155,8 +3177,8 @@ impl ProjectStore {
         entity_id: String,
     ) -> Result<Vec<serde_json::Value>, CoreError> {
         self.ensure_source_index_current()?;
-        let mut statement = self.connection.prepare("SELECT location_id,map_entity_id,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution FROM map_location_projection WHERE entity_id=?1 ORDER BY location_id")?;
-        let rows = statement.query_map(rusqlite::params![entity_id], |row| Ok(serde_json::json!({"id":row.get::<_,String>(0)?,"mapEntityId":row.get::<_,String>(1)?,"role":row.get::<_,String>(2)?,"anchorKind":row.get::<_,String>(3)?,"provider":row.get::<_,Option<String>>(4)?,"featureKind":row.get::<_,Option<String>>(5)?,"featureId":row.get::<_,Option<String>>(6)?,"bounds":[row.get::<_,Option<f64>>(7)?,row.get::<_,Option<f64>>(8)?,row.get::<_,Option<f64>>(9)?,row.get::<_,Option<f64>>(10)?],"validity":{"from":row.get::<_,Option<String>>(11)?,"to":row.get::<_,Option<String>>(12)?},"resolution":row.get::<_,String>(13)?})))?;
+        let mut statement = self.connection.prepare("SELECT location_id,map_entity_id,label,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution FROM map_location_projection WHERE entity_id=?1 ORDER BY location_id")?;
+        let rows = statement.query_map(rusqlite::params![entity_id], |row| Ok(serde_json::json!({"id":row.get::<_,String>(0)?,"mapEntityId":row.get::<_,String>(1)?,"label":row.get::<_,Option<String>>(2)?,"role":row.get::<_,String>(3)?,"anchorKind":row.get::<_,String>(4)?,"provider":row.get::<_,Option<String>>(5)?,"featureKind":row.get::<_,Option<String>>(6)?,"featureId":row.get::<_,Option<String>>(7)?,"bounds":[row.get::<_,Option<f64>>(8)?,row.get::<_,Option<f64>>(9)?,row.get::<_,Option<f64>>(10)?,row.get::<_,Option<f64>>(11)?],"validity":{"from":row.get::<_,Option<String>>(12)?,"to":row.get::<_,Option<String>>(13)?},"resolution":row.get::<_,String>(14)?})))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
     }
 
@@ -3169,8 +3191,8 @@ impl ProjectStore {
         map_entity_id: String,
     ) -> Result<Vec<serde_json::Value>, CoreError> {
         self.ensure_source_index_current()?;
-        let mut statement = self.connection.prepare("SELECT location_id,entity_id,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution FROM map_location_projection WHERE map_entity_id=?1 ORDER BY location_id")?;
-        let rows = statement.query_map(rusqlite::params![map_entity_id], |row| Ok(serde_json::json!({"id":row.get::<_,String>(0)?,"entityId":row.get::<_,String>(1)?,"role":row.get::<_,String>(2)?,"anchorKind":row.get::<_,String>(3)?,"provider":row.get::<_,Option<String>>(4)?,"featureKind":row.get::<_,Option<String>>(5)?,"featureId":row.get::<_,Option<String>>(6)?,"bounds":[row.get::<_,Option<f64>>(7)?,row.get::<_,Option<f64>>(8)?,row.get::<_,Option<f64>>(9)?,row.get::<_,Option<f64>>(10)?],"validity":{"from":row.get::<_,Option<String>>(11)?,"to":row.get::<_,Option<String>>(12)?},"resolution":row.get::<_,String>(13)?})))?;
+        let mut statement = self.connection.prepare("SELECT location_id,entity_id,label,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution FROM map_location_projection WHERE map_entity_id=?1 ORDER BY location_id")?;
+        let rows = statement.query_map(rusqlite::params![map_entity_id], |row| Ok(serde_json::json!({"id":row.get::<_,String>(0)?,"entityId":row.get::<_,String>(1)?,"label":row.get::<_,Option<String>>(2)?,"role":row.get::<_,String>(3)?,"anchorKind":row.get::<_,String>(4)?,"provider":row.get::<_,Option<String>>(5)?,"featureKind":row.get::<_,Option<String>>(6)?,"featureId":row.get::<_,Option<String>>(7)?,"bounds":[row.get::<_,Option<f64>>(8)?,row.get::<_,Option<f64>>(9)?,row.get::<_,Option<f64>>(10)?,row.get::<_,Option<f64>>(11)?],"validity":{"from":row.get::<_,Option<String>>(12)?,"to":row.get::<_,Option<String>>(13)?},"resolution":row.get::<_,String>(14)?})))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
     }
 
@@ -5716,6 +5738,106 @@ mod tests {
         drop(rebuilt);
         std::fs::remove_dir_all(root).unwrap();
         std::fs::remove_dir_all(clone).unwrap();
+    }
+
+    #[test]
+    fn create_and_save_entry_enforce_map_field_validation() {
+        let store = ProjectStore::in_memory().unwrap();
+        let invalid_field = CreateEntryField {
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            key: "map".into(),
+            value: serde_json::json!({"schemaVersion": 99}),
+        };
+        let err = store.create_entry_with_request(
+            CreateEntry {
+                name: "Bad map entity".into(),
+                entity_type: Some(crate::maps::MAP_ENTITY_TYPE.into()),
+                fields: vec![invalid_field.clone()],
+                document: None,
+                relationships: vec![],
+            },
+            None,
+        );
+        assert!(err.is_err());
+
+        let map = store.create_map("Valid Map".into()).unwrap();
+        let save_err = store.save_entry_with_options(
+            SaveEntry {
+                document: SaveDocument {
+                    entity_id: map.id.clone(),
+                    format: None,
+                    body: String::new(),
+                },
+                fields: vec![FieldValue {
+                    entity_id: map.id,
+                    namespace: crate::maps::MAP_NAMESPACE.into(),
+                    key: "map".into(),
+                    value: serde_json::json!({"schemaVersion": 99}),
+                    revision: String::new(),
+                }],
+            },
+            None,
+            None,
+        );
+        assert!(save_err.is_err());
+    }
+
+    #[test]
+    fn feature_resolution_returns_unresolved_when_json_asset_lacks_features_key() {
+        let root = std::env::temp_dir().join(format!("daena-map-no-feat-{}", Uuid::new_v4()));
+        let source = std::env::temp_dir().join(format!("daena-map-no-feat-src-{}.map", Uuid::new_v4()));
+        std::fs::write(&source, br#"{"info": "no features key here"}"#).unwrap();
+
+        let store = ProjectStore::open_directory(&root).unwrap();
+        let map = store.create_map("Map without features".into()).unwrap();
+        let place = store.create_entity(CreateEntity { name: "Place".into(), entity_type: Some("place".into()) }).unwrap();
+        let asset = store.register_asset_file(AssetFileInput {
+            entity_id: map.id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            source_path: source.to_string_lossy().into_owned(),
+            filename: "nofeat.map".into(),
+            mime_type: "application/x-fmg-map".into(),
+        }).unwrap();
+
+        store.set_field(FieldValue {
+            entity_id: map.id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            key: "map".into(),
+            value: serde_json::json!({
+                "schemaVersion": 1,
+                "provider": {"id": "azgaar-fmg", "adapterVersion": 1, "sourceFormat": "fmg-map"},
+                "sourceAssetId": asset.id,
+                "previewAssetId": null,
+                "defaultView": {"center": [0.5, 0.5], "zoom": 1}
+            }),
+            revision: String::new(),
+        }).unwrap();
+
+        let loc_id = Uuid::new_v4().to_string();
+        store.set_field(FieldValue {
+            entity_id: place.id,
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            key: "locations".into(),
+            value: serde_json::json!({
+                "schemaVersion": 1,
+                "locations": [{
+                    "id": loc_id,
+                    "mapEntityId": map.id,
+                    "role": "origin",
+                    "label": "Test",
+                    "anchor": {"kind": "provider-feature", "provider": "azgaar-fmg", "featureKind": "burg", "featureId": "1", "fallbackPoint": [0.5, 0.5]},
+                    "validity": {"from": null, "to": null}
+                }]
+            }),
+            revision: String::new(),
+        }).unwrap();
+
+        let projection = store.map_location_projection(map.id).unwrap();
+        assert_eq!(projection[0]["resolution"], "unresolved");
+
+        drop(store);
+        std::fs::remove_file(source).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -4058,7 +4058,7 @@ fn resolve_maps_navigation(
                 return Err("not-on-map: no locations for the requested entities".into());
             }
             MapsNavigationOutcome {
-                emit: None,
+                emit: Some((map_id.clone(), None)),
                 result: Ok(serde_json::json!({ "mapEntityId": map_id, "locations": rows })),
             }
         }
@@ -5035,5 +5035,48 @@ mod tests {
         ] {
             assert!(invalid.validate().is_err());
         }
+    }
+
+    #[test]
+    fn show_results_navigation_emits_event_payload() {
+        let root = std::env::temp_dir().join(format!("daena-show-results-test-{}", uuid::Uuid::new_v4()));
+        let mut core = CoreService::new();
+        core.open_directory(trusted_shell(), &root).unwrap();
+        let (map_id, place_id) = {
+            let project = core.project(trusted_shell()).unwrap();
+            let map = project.create_map("Test Map".into()).unwrap();
+            let place = project.create_entity(daena_core::CreateEntity { name: "Place".into(), entity_type: Some("place".into()) }).unwrap();
+            project.set_field(daena_core::FieldValue {
+                entity_id: place.id.clone(),
+                namespace: daena_core::maps::MAP_NAMESPACE.into(),
+                key: "locations".into(),
+                value: serde_json::json!({
+                    "schemaVersion": 1,
+                    "locations": [{
+                        "id": uuid::Uuid::new_v4().to_string(),
+                        "mapEntityId": map.id.clone(),
+                        "role": "location",
+                        "label": "Test Location",
+                        "anchor": {"kind": "point", "point": [0.5, 0.5]},
+                        "validity": {"from": null, "to": null}
+                    }]
+                }),
+                revision: String::new(),
+            }).unwrap();
+            (map.id, place.id)
+        };
+        let request = MapsNavigationRequest {
+            operation: "showResults".into(),
+            map_entity_id: None,
+            entity_id: None,
+            link_id: None,
+            date: None,
+            entity_ids: Some(vec![place_id]),
+        };
+        let outcome = resolve_maps_navigation(&mut core, &request).unwrap();
+        assert_eq!(outcome.emit, Some((map_id, None)));
+        assert!(outcome.result.is_ok());
+
+        std::fs::remove_dir_all(root).ok();
     }
 }

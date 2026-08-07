@@ -308,7 +308,7 @@ fn forged_identity_and_origin_are_rejected() {
         rpc_version: 1,
         session_id: session.id.clone(),
         request_id: "1".into(),
-        method: "entity.read".into(),
+        method: "entity.list".into(),
         payload: serde_json::json!({}),
     };
     assert_eq!(
@@ -344,7 +344,7 @@ fn bundled_bootstrap_is_deny_by_default_without_consent() {
         rpc_version: RPC_VERSION,
         session_id: session.id,
         request_id: "deny".into(),
-        method: "entity.read".into(),
+        method: "entity.list".into(),
         payload: serde_json::json!({}),
     };
     assert_eq!(
@@ -615,7 +615,7 @@ fn undeclared_and_foreign_namespace_operations_are_rejected() {
         rpc_version: 1,
         session_id: session.id.clone(),
         request_id: "1".into(),
-        method: "entity.write".into(),
+        method: "entity.update".into(),
         payload: serde_json::json!({}),
     };
     assert_eq!(
@@ -743,6 +743,56 @@ fn maps_asset_create_is_authorized_for_write_capability() {
     assert_eq!(response.error, None);
 }
 #[test]
+fn maps_locations_and_reconcile_are_authorized_for_read_capability() {
+    let mut host = host();
+    let session = host
+        .bootstrap("com.example.one", "project", "plugin://one")
+        .unwrap();
+    for method in ["maps.locations.list", "maps.reconcile.links"] {
+        let denied = RpcRequest {
+            rpc_version: 1,
+            session_id: session.id.clone(),
+            request_id: "maps-read".into(),
+            method: method.into(),
+            payload: serde_json::json!({ "mapEntityId": "map-1" }),
+        };
+        assert_eq!(
+            host.rpc("plugin://one", &denied).error.unwrap().code,
+            "capability.denied",
+            "{method} should be denied without asset.read:self"
+        );
+    }
+    host.grants
+        .set(
+            "project",
+            "com.example.one",
+            &["asset.read:self".into()],
+            ["asset.read:self".into()]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<String>>(),
+        )
+        .unwrap();
+    let session = host
+        .bootstrap("com.example.one", "project", "plugin://one")
+        .unwrap();
+    for method in ["maps.locations.list", "maps.reconcile.links"] {
+        let granted = RpcRequest {
+            rpc_version: 1,
+            session_id: session.id.clone(),
+            request_id: "maps-read".into(),
+            method: method.into(),
+            payload: serde_json::json!({ "mapEntityId": "map-1" }),
+        };
+        let response = host.rpc("plugin://one", &granted);
+        assert!(
+            response.ok,
+            "{method} should authorize with asset.read:self, got: {:?}",
+            response.error.as_ref().map(|error| error.code.clone())
+        );
+        assert_eq!(response.error, None);
+    }
+}
+#[test]
 fn revoked_session_cannot_be_replayed() {
     let mut host = host();
     let session = host
@@ -753,7 +803,7 @@ fn revoked_session_cannot_be_replayed() {
         rpc_version: 1,
         session_id: session.id,
         request_id: "1".into(),
-        method: "entity.read".into(),
+        method: "entity.list".into(),
         payload: serde_json::json!({}),
     };
     assert_eq!(
@@ -775,7 +825,7 @@ fn activation_generation_invalidates_previous_session() {
         rpc_version: 1,
         session_id: first.id,
         request_id: "1".into(),
-        method: "entity.read".into(),
+        method: "entity.list".into(),
         payload: serde_json::json!({}),
     };
     assert_eq!(
@@ -925,7 +975,7 @@ fn expired_session_is_rejected() {
         rpc_version: 1,
         session_id: session.id,
         request_id: "1".into(),
-        method: "entity.read".into(),
+        method: "entity.list".into(),
         payload: serde_json::json!({}),
     };
     assert_eq!(
@@ -1524,4 +1574,367 @@ fn host_field_forms_require_read_and_write_grants() {
     );
     let result = host.host_view("project", "com.example.one", "overview");
     assert!(result.is_ok(), "host view failed: {:?}", result.err());
+}
+
+#[test]
+fn capability_mappings_are_stable_for_static_methods() {
+    let mut host = host();
+    let entry = host.catalog.get("com.example.one").unwrap().clone();
+    let session = host.sessions.issue(
+        &entry,
+        "project",
+        "plugin://com.example.one",
+        BTreeSet::new(),
+        Duration::from_secs(60),
+    );
+    let empty = serde_json::json!({});
+    let cases: &[(&str, &serde_json::Value, &[&str])] = &[
+        ("entity.list", &empty, &["entity.read"]),
+        ("entity.get", &empty, &["entity.read"]),
+        ("entity.update", &empty, &["entity.write"]),
+        ("entity.delete", &empty, &["entity.delete"]),
+        ("document.list", &empty, &["document.read"]),
+        ("document.save", &empty, &["document.write"]),
+        ("relationship.list", &empty, &["relationship.read"]),
+        ("relationship.create", &empty, &["relationship.write"]),
+        ("relationship.delete", &empty, &["relationship.write"]),
+        ("search.query", &empty, &["search.query"]),
+        ("asset.replace.commit", &empty, &["asset.write:self"]),
+        ("asset.transfer.cancel", &empty, &[]),
+        (
+            "maps.asset.create.begin",
+            &empty,
+            &["asset.write:self"],
+        ),
+        (
+            "maps.asset.create.commit",
+            &empty,
+            &["asset.write:self"],
+        ),
+        (
+            "maps.recovery.export.begin",
+            &empty,
+            &["asset.write:self"],
+        ),
+        (
+            "maps.recovery.export.commit",
+            &empty,
+            &["asset.write:self"],
+        ),
+        ("maps.recovery.restore", &empty, &["asset.write:self"]),
+        ("maps.recovery.list", &empty, &["asset.read:self"]),
+        ("maps.locations.list", &empty, &["asset.read:self"]),
+        ("maps.reconcile.links", &empty, &["asset.read:self"]),
+    ];
+    for (method, payload, expected) in cases {
+        assert_eq!(
+            required_capabilities(method, payload, &session, &host.namespaces).unwrap(),
+            expected.iter().map(|c| c.to_string()).collect::<Vec<_>>(),
+            "capability mapping for {method} drifted"
+        );
+    }
+    assert_eq!(
+        required_capabilities("project.open", &empty, &session, &host.namespaces)
+            .unwrap_err()
+            .code,
+        "method.unknown"
+    );
+}
+
+#[test]
+fn entity_create_capability_rules_are_stable() {
+    let mut host = host();
+    let entry = host.catalog.get("com.example.one").unwrap().clone();
+    let session = host.sessions.issue(
+        &entry,
+        "project",
+        "plugin://com.example.one",
+        BTreeSet::new(),
+        Duration::from_secs(60),
+    );
+    let bare = required_capabilities(
+        "entity.create",
+        &serde_json::json!({}),
+        &session,
+        &host.namespaces,
+    )
+    .unwrap();
+    assert_eq!(bare, vec!["entity.write".to_string()]);
+
+    let with_document = required_capabilities(
+        "entity.create",
+        &serde_json::json!({ "document": { "body": "text" } }),
+        &session,
+        &host.namespaces,
+    )
+    .unwrap();
+    assert_eq!(
+        with_document,
+        vec!["entity.write".to_string(), "document.write".to_string()]
+    );
+
+    let with_owned_fields = required_capabilities(
+        "entity.create",
+        &serde_json::json!({
+            "fields": [ { "namespace": "one", "key": "summary", "value": "text" } ]
+        }),
+        &session,
+        &host.namespaces,
+    )
+    .unwrap();
+    assert_eq!(
+        with_owned_fields,
+        vec!["entity.write".to_string(), "field.write:self".to_string()]
+    );
+
+    let with_relationships = required_capabilities(
+        "entity.create",
+        &serde_json::json!({
+            "relationships": [ { "relationship_type": "linked", "target_ids": ["e2"] } ]
+        }),
+        &session,
+        &host.namespaces,
+    )
+    .unwrap();
+    assert_eq!(
+        with_relationships,
+        vec!["entity.write".to_string(), "relationship.write".to_string()]
+    );
+
+    let foreign_fields = required_capabilities(
+        "entity.create",
+        &serde_json::json!({
+            "fields": [ { "namespace": "other", "key": "summary", "value": "text" } ]
+        }),
+        &session,
+        &host.namespaces,
+    )
+    .unwrap_err();
+    assert_eq!(foreign_fields.code, "namespace.denied");
+
+    let malformed_fields = required_capabilities(
+        "entity.create",
+        &serde_json::json!({ "fields": "not-an-array" }),
+        &session,
+        &host.namespaces,
+    )
+    .unwrap_err();
+    assert_eq!(malformed_fields.code, "payload.invalid");
+}
+
+#[test]
+fn field_and_asset_capability_rules_are_stable() {
+    let mut owner = manifest("com.example.owner", "owner");
+    owner.schemas[0].fields[0].shared = true;
+    let mut reader = manifest("com.example.reader", "reader");
+    reader.capabilities.push("field.read:shared".into());
+    let mut host = PluginHost::new();
+    for plugin in [owner.clone(), reader.clone()] {
+        host.catalog
+            .insert_for_test(CatalogEntry {
+                manifest: plugin.clone(),
+                package_root: PathBuf::new(),
+                digest: plugin.id.repeat(64).chars().take(64).collect(),
+                embedded_wasm: None,
+            })
+            .unwrap();
+        host.namespaces.register_manifest(&plugin).unwrap();
+    }
+    let owner_session = host.sessions.issue(
+        host.catalog.get("com.example.owner").unwrap(),
+        "project",
+        "plugin://owner",
+        BTreeSet::new(),
+        Duration::from_secs(60),
+    );
+    let reader_session = host.sessions.issue(
+        host.catalog.get("com.example.reader").unwrap(),
+        "project",
+        "plugin://reader",
+        BTreeSet::new(),
+        Duration::from_secs(60),
+    );
+
+    assert_eq!(
+        required_capabilities(
+            "field.read",
+            &serde_json::json!({ "namespace": "owner", "key": "summary" }),
+            &owner_session,
+            &host.namespaces,
+        )
+        .unwrap(),
+        vec!["field.read:self".to_string()]
+    );
+    assert_eq!(
+        required_capabilities(
+            "field.list",
+            &serde_json::json!({ "namespace": "owner" }),
+            &owner_session,
+            &host.namespaces,
+        )
+        .unwrap(),
+        vec!["field.read:self".to_string()]
+    );
+    assert_eq!(
+        required_capabilities(
+            "field.set",
+            &serde_json::json!({ "namespace": "owner", "key": "summary" }),
+            &owner_session,
+            &host.namespaces,
+        )
+        .unwrap(),
+        vec!["field.write:self".to_string()]
+    );
+    assert_eq!(
+        required_capabilities(
+            "field.read",
+            &serde_json::json!({ "namespace": "owner", "key": "summary" }),
+            &reader_session,
+            &host.namespaces,
+        )
+        .unwrap(),
+        vec!["field.read:shared".to_string()]
+    );
+    let unshared = required_capabilities(
+        "field.read",
+        &serde_json::json!({ "namespace": "owner", "key": "other" }),
+        &reader_session,
+        &host.namespaces,
+    )
+    .unwrap_err();
+    assert_eq!(unshared.code, "namespace.denied");
+    let foreign_write = required_capabilities(
+        "field.set",
+        &serde_json::json!({ "namespace": "owner", "key": "summary" }),
+        &reader_session,
+        &host.namespaces,
+    )
+    .unwrap_err();
+    assert_eq!(foreign_write.code, "namespace.denied");
+
+    assert_eq!(
+        required_capabilities(
+            "asset.list",
+            &serde_json::json!({ "namespace": "owner" }),
+            &owner_session,
+            &host.namespaces,
+        )
+        .unwrap(),
+        vec!["asset.read:self".to_string()]
+    );
+    assert_eq!(
+        required_capabilities(
+            "asset.register",
+            &serde_json::json!({ "namespace": "owner" }),
+            &owner_session,
+            &host.namespaces,
+        )
+        .unwrap(),
+        vec!["asset.register".to_string()]
+    );
+    assert_eq!(
+        required_capabilities(
+            "asset.read.begin",
+            &serde_json::json!({ "namespace": "owner" }),
+            &owner_session,
+            &host.namespaces,
+        )
+        .unwrap(),
+        vec!["asset.read:self".to_string()]
+    );
+    assert_eq!(
+        required_capabilities(
+            "asset.replace.begin",
+            &serde_json::json!({ "namespace": "owner" }),
+            &owner_session,
+            &host.namespaces,
+        )
+        .unwrap(),
+        vec!["asset.write:self".to_string()]
+    );
+    let foreign_asset = required_capabilities(
+        "asset.list",
+        &serde_json::json!({ "namespace": "reader" }),
+        &owner_session,
+        &host.namespaces,
+    )
+    .unwrap_err();
+    assert_eq!(foreign_asset.code, "namespace.denied");
+    let missing_asset_namespace = required_capabilities(
+        "asset.list",
+        &serde_json::json!({}),
+        &owner_session,
+        &host.namespaces,
+    )
+    .unwrap_err();
+    assert_eq!(missing_asset_namespace.code, "payload.invalid");
+}
+
+#[test]
+fn event_and_service_capability_rules_are_stable() {
+    let mut host = host();
+    let entry = host.catalog.get("com.example.one").unwrap().clone();
+    let session = host.sessions.issue(
+        &entry,
+        "project",
+        "plugin://com.example.one",
+        BTreeSet::new(),
+        Duration::from_secs(60),
+    );
+    assert_eq!(
+        required_capabilities(
+            "event.publish",
+            &serde_json::json!({ "type": "daena.core/event@1" }),
+            &session,
+            &host.namespaces,
+        )
+        .unwrap(),
+        vec!["event.publish:daena.core/event@1".to_string()]
+    );
+    assert_eq!(
+        required_capabilities(
+            "event.subscribe",
+            &serde_json::json!({ "type": "daena.core/event@1" }),
+            &session,
+            &host.namespaces,
+        )
+        .unwrap(),
+        vec!["event.subscribe:daena.core/event@1".to_string()]
+    );
+    assert_eq!(
+        required_capabilities(
+            "event.poll",
+            &serde_json::json!({ "type": "daena.core/event@1" }),
+            &session,
+            &host.namespaces,
+        )
+        .unwrap(),
+        vec!["event.subscribe:daena.core/event@1".to_string()]
+    );
+    let missing_event_type = required_capabilities(
+        "event.publish",
+        &serde_json::json!({}),
+        &session,
+        &host.namespaces,
+    )
+    .unwrap_err();
+    assert_eq!(missing_event_type.code, "payload.invalid");
+    assert_eq!(
+        required_capabilities(
+            "service.call",
+            &serde_json::json!({ "name": "com.example.calculate", "major": 1 }),
+            &session,
+            &host.namespaces,
+        )
+        .unwrap(),
+        vec!["service.call:com.example.calculate@1".to_string()]
+    );
+    let missing_major = required_capabilities(
+        "service.call",
+        &serde_json::json!({ "name": "com.example.calculate" }),
+        &session,
+        &host.namespaces,
+    )
+    .unwrap_err();
+    assert_eq!(missing_major.code, "payload.invalid");
 }

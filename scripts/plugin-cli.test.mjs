@@ -33,6 +33,20 @@ try {
     { name: "MANIFEST.json", data: "{}" },
   ]));
   assert.throws(() => execFileSync("node", [cli, "validate", unsafeArchive], { stdio: "pipe" }), /duplicate|case-colliding/i);
+  const shapeOnly = join(temporary, "shape-only");
+  cpSync(join(workspace, "examples/plugins/declarative"), shapeOnly, { recursive: true });
+  const shapeManifest = JSON.parse(readFileSync(join(shapeOnly, "manifest.json"), "utf8"));
+  shapeManifest.schemas[0].fields[0].options = "not-an-array";
+  shapeManifest.templates[0].fields = {};
+  writeFileSync(join(shapeOnly, "manifest.json"), `${JSON.stringify(shapeManifest, null, 2)}\n`);
+  assert.throws(() => execFileSync("node", [cli, "validate", shapeOnly], { stdio: "pipe" }), /schema:\/schemas\/0\/fields\/0\/options/);
+  const ecosystemNames = join(temporary, "ecosystem-names");
+  cpSync(join(workspace, "examples/plugins/declarative"), ecosystemNames, { recursive: true });
+  const ecosystemManifest = JSON.parse(readFileSync(join(ecosystemNames, "manifest.json"), "utf8"));
+  ecosystemManifest.id = "com.example.my_plugin";
+  ecosystemManifest.services = { provides: [], consumes: [{ name: "daena.maps/navigation", major: 1 }] };
+  writeFileSync(join(ecosystemNames, "manifest.json"), `${JSON.stringify(ecosystemManifest, null, 2)}\n`);
+  execFileSync("node", [cli, "validate", ecosystemNames], { stdio: "pipe" });
   console.log("plugin CLI checks passed");
 } finally {
   rmSync(temporary, { recursive: true, force: true });

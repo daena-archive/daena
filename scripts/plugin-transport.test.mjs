@@ -71,7 +71,11 @@ assert.deepEqual(await client.listEntities(), [{
 }]);
 assert.equal(first.bootstrapCount, 1);
 assert.equal(first.calls[1].request.sessionId, "session-1");
-assert.equal(first.calls[1].request.requestId, "com.example.plugin-1");
+const requestId = first.calls[1].request.requestId;
+assert.ok(
+  requestId === "com.example.plugin-1" || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(requestId),
+  "requestId is opaque: pluginId counter or UUID",
+);
 
 await assert.rejects(
   client.call("entity.write", {}),

@@ -209,7 +209,7 @@ export async function uploadAssetChunks(transfer, bytes, fetcher = globalThis.fe
 const knownCapabilities = new Set([
     "entity.read", "entity.write", "entity.delete", "document.read", "document.write",
     "field.read:self", "field.read:shared", "field.write:self", "relationship.read",
-    "relationship.write", "asset.read:self", "asset.write:self", "asset.import", "search.query",
+    "relationship.write", "asset.read:self", "asset.write:self", "asset.register", "search.query",
     "event.publish:<type>", "event.subscribe:<type>", "service.provide:<name>", "service.call:<name>",
 ]);
 export function isPluginIdentifier(value) {
@@ -450,9 +450,11 @@ export function validatePluginManifest(manifest) {
         const commandIds = new Set();
         for (const command of commands)
             if (isRecord(command)) {
-                if (typeof command.id !== "string" || commandIds.has(command.id))
+                if (typeof command.id !== "string" || !command.id.trim() || commandIds.has(command.id))
                     errors.push(`duplicate or invalid command id: ${String(command.id)}`);
                 commandIds.add(String(command.id));
+                if (typeof command.title !== "string" || !command.title.trim())
+                    errors.push(`command ${String(command.id)} title must not be empty`);
                 if (Array.isArray(command.exposure)) {
                     const exposures = new Set(command.exposure.map(String));
                     if (exposures.size !== command.exposure.length)
@@ -495,8 +497,12 @@ export function validatePluginManifest(manifest) {
             fields.set(field.key, field);
             if (field.entityTypes?.some((type) => !entityTypes.has(type)))
                 errors.push(`field ${field.key} uses an unknown entity type`);
+            if (field.entityTypes && (field.entityTypes.length === 0 || new Set(field.entityTypes).size !== field.entityTypes.length))
+                errors.push(`field ${field.key} has empty or duplicate entity types`);
             if (field.type === "relationship" && (!field.relationshipType || !field.targetEntityTypes?.length))
                 errors.push(`relationship field ${field.key} is incomplete`);
+            if (field.type === "relationship" && field.targetEntityTypes && (field.targetEntityTypes.some((type) => !entityTypes.has(type)) || new Set(field.targetEntityTypes).size !== field.targetEntityTypes.length))
+                errors.push(`relationship field ${field.key} has unknown or duplicate target entity types`);
             if (field.type !== "relationship" && (field.relationshipType || field.targetEntityTypes))
                 errors.push(`non-relationship field ${field.key} has relationship metadata`);
         }
@@ -513,6 +519,35 @@ export function validatePluginManifest(manifest) {
                 errors.push(`template ${template.id} uses undeclared field: ${key}`);
             else if (field.entityTypes && !field.entityTypes.includes(template.entityType))
                 errors.push(`template ${template.id} uses an inapplicable field: ${key}`);
+            else {
+                const preset = template.fields[key];
+                if (preset !== null && preset !== "") {
+                    let valid = false;
+                    switch (field.type) {
+                        case "text":
+                        case "entity-ref":
+                            valid = typeof preset === "string";
+                            break;
+                        case "relationship":
+                            valid = Array.isArray(preset) && preset.every((target) => typeof target === "string");
+                            break;
+                        case "number":
+                            valid = typeof preset === "number";
+                            break;
+                        case "boolean":
+                            valid = typeof preset === "boolean";
+                            break;
+                        case "date":
+                            valid = typeof preset === "string" || isRecord(preset);
+                            break;
+                        case "enum":
+                            valid = typeof preset === "string" && (field.options?.includes(preset) ?? false);
+                            break;
+                    }
+                    if (!valid)
+                        errors.push(`template ${template.id} has invalid preset for field: ${key}`);
+                }
+            }
         }
         for (const key of template.requiredFields ?? [])
             if (!fields.has(key))
@@ -523,12 +558,24 @@ export function validatePluginManifest(manifest) {
         if (viewIds.has(view.id))
             errors.push(`duplicate view id: ${view.id}`);
         viewIds.add(view.id);
+        if (typeof view.id !== "string" || !view.id.trim())
+            errors.push(`view id must not be empty`);
+        if (typeof view.title !== "string" || !view.title.trim())
+            errors.push(`view ${view.id} title must not be empty`);
         const componentIds = new Set();
         for (const component of view.components ?? []) {
+            if (typeof component.id !== "string" || !component.id.trim())
+                errors.push(`view ${view.id} component id must not be empty`);
             if (componentIds.has(component.id))
                 errors.push(`duplicate view component id: ${component.id}`);
             componentIds.add(component.id);
-            if (component.type === "entity-list") {
+            if (component.type === "heading" || component.type === "text") {
+                if (typeof component.text !== "string" || !component.text.trim())
+                    errors.push(`view ${view.id} ${component.type} text must not be empty`);
+            }
+            else if (component.type === "entity-list") {
+                if (typeof component.title !== "string" || !component.title.trim())
+                    errors.push(`view ${view.id} entity list title must not be empty`);
                 if (!entityTypes.has(component.entityType))
                     errors.push(`view ${view.id} lists an unknown entity type`);
                 if (!capabilityList.includes("entity.read"))
@@ -537,6 +584,10 @@ export function validatePluginManifest(manifest) {
                     errors.push(`view ${view.id} entity list limit is invalid`);
             }
             else if (component.type === "entity-detail") {
+                if (typeof component.title !== "string" || !component.title.trim())
+                    errors.push(`view ${view.id} entity detail title must not be empty`);
+                if (typeof component.source !== "string" || !component.source.trim())
+                    errors.push(`view ${view.id} entity detail source must not be empty`);
                 if (!view.components?.some((candidate) => candidate.type === "entity-list" && candidate.id === component.source))
                     errors.push(`view ${view.id} detail references an unknown entity list`);
                 if (!capabilityList.includes("entity.read"))
@@ -546,12 +597,22 @@ export function validatePluginManifest(manifest) {
                 const source = view.components?.find((candidate) => candidate.type === "entity-list" && candidate.id === component.source);
                 if (!source)
                     errors.push(`view ${view.id} form references an unknown entity list`);
+                if (typeof component.title !== "string" || !component.title.trim())
+                    errors.push(`view ${view.id} field form title must not be empty`);
+                if (typeof component.source !== "string" || !component.source.trim())
+                    errors.push(`view ${view.id} field form source must not be empty`);
+                if (typeof component.namespace !== "string" || !component.namespace.trim())
+                    errors.push(`view ${view.id} field form namespace must not be empty`);
+                if (!Array.isArray(component.fields) || component.fields.length === 0 || component.fields.some((key) => typeof key !== "string" || !key.trim()))
+                    errors.push(`view ${view.id} field form must list at least one non-empty field`);
                 if (!owned.has(component.namespace))
                     errors.push(`view ${view.id} form uses an unowned namespace`);
-                for (const key of component.fields) {
-                    const field = fields.get(key);
-                    if (!field || field.entityTypes?.length && source && !field.entityTypes.includes(source.entityType))
-                        errors.push(`view ${view.id} form uses an invalid field: ${key}`);
+                if (Array.isArray(component.fields)) {
+                    for (const key of component.fields) {
+                        const field = fields.get(key);
+                        if (!field || field.entityTypes?.length && source && !field.entityTypes.includes(source.entityType))
+                            errors.push(`view ${view.id} form uses an invalid field: ${key}`);
+                    }
                 }
                 if (!capabilityList.includes("field.read:self"))
                     errors.push(`view ${view.id} field form requires field.read:self`);
@@ -559,8 +620,12 @@ export function validatePluginManifest(manifest) {
                     errors.push(`view ${view.id} editable form requires field.write:self`);
             }
             else if (component.type === "button") {
+                if (typeof component.label !== "string" || !component.label.trim())
+                    errors.push(`view ${view.id} button label must not be empty`);
                 const command = commands.find((candidate) => candidate.id === component.command);
-                if (!command?.action)
+                if (typeof component.command !== "string" || !component.command.trim())
+                    errors.push(`view ${view.id} button command must not be empty`);
+                else if (!command?.action)
                     errors.push(`view ${view.id} button references a command without a host action`);
                 else if (command.exposure?.length && !command.exposure.includes("view"))
                     errors.push(`view ${view.id} button references a command not exposed to views`);

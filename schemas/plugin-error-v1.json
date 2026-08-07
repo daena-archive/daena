@@ -1,14 +1,27 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/daena-archive/daena/schemas/plugin-error-v1.json",
-  "title": "Daena Archive Plugin RPC Error v1",
-  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "required": ["code", "message", "retryable"],
   "properties": {
-    "code": { "type": "string", "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9-]*)+$" },
-    "message": { "type": "string", "minLength": 1, "maxLength": 512 },
-    "retryable": { "type": "boolean" },
-    "details": {}
-  }
+    "code": {
+      "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9-]*)+$",
+      "type": "string"
+    },
+    "details": true,
+    "message": {
+      "maxLength": 512,
+      "minLength": 1,
+      "type": "string"
+    },
+    "retryable": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "code",
+    "message",
+    "retryable"
+  ],
+  "title": "Daena Archive Plugin RPC Error v1",
+  "type": "object"
 }

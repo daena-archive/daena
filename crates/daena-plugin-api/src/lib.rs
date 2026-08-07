@@ -4,6 +4,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+pub mod catalog;
+pub mod rpc;
+pub use catalog::*;
+pub use rpc::*;
+
 pub const MANIFEST_VERSION: u32 = 1;
 pub const RPC_VERSION: u32 = 1;
 
@@ -20,13 +25,49 @@ pub const KNOWN_CAPABILITIES: &[&str] = &[
     "relationship.write",
     "asset.read:self",
     "asset.write:self",
-    "asset.import",
+    "asset.register",
     "search.query",
     "event.publish:<type>",
     "event.subscribe:<type>",
     "service.provide:<name>",
     "service.call:<name>",
 ];
+
+/// The canonical capability registry: every capability id plus the resource it
+/// targets and the operations it grants. `confirmation` is set for destructive
+/// capabilities that require interactive confirmation.
+pub struct CapabilityEntry {
+    pub id: &'static str,
+    pub resource: &'static str,
+    pub operations: &'static [&'static str],
+    pub confirmation: Option<&'static str>,
+}
+
+pub const CAPABILITY_REGISTRY: &[CapabilityEntry] = &[
+    CapabilityEntry { id: "entity.read", resource: "project.entities", operations: &["read"], confirmation: None },
+    CapabilityEntry { id: "entity.write", resource: "project.entities", operations: &["create", "update"], confirmation: None },
+    CapabilityEntry { id: "entity.delete", resource: "project.entities", operations: &["delete"], confirmation: Some("interactive") },
+    CapabilityEntry { id: "document.read", resource: "project.documents", operations: &["read"], confirmation: None },
+    CapabilityEntry { id: "document.write", resource: "project.documents", operations: &["create", "update"], confirmation: None },
+    CapabilityEntry { id: "field.read:self", resource: "plugin.namespace", operations: &["read"], confirmation: None },
+    CapabilityEntry { id: "field.read:shared", resource: "shared.field", operations: &["read"], confirmation: None },
+    CapabilityEntry { id: "field.write:self", resource: "plugin.namespace", operations: &["create", "update"], confirmation: None },
+    CapabilityEntry { id: "relationship.read", resource: "project.relationships", operations: &["read"], confirmation: None },
+    CapabilityEntry { id: "relationship.write", resource: "project.relationships", operations: &["create"], confirmation: None },
+    CapabilityEntry { id: "asset.read:self", resource: "plugin.assets", operations: &["read-metadata"], confirmation: None },
+    CapabilityEntry { id: "asset.write:self", resource: "plugin.assets", operations: &["replace"], confirmation: None },
+    CapabilityEntry { id: "asset.register", resource: "plugin.assets", operations: &["register"], confirmation: None },
+    CapabilityEntry { id: "search.query", resource: "project.search", operations: &["query"], confirmation: None },
+    CapabilityEntry { id: "event.publish:<type>", resource: "declared.event", operations: &["publish"], confirmation: None },
+    CapabilityEntry { id: "event.subscribe:<type>", resource: "declared.event", operations: &["subscribe"], confirmation: None },
+    CapabilityEntry { id: "service.provide:<name>", resource: "declared.service", operations: &["provide"], confirmation: None },
+    CapabilityEntry { id: "service.call:<name>", resource: "declared.service", operations: &["call"], confirmation: None },
+];
+
+/// Host capabilities that are never granted unless a plugin explicitly opts in
+/// through a review flow; the SDK refuses to mint them from a manifest.
+pub const DENIED_BY_DEFAULT_CAPABILITIES: &[&str] =
+    &["filesystem", "shell", "process", "dialog", "tauri", "network"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContractError(pub String);
@@ -39,6 +80,7 @@ impl fmt::Display for ContractError {
 impl std::error::Error for ContractError {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum PluginKind {
     Declarative,
@@ -46,6 +88,7 @@ pub enum PluginKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Entrypoints {
     pub ui: Option<String>,
@@ -53,6 +96,7 @@ pub struct Entrypoints {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Dependency {
     pub version: String,
@@ -60,6 +104,7 @@ pub struct Dependency {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct FieldDefinition {
     pub key: String,
@@ -81,6 +126,7 @@ pub struct FieldDefinition {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SchemaContribution {
     pub namespace: String,
@@ -90,6 +136,7 @@ pub struct SchemaContribution {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct EntityTemplate {
     pub id: String,
@@ -105,6 +152,7 @@ pub struct EntityTemplate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum MigrationOperation {
     CreateNamespace {
@@ -126,6 +174,7 @@ pub enum MigrationOperation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Migration {
     pub id: String,
@@ -136,6 +185,7 @@ pub struct Migration {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct View {
     pub id: String,
@@ -145,6 +195,7 @@ pub struct View {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ViewComponent {
     Heading {
@@ -183,12 +234,14 @@ pub enum ViewComponent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum CommandAction {
     RefreshView,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum CommandExposure {
     View,
@@ -196,6 +249,7 @@ pub enum CommandExposure {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum CommandValueType {
     Object,
@@ -207,6 +261,7 @@ pub enum CommandValueType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct CommandProperty {
     #[serde(rename = "type")]
@@ -214,6 +269,7 @@ pub struct CommandProperty {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct CommandSchema {
     #[serde(rename = "type")]
@@ -234,6 +290,7 @@ fn default_additional_properties() -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Command {
     pub id: String,
@@ -251,6 +308,7 @@ pub struct Command {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Service {
     pub name: String,
@@ -258,6 +316,7 @@ pub struct Service {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Event {
     pub name: String,
@@ -265,6 +324,7 @@ pub struct Event {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Services {
     pub provides: Vec<Service>,
@@ -272,6 +332,7 @@ pub struct Services {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Events {
     pub publishes: Vec<Event>,
@@ -279,6 +340,7 @@ pub struct Events {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct PluginManifest {
     #[serde(rename = "manifestVersion")]
@@ -323,6 +385,7 @@ pub struct MutationOptions {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct RpcError {
     pub code: String,
@@ -421,8 +484,8 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
     if manifest.name.trim().is_empty() || !is_semver(&manifest.version) {
         return Err(ContractError("invalid name or semantic version".into()));
     }
-    if manifest.host_api.trim().is_empty() {
-        return Err(ContractError("hostApi must not be empty".into()));
+    if !is_host_api_range(&manifest.host_api) {
+        return Err(ContractError("hostApi must be a valid semver range".into()));
     }
     if manifest.entrypoints.ui.is_none() && manifest.entrypoints.wasm.is_none() {
         return Err(ContractError("at least one entrypoint is required".into()));
@@ -908,21 +971,63 @@ pub fn is_identifier(value: &str) -> bool {
 }
 
 pub fn is_semver(value: &str) -> bool {
-    let core = value.split(['-', '+']).next().unwrap_or_default();
-    let parts: Vec<_> = core.split('.').collect();
-    parts.len() == 3
-        && parts.iter().all(|part| {
-            !part.is_empty()
-                && (part == &"0" || !part.starts_with('0'))
-                && part.chars().all(|c| c.is_ascii_digit())
-        })
+    fn numeric_part(part: &str) -> bool {
+        !part.is_empty()
+            && (part == "0" || !part.starts_with('0'))
+            && part.chars().all(|c| c.is_ascii_digit())
+    }
+    fn pre_build_part(part: &str) -> bool {
+        !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+    }
+    let (core, pre, build) = match value.split_once('+') {
+        Some((before, build)) => match before.split_once('-') {
+            Some((core, pre)) => (core, Some(pre), Some(build)),
+            None => (before, None, Some(build)),
+        },
+        None => match value.split_once('-') {
+            Some((core, pre)) => (core, Some(pre), None),
+            None => (value, None, None),
+        },
+    };
+    let core_parts: Vec<_> = core.split('.').collect();
+    core_parts.len() == 3
+        && core_parts.iter().all(|part| numeric_part(part))
+        && pre.is_none_or(pre_build_part)
+        && build.is_none_or(pre_build_part)
+}
+
+/// A hostApi range is a space-separated list of semver constraints, each
+/// optionally prefixed with `^`, `~`, `>=`, `<=`, `>`, `<`, or `=`.
+pub fn is_host_api_range(value: &str) -> bool {
+    let parts: Vec<&str> = value.trim().split_whitespace().collect();
+    if parts.is_empty() {
+        return false;
+    }
+    parts.iter().all(|raw| {
+        let part = raw.trim();
+        let rest = if part.starts_with(">=") || part.starts_with("<=") {
+            &part[2..]
+        } else if part.starts_with('^')
+            || part.starts_with('~')
+            || part.starts_with('>')
+            || part.starts_with('<')
+            || part.starts_with('=')
+        {
+            &part[1..]
+        } else {
+            part
+        };
+        is_semver(rest)
+    })
 }
 
 pub fn is_package_path(value: &str) -> bool {
     !value.is_empty()
         && !value.starts_with('/')
         && !value.contains('\\')
-        && !value.split('/').any(|part| part == ".." || part.is_empty())
+        && !value
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

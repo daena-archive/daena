@@ -322,6 +322,35 @@ enum FailurePoint {
     AfterReceipt,
 }
 
+fn prune_empty_parent_directories(root: &Path, target: &Path) -> Result<PathBuf, CoreError> {
+    let mut current = target.parent();
+    while let Some(parent) = current {
+        if parent == root {
+            break;
+        }
+        if !parent.is_dir() {
+            current = parent.parent();
+            continue;
+        }
+        let is_empty = {
+            let mut entries = fs::read_dir(parent).map_err(|source| CoreError::Io {
+                operation: "read canonical transaction parent",
+                source,
+            })?;
+            entries.next().is_none()
+        };
+        if !is_empty {
+            break;
+        }
+        fs::remove_dir(parent).map_err(|source| CoreError::Io {
+            operation: "remove empty canonical transaction directory",
+            source,
+        })?;
+        current = parent.parent();
+    }
+    Ok(current.unwrap_or(root).to_path_buf())
+}
+
 fn apply_replacements(
     root: &Path,
     directory: &Path,
@@ -347,9 +376,8 @@ fn apply_replacements(
                     source,
                 })?;
             }
-            if let Some(parent) = target.parent() {
-                sync_directory(parent)?;
-            }
+            let survivor = prune_empty_parent_directories(root, &target)?;
+            sync_directory(&survivor)?;
             if failure == Some(FailurePoint::AfterReplacement(index)) {
                 return Err(injected_failure());
             }

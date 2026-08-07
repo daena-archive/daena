@@ -860,6 +860,52 @@ fn seed_example_is_repeatable_after_modules_are_initialized() {
 }
 
 #[test]
+fn seed_example_is_repository_first_and_survives_reopen() {
+    let root = std::env::temp_dir().join(format!("daena-seed-example-{}", Uuid::new_v4()));
+    let mut store = ProjectStore::open_directory(&root).unwrap();
+
+    assert_eq!(store.seed_example().unwrap(), 26);
+    let entities = store.list_entities().unwrap();
+    assert_eq!(entities.len(), 26);
+    let map = entities
+        .iter()
+        .find(|entity| entity.entity_type.as_deref() == Some(crate::maps::MAP_ENTITY_TYPE))
+        .expect("seed example ships a map entity");
+    assert_eq!(map.name, "The Known Coast");
+    assert_eq!(
+        store
+            .map_locations_for_entity(
+                entities
+                    .iter()
+                    .find(|e| e.name == "Eldermere")
+                    .unwrap()
+                    .id
+                    .clone()
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let reopened = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(reopened.list_entities().unwrap().len(), 26);
+    assert_eq!(
+        reopened
+            .list_entities()
+            .unwrap()
+            .iter()
+            .filter(|entity| entity.entity_type.as_deref() == Some(crate::maps::MAP_ENTITY_TYPE))
+            .count(),
+        1
+    );
+
+    let mut again = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(again.seed_example().unwrap(), 26);
+    assert_eq!(again.list_entities().unwrap().len(), 26);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn restore_replaces_records_missing_from_the_backup() {
     let source = ProjectStore::in_memory().unwrap();
     source

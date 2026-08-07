@@ -3441,6 +3441,15 @@ impl ProjectStore {
     }
 
     pub fn seed_example(&mut self) -> Result<usize, CoreError> {
+        if self.root.is_some() {
+            return self.repository_first_mutation(None, |projection, _request_id| {
+                projection.seed_example_unchecked()
+            });
+        }
+        self.seed_example_unchecked()
+    }
+
+    fn seed_example_unchecked(&mut self) -> Result<usize, CoreError> {
         let tx = self.connection.transaction()?;
         tx.execute("DELETE FROM assets", [])?;
         tx.execute("DELETE FROM entity_fields", [])?;

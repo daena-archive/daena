@@ -7,7 +7,7 @@
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "declarative",
   "entrypoints": { "ui": "dist/ui/index.html" },
-  "capabilities": ["entity.read", "entity.write", "entity.delete", "document.read", "document.write", "field.read:self", "field.write:self", "relationship.read", "relationship.write", "asset.read:self", "asset.import", "search.query", "service.call:daena.maps/navigation"],
+  "capabilities": ["entity.read", "entity.write", "entity.delete", "document.read", "document.write", "field.read:self", "field.write:self", "relationship.read", "relationship.write", "asset.read:self", "asset.register", "search.query", "service.call:daena.maps/navigation"],
   "dependencies": {},
   "namespaces": ["writing"],
   "schemas": [{

@@ -2,8 +2,20 @@
 
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import Ajv2020 from "ajv/dist/2020.js";
 import * as sdk from "@daena-archive/plugin-sdk";
 import { createZipArchive, readZipArchive } from "./zip.mjs";
+
+const schemaPath = resolve(import.meta.dirname, "../../../schemas/plugin-manifest-v1.json");
+if (!existsSync(schemaPath)) throw new Error(`generated manifest schema not found: ${schemaPath}`);
+const ajv = new Ajv2020({ allErrors: true });
+ajv.addFormat("uint32", (value) => Number.isInteger(value) && value >= 0 && value <= 0xffffffff);
+const validateShape = ajv.compile(JSON.parse(readFileSync(schemaPath, "utf8")));
+
+function shapeErrors(manifest) {
+  if (validateShape(manifest)) return [];
+  return (validateShape.errors ?? []).map((error) => `schema:${error.instancePath || "/"} ${error.message}`);
+}
 
 function usage() {
   console.error(`Usage:
@@ -51,7 +63,7 @@ function validateDirectory(input) {
   if (!existsSync(directory) || !statSync(directory).isDirectory()) throw new Error(`package directory does not exist: ${directory}`);
   inspectPackageTree(directory);
   const { manifest } = readManifest(directory);
-  const errors = sdk.validatePluginManifest(manifest);
+  const errors = [...shapeErrors(manifest), ...sdk.validatePluginManifest(manifest)];
   for (const entrypoint of [manifest.entrypoints?.ui, manifest.entrypoints?.wasm].filter(Boolean)) {
     const target = resolve(directory, entrypoint);
     if (!target.startsWith(`${directory}/`) || !existsSync(target) || !statSync(target).isFile()) errors.push(`missing entrypoint: ${entrypoint}`);
@@ -82,7 +94,7 @@ function validateArchive(input) {
   if (!names.includes("manifest.json")) throw new Error("archive must contain manifest.json at its root");
   let manifest;
   try { manifest = JSON.parse(entries.find((entry) => entry.name === "manifest.json").data.toString("utf8")); } catch (error) { throw new Error(`archive manifest is invalid: ${error.message}`); }
-  const errors = sdk.validatePluginManifest(manifest);
+  const errors = [...shapeErrors(manifest), ...sdk.validatePluginManifest(manifest)];
   for (const entrypoint of [manifest.entrypoints?.ui, manifest.entrypoints?.wasm].filter(Boolean)) if (!names.includes(entrypoint)) errors.push(`missing entrypoint: ${entrypoint}`);
   if (errors.length) throw new Error(errors.join("; "));
   return { archive, manifest, files: names };

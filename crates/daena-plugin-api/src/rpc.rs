@@ -1,0 +1,552 @@
+//! Canonical RPC method payloads and wire shapes.
+//!
+//! These types pin down the exact wire names that `validate_broker_payload`
+//! (`src-tauri/src/lib.rs`) enforces. Field names deliberately mirror the
+//! frozen keys, including the mixed casing the contract has accumulated
+//! (`expectedRevision`, `mapEntityId`, `source_id`). They are the single Rust
+//! definition for Phase 1 contract generation and the Phase 2 data-driven
+//! `RPC_METHOD_CATALOG`.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// `RpcSuccess` — `{ rpcVersion, requestId, ok: true, result }`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RpcSuccess {
+    #[serde(rename = "rpcVersion")]
+    pub rpc_version: u32,
+    #[serde(rename = "requestId")]
+    pub request_id: String,
+    pub ok: bool,
+    pub result: Value,
+}
+
+/// `RpcFailure` — `{ rpcVersion, requestId, ok: false, error }`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RpcFailure {
+    #[serde(rename = "rpcVersion")]
+    pub rpc_version: u32,
+    #[serde(rename = "requestId")]
+    pub request_id: String,
+    pub ok: bool,
+    pub error: super::RpcError,
+}
+
+/// Bootstrap envelope delivered to a plugin at activation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct PluginBootstrap {
+    #[serde(rename = "rpcVersion")]
+    pub rpc_version: u32,
+    #[serde(rename = "pluginId")]
+    pub plugin_id: String,
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    #[serde(rename = "projectId")]
+    pub project_id: String,
+    pub version: String,
+    #[serde(rename = "hostApi")]
+    pub host_api: String,
+    #[serde(rename = "grantedCapabilities")]
+    pub granted_capabilities: Vec<String>,
+    #[serde(rename = "optionalFeatures")]
+    pub optional_features: Vec<String>,
+}
+
+/// Entity record as returned to callers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct EntityRecord {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "entityType")]
+    pub entity_type: Option<String>,
+    pub deleted: bool,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+    pub revision: String,
+}
+
+/// Authoring options for a migration (`recovery`, `description`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MigrationAuthoringOptions {
+    pub recovery: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct EntityCreateField {
+    pub namespace: String,
+    pub key: String,
+    pub value: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct EntityCreateRelationship {
+    #[serde(rename = "relationship_type")]
+    pub relationship_type: String,
+    #[serde(rename = "target_ids")]
+    pub target_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct EntityCreateDocument {
+    pub body: String,
+    pub format: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct EntityListPayload {
+    #[serde(rename = "entityType")]
+    pub entity_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct EntityGetPayload {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct EntityCreatePayload {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub r#type: Option<String>,
+    #[serde(default)]
+    pub fields: Vec<EntityCreateField>,
+    #[serde(default)]
+    pub relationships: Vec<EntityCreateRelationship>,
+    #[serde(default)]
+    pub document: Option<EntityCreateDocument>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct EntityUpdatePayload {
+    pub id: String,
+    pub name: Option<String>,
+    #[serde(rename = "type")]
+    pub r#type: Option<String>,
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct EntityDeletePayload {
+    pub id: String,
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct DocumentListPayload {
+    #[serde(rename = "entityId")]
+    pub entity_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct DocumentSavePayload {
+    #[serde(rename = "entityId")]
+    pub entity_id: String,
+    pub body: String,
+    pub format: Option<String>,
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct FieldReadPayload {
+    #[serde(rename = "entityId")]
+    pub entity_id: String,
+    pub namespace: String,
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct FieldListPayload {
+    #[serde(rename = "entityId")]
+    pub entity_id: String,
+    pub namespace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct FieldSetPayload {
+    #[serde(rename = "entityId")]
+    pub entity_id: String,
+    pub namespace: String,
+    pub key: String,
+    pub value: Value,
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct RelationshipListPayload {
+    #[serde(rename = "entityId")]
+    pub entity_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct RelationshipCreatePayload {
+    #[serde(rename = "source_id")]
+    pub source_id: String,
+    #[serde(rename = "target_id")]
+    pub target_id: String,
+    #[serde(rename = "relationship_type")]
+    pub relationship_type: String,
+    pub metadata: Option<String>,
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct RelationshipDeletePayload {
+    pub id: String,
+    #[serde(rename = "relationship_type")]
+    pub relationship_type: Option<String>,
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AssetListPayload {
+    #[serde(rename = "entityId")]
+    pub entity_id: String,
+    pub namespace: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AssetRegisterPayload {
+    #[serde(rename = "entity_id")]
+    pub entity_id: String,
+    pub namespace: String,
+    #[serde(rename = "content_hash")]
+    pub content_hash: String,
+    #[serde(rename = "mime_type")]
+    pub mime_type: String,
+    pub filename: String,
+    pub size: i64,
+    pub path: String,
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AssetReadBeginPayload {
+    #[serde(rename = "assetId")]
+    pub asset_id: String,
+    pub namespace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AssetReplaceBeginPayload {
+    #[serde(rename = "assetId")]
+    pub asset_id: String,
+    pub namespace: String,
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: String,
+    pub size: i64,
+    #[serde(rename = "mimeType")]
+    pub mime_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AssetReplaceCommitPayload {
+    pub handle: String,
+    #[serde(rename = "contentHash")]
+    pub content_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AssetTransferCancelPayload {
+    pub handle: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct SearchQueryPayload {
+    pub query: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsAssetCreateBeginPayload {
+    #[serde(rename = "mapEntityId")]
+    pub map_entity_id: String,
+    pub size: i64,
+    #[serde(rename = "mimeType")]
+    pub mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsAssetCreateCommitPayload {
+    pub handle: String,
+    #[serde(rename = "contentHash")]
+    pub content_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsRecoveryExportBeginPayload {
+    #[serde(rename = "mapEntityId")]
+    pub map_entity_id: String,
+    pub size: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsRecoveryExportCommitPayload {
+    pub handle: String,
+    #[serde(rename = "contentHash")]
+    pub content_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsRecoveryListPayload {
+    #[serde(rename = "mapEntityId")]
+    pub map_entity_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsRecoveryRestorePayload {
+    #[serde(rename = "mapEntityId")]
+    pub map_entity_id: String,
+    #[serde(rename = "fileName")]
+    pub file_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsLocationsListPayload {
+    #[serde(rename = "mapEntityId")]
+    pub map_entity_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsReconcileLinksPayload {
+    #[serde(rename = "mapEntityId")]
+    pub map_entity_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct EventTypePayload {
+    #[serde(rename = "type")]
+    pub r#type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct EventPublishPayload {
+    #[serde(rename = "type")]
+    pub r#type: String,
+    pub payload: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ServiceCallPayload {
+    pub name: String,
+    pub major: u32,
+    pub payload: Value,
+    #[serde(rename = "deadlineMs")]
+    pub deadline_ms: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn asset_register_uses_snake_case_wire_names() {
+        let json = serde_json::json!({
+            "entity_id": "e1",
+            "namespace": "media",
+            "filename": "cover.png",
+            "content_hash": "sha256:abc",
+            "size": 42,
+            "mime_type": "image/png",
+            "path": "media/cover.png",
+            "expectedRevision": "rev-3"
+        });
+        let parsed: AssetRegisterPayload = serde_json::from_value(json.clone()).unwrap();
+        let re_encoded = serde_json::to_value(parsed).unwrap();
+        assert_eq!(re_encoded, json);
+    }
+
+    #[test]
+    fn relationship_create_round_trips_mixed_case() {
+        let json = serde_json::json!({
+            "source_id": "e1",
+            "target_id": "e2",
+            "relationship_type": "mentions",
+            "metadata": "note",
+            "expectedRevision": "rev-9"
+        });
+        let parsed: RelationshipCreatePayload = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(parsed.source_id, "e1");
+        assert_eq!(serde_json::to_value(parsed).unwrap(), json);
+    }
+
+    #[test]
+    fn maps_and_service_payloads_use_camel_wire_names() {
+        let locations: MapsLocationsListPayload =
+            serde_json::from_value(serde_json::json!({ "mapEntityId": "m1" })).unwrap();
+        assert_eq!(locations.map_entity_id, "m1");
+
+        let reconcile: MapsReconcileLinksPayload =
+            serde_json::from_value(serde_json::json!({ "mapEntityId": "m1" })).unwrap();
+        assert_eq!(reconcile.map_entity_id, "m1");
+
+        let service: ServiceCallPayload = serde_json::from_value(serde_json::json!({
+            "name": "daena.maps/navigation",
+            "major": 1,
+            "payload": { "dest": "m1" },
+            "deadlineMs": 500
+        }))
+        .unwrap();
+        assert_eq!(service.deadline_ms, Some(500));
+
+        let publish: EventPublishPayload =
+            serde_json::from_value(serde_json::json!({ "type": "daena.maps/state", "payload": {} }))
+                .unwrap();
+        assert_eq!(publish.r#type, "daena.maps/state");
+    }
+
+    #[test]
+    fn entity_create_accepts_missing_optional_collections() {
+        let parsed: EntityCreatePayload =
+            serde_json::from_value(serde_json::json!({ "name": "Map", "type": "daena.maps:map" }))
+                .unwrap();
+        assert!(parsed.fields.is_empty());
+        assert!(parsed.relationships.is_empty());
+        assert_eq!(parsed.document, None);
+    }
+
+    #[test]
+    fn bootstrap_and_entity_record_round_trip() {
+        let bootstrap = PluginBootstrap {
+            rpc_version: 1,
+            plugin_id: "daena.maps".into(),
+            session_id: "s1".into(),
+            project_id: "p1".into(),
+            version: "0.1.0".into(),
+            host_api: ">=1.0.0 <2.0.0".into(),
+            granted_capabilities: vec!["asset.read:self".into()],
+            optional_features: vec![],
+        };
+        let json = serde_json::to_value(&bootstrap).unwrap();
+        assert_eq!(json["pluginId"], "daena.maps");
+        assert_eq!(json["grantedCapabilities"][0], "asset.read:self");
+        assert_eq!(
+            serde_json::from_value::<PluginBootstrap>(json).unwrap(),
+            bootstrap
+        );
+
+        let record: EntityRecord = serde_json::from_value(serde_json::json!({
+            "id": "e1",
+            "name": "Map",
+            "entityType": "daena.maps:map",
+            "deleted": false,
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z",
+            "revision": "rev-1"
+        }))
+        .unwrap();
+        assert_eq!(record.entity_type.as_deref(), Some("daena.maps:map"));
+    }
+
+    #[test]
+    fn rpc_success_and_failure_round_trip() {
+        let success = RpcSuccess {
+            rpc_version: 1,
+            request_id: "r1".into(),
+            ok: true,
+            result: serde_json::json!({ "ok": true }),
+        };
+        let parsed: RpcSuccess = serde_json::from_value(serde_json::to_value(&success).unwrap())
+            .unwrap();
+        assert_eq!(parsed, success);
+
+        let failure = RpcFailure {
+            rpc_version: 1,
+            request_id: "r2".into(),
+            ok: false,
+            error: super::super::RpcError {
+                code: "method.unknown".into(),
+                message: "nope".into(),
+                retryable: false,
+                details: None,
+            },
+        };
+        let parsed: RpcFailure = serde_json::from_value(serde_json::to_value(&failure).unwrap())
+            .unwrap();
+        assert_eq!(parsed, failure);
+    }
+}

@@ -15,8 +15,9 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 use daena_plugin_api::{
     command_exposes, lifecycle_transition, parse_manifest, validate_command_value, Command,
-    CommandAction, CommandExposure, LifecycleState, PluginManifest, RpcError, RpcRequest,
-    RpcResponse, View, ViewComponent, RPC_VERSION,
+    CommandAction, CommandExposure, LifecycleState, NamespaceView, PluginManifest,
+    RpcAuthorizationContext, RpcError, RpcRequest, RpcResponse, View, ViewComponent,
+    RPC_METHOD_CATALOG, RPC_VERSION,
 };
 
 pub mod package;
@@ -619,6 +620,20 @@ impl NamespaceOwnership {
             .filter(|((field_namespace, _), (_, shared))| field_namespace == namespace && *shared)
             .map(|((_, key), _)| key.clone())
             .collect()
+    }
+}
+
+impl NamespaceView for NamespaceOwnership {
+    fn owner(&self, namespace: &str) -> Option<&str> {
+        NamespaceOwnership::owner(self, namespace)
+    }
+
+    fn field_is_shared(&self, namespace: &str, key: &str) -> bool {
+        NamespaceOwnership::field_is_shared(self, namespace, key)
+    }
+
+    fn namespace_has_shared_fields(&self, namespace: &str) -> bool {
+        NamespaceOwnership::namespace_has_shared_fields(self, namespace)
     }
 }
 
@@ -2631,7 +2646,7 @@ fn validate_schema_resource(
                 }
             }
         }
-        "field.read" | "field.list" | "field.write" | "field.set" => {
+        "field.read" | "field.list" | "field.set" => {
             let namespace = payload
                 .get("namespace")
                 .and_then(serde_json::Value::as_str)
@@ -2655,9 +2670,7 @@ fn validate_schema_resource(
                 ));
             }
         }
-        "asset.read"
-        | "asset.list"
-        | "asset.import"
+        "asset.list"
         | "asset.register"
         | "asset.read.begin"
         | "asset.replace.begin" => {
@@ -2842,180 +2855,15 @@ fn required_capabilities(
     session: &Session,
     namespaces: &NamespaceOwnership,
 ) -> Result<Vec<String>, RpcError> {
-    match method {
-        "entity.read" | "entity.list" | "entity.get" => Ok(vec!["entity.read".into()]),
-        "entity.write" | "entity.update" => Ok(vec!["entity.write".into()]),
-        "entity.create" => {
-            let mut capabilities = vec!["entity.write".into()];
-            if payload.get("document").is_some() {
-                capabilities.push("document.write".into());
-            }
-            if let Some(fields) = payload.get("fields") {
-                let fields = fields.as_array().ok_or_else(|| {
-                    rpc_error("payload.invalid", "entity fields must be an array", false)
-                })?;
-                for field in fields {
-                    let namespace = field
-                        .get("namespace")
-                        .and_then(serde_json::Value::as_str)
-                        .ok_or_else(|| {
-                            rpc_error("payload.invalid", "entity fields require namespace", false)
-                        })?;
-                    if namespaces.owner(namespace) != Some(session.plugin_id.as_str()) {
-                        return Err(rpc_error(
-                            "namespace.denied",
-                            "plugin does not own namespace",
-                            false,
-                        ));
-                    }
-                }
-                if !fields.is_empty() {
-                    capabilities.push("field.write:self".into());
-                }
-            }
-            if let Some(relationships) = payload.get("relationships") {
-                let relationships = relationships.as_array().ok_or_else(|| {
-                    rpc_error(
-                        "payload.invalid",
-                        "entity relationships must be an array",
-                        false,
-                    )
-                })?;
-                if !relationships.is_empty() {
-                    capabilities.push("relationship.write".into());
-                }
-            }
-            Ok(capabilities)
-        }
-        "entity.delete" => Ok(vec!["entity.delete".into()]),
-        "document.read" | "document.list" => Ok(vec!["document.read".into()]),
-        "document.write" | "document.save" => Ok(vec!["document.write".into()]),
-        "relationship.read" | "relationship.list" => Ok(vec!["relationship.read".into()]),
-        "relationship.write" | "relationship.create" => Ok(vec!["relationship.write".into()]),
-        "relationship.delete" => Ok(vec!["relationship.write".into()]),
-        "search.query" => Ok(vec!["search.query".into()]),
-        "asset.import" | "asset.register" => {
-            ensure_owned_namespace(payload, session, namespaces)?;
-            Ok(vec!["asset.import".into()])
-        }
-        "asset.read" | "asset.list" | "asset.read.begin" => {
-            ensure_owned_namespace(payload, session, namespaces)?;
-            Ok(vec!["asset.read:self".into()])
-        }
-        "asset.replace.begin" => {
-            ensure_owned_namespace(payload, session, namespaces)?;
-            Ok(vec!["asset.write:self".into()])
-        }
-        "asset.replace.commit" => Ok(vec!["asset.write:self".into()]),
-        "asset.transfer.cancel" => Ok(Vec::new()),
-        "maps.asset.create.begin" | "maps.asset.create.commit" => Ok(vec!["asset.write:self".into()]),
-        "maps.recovery.export.begin" | "maps.recovery.export.commit" | "maps.recovery.restore" => {
-            Ok(vec!["asset.write:self".into()])
-        }
-        "maps.recovery.list" => Ok(vec!["asset.read:self".into()]),
-        "field.read" | "field.list" | "field.write" | "field.set" => {
-            let namespace = payload
-                .get("namespace")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| {
-                    rpc_error("payload.invalid", "operation requires namespace", false)
-                })?;
-            if namespaces.owner(namespace) == Some(session.plugin_id.as_str()) {
-                return Ok(vec![if matches!(method, "field.read" | "field.list") {
-                    "field.read:self".into()
-                } else {
-                    "field.write:self".into()
-                }]);
-            }
-            if matches!(method, "field.read" | "field.list") {
-                if let Some(key) = payload.get("key").and_then(serde_json::Value::as_str) {
-                    if !namespaces.field_is_shared(namespace, key) {
-                        return Err(rpc_error(
-                            "namespace.denied",
-                            "field is not explicitly shared",
-                            false,
-                        ));
-                    }
-                } else if !namespaces.namespace_has_shared_fields(namespace) {
-                    return Err(rpc_error(
-                        "namespace.denied",
-                        "namespace has no explicitly shared fields",
-                        false,
-                    ));
-                }
-                Ok(vec!["field.read:shared".into()])
-            } else {
-                Err(rpc_error(
-                    "namespace.denied",
-                    "plugin may only read explicitly shared fields",
-                    false,
-                ))
-            }
-        }
-        "event.publish" | "event.subscribe" | "event.poll" => {
-            let event_type = payload
-                .get("type")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| {
-                    rpc_error("payload.invalid", "event operations require type", false)
-                })?;
-            Ok(vec![format!(
-                "event.{}:{event_type}",
-                if method == "event.publish" {
-                    "publish"
-                } else {
-                    "subscribe"
-                }
-            )])
-        }
-        "service.provide" | "service.call" => {
-            let name = payload
-                .get("name")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| {
-                    rpc_error("payload.invalid", "service operations require name", false)
-                })?;
-            let major = payload
-                .get("major")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|major| u32::try_from(major).ok())
-                .ok_or_else(|| {
-                    rpc_error("payload.invalid", "service operations require major", false)
-                })?;
-            Ok(vec![format!(
-                "service.{}:{name}@{major}",
-                if method == "service.provide" {
-                    "provide"
-                } else {
-                    "call"
-                }
-            )])
-        }
-        _ => Err(rpc_error(
-            "method.unknown",
-            "unknown or unavailable plugin method",
-            false,
-        )),
-    }
-}
-
-fn ensure_owned_namespace(
-    payload: &serde_json::Value,
-    session: &Session,
-    namespaces: &NamespaceOwnership,
-) -> Result<(), RpcError> {
-    let namespace = payload
-        .get("namespace")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| rpc_error("payload.invalid", "operation requires namespace", false))?;
-    if namespaces.owner(namespace) != Some(session.plugin_id.as_str()) {
-        return Err(rpc_error(
-            "namespace.denied",
-            "plugin does not own namespace",
-            false,
-        ));
-    }
-    Ok(())
+    let entry = RPC_METHOD_CATALOG
+        .iter()
+        .find(|entry| entry.name == method)
+        .ok_or_else(|| rpc_error("method.unknown", "unknown or unavailable plugin method", false))?;
+    let context = RpcAuthorizationContext {
+        plugin_id: &session.plugin_id,
+        namespaces,
+    };
+    entry.capability.resolve(payload, &context)
 }
 
 fn rpc_error(code: impl Into<String>, message: impl Into<String>, retryable: bool) -> RpcError {

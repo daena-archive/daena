@@ -6,5 +6,8 @@
   "type": "module",
   "bin": { "daena-plugin": "bin/daena-plugin.mjs" },
   "files": ["bin", "README.md"],
-  "dependencies": { "@daena-archive/plugin-sdk": "1.0.0" }
+  "dependencies": {
+    "@daena-archive/plugin-sdk": "1.0.0",
+    "ajv": "^8.20.0"
+  }
 }

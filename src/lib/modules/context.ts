@@ -280,7 +280,7 @@ export function buildModuleContext(
         return (await rpc.call<RawAsset[]>("asset.list", { entityId, namespace })).filter((asset) => manifest.schemas.some((schema) => schema.namespace === asset.namespace)).map(toAsset);
       },
       register: async (input, options?: MutationOptions) => {
-        checkCapability(manifest, "asset.import");
+        checkCapability(manifest, "asset.register");
         if (!manifest.schemas.some((schema) => schema.namespace === input.namespace)) throw new Error(`Module ${manifest.id} does not own namespace: ${input.namespace}`);
         return toAsset(await rpc.call<RawAsset>("asset.register", {
           entity_id: input.entityId,

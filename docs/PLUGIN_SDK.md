@@ -259,7 +259,7 @@ the broker permits the operation.
 | `field.read:shared` | Read fields explicitly shared by another plugin. |
 | `relationship.read` / `relationship.write` | Read or create relationships. |
 | `asset.read:self` | Read metadata for plugin-owned assets. |
-| `asset.import` | Ask the host to import a user-selected file. |
+| `asset.register` | Register a plugin-supplied asset into a caller-owned namespace. |
 | `search.query` | Query the project search service. |
 | `event.publish:<type>` / `event.subscribe:<type>` | Publish or subscribe to declared events. |
 | `service.provide:<name>` / `service.call:<name>` | Provide or call declared services. |
@@ -501,9 +501,29 @@ Before publishing a plugin, verify:
 This guide is the author-facing source of truth. The following files define the
 machine-readable or architectural contract it summarizes:
 
+- [`crates/daena-plugin-api/src/lib.rs`](../crates/daena-plugin-api/src/lib.rs)
+  — the Rust manifest types and `validate_manifest`: the enforcement boundary
+  and the source of truth for the contract.
+- [`crates/daena-plugin-api/src/rpc.rs`](../crates/daena-plugin-api/src/rpc.rs)
+  — the Rust RPC payload and envelope types.
+- [`crates/daena-plugin-api/src/catalog.rs`](../crates/daena-plugin-api/src/catalog.rs)
+  — the RPC method catalog: methods, payload shapes, revision and capability
+  requirements.
 - [`schemas/plugin-manifest-v1.json`](../schemas/plugin-manifest-v1.json)
 - [`schemas/plugin-rpc-v1.json`](../schemas/plugin-rpc-v1.json)
 - [`schemas/plugin-error-v1.json`](../schemas/plugin-error-v1.json)
 - [`schemas/capability-registry-v1.json`](../schemas/capability-registry-v1.json)
-- [`PLUGIN_PLATFORM_PLAN.md`](PLUGIN_PLATFORM_PLAN.md)
+  — the JSON Schemas are generated from the Rust types by
+  `npm run gen:plugin-contract`; do not hand-edit them.
 - [`packages/plugin-sdk/src/generated.ts`](../packages/plugin-sdk/src/generated.ts)
+  — the TypeScript contract types, generated from the schemas.
+- [`packages/plugin-sdk/src/index.ts`](../packages/plugin-sdk/src/index.ts) —
+  `validatePluginManifest`, the TypeScript rule validator kept in parity with
+  the Rust validator by the dual-validator conformance test
+  (`npm run test:plugin-conformance`).
+- [`schemas/fixtures/manifest/`](../schemas/fixtures/manifest/) — the shared
+  fixture battery the conformance and structural checks run against.
+- [`PLUGIN_PLATFORM_PLAN.md`](PLUGIN_PLATFORM_PLAN.md)
+- [`adr/0006-rust-first-contract-generation.md`](adr/0006-rust-first-contract-generation.md)
+  — the decision that Rust owns the contract and schemas/TS are generated
+  artifacts.

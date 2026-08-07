@@ -129,7 +129,7 @@ The initial capability vocabulary is:
 | `relationship.read`                  | Read relationships involving visible entities.                                         |
 | `relationship.write`                 | Create relationships using registered relationship types.                              |
 | `asset.read:self`                    | Read metadata for caller-owned assets; bytes require an explicit broker request.       |
-| `asset.import`                       | Ask the host to import a user-selected file into a caller-owned namespace.             |
+| `asset.register`                      | Register a plugin-supplied asset into a caller-owned namespace.                       |
 | `search.query`                       | Query the core search service.                                                         |
 | `event.publish:<type>`               | Publish a declared event type.                                                         |
 | `event.subscribe:<type>`             | Subscribe to a declared event type.                                                    |
@@ -149,9 +149,15 @@ exports fields as shared.
 
 ### 5. Canonical manifest
 
-There will be one JSON manifest per package and one versioned JSON Schema owned
-by the Rust plugin API crate. Rust types and TypeScript declarations are
-generated from that schema. Handwritten duplicate manifests are removed.
+There will be one JSON manifest per package. The Rust `daena-plugin-api` crate
+owns the contract types; the versioned JSON Schemas and the TypeScript SDK
+declarations are generated from those Rust types by `npm run gen:plugin-contract`
+and are build artifacts, not hand-edited sources. Handwritten duplicate contract
+types are removed. Cross-reference rules (namespace ownership, migration
+contiguity, template-field typing) stay handwritten in Rust's
+`validate_manifest` and are mirrored in the TypeScript `validatePluginManifest`,
+with parity enforced by a dual-validator conformance test over a shared fixture
+battery. See [ADR 0006](adr/0006-rust-first-contract-generation.md).
 
 The initial manifest contains:
 
@@ -464,13 +470,15 @@ than the source of truth.
 
 ### Phase 0: Specify and lock the public contract
 
-Create the manifest and RPC JSON Schemas, Rust types, generated TypeScript
-types, capability registry, lifecycle state machine, and error model. Add ADRs
-for isolation, package trust, plugin-to-plugin communication, and data
-ownership. Update `ARCHITECTURE.md` and `PLAN.md` to link to this document.
+Create the manifest and RPC contract types in Rust, generate the JSON Schemas
+and TypeScript declarations from them, and define the capability registry,
+lifecycle state machine, and error model. Add ADRs for isolation, package
+trust, plugin-to-plugin communication, and data ownership. Update
+`ARCHITECTURE.md` and `PLAN.md` to link to this document.
 
-**Exit gate:** One canonical Lore manifest validates in Rust and TypeScript;
-there are no handwritten duplicate contract types.
+**Exit gate:** One canonical Lore manifest validates identically in Rust and
+TypeScript; JSON Schemas and TypeScript declarations are generated from the
+Rust contract types, and there are no handwritten duplicate contract types.
 
 ### Phase 1: Extract the Rust core
 
@@ -616,10 +624,137 @@ refactoring implementation code:
 2. `schemas/plugin-rpc-v1.json` and the common error envelope;
 3. the capability registry with request/resource mappings;
 4. Rust contract types in the proposed `daena-plugin-api` crate;
-5. generated TypeScript SDK types;
+5. generated JSON Schemas and TypeScript SDK types (generated from the Rust
+   contract types by `npm run gen:plugin-contract`, not hand-written);
 6. canonical Lore and Timeline manifests; and
 7. ADRs for isolation, authority, packaging trust, and inter-plugin contracts.
 
 Implementation should then follow the phase gates in order. In particular,
 installer UI or marketplace work must not jump ahead of backend identity,
 authorization, bundled-plugin conversion, and runtime isolation.
+
+## Contract reconciliation and generation record
+
+This appendix is the implementation record of the contract-reconciliation
+effort. It supersedes the interim `plan/` documents and preserves their
+load-bearing decisions and current state. The overall decision — Rust owns the
+contract, schemas and TypeScript are generated artifacts — is [ADR 0006]
+(adr/0006-rust-first-contract-generation.md).
+
+### Representations are unified under Rust
+
+The five parallel representations that previously disagreed are now derived
+from one source:
+
+| Representation | Location | Role |
+| -------------- | -------- | ---- |
+| Rust contract types + `validate_manifest` | `crates/daena-plugin-api/src/lib.rs` | Single source of truth |
+| RPC payload/envelope types | `crates/daena-plugin-api/src/rpc.rs` | Pins exact wire names |
+| RPC method catalog | `crates/daena-plugin-api/src/catalog.rs` | 32 methods, payload, revision, capability |
+| JSON schemas | `schemas/plugin-{manifest,rpc,error}-v1.json`, `schemas/capability-registry-v1.json` | Generated build artifacts |
+| TypeScript contract types | `packages/plugin-sdk/src/generated.ts` | Generated build artifact |
+| TS rule validator | `packages/plugin-sdk/src/index.ts` (`validatePluginManifest`) | Mirror of Rust rules, conformance-tested |
+
+JSON Schema cannot express the cross-reference *rules* (namespace ownership,
+migration contiguity, template-field typing), so rules stay handwritten in Rust
+and are mirrored in TypeScript. Shapes are generated; parity is enforced.
+
+### Canonical RPC method catalog
+
+32 executable methods in `RPC_METHOD_CATALOG`:
+
+```
+entity.list  entity.get  entity.create  entity.update  entity.delete
+document.list  document.save
+field.read  field.list  field.set
+relationship.list  relationship.create  relationship.delete
+asset.list  asset.register  asset.read.begin
+asset.replace.begin  asset.replace.commit  asset.transfer.cancel
+search.query
+maps.asset.create.begin  maps.asset.create.commit
+maps.recovery.export.begin  maps.recovery.export.commit
+maps.recovery.list  maps.recovery.restore
+maps.locations.list  maps.reconcile.links
+event.publish  event.subscribe  event.poll
+service.call
+```
+
+### Resolved contract decisions
+
+- **`asset.import` capability renamed to `asset.register` (breaking).** The old
+  capability implied a host file-picker import with no executable method; only
+  `asset.register` (plugin-supplied file) exists. The capability registry,
+  `KNOWN_CAPABILITIES`, the SDK validator's `knownCapabilities`, bundled
+  manifests, the frontend `checkCapability`, and this document's §4 all use
+  `asset.register`.
+- **`maps.*` methods are first-class broker methods.** Previously
+  `maps.locations.list` and `maps.reconcile.links` dispatched but had no
+  capability arm (broker-unreachable). Both now map to `asset.read:self`;
+  `reconcile.links` rebuilds the disposable map projection and does not mutate
+  canonical files.
+- **Capability-alias names are grouping keys, not methods.** `entity.read`,
+  `entity.write`, `document.read`, `document.write`, `relationship.read`,
+  `relationship.write`, `asset.read`, `field.write`, and `service.provide` were
+  `required_capabilities` arms with no dispatch target; a call would authorize
+  then fail with "unknown plugin RPC method". They are excluded from the
+  catalog and return `method.unknown`; the host `required_capabilities` is now
+  a catalog lookup.
+- **`service.provide` is vestigial as a method.** Providers register at
+  activation; the manifest `services.provides` is the mechanism.
+- **Wire-name fidelity.** Payloads mix snake_case and camelCase by design
+  (`source_id`, `expectedRevision`, `mapEntityId`, `fileName`). The Rust payload
+  structs in `rpc.rs` pin these exact wire names through serde renames, so
+  `generated.ts` matches what the host actually sends.
+
+### Validation parity
+
+Rust `validate_manifest` and TS `validatePluginManifest` were aligned rule by
+rule:
+
+- Rust gained semver `-pre`/`+build` parsing, `is_host_api_range`, and `.`-path
+  segment rejection.
+- TS gained Rust's template-preset typing, relationship
+  `entityTypes`/`targetEntityTypes` duplicate/empty checks, and non-empty
+  `views`/`commands` rule checks.
+- `schemas/fixtures/manifest/` holds an 18-fixture battery (one manifest per
+  rejection class) indexed in `index.json`. Both validators must agree with the
+  indexed `expected` outcomes, enforced by
+  `crates/daena-plugin-api/tests/fixture_battery.rs`, `npm run
+  check:manifest-fixtures`, and the dual-validator conformance test
+  (`npm run test:plugin-conformance`, which also runs 42 broker checks and
+  lifecycle install/enable/upgrade/rollback/uninstall against the test host).
+- Intentionally non-mutual rules (e.g. TS rejects duplicate capabilities and
+  unknown migration-item keys; Rust rejects duplicate command exposure) remain
+  outside the battery as non-contract-critical.
+
+### Generation pipeline and drift guard
+
+- `npm run gen:plugin-contract` runs the `gen-contract` bin
+  (`crates/daena-plugin-api/src/bin/gen-contract.rs`, `--features gen`) to
+  emit the four schemas, then converts them to
+  `packages/plugin-sdk/src/generated.ts`. The SDK `dist` is rebuilt with
+  `npm run build:plugin-sdk`.
+- `npm run check:plugin-contract` (in `npm run check`) regenerates everything
+  into a temp directory and byte-diffs the committed schemas, `generated.ts`,
+  and `dist/generated.*` against the fresh output. Any contract change that is
+  not followed by a regen fails the check; a gen-gated cargo test
+  (`committed_schemas_match_generation`) does the same in-process.
+- `schemas/fixtures/manifest/` is gitignored and regenerable:
+  `npm run gen:manifest-fixtures` re-derives the 18 fixtures plus `index.json`
+  from the Lore manifest (`packages/modules/lore/manifest.json`), so the
+  directory contents can be deleted and rebuilt on demand (~50 ms). The
+  dependent checks auto-generate first via npm `pre` hooks
+  (`check:manifest-fixtures`, `test:plugin-conformance`), so a fresh clone
+  needs no manual step. `npm run check:manifest-fixtures` additionally
+  regenerates to a temp directory and byte-diffs the on-disk fixtures
+  (`check-manifest-fixtures-drift.mjs`), failing with "is stale" when hand-edited
+  files drift from the generator.
+- The `daena-plugin validate` CLI compiles
+  `schemas/plugin-manifest-v1.json` with `ajv` (draft 2020-12, strict, with the
+  non-standard `uint32` format registered) at startup and prepends
+  `schema:<instancePath>` errors to the TS validator's output in both validate
+  paths, so shape-only rejections are caught too.
+- The Phase 0–5 exit gates (all representations agree on the frozen contract,
+  generated types reviewed and tests green, full suites green, drift guard
+  fails on an intentional Rust change without regen, docs match code) are all
+  **met**.

@@ -2866,6 +2866,10 @@ fn required_capabilities(
         }
         "asset.replace.commit" => Ok(vec!["asset.write:self".into()]),
         "asset.transfer.cancel" => Ok(Vec::new()),
+        "maps.recovery.export.begin" | "maps.recovery.export.commit" | "maps.recovery.restore" => {
+            Ok(vec!["asset.write:self".into()])
+        }
+        "maps.recovery.list" => Ok(vec!["asset.read:self".into()]),
         "field.read" | "field.list" | "field.write" | "field.set" => {
             let namespace = payload
                 .get("namespace")

@@ -63,6 +63,9 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   let loadedDocumentRevision = "";
   let documentConflict = $state<{ paths: string[]; diagnostics: string[] } | null>(null);
   let conflictDiskBody = $state("");
+  let mapSaveStates = $state<Record<string, { status: string; detail: unknown }>>({});
+  let mapReloadCounter = $state(0);
+  let mapRecoveryBusy = $state(false);
   let projectDiagnostics = $state<string[]>([]);
   let showPlugins = $state(false);
   let adminPlugins = $state<PluginAdminEntry[] | null>(null);
@@ -313,6 +316,62 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     } catch (cause) {
       error = friendlyError(cause);
     }
+  }
+
+  function currentMapId() {
+    return selected?.entity_type === "daena.maps:map" ? selected.id : null;
+  }
+
+  async function saveCurrentMap() {
+    try {
+      await project.mapsEditorSave();
+    } catch (cause) {
+      error = friendlyError(cause);
+    }
+  }
+
+  function reloadMapOriginal() {
+    if (!currentMapId()) return;
+    mapReloadCounter += 1;
+  }
+
+  async function restoreMapDraft() {
+    const mapId = currentMapId();
+    if (!mapId || mapRecoveryBusy) return;
+    mapRecoveryBusy = true;
+    try {
+      const copies = await project.mapsRecoveryList(mapId);
+      if (copies.length === 0) throw new Error("No recovery copy was found for this map.");
+      await project.mapsRecoveryRestore(mapId, copies[0].fileName);
+      mapSaveStates[mapId] = { status: "restoring", detail: null };
+      mapReloadCounter += 1;
+    } catch (cause) {
+      error = friendlyError(cause);
+    } finally {
+      mapRecoveryBusy = false;
+    }
+  }
+
+  function dismissMapConflict() {
+    const mapId = currentMapId();
+    if (!mapId) return;
+    mapSaveStates[mapId] = { status: "clean", detail: null };
+  }
+
+  function mapSaveLabel(state: { status: string; detail: unknown } | null) {
+    switch (state?.status) {
+      case "dirty": return "Unsaved changes";
+      case "saving": return "Saving…";
+      case "saved": return "Saved";
+      case "conflict": return "Save blocked by changes on disk";
+      case "error": return "Save failed";
+      case "restoring": return "Restoring draft…";
+      default: return "Up to date";
+    }
+  }
+
+  function mapConflictDetail(detail: unknown): { path?: string } {
+    return typeof detail === "object" && detail !== null ? (detail as { path?: string }) : {};
   }
 
   function visibleEntities() {
@@ -1176,7 +1235,12 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
         await openPluginView(item);
       } catch (cause) { error = friendlyError(cause); }
     }).then((cleanup) => { unlistenMaps = cleanup; }).catch(() => {});
-    return () => { unlisten?.(); unlistenMaps?.(); };
+    let unlistenMapsState: (() => void) | undefined;
+    void listen<{ mapEntityId: string; status: string; detail: unknown }>("maps-state", (event) => {
+      const { mapEntityId, status, detail } = event.payload;
+      mapSaveStates[mapEntityId] = { status, detail };
+    }).then((cleanup) => { unlistenMapsState = cleanup; }).catch(() => {});
+    return () => { unlisten?.(); unlistenMaps?.(); unlistenMapsState?.(); };
   });
 </script>
 
@@ -1445,8 +1509,30 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     {:else if hostView}
       <div class="host-view-shell"><button class="quiet-button host-view-back" onclick={() => hostView = null}>Back to workspace</button><HostView plugin={hostView.plugin} view={hostView.view} /></div>
     {:else if sandboxView}
-      {#key `${sandboxView.plugin.id}:${sandboxView.view?.id ?? "default"}:${sandboxView.plugin.id === "daena.maps" && selected?.entity_type === "daena.maps:map" ? selected.id : ""}`}
-        <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={sandboxView.plugin.name} mapEntityId={sandboxView.plugin.id === "daena.maps" && selected?.entity_type === "daena.maps:map" ? selected.id : undefined} />
+      {#key `${sandboxView.plugin.id}:${sandboxView.view?.id ?? "default"}:${sandboxView.plugin.id === "daena.maps" && selected?.entity_type === "daena.maps:map" ? selected.id : ""}:${sandboxView.plugin.id === "daena.maps" ? mapReloadCounter : 0}`}
+        {#if sandboxView.plugin.id === "daena.maps" && selected?.entity_type === "daena.maps:map"}
+          {@const mapId = selected.id}
+          {@const mapState = mapSaveStates[mapId] ?? null}
+          {@const mapDetail = mapConflictDetail(mapState?.detail)}
+          <div class="map-editor-shell">
+            <div class="map-editor-toolbar">
+              <span class:map-state-warn={mapState?.status === "dirty" || mapState?.status === "error"} class:map-state-error={mapState?.status === "conflict"} class="map-save-chip"><span class="map-save-dot"></span>{mapSaveLabel(mapState)}</span>
+              {#if mapState?.status === "conflict"}<span class="map-conflict-path">{mapDetail.path ?? "Draft exported as a recovery copy."}</span>{/if}
+              <div class="map-toolbar-actions">
+                <button class="quiet-button" type="button" disabled={mapState?.status !== "dirty" && mapState?.status !== "error"} onclick={saveCurrentMap}>Save</button>
+              </div>
+            </div>
+            {#if mapState?.status === "conflict"}
+              <div class="map-conflict-banner" role="alert">
+                <div class="map-conflict-copy"><strong>This map changed on disk while you were editing</strong><p>Your draft was not saved over it. A recovery copy was exported so nothing is lost.</p>{#if mapDetail.path}<code>{mapDetail.path}</code>{/if}</div>
+                <div class="map-conflict-actions"><button class="primary-button" type="button" disabled={mapRecoveryBusy} onclick={restoreMapDraft}>{mapRecoveryBusy ? "Restoring…" : "Restore draft"}</button><button class="quiet-button" type="button" onclick={reloadMapOriginal}>Reload original</button><button class="quiet-button" type="button" onclick={dismissMapConflict}>Keep editing</button></div>
+              </div>
+            {/if}
+            <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={sandboxView.plugin.name} mapEntityId={mapId} />
+          </div>
+        {:else}
+          <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={sandboxView.plugin.name} mapEntityId={sandboxView.plugin.id === "daena.maps" && selected?.entity_type === "daena.maps:map" ? selected.id : undefined} />
+        {/if}
       {/key}
     {:else if !sectionEnabled()}
       <section class="disabled-state"><div class="disabled-icon">◌</div><span class="overline">Module unavailable</span><h1>{sectionLabel()} is resting.</h1><p>Your project data is safe. Re-enable this module to continue working in this workspace.</p><button class="primary-button" onclick={() => toggleModule(activeModuleId() as ModuleId)}>Enable {sectionLabel()}</button></section>
@@ -1515,7 +1601,18 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   .welcome, .disabled-state { max-width: 1080px; min-height: calc(100vh - 58px); margin: auto; padding: 10vh 7vw; display: flex; align-items: center; gap: 8vw; } .welcome-copy { flex: 1; } .overline, .panel-kicker { display: block; color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: .18em; } .welcome h1 { margin: 20px 0 18px; font: 500 clamp(48px, 6vw, 78px)/.98 var(--font-display); letter-spacing: -.04em; } .welcome h1 em { color: var(--accent); font-style: italic; } .welcome p { max-width: 380px; margin: 0; color: var(--ink-soft); font-size: 16px; line-height: 1.7; } .welcome-art { position: relative; width: 360px; height: 390px; } .orb { position: absolute; border-radius: 50%; } .orb-one { top: 16px; right: 15px; width: 275px; height: 275px; background: radial-gradient(circle at 33% 30%, #eed5a5, #c2794d 64%, #7b4d3f); box-shadow: 30px 35px 60px rgba(115,74,56,.22); } .orb-two { left: 10px; bottom: 36px; width: 140px; height: 140px; background: #365342; box-shadow: 14px 16px 30px rgba(45,71,54,.2); } .art-card { position: absolute; right: -10px; bottom: 0; width: 235px; padding: 22px; border: 1px solid rgba(255,255,255,.65); border-radius: 12px; background: rgba(255,254,250,.86); box-shadow: var(--shadow-lg); } .art-card span, .art-card small { display: block; color: var(--accent); font-size: 9px; font-weight: 800; letter-spacing: .16em; } .art-card strong { display: block; margin: 17px 0 27px; font: 500 20px/1.18 var(--font-display); } .art-card small { color: var(--ink-faint); font-weight: 500; letter-spacing: 0; }
   .primary-button, .quiet-button, .add-button { border: 0; border-radius: 8px; cursor: pointer; } .primary-button { padding: 10px 15px; background: var(--accent-dark); color: #fff; font-weight: 700; font-size: 12px; box-shadow: 0 5px 12px rgba(42,68,51,.14); } .primary-button:hover { background: #2b4535; } .primary-button:disabled { opacity: .55; cursor: wait; } .quiet-button { padding: 10px 12px; background: transparent; color: var(--ink-soft); font-size: 12px; } .quiet-button:hover { background: var(--surface-muted); color: var(--ink); }
   .workspace-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; padding: 42px 40px 25px; } .workspace-heading h1 { margin: 8px 0 4px; font: 500 38px/1 var(--font-display); } .workspace-heading p { margin: 0; color: var(--ink-soft); font-size: 13px; } .heading-actions { display: flex; gap: 7px; } .projection-bar { min-height: 42px; margin: 0 40px 15px; padding: 0 14px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,254,250,.72); } .projection-bar:empty { display: none; } .workspace-grid { display: grid; grid-template-columns: 245px minmax(360px, 1fr) 270px; gap: 14px; padding: 0 40px 40px; align-items: start; } .panel-surface, .editor-panel { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-sm); } .collection-panel, .inspector-panel { min-height: 650px; } .collection-panel { display: flex; flex-direction: column; } .panel-heading, .inspector-heading { display: flex; align-items: center; justify-content: space-between; padding: 18px 17px 12px; } .panel-heading strong { display: block; margin-top: 5px; font: 500 28px var(--font-display); }
-  .project-diagnostics { display: grid; gap: 5px; margin: 0 25px 14px; padding: 12px 14px; border: 1px solid #e2b48c; border-radius: 9px; background: #fff5e9; color: #765a39; font-size: 11px; } .project-diagnostics strong { font-size: 12px; } .project-diagnostics small { margin-top: 3px; color: #9a7957; } .editor-panel { min-height: 650px; padding: 24px 25px 18px; } .editor-header { display: flex; align-items: flex-start; justify-content: space-between; min-height: 72px; } .editor-header h2 { margin: 8px 0 0; font: 500 28px/1.1 var(--font-display); } .editor-status { color: var(--ink-faint); font-size: 11px; } .saving-dot, .saved-dot { display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: #d6a35f; } .saved-dot { width: auto; height: auto; margin: 0 4px 0 0; color: #6fa276; background: transparent; } .document-conflict { margin: -4px 0 16px; padding: 13px 14px; border: 1px solid #e2b48c; border-radius: 9px; background: #fff5e9; color: #765a39; } .document-conflict strong { font-size: 12px; } .document-conflict p { margin: 5px 0 10px; font-size: 11px; line-height: 1.5; } .conflict-compare { margin: 8px 0 10px; padding: 8px 10px; border: 1px solid #ead7c2; border-radius: 7px; background: #fffaf3; } .conflict-compare summary { cursor: pointer; font-size: 11px; font-weight: 700; } .conflict-compare pre { max-height: 180px; margin: 8px 0 0; overflow: auto; white-space: pre-wrap; font: 11px/1.5 ui-monospace, monospace; } .conflict-actions { display: flex; flex-wrap: wrap; gap: 6px; } .editor-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 14px; color: var(--ink-faint); font-size: 11px; } .editor-footer div { display: flex; gap: 4px; } .editor-empty { display: grid; place-items: center; min-height: 500px; padding: 30px; text-align: center; } .empty-mark, .disabled-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 16px; background: #f2e4d2; color: var(--accent); font-size: 23px; } .editor-empty h3 { margin: 18px 0 6px; font: 500 23px var(--font-display); } .editor-empty p, .disabled-state p { max-width: 280px; margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
+  .project-diagnostics { display: grid; gap: 5px; margin: 0 25px 14px; padding: 12px 14px; border: 1px solid #e2b48c; border-radius: 9px; background: #fff5e9; color: #765a39; font-size: 11px; } .project-diagnostics strong { font-size: 12px; } .project-diagnostics small { margin-top: 3px; color: #9a7957; } .editor-panel { min-height: 650px; padding: 24px 25px 18px; } .editor-header { display: flex; align-items: flex-start; justify-content: space-between; min-height: 72px; } .editor-header h2 { margin: 8px 0 0; font: 500 28px/1.1 var(--font-display); } .editor-status { color: var(--ink-faint); font-size: 11px; } .saving-dot, .saved-dot { display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: #d6a35f; } .saved-dot { width: auto; height: auto; margin: 0 4px 0 0; color: #6fa276; background: transparent; } .document-conflict { margin: -4px 0 16px; padding: 13px 14px; border: 1px solid #e2b48c; border-radius: 9px; background: #fff5e9; color: #765a39; } .document-conflict strong { font-size: 12px; } .document-conflict p { margin: 5px 0 10px; font-size: 11px; line-height: 1.5; } .conflict-compare { margin: 8px 0 10px; padding: 8px 10px; border: 1px solid #ead7c2; border-radius: 7px; background: #fffaf3; } .conflict-compare summary { cursor: pointer; font-size: 11px; font-weight: 700; } .conflict-compare pre { max-height: 180px; margin: 8px 0 0; overflow: auto; white-space: pre-wrap; font: 11px/1.5 ui-monospace, monospace; }   .conflict-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .map-editor-shell { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; }
+  .map-editor-toolbar { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 18px; border-bottom: 1px solid var(--line); background: var(--surface); }
+  .map-save-chip { display: inline-flex; align-items: center; gap: 7px; color: var(--ink-soft); font-size: 11px; } .map-save-dot { width: 7px; height: 7px; border-radius: 50%; background: #72a97a; }
+  .map-state-warn { color: #8a6a3b; } .map-state-warn .map-save-dot { background: #d6a35f; }
+  .map-state-error { color: #a14f42; } .map-state-error .map-save-dot { background: #c05a4b; }
+  .map-conflict-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-faint); font: 11px ui-monospace, monospace; }
+  .map-toolbar-actions { margin-left: auto; display: flex; gap: 6px; } .map-toolbar-actions .quiet-button:disabled { opacity: .45; cursor: not-allowed; }
+  .map-conflict-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 18px; border-bottom: 1px solid #e2b48c; background: #fff5e9; color: #765a39; }
+  .map-conflict-copy strong { font-size: 12px; } .map-conflict-copy p { margin: 4px 0 0; font-size: 11px; line-height: 1.5; } .map-conflict-copy code { display: block; margin-top: 6px; font: 11px ui-monospace, monospace; }
+  .map-conflict-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }
+  @media (max-width: 760px) { .map-conflict-banner { align-items: flex-start; flex-direction: column; } } .editor-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 14px; color: var(--ink-faint); font-size: 11px; } .editor-footer div { display: flex; gap: 4px; } .editor-empty { display: grid; place-items: center; min-height: 500px; padding: 30px; text-align: center; } .empty-mark, .disabled-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 16px; background: #f2e4d2; color: var(--accent); font-size: 23px; } .editor-empty h3 { margin: 18px 0 6px; font: 500 23px var(--font-display); } .editor-empty p, .disabled-state p { max-width: 280px; margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
   .date-editor { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fcf8f1; } .date-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; } .date-fields label { display: grid; gap: 4px; color: var(--ink-faint); font-size: 9px; font-weight: 700; text-transform: uppercase; } .date-fields input { min-width: 0; width: 100%; padding: 8px 6px; border: 1px solid var(--line); border-radius: 7px; background: var(--canvas); color: var(--ink); font-size: 11px; } .date-fields input:focus { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180,119,63,.1); outline: 0; } .date-preview { color: var(--accent); font-size: 10px; font-weight: 700; } .date-clear, .date-empty { width: fit-content; padding: 0; border: 0; background: transparent; color: var(--ink-faint); font-size: 10px; cursor: pointer; } .date-empty { padding: 8px 10px; border: 1px dashed #d3c0a9; border-radius: 7px; color: var(--accent); } .inspector-heading { border-bottom: 1px solid var(--line); } .inspector-heading strong { display: block; margin-top: 7px; font: 500 20px var(--font-display); } .inspector-type { padding: 4px 7px; border-radius: 5px; background: #f2e4d2; color: var(--accent); font-size: 9px; font-weight: 800; text-transform: uppercase; } .inspector-section { padding: 18px 16px; border-bottom: 1px solid var(--line); } .inspector-section h3, .section-title h3 { margin: 0; color: var(--ink-soft); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; } .property-field { display: block; margin-top: 14px; } .property-field span { display: block; margin-bottom: 5px; color: var(--ink-soft); font-size: 10px; } .property-field b { margin-left: 3px; color: var(--accent); } .property-field input { width: 100%; padding: 8px 9px; border: 1px solid var(--line); border-radius: 7px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 11px; } .property-field input:focus { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180,119,63,.1); } .section-title { display: flex; align-items: center; justify-content: space-between; } .section-title span { color: var(--ink-faint); font-size: 11px; } .asset-row strong, .asset-row small { display: block; } .asset-row strong { font-size: 10px; } .asset-row small { margin-top: 3px; color: var(--ink-faint); font-size: 9px; } .drop-zone { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 12px; padding: 16px 8px; border: 1px dashed #d3c0a9; border-radius: 8px; background: #fcf8f1; color: var(--accent); text-align: center; cursor: pointer; } .drop-zone span { font-size: 22px; } .drop-zone strong { color: var(--ink-soft); font-size: 10px; } .drop-zone small { color: var(--ink-faint); font-size: 9px; } .asset-row { display: flex; align-items: center; gap: 8px; margin-top: 9px; } .asset-icon { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 6px; background: #ede9e0; color: var(--accent); }
   .disabled-state { display: grid; min-height: calc(100vh - 58px); place-content: center; justify-items: center; padding: 40px; text-align: center; } .disabled-state h1 { margin: 12px 0 10px; font: 500 42px var(--font-display); } .disabled-state p { margin-bottom: 24px; } .toast { position: fixed; right: 24px; bottom: 24px; z-index: 60; max-width: 430px; padding: 13px 14px; border: 1px solid #e5d4ba; border-radius: 9px; background: #fff8ed; box-shadow: var(--shadow-lg); color: #765a39; font-size: 12px; } .toast button { margin-left: 10px; border: 0; background: none; color: inherit; cursor: pointer; font-size: 17px; } .inspector-empty { display: grid; place-items: center; min-height: 240px; padding: 30px; color: var(--ink-faint); text-align: center; font-size: 10px; } .inspector-empty p { max-width: 170px; margin-top: 13px; line-height: 1.6; }
   @media (max-width: 1180px) { .workspace-grid { grid-template-columns: 220px minmax(320px, 1fr); } .inspector-panel { grid-column: 1 / -1; min-height: auto; display: grid; grid-template-columns: repeat(3, 1fr); } .inspector-heading { grid-column: 1 / -1; } .inspector-section { border-right: 1px solid var(--line); border-bottom: 0; } }

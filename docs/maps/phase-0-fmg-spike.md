@@ -80,11 +80,21 @@ from the public plugin conformance suite.
 
 ## Remaining exit-gate evidence
 
-The source, offline build, archive, and protocol path are now implemented. A
-packaged Tauri development build still has to prove, in a real child webview: offline
-boot; load/edit/serialize/reload of the fixture; selection and viewport focus;
-no network or Tauri globals; cleanup on close; and representative load/save
-time, memory, and compressed-input expansion measurements.
+The source, offline build, archive, protocol path, editor lifecycle, and
+conflict/recovery flows are now implemented and covered by automated checks
+(Rust: `bundled_maps_shell_is_deterministic_and_provider_fail_closed`,
+`recovery_uploads_are_bound_chunk_ordered_and_hash_verified`,
+`map_recovery_copies_are_canonical_listed_newest_first_and_restored`,
+`map_recovery_copies_require_map_entities_and_reject_traversal`, seed example
+with empty-source map; Deno: `maps-adapter.test.ts` controller lifecycle +
+bridge invariants; `deno task check` / `build` / `check:plugin-contract`).
+
+A packaged Tauri development build still has to prove, in a real child webview:
+offline boot; load/edit/serialize/reload of the fixture; selection and viewport
+focus; no network or Tauri globals; cleanup on close (no webview/session/staging
+left behind on workspace switch); and representative load/save time, memory,
+and compressed-input expansion measurements. Conflict/recovery and save-state
+UI also need an interactive pass per platform (see `docs/PHASE3_MAPS_PLAN.md`).
 
 The candidate contract for review is
 [`maps-contract-v1.schema.json`](./maps-contract-v1.schema.json). It is a

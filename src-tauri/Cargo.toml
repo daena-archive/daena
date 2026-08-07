@@ -27,6 +27,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+sha2 = "0.10"
 daena-core = { path = "../crates/daena-core" }
 daena-plugin-api = { path = "../crates/daena-plugin-api" }
 daena-plugin-host = { path = "../crates/daena-plugin-host" }

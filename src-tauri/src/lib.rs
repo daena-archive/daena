@@ -22,6 +22,7 @@ use daena_plugin_host::{
     VerificationPolicy, BUNDLED_TIMELINE_SERVICE_WASM,
 };
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
 
 type SharedCore = Arc<Mutex<CoreService>>;
@@ -31,6 +32,10 @@ type SharedBinaryTransfers = Arc<Mutex<BinaryTransferManager>>;
 const MAX_ASSET_TRANSFER_BYTES: usize = 64 * 1024 * 1024;
 const ASSET_TRANSFER_TTL: Duration = Duration::from_secs(60);
 const BUNDLED_FMG_ARCHIVE: &[u8] = include_bytes!("../plugin-assets/maps/fmg-v1.119.zip");
+
+/// Set during `setup` so the custom protocol handler (which does not receive
+/// an `AppHandle`) can forward plugin state events to the shell.
+static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
 #[derive(Default)]
 struct BinaryTransferManager {
@@ -57,15 +62,25 @@ enum BinaryTransfer {
         bytes: Vec<u8>,
         expires_at: Instant,
     },
+    RecoveryUpload {
+        plugin_id: String,
+        session_id: String,
+        project_id: String,
+        entity_id: String,
+        declared_size: usize,
+        next_chunk: u64,
+        bytes: Vec<u8>,
+        expires_at: Instant,
+    },
 }
 
 impl BinaryTransferManager {
     fn cleanup(&mut self) {
         let now = Instant::now();
         self.transfers.retain(|_, transfer| match transfer {
-            BinaryTransfer::Read { expires_at, .. } | BinaryTransfer::Upload { expires_at, .. } => {
-                *expires_at > now
-            }
+            BinaryTransfer::Read { expires_at, .. }
+            | BinaryTransfer::Upload { expires_at, .. }
+            | BinaryTransfer::RecoveryUpload { expires_at, .. } => *expires_at > now,
         });
     }
 
@@ -114,16 +129,24 @@ impl BinaryTransferManager {
             .transfers
             .get_mut(token)
             .ok_or_else(|| "asset upload handle is invalid or expired".to_string())?;
-        let BinaryTransfer::Upload {
-            plugin_id: owner,
-            session_id: expected_session,
-            next_chunk,
-            declared_size,
-            bytes,
-            ..
-        } = transfer
-        else {
-            return Err("asset handle is not an upload handle".into());
+        let (owner, expected_session, next_chunk, declared_size, bytes) = match transfer {
+            BinaryTransfer::Upload {
+                plugin_id,
+                session_id,
+                next_chunk,
+                declared_size,
+                bytes,
+                ..
+            }
+            | BinaryTransfer::RecoveryUpload {
+                plugin_id,
+                session_id,
+                next_chunk,
+                declared_size,
+                bytes,
+                ..
+            } => (plugin_id, session_id, next_chunk, declared_size, bytes),
+            _ => return Err("asset handle is not an upload handle".into()),
         };
         if owner != plugin_id || expected_session != session_id {
             return Err("asset upload handle is not valid for this plugin session".into());
@@ -188,12 +211,59 @@ impl BinaryTransferManager {
         }
     }
 
+    fn prepare_recovery_upload(
+        &mut self,
+        token: &str,
+        plugin_id: &str,
+        session_id: &str,
+        project_id: &str,
+        content_hash: &str,
+    ) -> Result<(String, Vec<u8>), String> {
+        self.cleanup();
+        let transfer = self
+            .transfers
+            .get(token)
+            .ok_or_else(|| "asset upload handle is invalid or expired".to_string())?;
+        match transfer {
+            BinaryTransfer::RecoveryUpload {
+                plugin_id: owner,
+                session_id: expected_session,
+                project_id: expected_project,
+                entity_id,
+                declared_size,
+                bytes,
+                ..
+            } if owner == plugin_id
+                && expected_session == session_id
+                && expected_project == project_id =>
+            {
+                if bytes.len() != *declared_size {
+                    return Err("asset upload is incomplete".into());
+                }
+                let digest = format!(
+                    "sha256:{:x}",
+                    Sha256::digest(bytes)
+                );
+                if digest != content_hash {
+                    return Err("asset upload content hash does not match bytes".into());
+                }
+                Ok((entity_id.clone(), bytes.clone()))
+            }
+            _ => Err("asset upload handle is not valid for this session or project".into()),
+        }
+    }
+
     fn complete_upload(&mut self, token: &str, plugin_id: &str, session_id: &str) -> Result<(), String> {
         let Some(transfer) = self.transfers.remove(token) else {
             return Err("asset upload handle is invalid or expired".into());
         };
         match transfer {
             BinaryTransfer::Upload {
+                plugin_id: owner,
+                session_id: expected_session,
+                ..
+            }
+            | BinaryTransfer::RecoveryUpload {
                 plugin_id: owner,
                 session_id: expected_session,
                 ..
@@ -211,9 +281,9 @@ impl BinaryTransferManager {
             return Ok(());
         };
         let owner = match transfer {
-            BinaryTransfer::Read { plugin_id, .. } | BinaryTransfer::Upload { plugin_id, .. } => {
-                plugin_id
-            }
+            BinaryTransfer::Read { plugin_id, .. }
+            | BinaryTransfer::Upload { plugin_id, .. }
+            | BinaryTransfer::RecoveryUpload { plugin_id, .. } => plugin_id,
         };
         if owner != plugin_id {
             return Err("asset handle is not valid for this plugin".into());
@@ -342,10 +412,8 @@ fn bundled_maps_asset(path: &str) -> Option<(Vec<u8>, &'static str)> {
         // entrypoint historically emitted relative and absolute FMG URLs,
         // which resolve here instead of under /dist/ui/fmg/.
         relative
-    } else if let Some(relative) = path.strip_prefix("/Fantasy-Map-Generator/") {
-        relative
     } else {
-        return None;
+        path.strip_prefix("/Fantasy-Map-Generator/")?
     };
     if relative.is_empty()
         || relative.split('/').any(|part| part.is_empty() || part == "." || part == "..")
@@ -756,12 +824,16 @@ fn plugin_protocol_response(
                 if current_project.as_deref() != Some(session.project_id.as_str()) {
                     return Err("plugin session is not bound to the open project".into());
                 }
+                let publish_payload = (request.method == "event.publish")
+                    .then(|| request.payload.clone());
                 let value = if matches!(
                     request.method.as_str(),
                     "asset.read.begin"
                         | "asset.replace.begin"
                         | "asset.replace.commit"
                         | "asset.transfer.cancel"
+                        | "maps.recovery.export.begin"
+                        | "maps.recovery.export.commit"
                 ) {
                     dispatch_binary_asset_rpc(
                         core,
@@ -792,6 +864,9 @@ fn plugin_protocol_response(
                     )
                     .map_err(|error| error.to_string())?
                 };
+                if let Some(payload) = publish_payload {
+                    forward_maps_state_event(&payload);
+                }
                 Ok(
                     serde_json::json!({"rpcVersion": 1, "requestId": request_id, "ok": true, "result": value}),
                 )
@@ -809,6 +884,31 @@ fn plugin_protocol_response(
         Ok(value) => json_response(value, 200),
         Err(error) => json_response(serde_json::json!({"error": error}), 400),
     }
+}
+
+/// Forwards a plugin-published `daena.maps/state@1` event to the shell as a
+/// `maps-state` Tauri event. The shell owns the wrapper chrome (save chip,
+/// conflict banner) around the child webview, which has no other way to reach
+/// it.
+fn forward_maps_state_event(payload: &serde_json::Value) {
+    let Some(event_type) = payload.get("type").and_then(serde_json::Value::as_str) else {
+        return;
+    };
+    if !event_type.starts_with("daena.maps/state@") {
+        return;
+    }
+    let Some(app) = APP_HANDLE.get() else {
+        return;
+    };
+    let state = payload.get("payload").cloned().unwrap_or_default();
+    let _ = app.emit(
+        "maps-state",
+        serde_json::json!({
+            "mapEntityId": state.get("mapEntityId").cloned().unwrap_or_default(),
+            "status": state.get("status").and_then(serde_json::Value::as_str).unwrap_or("state"),
+            "detail": state.get("detail").cloned().unwrap_or(serde_json::Value::Null),
+        }),
+    );
 }
 
 fn dispatch_binary_asset_rpc(
@@ -943,6 +1043,76 @@ fn dispatch_binary_asset_rpc(
                 .ok_or_else(|| "handle is required".to_string())?;
             manager.cancel(token, &session.plugin_id)?;
             Ok(serde_json::Value::Null)
+        }
+        "maps.recovery.export.begin" => {
+            let entity_id = payload
+                .get("mapEntityId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "mapEntityId is required".to_string())?;
+            let exists = project
+                .list_entities()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .any(|entity| {
+                    entity.id == entity_id
+                        && entity.entity_type.as_deref()
+                            == Some(daena_core::maps::MAP_ENTITY_TYPE)
+                });
+            if !exists {
+                return Err("map entity not found".into());
+            }
+            let size_value = payload
+                .get("size")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "size is required".to_string())?;
+            if size_value > MAX_ASSET_TRANSFER_BYTES as u64 {
+                return Err("asset exceeds host transfer limit".into());
+            }
+            let size = size_value as usize;
+            let token = manager.token(BinaryTransfer::RecoveryUpload {
+                plugin_id: session.plugin_id.clone(),
+                session_id: session.id.clone(),
+                project_id: session.project_id.clone(),
+                entity_id: entity_id.into(),
+                declared_size: size,
+                next_chunk: 0,
+                bytes: Vec::with_capacity(size.min(MAX_ASSET_TRANSFER_BYTES)),
+                expires_at: Instant::now() + ASSET_TRANSFER_TTL,
+            });
+            Ok(
+                serde_json::json!({"handle":token,"url":format!("plugin://{}/__asset/{}/0?sessionId={}", session.plugin_id, token, session.id),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
+            )
+        }
+        "maps.recovery.export.commit" => {
+            let token = payload
+                .get("handle")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "handle is required".to_string())?;
+            let content_hash = payload
+                .get("contentHash")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "contentHash is required".to_string())?;
+            let (entity_id, bytes) = manager.prepare_recovery_upload(
+                token,
+                &session.plugin_id,
+                &session.id,
+                &session.project_id,
+                content_hash,
+            )?;
+            drop(manager);
+            let path = project
+                .save_map_recovery_copy(&entity_id, &bytes)
+                .map_err(|e| e.to_string())?;
+            let mut manager = transfers
+                .lock()
+                .map_err(|_| "asset transfer state is unavailable".to_string())?;
+            manager.complete_upload(token, &session.plugin_id, &session.id)?;
+            let file_name = path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&path)
+                .to_string();
+            Ok(serde_json::json!({"path": path, "fileName": file_name}))
         }
         _ => Err("unknown binary asset operation".into()),
     }
@@ -2858,6 +3028,10 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
         ),
         "asset.replace.commit" => (&["handle", "contentHash"], &[]),
         "asset.transfer.cancel" => (&["handle"], &[]),
+        "maps.recovery.export.begin" => (&["mapEntityId", "size"], &[]),
+        "maps.recovery.export.commit" => (&["handle", "contentHash"], &[]),
+        "maps.recovery.list" => (&["mapEntityId"], &[]),
+        "maps.recovery.restore" => (&["mapEntityId", "fileName"], &[]),
         "search.query" => (&["query"], &[]),
         "event.publish" => (&["type", "payload"], &[]),
         "event.subscribe" | "event.poll" => (&["type"], &[]),
@@ -3114,6 +3288,21 @@ fn dispatch_module_rpc(
         }
         "search.query" => serde_json::to_value(project.search(payload_string(&payload, "query")?)?)
             .map_err(|error| CoreError::Validation(error.to_string())),
+        "maps.recovery.list" => {
+            let entity_id = payload_string(&payload, "mapEntityId")?;
+            serde_json::to_value(project.list_map_recovery_copies(&entity_id)?)
+                .map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "maps.recovery.restore" => {
+            let entity_id = payload_string(&payload, "mapEntityId")?;
+            let file_name = payload_string(&payload, "fileName")?;
+            serde_json::to_value(project.restore_map_recovery_copy(
+                &entity_id,
+                &file_name,
+                request_id,
+            )?)
+            .map_err(|error| CoreError::Validation(error.to_string()))
+        }
         _ => Err(CoreError::Validation(format!(
             "unknown plugin RPC method: {method}"
         ))),
@@ -3667,6 +3856,45 @@ async fn maps_navigation(
     }
 }
 
+/// Asks the open Maps child webview to save. There is no shell-to-webview
+/// RPC channel; the child exposes its save path on `window.daenaMapProvider`
+/// and the host evaluates a fixed literal to trigger it.
+#[tauri::command]
+async fn maps_editor_save(app: tauri::AppHandle) -> Result<(), String> {
+    let label = plugin_window_label("daena.maps");
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| "the map editor is not open".to_string())?;
+    webview
+        .eval("window.daenaMapProvider && window.daenaMapProvider.save && window.daenaMapProvider.save()")
+        .map_err(|error| format!("request map editor save: {error}"))
+}
+
+#[tauri::command]
+async fn maps_recovery_list(
+    state: tauri::State<'_, SharedCore>,
+    entity_id: String,
+) -> Result<Vec<daena_core::maps::MapRecoveryCopy>, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.list_map_recovery_copies(&entity_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn maps_recovery_restore(
+    state: tauri::State<'_, SharedCore>,
+    entity_id: String,
+    file_name: String,
+    request_id: Option<String>,
+) -> Result<Asset, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .restore_map_recovery_copy(&entity_id, &file_name, request_id.as_deref())
+    })
+    .await
+}
+
 #[tauri::command]
 async fn project_register_asset(
     state: tauri::State<'_, SharedCore>,
@@ -3816,6 +4044,7 @@ pub fn run() {
     let watcher = Arc::new(Mutex::new(ProjectWatcher::default()));
     tauri::Builder::default()
         .setup(move |app| {
+            let _ = APP_HANDLE.set(app.handle().clone());
             let app_data = app
                 .path()
                 .app_data_dir()
@@ -3909,6 +4138,9 @@ pub fn run() {
             project_upsert_map_location,
             project_unlink_map_location,
             maps_navigation,
+            maps_editor_save,
+            maps_recovery_list,
+            maps_recovery_restore,
             project_register_asset,
             project_register_asset_file,
             project_list_assets,
@@ -4144,6 +4376,85 @@ mod tests {
     }
 
     #[test]
+    fn recovery_uploads_are_bound_chunk_ordered_and_hash_verified() {
+        let mut manager = BinaryTransferManager::default();
+        let token = manager.token(BinaryTransfer::RecoveryUpload {
+            plugin_id: "maps".into(),
+            session_id: "session".into(),
+            project_id: "project".into(),
+            entity_id: "map-entity".into(),
+            declared_size: 3,
+            next_chunk: 0,
+            bytes: Vec::new(),
+            expires_at: Instant::now() + ASSET_TRANSFER_TTL,
+        });
+        assert!(manager
+            .append_upload(&token, "other", "session", 0, b"a")
+            .is_err());
+        assert!(manager
+            .append_upload(&token, "maps", "other-session", 0, b"a")
+            .is_err());
+        assert!(manager
+            .append_upload(&token, "maps", "session", 1, b"a")
+            .is_err());
+        assert_eq!(
+            manager.append_upload(&token, "maps", "session", 0, b"ab").unwrap(),
+            2
+        );
+        assert!(manager
+            .append_upload(&token, "maps", "session", 1, b"cd")
+            .is_err());
+        assert_eq!(
+            manager.append_upload(&token, "maps", "session", 1, b"c").unwrap(),
+            3
+        );
+        let good_hash = format!("sha256:{:x}", Sha256::digest(b"abc"));
+        assert!(manager
+            .prepare_recovery_upload(&token, "maps", "session", "other-project", &good_hash)
+            .is_err());
+        assert!(manager
+            .prepare_recovery_upload(
+                &token,
+                "maps",
+                "session",
+                "project",
+                "sha256:not-the-bytes"
+            )
+            .is_err());
+        let (entity_id, bytes) = manager
+            .prepare_recovery_upload(&token, "maps", "session", "project", &good_hash)
+            .unwrap();
+        assert_eq!(entity_id, "map-entity");
+        assert_eq!(bytes, b"abc");
+        assert!(manager
+            .complete_upload(&token, "maps", "other-session")
+            .is_err());
+        assert!(manager.complete_upload(&token, "maps", "session").is_ok());
+        assert!(manager.complete_upload(&token, "maps", "session").is_err());
+
+        let incomplete = manager.token(BinaryTransfer::RecoveryUpload {
+            plugin_id: "maps".into(),
+            session_id: "session".into(),
+            project_id: "project".into(),
+            entity_id: "map-entity".into(),
+            declared_size: 4,
+            next_chunk: 0,
+            bytes: Vec::new(),
+            expires_at: Instant::now() + ASSET_TRANSFER_TTL,
+        });
+        manager.append_upload(&incomplete, "maps", "session", 0, b"ab").unwrap();
+        assert!(manager
+            .prepare_recovery_upload(
+                &incomplete,
+                "maps",
+                "session",
+                "project",
+                &format!("sha256:{:x}", Sha256::digest(b"ab"))
+            )
+            .is_err());
+    }
+
+    #[test]
     fn bundled_plugin_protocol_serves_only_embedded_assets() {
         let request = tauri::http::Request::builder()
             .uri("plugin://daena.lore/dist/ui/index.html")
@@ -4178,7 +4489,11 @@ mod tests {
         assert!(!body.contains("googletagmanager.com"));
         assert!(!body.contains("dataLayer"));
         assert!(body.find("<script defer src=\"daena-bridge.js\">").unwrap()
+            < body.find("<script defer src=\"daena-inline-bootstrap.js\">").unwrap());
+        assert!(body.find("<script defer src=\"daena-inline-bootstrap.js\">").unwrap()
             < body.find("<script type=\"module\"").unwrap());
+        assert!(body.find("<base href=\"/dist/ui/fmg/").unwrap()
+            < body.find("<script defer src=\"daena-bridge.js\">").unwrap());
         assert!(body.contains("rel=\"stylesheet\"\n      href=\"index.css?v=1.113.1\""));
         assert!(!body.contains("rel=\"preload\""));
         assert_eq!(response.headers().get("Content-Security-Policy").unwrap(), "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'");
@@ -4196,7 +4511,7 @@ mod tests {
         assert!(bridge_body.contains("metadata.size === 0"));
         assert!(bridge_body.contains("daena-map-diagnostic"));
         assert!(bridge_body.contains("asset.replace.commit"));
-        assert!(bridge_body.contains("!new URLSearchParams(location.search).get(\"mapEntityId\")"));
+        assert!(bridge_body.contains("if (!mapAsset) { await window.generateMapOnLoad?.(); return; }"));
         assert!(bridge_body.contains("Daena Maps provider startup failed"));
 
         let bootstrap = tauri::http::Request::builder()
@@ -4205,8 +4520,12 @@ mod tests {
             .unwrap();
         let bootstrap_response = plugin_asset_response("daena.maps", &bootstrap, None, None);
         assert_eq!(bootstrap_response.status(), 200);
-        assert!(String::from_utf8_lossy(bootstrap_response.body())
-            .contains("element.style.cssText"));
+        let bootstrap_body = String::from_utf8_lossy(bootstrap_response.body());
+        assert!(bootstrap_body.contains("element.style.cssText"));
+        assert!(bootstrap_body.contains("data-daena-event"));
+        assert!(bootstrap_body.contains("element.addEventListener"));
+        assert!(bootstrap_body.contains("decodeURIComponent(element.dataset.daenaStyle)"));
+        assert!(bootstrap_body.contains("querySelectorAll(\"[data-daena-style]\")"));
 
         let main = tauri::http::Request::builder()
             .uri("plugin://daena.maps/dist/ui/fmg/main.js")

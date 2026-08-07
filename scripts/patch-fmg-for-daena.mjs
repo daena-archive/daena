@@ -23,16 +23,23 @@ html = html.replace(
 // The plugin protocol exposes the packaged tree below /dist/ui/fmg/. A base
 // URL makes FMG's large set of relative CSS, image, font, and classic-script
 // references resolve inside that tree. The Vite module is the one upstream
-// absolute URL, so make it relative as well.
+// absolute URL, so make it relative as well. The base must precede the module
+// tag: the browser fetches the module as soon as the parser reaches it, so a
+// base inserted after it would never apply to the module's relative URL.
 if (!html.includes('<base href="/dist/ui/fmg/"')) {
-  html = html.replace("</head>", '    <base href="/dist/ui/fmg/" />\n  </head>');
+  html = html.replace("<head>", "<head>\n    <base href=\"/dist/ui/fmg/\" />");
 }
 html = html.replace(/(src|href)="\/Fantasy-Map-Generator\//g, '$1="');
 
 // Keep the host marker ahead of every deferred FMG script. FMG's bundled
 // runtime reads it during initialization, before the provider bridge runs.
+// The inline bootstrap follows immediately: it re-attaches the externalized
+// event handlers and restores the externalized inline styles before the
+// module bundle renders, so FMG's stock hidden UI (prompt, map overlay)
+// stays hidden in the Daena webview.
 html = html.replace(/\s*<script defer src="daena-bridge\.js"><\/script>/g, "");
-const bridge = '    <script defer src="daena-bridge.js"></script>';
+html = html.replace(/\s*<script defer src="daena-inline-bootstrap\.js"><\/script>/g, "");
+const bridge = '    <script defer src="daena-bridge.js"></script>\n    <script defer src="daena-inline-bootstrap.js"></script>';
 if (html.includes('<base href="/dist/ui/fmg/" />')) {
   html = html.replace('<base href="/dist/ui/fmg/" />', `<base href="/dist/ui/fmg/" />\n${bridge}`);
 } else if (html.includes('<script type="module"')) {
@@ -101,8 +108,8 @@ if (!bridgeSource.includes("function showDiagnostic")) {
   );
 }
 bridgeSource = bridgeSource.replace(
-  '  async function firstMapAsset() {\n    const maps = await rpc("entity.list", {entityType: "daena.maps:map"});\n    for (const map of maps) {\n      const field = await rpc("field.read", {entityId: map.id, namespace: "daena.maps", key: "map"});\n      const descriptor = Array.isArray(field) ? field[0]?.value : field?.value ?? field;\n      if (descriptor?.sourceAssetId) return {mapId: map.id, assetId: descriptor.sourceAssetId};\n    }\n    return null;\n  }',
-  '  async function firstMapAsset() {\n    const maps = await rpc("entity.list", {entityType: "daena.maps:map"});\n    for (const map of maps) {\n      if (requestedMapEntityId && map.id !== requestedMapEntityId) continue;\n      const field = await rpc("field.read", {entityId: map.id, namespace: "daena.maps", key: "map"});\n      const descriptor = Array.isArray(field) ? field[0]?.value : field?.value ?? field;\n      if (descriptor?.sourceAssetId) return {mapId: map.id, assetId: descriptor.sourceAssetId};\n    }\n    if (requestedMapEntityId) throw new Error(`requested map is unavailable: ${requestedMapEntityId}`);\n    return null;\n  }',
+  '  async function firstMapAsset() {\n    const maps = await rpc("entity.list", {entityType: "daena.maps:map"});\n    for (const map of maps) {\n      const field = await rpc("field.read", {entityId: map.id, namespace: "maps", key: "map"});\n      const descriptor = Array.isArray(field) ? field[0]?.value : field?.value ?? field;\n      if (descriptor?.sourceAssetId) return {mapId: map.id, assetId: descriptor.sourceAssetId};\n    }\n    return null;\n  }',
+  '  async function firstMapAsset() {\n    const maps = await rpc("entity.list", {entityType: "daena.maps:map"});\n    for (const map of maps) {\n      if (requestedMapEntityId && map.id !== requestedMapEntityId) continue;\n      const field = await rpc("field.read", {entityId: map.id, namespace: "maps", key: "map"});\n      const descriptor = Array.isArray(field) ? field[0]?.value : field?.value ?? field;\n      if (descriptor?.sourceAssetId) return {mapId: map.id, assetId: descriptor.sourceAssetId};\n    }\n    if (requestedMapEntityId) throw new Error(`requested map is unavailable: ${requestedMapEntityId}`);\n    return null;\n  }',
 );
 if (!bridgeSource.includes("Daena Maps provider startup failed")) {
   bridgeSource = bridgeSource.replace(
@@ -120,11 +127,11 @@ bridgeSource = bridgeSource.replace(
 );
 bridgeSource = bridgeSource.replace(
   '  await window.daenaMapProvider.load(source);',
-  '  if (source === null) {\n    if (typeof window.generateMapOnLoad !== "function") throw new Error("new map source is empty and FMG generation is unavailable");\n    await window.generateMapOnLoad();\n    await saveAsset(asset);\n  } else {\n    await window.daenaMapProvider.load(source);\n  }',
+  '  if (source === null) {\n    if (typeof window.generateMapOnLoad !== "function") throw new Error("new map source is empty and FMG generation is unavailable");\n    await window.generateMapOnLoad();\n    await saveAsset(asset);\n  } else {\n    await window.daenaMapProvider.load(source);\n    lastSavedHash = await sha256(new TextEncoder().encode(prepareMapData()));\n    publishState("clean");\n  }',
 );
 bridgeSource = bridgeSource.replace(
   '  window.saveMap = method => method === "machine" || method === "dropbox" || method === "storage" ? saveAsset(asset) : originalSave?.(method);\n  window.addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void saveAsset(asset); } });',
-  '  window.saveMap = method => method === "machine" || method === "dropbox" || method === "storage" ? saveAsset(asset).catch(error => { showDiagnostic(error); throw error; }) : originalSave?.(method);\n  window.addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void saveAsset(asset).catch(showDiagnostic); } });',
+  '  window.saveMap = method => method === "machine" || method === "dropbox" || method === "storage" ? saveAsset(asset).catch(showDiagnosticUnlessConflict) : originalSave?.(method);\n  window.addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void saveAsset(asset).catch(showDiagnosticUnlessConflict); } });',
 );
 bridgeSource = bridgeSource.replace(
   '})().catch(error => { console.error("Daena Maps provider startup failed:", error); if (!new URLSearchParams(location.search).get("mapEntityId")) window.generateMapOnLoad?.(); });',
@@ -170,7 +177,7 @@ bridgeSource = bridgeSource.replace(
 );
 bridgeSource = bridgeSource.replace(
   /  if \(source === null\) \{[\s\S]*?\n\}\)\(\)\.catch\(error =>/,
-  '  if (source === null) {\n    if (typeof window.generateMapOnLoad !== "function") throw new Error("new map source is empty and FMG generation is unavailable");\n    await window.generateMapOnLoad();\n    await saveAsset(asset);\n  } else {\n    await window.daenaMapProvider.load(source);\n  }\n})().catch(error =>',
+  '  if (source === null) {\n    if (typeof window.generateMapOnLoad !== "function") throw new Error("new map source is empty and FMG generation is unavailable");\n    await window.generateMapOnLoad();\n    await saveAsset(asset);\n  } else {\n    await window.daenaMapProvider.load(source);\n    lastSavedHash = await sha256(new TextEncoder().encode(prepareMapData()));\n    publishState("clean");\n  }\n  startDirtyWatcher();\n})().catch(error =>',
 );
 writeFileSync(bridgePath, bridgeSource);
 
@@ -178,7 +185,12 @@ const bootstrapPath = join(dist, "daena-inline-bootstrap.js");
 const handlers = events
   .map(({ id, type, code }) => `for (const element of document.querySelectorAll('[data-daena-event="${id}"]')) element.addEventListener(${JSON.stringify(type)}, function (domEvent) { ${code} });`)
   .join("\n");
-writeFileSync(bootstrapPath, `"use strict";\n${handlers}\nfor (const element of document.querySelectorAll("[data-daena-style]")) element.style.cssText = decodeURIComponent(element.dataset.daenaStyle);\n`);
+// On a re-run every inline handler was already externalized, so `events` is
+// empty. Rewriting then would shrink the bootstrap back to the style-restore
+// loop and silently drop the event re-attachment, so keep the existing file.
+if (events.length > 0 || !existsSync(bootstrapPath)) {
+  writeFileSync(bootstrapPath, `"use strict";\n${handlers}\nfor (const element of document.querySelectorAll("[data-daena-style]")) element.style.cssText = decodeURIComponent(element.dataset.daenaStyle);\n`);
+}
 
 const files = [];
 writeFileSync(join(dist, "FMG-LICENSE"), readFileSync(join(root, "LICENSE")));

@@ -625,6 +625,158 @@ impl ProjectStore {
             .replace('\\', "/"))
     }
 
+    fn require_map_entity(&self, entity_id: &str) -> Result<(), CoreError> {
+        uuid::Uuid::parse_str(entity_id)
+            .map_err(|error| CoreError::Validation(format!("invalid entity ID: {error}")))?;
+        let entity_type: Option<String> = self.connection.query_row(
+            "SELECT entity_type FROM entities WHERE id=?1 AND deleted=0",
+            [entity_id],
+            |row| row.get(0),
+        )?;
+        if entity_type.as_deref() != Some(crate::maps::MAP_ENTITY_TYPE) {
+            return Err(CoreError::NotFound("map entity not found".into()));
+        }
+        Ok(())
+    }
+
+    fn map_recovery_dir(&self, create: bool) -> Result<std::path::PathBuf, CoreError> {
+        let Some(root) = self.root.as_deref() else {
+            return Err(CoreError::Validation(
+                "map recovery copies require a directory-backed project".into(),
+            ));
+        };
+        let conflicts = root.join(".daena/conflicts/maps");
+        if create {
+            std::fs::create_dir_all(&conflicts).map_err(|error| CoreError::Io {
+                operation: "create map recovery copy directory",
+                source: error,
+            })?;
+        }
+        Ok(conflicts)
+    }
+
+    /// Writes a rejected map save draft to `.daena/conflicts/maps/`. The
+    /// original source asset is never overwritten without review; the draft
+    /// lives only in the disposable derived state directory.
+    pub fn save_map_recovery_copy(
+        &self,
+        entity_id: &str,
+        bytes: &[u8],
+    ) -> Result<String, CoreError> {
+        self.require_map_entity(entity_id)?;
+        if bytes.len() > crate::maps::MAP_RECOVERY_MAX_BYTES {
+            return Err(CoreError::Validation(
+                "map recovery copy exceeds the host transfer limit".into(),
+            ));
+        }
+        let conflicts = self.map_recovery_dir(true)?;
+        let file_name = format!(
+            "{}-{}-{}.map",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+            entity_id,
+            Uuid::new_v4()
+        );
+        std::fs::write(conflicts.join(&file_name), bytes).map_err(|error| CoreError::Io {
+            operation: "write map recovery copy",
+            source: error,
+        })?;
+        Ok(format!(".daena/conflicts/maps/{file_name}"))
+    }
+
+    /// Lists the recovery drafts recorded for a map, newest first. The
+    /// returned `path` is root-relative so it can be surfaced to the shell
+    /// without exposing filesystem layout.
+    pub fn list_map_recovery_copies(
+        &self,
+        entity_id: &str,
+    ) -> Result<Vec<crate::maps::MapRecoveryCopy>, CoreError> {
+        self.require_map_entity(entity_id)?;
+        let Ok(conflicts) = self.map_recovery_dir(false) else {
+            return Ok(Vec::new());
+        };
+        let Ok(entries) = std::fs::read_dir(&conflicts) else {
+            return Ok(Vec::new());
+        };
+        let mut copies = Vec::new();
+        for entry in entries.flatten() {
+            let Some(file_name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let Some(created_at) = parse_map_recovery_file_name(entity_id, &file_name) else {
+                continue;
+            };
+            copies.push(crate::maps::MapRecoveryCopy {
+                file_name: file_name.clone(),
+                path: format!(".daena/conflicts/maps/{file_name}"),
+                created_at,
+            });
+        }
+        copies.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(copies)
+    }
+
+    /// Replaces a map source asset with a previously exported recovery draft.
+    /// This is an explicit user action, so the revision preflight runs against
+    /// the current revision instead of a stale one.
+    pub fn restore_map_recovery_copy(
+        &self,
+        entity_id: &str,
+        file_name: &str,
+        request_id: Option<&str>,
+    ) -> Result<Asset, CoreError> {
+        self.require_map_entity(entity_id)?;
+        if file_name.trim().is_empty() || file_name.contains('/') || file_name.contains('\\') {
+            return Err(CoreError::Validation(
+                "map recovery copy file name is invalid".into(),
+            ));
+        }
+        if parse_map_recovery_file_name(entity_id, file_name).is_none() {
+            return Err(CoreError::Validation(
+                "map recovery copy file name is invalid".into(),
+            ));
+        }
+        let conflicts = self.map_recovery_dir(false)?;
+        let bytes = std::fs::read(conflicts.join(file_name)).map_err(|error| CoreError::Io {
+            operation: "read map recovery copy",
+            source: error,
+        })?;
+        if bytes.len() > crate::maps::MAP_RECOVERY_MAX_BYTES {
+            return Err(CoreError::Validation(
+                "map recovery copy exceeds the host transfer limit".into(),
+            ));
+        }
+        let descriptor: crate::maps::MapDescriptor = self
+            .list_fields(entity_id.into())?
+            .into_iter()
+            .find(|field| {
+                field.namespace == crate::maps::MAP_NAMESPACE && field.key == "map"
+            })
+            .map(|field| {
+                serde_json::from_value(field.value)
+                    .map_err(|error| CoreError::Serialization(error.to_string()))
+            })
+            .transpose()?
+            .ok_or_else(|| CoreError::NotFound("map descriptor not found".into()))?;
+        let mut source = self.asset_unchecked(&descriptor.source_asset_id)?;
+        let expected_revision = self.revision_for_asset(&source.id)?;
+        let digest = format!("sha256:{}", digest_bytes(&bytes));
+        self.replace_asset_bytes_with_request(
+            AssetReplaceInput {
+                asset_id: descriptor.source_asset_id,
+                content_hash: digest,
+                size: bytes.len() as i64,
+                mime_type: std::mem::take(&mut source.mime_type),
+            },
+            bytes,
+            &expected_revision,
+            request_id,
+        )
+    }
+
+
     fn revision_for_entity(&self, entity_id: &str) -> Result<String, CoreError> {
         let entity = self.connection.query_row(
             "SELECT id,name,entity_type,deleted,created_at,updated_at FROM entities WHERE id=?1",
@@ -3465,9 +3617,39 @@ impl ProjectStore {
         tx.execute("INSERT OR IGNORE INTO module_versions(module_id,version) VALUES ('daena.lore',1), ('daena.timeline',1)", [])?;
         tx.execute("INSERT OR IGNORE INTO module_namespaces(module_id,namespace) VALUES ('daena.lore','lore'), ('daena.timeline','timeline')", [])?;
         tx.commit()?;
+        let map = self.create_map("The Known Coast".into())?;
+        for (entity_id, role, label, feature_id, x, y) in [
+            (eldermere_id, "capital", "Eldermere", "101", 0.62, 0.44),
+            (glass_coast_id, "region", "The Glass Coast", "102", 0.18, 0.71),
+            (frostgate_id, "frontier", "Frostgate Pass", "103", 0.85, 0.12),
+            (lantern_marsh_id, "region", "Lantern Marsh", "104", 0.77, 0.38),
+            (mira_vale_id, "home", "Mira Vale's workshop", "105", 0.55, 0.63),
+            (crown_salt_id, "resting-place", "Crown of Salt", "106", 0.31, 0.29),
+        ] {
+            self.upsert_map_location(
+                entity_id,
+                crate::maps::LocationReference {
+                    id: Uuid::new_v4().to_string(),
+                    map_entity_id: map.id.clone(),
+                    role: role.into(),
+                    label: label.into(),
+                    anchor: crate::maps::Anchor::ProviderFeature {
+                        provider: crate::maps::FMG_PROVIDER.into(),
+                        feature_kind: "burg".into(),
+                        feature_id: feature_id.into(),
+                        fallback_point: crate::maps::Point(x, y),
+                    },
+                    validity: crate::maps::Validity {
+                        from: None,
+                        to: None,
+                    },
+                },
+                None,
+            )?;
+        }
         self.rebuild_search()?;
         self.sync_canonical()?;
-        Ok(25)
+        Ok(26)
     }
 
     pub fn get_module_version(&self, module_id: &str) -> Result<i64, CoreError> {
@@ -3685,6 +3867,26 @@ pub(crate) fn chrono_like_now() -> String {
         .unwrap_or_default()
         .as_secs()
         .to_string()
+}
+
+/// Parses a recovery copy file name of the form
+/// `<epochMillis>-<entityId>-<uuid>.map`, returning the epoch milliseconds when
+/// the name matches the entity. Both the trailing UUID and the embedded entity
+/// ID must validate so that files from other maps (or traversal attempts) are
+/// never touched.
+fn parse_map_recovery_file_name(entity_id: &str, file_name: &str) -> Option<String> {
+    let stem = file_name.strip_suffix(".map")?;
+    if stem.len() < 37 + 36 {
+        return None;
+    }
+    let uuid_part = &stem[stem.len() - 36..];
+    Uuid::parse_str(uuid_part).ok()?;
+    let prefix = &stem[..stem.len() - 37];
+    let created_at = prefix.strip_suffix(&format!("-{entity_id}"))?;
+    if created_at.is_empty() || !created_at.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(created_at.to_string())
 }
 
 fn digest_bytes(bytes: &[u8]) -> String {
@@ -4548,10 +4750,10 @@ mod tests {
             .set_module_enabled("daena.timeline".into(), true)
             .unwrap();
 
-        assert_eq!(store.seed_example().unwrap(), 25);
-        assert_eq!(store.seed_example().unwrap(), 25);
+        assert_eq!(store.seed_example().unwrap(), 26);
+        assert_eq!(store.seed_example().unwrap(), 26);
         let entities = store.list_entities().unwrap();
-        assert_eq!(entities.len(), 25);
+        assert_eq!(entities.len(), 26);
         assert_eq!(
             entities
                 .iter()
@@ -4565,6 +4767,25 @@ mod tests {
                 .iter()
                 .filter(|entity| entity.name == "Frostgate Pass")
                 .count(),
+            1
+        );
+        let map = entities
+            .iter()
+            .find(|entity| entity.entity_type.as_deref() == Some(crate::maps::MAP_ENTITY_TYPE))
+            .expect("seed example ships a map entity");
+        assert_eq!(map.name, "The Known Coast");
+        assert_eq!(
+            store
+                .list_map_recovery_copies(&map.id)
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            store
+                .map_locations_for_entity(entities.iter().find(|e| e.name == "Eldermere").unwrap().id.clone())
+                .unwrap()
+                .len(),
             1
         );
     }
@@ -5086,6 +5307,85 @@ mod tests {
         });
         assert!(invalid.is_err());
         assert!(invalid.unwrap_err().to_string().contains("maps:"));
+    }
+
+    #[test]
+    fn map_recovery_copies_are_canonical_listed_newest_first_and_restored() {
+        let root = std::env::temp_dir().join(format!("daena-map-recovery-{}", Uuid::new_v4()));
+        let store = ProjectStore::open_directory(&root).unwrap();
+        let map = store.create_map("Recovered map".into()).unwrap();
+        let before = store.list_map_recovery_copies(&map.id).unwrap();
+        assert!(before.is_empty());
+        let first_path = store
+            .save_map_recovery_copy(&map.id, b"draft-v1")
+            .unwrap();
+        let second_path = store
+            .save_map_recovery_copy(&map.id, b"draft-v2")
+            .unwrap();
+        assert!(first_path.starts_with(".daena/conflicts/maps/") && first_path.ends_with(".map"));
+        assert!(second_path.starts_with(".daena/conflicts/maps/") && second_path.ends_with(".map"));
+        assert_eq!(
+            std::fs::read(root.join(&second_path)).unwrap(),
+            b"draft-v2"
+        );
+        assert!(!store
+            .canonical_source_hashes(".daena/conflicts/%")
+            .unwrap()
+            .iter()
+            .any(|(source, _)| source.contains("conflicts")));
+
+        let copies = store.list_map_recovery_copies(&map.id).unwrap();
+        assert_eq!(copies.len(), 2);
+        assert!(copies.iter().any(|copy| copy.file_name == first_path.rsplit('/').next().unwrap()));
+        assert!(copies.iter().any(|copy| copy.file_name == second_path.rsplit('/').next().unwrap()));
+        assert!(copies.iter().all(|copy| copy.path.starts_with(".daena/conflicts/maps/")));
+        assert!(copies
+            .iter()
+            .all(|copy| copy.created_at.chars().all(|c| c.is_ascii_digit())));
+        assert!(copies[0].created_at >= copies[1].created_at);
+
+        let expected_bytes = std::fs::read(root.join(&copies[0].path)).unwrap();
+        let restored = store
+            .restore_map_recovery_copy(&map.id, &copies[0].file_name, None)
+            .unwrap();
+        assert_eq!(std::fs::read(root.join(&restored.path)).unwrap(), expected_bytes);
+        let asset = store.list_assets(map.id).unwrap().pop().unwrap();
+        assert_eq!(asset.size as usize, expected_bytes.len());
+        assert_eq!(
+            asset.content_hash,
+            format!("sha256:{}", digest_bytes(&expected_bytes))
+        );
+        assert_eq!(asset.mime_type, "application/x-fmg-map");
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn map_recovery_copies_require_map_entities_and_reject_traversal() {
+        let store = ProjectStore::in_memory().unwrap();
+        let place = store
+            .create_entity(CreateEntity {
+                name: "Not a map".into(),
+                entity_type: Some("place".into()),
+            })
+            .unwrap();
+        assert!(store.save_map_recovery_copy(&place.id, b"x").is_err());
+        assert!(store.list_map_recovery_copies(&place.id).is_err());
+        assert!(
+            store
+                .restore_map_recovery_copy(&place.id, "../escape.map", None)
+                .is_err()
+        );
+        let map = store.create_map("Traversal map".into()).unwrap();
+        assert!(store
+            .restore_map_recovery_copy(&map.id, "../escape.map", None)
+            .is_err());
+        assert!(store
+            .restore_map_recovery_copy(&map.id, "other-entity-00000000-0000-0000-0000-000000000000.map", None)
+            .is_err());
+        assert!(store
+            .restore_map_recovery_copy(&map.id, "missing.map", None)
+            .is_err());
     }
 
     #[test]

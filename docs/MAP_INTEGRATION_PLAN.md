@@ -495,6 +495,9 @@ source and never a mixed asset record/byte state.
 - Preserve the original source asset on no-edit close.
 - Add one small example map to the example project.
 
+Status: implemented 2026-08-07 (see `docs/PHASE3_MAPS_PLAN.md` for the
+completion notes and per-platform packaged checks that remain).
+
 **Exit gate:** New, existing, externally replaced, missing, malformed, and
 conflicting maps have deterministic behavior in packaged Tauri checks on each
 supported desktop platform. Closing or switching workspaces leaves no native

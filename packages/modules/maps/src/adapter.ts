@@ -38,10 +38,21 @@ export type ProviderEvent =
   | { type: "viewport-changed" }
   | { type: "fatal-error"; message: string };
 
+export type MapEditorSaveResult = { bytes: Uint8Array; hash: string };
+
 export interface MapProviderAdapter {
   capabilities(): Promise<ProviderCapabilities>;
   load(source: Uint8Array): Promise<LoadedMap>;
   serialize(): Promise<Uint8Array>;
+  /** Begin an editing session. When `source` is provided the provider loads
+   * it; when omitted (new empty source) the provider is expected to have a
+   * freshly generated map already. Marks the session clean on success. */
+  open(session: MapEditorSession, source?: Uint8Array): Promise<void>;
+  /** Serialize the editor state. Does not commit to the host. */
+  save(session: MapEditorSession): Promise<MapEditorSaveResult>;
+  /** End the session. No-op when the session is clean; tears down provider
+   * state when dirty. Returns whether unsaved work was discarded. */
+  close(session: MapEditorSession): Promise<boolean>;
   listFeatures(query?: FeatureQuery): Promise<ProviderFeature[]>;
   captureSelection(): Promise<MapAnchor | null>;
   resolveAnchor(anchor: MapAnchor): Promise<{ resolved: boolean; point: NormalizedPoint | null }>;
@@ -112,6 +123,24 @@ export class JsonProviderAdapter implements MapProviderAdapter {
     return encoder.encode(JSON.stringify(this.source));
   }
 
+  async open(session: MapEditorSession, source?: Uint8Array): Promise<void> {
+    if (source) {
+      await this.load(source);
+    } else if (!this.source) {
+      throw new Error("map is not loaded");
+    }
+    session.dirty = false;
+  }
+
+  async save(_session: MapEditorSession): Promise<MapEditorSaveResult> {
+    const bytes = await this.serialize();
+    return { bytes, hash: await digest(bytes) };
+  }
+
+  async close(session: MapEditorSession): Promise<boolean> {
+    return session.dirty;
+  }
+
   async listFeatures(query: FeatureQuery = {}): Promise<ProviderFeature[]> {
     const features = (this.source?.features ?? []) as Array<Record<string, unknown>>;
     return features.filter((feature) => (!query.kind || feature.kind === query.kind) && (!query.text || String(feature.label ?? "").toLocaleLowerCase().includes(query.text.toLocaleLowerCase()))).map((feature) => ({ kind: feature.kind as string, id: feature.id as string, label: feature.label as string | undefined, point: feature.point as NormalizedPoint }));
@@ -160,6 +189,19 @@ export class FmgBrowserAdapter implements MapProviderAdapter {
   async capabilities(): Promise<ProviderCapabilities> { return this.provider.capabilities?.() ?? { provider: FMG_PROVIDER, adapterVersion: 1, featureKinds: ["burg", "state", "province", "river", "marker"], supportsEditing: true }; }
   async load(source: Uint8Array): Promise<LoadedMap> { await this.provider.load(source); return { provider: FMG_PROVIDER, sourceHash: await digest(source), dirty: false }; }
   async serialize(): Promise<Uint8Array> { return this.provider.serialize(); }
+  async open(session: MapEditorSession, source?: Uint8Array): Promise<void> {
+    if (source) await this.provider.load(source);
+    session.dirty = false;
+  }
+  async save(_session: MapEditorSession): Promise<MapEditorSaveResult> {
+    const bytes = await this.provider.serialize();
+    return { bytes, hash: await digest(bytes) };
+  }
+  async close(session: MapEditorSession): Promise<boolean> {
+    if (!session.dirty) return false;
+    await this.provider.dispose?.();
+    return true;
+  }
   async listFeatures(query?: FeatureQuery): Promise<ProviderFeature[]> { return this.provider.listFeatures?.(query) ?? []; }
   async captureSelection(): Promise<MapAnchor | null> { return this.provider.captureSelection?.() ?? null; }
   async resolveAnchor(value: MapAnchor): Promise<{ resolved: boolean; point: NormalizedPoint | null }> { return this.provider.resolveAnchor?.(value) ?? { resolved: false, point: null }; }
@@ -189,12 +231,91 @@ export class UnavailableProviderAdapter implements MapProviderAdapter {
   async setSemanticOverlay(_frame: OverlayFrame): Promise<void> { return this.unavailable(); }
   subscribe(_listener: (event: ProviderEvent) => void): () => void { return () => undefined; }
   async dispose(): Promise<void> {}
-  async open(_session: MapEditorSession): Promise<void> { return this.unavailable(); }
-  async save(_session: MapEditorSession): Promise<void> { return this.unavailable(); }
-  async close(_session: MapEditorSession): Promise<void> {}
+  async open(_session: MapEditorSession, _source?: Uint8Array): Promise<void> { return this.unavailable(); }
+  async save(_session: MapEditorSession): Promise<MapEditorSaveResult> { return this.unavailable(); }
+  async close(_session: MapEditorSession): Promise<boolean> { return false; }
 }
 
 export function diagnosticForAssetState(state: "missing" | "malformed" | "conflict"): MapEditorDiagnostic {
   const messages = { missing: "The map source asset is missing.", malformed: "The map source asset is malformed.", conflict: "The map source changed outside Daena." } as const;
   return { code: `asset-${state}`, message: messages[state], recoverable: true };
+}
+
+export type MapEditorControllerEvent =
+  | { type: "dirty"; dirty: boolean }
+  | { type: "saved"; revision: number; contentHash: string }
+  | { type: "conflict"; diagnostic: MapEditorDiagnostic }
+  | { type: "fatal"; message: string };
+
+/** Owns the editing session state on top of a provider adapter: tracks
+ * dirty/saved transitions, forwards provider signals, and reports whether
+ * closing discarded unsaved work. Session mutations flow through here so the
+ * bridge can publish deterministic editor state to the shell. */
+export class MapEditorController {
+  private readonly listeners = new Set<(event: MapEditorControllerEvent) => void>();
+  private session: MapEditorSession | null = null;
+  private unsubscribeProvider: (() => void) | null = null;
+
+  constructor(private readonly adapter: MapProviderAdapter) {}
+
+  getSession(): MapEditorSession | null { return this.session; }
+
+  subscribe(listener: (event: MapEditorControllerEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
+
+  async open(session: MapEditorSession, source?: Uint8Array): Promise<void> {
+    if (this.unsubscribeProvider) { this.unsubscribeProvider(); this.unsubscribeProvider = null; }
+    this.unsubscribeProvider = this.adapter.subscribe((event) => {
+      if (event.type === "dirty") {
+        if (this.session && this.session.dirty !== event.dirty) {
+          this.session.dirty = event.dirty;
+          this.emit({ type: "dirty", dirty: event.dirty });
+        }
+      } else if (event.type === "fatal-error") {
+        this.emit({ type: "fatal", message: event.message });
+      }
+    });
+    await this.adapter.open(session, source);
+    this.session = { ...session, dirty: false };
+  }
+
+  async save(): Promise<MapEditorSaveResult> {
+    if (!this.session) throw new Error("map editor is not open");
+    return this.adapter.save(this.session);
+  }
+
+  confirmSaved(revision: number, contentHash: string): void {
+    if (!this.session) return;
+    this.session.asset = { ...this.session.asset, revision, contentHash };
+    this.session.dirty = false;
+    this.emit({ type: "saved", revision, contentHash });
+  }
+
+  markDirty(): void {
+    if (this.session && !this.session.dirty) {
+      this.session.dirty = true;
+      this.emit({ type: "dirty", dirty: true });
+    }
+  }
+
+  reportConflict(diagnostic: MapEditorDiagnostic): void {
+    this.emit({ type: "conflict", diagnostic });
+  }
+
+  /** Ends the session. Returns whether unsaved work was discarded. */
+  async close(): Promise<boolean> {
+    const session = this.session;
+    this.session = null;
+    if (this.unsubscribeProvider) { this.unsubscribeProvider(); this.unsubscribeProvider = null; }
+    if (!session) return false;
+    const discarded = await this.adapter.close(session);
+    await this.adapter.dispose();
+    return discarded;
+  }
+
+  private emit(event: MapEditorControllerEvent): void {
+    for (const listener of this.listeners) listener(event);
+  }
 }

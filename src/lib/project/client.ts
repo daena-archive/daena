@@ -14,6 +14,7 @@ export interface Document { id: string; entity_id: string; format: string; body:
 export interface FieldValue { entity_id: string; namespace: string; key: string; value: unknown; revision: string; }
 export interface Relationship { id: string; source_id: string; target_id: string; relationship_type: string; metadata: string; revision: string; }
 export interface MapLocation { id: string; mapEntityId: string; role: string; label: string; anchor: unknown; validity: { from: unknown | null; to: unknown | null }; }
+export interface MapRecoveryCopy { fileName: string; path: string; createdAt: string; }
 export interface Asset { id: string; entity_id: string; namespace: string; filename: string; content_hash: string; size: number; mime_type: string; path: string; created_at: string; revision: string; }
 export interface ProjectInfo { name: string; root: string; index_status: string; assets: string; }
 export interface ExternalChangeReport { changed: boolean; paths: string[]; diagnostics: string[]; }
@@ -121,6 +122,9 @@ export const project = {
   upsertMapLocation: (entityId: string, location: MapLocation, options?: MutationOptions) => invoke<void>("project_upsert_map_location", { entityId, location, request_id: requestId(options) }),
   unlinkMapLocation: (entityId: string, locationId: string, options?: MutationOptions) => invoke<void>("project_unlink_map_location", { entityId, locationId, request_id: requestId(options) }),
   mapsNavigation: (operation: string, input: { mapEntityId?: string; entityId?: string; linkId?: string } = {}) => invoke<unknown>("maps_navigation", { operation, map_entity_id: input.mapEntityId ?? null, entity_id: input.entityId ?? null, link_id: input.linkId ?? null }),
+  mapsEditorSave: () => invoke<void>("maps_editor_save"),
+  mapsRecoveryList: (entityId: string) => invoke<MapRecoveryCopy[]>("maps_recovery_list", { entityId }),
+  mapsRecoveryRestore: (entityId: string, fileName: string) => invoke<Asset>("maps_recovery_restore", { entityId, fileName }),
   registerAsset: (input: { entity_id: string; namespace: string; filename: string; content_hash: string; size: number; mime_type: string; path: string }, options?: MutationOptions) =>
     invoke<Asset>("project_register_asset", { input, expected_revision: options?.expectedRevision ?? null, request_id: requestId(options) }),
   registerAssetFile: (input: { entity_id: string; namespace: string; source_path: string; filename: string; mime_type: string }, options?: MutationOptions) =>

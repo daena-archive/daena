@@ -72,6 +72,20 @@ pub struct DefaultView {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+pub struct MapRecoveryCopy {
+    #[serde(rename = "fileName")]
+    pub file_name: String,
+    pub path: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+}
+
+/// Upper bound for a rejected map draft written to the recovery directory.
+/// Mirrors the host transfer ceiling; larger payloads cannot arrive here.
+pub const MAP_RECOVERY_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct MapDescriptor {
     #[serde(rename = "schemaVersion")]
     pub schema_version: u32,

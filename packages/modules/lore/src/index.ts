@@ -66,6 +66,8 @@ function createGraphStyles(): HTMLStyleElement {
     .lore-graph-details small { color: #8f897e; }
     .lore-graph-details-list { display: flex; flex-wrap: wrap; gap: 5px 10px; margin: 0; padding: 0; list-style: none; }
     .lore-graph-details-list li { padding: 3px 7px; border-radius: 999px; background: #f4eee3; }
+    .lore-graph-map-button { width: fit-content; padding: 5px 9px; border: 1px solid #d9cdbd; border-radius: 7px; background: #fffefa; color: #62594e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
+    .lore-graph-map-button:hover, .lore-graph-map-button:focus-visible { border-color: #b4773f; color: #55351f; outline: none; }
     .lore-graph-empty { margin: 0; padding: 28px 18px; color: #8f897e; font: 12px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
     @media (max-width: 760px) {
       .lore-graph-toolbar { align-items: flex-start; flex-direction: column; }
@@ -167,7 +169,7 @@ function graphElements(
   ];
 }
 
-function renderSelection(details: HTMLElement, node: NodeSingular, entities: Map<string, EntitySummary>, relationships: Relationship[]) {
+function renderSelection(details: HTMLElement, node: NodeSingular, entities: Map<string, EntitySummary>, relationships: Relationship[], context: ModuleContext) {
   const entity = entities.get(node.id());
   if (!entity) return;
   const connected = relationships
@@ -183,7 +185,12 @@ function renderSelection(details: HTMLElement, node: NodeSingular, entities: Map
   name.textContent = entity.name;
   const type = document.createElement("small");
   type.textContent = `${displayType(entity.type)} · ${connected.length} connection${connected.length === 1 ? "" : "s"}`;
-  details.append(name, type);
+  const mapButton = document.createElement("button");
+  mapButton.type = "button";
+  mapButton.className = "lore-graph-map-button";
+  mapButton.textContent = "Show on map";
+  mapButton.onclick = () => void showOnMap(context, entity.id);
+  details.append(name, type, mapButton);
   if (connected.length === 0) return;
   const list = document.createElement("ul");
   list.className = "lore-graph-details-list";
@@ -202,6 +209,20 @@ function applyNeighborhoodHighlight(graph: Core, node: NodeSingular | null, show
   graph.elements().difference(neighborhood).addClass("faded");
   node.connectedEdges().addClass("related");
   if (showLabels) node.connectedEdges().addClass("hover-related");
+}
+
+async function showOnMap(context: ModuleContext, entityId: string) {
+  try {
+    const result = await context.maps.focusEntity({ entityId });
+    if (result.status === "multiple-links" && result.locations.length > 0) {
+      const location = result.locations[0];
+      await context.maps.openMap({ mapEntityId: location.mapEntityId, linkId: location.id });
+    }
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    if (message.includes("not-on-map") || message.includes("link-unresolved") || message.includes("map-unavailable") || message.includes("forbidden") || message.includes("denied")) return;
+    console.error("show on map failed", cause);
+  }
 }
 
 export const lore: DaenaModule = {
@@ -407,7 +428,7 @@ export const lore: DaenaModule = {
           graph!.elements().removeClass("selected");
           node.addClass("selected");
           node.connectedEdges().addClass("selected");
-          renderSelection(details, node, entityMap, relationships);
+          renderSelection(details, node, entityMap, relationships, context);
           applyNeighborhoodHighlight(graph!, node);
         });
         graph.on("tap", (event) => {

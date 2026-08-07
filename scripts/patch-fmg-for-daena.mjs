@@ -177,7 +177,7 @@ bridgeSource = bridgeSource.replace(
 );
 bridgeSource = bridgeSource.replace(
   /  if \(source === null\) \{[\s\S]*?\n\}\)\(\)\.catch\(error =>/,
-  '  if (source === null) {\n    if (typeof window.generateMapOnLoad !== "function") throw new Error("new map source is empty and FMG generation is unavailable");\n    await window.generateMapOnLoad();\n    await saveAsset(asset);\n  } else {\n    await window.daenaMapProvider.load(source);\n    lastSavedHash = await sha256(new TextEncoder().encode(prepareMapData()));\n    publishState("clean");\n  }\n  startDirtyWatcher();\n})().catch(error =>',
+  '  if (source === null) {\n    if (typeof window.generateMapOnLoad !== "function") throw new Error("new map source is empty and FMG generation is unavailable");\n    await window.generateMapOnLoad();\n    await saveAsset(asset);\n  } else {\n    await window.daenaMapProvider.load(source);\n    lastSavedHash = await sha256(new TextEncoder().encode(prepareMapData()));\n    publishState("clean");\n  }\n  void subscribeCoreEvents();\n  void refreshOverlay();\n  startDirtyWatcher();\n  startSelectionWatcher();\n})().catch(error =>',
 );
 writeFileSync(bridgePath, bridgeSource);
 

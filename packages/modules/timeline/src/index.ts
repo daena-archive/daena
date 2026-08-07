@@ -5,6 +5,20 @@ import manifestJson from "../manifest.json";
 
 const manifest = manifestJson as unknown as ModuleManifest;
 
+async function showOnMap(context: ModuleContext, entityId: string) {
+  try {
+    const result = await context.maps.focusEntity({ entityId });
+    if (result.status === "multiple-links" && result.locations.length > 0) {
+      const location = result.locations[0];
+      await context.maps.openMap({ mapEntityId: location.mapEntityId, linkId: location.id });
+    }
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    if (message.includes("not-on-map") || message.includes("link-unresolved") || message.includes("map-unavailable") || message.includes("forbidden") || message.includes("denied")) return;
+    console.error("show on map failed", cause);
+  }
+}
+
 export const timeline: DaenaModule = {
   manifest,
   views: [{
@@ -47,7 +61,12 @@ export const timeline: DaenaModule = {
           name.textContent = entity.name;
           const range = document.createElement("small");
           range.textContent = fields.endsAt ? `Through ${formatCalendarDate(fields.endsAt)}` : "Single event";
-          card.append(name, range);
+          const mapButton = document.createElement("button");
+          mapButton.type = "button";
+          mapButton.className = "timeline-map-button";
+          mapButton.textContent = "Show on map";
+          mapButton.onclick = () => void showOnMap(context, entity.id);
+          card.append(name, range, mapButton);
           item.append(date, card); track.append(item);
         }
         element.append(track);

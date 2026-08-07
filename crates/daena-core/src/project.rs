@@ -3160,6 +3160,37 @@ impl ProjectStore {
         rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
     }
 
+    /// Returns the disposable projection rows for all locations on a map.
+    /// The projection carries provider selectors, bounds, validity, and
+    /// resolution state; it is rebuilt from the canonical `locations` fields
+    /// and the source asset bytes and is never treated as durable state.
+    pub fn map_location_projection(
+        &self,
+        map_entity_id: String,
+    ) -> Result<Vec<serde_json::Value>, CoreError> {
+        self.ensure_source_index_current()?;
+        let mut statement = self.connection.prepare("SELECT location_id,entity_id,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution FROM map_location_projection WHERE map_entity_id=?1 ORDER BY location_id")?;
+        let rows = statement.query_map(rusqlite::params![map_entity_id], |row| Ok(serde_json::json!({"id":row.get::<_,String>(0)?,"entityId":row.get::<_,String>(1)?,"role":row.get::<_,String>(2)?,"anchorKind":row.get::<_,String>(3)?,"provider":row.get::<_,Option<String>>(4)?,"featureKind":row.get::<_,Option<String>>(5)?,"featureId":row.get::<_,Option<String>>(6)?,"bounds":[row.get::<_,Option<f64>>(7)?,row.get::<_,Option<f64>>(8)?,row.get::<_,Option<f64>>(9)?,row.get::<_,Option<f64>>(10)?],"validity":{"from":row.get::<_,Option<String>>(11)?,"to":row.get::<_,Option<String>>(12)?},"resolution":row.get::<_,String>(13)?})))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
+    }
+
+    /// Rebuilds the disposable map projections so provider-feature resolution
+    /// reflects the current source asset bytes, then returns per-location
+    /// resolution results for the given map. Called after every source save so
+    /// removed or renumbered FMG features surface as `unresolved` immediately
+    /// rather than on the next full index build.
+    pub fn reconcile_map_links(
+        &self,
+        map_entity_id: String,
+    ) -> Result<Vec<serde_json::Value>, CoreError> {
+        self.rebuild_maps_projection()?;
+        let mut statement = self.connection.prepare("SELECT location_id,resolution FROM map_location_projection WHERE map_entity_id=?1 ORDER BY location_id")?;
+        let rows = statement.query_map(rusqlite::params![map_entity_id], |row| {
+            Ok(serde_json::json!({"locationId": row.get::<_, String>(0)?, "resolved": row.get::<_, String>(1)? == "resolved"}))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
+    }
+
     /// Returns the canonical location references owned by an entity.  The
     /// disposable projection is intentionally not used for mutation: the
     /// JSON field remains the source of truth and is rewritten atomically.
@@ -5307,6 +5338,243 @@ mod tests {
         });
         assert!(invalid.is_err());
         assert!(invalid.unwrap_err().to_string().contains("maps:"));
+    }
+
+    #[test]
+    fn map_location_projection_and_reconcile_track_feature_resolution() {
+        let root = std::env::temp_dir().join(format!("daena-map-resolve-{}", Uuid::new_v4()));
+        let source = std::env::temp_dir().join(format!("daena-map-resolve-src-{}.map", Uuid::new_v4()));
+        std::fs::write(&source, br#"{"features": [{"kind": "burg", "id": "7", "x": 120, "y": 80}]}"#).unwrap();
+
+        let store = ProjectStore::open_directory(&root).unwrap();
+        let map = store
+            .create_entity(CreateEntity {
+                name: "Resolved map".into(),
+                entity_type: Some(crate::maps::MAP_ENTITY_TYPE.into()),
+            })
+            .unwrap();
+        let place = store
+            .create_entity(CreateEntity {
+                name: "Harbor".into(),
+                entity_type: Some("place".into()),
+            })
+            .unwrap();
+        let asset = store
+            .register_asset_file(AssetFileInput {
+                entity_id: map.id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                source_path: source.to_string_lossy().into_owned(),
+                filename: "world.map".into(),
+                mime_type: "application/x-fmg-map".into(),
+            })
+            .unwrap();
+        store
+            .set_field(FieldValue {
+                entity_id: map.id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "map".into(),
+                value: serde_json::json!({
+                    "schemaVersion": 1,
+                    "provider": {"id": "azgaar-fmg", "adapterVersion": 1, "sourceFormat": "fmg-map"},
+                    "sourceAssetId": asset.id,
+                    "previewAssetId": null,
+                    "defaultView": {"center": [0.5, 0.5], "zoom": 1}
+                }),
+                revision: String::new(),
+            })
+            .unwrap();
+
+        let resolved_id = Uuid::new_v4().to_string();
+        let missing_id = Uuid::new_v4().to_string();
+        store
+            .set_field(FieldValue {
+                entity_id: place.id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "locations".into(),
+                value: serde_json::json!({
+                    "schemaVersion": 1,
+                    "locations": [
+                        {
+                            "id": resolved_id,
+                            "mapEntityId": map.id,
+                            "role": "birthplace",
+                            "label": "Old Harbor",
+                            "anchor": {"kind": "provider-feature", "provider": "azgaar-fmg", "featureKind": "burg", "featureId": "7", "fallbackPoint": [0.6, 0.4]},
+                            "validity": {"from": null, "to": null}
+                        },
+                        {
+                            "id": missing_id,
+                            "mapEntityId": map.id,
+                            "role": "haven",
+                            "label": "Lost Harbor",
+                            "anchor": {"kind": "provider-feature", "provider": "azgaar-fmg", "featureKind": "burg", "featureId": "999", "fallbackPoint": [0.2, 0.8]},
+                            "validity": {"from": null, "to": null}
+                        }
+                    ]
+                }),
+                revision: String::new(),
+            })
+            .unwrap();
+
+        let projection = store.map_location_projection(map.id.clone()).unwrap();
+        assert_eq!(projection.len(), 2);
+        let resolved = projection
+            .iter()
+            .find(|location| location["id"] == serde_json::Value::String(resolved_id.clone()))
+            .unwrap();
+        assert_eq!(resolved["resolution"], "resolved");
+        assert_eq!(resolved["featureKind"], "burg");
+        assert_eq!(resolved["featureId"], "7");
+        let missing = projection
+            .iter()
+            .find(|location| location["id"] == serde_json::Value::String(missing_id.clone()))
+            .unwrap();
+        assert_eq!(missing["resolution"], "unresolved");
+        assert_eq!(missing["featureId"], "999");
+        assert!(missing["bounds"].is_array());
+
+        let reconciled = store.reconcile_map_links(map.id.clone()).unwrap();
+        assert_eq!(reconciled.len(), 2);
+        let by_id: BTreeMap<&str, bool> = reconciled
+            .iter()
+            .map(|row| {
+                (
+                    row["locationId"].as_str().unwrap(),
+                    row["resolved"].as_bool().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(by_id.get(resolved_id.as_str()), Some(&true));
+        assert_eq!(by_id.get(missing_id.as_str()), Some(&false));
+
+        // Renumbering the feature must flip resolution without touching the
+        // canonical location field: no silent retargeting. The asset file is a
+        // project copy, so replace it through the revision-aware mutation.
+        let renumbered = br#"{"features": [{"kind": "burg", "id": "999", "x": 120, "y": 80}]}"#;
+        store
+            .replace_asset_bytes_with_request(
+                AssetReplaceInput {
+                    asset_id: asset.id.clone(),
+                    content_hash: format!("sha256:{}", digest_bytes(renumbered)),
+                    size: renumbered.len() as i64,
+                    mime_type: "application/x-fmg-map".into(),
+                },
+                renumbered.to_vec(),
+                &asset.revision,
+                None,
+            )
+            .unwrap();
+        let after = store.reconcile_map_links(map.id.clone()).unwrap();
+        let by_id_after: BTreeMap<&str, bool> = after
+            .iter()
+            .map(|row| {
+                (
+                    row["locationId"].as_str().unwrap(),
+                    row["resolved"].as_bool().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(by_id_after.get(missing_id.as_str()), Some(&true));
+        assert_eq!(by_id_after.get(resolved_id.as_str()), Some(&false));
+        assert_eq!(
+            store.map_locations(place.id).unwrap().len(),
+            2,
+            "canonical locations must be untouched by reconciliation"
+        );
+        drop(store);
+        std::fs::remove_file(source).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn transaction_request_ids_must_be_uuids_but_may_be_absent() {
+        let root = std::env::temp_dir().join(format!("daena-map-rid-{}", Uuid::new_v4()));
+        let source = std::env::temp_dir().join(format!("daena-map-rid-src-{}.map", Uuid::new_v4()));
+        std::fs::write(&source, br#"{"features": []}"#).unwrap();
+
+        let store = ProjectStore::open_directory(&root).unwrap();
+        let map = store.create_map("Rid map".into()).unwrap();
+        let place = store
+            .create_entity(CreateEntity {
+                name: "Rid place".into(),
+                entity_type: Some("place".into()),
+            })
+            .unwrap();
+        let asset = store
+            .register_asset_file(AssetFileInput {
+                entity_id: map.id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                source_path: source.to_string_lossy().into_owned(),
+                filename: "world.map".into(),
+                mime_type: "application/x-fmg-map".into(),
+            })
+            .unwrap();
+        let map_id = map.id.clone();
+        let place_id = place.id.clone();
+        let asset_id = asset.id.clone();
+        let revision = asset.revision.clone();
+
+        // Correlation tokens like the FMG bridge's 'maps-fmg-N' are not
+        // UUIDs: the core transaction layer rejects them outright. The host
+        // sanitizes such ids to None before reaching the core (see
+        // sanitize_mutation_request_id in src-tauri), and None must be
+        // accepted here with a generated UUID receipt.
+        let bytes = br#"{"features": [{"kind": "burg", "id": "3", "x": 1, "y": 1}]}"#;
+        let rejected = store.replace_asset_bytes_with_request(
+            AssetReplaceInput {
+                asset_id: asset_id.clone(),
+                content_hash: format!("sha256:{}", digest_bytes(bytes)),
+                size: bytes.len() as i64,
+                mime_type: "application/x-fmg-map".into(),
+            },
+            bytes.to_vec(),
+            &revision,
+            Some("maps-fmg-1"),
+        );
+        assert!(rejected.is_err());
+        assert!(rejected
+            .unwrap_err()
+            .to_string()
+            .contains("transaction request ID must be a UUID"));
+        let accepted = store.replace_asset_bytes_with_request(
+            AssetReplaceInput {
+                asset_id: asset_id.clone(),
+                content_hash: format!("sha256:{}", digest_bytes(bytes)),
+                size: bytes.len() as i64,
+                mime_type: "application/x-fmg-map".into(),
+            },
+            bytes.to_vec(),
+            &revision,
+            None,
+        );
+        assert!(accepted.is_ok());
+        store
+            .set_field_with_request(
+                FieldValue {
+                    entity_id: place_id.clone(),
+                    namespace: crate::maps::MAP_NAMESPACE.into(),
+                    key: "locations".into(),
+                    value: serde_json::json!({
+                        "schemaVersion": 1,
+                        "locations": [{
+                            "id": Uuid::new_v4(),
+                            "mapEntityId": map_id,
+                            "role": "origin",
+                            "label": "Rid place",
+                            "anchor": {"kind": "point", "point": [0.5, 0.5]},
+                            "validity": {"from": null, "to": null}
+                        }]
+                    }),
+                    revision: String::new(),
+                },
+                None,
+            )
+            .expect("absent request ids must be accepted");
+        assert_eq!(store.map_locations(place_id).unwrap().len(), 1);
+
+        drop(store);
+        std::fs::remove_file(source).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

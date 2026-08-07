@@ -2183,6 +2183,48 @@ impl PluginHost {
         self.services
             .call(consumer_id, name, major, payload, deadline)
     }
+    pub fn publish_event_authorized(
+        &mut self,
+        source_plugin: &str,
+        project_id: &str,
+        name: &str,
+        version: u32,
+        payload: serde_json::Value,
+    ) -> Result<PublishResult, HostError> {
+        self.events
+            .publish(project_id, source_plugin, name, version, payload)
+    }
+    pub fn subscribe_event_authorized(
+        &mut self,
+        plugin_id: &str,
+        project_id: &str,
+        name: &str,
+        version: u32,
+    ) -> Result<(), HostError> {
+        self.events.subscribe(project_id, plugin_id, name, version);
+        Ok(())
+    }
+    pub fn poll_events_authorized(
+        &mut self,
+        plugin_id: &str,
+        project_id: &str,
+        name: &str,
+        version: u32,
+    ) -> Result<Vec<EventEnvelope>, HostError> {
+        Ok(self.events.drain(project_id, plugin_id, name, version))
+    }
+    pub fn call_service_authorized(
+        &mut self,
+        consumer_id: &str,
+        _project_id: &str,
+        name: &str,
+        major: u32,
+        payload: serde_json::Value,
+        deadline: Duration,
+    ) -> Result<serde_json::Value, HostError> {
+        self.services
+            .call(consumer_id, name, major, payload, deadline)
+    }
 
     pub fn register_declared_service_provider(
         &mut self,
@@ -3795,6 +3837,63 @@ mod tests {
             payload: serde_json::json!({"type":"daena.core/event@1"}),
         };
         assert!(host.rpc("plugin://one", &request).ok);
+    }
+    #[test]
+    fn authorized_event_and_service_calls_preserve_webview_session() {
+        let mut host = host();
+        let entry = host
+            .catalog
+            .get("com.example.one")
+            .unwrap()
+            .manifest
+            .clone();
+        host.grants
+            .set(
+                "project",
+                "com.example.one",
+                &entry.capabilities,
+                entry.capabilities.iter().cloned().collect(),
+            )
+            .unwrap();
+        host.services
+            .register(
+                "com.example.one",
+                "com.example.calculate",
+                1,
+                Arc::new(|_request| Ok(serde_json::json!({"sum": 2}))),
+            )
+            .unwrap();
+        let session = host
+            .bootstrap("com.example.one", "project", "plugin://one")
+            .unwrap();
+        host.subscribe_event_authorized("com.example.one", "project", "daena.core/event", 1)
+            .unwrap();
+        assert!(host
+            .publish_event_authorized(
+                "com.example.one",
+                "project",
+                "daena.core/event",
+                1,
+                serde_json::json!({"ready": true}),
+            )
+            .is_ok());
+        assert!(host
+            .poll_events_authorized("com.example.one", "project", "daena.core/event", 1)
+            .is_ok());
+        assert!(host
+            .call_service_authorized(
+                "com.example.one",
+                "project",
+                "com.example.calculate",
+                1,
+                serde_json::json!({"a": 1, "b": 1}),
+                Duration::from_millis(1000),
+            )
+            .is_ok());
+        assert!(
+            host.sessions.valid(&session.id, "plugin://one").is_ok(),
+            "webview session must survive authorized event and service traffic"
+        );
     }
     #[test]
     fn namespace_collisions_are_rejected() {

@@ -170,3 +170,13 @@ Deno.test("Maps bridge publishes editor state and recovery flows", async () => {
   if (!bridge.includes("startDirtyWatcher")) throw new Error("dirty watcher is missing");
   if (!bridge.includes("reloadSource")) throw new Error("source reload is missing");
 });
+
+Deno.test("Maps bridge self-heals a revoked session by re-bootstrapping", async () => {
+  const bridge = await Deno.readTextFile(new URL("./fmg-bridge-template.js", import.meta.url));
+  if (!bridge.includes("session.revoked")) throw new Error("revoked session code is not handled");
+  if (!bridge.includes("session.stale")) throw new Error("stale session code is not handled");
+  if (!bridge.includes("session.expired")) throw new Error("expired session code is not handled");
+  if (!bridge.includes("session.invalid")) throw new Error("invalid session code is not handled");
+  if (!bridge.includes("sessionId = undefined")) throw new Error("session is not cleared for re-bootstrap");
+  if (!bridge.includes("attempt < 2")) throw new Error("rpc does not retry after re-bootstrap");
+});

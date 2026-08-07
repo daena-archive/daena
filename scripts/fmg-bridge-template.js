@@ -8,6 +8,7 @@ window.DAENA_HOST = true;
   const params = new URLSearchParams(location.search);
   const projectId = params.get("project");
   const requestedMapEntityId = params.get("mapEntityId");
+  const requestedLinkId = params.get("linkId");
   function showDiagnostic(error) {
     const message = error instanceof Error ? error.message : String(error);
     let panel = document.getElementById("daena-map-diagnostic");
@@ -29,15 +30,21 @@ window.DAENA_HOST = true;
   async function post(body) {
     const response = await fetch("/__rpc", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const value = await response.json();
-    if (!response.ok || value.ok === false) throw new Error(value.error?.message || value.error || `Daena RPC failed (${response.status})`);
+    if (!response.ok) throw new Error(value.error?.message || value.error || `Daena RPC failed (${response.status})`);
     return value;
   }
+  const isSessionFailure = value => value?.ok === false && ["session.revoked", "session.stale", "session.expired", "session.invalid"].includes(value.error?.code);
   async function rpc(method, payload) {
-    if (!sessionId) sessionId = (await post({ op: "bootstrap", pluginId: "daena.maps", projectId })).sessionId;
-    const requestId = `maps-fmg-${++requestSequence}`;
-    const value = await post({ op: "rpc", request: { rpcVersion: 1, sessionId, requestId, method, payload } });
-    if (!value.ok) throw new Error(value.error?.message || "Daena RPC failed");
-    return value.result;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (!sessionId) sessionId = (await post({ op: "bootstrap", pluginId: "daena.maps", projectId })).sessionId;
+      const requestId = `maps-fmg-${++requestSequence}`;
+      const value = await post({ op: "rpc", request: { rpcVersion: 1, sessionId, requestId, method, payload } });
+      if (value.ok) return value.result;
+      if (attempt === 0 && isSessionFailure(value)) { sessionId = undefined; continue; }
+      const error = new Error(value.error?.message || "Daena RPC failed");
+      error.code = value.error?.code;
+      throw error;
+    }
   }
   async function sha256(bytes) {
     const hashBuffer = await crypto.subtle.digest("SHA-256", bytes);
@@ -98,6 +105,15 @@ window.DAENA_HOST = true;
       setDirty(false);
       window.dispatchEvent(new CustomEvent("daena-map-saved", { detail: saved }));
       publishState("saved", { revision: saved.revision });
+      // The source bytes changed, so provider-feature resolution may have
+      // changed. Reconcile immediately so removed or renumbered features
+      // surface as unresolved rather than on the next full index build.
+      const reconciled = await rpc("maps.reconcile.links", { mapEntityId: mapId }).catch(() => null);
+      if (Array.isArray(reconciled)) {
+        const unresolved = reconciled.filter(item => !item.resolved).map(item => item.locationId);
+        await refreshOverlay().catch(() => undefined);
+        publishState("reconcile", { total: reconciled.length, unresolved });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("asset revision conflict")) {
@@ -150,6 +166,149 @@ window.DAENA_HOST = true;
     const feature = (pack[featureCollections[anchor.featureKind]] || []).find(item => String(item.i) === String(anchor.featureId));
     return feature ? { resolved: true, point: pointFor(feature) } : { resolved: false, point: anchor.fallbackPoint };
   };
+  // Capture support. FMG's selection state is not exposed by the vendored
+  // bundle, so capture uses click-to-pick: the last pointer position inside
+  // the map SVG, snapped to the nearest feature within ~2% of the graph.
+  let lastPointer = null;
+  window.addEventListener("pointerdown", event => {
+    const svg = event.target?.closest?.("svg");
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    lastPointer = [(event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height];
+  }, true);
+  async function computeSelection() {
+    const point = lastPointer;
+    if (!point) return null;
+    let nearest = null;
+    let nearestDistance = Infinity;
+    for (const [kind, collectionName] of Object.entries(featureCollections)) {
+      for (const feature of pack[collectionName] || []) {
+        if (!Number.isFinite(feature.x) || !Number.isFinite(feature.y)) continue;
+        const fx = feature.x / graphWidth;
+        const fy = feature.y / graphHeight;
+        const distance = (fx - point[0]) ** 2 + (fy - point[1]) ** 2;
+        if (distance < nearestDistance) {
+          nearestDistance = distance;
+          nearest = { kind, feature };
+        }
+      }
+    }
+    if (nearest && nearestDistance <= 0.0004) {
+      return { kind: "provider-feature", provider: "azgaar-fmg", featureKind: nearest.kind, featureId: String(nearest.feature.i), fallbackPoint: pointFor(nearest.feature) };
+    }
+    return { kind: "point", point };
+  }
+  async function publishSelection() {
+    if (!mapId) return;
+    const anchor = await computeSelection().catch(() => null);
+    void rpc("event.publish", { type: "daena.maps/selection@1", payload: { mapEntityId: mapId, anchor } }).catch(() => undefined);
+    return anchor;
+  }
+  // Semantic overlay. The overlay is derived state: it is rebuilt from the
+  // disposable projection on entity-changed events and after every save, and
+  // never persists anything itself.
+  let overlayFrame = null;
+  let overlayDate = null;
+  let pendingLinkId = requestedLinkId;
+  let overlayRoot = null;
+  function ensureOverlayRoot() {
+    if (overlayRoot && overlayRoot.isConnected) return overlayRoot;
+    const host = document.querySelector("#map") || document.body;
+    if (host !== document.body && host.style.position === "") host.style.position = "relative";
+    overlayRoot = document.createElement("div");
+    overlayRoot.id = "daena-semantic-overlay";
+    overlayRoot.style.cssText = "position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:2000;";
+    host.appendChild(overlayRoot);
+    return overlayRoot;
+  }
+  function overlayPoint(location) {
+    if (location.anchorKind === "provider-feature" && location.featureKind && location.featureId) {
+      const feature = (pack[featureCollections[location.featureKind]] || []).find(item => String(item.i) === String(location.featureId));
+      if (feature && Number.isFinite(feature.x) && Number.isFinite(feature.y)) return pointFor(feature);
+    }
+    const [minX, minY, maxX, maxY] = location.bounds || [null, null, null, null];
+    if (Number.isFinite(minX) && Number.isFinite(minY) && Number.isFinite(maxX) && Number.isFinite(maxY)) return [(minX + maxX) / 2, (minY + maxY) / 2];
+    return null;
+  }
+  function inValidity(location) {
+    if (!overlayDate) return true;
+    const from = location.validity?.from ?? null;
+    const to = location.validity?.to ?? null;
+    if (from && overlayDate < from) return false;
+    if (to && overlayDate > to) return false;
+    return true;
+  }
+  function renderOverlay() {
+    if (!overlayFrame) return;
+    const root = ensureOverlayRoot();
+    root.replaceChildren();
+    for (const location of overlayFrame) {
+      if (location.resolution === "unresolved" || !inValidity(location)) continue;
+      const point = overlayPoint(location);
+      if (!point) continue;
+      const marker = document.createElement("div");
+      marker.title = `${location.label || location.role} (${location.role})`;
+      marker.style.cssText = "position:absolute;width:10px;height:10px;margin:-5px 0 0 -5px;border-radius:50%;background:#e11d48;border:1.5px solid #fff;box-shadow:0 1px 3px #0006;";
+      marker.style.left = `${(point[0] * 100).toFixed(2)}%`;
+      marker.style.top = `${(point[1] * 100).toFixed(2)}%`;
+      root.appendChild(marker);
+    }
+  }
+  function setOverlayDate(date) {
+    if (date == null) {
+      overlayDate = null;
+      renderOverlay();
+      return;
+    }
+    if (typeof date === "string") {
+      overlayDate = date.slice(0, 10);
+      renderOverlay();
+      return;
+    }
+    const year = date.year;
+    const month = date.month ? String(date.month).padStart(2, "0") : "01";
+    const day = date.day ? String(date.day).padStart(2, "0") : "01";
+    overlayDate = `${date.era === "BCE" ? "-" : ""}${String(year).padStart(4, "0")}-${month}-${day}`;
+    renderOverlay();
+  }
+  async function focusByLink(linkId) {
+    if (!overlayFrame) return false;
+    const location = overlayFrame.find(item => item.id === linkId);
+    if (!location || location.resolution === "unresolved") return false;
+    const point = overlayPoint(location);
+    if (!point) return false;
+    zoomTo(point[0] * graphWidth, point[1] * graphHeight, 8, 500);
+    return true;
+  }
+  async function refreshOverlay() {
+    if (!mapId) return;
+    const rows = await rpc("maps.locations.list", { mapEntityId: mapId }).catch(() => null);
+    if (!Array.isArray(rows)) return;
+    overlayFrame = rows;
+    renderOverlay();
+    if (pendingLinkId && (await focusByLink(pendingLinkId))) pendingLinkId = null;
+  }
+  async function subscribeCoreEvents() {
+    await rpc("event.subscribe", { type: "daena.core/entity-changed@1" }).catch(() => undefined);
+    window.setInterval(async () => {
+      const events = await rpc("event.poll", { type: "daena.core/entity-changed@1" }).catch(() => []);
+      if (Array.isArray(events) && events.length > 0) await refreshOverlay().catch(() => undefined);
+    }, 2000);
+  }
+  // Publish a compact selection signal so the shell can enable or disable the
+  // capture tool. Best-effort: publishing failures are never fatal.
+  let lastSelectionPayload = null;
+  const startSelectionWatcher = () => {
+    window.setInterval(async () => {
+      if (!mapId) return;
+      const anchor = await computeSelection().catch(() => null);
+      const key = JSON.stringify(anchor);
+      if (key === lastSelectionPayload) return;
+      lastSelectionPayload = key;
+      void rpc("event.publish", { type: "daena.maps/selection@1", payload: { mapEntityId: mapId, anchor } }).catch(() => undefined);
+    }, 900);
+  };
   async function loadMapSource(bytes) { await uploadMap(new File([bytes], "daena.map", { type: "application/octet-stream" })); }
   async function reloadSource() {
     const bytes = await loadAsset(asset.assetId);
@@ -157,8 +316,9 @@ window.DAENA_HOST = true;
     lastSavedHash = await sha256(new TextEncoder().encode(prepareMapData()));
     setDirty(false);
     publishState("clean");
+    await refreshOverlay().catch(() => undefined);
   }
-  window.daenaMapProvider = { provider: "azgaar-fmg", capabilities: async () => ({ provider: "azgaar-fmg", adapterVersion: 1, featureKinds: Object.keys(featureCollections), supportsEditing: true }), load: loadMapSource, serialize: () => new TextEncoder().encode(prepareMapData()), listFeatures, resolveAnchor, focus: async anchor => { const result = await resolveAnchor(anchor); if (result.point) zoomTo(result.point[0] * graphWidth, result.point[1] * graphHeight, 8, 500); }, save: () => saveAsset(asset), exportDraft, reloadSource, dispose: () => { delete window.daenaMapProvider; } };
+  window.daenaMapProvider = { provider: "azgaar-fmg", capabilities: async () => ({ provider: "azgaar-fmg", adapterVersion: 1, featureKinds: Object.keys(featureCollections), supportsEditing: true }), load: loadMapSource, serialize: () => new TextEncoder().encode(prepareMapData()), listFeatures, resolveAnchor, captureSelection: publishSelection, focus: async anchor => { const result = await resolveAnchor(anchor); if (result.point) zoomTo(result.point[0] * graphWidth, result.point[1] * graphHeight, 8, 500); }, focusByLink, setSemanticOverlay: frame => { overlayFrame = Array.isArray(frame?.locations) ? frame.locations : null; setOverlayDate(frame?.date ?? null); }, setDate: setOverlayDate, save: () => saveAsset(asset), exportDraft, reloadSource, dispose: () => { delete window.daenaMapProvider; } };
   const originalSave = window.saveMap;
   window.saveMap = method => method === "machine" || method === "dropbox" || method === "storage" ? saveAsset(asset).catch(showDiagnosticUnlessConflict) : originalSave?.(method);
   window.addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void saveAsset(asset).catch(showDiagnosticUnlessConflict); } });
@@ -171,7 +331,10 @@ window.DAENA_HOST = true;
     lastSavedHash = await sha256(new TextEncoder().encode(prepareMapData()));
     publishState("clean");
   }
+  void subscribeCoreEvents();
+  void refreshOverlay();
   startDirtyWatcher();
+  startSelectionWatcher();
 })().catch(error => {
   console.error("Daena Maps provider startup failed:", error);
   window.daenaMapDiagnostic?.(error);

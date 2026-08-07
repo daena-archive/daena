@@ -808,6 +808,7 @@ fn plugin_protocol_response(
                 }
             };
             let request_id = request.request_id.clone();
+            let mutation_request_id = sanitize_mutation_request_id(&request_id);
             let result = (|| -> Result<serde_json::Value, String> {
                 let session = plugins
                     .lock()
@@ -841,7 +842,7 @@ fn plugin_protocol_response(
                         &session,
                         &request.method,
                         request.payload,
-                        Some(&request_id),
+                        mutation_request_id,
                     )?
                 } else if matches!(
                     request.method.as_str(),
@@ -860,7 +861,7 @@ fn plugin_protocol_response(
                         &mut core,
                         &request.method,
                         request.payload,
-                        Some(&request_id),
+                        mutation_request_id,
                     )
                     .map_err(|error| error.to_string())?
                 };
@@ -886,29 +887,37 @@ fn plugin_protocol_response(
     }
 }
 
-/// Forwards a plugin-published `daena.maps/state@1` event to the shell as a
-/// `maps-state` Tauri event. The shell owns the wrapper chrome (save chip,
-/// conflict banner) around the child webview, which has no other way to reach
-/// it.
+/// Forwards plugin-published `daena.maps/state@1` and `daena.maps/selection@1`
+/// events to the shell as `maps-state` / `maps-selection` Tauri events. The
+/// shell owns the wrapper chrome (save chip, conflict banner, capture tool)
+/// around the child webview, which has no other way to reach it. Forwarding
+/// is a hint only; the shell re-queries canonical records before acting.
 fn forward_maps_state_event(payload: &serde_json::Value) {
     let Some(event_type) = payload.get("type").and_then(serde_json::Value::as_str) else {
         return;
     };
-    if !event_type.starts_with("daena.maps/state@") {
-        return;
-    }
     let Some(app) = APP_HANDLE.get() else {
         return;
     };
     let state = payload.get("payload").cloned().unwrap_or_default();
-    let _ = app.emit(
-        "maps-state",
-        serde_json::json!({
-            "mapEntityId": state.get("mapEntityId").cloned().unwrap_or_default(),
-            "status": state.get("status").and_then(serde_json::Value::as_str).unwrap_or("state"),
-            "detail": state.get("detail").cloned().unwrap_or(serde_json::Value::Null),
-        }),
-    );
+    if event_type.starts_with("daena.maps/state@") {
+        let _ = app.emit(
+            "maps-state",
+            serde_json::json!({
+                "mapEntityId": state.get("mapEntityId").cloned().unwrap_or_default(),
+                "status": state.get("status").and_then(serde_json::Value::as_str).unwrap_or("state"),
+                "detail": state.get("detail").cloned().unwrap_or(serde_json::Value::Null),
+            }),
+        );
+    } else if event_type.starts_with("daena.maps/selection@") {
+        let _ = app.emit(
+            "maps-selection",
+            serde_json::json!({
+                "mapEntityId": state.get("mapEntityId").cloned().unwrap_or_default(),
+                "anchor": state.get("anchor").cloned().unwrap_or(serde_json::Value::Null),
+            }),
+        );
+    }
 }
 
 fn dispatch_binary_asset_rpc(
@@ -1274,6 +1283,7 @@ fn plugin_webview_url(
     project_id: &str,
     view_id: Option<&str>,
     map_entity_id: Option<&str>,
+    link_id: Option<&str>,
     bounds: PluginWebviewBounds,
 ) -> Result<tauri::WebviewUrl, String> {
     let mut url = format!(
@@ -1294,6 +1304,10 @@ fn plugin_webview_url(
         url.push_str("&mapEntityId=");
         url.push_str(&percent_encode(map_entity_id));
     }
+    if let Some(link_id) = link_id {
+        url.push_str("&linkId=");
+        url.push_str(&percent_encode(link_id));
+    }
     Ok(tauri::WebviewUrl::External(
         url.parse()
             .map_err(|error| format!("invalid plugin URL: {error}"))?,
@@ -1301,6 +1315,7 @@ fn plugin_webview_url(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn plugin_mount_webview(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
@@ -1308,6 +1323,7 @@ async fn plugin_mount_webview(
     plugin_id: String,
     view_id: Option<String>,
     map_entity_id: Option<String>,
+    link_id: Option<String>,
     bounds: PluginWebviewBounds,
 ) -> Result<(), String> {
     let bounds = native_plugin_bounds(&app, bounds)?;
@@ -1340,6 +1356,7 @@ async fn plugin_mount_webview(
             &project_id,
             view_id.as_deref(),
             map_entity_id.as_deref(),
+            link_id.as_deref(),
             bounds,
         )?;
         (policy, url)
@@ -1934,7 +1951,8 @@ async fn plugin_rpc(
         )
     } else {
         let project_id = session.project_id;
-        let request_id_for_dispatch = request_id.clone();
+        let request_id_for_dispatch =
+            sanitize_mutation_request_id(&request_id).map(str::to_owned);
         with_core(core, move |core| {
             let current_project = core
                 .info()
@@ -1945,7 +1963,7 @@ async fn plugin_rpc(
                     operation: "access another project",
                 });
             }
-            dispatch_module_rpc(core, &method, payload, Some(&request_id_for_dispatch))
+            dispatch_module_rpc(core, &method, payload, request_id_for_dispatch.as_deref())
         })
         .await
     };
@@ -2002,7 +2020,7 @@ fn dispatch_host_rpc(
             .unwrap_or(5_000)
             .clamp(1, 30_000);
         return host
-            .call_service(
+            .call_service_authorized(
                 plugin_id,
                 project_id,
                 name,
@@ -2028,17 +2046,17 @@ fn dispatch_host_rpc(
         .map_err(|_| "event version is invalid".to_string())?;
     match method {
         "event.subscribe" => {
-            host.subscribe_event(plugin_id, project_id, name, version)
+            host.subscribe_event_authorized(plugin_id, project_id, name, version)
                 .map_err(|error| error.to_string())?;
             Ok(serde_json::Value::Null)
         }
         "event.poll" => serde_json::to_value(
-            host.poll_events(plugin_id, project_id, name, version)
+            host.poll_events_authorized(plugin_id, project_id, name, version)
                 .map_err(|error| error.to_string())?,
         )
         .map_err(|error| error.to_string()),
         "event.publish" => serde_json::to_value(
-            host.publish_event(
+            host.publish_event_authorized(
                 plugin_id,
                 project_id,
                 name,
@@ -2097,7 +2115,7 @@ fn greet(name: &str) -> String {
     format!("Hello, {name}! You've been greeted from Rust!")
 }
 
-fn bundled_plugin_host() -> Result<PluginHost, String> {
+fn bundled_plugin_host(core: SharedCore) -> Result<PluginHost, String> {
     let mut host = PluginHost::new();
     for (manifest, wasm) in [
         (
@@ -2120,6 +2138,17 @@ fn bundled_plugin_host() -> Result<PluginHost, String> {
         host.register_bundled_json_with_wasm(manifest, wasm)
             .map_err(|error| error.to_string())?;
     }
+    // Native provider for the public navigation service. Registered before
+    // project activation so the manifest-declared WASM stub is skipped and
+    // Lore/Timeline consumers reach the same resolution as the shell command.
+        let navigation = maps_navigation_service_handler(core);
+        host.register_declared_service_provider(
+            "daena.maps",
+            "daena.maps/navigation",
+            1,
+            navigation,
+        )
+        .map_err(|error| error.to_string())?;
     Ok(host)
 }
 
@@ -3032,6 +3061,8 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
         "maps.recovery.export.commit" => (&["handle", "contentHash"], &[]),
         "maps.recovery.list" => (&["mapEntityId"], &[]),
         "maps.recovery.restore" => (&["mapEntityId", "fileName"], &[]),
+        "maps.locations.list" => (&["mapEntityId"], &[]),
+        "maps.reconcile.links" => (&["mapEntityId"], &[]),
         "search.query" => (&["query"], &[]),
         "event.publish" => (&["type", "payload"], &[]),
         "event.subscribe" | "event.poll" => (&["type"], &[]),
@@ -3302,6 +3333,16 @@ fn dispatch_module_rpc(
                 request_id,
             )?)
             .map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "maps.locations.list" => {
+            let map_entity_id = payload_string(&payload, "mapEntityId")?;
+            serde_json::to_value(project.map_location_projection(map_entity_id)?)
+                .map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "maps.reconcile.links" => {
+            let map_entity_id = payload_string(&payload, "mapEntityId")?;
+            serde_json::to_value(project.reconcile_map_links(map_entity_id)?)
+                .map_err(|error| CoreError::Validation(error.to_string()))
         }
         _ => Err(CoreError::Validation(format!(
             "unknown plugin RPC method: {method}"
@@ -3814,7 +3855,233 @@ async fn project_unlink_map_location(
 /// Versioned host handoff for the public `daena.maps/navigation@1` service.
 /// The service resolves canonical links before asking the shell to mount Maps;
 /// provider availability remains a concern of the child webview.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MapsNavigationRequest {
+    operation: String,
+    #[serde(default)]
+    map_entity_id: Option<String>,
+    #[serde(default)]
+    entity_id: Option<String>,
+    #[serde(default)]
+    link_id: Option<String>,
+    #[serde(default)]
+    date: Option<serde_json::Value>,
+    #[serde(default)]
+    entity_ids: Option<Vec<String>>,
+}
+
+/// The result of resolving a navigation operation. `emit` carries the shell
+/// handoff (`maps-navigation` Tauri event) when the shell must mount or
+/// re-focus the map editor; `result` is the service response. An unresolved
+/// link emits the handoff (so the map opens and the notice can surface) while
+/// still returning a typed `link-unresolved` error.
+struct MapsNavigationOutcome {
+    emit: Option<(String, Option<serde_json::Value>)>,
+    result: Result<serde_json::Value, String>,
+}
+
+fn resolve_maps_navigation(
+    core: &mut CoreService,
+    request: &MapsNavigationRequest,
+) -> Result<MapsNavigationOutcome, String> {
+    let project = core
+        .project(trusted_shell())
+        .map_err(|error| error.to_string())?;
+    let outcome = match request.operation.as_str() {
+        "openMap" => {
+            let id = request.map_entity_id.clone().ok_or_else(|| {
+                "map-unavailable: mapEntityId is required".to_string()
+            })?;
+            let exists = project
+                .list_entities()
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .any(|entity| {
+                    entity.id == id
+                        && entity.entity_type.as_deref()
+                            == Some(daena_core::maps::MAP_ENTITY_TYPE)
+                });
+            if !exists {
+                return Err("map-unavailable".into());
+            }
+            let link = request
+                .link_id
+                .clone()
+                .map(serde_json::Value::String);
+            MapsNavigationOutcome {
+                emit: Some((id.clone(), link)),
+                result: Ok(serde_json::json!({
+                    "mapEntityId": id,
+                    "linkId": request.link_id,
+                })),
+            }
+        }
+        "focusEntity" => {
+            let id = request
+                .entity_id
+                .clone()
+                .ok_or_else(|| "not-on-map: entityId is required".to_string())?;
+            let locations = project
+                .map_locations_for_entity(id)
+                .map_err(|error| error.to_string())?;
+            let filtered: Vec<serde_json::Value> = locations
+                .into_iter()
+                .filter(|location| {
+                    request.map_entity_id.as_deref().is_none_or(|map| {
+                        map == location["mapEntityId"].as_str().unwrap_or_default()
+                    })
+                })
+                .collect();
+            if let Some(link_id) = request.link_id.as_deref() {
+                let Some(location) = filtered
+                    .iter()
+                    .find(|location| location["id"].as_str() == Some(link_id))
+                else {
+                    return Err("link-unresolved: location no longer exists on the entity".into());
+                };
+                let map_id = location["mapEntityId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                let unresolved = location["anchorKind"].as_str() == Some("provider-feature")
+                    && location["resolution"].as_str() == Some("unresolved");
+                let result = if unresolved {
+                    Err("link-unresolved: the map feature was removed or renumbered".into())
+                } else {
+                    Ok(serde_json::json!({
+                        "mapEntityId": map_id,
+                        "linkId": link_id,
+                    }))
+                };
+                MapsNavigationOutcome {
+                    emit: Some((
+                        map_id,
+                        Some(serde_json::Value::String(link_id.to_string())),
+                    )),
+                    result,
+                }
+            } else if filtered.is_empty() {
+                return Err("not-on-map".into());
+            } else if filtered.len() > 1 {
+                MapsNavigationOutcome {
+                    emit: None,
+                    result: Ok(serde_json::json!({
+                        "status": "multiple-links",
+                        "locations": filtered,
+                    })),
+                }
+            } else {
+                let location = &filtered[0];
+                let map_id = location["mapEntityId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                let link_id = location["id"].as_str().unwrap_or_default().to_string();
+                let unresolved = location["anchorKind"].as_str() == Some("provider-feature")
+                    && location["resolution"].as_str() == Some("unresolved");
+                let result = if unresolved {
+                    Err("link-unresolved: the map feature was removed or renumbered".into())
+                } else {
+                    Ok(serde_json::json!({
+                        "mapEntityId": map_id,
+                        "linkId": link_id,
+                    }))
+                };
+                MapsNavigationOutcome {
+                    emit: Some((
+                        map_id,
+                        Some(serde_json::Value::String(link_id)),
+                    )),
+                    result,
+                }
+            }
+        }
+        "listLocations" => {
+            let id = request
+                .entity_id
+                .clone()
+                .ok_or_else(|| "entityId is required".to_string())?;
+            let locations = project
+                .map_locations(id)
+                .map_err(|error| error.to_string())?;
+            MapsNavigationOutcome {
+                emit: None,
+                result: serde_json::to_value(locations)
+                    .map_err(|error| format!("serialize locations: {error}")),
+            }
+        }
+        "setDate" => {
+            let date = request
+                .date
+                .clone()
+                .ok_or_else(|| "setDate requires a date payload".to_string())?;
+            let era_ok = date
+                .get("era")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(|era| era == "BCE" || era == "CE");
+            if !date.is_object() || date.get("year").is_none() || !era_ok {
+                return Err("validation: invalid date payload".into());
+            }
+            MapsNavigationOutcome {
+                emit: None,
+                result: Ok(serde_json::json!({ "accepted": true, "date": date })),
+            }
+        }
+        "showResults" => {
+            let ids = request
+                .entity_ids
+                .clone()
+                .ok_or_else(|| "showResults requires entityIds".to_string())?;
+            let mut rows: Vec<serde_json::Value> = Vec::new();
+            for entity_id in &ids {
+                let locations = project
+                    .map_locations_for_entity(entity_id.clone())
+                    .map_err(|error| error.to_string())?;
+                rows.extend(locations.into_iter().filter(|location| {
+                    request.map_entity_id.as_deref().is_none_or(|map| {
+                        map == location["mapEntityId"].as_str().unwrap_or_default()
+                    })
+                }));
+            }
+            let map_id = request
+                .map_entity_id
+                .clone()
+                .or_else(|| {
+                    rows.first()
+                        .and_then(|row| row["mapEntityId"].as_str())
+                        .map(String::from)
+                })
+                .ok_or_else(|| "not-on-map: no locations for the requested entities".to_string())?;
+            rows.retain(|row| row["mapEntityId"].as_str() == Some(map_id.as_str()));
+            if rows.is_empty() {
+                return Err("not-on-map: no locations for the requested entities".into());
+            }
+            MapsNavigationOutcome {
+                emit: None,
+                result: Ok(serde_json::json!({ "mapEntityId": map_id, "locations": rows })),
+            }
+        }
+        _ => {
+            return Err("unsupported daena.maps/navigation@1 operation".into());
+        }
+    };
+    Ok(outcome)
+}
+
+/// Plugin RPC envelopes carry correlation-only `requestId`s (the FMG bridge
+/// uses `maps-fmg-N`). Transaction receipts are UUID-keyed, so only pass a
+/// request id into core mutations when it is a real UUID; the response echo
+/// keeps the original envelope id.
+fn sanitize_mutation_request_id(request_id: &str) -> Option<&str> {
+    request_id
+        .parse::<uuid::Uuid>()
+        .is_ok()
+        .then_some(request_id)
+}
+
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn maps_navigation(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
@@ -3822,38 +4089,61 @@ async fn maps_navigation(
     map_entity_id: Option<String>,
     entity_id: Option<String>,
     link_id: Option<String>,
+    date: Option<serde_json::Value>,
+    entity_ids: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
-    let operation_for_core = operation.clone();
-    let target = with_core(state, move |core| {
-        let project = core.project(trusted_shell())?;
-        match operation_for_core.as_str() {
-            "openMap" => {
-                let id = map_entity_id.clone().ok_or_else(|| daena_core::CoreError::Validation("map-unavailable: mapEntityId is required".into()))?;
-                let exists = project.list_entities()?.into_iter().any(|entity| entity.id == id && entity.entity_type.as_deref() == Some(daena_core::maps::MAP_ENTITY_TYPE));
-                if !exists { return Err(daena_core::CoreError::NotFound("map-unavailable".into())); }
-                Ok(serde_json::json!({"mapEntityId": id, "linkId": link_id}))
-            }
-            "focusEntity" => {
-                let id = entity_id.clone().ok_or_else(|| daena_core::CoreError::Validation("not-on-map: entityId is required".into()))?;
-                let locations = project.map_locations(id)?;
-                let location = locations.into_iter().find(|location| map_entity_id.as_deref().is_none_or(|map| map == location.map_entity_id)).ok_or_else(|| daena_core::CoreError::NotFound("not-on-map".into()))?;
-                Ok(serde_json::json!({"mapEntityId": location.map_entity_id, "linkId": location.id}))
-            }
-            "listLocations" => {
-                let id = entity_id.ok_or_else(|| daena_core::CoreError::Validation("entityId is required".into()))?;
-                Ok(serde_json::to_value(project.map_locations(id)?).map_err(|error| daena_core::CoreError::Serialization(error.to_string()))?)
-            }
-            "setDate" | "showResults" => Ok(serde_json::json!({"accepted": true})),
-            _ => Err(daena_core::CoreError::Validation("unsupported daena.maps/navigation@1 operation".into())),
-        }
-    }).await?;
-    if matches!(operation.as_str(), "openMap" | "focusEntity") {
-        let map_id = target.get("mapEntityId").and_then(serde_json::Value::as_str).ok_or_else(|| "map-unavailable".to_string())?;
-        app.emit("maps-navigation", serde_json::json!({"mapEntityId": map_id, "linkId": target.get("linkId")})).map_err(|error| error.to_string())?;
-        Ok(serde_json::json!({"version": 1, "mapEntityId": map_id, "linkId": target.get("linkId")}))
-    } else {
-        Ok(serde_json::json!({"version": 1, "result": target}))
+    let request = MapsNavigationRequest {
+        operation,
+        map_entity_id,
+        entity_id,
+        link_id,
+        date,
+        entity_ids,
+    };
+    let outcome = with_core(state, move |core| {
+        resolve_maps_navigation(core, &request)
+            .map_err(daena_core::CoreError::Validation)
+    })
+    .await?;
+    if let Some((map_id, link)) = &outcome.emit {
+        app.emit(
+            "maps-navigation",
+            serde_json::json!({ "mapEntityId": map_id, "linkId": link }),
+        )
+        .map_err(|error| error.to_string())?;
     }
+    outcome.result
+}
+
+/// Native handler for the public `daena.maps/navigation@1` service. Registered
+/// on the plugin host before project activation so the manifest-declared WASM
+/// stub is skipped; consumers such as Lore and Timeline reach the same
+/// resolution and shell handoff as the `maps_navigation` Tauri command.
+fn maps_navigation_service_handler(
+    core: SharedCore,
+) -> daena_plugin_host::ServiceHandler {
+    use daena_plugin_host::{HostError, ServiceRequest};
+    std::sync::Arc::new(move |request: ServiceRequest| {
+        let app = APP_HANDLE
+            .get()
+            .ok_or_else(|| HostError("map editor is not open".into()))?;
+        let request: MapsNavigationRequest =
+            serde_json::from_value(request.payload.clone()).map_err(|error| {
+                HostError(format!("invalid daena.maps/navigation@1 payload: {error}"))
+            })?;
+        let mut core = core
+            .lock()
+            .map_err(|_| HostError("core lock poisoned".into()))?;
+        let outcome =
+            resolve_maps_navigation(&mut core, &request).map_err(HostError)?;
+        if let Some((map_id, link)) = &outcome.emit {
+            let _ = app.emit(
+                "maps-navigation",
+                serde_json::json!({ "mapEntityId": map_id, "linkId": link }),
+            );
+        }
+        outcome.result.map_err(HostError)
+    })
 }
 
 /// Asks the open Maps child webview to save. There is no shell-to-webview
@@ -3868,6 +4158,76 @@ async fn maps_editor_save(app: tauri::AppHandle) -> Result<(), String> {
     webview
         .eval("window.daenaMapProvider && window.daenaMapProvider.save && window.daenaMapProvider.save()")
         .map_err(|error| format!("request map editor save: {error}"))
+}
+
+/// Asks the open Maps child webview to capture the current selection. The
+/// capture itself is asynchronous in the child; the anchor is delivered back
+/// on `daena.maps/selection@1`, forwarded to the shell as `maps-selection`.
+#[tauri::command]
+async fn maps_editor_capture_anchor(app: tauri::AppHandle) -> Result<(), String> {
+    let label = plugin_window_label("daena.maps");
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| "the map editor is not open".to_string())?;
+    webview
+        .eval("window.daenaMapProvider && window.daenaMapProvider.captureSelection && window.daenaMapProvider.captureSelection()")
+        .map_err(|error| format!("request map editor capture: {error}"))
+}
+
+/// Pushes a semantic overlay frame into the open Maps child webview. The
+/// frame is derived state (projection rows); the child never persists it.
+#[tauri::command]
+async fn maps_editor_set_overlay(
+    app: tauri::AppHandle,
+    frame: serde_json::Value,
+) -> Result<(), String> {
+    let label = plugin_window_label("daena.maps");
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| "the map editor is not open".to_string())?;
+    let frame = serde_json::to_string(&frame)
+        .map_err(|error| format!("serialize overlay frame: {error}"))?;
+    webview
+        .eval(format!(
+            "window.daenaMapProvider && window.daenaMapProvider.setSemanticOverlay && window.daenaMapProvider.setSemanticOverlay({frame})"
+        ).as_str())
+        .map_err(|error| format!("request map editor overlay: {error}"))
+}
+
+/// Pushes a display date into the open Maps child webview so the overlay
+/// filters locations by validity. `null` clears the temporal filter.
+#[tauri::command]
+async fn maps_editor_set_date(
+    app: tauri::AppHandle,
+    date: Option<serde_json::Value>,
+) -> Result<(), String> {
+    let label = plugin_window_label("daena.maps");
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| "the map editor is not open".to_string())?;
+    let date = serde_json::to_string(&date)
+        .map_err(|error| format!("serialize overlay date: {error}"))?;
+    webview
+        .eval(format!(
+            "window.daenaMapProvider && window.daenaMapProvider.setDate && window.daenaMapProvider.setDate({date})"
+        ).as_str())
+        .map_err(|error| format!("request map editor date: {error}"))
+}
+
+/// Asks the open Maps child webview to focus a linked location by ID.
+#[tauri::command]
+async fn maps_editor_focus_link(app: tauri::AppHandle, link_id: String) -> Result<(), String> {
+    let label = plugin_window_label("daena.maps");
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| "the map editor is not open".to_string())?;
+    let link_id = serde_json::to_string(&link_id)
+        .map_err(|error| format!("serialize link id: {error}"))?;
+    webview
+        .eval(format!(
+            "window.daenaMapProvider && window.daenaMapProvider.focusByLink && window.daenaMapProvider.focusByLink({link_id})"
+        ).as_str())
+        .map_err(|error| format!("request map editor focus: {error}"))
 }
 
 #[tauri::command]
@@ -4034,7 +4394,7 @@ async fn migration_apply(
 pub fn run() {
     let core = Arc::new(Mutex::new(CoreService::new()));
     let plugins = Arc::new(Mutex::new(
-        bundled_plugin_host().expect("canonical bundled plugin manifests must validate"),
+        bundled_plugin_host(core.clone()).expect("canonical bundled plugin manifests must validate"),
     ));
     let protocol_core = core.clone();
     let protocol_plugins = plugins.clone();
@@ -4139,6 +4499,10 @@ pub fn run() {
             project_unlink_map_location,
             maps_navigation,
             maps_editor_save,
+            maps_editor_capture_anchor,
+            maps_editor_set_overlay,
+            maps_editor_set_date,
+            maps_editor_focus_link,
             maps_recovery_list,
             maps_recovery_restore,
             project_register_asset,
@@ -4161,8 +4525,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sanitize_mutation_request_id_keeps_only_uuids() {
+        assert_eq!(sanitize_mutation_request_id("maps-fmg-1"), None);
+        assert_eq!(sanitize_mutation_request_id(""), None);
+        assert_eq!(sanitize_mutation_request_id("not-a-uuid"), None);
+        let uuid = "f4c4f6b9-7c1e-4b8a-9d2e-0a3b5c7d9e11";
+        assert_eq!(sanitize_mutation_request_id(uuid), Some(uuid));
+    }
+
+    #[test]
     fn bundled_manifests_supply_generic_migrations() {
-        let host = bundled_plugin_host().unwrap();
+        let host =
+            bundled_plugin_host(Arc::new(Mutex::new(CoreService::new()))).unwrap();
         let lore = host.catalog.get("daena.lore").unwrap();
         let timeline = host.catalog.get("daena.timeline").unwrap();
         let writing = host.catalog.get("daena.writing").unwrap();
@@ -4182,7 +4556,8 @@ mod tests {
 
     #[test]
     fn bundled_workspace_manifests_do_not_declare_duplicate_sidebar_views() {
-        let host = bundled_plugin_host().unwrap();
+        let host =
+            bundled_plugin_host(Arc::new(Mutex::new(CoreService::new()))).unwrap();
         for plugin_id in ["daena.lore", "daena.timeline", "daena.writing"] {
             assert!(
                 host.catalog
@@ -4227,6 +4602,7 @@ mod tests {
             "project",
             None,
             None,
+            None,
             PluginWebviewBounds {
                 x: 0.0,
                 y: 0.0,
@@ -4250,6 +4626,7 @@ mod tests {
             "project",
             Some("map-workspace"),
             Some("018f89df-b93e-7ad0-a07f-08b1441d1550"),
+            Some("f4c4f6b9-7c1e-4b8a-9d2e-0a3b5c7d9e11"),
             PluginWebviewBounds {
                 x: 0.0,
                 y: 0.0,
@@ -4266,6 +4643,7 @@ mod tests {
         let map_query = map_url.query().unwrap();
         assert!(map_query.contains("view=map-workspace"));
         assert!(map_query.contains("mapEntityId=018f89df-b93e-7ad0-a07f-08b1441d1550"));
+        assert!(map_query.contains("linkId=f4c4f6b9-7c1e-4b8a-9d2e-0a3b5c7d9e11"));
     }
 
     #[test]

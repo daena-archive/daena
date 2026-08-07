@@ -66,6 +66,15 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   let mapSaveStates = $state<Record<string, { status: string; detail: unknown }>>({});
   let mapReloadCounter = $state(0);
   let mapRecoveryBusy = $state(false);
+  let mapFocusLinkId = $state<string | null>(null);
+  let mapSelection = $state<unknown | null>(null);
+  let captureDialog = $state(false);
+  let captureMode = $state<"existing" | "create">("existing");
+  let captureEntityId = $state("");
+  let captureTemplateKey = $state("");
+  let captureName = $state("");
+  let captureRole = $state("story-location");
+  let mapReconcileNotice = $state("");
   let projectDiagnostics = $state<string[]>([]);
   let showPlugins = $state(false);
   let adminPlugins = $state<PluginAdminEntry[] | null>(null);
@@ -290,6 +299,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   }
 
   async function openPluginView(item: PluginNavigationItem) {
+    if (item.plugin.id === "daena.maps") mapFocusLinkId = null;
     if (item.mode === "host") {
       await openHostView(item.plugin, item.view);
       return;
@@ -364,6 +374,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
       case "saving": return "Saving…";
       case "saved": return "Saved";
       case "conflict": return "Save blocked by changes on disk";
+      case "reconcile": return "Links re-checked";
       case "error": return "Save failed";
       case "restoring": return "Restoring draft…";
       default: return "Up to date";
@@ -655,8 +666,16 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   }
 
   async function openMapLocation(location: MapLocation) {
-    try { await project.mapsNavigation("openMap", { mapEntityId: location.mapEntityId, linkId: location.id }); }
-    catch (cause) { error = friendlyError(cause); }
+    try {
+      await project.mapsNavigation("openMap", { mapEntityId: location.mapEntityId, linkId: location.id });
+    } catch (cause) {
+      const message = friendlyError(cause);
+      if (message.includes("link-unresolved")) {
+        mapReconcileNotice = `This link is unresolved — the map feature it pointed to was removed or renumbered.`;
+        return;
+      }
+      error = message;
+    }
   }
 
   async function unlinkMapLocation(location: MapLocation) {
@@ -686,18 +705,75 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     catch (cause) { error = friendlyError(cause); }
   }
 
+  function captureAnchorLabel(): string {
+    const anchor = mapSelection as { kind?: string; featureKind?: string; featureId?: string; point?: number[] } | null;
+    if (!anchor) return "Nothing selected yet — click the map first";
+    if (anchor.kind === "provider-feature") return `${anchor.featureKind ?? "feature"} ${anchor.featureId ?? ""}`.trim();
+    return anchor.point ? `Point (${anchor.point[0].toFixed(3)}, ${anchor.point[1].toFixed(3)})` : "Arbitrary selection";
+  }
+
+  async function requestMapCapture() {
+    if (!currentMapId()) return;
+    try {
+      mapSelection = await project.mapsEditorCaptureAnchor();
+      captureMode = "existing";
+      captureEntityId = "";
+      captureTemplateKey = "";
+      captureName = "";
+      captureRole = "story-location";
+      captureDialog = true;
+    } catch (cause) { error = friendlyError(cause); }
+  }
+
+  function closeCaptureDialog() {
+    captureDialog = false;
+    mapSelection = null;
+  }
+
+  async function submitMapCapture() {
+    const mapId = currentMapId();
+    if (!mapId || !mapSelection) return;
+    let entity: Entity;
+    try {
+      if (captureMode === "create") {
+        const option = createGroups().flatMap((group) => group.options).find((candidate) => candidate.key === captureTemplateKey);
+        if (!option || !captureName.trim()) throw new Error("Choose a template and enter a name for the new entity.");
+        const context = buildModuleContext(option.module, projectInfo?.root ?? "");
+        const created = await context.entities.create({ name: captureName.trim(), type: option.template.entityType, fields: {}, relationships: {} });
+        await loadEntities();
+        entity = { id: created.id, name: created.name, entity_type: created.type, deleted: created.deleted, created_at: created.createdAt, updated_at: created.updatedAt, revision: "" };
+      } else {
+        const found = entities.find((candidate) => candidate.id === captureEntityId);
+        if (!found) throw new Error("Choose an entity to link.");
+        entity = found;
+      }
+      const location: MapLocation = { id: crypto.randomUUID(), mapEntityId: mapId, role: captureRole.trim() || "story-location", label: entity.name, anchor: mapSelection, validity: { from: null, to: null } };
+      await project.upsertMapLocation(entity.id, location);
+      if (selected?.id === entity.id) mapLocations = await project.listMapLocations(entity.id);
+      await project.mapsEditorFocusLink(location.id);
+      closeCaptureDialog();
+    } catch (cause) { error = friendlyError(cause); }
+  }
+
   async function linkEntityToMap() {
     if (!selected) return;
     const maps = entities.filter((entity) => entity.entity_type === "daena.maps:map");
     if (maps.length === 0) { error = "Create or enable a Maps map before linking a location."; return; }
-    const map = maps[0];
+    let map = maps[0];
+    if (maps.length > 1) {
+      const pick = prompt(`Pick a map:\n${maps.map((candidate, index) => `${index + 1}. ${candidate.name}`).join("\n")}`);
+      const choice = maps[Number(pick) - 1];
+      if (!choice) return;
+      map = choice;
+    }
     const role = prompt("Role for this map location", "story-location")?.trim();
     if (!role) return;
     const raw = prompt("Normalized point x,y (0..1)", "0.5,0.5") ?? "";
     const [x, y] = raw.split(",").map(Number);
     if (![x, y].every((value) => Number.isFinite(value) && value >= 0 && value <= 1)) { error = "Use normalized coordinates such as 0.5,0.5."; return; }
     try {
-      await project.upsertMapLocation(selected.id, { id: crypto.randomUUID(), mapEntityId: map.id, role, label: selected.name, anchor: { kind: "point", point: [x, y] }, validity: { from: null, to: null } });
+      const location: MapLocation = { id: crypto.randomUUID(), mapEntityId: map.id, role, label: selected.name, anchor: { kind: "point", point: [x, y] }, validity: { from: null, to: null } };
+      await project.upsertMapLocation(selected.id, location);
       mapLocations = await project.listMapLocations(selected.id);
     } catch (cause) { error = friendlyError(cause); }
   }
@@ -1233,14 +1309,31 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
         selected = map;
         await loadSelectedState(map);
         await openPluginView(item);
+        const linkId = event.payload.linkId ?? null;
+        mapFocusLinkId = linkId;
+        if (linkId && sandboxView?.plugin.id === "daena.maps") {
+          setTimeout(() => { void project.mapsEditorFocusLink(linkId).catch(() => {}); }, 400);
+        }
       } catch (cause) { error = friendlyError(cause); }
     }).then((cleanup) => { unlistenMaps = cleanup; }).catch(() => {});
     let unlistenMapsState: (() => void) | undefined;
     void listen<{ mapEntityId: string; status: string; detail: unknown }>("maps-state", (event) => {
       const { mapEntityId, status, detail } = event.payload;
       mapSaveStates[mapEntityId] = { status, detail };
+      if (status === "reconcile") {
+        const reconcileDetail = detail as { unresolved?: unknown } | null;
+        const unresolved = Array.isArray(reconcileDetail?.unresolved) ? reconcileDetail.unresolved.length : 0;
+        mapReconcileNotice = unresolved > 0
+          ? `${unresolved} link${unresolved === 1 ? "" : "s"} on this map are unresolved — the features they pointed to were removed or renumbered.`
+          : "";
+        if (selected && mapLocations.length > 0) void project.listMapLocations(selected.id).then((locations) => { mapLocations = locations; }).catch(() => {});
+      }
     }).then((cleanup) => { unlistenMapsState = cleanup; }).catch(() => {});
-    return () => { unlisten?.(); unlistenMaps?.(); unlistenMapsState?.(); };
+    let unlistenMapsSelection: (() => void) | undefined;
+    void listen<{ mapEntityId: string; anchor: unknown }>("maps-selection", (event) => {
+      if (event.payload.mapEntityId === currentMapId()) mapSelection = event.payload.anchor;
+    }).then((cleanup) => { unlistenMapsSelection = cleanup; }).catch(() => {});
+    return () => { unlisten?.(); unlistenMaps?.(); unlistenMapsState?.(); unlistenMapsSelection?.(); };
   });
 </script>
 
@@ -1307,6 +1400,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     {#if showCreateForm}{@const createOption = selectedCreateOption()}<div class="modal-backdrop"><form class="dialog create-dialog" onsubmit={createEntity}><div class="create-dialog-heading"><div><span class="panel-kicker">CREATE SOMETHING NEW</span><strong>Choose a starting point</strong><p>Templates set the shape of your new entry. You can fill in the details before it is saved.</p></div><button type="button" class="new-form-close" aria-label="Close create dialog" onclick={closeCreateForm}>×</button></div><div class="create-dialog-body"><aside class="create-template-panel"><div class="create-panel-label">TEMPLATES</div><div class="create-template-list">{#each createGroups() as group}<div class="create-template-group"><span>{group.module.name}</span>{#each group.options as option}<button type="button" class:selected={option.key === selectedCreateKey} class="create-template-card" onclick={() => selectCreateOption(option.key)}><span class="create-template-icon">{option.template.icon ?? option.template.name.slice(0, 1)}</span><span class="create-template-copy"><strong>{option.template.name}</strong><small>{option.template.description ?? option.template.entityType}</small></span><span class="create-template-check">{option.key === selectedCreateKey ? "✓" : ""}</span></button>{/each}</div>{/each}</div></aside><section class="create-form-panel">{#if createOption}<div class="create-form-title"><span class="panel-kicker">{createOption.module.name.toUpperCase()}</span><h2>{createOption.template.name}</h2><p>{createOption.template.description ?? `Create a new ${createOption.template.entityType}.`}</p></div><label class="create-input-field" for="new-entity"><span>Name <b>*</b></span><input id="new-entity" bind:value={name} placeholder={`e.g. ${createOption.template.name}`} autocomplete="off" /></label>{#each createFieldsFor(createOption) as item}<div class="create-input-field"><label for={`create-${item.field.key}`}><span>{item.field.label} {#if item.required}<b>*</b>{/if}</span></label>{#if item.field.type === "relationship"}<RelationshipPicker field={item.field} entities={entities} selectedIds={createRelationshipValues(item.field.key)} onChange={(ids) => setCreateRelationshipValues(item.field.key, ids)} />{:else if item.field.type === "text"}<textarea id={`create-${item.field.key}`} rows="3" value={String(createFieldValues[item.field.key] ?? "")} placeholder={`Add ${item.field.label.toLowerCase()}`} oninput={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLTextAreaElement).value)}></textarea>{:else if item.field.type === "number"}<input id={`create-${item.field.key}`} type="number" value={String(createFieldValues[item.field.key] ?? "")} placeholder={`Add ${item.field.label.toLowerCase()}`} oninput={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).value)} />{:else if item.field.type === "boolean"}<label class="create-checkbox" for={`create-${item.field.key}`}><input id={`create-${item.field.key}`} type="checkbox" checked={createFieldValues[item.field.key] === true} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).checked)} /><span>Yes</span></label>{:else if item.field.type === "enum"}<select id={`create-${item.field.key}`} value={String(createFieldValues[item.field.key] ?? "")} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}><option value="">Choose {item.field.label.toLowerCase()}</option>{#each item.field.options ?? [] as option}<option value={option}>{option}</option>{/each}</select>{:else if item.field.type === "entity-ref"}<select id={`create-${item.field.key}`} value={String(createFieldValues[item.field.key] ?? "")} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}><option value="">Choose an entity</option>{#each entities.filter((entity) => !entity.deleted) as entity}<option value={entity.id}>{entity.name} · {entity.entity_type ?? "Uncategorized"}</option>{/each}</select>{:else if item.field.type === "date"}{#if createDateForField(item.field.key) || createDateEditorOpen[item.field.key]}{@const date = createDateDraftForField(item.field.key) ?? { calendar: "gregorian", era: "CE", precision: "day" }}<div class="date-editor"><div class="date-fields"><label for={`create-${item.field.key}-year`}>Year<input id={`create-${item.field.key}-year`} aria-label={`${item.field.label} year`} type="number" min="1" value={date.year ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "year", (event.currentTarget as HTMLInputElement).value, 1)} /></label><label for={`create-${item.field.key}-month`}>Month<input id={`create-${item.field.key}-month`} aria-label={`${item.field.label} month`} type="number" min="1" max="12" value={date.month ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "month", (event.currentTarget as HTMLInputElement).value, 1, 12)} /></label><label for={`create-${item.field.key}-day`}>Day<input id={`create-${item.field.key}-day`} aria-label={`${item.field.label} day`} type="number" min="1" max="31" value={date.day ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "day", (event.currentTarget as HTMLInputElement).value, 1, 31)} /></label></div><small class="date-preview">{typeof date.year === "number" ? formatCalendarDate(date) : "Add a date"}</small><button class="date-clear" type="button" onclick={() => clearCreateDateField(item.field.key)}>Clear date</button></div>{:else}<button class="date-empty" type="button" onclick={() => openCreateDateEditor(item.field.key)}>Add a date</button>{/if}{/if}</div>{/each}{#if createOption.template.document}<label class="create-input-field" for="create-document"><span>Opening note</span><textarea id="create-document" rows="5" bind:value={createDocumentBody} placeholder="Add a first note or leave the template text as-is"></textarea></label>{/if}{:else}<div class="create-form-empty">Select a template to begin.</div>{/if}</section></div><div class="create-dialog-actions"><button type="button" class="quiet-button" onclick={closeCreateForm}>Cancel</button><button class="primary-button" type="submit" disabled={!name.trim() || !createOption}>Create {createOption?.template.name ?? "entry"}</button></div></form></div>{/if}
     {#if showDiscardPrompt}<div class="discard-backdrop"><div class="discard-dialog" role="alertdialog" aria-modal="true" aria-labelledby="discard-create-title"><span class="panel-kicker">UNSAVED VALUES</span><h2 id="discard-create-title">Discard this creation?</h2><p>Your entered values will be cleared. You can keep editing or start over with the new template.</p><div class="discard-actions"><button type="button" class="quiet-button" onclick={keepCreateEditing}>Keep editing</button><button type="button" class="primary-button" onclick={discardCreateValues}>Discard values</button></div></div></div>{/if}
     {#if showCommitForm}<div class="modal-backdrop"><form class="dialog commit-form" onsubmit={(event) => { event.preventDefault(); void commitGit(); }}><div class="new-form-heading"><div><span class="panel-kicker">VERSION CONTROL</span><strong>Commit changes</strong></div><button type="button" class="new-form-close" onclick={() => showCommitForm = false}>×</button></div><p>Only the canonical paths below will be staged.</p>{#if gitPreflight?.ready}<ul class="commit-preview">{#each gitPreflight.staging_paths as path}<li>{path}</li>{/each}</ul>{:else}<p class="commit-warning">{gitPreflight?.diagnostics[0] ?? "Git preflight has not completed."}</p>{/if}<input aria-label="Commit message" bind:value={commitMessage} placeholder="Describe the changes" /><div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => showCommitForm = false}>Cancel</button><button class="primary-button" type="submit" disabled={!commitMessage.trim() || gitBusy || !gitPreflight?.ready || gitPreflight.staging_paths.length === 0}>{gitBusy ? "Committing…" : "Commit changes"}</button></div></form></div>{/if}
+    {#if captureDialog}<div class="modal-backdrop"><form class="dialog capture-dialog" onsubmit={(event) => { event.preventDefault(); void submitMapCapture(); }}><div class="new-form-heading"><div><span class="panel-kicker">MAP LINK</span><strong>Link a map selection to the world</strong></div><button type="button" class="new-form-close" onclick={closeCaptureDialog}>×</button></div><p class="capture-preview"><span class="capture-preview-label">Selected</span><strong>{captureAnchorLabel()}</strong></p><label class="create-input-field" for="capture-role"><span>Role</span><input id="capture-role" bind:value={captureRole} placeholder="story-location" autocomplete="off" /></label><div class="capture-mode" role="tablist" aria-label="Link target"><button type="button" role="tab" aria-selected={captureMode === "existing"} class:active={captureMode === "existing"} onclick={() => captureMode = "existing"}>Link existing</button><button type="button" role="tab" aria-selected={captureMode === "create"} class:active={captureMode === "create"} onclick={() => captureMode = "create"}>Create new</button></div>{#if captureMode === "existing"}<label class="create-input-field" for="capture-entity"><span>Entity</span><select id="capture-entity" bind:value={captureEntityId}><option value="">Choose an entity…</option>{#each entities as entity}<option value={entity.id}>{entity.name} · {entityTypeLabel(entity.entity_type)}</option>{/each}</select></label>{:else}<label class="create-input-field" for="capture-template"><span>Template</span><select id="capture-template" bind:value={captureTemplateKey}><option value="">Choose a template…</option>{#each createGroups() as group}{#each group.options as option}<option value={option.key}>{group.module.name} · {option.template.name}</option>{/each}{/each}</select></label><label class="create-input-field" for="capture-name"><span>Name <b>*</b></span><input id="capture-name" bind:value={captureName} placeholder="e.g. Harrow Gate" autocomplete="off" /></label>{/if}<div class="new-form-actions"><button type="button" class="quiet-button" onclick={closeCaptureDialog}>Cancel</button><button class="primary-button" type="submit" disabled={!mapSelection || (captureMode === "existing" && !captureEntityId) || (captureMode === "create" && (!captureTemplateKey || !captureName.trim()))}>Link to map</button></div></form></div>{/if}
     {#if showPlugins}
       <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) showPlugins = false; }} onkeydown={(event) => { if (event.key === "Escape") showPlugins = false; }}>
         <div class="dialog plugins-dialog">
@@ -1518,7 +1612,9 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
             <div class="map-editor-toolbar">
               <span class:map-state-warn={mapState?.status === "dirty" || mapState?.status === "error"} class:map-state-error={mapState?.status === "conflict"} class="map-save-chip"><span class="map-save-dot"></span>{mapSaveLabel(mapState)}</span>
               {#if mapState?.status === "conflict"}<span class="map-conflict-path">{mapDetail.path ?? "Draft exported as a recovery copy."}</span>{/if}
+              {#if mapReconcileNotice}<span class="map-reconcile-notice">{mapReconcileNotice}</span>{/if}
               <div class="map-toolbar-actions">
+                <button class="quiet-button" type="button" onclick={requestMapCapture}>Link selection</button>
                 <button class="quiet-button" type="button" disabled={mapState?.status !== "dirty" && mapState?.status !== "error"} onclick={saveCurrentMap}>Save</button>
               </div>
             </div>
@@ -1528,7 +1624,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
                 <div class="map-conflict-actions"><button class="primary-button" type="button" disabled={mapRecoveryBusy} onclick={restoreMapDraft}>{mapRecoveryBusy ? "Restoring…" : "Restore draft"}</button><button class="quiet-button" type="button" onclick={reloadMapOriginal}>Reload original</button><button class="quiet-button" type="button" onclick={dismissMapConflict}>Keep editing</button></div>
               </div>
             {/if}
-            <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={sandboxView.plugin.name} mapEntityId={mapId} />
+            <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={sandboxView.plugin.name} mapEntityId={mapId} linkId={mapFocusLinkId ?? undefined} />
           </div>
         {:else}
           <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={sandboxView.plugin.name} mapEntityId={sandboxView.plugin.id === "daena.maps" && selected?.entity_type === "daena.maps:map" ? selected.id : undefined} />
@@ -1551,7 +1647,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
           </div>
         </aside>
 
-        {#if selected}<section class="map-contribution panel-surface" aria-label="Maps contribution"><div class="section-title"><h3>Maps</h3><span>{mapLocations.length}</span></div><p>Shared locations remain on the entity even when Maps is disabled.</p><button class="quiet-button" type="button" onclick={() => void linkEntityToMap()}>＋ Link location</button>{#if mapLocations.length === 0}<small>No map links yet.</small>{:else}{#each mapLocations as location (location.id)}<div class="map-location-row"><div><strong>{location.label || location.role}</strong><small>{location.role} · {location.mapEntityId.slice(0, 8)}</small></div><div><button class="quiet-button" type="button" onclick={() => void openMapLocation(location)}>Show on map</button><button class="quiet-button" type="button" onclick={() => void editMapLocation(location)}>Edit</button><button class="quiet-button" type="button" onclick={() => void rebindMapLocation(location)}>Rebind</button><button class="quiet-button" type="button" onclick={() => void unlinkMapLocation(location)}>Unlink</button></div></div>{/each}{/if}</section>{/if}
+        {#if selected}<section class="map-contribution panel-surface" aria-label="Maps contribution"><div class="section-title"><h3>Maps</h3><span>{mapLocations.length}</span></div><p>Shared locations remain on the entity even when Maps is disabled.</p><button class="quiet-button" type="button" onclick={() => void linkEntityToMap()}>＋ Link location</button>{#if mapLocations.length === 0}<small>No map links yet.</small>{:else}{#each mapLocations as location (location.id)}<div class="map-location-row"><div><strong>{location.label || location.role}</strong><small>{location.role} · {location.mapEntityId.slice(0, 8)}{#if location.resolution === "unresolved"} · <span class="map-unresolved-badge">Unresolved</span>{/if}</small></div><div>{#if location.resolution === "unresolved"}<span class="map-unresolved-note" title="The map feature this link pointed to was removed or renumbered.">Feature missing</span>{:else}<button class="quiet-button" type="button" onclick={() => void openMapLocation(location)}>Show on map</button>{/if}<button class="quiet-button" type="button" onclick={() => void editMapLocation(location)}>Edit</button><button class="quiet-button" type="button" onclick={() => void rebindMapLocation(location)}>Rebind</button><button class="quiet-button" type="button" onclick={() => void unlinkMapLocation(location)}>Unlink</button></div></div>{/each}{/if}</section>{/if}
         <article class:editor-fullscreen={editorFullscreen} class="editor-panel">
           <div class="editor-header">
             <div>
@@ -1632,6 +1728,9 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   :global(.timeline-event::before) { content: ""; position: absolute; left: -19px; width: 9px; height: 9px; border: 3px solid #fffefa; border-radius: 50%; background: #b4773f; box-shadow: 0 0 0 1px #b4773f; }
   :global(.timeline-date) { color: #9a7550; font-size: 10px; font-weight: 700; }
   :global(.timeline-card) { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fffefa; }
+  :global(.timeline-card small) { display: block; margin-top: 3px; color: var(--ink-faint); font-size: 10px; }
+  :global(.timeline-map-button) { margin-top: 8px; padding: 5px 9px; border: 1px solid #d9cdbd; border-radius: 7px; background: #fffefa; color: #62594e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
+  :global(.timeline-map-button:hover) { border-color: #b4773f; color: #55351f; }
   :global(.timeline-card strong), :global(.timeline-card small) { display: block; }
   :global(.timeline-card strong) { font: 500 15px var(--font-display); }
   :global(.timeline-card small) { margin-top: 3px; color: var(--ink-faint); font-size: 10px; }
@@ -1842,6 +1941,16 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   .discard-dialog h2 { margin: 8px 0 7px; font: 500 23px/1.1 var(--font-display); }
   .discard-dialog p { margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.55; }
   .discard-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 20px; }
+  .capture-dialog { width: min(420px, 100%); padding: 22px; }
+  .capture-preview { display: grid; gap: 4px; margin: 14px 0 2px; padding: 10px 12px; border: 1px dashed #d3c0a9; border-radius: 8px; background: #fcf8f1; }
+  .capture-preview-label { color: var(--ink-faint); font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+  .capture-preview strong { color: var(--accent-dark); font-size: 12px; }
+  .capture-mode { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 17px; padding: 4px; border: 1px solid #d9cdbd; border-radius: 9px; background: var(--canvas); }
+  .capture-mode button { padding: 8px; border: 0; border-radius: 7px; background: transparent; color: var(--ink-soft); font-size: 12px; cursor: pointer; }
+  .capture-mode button.active { background: var(--surface); color: var(--ink); box-shadow: var(--shadow-sm); font-weight: 700; }
+  .map-reconcile-notice { min-width: 0; overflow: hidden; color: #8a6a3b; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  .map-unresolved-badge { display: inline-block; padding: 1px 6px; border-radius: 5px; background: #f7e6dd; color: #a14f42; font-weight: 700; }
+  .map-unresolved-note { color: #a14f42; font-size: 10px; font-weight: 700; white-space: nowrap; }
   .mobile-create-button { display: none; }
 
   @media (max-width: 760px) {

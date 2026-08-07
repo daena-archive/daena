@@ -1,0 +1,2027 @@
+use super::*;
+use std::collections::BTreeMap;
+
+fn canonical_files(root: &Path) -> BTreeMap<String, Vec<u8>> {
+    fn visit(root: &Path, current: &Path, files: &mut BTreeMap<String, Vec<u8>>) {
+        for entry in std::fs::read_dir(current).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.file_name().and_then(|name| name.to_str()) == Some(".daena") {
+                continue;
+            }
+            if path.is_dir() {
+                visit(root, &path, files);
+            } else {
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if relative == "project.json"
+                    || relative.starts_with("entities/")
+                    || relative.starts_with("plugins/")
+                    || relative.starts_with("assets/")
+                {
+                    files.insert(relative, std::fs::read(path).unwrap());
+                }
+            }
+        }
+    }
+
+    let mut files = BTreeMap::new();
+    visit(root, root, &mut files);
+    files
+}
+
+#[test]
+fn creates_entities_and_rejects_empty_names() {
+    let store = ProjectStore::in_memory().unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Eldermere".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    assert_eq!(store.list_entities().unwrap()[0].id, entity.id);
+    assert!(store
+        .create_entity(CreateEntity {
+            name: "  ".into(),
+            entity_type: None
+        })
+        .is_err());
+}
+
+#[test]
+fn external_markdown_edits_refresh_clean_index_and_invalid_edits_preserve_it() {
+    let root = std::env::temp_dir().join(format!("daena-external-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Watched record".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    store
+        .save_document(SaveDocument {
+            entity_id: entity.id.clone(),
+            body: "Before\n".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+
+    std::fs::write(
+        root.join("entities").join(&entity.id).join("document.md"),
+        "# After\n",
+    )
+    .unwrap();
+    let report = store.reconcile_external_changes().unwrap();
+    assert!(report.changed);
+    assert!(report
+        .paths
+        .iter()
+        .any(|path| path == &format!("entities/{}/document.md", entity.id)));
+    assert_eq!(
+        store.list_documents(entity.id.clone()).unwrap()[0].body,
+        "# After\n"
+    );
+
+    std::fs::write(
+        root.join("entities").join(&entity.id).join("entity.json"),
+        "{not valid json",
+    )
+    .unwrap();
+    let invalid = store.reconcile_external_changes().unwrap();
+    assert!(!invalid.changed);
+    assert!(!invalid.diagnostics.is_empty());
+    assert_eq!(store.info().unwrap().index_status, "diagnostic");
+    assert_eq!(
+        store.list_documents_unchecked(entity.id).unwrap()[0].body,
+        "# After\n"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn recovery_copy_is_markdown_and_stays_outside_canonical_sources() {
+    let root = std::env::temp_dir().join(format!("daena-recovery-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Recovery record".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let path = store
+        .save_recovery_copy(&entity.id, "Draft\r\nwithout final newline")
+        .unwrap();
+    assert!(path.starts_with(".daena/conflicts/") && path.ends_with(".md"));
+    assert_eq!(
+        std::fs::read_to_string(root.join(&path)).unwrap(),
+        "Draft\nwithout final newline\n"
+    );
+    assert!(!store
+        .canonical_source_hashes(".daena/conflicts/%")
+        .unwrap()
+        .iter()
+        .any(|(source, _)| source.contains("conflicts")));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn git_unmerged_canonical_files_are_diagnostic_before_scanning() {
+    let root = std::env::temp_dir().join(format!("daena-git-conflict-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let run_git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        output
+    };
+    assert!(run_git(&["init", "-q"]).status.success());
+    assert!(run_git(&["config", "user.email", "tests@daena.local"])
+        .status
+        .success());
+    assert!(run_git(&["config", "user.name", "Daena tests"])
+        .status
+        .success());
+    assert!(run_git(&["config", "commit.gpgsign", "false"])
+        .status
+        .success());
+    assert!(run_git(&["add", "--all"]).status.success());
+    let base_commit = run_git(&["commit", "-qm", "base"]);
+    assert!(
+        base_commit.status.success(),
+        "base commit failed: {}",
+        String::from_utf8_lossy(&base_commit.stderr)
+    );
+    assert!(run_git(&["checkout", "-qb", "feature"]).status.success());
+
+    let mut manifest: crate::storage::ProjectManifest =
+        crate::storage::read_json(&root.join("project.json")).unwrap();
+    manifest.name = "Feature project".into();
+    crate::storage::write_json(&root.join("project.json"), &manifest).unwrap();
+    assert!(run_git(&["add", "project.json"]).status.success());
+    assert!(run_git(&["commit", "-qm", "feature"]).status.success());
+    assert!(run_git(&["checkout", "-q", "-"]).status.success());
+
+    manifest.name = "Main project".into();
+    crate::storage::write_json(&root.join("project.json"), &manifest).unwrap();
+    assert!(run_git(&["add", "project.json"]).status.success());
+    assert!(run_git(&["commit", "-qm", "main"]).status.success());
+    assert!(!run_git(&["merge", "feature"]).status.success());
+
+    let report = store.reconcile_external_changes().unwrap();
+    assert_eq!(report.paths, vec!["project.json"]);
+    assert!(report
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.starts_with("git.unmerged: project.json")));
+    let commit = store.git_commit("must not commit unresolved merge".into());
+    assert!(matches!(commit, Err(CoreError::Conflict(_))));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn git_preflight_lists_only_canonical_paths_and_rejects_staged_unrelated_files() {
+    let root = std::env::temp_dir().join(format!("daena-git-preview-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let run_git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .unwrap()
+    };
+    assert!(run_git(&["init", "-q"]).status.success());
+    assert!(run_git(&["config", "user.email", "tests@daena.local"])
+        .status
+        .success());
+    assert!(run_git(&["config", "user.name", "Daena tests"])
+        .status
+        .success());
+    assert!(run_git(&["config", "commit.gpgsign", "false"])
+        .status
+        .success());
+    assert!(run_git(&["add", "--all"]).status.success());
+    assert!(run_git(&["commit", "-qm", "base"]).status.success());
+
+    store
+        .create_entity(CreateEntity {
+            name: "Preview entity".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    let preview = store.git_staging_preview().unwrap();
+    assert!(preview.ready);
+    assert!(preview
+        .staging_paths
+        .iter()
+        .any(|path| path.starts_with("entities/") && path.ends_with("/entity.json")));
+    assert!(preview
+        .staging_paths
+        .iter()
+        .all(|path| ProjectStore::is_canonical_git_path(path)));
+
+    std::fs::write(root.join("README.md"), "unrelated\n").unwrap();
+    assert!(run_git(&["add", "README.md"]).status.success());
+    let rejected = store.git_preflight().unwrap();
+    assert!(!rejected.ready);
+    assert!(rejected
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.starts_with("git.noncanonical-staged:")));
+    assert!(rejected
+        .staging_paths
+        .iter()
+        .all(|path| { ProjectStore::is_canonical_git_path(path) }));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn directory_mutations_return_revisions_and_replay_requests() {
+    let root = std::env::temp_dir().join(format!("daena-revision-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let request_id = Uuid::new_v4().to_string();
+    let first = store
+        .create_entity_with_request(
+            CreateEntity {
+                name: "Revisioned entity".into(),
+                entity_type: Some("place".into()),
+            },
+            Some(&request_id),
+        )
+        .unwrap();
+    let replay = store
+        .create_entity_with_request(
+            CreateEntity {
+                name: "This must not duplicate".into(),
+                entity_type: None,
+            },
+            Some(&request_id),
+        )
+        .unwrap();
+    assert_eq!(first.id, replay.id);
+    assert!(!first.revision.is_empty());
+    assert_eq!(store.list_entities().unwrap().len(), 1);
+
+    let conflict = store.update_entity_with_options(
+        first.id.clone(),
+        Some("Changed concurrently".into()),
+        None,
+        Some("sha256:stale"),
+        Some(&Uuid::new_v4().to_string()),
+    );
+    assert!(matches!(conflict, Err(CoreError::Conflict(_))));
+    let updated = store
+        .update_entity_with_options(
+            first.id.clone(),
+            Some("Changed safely".into()),
+            None,
+            Some(&first.revision),
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+    assert_ne!(first.revision, updated.revision);
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn directory_mutations_treat_canonical_files_as_authority_over_a_stale_index() {
+    let root = std::env::temp_dir().join(format!("daena-canonical-first-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Canonical name".into(),
+            entity_type: None,
+        })
+        .unwrap();
+
+    // Simulate a stale disposable projection. A repository-first update
+    // must seed its proposal from canonical files, not this SQLite row.
+    store
+        .connection
+        .execute(
+            "UPDATE entities SET name='SQLite-only name' WHERE id=?1",
+            params![entity.id],
+        )
+        .unwrap();
+    let updated = store
+        .update_entity_with_options(
+            entity.id.clone(),
+            Some("Canonical update".into()),
+            None,
+            None,
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+    assert_eq!(updated.name, "Canonical update");
+
+    drop(store);
+    let reopened = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(
+        reopened.list_entities().unwrap()[0].name,
+        "Canonical update"
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn asset_file_import_is_committed_with_canonical_metadata() {
+    let root = std::env::temp_dir().join(format!("daena-asset-{}", Uuid::new_v4()));
+    let source = root.with_extension("source.bin");
+    std::fs::write(&source, b"asset bytes").unwrap();
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Asset owner".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let asset = store
+        .register_asset_file(AssetFileInput {
+            entity_id: entity.id.clone(),
+            namespace: "core".into(),
+            source_path: source.to_string_lossy().into_owned(),
+            filename: "sample.bin".into(),
+            mime_type: "application/octet-stream".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        std::fs::read(root.join(&asset.path)).unwrap(),
+        b"asset bytes"
+    );
+    assert_eq!(
+        store.list_assets(entity.id).unwrap()[0].revision,
+        asset.revision
+    );
+    drop(store);
+    std::fs::remove_file(source).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn disabled_module_survives_directory_reopen() {
+    let root = std::env::temp_dir().join(format!("daena-disabled-module-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    store
+        .set_module_enabled("daena.lore".into(), false)
+        .unwrap();
+    assert!(!store.is_module_enabled("daena.lore").unwrap());
+    drop(store);
+
+    let reopened = ProjectStore::open_directory(&root).unwrap();
+    assert!(!reopened.is_module_enabled("daena.lore").unwrap());
+    drop(reopened);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn file_backed_project_paths_are_rejected() {
+    let path = std::env::temp_dir().join(format!("daena-legacy-{}.sqlite", Uuid::new_v4()));
+    std::fs::write(&path, b"legacy database placeholder").unwrap();
+    let error = match ProjectStore::open(&path) {
+        Ok(_) => panic!("file-backed project paths must be rejected"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("opened from a directory"));
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn search_matches_prefixes() {
+    let store = ProjectStore::in_memory().unwrap();
+    store
+        .create_entity(CreateEntity {
+            name: "Amulet".into(),
+            entity_type: Some("artifact".into()),
+        })
+        .unwrap();
+
+    let matches = store.search("Am".into()).unwrap();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].name, "Amulet");
+}
+
+#[test]
+fn create_entry_writes_template_content_atomically() {
+    let store = ProjectStore::in_memory().unwrap();
+    let entity = store
+        .create_entry(CreateEntry {
+            name: "The Ash Court".into(),
+            entity_type: Some("faction".into()),
+            document: Some(CreateEntryDocument {
+                body: "A quiet power.".into(),
+                format: Some("plain-text".into()),
+            }),
+            fields: vec![CreateEntryField {
+                namespace: "lore".into(),
+                key: "summary".into(),
+                value: serde_json::json!("A quiet power."),
+            }],
+            relationships: vec![],
+        })
+        .unwrap();
+    assert_eq!(
+        store.list_documents(entity.id.clone()).unwrap()[0].body,
+        "A quiet power."
+    );
+    assert_eq!(store.list_fields(entity.id).unwrap()[0].key, "summary");
+
+    let result = store.create_entry(CreateEntry {
+        name: "Should roll back".into(),
+        entity_type: Some("place".into()),
+        document: Some(CreateEntryDocument {
+            body: "Not persisted".into(),
+            format: None,
+        }),
+        fields: vec![
+            CreateEntryField {
+                namespace: "lore".into(),
+                key: "summary".into(),
+                value: serde_json::json!("first"),
+            },
+            CreateEntryField {
+                namespace: "lore".into(),
+                key: "summary".into(),
+                value: serde_json::json!("duplicate"),
+            },
+        ],
+        relationships: vec![],
+    });
+    assert!(result.is_err());
+    assert_eq!(store.list_entities().unwrap().len(), 1);
+}
+
+#[test]
+fn create_entry_writes_multiple_relationships_atomically() {
+    let store = ProjectStore::in_memory().unwrap();
+    let first_leader = store
+        .create_entity(CreateEntity {
+            name: "First leader".into(),
+            entity_type: Some("person".into()),
+        })
+        .unwrap();
+    let second_leader = store
+        .create_entity(CreateEntity {
+            name: "Second leader".into(),
+            entity_type: Some("person".into()),
+        })
+        .unwrap();
+    let faction = store
+        .create_entry(CreateEntry {
+            name: "The Twin Council".into(),
+            entity_type: Some("faction".into()),
+            document: None,
+            fields: vec![],
+            relationships: vec![CreateEntryRelationship {
+                relationship_type: "led_by".into(),
+                target_ids: vec![first_leader.id.clone(), second_leader.id.clone()],
+            }],
+        })
+        .unwrap();
+    assert_eq!(
+        store.list_relationships(faction.id.clone()).unwrap().len(),
+        2
+    );
+
+    let relationship = store.list_relationships(faction.id).unwrap().remove(0);
+    store.delete_relationship(relationship.id).unwrap();
+    let remaining_relationships = store.list_relationships(first_leader.id).unwrap().len()
+        + store.list_relationships(second_leader.id).unwrap().len();
+    assert_eq!(remaining_relationships, 1);
+
+    let result = store.create_entry(CreateEntry {
+        name: "Should roll back".into(),
+        entity_type: Some("faction".into()),
+        document: None,
+        fields: vec![],
+        relationships: vec![CreateEntryRelationship {
+            relationship_type: "led_by".into(),
+            target_ids: vec!["missing".into()],
+        }],
+    });
+    assert!(result.is_err());
+    assert_eq!(store.list_entities().unwrap().len(), 3);
+}
+
+#[test]
+fn export_round_trip_preserves_entities_and_documents() {
+    let source = ProjectStore::in_memory().unwrap();
+    let entity = source
+        .create_entity(CreateEntity {
+            name: "Ash Court".into(),
+            entity_type: Some("faction".into()),
+        })
+        .unwrap();
+    source
+        .save_document(SaveDocument {
+            entity_id: entity.id.clone(),
+            body: "A quiet power.".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    let target = ProjectStore::in_memory().unwrap();
+    let imported = target
+        .import_json_with_mode(&source.export_json().unwrap(), false)
+        .unwrap();
+    assert_eq!(imported, 1);
+    assert_eq!(target.list_entities().unwrap()[0].name, "Ash Court");
+    assert_eq!(
+        target.list_documents(entity.id).unwrap()[0].body,
+        "A quiet power."
+    );
+}
+
+#[test]
+fn importing_the_same_snapshot_twice_preserves_children() {
+    let source = ProjectStore::in_memory().unwrap();
+    let entity = source
+        .create_entity(CreateEntity {
+            name: "Repeated import".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    source
+        .save_document(SaveDocument {
+            entity_id: entity.id.clone(),
+            body: "Content".into(),
+            format: Some("plain-text".into()),
+        })
+        .unwrap();
+    let payload = source.export_json().unwrap();
+    let target = ProjectStore::in_memory().unwrap();
+    target.import_json_with_mode(&payload, false).unwrap();
+    target.import_json_with_mode(&payload, false).unwrap();
+    assert_eq!(target.list_entities().unwrap().len(), 1);
+    assert_eq!(target.list_documents(entity.id).unwrap().len(), 1);
+}
+
+#[test]
+fn updates_canonical_document_and_preserves_namespaced_fields() {
+    let store = ProjectStore::in_memory().unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Harbor".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    store
+        .save_document(SaveDocument {
+            entity_id: entity.id.clone(),
+            body: "First".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    store
+        .save_document(SaveDocument {
+            entity_id: entity.id.clone(),
+            body: "Second".into(),
+            format: Some("plain-text".into()),
+        })
+        .unwrap();
+    store
+        .set_field(FieldValue {
+            entity_id: entity.id.clone(),
+            namespace: "lore".into(),
+            key: "summary".into(),
+            value: serde_json::json!("A port"),
+            revision: String::new(),
+        })
+        .unwrap();
+    store
+        .set_field(FieldValue {
+            entity_id: entity.id.clone(),
+            namespace: "timeline".into(),
+            key: "startsAt".into(),
+            value: serde_json::json!("0010-01-01"),
+            revision: String::new(),
+        })
+        .unwrap();
+    assert_eq!(store.list_documents(entity.id.clone()).unwrap().len(), 1);
+    assert_eq!(
+        store.list_documents(entity.id.clone()).unwrap()[0].body,
+        "Second"
+    );
+    assert_eq!(store.list_fields(entity.id).unwrap().len(), 2);
+}
+
+#[test]
+fn opening_and_updating_rebuilds_search_for_documents_and_fields() {
+    let path = std::env::temp_dir().join(format!("daena-search-test-{}", Uuid::new_v4()));
+    {
+        let store = ProjectStore::open_directory(&path).unwrap();
+        let entity = store
+            .create_entity(CreateEntity {
+                name: "Search target".into(),
+                entity_type: Some("place".into()),
+            })
+            .unwrap();
+        store
+            .save_document(SaveDocument {
+                entity_id: entity.id.clone(),
+                body: "old prose".into(),
+                format: Some("markdown".into()),
+            })
+            .unwrap();
+        store
+            .set_field(FieldValue {
+                entity_id: entity.id,
+                namespace: "lore".into(),
+                key: "summary".into(),
+                value: serde_json::json!("old field"),
+                revision: String::new(),
+            })
+            .unwrap();
+        store
+            .connection
+            .execute("DELETE FROM world_search", [])
+            .unwrap();
+    }
+
+    let store = ProjectStore::open_directory(&path).unwrap();
+    let entity = store.search("old prose".into()).unwrap();
+    assert_eq!(entity.len(), 1);
+    let field_match = store.search("old field".into()).unwrap();
+    assert_eq!(field_match.len(), 1);
+
+    let entity_id = entity[0].id.clone();
+    store
+        .save_document(SaveDocument {
+            entity_id: entity_id.clone(),
+            body: "new prose".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    assert!(store.search("old prose".into()).unwrap().is_empty());
+    assert_eq!(store.search("new prose".into()).unwrap().len(), 1);
+
+    store
+        .set_field(FieldValue {
+            entity_id,
+            namespace: "lore".into(),
+            key: "summary".into(),
+            value: serde_json::json!("new field"),
+            revision: String::new(),
+        })
+        .unwrap();
+    assert!(store.search("old field".into()).unwrap().is_empty());
+    assert_eq!(store.search("new field".into()).unwrap().len(), 1);
+
+    drop(store);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn typed_fields_round_trip_as_json_values() {
+    let store = ProjectStore::in_memory().unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Typed fields".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    store
+        .set_field(FieldValue {
+            entity_id: entity.id.clone(),
+            namespace: "test".into(),
+            key: "count".into(),
+            value: serde_json::json!(42),
+            revision: String::new(),
+        })
+        .unwrap();
+    store
+        .set_field(FieldValue {
+            entity_id: entity.id.clone(),
+            namespace: "test".into(),
+            key: "published".into(),
+            value: serde_json::json!(true),
+            revision: String::new(),
+        })
+        .unwrap();
+    let fields = store.list_fields(entity.id).unwrap();
+    assert!(fields
+        .iter()
+        .any(|field| field.value == serde_json::json!(42)));
+    assert!(fields
+        .iter()
+        .any(|field| field.value == serde_json::json!(true)));
+}
+
+#[test]
+fn save_entry_rejects_invalid_fields_before_writing_document() {
+    let store = ProjectStore::in_memory().unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Atomic entry".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let result = store.save_entry(SaveEntry {
+        document: SaveDocument {
+            entity_id: entity.id.clone(),
+            body: "Should not persist".into(),
+            format: Some("plain-text".into()),
+        },
+        fields: vec![FieldValue {
+            entity_id: "different-entity".into(),
+            namespace: "test".into(),
+            key: "value".into(),
+            value: serde_json::json!("invalid"),
+            revision: String::new(),
+        }],
+    });
+    assert!(result.is_err());
+    assert!(store.list_documents(entity.id).unwrap().is_empty());
+}
+
+#[test]
+fn rename_updates_search_and_relationships_require_live_entities() {
+    let store = ProjectStore::in_memory().unwrap();
+    let source = store
+        .create_entity(CreateEntity {
+            name: "Old Name".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let target = store
+        .create_entity(CreateEntity {
+            name: "Target".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    store
+        .update_entity(source.id.clone(), Some("New Name".into()), None)
+        .unwrap();
+    assert!(store.search("Old Name".into()).unwrap().is_empty());
+    assert_eq!(store.search("New Name".into()).unwrap()[0].id, source.id);
+    store.delete_entity(target.id.clone()).unwrap();
+    assert!(store
+        .create_relationship(RelationshipInput {
+            source_id: source.id,
+            target_id: target.id,
+            relationship_type: "points_to".into(),
+            metadata: None
+        })
+        .is_err());
+}
+
+#[test]
+fn assets_and_module_state_survive_export_import() {
+    let source = ProjectStore::in_memory().unwrap();
+    let entity = source
+        .create_entity(CreateEntity {
+            name: "Map Room".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    let asset = source
+        .register_asset(AssetInput {
+            entity_id: entity.id.clone(),
+            namespace: "lore".into(),
+            filename: "map.png".into(),
+            content_hash: "abc123".into(),
+            size: 42,
+            mime_type: "image/png".into(),
+            path: "map.png".into(),
+        })
+        .unwrap();
+    source
+        .set_module_enabled("daena.lore".into(), false)
+        .unwrap();
+    source
+        .set_module_package_version("daena.lore", Some("1.2.0"))
+        .unwrap();
+    let target = ProjectStore::in_memory().unwrap();
+    target
+        .import_json_with_mode(&source.export_json().unwrap(), false)
+        .unwrap();
+    assert_eq!(target.list_assets(entity.id).unwrap()[0].id, asset.id);
+    assert!(!target.is_module_enabled("daena.lore").unwrap());
+    assert_eq!(
+        target
+            .module_package_version("daena.lore")
+            .unwrap()
+            .as_deref(),
+        Some("1.2.0")
+    );
+}
+
+#[test]
+fn seed_example_is_repeatable_after_modules_are_initialized() {
+    let mut store = ProjectStore::in_memory().unwrap();
+    store.set_module_enabled("daena.lore".into(), true).unwrap();
+    store
+        .set_module_enabled("daena.timeline".into(), true)
+        .unwrap();
+
+    assert_eq!(store.seed_example().unwrap(), 26);
+    assert_eq!(store.seed_example().unwrap(), 26);
+    let entities = store.list_entities().unwrap();
+    assert_eq!(entities.len(), 26);
+    assert_eq!(
+        entities
+            .iter()
+            .map(|entity| store.list_relationships(entity.id.clone()).unwrap().len())
+            .sum::<usize>(),
+        38
+    );
+    assert_eq!(store.search("Highland Culture".into()).unwrap().len(), 1);
+    assert_eq!(
+        entities
+            .iter()
+            .filter(|entity| entity.name == "Frostgate Pass")
+            .count(),
+        1
+    );
+    let map = entities
+        .iter()
+        .find(|entity| entity.entity_type.as_deref() == Some(crate::maps::MAP_ENTITY_TYPE))
+        .expect("seed example ships a map entity");
+    assert_eq!(map.name, "The Known Coast");
+    assert_eq!(store.list_map_recovery_copies(&map.id).unwrap().len(), 0);
+    assert_eq!(
+        store
+            .map_locations_for_entity(
+                entities
+                    .iter()
+                    .find(|e| e.name == "Eldermere")
+                    .unwrap()
+                    .id
+                    .clone()
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn restore_replaces_records_missing_from_the_backup() {
+    let source = ProjectStore::in_memory().unwrap();
+    source
+        .create_entity(CreateEntity {
+            name: "From backup".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let path = std::env::temp_dir().join(format!("daena-restore-test-{}.json", Uuid::new_v4()));
+    std::fs::write(&path, source.export_json().unwrap()).unwrap();
+
+    let target = ProjectStore::in_memory().unwrap();
+    target
+        .create_entity(CreateEntity {
+            name: "Stale record".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    target.restore(path.to_string_lossy().into_owned()).unwrap();
+
+    assert_eq!(target.list_entities().unwrap().len(), 1);
+    assert_eq!(target.list_entities().unwrap()[0].name, "From backup");
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn applying_migration_creates_backup_and_records_version() {
+    let mut store = ProjectStore::in_memory().unwrap();
+    let migration = crate::migrations::Migration {
+        id: "timeline-v1".into(),
+        module_id: "daena.timeline".into(),
+        from: 0,
+        to: 1,
+        operations: vec![crate::migrations::Operation::CreateNamespace {
+            namespace: "timeline".into(),
+        }],
+        recovery: "backup".into(),
+        package_digest: "sha256:test-package".into(),
+    };
+    store.apply_migration(&migration).unwrap();
+    assert_eq!(store.get_module_version("daena.timeline").unwrap(), 1);
+    let snapshot: serde_json::Value = serde_json::from_str(&store.export_json().unwrap()).unwrap();
+    let history = &snapshot["migration_history"][0];
+    assert_eq!(history["package_digest"], "sha256:test-package");
+    assert!(history["applied_at"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
+}
+
+#[test]
+fn plugin_backup_restores_schema_and_migration_history() {
+    let directory = std::env::temp_dir().join(format!("daena-plugin-backup-{}", Uuid::new_v4()));
+    let mut store = ProjectStore::open_directory(&directory).unwrap();
+    let backup = store
+        .create_plugin_backup("daena.timeline", Some("0.1.0"), Some("0.2.0"), 0)
+        .unwrap();
+    assert_eq!(
+        store
+            .latest_plugin_backup("daena.timeline", Some("0.1.0"), Some("0.2.0"),)
+            .unwrap()
+            .unwrap()
+            .id,
+        backup.id
+    );
+    let migration = crate::migrations::Migration {
+        id: "timeline-v1".into(),
+        module_id: "daena.timeline".into(),
+        from: 0,
+        to: 1,
+        operations: vec![crate::migrations::Operation::CreateNamespace {
+            namespace: "timeline".into(),
+        }],
+        recovery: "backup".into(),
+        package_digest: String::new(),
+    };
+    store.apply_migration(&migration).unwrap();
+    store.restore_plugin_backup(&backup).unwrap();
+    assert_eq!(store.get_module_version("daena.timeline").unwrap(), 0);
+    store.apply_migration(&migration).unwrap();
+    assert_eq!(store.get_module_version("daena.timeline").unwrap(), 1);
+    drop(store);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn plugin_data_deletion_requires_confirmation_and_keeps_backup() {
+    let mut store = ProjectStore::in_memory().unwrap();
+    let migration = crate::migrations::Migration {
+        id: "lore-v1".into(),
+        module_id: "daena.lore".into(),
+        from: 0,
+        to: 1,
+        operations: vec![crate::migrations::Operation::CreateNamespace {
+            namespace: "lore".into(),
+        }],
+        recovery: "backup".into(),
+        package_digest: String::new(),
+    };
+    store.apply_migration(&migration).unwrap();
+    assert!(store.delete_plugin_data("daena.lore", "no").is_err());
+    let backup = store
+        .delete_plugin_data("daena.lore", "daena.lore")
+        .unwrap();
+    assert!(std::path::Path::new(&backup).is_file());
+    assert_eq!(store.get_module_version("daena.lore").unwrap(), 0);
+    std::fs::remove_file(backup).unwrap();
+}
+
+#[test]
+fn migration_chain_failure_restores_the_pre_chain_state() {
+    let mut store = ProjectStore::in_memory().unwrap();
+    let first = crate::migrations::Migration {
+        id: "lore-v1".into(),
+        module_id: "daena.lore".into(),
+        from: 0,
+        to: 1,
+        operations: vec![crate::migrations::Operation::CreateNamespace {
+            namespace: "lore".into(),
+        }],
+        recovery: "backup".into(),
+        package_digest: String::new(),
+    };
+    let second = crate::migrations::Migration {
+        id: "lore-v2".into(),
+        module_id: "daena.lore".into(),
+        from: 1,
+        to: 2,
+        operations: vec![crate::migrations::Operation::AddField {
+            namespace: "missing".into(),
+            field: crate::migrations::FieldDefinition {
+                key: "summary".into(),
+                field_type: "text".into(),
+                required: false,
+            },
+        }],
+        recovery: "backup".into(),
+        package_digest: String::new(),
+    };
+    assert!(store.apply_migrations(&[first, second]).is_err());
+    assert_eq!(store.get_module_version("daena.lore").unwrap(), 0);
+}
+
+#[test]
+fn directory_projects_create_portable_layout() {
+    let root = std::env::temp_dir().join(format!("daena-project-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(store.info().unwrap().root, root.to_string_lossy());
+    assert!(root.join("project.json").is_file());
+    assert!(root.join(".daena/index.sqlite").is_file());
+    assert!(root.join("entities").is_dir());
+    assert!(root.join("plugins").is_dir());
+    let manifest =
+        crate::storage::read_json::<crate::storage::ProjectManifest>(&root.join("project.json"))
+            .unwrap();
+    assert_eq!(manifest.format_version, 2);
+    assert_eq!(manifest.name, root.file_name().unwrap().to_string_lossy());
+    assert_eq!(
+        std::fs::read_to_string(root.join(".gitignore")).unwrap(),
+        ".daena/\ndaena.sqlite\ndaena.sqlite-*\n"
+    );
+    assert!(root.join("assets/images").is_dir());
+    assert!(root.join("assets/videos").is_dir());
+    assert!(root.join("assets/maps").is_dir());
+    assert!(root.join("assets/files").is_dir());
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn directory_assets_are_copied_and_hashed() {
+    let root = std::env::temp_dir().join(format!("daena-project-{}", Uuid::new_v4()));
+    let source = std::env::temp_dir().join(format!("daena-asset-{}.txt", Uuid::new_v4()));
+    std::fs::write(&source, b"asset contents").unwrap();
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Asset owner".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let asset = store
+        .register_asset_file(AssetFileInput {
+            entity_id: entity.id,
+            namespace: "lore".into(),
+            source_path: source.to_string_lossy().into_owned(),
+            filename: "notes.txt".into(),
+            mime_type: "text/plain".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        asset.content_hash,
+        "sha256:f64ec9687efc98edc9ed69b2024bb23bcee2ba0a4e52b64ac3ab204f818716d4"
+    );
+    assert!(asset.path.starts_with("assets/files/"));
+    assert!(root.join(&asset.path).is_file());
+    drop(store);
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let reopened = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(reopened.list_assets(asset.entity_id).unwrap().len(), 1);
+    drop(reopened);
+    std::fs::remove_file(source).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn canonical_files_survive_disposable_index_deletion() {
+    let root = std::env::temp_dir().join(format!("daena-canonical-{}", Uuid::new_v4()));
+    let mut first = ProjectStore::open_directory(&root).unwrap();
+    let source = first
+        .create_entity(CreateEntity {
+            name: "Source".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    let target = first
+        .create_entity(CreateEntity {
+            name: "Target".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    first
+        .apply_migration(&crate::migrations::Migration {
+            id: "notes-v1".into(),
+            module_id: "com.example.notes".into(),
+            from: 0,
+            to: 1,
+            operations: vec![crate::migrations::Operation::CreateNamespace {
+                namespace: "notes".into(),
+            }],
+            recovery: "backup".into(),
+            package_digest: "sha256:test".into(),
+        })
+        .unwrap();
+    first
+        .save_document(SaveDocument {
+            entity_id: source.id.clone(),
+            body: "# Canonical prose".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    first
+        .set_field(FieldValue {
+            entity_id: source.id.clone(),
+            namespace: "notes".into(),
+            key: "summary".into(),
+            value: serde_json::json!("stored in files"),
+            revision: String::new(),
+        })
+        .unwrap();
+    first
+        .create_relationship(RelationshipInput {
+            source_id: source.id.clone(),
+            target_id: target.id,
+            relationship_type: "located-in".into(),
+            metadata: None,
+        })
+        .unwrap();
+    assert!(root
+        .join("entities")
+        .join(&source.id)
+        .join("entity.json")
+        .is_file());
+    assert!(root
+        .join("entities")
+        .join(&source.id)
+        .join("document.md")
+        .is_file());
+    assert!(root.join("plugins/com.example.notes.json").is_file());
+    let canonical_before = canonical_files(&root);
+    let search_before = first
+        .search("Canonical prose".into())
+        .unwrap()
+        .into_iter()
+        .map(|entity| entity.id)
+        .collect::<Vec<_>>();
+    let source_count_before: i64 = first
+        .connection
+        .query_row("SELECT COUNT(*) FROM source_files", [], |row| row.get(0))
+        .unwrap();
+    let source_hash: String = first
+        .connection
+        .query_row(
+            "SELECT content_hash FROM source_files WHERE path=?1",
+            params![format!("entities/{}/document.md", source.id)],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        source_hash,
+        format!(
+            "sha256:{}",
+            digest_bytes(
+                &std::fs::read(root.join("entities").join(&source.id).join("document.md")).unwrap()
+            )
+        )
+    );
+    drop(first);
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+
+    let reopened = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(canonical_files(&root), canonical_before);
+    let entities = reopened.list_entities().unwrap();
+    assert_eq!(entities.len(), 2);
+    assert_eq!(
+        reopened.list_documents(source.id.clone()).unwrap()[0].body,
+        "# Canonical prose\n"
+    );
+    assert_eq!(reopened.list_fields(source.id.clone()).unwrap().len(), 1);
+    assert_eq!(
+        reopened
+            .list_relationships(source.id.clone())
+            .unwrap()
+            .len(),
+        1
+    );
+    let search_after = reopened
+        .search("Canonical prose".into())
+        .unwrap()
+        .into_iter()
+        .map(|entity| entity.id)
+        .collect::<Vec<_>>();
+    assert_eq!(search_after, search_before);
+    let source_count_after: i64 = reopened
+        .connection
+        .query_row("SELECT COUNT(*) FROM source_files", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(source_count_after, source_count_before);
+    assert!(!root.join(".daena/index.sqlite.next").exists());
+    let document_path = root.join("entities").join(&source.id).join("document.md");
+    std::fs::write(&document_path, b"# External change\n").unwrap();
+    assert!(reopened.search("Canonical prose".into()).is_err());
+    drop(reopened);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn create_map_creates_descriptor_with_null_source_until_first_save() {
+    let root = std::env::temp_dir().join(format!("daena-create-map-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let map = store.create_map("New map".into()).unwrap();
+    assert_eq!(
+        map.entity_type.as_deref(),
+        Some(crate::maps::MAP_ENTITY_TYPE)
+    );
+    assert!(
+        store.list_assets(map.id.clone()).unwrap().is_empty(),
+        "a fresh map has no source asset until its first save"
+    );
+    let field = store
+        .list_fields(map.id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.namespace == crate::maps::MAP_NAMESPACE && field.key == "map")
+        .unwrap();
+    assert_eq!(field.value["sourceAssetId"], serde_json::Value::Null);
+    let locations = serde_json::json!({
+        "schemaVersion": 1,
+        "locations": []
+    });
+    assert!(
+        store
+            .set_field(FieldValue {
+                entity_id: map.id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "locations".into(),
+                value: locations,
+                revision: String::new(),
+            })
+            .is_ok(),
+        "map metadata must be writable before the first save"
+    );
+
+    let source_path = std::env::temp_dir().join(format!("daena-map-{}.map", Uuid::new_v4()));
+    std::fs::write(&source_path, b"fresh map source").unwrap();
+    let asset = store
+        .register_asset_file_with_request(
+            AssetFileInput {
+                entity_id: map.id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                source_path: source_path.to_string_lossy().into_owned(),
+                filename: "map.map".into(),
+                mime_type: "application/x-fmg-map".into(),
+            },
+            None,
+        )
+        .unwrap();
+    assert!(asset.size > 0);
+    store
+        .set_field(FieldValue {
+            entity_id: map.id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            key: "map".into(),
+            value: serde_json::json!({
+                "schemaVersion": 1,
+                "provider": {"id": "azgaar-fmg", "adapterVersion": 1, "sourceFormat": "fmg-map"},
+                "sourceAssetId": asset.id,
+                "previewAssetId": null,
+                "defaultView": {"center": [0.5, 0.5], "zoom": 1}
+            }),
+            revision: String::new(),
+        })
+        .unwrap();
+    drop(store);
+    std::fs::remove_file(&source_path).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn map_entities_and_locations_survive_disposable_index_rebuild() {
+    let root = std::env::temp_dir().join(format!("daena-maps-canonical-{}", Uuid::new_v4()));
+    let source_a = std::env::temp_dir().join(format!("daena-map-a-{}.map", Uuid::new_v4()));
+    let source_b = std::env::temp_dir().join(format!("daena-map-b-{}.map", Uuid::new_v4()));
+    std::fs::write(&source_a, b"map-a-source").unwrap();
+    std::fs::write(&source_b, b"map-b-source").unwrap();
+
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let map_a = store
+        .create_entity(CreateEntity {
+            name: "World map".into(),
+            entity_type: Some(crate::maps::MAP_ENTITY_TYPE.into()),
+        })
+        .unwrap();
+    let map_b = store
+        .create_entity(CreateEntity {
+            name: "Regional map".into(),
+            entity_type: Some(crate::maps::MAP_ENTITY_TYPE.into()),
+        })
+        .unwrap();
+    let place = store
+        .create_entity(CreateEntity {
+            name: "Old Harbor".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    let asset_a = store
+        .register_asset_file(AssetFileInput {
+            entity_id: map_a.id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            source_path: source_a.to_string_lossy().into_owned(),
+            filename: "world.map".into(),
+            mime_type: "application/x-fmg-map".into(),
+        })
+        .unwrap();
+    let asset_b = store
+        .register_asset_file(AssetFileInput {
+            entity_id: map_b.id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            source_path: source_b.to_string_lossy().into_owned(),
+            filename: "regional.map".into(),
+            mime_type: "application/x-fmg-map".into(),
+        })
+        .unwrap();
+
+    for (map, asset) in [(&map_a, &asset_a), (&map_b, &asset_b)] {
+        store
+                .set_field(FieldValue {
+                    entity_id: map.id.clone(),
+                    namespace: crate::maps::MAP_NAMESPACE.into(),
+                    key: "map".into(),
+                    value: serde_json::json!({
+                        "schemaVersion": 1,
+                        "provider": {"id": "azgaar-fmg", "adapterVersion": 1, "sourceFormat": "fmg-map"},
+                        "sourceAssetId": asset.id,
+                        "previewAssetId": null,
+                        "defaultView": {"center": [0.5, 0.5], "zoom": 1}
+                    }),
+                    revision: String::new(),
+                })
+                .unwrap();
+    }
+
+    let location_a = Uuid::new_v4().to_string();
+    let location_b = Uuid::new_v4().to_string();
+    store
+            .set_field(FieldValue {
+                entity_id: place.id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "locations".into(),
+                value: serde_json::json!({
+                    "schemaVersion": 1,
+                    "locations": [
+                        {
+                            "id": location_a,
+                            "mapEntityId": map_a.id,
+                            "role": "birthplace",
+                            "label": "Old Harbor",
+                            "anchor": {"kind": "provider-feature", "provider": "azgaar-fmg", "featureKind": "burg", "featureId": "42", "fallbackPoint": [0.613, 0.428]},
+                            "validity": {"from": null, "to": null}
+                        },
+                        {
+                            "id": location_b,
+                            "mapEntityId": map_b.id,
+                            "role": "trade-port",
+                            "label": "Regional harbor",
+                            "anchor": {"kind": "point", "point": [0.2, 0.8]},
+                            "validity": {"from": null, "to": null}
+                        }
+                    ]
+                }),
+                revision: String::new(),
+            })
+            .unwrap();
+
+    let canonical_before = canonical_files(&root);
+    let projection_before = store.map_locations_for_entity(place.id.clone()).unwrap();
+    assert_eq!(projection_before.len(), 2);
+    assert!(projection_before
+        .iter()
+        .all(|location| location["resolution"] == "resolved"));
+    let anchor_kinds = projection_before
+        .iter()
+        .map(|location| location["anchorKind"].as_str().unwrap())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(anchor_kinds, BTreeSet::from(["point", "provider-feature"]));
+    drop(store);
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(canonical_files(&root), canonical_before);
+    assert_eq!(
+        rebuilt
+            .list_entities()
+            .unwrap()
+            .into_iter()
+            .filter(|entity| entity.entity_type.as_deref() == Some(crate::maps::MAP_ENTITY_TYPE))
+            .count(),
+        2
+    );
+    assert_eq!(
+        rebuilt.map_locations_for_entity(place.id).unwrap(),
+        projection_before
+    );
+    drop(rebuilt);
+    std::fs::remove_file(source_a).unwrap();
+    std::fs::remove_file(source_b).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn map_locations_reject_dangling_maps_and_invalid_geometry() {
+    let store = ProjectStore::in_memory().unwrap();
+    let place = store
+        .create_entity(CreateEntity {
+            name: "Unbound place".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    let invalid = store.set_field(FieldValue {
+        entity_id: place.id,
+        namespace: crate::maps::MAP_NAMESPACE.into(),
+        key: "locations".into(),
+        value: serde_json::json!({
+            "schemaVersion": 1,
+            "locations": [{
+                "id": Uuid::new_v4(),
+                "mapEntityId": Uuid::new_v4(),
+                "role": "origin",
+                "label": "Nowhere",
+                "anchor": {"kind": "point", "point": [1.5, 0.5]},
+                "validity": {"from": null, "to": null}
+            }]
+        }),
+        revision: String::new(),
+    });
+    assert!(invalid.is_err());
+    assert!(invalid.unwrap_err().to_string().contains("maps:"));
+}
+
+#[test]
+fn map_location_projection_and_reconcile_track_feature_resolution() {
+    let root = std::env::temp_dir().join(format!("daena-map-resolve-{}", Uuid::new_v4()));
+    let source = std::env::temp_dir().join(format!("daena-map-resolve-src-{}.map", Uuid::new_v4()));
+    std::fs::write(
+        &source,
+        br#"{"features": [{"kind": "burg", "id": "7", "x": 120, "y": 80}]}"#,
+    )
+    .unwrap();
+
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let map = store
+        .create_entity(CreateEntity {
+            name: "Resolved map".into(),
+            entity_type: Some(crate::maps::MAP_ENTITY_TYPE.into()),
+        })
+        .unwrap();
+    let place = store
+        .create_entity(CreateEntity {
+            name: "Harbor".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    let asset = store
+        .register_asset_file(AssetFileInput {
+            entity_id: map.id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            source_path: source.to_string_lossy().into_owned(),
+            filename: "world.map".into(),
+            mime_type: "application/x-fmg-map".into(),
+        })
+        .unwrap();
+    store
+        .set_field(FieldValue {
+            entity_id: map.id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            key: "map".into(),
+            value: serde_json::json!({
+                "schemaVersion": 1,
+                "provider": {"id": "azgaar-fmg", "adapterVersion": 1, "sourceFormat": "fmg-map"},
+                "sourceAssetId": asset.id,
+                "previewAssetId": null,
+                "defaultView": {"center": [0.5, 0.5], "zoom": 1}
+            }),
+            revision: String::new(),
+        })
+        .unwrap();
+
+    let resolved_id = Uuid::new_v4().to_string();
+    let missing_id = Uuid::new_v4().to_string();
+    store
+            .set_field(FieldValue {
+                entity_id: place.id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "locations".into(),
+                value: serde_json::json!({
+                    "schemaVersion": 1,
+                    "locations": [
+                        {
+                            "id": resolved_id,
+                            "mapEntityId": map.id,
+                            "role": "birthplace",
+                            "label": "Old Harbor",
+                            "anchor": {"kind": "provider-feature", "provider": "azgaar-fmg", "featureKind": "burg", "featureId": "7", "fallbackPoint": [0.6, 0.4]},
+                            "validity": {"from": null, "to": null}
+                        },
+                        {
+                            "id": missing_id,
+                            "mapEntityId": map.id,
+                            "role": "haven",
+                            "label": "Lost Harbor",
+                            "anchor": {"kind": "provider-feature", "provider": "azgaar-fmg", "featureKind": "burg", "featureId": "999", "fallbackPoint": [0.2, 0.8]},
+                            "validity": {"from": null, "to": null}
+                        }
+                    ]
+                }),
+                revision: String::new(),
+            })
+            .unwrap();
+
+    let projection = store.map_location_projection(map.id.clone()).unwrap();
+    assert_eq!(projection.len(), 2);
+    let resolved = projection
+        .iter()
+        .find(|location| location["id"] == serde_json::Value::String(resolved_id.clone()))
+        .unwrap();
+    assert_eq!(resolved["resolution"], "resolved");
+    assert_eq!(resolved["featureKind"], "burg");
+    assert_eq!(resolved["featureId"], "7");
+    let missing = projection
+        .iter()
+        .find(|location| location["id"] == serde_json::Value::String(missing_id.clone()))
+        .unwrap();
+    assert_eq!(missing["resolution"], "unresolved");
+    assert_eq!(missing["featureId"], "999");
+    assert!(missing["bounds"].is_array());
+
+    let reconciled = store.reconcile_map_links(map.id.clone()).unwrap();
+    assert_eq!(reconciled.len(), 2);
+    let by_id: BTreeMap<&str, bool> = reconciled
+        .iter()
+        .map(|row| {
+            (
+                row["locationId"].as_str().unwrap(),
+                row["resolved"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(by_id.get(resolved_id.as_str()), Some(&true));
+    assert_eq!(by_id.get(missing_id.as_str()), Some(&false));
+
+    // Renumbering the feature must flip resolution without touching the
+    // canonical location field: no silent retargeting. The asset file is a
+    // project copy, so replace it through the revision-aware mutation.
+    let renumbered = br#"{"features": [{"kind": "burg", "id": "999", "x": 120, "y": 80}]}"#;
+    store
+        .replace_asset_bytes_with_request(
+            AssetReplaceInput {
+                asset_id: asset.id.clone(),
+                content_hash: format!("sha256:{}", digest_bytes(renumbered)),
+                size: renumbered.len() as i64,
+                mime_type: "application/x-fmg-map".into(),
+            },
+            renumbered.to_vec(),
+            &asset.revision,
+            None,
+        )
+        .unwrap();
+    let after = store.reconcile_map_links(map.id.clone()).unwrap();
+    let by_id_after: BTreeMap<&str, bool> = after
+        .iter()
+        .map(|row| {
+            (
+                row["locationId"].as_str().unwrap(),
+                row["resolved"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(by_id_after.get(missing_id.as_str()), Some(&true));
+    assert_eq!(by_id_after.get(resolved_id.as_str()), Some(&false));
+    assert_eq!(
+        store.map_locations(place.id).unwrap().len(),
+        2,
+        "canonical locations must be untouched by reconciliation"
+    );
+    drop(store);
+    std::fs::remove_file(source).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn transaction_request_ids_must_be_uuids_but_may_be_absent() {
+    let root = std::env::temp_dir().join(format!("daena-map-rid-{}", Uuid::new_v4()));
+    let source = std::env::temp_dir().join(format!("daena-map-rid-src-{}.map", Uuid::new_v4()));
+    std::fs::write(&source, br#"{"features": []}"#).unwrap();
+
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let map = store.create_map("Rid map".into()).unwrap();
+    let place = store
+        .create_entity(CreateEntity {
+            name: "Rid place".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    let asset = store
+        .register_asset_file(AssetFileInput {
+            entity_id: map.id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            source_path: source.to_string_lossy().into_owned(),
+            filename: "world.map".into(),
+            mime_type: "application/x-fmg-map".into(),
+        })
+        .unwrap();
+    let map_id = map.id.clone();
+    let place_id = place.id.clone();
+    let asset_id = asset.id.clone();
+    let revision = asset.revision.clone();
+
+    // Correlation tokens like the FMG bridge's 'maps-fmg-N' are not
+    // UUIDs: the core transaction layer rejects them outright. The host
+    // sanitizes such ids to None before reaching the core (see
+    // sanitize_mutation_request_id in src-tauri), and None must be
+    // accepted here with a generated UUID receipt.
+    let bytes = br#"{"features": [{"kind": "burg", "id": "3", "x": 1, "y": 1}]}"#;
+    let rejected = store.replace_asset_bytes_with_request(
+        AssetReplaceInput {
+            asset_id: asset_id.clone(),
+            content_hash: format!("sha256:{}", digest_bytes(bytes)),
+            size: bytes.len() as i64,
+            mime_type: "application/x-fmg-map".into(),
+        },
+        bytes.to_vec(),
+        &revision,
+        Some("maps-fmg-1"),
+    );
+    assert!(rejected.is_err());
+    assert!(rejected
+        .unwrap_err()
+        .to_string()
+        .contains("transaction request ID must be a UUID"));
+    let accepted = store.replace_asset_bytes_with_request(
+        AssetReplaceInput {
+            asset_id: asset_id.clone(),
+            content_hash: format!("sha256:{}", digest_bytes(bytes)),
+            size: bytes.len() as i64,
+            mime_type: "application/x-fmg-map".into(),
+        },
+        bytes.to_vec(),
+        &revision,
+        None,
+    );
+    assert!(accepted.is_ok());
+    store
+        .set_field_with_request(
+            FieldValue {
+                entity_id: place_id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "locations".into(),
+                value: serde_json::json!({
+                    "schemaVersion": 1,
+                    "locations": [{
+                        "id": Uuid::new_v4(),
+                        "mapEntityId": map_id,
+                        "role": "origin",
+                        "label": "Rid place",
+                        "anchor": {"kind": "point", "point": [0.5, 0.5]},
+                        "validity": {"from": null, "to": null}
+                    }]
+                }),
+                revision: String::new(),
+            },
+            None,
+        )
+        .expect("absent request ids must be accepted");
+    assert_eq!(store.map_locations(place_id).unwrap().len(), 1);
+
+    drop(store);
+    std::fs::remove_file(source).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn map_recovery_copies_are_canonical_listed_newest_first_and_restored() {
+    let root = std::env::temp_dir().join(format!("daena-map-recovery-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let map = store.create_map("Recovered map".into()).unwrap();
+    let source = std::env::temp_dir().join(format!("daena-map-source-{}.map", Uuid::new_v4()));
+    std::fs::write(&source, b"original-source").unwrap();
+    let asset = store
+        .register_asset_file(AssetFileInput {
+            entity_id: map.id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            source_path: source.to_string_lossy().into_owned(),
+            filename: "map.map".into(),
+            mime_type: "application/x-fmg-map".into(),
+        })
+        .unwrap();
+    store
+        .set_field(FieldValue {
+            entity_id: map.id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            key: "map".into(),
+            value: serde_json::json!({
+                "schemaVersion": 1,
+                "provider": {"id": "azgaar-fmg", "adapterVersion": 1, "sourceFormat": "fmg-map"},
+                "sourceAssetId": asset.id,
+                "previewAssetId": null,
+                "defaultView": {"center": [0.5, 0.5], "zoom": 1}
+            }),
+            revision: String::new(),
+        })
+        .unwrap();
+    std::fs::remove_file(&source).unwrap();
+    let before = store.list_map_recovery_copies(&map.id).unwrap();
+    assert!(before.is_empty());
+    let first_path = store.save_map_recovery_copy(&map.id, b"draft-v1").unwrap();
+    let second_path = store.save_map_recovery_copy(&map.id, b"draft-v2").unwrap();
+    assert!(first_path.starts_with(".daena/conflicts/maps/") && first_path.ends_with(".map"));
+    assert!(second_path.starts_with(".daena/conflicts/maps/") && second_path.ends_with(".map"));
+    assert_eq!(std::fs::read(root.join(&second_path)).unwrap(), b"draft-v2");
+    assert!(!store
+        .canonical_source_hashes(".daena/conflicts/%")
+        .unwrap()
+        .iter()
+        .any(|(source, _)| source.contains("conflicts")));
+
+    let copies = store.list_map_recovery_copies(&map.id).unwrap();
+    assert_eq!(copies.len(), 2);
+    assert!(copies
+        .iter()
+        .any(|copy| copy.file_name == first_path.rsplit('/').next().unwrap()));
+    assert!(copies
+        .iter()
+        .any(|copy| copy.file_name == second_path.rsplit('/').next().unwrap()));
+    assert!(copies
+        .iter()
+        .all(|copy| copy.path.starts_with(".daena/conflicts/maps/")));
+    assert!(copies
+        .iter()
+        .all(|copy| copy.created_at.chars().all(|c| c.is_ascii_digit())));
+    assert!(copies[0].created_at >= copies[1].created_at);
+
+    let expected_bytes = std::fs::read(root.join(&copies[0].path)).unwrap();
+    let restored = store
+        .restore_map_recovery_copy(&map.id, &copies[0].file_name, None)
+        .unwrap();
+    assert_eq!(
+        std::fs::read(root.join(&restored.path)).unwrap(),
+        expected_bytes
+    );
+    let asset = store.list_assets(map.id).unwrap().pop().unwrap();
+    assert_eq!(asset.size as usize, expected_bytes.len());
+    assert_eq!(
+        asset.content_hash,
+        format!("sha256:{}", digest_bytes(&expected_bytes))
+    );
+    assert_eq!(asset.mime_type, "application/x-fmg-map");
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn map_recovery_copies_require_map_entities_and_reject_traversal() {
+    let store = ProjectStore::in_memory().unwrap();
+    let place = store
+        .create_entity(CreateEntity {
+            name: "Not a map".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    assert!(store.save_map_recovery_copy(&place.id, b"x").is_err());
+    assert!(store.list_map_recovery_copies(&place.id).is_err());
+    assert!(store
+        .restore_map_recovery_copy(&place.id, "../escape.map", None)
+        .is_err());
+    let map = store.create_map("Traversal map".into()).unwrap();
+    assert!(store
+        .restore_map_recovery_copy(&map.id, "../escape.map", None)
+        .is_err());
+    assert!(store
+        .restore_map_recovery_copy(
+            &map.id,
+            "other-entity-00000000-0000-0000-0000-000000000000.map",
+            None
+        )
+        .is_err());
+    assert!(store
+        .restore_map_recovery_copy(&map.id, "missing.map", None)
+        .is_err());
+}
+
+#[test]
+fn fresh_git_clone_rebuilds_its_ignored_index() {
+    let root = std::env::temp_dir().join(format!("daena-git-clone-source-{}", Uuid::new_v4()));
+    let clone = std::env::temp_dir().join(format!("daena-git-clone-copy-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Cloned canonical entry".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    drop(store);
+
+    let run_git = |cwd: &Path, args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap()
+    };
+    assert!(run_git(&root, &["init", "-q"]).status.success());
+    assert!(
+        run_git(&root, &["config", "user.email", "tests@daena.local"])
+            .status
+            .success()
+    );
+    assert!(run_git(&root, &["config", "user.name", "Daena tests"])
+        .status
+        .success());
+    assert!(run_git(&root, &["config", "commit.gpgsign", "false"])
+        .status
+        .success());
+    assert!(run_git(&root, &["add", "--all"]).status.success());
+    assert!(run_git(&root, &["commit", "-qm", "canonical project"])
+        .status
+        .success());
+    let clone_output = Command::new("git")
+        .args([
+            "clone",
+            "--quiet",
+            root.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(clone_output.status.success());
+    assert!(!clone.join(".daena").exists());
+
+    let reopened = ProjectStore::open_directory(&clone).unwrap();
+    assert_eq!(reopened.list_entities().unwrap()[0].id, entity.id);
+    drop(reopened);
+    std::fs::remove_dir_all(clone.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&clone).unwrap();
+    assert_eq!(
+        rebuilt.list_entities().unwrap()[0].name,
+        "Cloned canonical entry"
+    );
+    drop(rebuilt);
+    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(clone).unwrap();
+}
+
+#[test]
+fn create_and_save_entry_enforce_map_field_validation() {
+    let store = ProjectStore::in_memory().unwrap();
+    let invalid_field = CreateEntryField {
+        namespace: crate::maps::MAP_NAMESPACE.into(),
+        key: "map".into(),
+        value: serde_json::json!({"schemaVersion": 99}),
+    };
+    let err = store.create_entry_with_request(
+        CreateEntry {
+            name: "Bad map entity".into(),
+            entity_type: Some(crate::maps::MAP_ENTITY_TYPE.into()),
+            fields: vec![invalid_field.clone()],
+            document: None,
+            relationships: vec![],
+        },
+        None,
+    );
+    assert!(err.is_err());
+
+    let map = store.create_map("Valid Map".into()).unwrap();
+    let save_err = store.save_entry_with_options(
+        SaveEntry {
+            document: SaveDocument {
+                entity_id: map.id.clone(),
+                format: None,
+                body: String::new(),
+            },
+            fields: vec![FieldValue {
+                entity_id: map.id,
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "map".into(),
+                value: serde_json::json!({"schemaVersion": 99}),
+                revision: String::new(),
+            }],
+        },
+        None,
+        None,
+    );
+    assert!(save_err.is_err());
+}
+
+#[test]
+fn feature_resolution_returns_unresolved_when_json_asset_lacks_features_key() {
+    let root = std::env::temp_dir().join(format!("daena-map-no-feat-{}", Uuid::new_v4()));
+    let source = std::env::temp_dir().join(format!("daena-map-no-feat-src-{}.map", Uuid::new_v4()));
+    std::fs::write(&source, br#"{"info": "no features key here"}"#).unwrap();
+
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let map = store.create_map("Map without features".into()).unwrap();
+    let place = store
+        .create_entity(CreateEntity {
+            name: "Place".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    let asset = store
+        .register_asset_file(AssetFileInput {
+            entity_id: map.id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            source_path: source.to_string_lossy().into_owned(),
+            filename: "nofeat.map".into(),
+            mime_type: "application/x-fmg-map".into(),
+        })
+        .unwrap();
+
+    store
+        .set_field(FieldValue {
+            entity_id: map.id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            key: "map".into(),
+            value: serde_json::json!({
+                "schemaVersion": 1,
+                "provider": {"id": "azgaar-fmg", "adapterVersion": 1, "sourceFormat": "fmg-map"},
+                "sourceAssetId": asset.id,
+                "previewAssetId": null,
+                "defaultView": {"center": [0.5, 0.5], "zoom": 1}
+            }),
+            revision: String::new(),
+        })
+        .unwrap();
+
+    let loc_id = Uuid::new_v4().to_string();
+    store.set_field(FieldValue {
+            entity_id: place.id,
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            key: "locations".into(),
+            value: serde_json::json!({
+                "schemaVersion": 1,
+                "locations": [{
+                    "id": loc_id,
+                    "mapEntityId": map.id,
+                    "role": "origin",
+                    "label": "Test",
+                    "anchor": {"kind": "provider-feature", "provider": "azgaar-fmg", "featureKind": "burg", "featureId": "1", "fallbackPoint": [0.5, 0.5]},
+                    "validity": {"from": null, "to": null}
+                }]
+            }),
+            revision: String::new(),
+        }).unwrap();
+
+    let projection = store.map_location_projection(map.id).unwrap();
+    assert_eq!(projection[0]["resolution"], "unresolved");
+
+    drop(store);
+    std::fs::remove_file(source).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn asset_replacement_rejects_wrong_hash_size_and_revision() {
+    let store = ProjectStore::in_memory().unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Map source".into(),
+            entity_type: Some("daena.maps:map".into()),
+        })
+        .unwrap();
+    let asset = store
+        .register_asset(AssetInput {
+            entity_id: entity.id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            filename: "world.map".into(),
+            content_hash: "sha256:old".into(),
+            size: 3,
+            mime_type: "application/octet-stream".into(),
+            path: "assets/maps/world.map".into(),
+        })
+        .unwrap();
+    let correct_hash = format!("sha256:{:x}", Sha256::digest(b"new"));
+    assert!(store
+        .replace_asset_bytes_with_request(
+            AssetReplaceInput {
+                asset_id: asset.id.clone(),
+                content_hash: "sha256:wrong".into(),
+                size: 3,
+                mime_type: "application/octet-stream".into(),
+            },
+            b"new".to_vec(),
+            &asset.revision,
+            None,
+        )
+        .is_err());
+    assert!(store
+        .replace_asset_bytes_with_request(
+            AssetReplaceInput {
+                asset_id: asset.id.clone(),
+                content_hash: correct_hash.clone(),
+                size: 4,
+                mime_type: "application/octet-stream".into(),
+            },
+            b"new".to_vec(),
+            &asset.revision,
+            None,
+        )
+        .is_err());
+    let replaced = store
+        .replace_asset_bytes_with_request(
+            AssetReplaceInput {
+                asset_id: asset.id.clone(),
+                content_hash: correct_hash,
+                size: 3,
+                mime_type: "application/octet-stream".into(),
+            },
+            b"new".to_vec(),
+            &asset.revision,
+            None,
+        )
+        .unwrap();
+    assert_ne!(replaced.revision, asset.revision);
+    assert!(store
+        .replace_asset_bytes_with_request(
+            AssetReplaceInput {
+                asset_id: asset.id,
+                content_hash: replaced.content_hash,
+                size: 3,
+                mime_type: replaced.mime_type,
+            },
+            b"new".to_vec(),
+            "stale-revision",
+            None,
+        )
+        .is_err());
+}

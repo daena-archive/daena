@@ -271,6 +271,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   }
 
   function pluginNavigationActive(item: PluginNavigationItem) {
+    if (item.plugin.id === "daena.maps") return sandboxView?.plugin.id === "daena.maps";
     if (item.mode === "host") {
       return hostView?.plugin.id === item.plugin.id && hostView.view.id === item.view.id;
     }
@@ -299,7 +300,20 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   }
 
   async function openPluginView(item: PluginNavigationItem) {
-    if (item.plugin.id === "daena.maps") mapFocusLinkId = null;
+    if (item.plugin.id === "daena.maps") {
+      showPlugins = false;
+      const mapId = currentMapId();
+      if (sandboxView?.plugin.id === "daena.maps") {
+        const mapsWelcome = sandboxView.view === null;
+        if ((mapId === null && mapsWelcome) || (mapId !== null && !mapsWelcome)) return;
+      }
+      mapFocusLinkId = null;
+      await leavePluginView();
+      sandboxView = mapId
+        ? { plugin: item.plugin, view: item.view }
+        : { plugin: item.plugin, view: null };
+      return;
+    }
     if (item.mode === "host") {
       await openHostView(item.plugin, item.view);
       return;
@@ -330,6 +344,43 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
 
   function currentMapId() {
     return selected?.entity_type === "daena.maps:map" ? selected.id : null;
+  }
+
+  type SavedMapEntry = Entity & { size: number };
+  let savedMapsCache = $state<SavedMapEntry[] | null>(null);
+  let savedMapsRequest = 0;
+  $effect(() => {
+    const mapsWelcomeOpen = sandboxView?.plugin.id === "daena.maps" && sandboxView.view == null;
+    void entities;
+    if (!ready || !mapsWelcomeOpen) {
+      savedMapsCache = null;
+      return;
+    }
+    const request = ++savedMapsRequest;
+    void (async () => {
+      try {
+        const all = await project.listEntities();
+        const maps = all.filter((entity) => entity.entity_type === "daena.maps:map");
+        const entries: SavedMapEntry[] = [];
+        for (const map of maps) {
+          const fields = await project.listFields(map.id);
+          const descriptor = (fields.find((field) => field.namespace === "maps" && field.key === "map")?.value ?? null) as { sourceAssetId?: string | null } | null;
+          if (!descriptor?.sourceAssetId) continue;
+          const assets = await project.listAssets(map.id);
+          const source = assets.find((asset) => asset.namespace === "maps" && asset.id === descriptor.sourceAssetId && asset.size > 0);
+          if (!source) continue;
+          entries.push({ ...map, size: source.size });
+        }
+        entries.sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+        if (request === savedMapsRequest) savedMapsCache = entries;
+      } catch {
+        // Keep the previous cache on transient failures; retry on next change.
+      }
+    })();
+  });
+
+  function savedMaps() {
+    return savedMapsCache ?? [];
   }
 
   async function saveCurrentMap() {
@@ -1379,7 +1430,6 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
           {#each pluginViews() as item (item.key)}
             <div class="plugin-nav-row">
               <button class:active={pluginNavigationActive(item)} class="rail-button" title={pluginViewLabel(item)} aria-current={pluginNavigationActive(item) ? "page" : undefined} aria-label={`Open ${item.plugin.name}: ${item.view.title}`} onclick={() => void openPluginView(item)}><span class="rail-icon">◇</span><span class="plugin-nav-title">{pluginViewLabel(item)}</span></button>
-              {#if item.plugin.id === "daena.maps"}<button class="plugin-new-button" title="Create a new map" aria-label="Create a new map" onclick={() => void createMap()}>＋</button>{/if}
             </div>
           {/each}
         </nav>
@@ -1626,6 +1676,34 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
             {/if}
             <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={sandboxView.plugin.name} mapEntityId={mapId} linkId={mapFocusLinkId ?? undefined} />
           </div>
+        {:else if sandboxView.plugin.id === "daena.maps" && sandboxView.view == null}
+          {@const mapsView = pluginViews().find((item) => item.plugin.id === "daena.maps")}
+          <section class="welcome maps-welcome">
+            <div class="welcome-copy">
+              <span class="overline">MAPS</span>
+              <h1>Draw the world<br /><em>behind the story.</em></h1>
+              <p>Shape continents, kingdoms, and borders in the built-in generator. Create a new map or open one you have saved.</p>
+              <div class="maps-welcome-actions">
+                <button class="primary-button" type="button" onclick={() => void createMap()}>Create Map</button>
+              </div>
+            </div>
+            <div class="maps-welcome-list panel-surface">
+              <div class="panel-heading"><div><span class="panel-kicker">SAVED MAPS</span><strong>{savedMaps().length} saved</strong></div></div>
+              {#if savedMaps().length === 0}
+                <div class="list-empty" role="status"><span class="empty-mark" aria-hidden="true">◇</span><strong>No saved maps yet.</strong><p>Create a map and press Save to keep your first world.</p></div>
+              {:else}
+                <div class="collection-list">
+                  {#each savedMaps() as map (map.id)}
+                    <button class="collection-item" type="button" onclick={async () => {
+                      selected = map;
+                      await loadSelectedState(map);
+                      if (mapsView) await openPluginView(mapsView);
+                    }}><span class="item-copy"><strong>{map.name}</strong><small>Updated {new Date(map.updated_at).toLocaleString()}</small></span><span class="item-arrow" aria-hidden="true">›</span></button>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          </section>
         {:else}
           <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={sandboxView.plugin.name} mapEntityId={sandboxView.plugin.id === "daena.maps" && selected?.entity_type === "daena.maps:map" ? selected.id : undefined} />
         {/if}
@@ -1695,7 +1773,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   .studio-shell { min-height: 100vh; display: flex; } .rail { width: 248px; flex: 0 0 248px; display: flex; flex-direction: column; padding: 25px 15px 18px; background: #283a30; color: #eef0e9; } .startup-rail { padding-top: 34px; } .brand { display: flex; align-items: center; gap: 11px; padding: 0 10px 40px; } .rail:not(.startup-rail) .brand { padding-bottom: 20px; } .brand-mark { display: grid; place-items: start center; width: 31px; height: 31px; overflow: hidden; border-radius: 9px; background: #d5ab6c; } .project-card strong, .recent-project strong, .recent-project small { display: block; } .recent-project small { margin-top: 3px; color: #aab9ad; font-size: 11px; } .rail-label { margin: 0 10px 9px; color: #819688; font-size: 10px; font-weight: 700; letter-spacing: .16em; } .recent-label { margin-top: 27px; } .rail-button { width: 100%; display: flex; align-items: center; gap: 11px; padding: 10px 11px; margin-bottom: 3px; border: 0; border-radius: 8px; background: transparent; color: #b9c8bc; text-align: left; cursor: pointer; } .rail-button:hover, .rail-button.active { background: #3b5243; color: #fff; } .startup-primary { margin-top: 8px; background: #d5ab6c; color: #2c4032; font-weight: 700; } .startup-primary:hover { background: #e1bc82; color: #2c4032; } .rail-icon { width: 18px; color: #d5ab6c; text-align: center; } .startup-primary .rail-icon { color: #2c4032; } .muted-button { color: #91a397; } .rail-spacer { flex: 1; } .rail-footer { padding: 17px 10px 0; color: #708476; font-size: 11px; } .project-switcher { margin-bottom: 18px; } .project-card { display: flex; align-items: center; width: 100%; gap: 10px; padding: 10px; border: 0; border-radius: 8px; background: transparent; color: #eef0e9; font: inherit; text-align: left; cursor: pointer; } .project-card:hover, .project-card.active { background: #3b5243; } .project-copy { min-width: 0; flex: 1; } .project-chevron { flex: 0 0 auto; color: #aab9ad; font-size: 16px; line-height: 1; transform: translateY(-3px); } .project-card strong, .recent-project strong { font-size: 13px; max-width: 185px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .project-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: #777f78; } .project-dot.online { background: #88c18e; box-shadow: 0 0 0 4px rgba(136,193,142,.12); } .recent-projects { display: grid; gap: 3px; } .recent-project { width: 100%; display: flex; align-items: flex-start; gap: 10px; padding: 10px; border: 0; border-radius: 8px; background: transparent; color: #eef0e9; text-align: left; cursor: pointer; } .recent-project:hover { background: #3b5243; } .recent-project small { overflow: hidden; max-width: 180px; text-overflow: ellipsis; white-space: nowrap; } .project-menu { margin: 3px 0 8px 8px; padding-left: 8px; border-left: 1px solid #486052; } .project-menu .rail-button { padding: 8px 9px; color: #aab9ad; font-size: 11px; } .module-menu { margin: 6px 8px 12px; padding: 8px 10px; border: 1px solid #486052; border-radius: 8px; background: #30483a; }
   .app-main { min-width: 0; flex: 1; } .app-main.sandbox-active { display: flex; min-height: 0; flex-direction: column; overflow: hidden; } .app-main.sandbox-active > .topbar { flex: 0 0 auto; } .topbar { display: flex; align-items: center; justify-content: space-between; min-height: 58px; padding: 0 40px 0; border-bottom: 1px solid var(--line); background: rgba(255,254,250,.78); } .breadcrumbs, .top-actions { display: flex; align-items: center; gap: 10px; } .breadcrumbs { min-width: 0; color: var(--ink-faint); font-size: 12px; } .breadcrumbs strong { color: var(--ink-soft); } .breadcrumbs span:last-child { overflow: hidden; max-width: 180px; text-overflow: ellipsis; white-space: nowrap; } .breadcrumbs i { color: #d0ccc2; font-style: normal; } .global-search { display: flex; align-items: center; gap: 8px; width: 230px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink-faint); } .global-search input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 12px; } .sync-badge { color: var(--ink-faint); font-size: 10px; } .sync-badge { display: flex; align-items: center; gap: 6px; color: var(--ink-soft); } .sync-badge span { width: 6px; height: 6px; border-radius: 50%; background: #72a97a; }
   .welcome, .disabled-state { max-width: 1080px; min-height: calc(100vh - 58px); margin: auto; padding: 10vh 7vw; display: flex; align-items: center; gap: 8vw; } .welcome-copy { flex: 1; } .overline, .panel-kicker { display: block; color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: .18em; } .welcome h1 { margin: 20px 0 18px; font: 500 clamp(48px, 6vw, 78px)/.98 var(--font-display); letter-spacing: -.04em; } .welcome h1 em { color: var(--accent); font-style: italic; } .welcome p { max-width: 380px; margin: 0; color: var(--ink-soft); font-size: 16px; line-height: 1.7; } .welcome-art { position: relative; width: 360px; height: 390px; } .orb { position: absolute; border-radius: 50%; } .orb-one { top: 16px; right: 15px; width: 275px; height: 275px; background: radial-gradient(circle at 33% 30%, #eed5a5, #c2794d 64%, #7b4d3f); box-shadow: 30px 35px 60px rgba(115,74,56,.22); } .orb-two { left: 10px; bottom: 36px; width: 140px; height: 140px; background: #365342; box-shadow: 14px 16px 30px rgba(45,71,54,.2); } .art-card { position: absolute; right: -10px; bottom: 0; width: 235px; padding: 22px; border: 1px solid rgba(255,255,255,.65); border-radius: 12px; background: rgba(255,254,250,.86); box-shadow: var(--shadow-lg); } .art-card span, .art-card small { display: block; color: var(--accent); font-size: 9px; font-weight: 800; letter-spacing: .16em; } .art-card strong { display: block; margin: 17px 0 27px; font: 500 20px/1.18 var(--font-display); } .art-card small { color: var(--ink-faint); font-weight: 500; letter-spacing: 0; }
-  .primary-button, .quiet-button, .add-button { border: 0; border-radius: 8px; cursor: pointer; } .primary-button { padding: 10px 15px; background: var(--accent-dark); color: #fff; font-weight: 700; font-size: 12px; box-shadow: 0 5px 12px rgba(42,68,51,.14); } .primary-button:hover { background: #2b4535; } .primary-button:disabled { opacity: .55; cursor: wait; } .quiet-button { padding: 10px 12px; background: transparent; color: var(--ink-soft); font-size: 12px; } .quiet-button:hover { background: var(--surface-muted); color: var(--ink); }
+  .primary-button, .quiet-button, .add-button { border: 0; border-radius: 8px; cursor: pointer; } .primary-button { padding: 10px 15px; background: var(--accent-dark); color: #fff; font-weight: 700; font-size: 12px; box-shadow: 0 5px 12px rgba(42,68,51,.14); } .primary-button:hover { background: #2b4535; } .primary-button:disabled { opacity: .55; cursor: wait; } .quiet-button { padding: 10px 12px; background: transparent; color: var(--ink-soft); font-size: 12px; } .quiet-button:hover { background: var(--surface-muted); color: var(--ink); } .maps-welcome { align-items: stretch; } .maps-welcome-actions { display: flex; gap: 8px; margin-top: 26px; } .maps-welcome-list { flex: 0 0 380px; display: flex; width: 380px; min-height: 380px; max-height: calc(100vh - 220px); flex-direction: column; } .maps-welcome-list .panel-heading { flex: 0 0 auto; } .maps-welcome-list .collection-list { max-height: none; flex: 1 1 auto; overflow-y: auto; }
   .workspace-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; padding: 42px 40px 25px; } .workspace-heading h1 { margin: 8px 0 4px; font: 500 38px/1 var(--font-display); } .workspace-heading p { margin: 0; color: var(--ink-soft); font-size: 13px; } .heading-actions { display: flex; gap: 7px; } .projection-bar { min-height: 42px; margin: 0 40px 15px; padding: 0 14px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,254,250,.72); } .projection-bar:empty { display: none; } .workspace-grid { display: grid; grid-template-columns: 245px minmax(360px, 1fr) 270px; gap: 14px; padding: 0 40px 40px; align-items: start; } .panel-surface, .editor-panel { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-sm); } .collection-panel, .inspector-panel { min-height: 650px; } .collection-panel { display: flex; flex-direction: column; } .panel-heading, .inspector-heading { display: flex; align-items: center; justify-content: space-between; padding: 18px 17px 12px; } .panel-heading strong { display: block; margin-top: 5px; font: 500 28px var(--font-display); }
   .project-diagnostics { display: grid; gap: 5px; margin: 0 25px 14px; padding: 12px 14px; border: 1px solid #e2b48c; border-radius: 9px; background: #fff5e9; color: #765a39; font-size: 11px; } .project-diagnostics strong { font-size: 12px; } .project-diagnostics small { margin-top: 3px; color: #9a7957; } .editor-panel { min-height: 650px; padding: 24px 25px 18px; } .editor-header { display: flex; align-items: flex-start; justify-content: space-between; min-height: 72px; } .editor-header h2 { margin: 8px 0 0; font: 500 28px/1.1 var(--font-display); } .editor-status { color: var(--ink-faint); font-size: 11px; } .saving-dot, .saved-dot { display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: #d6a35f; } .saved-dot { width: auto; height: auto; margin: 0 4px 0 0; color: #6fa276; background: transparent; } .document-conflict { margin: -4px 0 16px; padding: 13px 14px; border: 1px solid #e2b48c; border-radius: 9px; background: #fff5e9; color: #765a39; } .document-conflict strong { font-size: 12px; } .document-conflict p { margin: 5px 0 10px; font-size: 11px; line-height: 1.5; } .conflict-compare { margin: 8px 0 10px; padding: 8px 10px; border: 1px solid #ead7c2; border-radius: 7px; background: #fffaf3; } .conflict-compare summary { cursor: pointer; font-size: 11px; font-weight: 700; } .conflict-compare pre { max-height: 180px; margin: 8px 0 0; overflow: auto; white-space: pre-wrap; font: 11px/1.5 ui-monospace, monospace; }   .conflict-actions { display: flex; flex-wrap: wrap; gap: 6px; }
   .map-editor-shell { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; }
@@ -1860,6 +1938,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     .welcome h1 { font-size: clamp(43px, 13vw, 56px); }
     .welcome p { font-size: 14px; }
     .welcome-art { margin-top: 22px; transform: scale(.72); transform-origin: left top; }
+    .maps-welcome-list { flex: 0 0 300px; width: 300px; transform: scale(.72); transform-origin: left top; margin-top: 22px; }
     .workspace-heading { padding: 28px 17px 18px; }
     .workspace-heading h1 { font-size: clamp(31px, 10vw, 38px); }
     .workspace-heading p { max-width: 38ch; line-height: 1.5; }

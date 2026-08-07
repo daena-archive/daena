@@ -10,7 +10,7 @@ export type MapAnchor =
 export interface MapDescriptor {
   schemaVersion: 1;
   provider: { id: string; adapterVersion: number; sourceFormat: string };
-  sourceAssetId: string;
+  sourceAssetId: string | null;
   previewAssetId: string | null;
   defaultView: { center: NormalizedPoint; zoom: number };
 }

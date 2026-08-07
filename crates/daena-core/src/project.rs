@@ -760,12 +760,17 @@ impl ProjectStore {
             })
             .transpose()?
             .ok_or_else(|| CoreError::NotFound("map descriptor not found".into()))?;
-        let mut source = self.asset_unchecked(&descriptor.source_asset_id)?;
+        let Some(source_asset_id) = descriptor.source_asset_id else {
+            return Err(CoreError::NotFound(
+                "map has no saved source asset to restore".into(),
+            ));
+        };
+        let mut source = self.asset_unchecked(&source_asset_id)?;
         let expected_revision = self.revision_for_asset(&source.id)?;
         let digest = format!("sha256:{}", digest_bytes(&bytes));
         self.replace_asset_bytes_with_request(
             AssetReplaceInput {
-                asset_id: descriptor.source_asset_id,
+                asset_id: source_asset_id,
                 content_hash: digest,
                 size: bytes.len() as i64,
                 mime_type: std::mem::take(&mut source.mime_type),
@@ -1881,24 +1886,13 @@ impl ProjectStore {
     }
 
     /// Creates the minimum canonical shape required before the map provider opens.
-    /// The provider fills the empty source asset with its first generated map on load.
+    /// No source asset exists until the first save; the descriptor carries a null
+    /// sourceAssetId and the provider generates its first map on load.
     pub fn create_map(&self, name: String) -> Result<Entity, CoreError> {
         let entity = self.create_entity(CreateEntity {
             name,
             entity_type: Some(crate::maps::MAP_ENTITY_TYPE.into()),
         })?;
-        let source_path = std::env::temp_dir().join(format!("daena-map-{}.map", entity.id));
-        std::fs::write(&source_path, [])
-            .map_err(|error| CoreError::Io { operation: "create map source", source: error })?;
-        let asset = self.register_asset_file(AssetFileInput {
-            entity_id: entity.id.clone(),
-            namespace: crate::maps::MAP_NAMESPACE.into(),
-            source_path: source_path.to_string_lossy().into_owned(),
-            filename: "map.map".into(),
-            mime_type: "application/x-fmg-map".into(),
-        });
-        let _ = std::fs::remove_file(&source_path);
-        let asset = asset?;
         self.set_field(FieldValue {
             entity_id: entity.id.clone(),
             namespace: crate::maps::MAP_NAMESPACE.into(),
@@ -1906,7 +1900,7 @@ impl ProjectStore {
             value: serde_json::json!({
                 "schemaVersion": 1,
                 "provider": {"id": "azgaar-fmg", "adapterVersion": 1, "sourceFormat": "fmg-map"},
-                "sourceAssetId": asset.id,
+                "sourceAssetId": null,
                 "previewAssetId": null,
                 "defaultView": {"center": [0.5, 0.5], "zoom": 1}
             }),
@@ -5184,23 +5178,71 @@ mod tests {
     }
 
     #[test]
-    fn create_map_writes_owned_empty_source_and_valid_descriptor() {
+    fn create_map_creates_descriptor_with_null_source_until_first_save() {
         let root = std::env::temp_dir().join(format!("daena-create-map-{}", Uuid::new_v4()));
         let store = ProjectStore::open_directory(&root).unwrap();
         let map = store.create_map("New map".into()).unwrap();
         assert_eq!(map.entity_type.as_deref(), Some(crate::maps::MAP_ENTITY_TYPE));
-        let asset = store.list_assets(map.id.clone()).unwrap().pop().unwrap();
-        assert_eq!(asset.namespace, crate::maps::MAP_NAMESPACE);
-        assert_eq!(asset.size, 0);
-        assert_eq!(std::fs::metadata(root.join(&asset.path)).unwrap().len(), 0);
+        assert!(
+            store.list_assets(map.id.clone()).unwrap().is_empty(),
+            "a fresh map has no source asset until its first save"
+        );
         let field = store
             .list_fields(map.id.clone())
             .unwrap()
             .into_iter()
             .find(|field| field.namespace == crate::maps::MAP_NAMESPACE && field.key == "map")
             .unwrap();
-        assert_eq!(field.value["sourceAssetId"], asset.id);
+        assert_eq!(field.value["sourceAssetId"], serde_json::Value::Null);
+        let locations = serde_json::json!({
+            "schemaVersion": 1,
+            "locations": []
+        });
+        assert!(
+            store
+                .set_field(FieldValue {
+                    entity_id: map.id.clone(),
+                    namespace: crate::maps::MAP_NAMESPACE.into(),
+                    key: "locations".into(),
+                    value: locations,
+                    revision: String::new(),
+                })
+                .is_ok(),
+            "map metadata must be writable before the first save"
+        );
+
+        let source_path = std::env::temp_dir().join(format!("daena-map-{}.map", Uuid::new_v4()));
+        std::fs::write(&source_path, b"fresh map source").unwrap();
+        let asset = store
+            .register_asset_file_with_request(
+                AssetFileInput {
+                    entity_id: map.id.clone(),
+                    namespace: crate::maps::MAP_NAMESPACE.into(),
+                    source_path: source_path.to_string_lossy().into_owned(),
+                    filename: "map.map".into(),
+                    mime_type: "application/x-fmg-map".into(),
+                },
+                None,
+            )
+            .unwrap();
+        assert!(asset.size > 0);
+        store
+            .set_field(FieldValue {
+                entity_id: map.id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "map".into(),
+                value: serde_json::json!({
+                    "schemaVersion": 1,
+                    "provider": {"id": "azgaar-fmg", "adapterVersion": 1, "sourceFormat": "fmg-map"},
+                    "sourceAssetId": asset.id,
+                    "previewAssetId": null,
+                    "defaultView": {"center": [0.5, 0.5], "zoom": 1}
+                }),
+                revision: String::new(),
+            })
+            .unwrap();
         drop(store);
+        std::fs::remove_file(&source_path).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -5604,6 +5646,33 @@ mod tests {
         let root = std::env::temp_dir().join(format!("daena-map-recovery-{}", Uuid::new_v4()));
         let store = ProjectStore::open_directory(&root).unwrap();
         let map = store.create_map("Recovered map".into()).unwrap();
+        let source = std::env::temp_dir().join(format!("daena-map-source-{}.map", Uuid::new_v4()));
+        std::fs::write(&source, b"original-source").unwrap();
+        let asset = store
+            .register_asset_file(AssetFileInput {
+                entity_id: map.id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                source_path: source.to_string_lossy().into_owned(),
+                filename: "map.map".into(),
+                mime_type: "application/x-fmg-map".into(),
+            })
+            .unwrap();
+        store
+            .set_field(FieldValue {
+                entity_id: map.id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "map".into(),
+                value: serde_json::json!({
+                    "schemaVersion": 1,
+                    "provider": {"id": "azgaar-fmg", "adapterVersion": 1, "sourceFormat": "fmg-map"},
+                    "sourceAssetId": asset.id,
+                    "previewAssetId": null,
+                    "defaultView": {"center": [0.5, 0.5], "zoom": 1}
+                }),
+                revision: String::new(),
+            })
+            .unwrap();
+        std::fs::remove_file(&source).unwrap();
         let before = store.list_map_recovery_copies(&map.id).unwrap();
         assert!(before.is_empty());
         let first_path = store

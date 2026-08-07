@@ -164,6 +164,11 @@ Deno.test("Maps bridge publishes editor state and recovery flows", async () => {
   if (!bridge.includes("exportDraft")) throw new Error("draft export is missing");
   if (!bridge.includes("maps.recovery.export.begin")) throw new Error("recovery export begin is missing");
   if (!bridge.includes("maps.recovery.export.commit")) throw new Error("recovery export commit is missing");
+  if (!bridge.includes("maps.asset.create.begin")) throw new Error("first-save create begin is missing");
+  if (!bridge.includes("maps.asset.create.commit")) throw new Error("first-save create commit is missing");
+  if (!bridge.includes("this map has no saved source yet")) throw new Error("reload guard for unsaved maps is missing");
+  if (!bridge.includes("map source is empty")) throw new Error("empty source guard is missing");
+  if (!bridge.includes("setDirty(true)")) throw new Error("fresh map generation is not marked dirty");
   if (!bridge.includes("publishState(\"clean\")")) throw new Error("boot state is not published");
   if (!bridge.includes("showDiagnosticUnlessConflict")) throw new Error("conflict diagnostics are not suppressed");
   if (!bridge.includes("if (savingNow) return;")) throw new Error("concurrent saves are not guarded");

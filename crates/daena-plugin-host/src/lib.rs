@@ -2908,6 +2908,7 @@ fn required_capabilities(
         }
         "asset.replace.commit" => Ok(vec!["asset.write:self".into()]),
         "asset.transfer.cancel" => Ok(Vec::new()),
+        "maps.asset.create.begin" | "maps.asset.create.commit" => Ok(vec!["asset.write:self".into()]),
         "maps.recovery.export.begin" | "maps.recovery.export.commit" | "maps.recovery.restore" => {
             Ok(vec!["asset.write:self".into()])
         }
@@ -3732,6 +3733,50 @@ mod tests {
                 .map(|error| error.code),
             Some("method.unknown".into())
         );
+    }
+    #[test]
+    fn maps_asset_create_is_authorized_for_write_capability() {
+        let mut host = host();
+        let session = host
+            .bootstrap("com.example.one", "project", "plugin://one")
+            .unwrap();
+        let denied = RpcRequest {
+            rpc_version: 1,
+            session_id: session.id,
+            request_id: "maps-create".into(),
+            method: "maps.asset.create.begin".into(),
+            payload: serde_json::json!({"mapEntityId": "map-1", "size": 42}),
+        };
+        assert_eq!(
+            host.rpc("plugin://one", &denied).error.unwrap().code,
+            "capability.denied"
+        );
+        host.grants
+            .set(
+                "project",
+                "com.example.one",
+                &["asset.write:self".into()],
+                ["asset.write:self".into()]
+                    .into_iter()
+                    .collect::<std::collections::BTreeSet<String>>(),
+            )
+            .unwrap();
+        let session = host
+            .bootstrap("com.example.one", "project", "plugin://one")
+            .unwrap();
+        let granted = RpcRequest {
+            session_id: session.id,
+            method: "maps.asset.create.commit".into(),
+            payload: serde_json::json!({"handle": "handle-1", "contentHash": "sha256:abc"}),
+            ..denied
+        };
+        let response = host.rpc("plugin://one", &granted);
+        assert!(
+            response.ok,
+            "expected authorization to succeed, got: {:?}",
+            response.error.as_ref().map(|error| error.code.clone())
+        );
+        assert_eq!(response.error, None);
     }
     #[test]
     fn revoked_session_cannot_be_replayed() {

@@ -65,6 +65,7 @@ window.DAENA_HOST = true;
       if (requestedMapEntityId && map.id !== requestedMapEntityId) continue;
       const field = await rpc("field.read", { entityId: map.id, namespace: "maps", key: "map" });
       const descriptor = Array.isArray(field) ? field[0]?.value : field?.value ?? field;
+      if (requestedMapEntityId) return { mapId: map.id, assetId: descriptor?.sourceAssetId ?? null };
       if (descriptor?.sourceAssetId) return { mapId: map.id, assetId: descriptor.sourceAssetId };
     }
     if (requestedMapEntityId) throw new Error(`requested map is unavailable: ${requestedMapEntityId}`);
@@ -93,14 +94,28 @@ window.DAENA_HOST = true;
     try {
       const bytes = new TextEncoder().encode(prepareMapData());
       const hash = await sha256(bytes);
-      const transfer = await rpc("asset.replace.begin", { assetId: asset.assetId, namespace: "maps", expectedRevision: asset.revision, size: bytes.length, mimeType: "application/x-fmg-map" });
-      for (let offset = 0, chunk = 0; offset < bytes.length; offset += transfer.maxChunkBytes, chunk += 1) {
-        const response = await fetch(transfer.url.replace(/\/0\?/, `/${chunk}?`), { method: "PUT", body: bytes.slice(offset, offset + transfer.maxChunkBytes) });
-        if (!response.ok) throw new Error(`map source upload failed (${response.status})`);
+      let saved;
+      if (asset.assetId === null) {
+        const transfer = await rpc("maps.asset.create.begin", { mapEntityId: asset.mapId, size: bytes.length });
+        for (let offset = 0, chunk = 0; offset < bytes.length; offset += transfer.maxChunkBytes, chunk += 1) {
+          const response = await fetch(transfer.url.replace(/\/0\?/, `/${chunk}?`), { method: "PUT", body: bytes.slice(offset, offset + transfer.maxChunkBytes) });
+          if (!response.ok) throw new Error(`map source upload failed (${response.status})`);
+        }
+        saved = await rpc("maps.asset.create.commit", { handle: transfer.handle, contentHash: hash });
+        asset.assetId = saved.id;
+        asset.revision = saved.revision;
+        asset.contentHash = saved.content_hash ?? saved.contentHash;
+        await rpc("field.set", { entityId: asset.mapId, namespace: "maps", key: "map", value: { schemaVersion: 1, provider: { id: "azgaar-fmg", adapterVersion: 1, sourceFormat: "fmg-map" }, sourceAssetId: saved.id, previewAssetId: null, defaultView: { center: [0.5, 0.5], zoom: 1 } }, expectedRevision: "" });
+      } else {
+        const transfer = await rpc("asset.replace.begin", { assetId: asset.assetId, namespace: "maps", expectedRevision: asset.revision, size: bytes.length, mimeType: "application/x-fmg-map" });
+        for (let offset = 0, chunk = 0; offset < bytes.length; offset += transfer.maxChunkBytes, chunk += 1) {
+          const response = await fetch(transfer.url.replace(/\/0\?/, `/${chunk}?`), { method: "PUT", body: bytes.slice(offset, offset + transfer.maxChunkBytes) });
+          if (!response.ok) throw new Error(`map source upload failed (${response.status})`);
+        }
+        saved = await rpc("asset.replace.commit", { handle: transfer.handle, contentHash: hash });
+        asset.revision = saved.revision;
+        asset.contentHash = saved.content_hash ?? saved.contentHash;
       }
-      const saved = await rpc("asset.replace.commit", { handle: transfer.handle, contentHash: hash });
-      asset.revision = saved.revision;
-      asset.contentHash = saved.content_hash ?? saved.contentHash;
       lastSavedHash = hash;
       setDirty(false);
       window.dispatchEvent(new CustomEvent("daena-map-saved", { detail: saved }));
@@ -154,10 +169,14 @@ window.DAENA_HOST = true;
   await waitForProvider();
   const mapAsset = await firstMapAsset();
   if (!mapAsset) { await window.generateMapOnLoad?.(); return; }
-  const metadata = await rpc("asset.read.begin", { assetId: mapAsset.assetId, namespace: "maps" });
-  const asset = { mapId: mapAsset.mapId, assetId: mapAsset.assetId, revision: metadata.revision, contentHash: metadata.contentHash };
+  let asset = { mapId: mapAsset.mapId, assetId: mapAsset.assetId, revision: null, contentHash: null };
+  let source = null;
+  if (asset.assetId !== null) {
+    const metadata = await rpc("asset.read.begin", { assetId: asset.assetId, namespace: "maps" });
+    asset = { mapId: asset.mapId, assetId: asset.assetId, revision: metadata.revision, contentHash: metadata.contentHash };
+    source = metadata.size === 0 ? null : await loadAsset(asset.assetId);
+  }
   mapId = asset.mapId;
-  const source = metadata.size === 0 ? null : await loadAsset(mapAsset.assetId);
   const featureCollections = { burg: "burgs", state: "states", province: "provinces", river: "rivers", marker: "markers" };
   const pointFor = feature => [feature.x / graphWidth, feature.y / graphHeight];
   const listFeatures = async query => Object.entries(featureCollections).flatMap(([kind, collectionName]) => (pack[collectionName] || []).filter(feature => (!query?.kind || query.kind === kind) && (!query?.text || String(feature.name || feature.i).toLowerCase().includes(query.text.toLowerCase()))).map(feature => ({ kind, id: String(feature.i), label: feature.name, point: pointFor(feature) })));
@@ -309,8 +328,12 @@ window.DAENA_HOST = true;
       void rpc("event.publish", { type: "daena.maps/selection@1", payload: { mapEntityId: mapId, anchor } }).catch(() => undefined);
     }, 900);
   };
-  async function loadMapSource(bytes) { await uploadMap(new File([bytes], "daena.map", { type: "application/octet-stream" })); }
+  async function loadMapSource(bytes) {
+    if (!bytes.length) throw new Error("map source is empty");
+    await uploadMap(new File([bytes], "daena.map", { type: "application/octet-stream" }));
+  }
   async function reloadSource() {
+    if (!asset.assetId) { showDiagnostic(new Error("this map has no saved source yet")); return; }
     const bytes = await loadAsset(asset.assetId);
     await loadMapSource(bytes);
     lastSavedHash = await sha256(new TextEncoder().encode(prepareMapData()));
@@ -325,7 +348,8 @@ window.DAENA_HOST = true;
   if (source === null) {
     if (typeof window.generateMapOnLoad !== "function") throw new Error("new map source is empty and FMG generation is unavailable");
     await window.generateMapOnLoad();
-    await saveAsset(asset);
+    if (asset.assetId === null) setDirty(true);
+    else await saveAsset(asset);
   } else {
     await window.daenaMapProvider.load(source);
     lastSavedHash = await sha256(new TextEncoder().encode(prepareMapData()));

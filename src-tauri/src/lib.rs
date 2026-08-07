@@ -72,6 +72,16 @@ enum BinaryTransfer {
         bytes: Vec<u8>,
         expires_at: Instant,
     },
+    Create {
+        plugin_id: String,
+        session_id: String,
+        project_id: String,
+        entity_id: String,
+        declared_size: usize,
+        next_chunk: u64,
+        bytes: Vec<u8>,
+        expires_at: Instant,
+    },
 }
 
 impl BinaryTransferManager {
@@ -80,7 +90,8 @@ impl BinaryTransferManager {
         self.transfers.retain(|_, transfer| match transfer {
             BinaryTransfer::Read { expires_at, .. }
             | BinaryTransfer::Upload { expires_at, .. }
-            | BinaryTransfer::RecoveryUpload { expires_at, .. } => *expires_at > now,
+            | BinaryTransfer::RecoveryUpload { expires_at, .. }
+            | BinaryTransfer::Create { expires_at, .. } => *expires_at > now,
         });
     }
 
@@ -139,6 +150,14 @@ impl BinaryTransferManager {
                 ..
             }
             | BinaryTransfer::RecoveryUpload {
+                plugin_id,
+                session_id,
+                next_chunk,
+                declared_size,
+                bytes,
+                ..
+            }
+            | BinaryTransfer::Create {
                 plugin_id,
                 session_id,
                 next_chunk,
@@ -253,6 +272,48 @@ impl BinaryTransferManager {
         }
     }
 
+    fn prepare_create_upload(
+        &mut self,
+        token: &str,
+        plugin_id: &str,
+        session_id: &str,
+        project_id: &str,
+        content_hash: &str,
+    ) -> Result<(String, Vec<u8>), String> {
+        self.cleanup();
+        let transfer = self
+            .transfers
+            .get(token)
+            .ok_or_else(|| "asset upload handle is invalid or expired".to_string())?;
+        match transfer {
+            BinaryTransfer::Create {
+                plugin_id: owner,
+                session_id: expected_session,
+                project_id: expected_project,
+                entity_id,
+                declared_size,
+                bytes,
+                ..
+            } if owner == plugin_id
+                && expected_session == session_id
+                && expected_project == project_id =>
+            {
+                if bytes.len() != *declared_size {
+                    return Err("asset upload is incomplete".into());
+                }
+                let digest = format!(
+                    "sha256:{:x}",
+                    Sha256::digest(bytes)
+                );
+                if digest != content_hash {
+                    return Err("asset upload content hash does not match bytes".into());
+                }
+                Ok((entity_id.clone(), bytes.clone()))
+            }
+            _ => Err("asset upload handle is not valid for this session or project".into()),
+        }
+    }
+
     fn complete_upload(&mut self, token: &str, plugin_id: &str, session_id: &str) -> Result<(), String> {
         let Some(transfer) = self.transfers.remove(token) else {
             return Err("asset upload handle is invalid or expired".into());
@@ -264,6 +325,11 @@ impl BinaryTransferManager {
                 ..
             }
             | BinaryTransfer::RecoveryUpload {
+                plugin_id: owner,
+                session_id: expected_session,
+                ..
+            }
+            | BinaryTransfer::Create {
                 plugin_id: owner,
                 session_id: expected_session,
                 ..
@@ -283,7 +349,8 @@ impl BinaryTransferManager {
         let owner = match transfer {
             BinaryTransfer::Read { plugin_id, .. }
             | BinaryTransfer::Upload { plugin_id, .. }
-            | BinaryTransfer::RecoveryUpload { plugin_id, .. } => plugin_id,
+            | BinaryTransfer::RecoveryUpload { plugin_id, .. }
+            | BinaryTransfer::Create { plugin_id, .. } => plugin_id,
         };
         if owner != plugin_id {
             return Err("asset handle is not valid for this plugin".into());
@@ -833,6 +900,8 @@ fn plugin_protocol_response(
                         | "asset.replace.begin"
                         | "asset.replace.commit"
                         | "asset.transfer.cancel"
+                        | "maps.asset.create.begin"
+                        | "maps.asset.create.commit"
                         | "maps.recovery.export.begin"
                         | "maps.recovery.export.commit"
                 ) {
@@ -1052,6 +1121,91 @@ fn dispatch_binary_asset_rpc(
                 .ok_or_else(|| "handle is required".to_string())?;
             manager.cancel(token, &session.plugin_id)?;
             Ok(serde_json::Value::Null)
+        }
+        "maps.asset.create.begin" => {
+            let entity_id = payload
+                .get("mapEntityId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "mapEntityId is required".to_string())?;
+            let exists = project
+                .list_entities()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .any(|entity| {
+                    entity.id == entity_id
+                        && entity.entity_type.as_deref()
+                            == Some(daena_core::maps::MAP_ENTITY_TYPE)
+                });
+            if !exists {
+                return Err("map entity not found".into());
+            }
+            let size_value = payload
+                .get("size")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "size is required".to_string())?;
+            if size_value > MAX_ASSET_TRANSFER_BYTES as u64 {
+                return Err("asset exceeds host transfer limit".into());
+            }
+            let size = size_value as usize;
+            if let Some(mime_type) = payload.get("mimeType") {
+                if !mime_type.is_string() {
+                    return Err("mimeType must be a string".into());
+                }
+            }
+            let token = manager.token(BinaryTransfer::Create {
+                plugin_id: session.plugin_id.clone(),
+                session_id: session.id.clone(),
+                project_id: session.project_id.clone(),
+                entity_id: entity_id.into(),
+                declared_size: size,
+                next_chunk: 0,
+                bytes: Vec::with_capacity(size.min(MAX_ASSET_TRANSFER_BYTES)),
+                expires_at: Instant::now() + ASSET_TRANSFER_TTL,
+            });
+            Ok(
+                serde_json::json!({"handle":token,"url":format!("plugin://{}/__asset/{}/0?sessionId={}", session.plugin_id, token, session.id),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
+            )
+        }
+        "maps.asset.create.commit" => {
+            let token = payload
+                .get("handle")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "handle is required".to_string())?;
+            let content_hash = payload
+                .get("contentHash")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "contentHash is required".to_string())?;
+            let (entity_id, bytes) = manager.prepare_create_upload(
+                token,
+                &session.plugin_id,
+                &session.id,
+                &session.project_id,
+                content_hash,
+            )?;
+            drop(manager);
+            let source_path = std::env::temp_dir().join(format!("daena-map-{entity_id}.map"));
+            std::fs::write(&source_path, &bytes).map_err(|error| {
+                format!("write map source temp file: {error}")
+            })?;
+            let result = project
+                .register_asset_file_with_request(
+                    AssetFileInput {
+                        entity_id: entity_id.clone(),
+                        namespace: daena_core::maps::MAP_NAMESPACE.into(),
+                        source_path: source_path.to_string_lossy().into_owned(),
+                        filename: "map.map".into(),
+                        mime_type: "application/x-fmg-map".into(),
+                    },
+                    request_id,
+                )
+                .map_err(|e| e.to_string());
+            let _ = std::fs::remove_file(&source_path);
+            let asset = result?;
+            let mut manager = transfers
+                .lock()
+                .map_err(|_| "asset transfer state is unavailable".to_string())?;
+            manager.complete_upload(token, &session.plugin_id, &session.id)?;
+            serde_json::to_value(asset).map_err(|e| e.to_string())
         }
         "maps.recovery.export.begin" => {
             let entity_id = payload
@@ -3057,6 +3211,8 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
         ),
         "asset.replace.commit" => (&["handle", "contentHash"], &[]),
         "asset.transfer.cancel" => (&["handle"], &[]),
+        "maps.asset.create.begin" => (&["mapEntityId", "size"], &["mimeType"]),
+        "maps.asset.create.commit" => (&["handle", "contentHash"], &[]),
         "maps.recovery.export.begin" => (&["mapEntityId", "size"], &[]),
         "maps.recovery.export.commit" => (&["handle", "contentHash"], &[]),
         "maps.recovery.list" => (&["mapEntityId"], &[]),
@@ -5076,6 +5232,155 @@ mod tests {
         let outcome = resolve_maps_navigation(&mut core, &request).unwrap();
         assert_eq!(outcome.emit, Some((map_id, None)));
         assert!(outcome.result.is_ok());
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn maps_asset_create_rpc_round_trips_source_asset() {
+        let root =
+            std::env::temp_dir().join(format!("daena-map-create-rpc-{}", uuid::Uuid::new_v4()));
+        let core: SharedCore = Arc::new(Mutex::new(CoreService::new()));
+        core.lock()
+            .unwrap()
+            .open_directory(trusted_shell(), &root)
+            .unwrap();
+        let map_id = {
+            let core = core.lock().unwrap();
+            let project = core.project(trusted_shell()).unwrap();
+            project.create_map("Test Map".into()).unwrap().id
+        };
+        let transfers: SharedBinaryTransfers = Arc::new(Mutex::new(BinaryTransferManager::default()));
+        let session = Session {
+            id: "session".into(),
+            plugin_id: "daena.maps".into(),
+            package_digest: "digest".into(),
+            plugin_version: "0.1.0".into(),
+            host_api: ">=1.0.0 <2.0.0".into(),
+            project_id: "project".into(),
+            origin: "plugin:daena.maps".into(),
+            grants: std::collections::BTreeSet::new(),
+            generation: 1,
+            expires_at: std::time::SystemTime::now() + ASSET_TRANSFER_TTL,
+            revoked: false,
+        };
+        let place_id = {
+            let core = core.lock().unwrap();
+            let project = core.project(trusted_shell()).unwrap();
+            project
+                .create_entity(CreateEntity {
+                    name: "Place".into(),
+                    entity_type: Some("place".into()),
+                })
+                .unwrap()
+                .id
+        };
+        assert!(
+            dispatch_binary_asset_rpc(
+                &core,
+                &transfers,
+                &session,
+                "maps.asset.create.begin",
+                serde_json::json!({"mapEntityId": place_id, "size": 5}),
+                None,
+            )
+            .is_err(),
+            "a non-map entity must be rejected"
+        );
+
+        let begin = dispatch_binary_asset_rpc(
+            &core,
+            &transfers,
+            &session,
+            "maps.asset.create.begin",
+            serde_json::json!({"mapEntityId": map_id, "size": 5}),
+            None,
+        )
+        .unwrap();
+        let handle = begin["handle"].as_str().unwrap().to_string();
+        assert!(
+            begin["url"]
+                .as_str()
+                .unwrap()
+                .starts_with(&format!("plugin://daena.maps/__asset/{handle}/0?sessionId=session"))
+        );
+        {
+            let mut manager = transfers.lock().unwrap();
+            assert_eq!(
+                manager
+                    .append_upload(&handle, "daena.maps", "session", 0, b"fmg-!")
+                    .unwrap(),
+                5
+            );
+        }
+
+        let saved = dispatch_binary_asset_rpc(
+            &core,
+            &transfers,
+            &session,
+            "maps.asset.create.commit",
+            serde_json::json!({"handle": handle, "contentHash": format!("sha256:{:x}", Sha256::digest(b"fmg-!"))}),
+            None,
+        )
+        .unwrap();
+        let saved_asset: Asset = serde_json::from_value(saved).unwrap();
+        assert_eq!(saved_asset.namespace, daena_core::maps::MAP_NAMESPACE);
+        assert_eq!(saved_asset.size, 5);
+
+        {
+            let core = core.lock().unwrap();
+            let project = core.project(trusted_shell()).unwrap();
+            let asset = project.asset(saved_asset.id.clone()).unwrap();
+            assert_eq!(asset.size, 5);
+            let info = project.info().unwrap();
+            let path = daena_core::normalized_project_path(Path::new(&info.root), &asset.path)
+                .unwrap();
+            assert_eq!(std::fs::read(path).unwrap(), b"fmg-!");
+            let descriptor = project
+                .list_fields(map_id.clone())
+                .unwrap()
+                .into_iter()
+                .find(|field| {
+                    field.namespace == daena_core::maps::MAP_NAMESPACE && field.key == "map"
+                })
+                .unwrap();
+            assert_eq!(
+                descriptor.value["sourceAssetId"],
+                serde_json::Value::Null,
+                "commit must not touch the descriptor; only the first save may"
+            );
+        }
+
+        let read = dispatch_binary_asset_rpc(
+            &core,
+            &transfers,
+            &session,
+            "asset.read.begin",
+            serde_json::json!({"assetId": saved_asset.id, "namespace": "maps"}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(read["size"], 5);
+
+        {
+            let core = core.lock().unwrap();
+            let project = core.project(trusted_shell()).unwrap();
+            project
+                .set_field(FieldValue {
+                    entity_id: map_id,
+                    namespace: daena_core::maps::MAP_NAMESPACE.into(),
+                    key: "map".into(),
+                    value: serde_json::json!({
+                        "schemaVersion": 1,
+                        "provider": {"id": "azgaar-fmg", "adapterVersion": 1, "sourceFormat": "fmg-map"},
+                        "sourceAssetId": saved_asset.id,
+                        "previewAssetId": null,
+                        "defaultView": {"center": [0.5, 0.5], "zoom": 1}
+                    }),
+                    revision: String::new(),
+                })
+                .unwrap();
+        }
 
         std::fs::remove_dir_all(root).ok();
     }

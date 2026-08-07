@@ -5,7 +5,7 @@
   "commit": "3430c22204f60baa412d4657ca2f9d00c270eda9",
   "license": "MIT",
   "fixture": { "path": "tests/fixtures/demo.map", "sha256": "f1ab797dcf7e2a383b0753e965342c374e86c6ce1db666ea2a4abc8122504799" },
-  "archive": { "path": "src-tauri/plugin-assets/maps/fmg-v1.119.zip", "sha256": "b3dfd9fe4f42b656be6deb046495061c39867f2fe67777142dcaa1895824cd6b", "uncompressedBytes": 24475025 },
+  "archive": { "path": "src-tauri/plugin-assets/maps/fmg-v1.119.zip", "sha256": "5af708d471f4767449ab3799113ef33212332142d1edc751140919bd9c021944", "uncompressedBytes": 24484631 },
   "build": { "node": "26.6.0", "npm": "11.18.0", "command": "npm ci --ignore-scripts --no-audit --no-fund && npm run build", "runtime": "offline" },
   "patches": [
     "daena-fmg-bridge: host-bound source load/save and feature focus",
@@ -14,6 +14,7 @@
     "disable service-worker registration in the Daena child webview",
     "remove analytics and external cloud entry points from the packaged shell",
     "externalize FMG inline event and style attributes for CSP",
-    "replace Google Fonts runtime URLs with a local system-font fallback"
+    "replace Google Fonts runtime URLs with a local system-font fallback",
+    "maps bridge: welcome flow with null sourceAssetId until first save, maps.asset.create begin/commit first-save path, dirty generated maps"
   ]
 }

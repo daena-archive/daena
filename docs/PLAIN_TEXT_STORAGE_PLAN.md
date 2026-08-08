@@ -574,3 +574,243 @@ fsync behavior vary by platform.
 - SQLite is always disposable derived state.
 - The alpha release adopts the new format directly and provides no project-data
   migration from the existing SQLite-canonical layout.
+
+## Appendix: Storage Implementation Review and Remaining Work
+
+### Purpose and scope
+
+This appendix records the implementation review of the filesystem-backed
+storage system. It is the durable replacement for the former standalone
+storage review. It applies to:
+
+- `crates/daena-core/src/project.rs`;
+- `crates/daena-core/src/storage.rs`;
+- `crates/daena-core/src/transactions.rs`; and
+- `src-tauri/src/lib.rs`.
+
+The canonical files remain authoritative. `.daena/index.sqlite` remains
+disposable derived state. The review identified a real mismatch: durability
+and correctness were substantially implemented, but several commit,
+reconciliation, and indexing paths still processed the whole project for
+small mutations.
+
+### Performance baseline
+
+The original implementation review measured the 26-entity seed fixture
+(94 canonical files) as follows:
+
+| Path | Time |
+| --- | ---: |
+| In-memory seed, without a disk commit | 0.08 s |
+| Directory-backed seed, reopen, and re-seed (two commits plus reopen) | 2.49 s |
+| Implied full-commit cost | approximately 1.2 s |
+
+The implied cost was approximately 13 ms per canonical file. This baseline is
+historical and must be refreshed before claiming a percentage improvement.
+The current implementation has not yet been benchmarked against an equivalent
+post-change fixture.
+
+Git diffs were already focused: `apply_replacements` skips replacing a
+canonical target when its current hash equals the staged new hash. The
+performance problem was the work before that final comparison: serialization,
+copying, staging, hashing, fsync, projection import, and derived-index
+reconstruction.
+
+### Review findings and current status
+
+| ID | Finding | Current status |
+| --- | --- | --- |
+| F1 | Every commit reconstructs and processes a full project snapshot | Partially fixed: unchanged transaction targets are no longer journaled or fsynced, but full snapshot serialization and staging preparation remain |
+| F2 | Every commit rebuilds the SQLite projection and search index | Partially fixed: duplicate derived-index rebuilds were removed and `source_files` maintenance is incremental; entity/document/field/relationship/asset rows and FTS are still broadly rebuilt |
+| F3 | Every open rebuilds the SQLite index | Fixed for the normal case: an existing index is reused when source hashes, integrity, and source count match; missing, stale, corrupt, or incompatible indexes still rebuild |
+| F4 | External reconciliation re-imports the whole snapshot | Partially fixed: source-file hash maintenance is incremental, but the logical projection and search rebuild remain snapshot-wide |
+| F5 | Commits perform repeated full scans and repeated hashing | Partially fixed: unchanged files avoid transaction staging and related hashes; full pre/staging/post scans and other full-tree work remain |
+| F6 | File and directory fsyncs are serialized per staged replacement | Unchanged; this remains a deliberate durability tradeoff. Batching requires crash-injection coverage before adoption |
+| F7 | Verification helpers perform expensive whole-tree or whole-index checks | Partially fixed: ordinary mutation validation uses foreign-key checks, `quick_check`, and source-count validation; full integrity verification remains for rebuild/open gates |
+| F8 | There is no explicit changed-set or dirty tracking | Open; this remains the root cause of the remaining full serialization and projection work |
+| F9 | Draft-versus-external conflict handling is incomplete | Open; external reconciliation still lacks a per-document dirty-draft gate and complete resolution UX |
+
+### Confirmed processing paths
+
+The original full-snapshot commit path performed all of the following for a
+small mutation:
+
+1. Exported a complete `ProjectSnapshot`.
+2. Scanned canonical sources before applying the transaction.
+3. Copied every canonical source into transaction staging.
+4. Re-serialized every entity, document, field file, relationship file, asset
+   record, and plugin state file.
+5. Scanned and parsed the staged tree.
+6. Staged every staged source, including unchanged sources, with per-file
+   syncing and expected-old-hash capture.
+7. Re-scanned the committed tree.
+8. Re-imported the complete snapshot into SQLite.
+9. Replaced all `source_files` rows and rebuilt FTS/map projections.
+
+The current code still performs the complete projection and canonical
+serialization pass. It now avoids journaling unchanged canonical paths by
+comparing staged source hashes with the pre-commit source set. It also avoids
+the duplicate search/map rebuild that previously occurred inside snapshot
+import and again after source-index replacement.
+
+### Remaining implementation work
+
+#### R1: Complete incremental derived-index updates
+
+Replace snapshot-wide projection replacement on normal mutations with
+changed-record updates:
+
+- Determine changed entity IDs, document IDs, field namespaces, relationship
+  source IDs, asset IDs, plugin IDs, and migration records from the mutation
+  or a before/after snapshot diff.
+- Upsert changed rows using the existing conflict-safe SQL.
+- Delete rows for records removed from the changed scopes.
+- Preserve cascading ownership rules: deleting or replacing an entity must
+  update its documents, fields, source-owned relationships, and assets.
+- Keep full replacement as the fallback for rebuilds and recovery.
+
+The existing `source_files` table is already updated incrementally for normal
+commits and external reconciliation. The remaining work is the logical
+projection represented by the other SQLite tables.
+
+#### R2: Incremental FTS and map projection maintenance
+
+`rebuild_search` currently recreates the FTS table and rebuilds map
+projection data. Replace this on normal mutations with targeted delete/insert
+operations for affected entities. FTS rows must retain the source path and
+source hash that prove their canonical origin. Keep full FTS/map rebuilding
+for index reconstruction and explicit repair operations.
+
+#### R3: Remove redundant full scans
+
+After the incremental update path is proven:
+
+- avoid a full pre-apply scan when the transaction can validate only its
+  changed paths against the indexed source hashes and expected revisions;
+- avoid a full staging scan when every staged byte has already been
+  canonicalized, hashed, and validated;
+- verify changed files after replacement by reading them back and comparing
+  their expected hashes;
+- retain source-count and targeted index checks;
+- retain the full canonical scan as the rebuild, open-verification, and
+  external-watcher validation path.
+
+External editors do not honor Daena's writer lock, so runtime revision checks
+must remain for every path actually replaced.
+
+#### R4: Add explicit changed-set or dirty tracking only after R1–R3
+
+The current repository mutation closure returns only its result value and does
+not report which records it touched. Once serialize-and-diff and incremental
+indexing are proven, consider recording touched entities, documents, fields,
+relationships, assets, modules, and migration state in the projection.
+
+Dirty tracking can remove the remaining full serialization pass, but it is
+risky: missing a cascade can silently omit canonical data. Every mutation
+must cover relationship edges, map projections, imports, namespace ownership,
+plugin state, migration history, and asset metadata. Do not adopt dirty
+tracking as the first optimization.
+
+#### R5: Decide whether to batch fsyncs
+
+The current journal remains conservative: staged files and replacement
+directories are synced individually. If profiling shows fsync remains
+dominant after R1–R3:
+
+- group staged-file syncs by parent directory;
+- sync each directory after its replacement group;
+- preserve journal ordering and crash recovery semantics;
+- add failure injection before and after each batch boundary;
+- verify recovery always produces the complete old or complete new state.
+
+Batching is an explicit durability tradeoff and must not be adopted based only
+on unit-test success.
+
+#### R6: Reuse captured expected hashes
+
+The transaction captures `expected_old_hash` while staging, then
+`apply_replacements` hashes the target again. Thread the captured value into
+replacement application where safe, while retaining a final current-hash
+check for paths being replaced. This is a small optimization after the
+changed-set work and must not weaken external-edit conflict detection.
+
+#### R7: Complete draft-versus-external conflict handling
+
+External reconciliation must distinguish:
+
+- a clean document with an external edit, which may reconcile automatically;
+- a document with an unsaved local draft and an overlapping external edit,
+  which must become a typed conflict;
+- an invalid canonical file, which must remain diagnostic-only and must not
+  replace the last valid projection.
+
+The conflict model must provide compare, reload disk, overwrite disk,
+and save draft as a recovery copy actions. Recovery copies belong below
+`.daena/conflicts/` and never enter canonical scans. Git-unmerged canonical
+files must remain diagnostics before scanning, and built-in Git commit must
+continue to reject unresolved diagnostics.
+
+### Change-set strategy decision
+
+Use serialize-and-diff as the first strategy. Deterministic canonical output
+makes byte equality equivalent to logical equality, so it avoids mutation
+bookkeeping and cannot silently omit an unmarked cascade. It reduces the
+transaction replacement set to the actual changed paths while preserving the
+existing journal, receipts, expected-old-hash checks, and crash recovery.
+
+Treat dirty tracking as a later strategy only after benchmarks show that
+serialization CPU, rather than projection/indexing or fsync, is the remaining
+bottleneck. The risk of missing a dirty cascade is greater than the likely
+constant-factor gain at the current stage.
+
+### Required verification
+
+All of the following must remain green:
+
+- core storage tests, including crash injection at every durable transaction
+  step;
+- canonical round-trip and delete-`.daena` recovery tests;
+- external clean-edit and invalid-edit tests;
+- Git-unmerged diagnostics and commit rejection tests;
+- focused source-index, projection, and search tests;
+- `cargo clippy` with warnings denied;
+- the cached Tauri check and applicable TypeScript/plugin contract checks.
+
+Add these performance and startup tests:
+
+1. Create directory-backed fixtures with 26, 500, and 1,000 entities or an
+   equivalent canonical-file count.
+2. Measure a single-field edit, a document edit, an entity rename, a
+   relationship edit, and an asset update.
+3. Record serialization, canonical scan, transaction staging, fsync,
+   projection update, and search-update timings separately where practical.
+4. Assert that the changed-file transaction set contains no unrelated paths.
+5. Assert that opening an unchanged indexed project does not replace
+   `.daena/index.sqlite`.
+6. Delete `.daena/` and verify that full rebuild produces an equivalent
+   projection and search result set.
+7. Run crash injection after every journal, staging, replacement, and receipt
+   boundary.
+8. Verify external clean edits refresh, invalid edits remain diagnostic-only,
+   and dirty drafts become conflicts rather than being overwritten.
+
+The target for the completed incremental path is sub-linear mutation work with
+respect to project size for ordinary small edits. Do not claim a percentage
+improvement until the same fixture and measurement procedure have been run
+before and after the implementation.
+
+### Storage implementation locations
+
+| Responsibility | Symbol or location |
+| --- | --- |
+| Directory open and verify-or-rebuild | `ProjectStore::open_directory`, `ProjectStore::rebuild_directory_index` |
+| External reconciliation | `ProjectStore::reconcile_external_changes` |
+| Repository-first mutation | `ProjectStore::repository_first_mutation` |
+| Canonical transaction commit | `ProjectStore::commit_canonical_snapshot` |
+| Canonical serialization and scan | `write_canonical_project`, `read_canonical_project` in `storage.rs` |
+| Source hash index | `replace_source_index`, incremental source-index helpers in `project.rs` |
+| Snapshot projection import | `import_json_with_mode_and_sync` in `project.rs` |
+| Search and map projection | `ProjectStore::rebuild_search` |
+| Index verification | `verify_index`, mutation-time quick checks in `project.rs` |
+| Transaction staging | `FileTransaction::stage_bytes` |
+| Transaction application and recovery | `apply_replacements`, `recover_transactions` in `transactions.rs` |

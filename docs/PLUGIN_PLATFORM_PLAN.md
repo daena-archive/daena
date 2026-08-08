@@ -4,8 +4,8 @@
 
 This document is the architecture decision and delivery plan for evolving
 Daena Archive's build-time module system into a third-party plugin platform. It
-supersedes the runtime-extension assumptions in `ARCHITECTURE.md` and `PLAN.md`
-where those documents are less specific. It does not change the canonical
+refines the runtime-extension architecture in `ARCHITECTURE.md` where this
+document is more specific. It does not change the canonical
 project data model described there.
 
 Plugin authors should use the [definitive plugin authoring guide](PLUGIN_SDK.md)
@@ -474,7 +474,7 @@ Create the manifest and RPC contract types in Rust, generate the JSON Schemas
 and TypeScript declarations from them, and define the capability registry,
 lifecycle state machine, and error model. Add ADRs for isolation, package
 trust, plugin-to-plugin communication, and data ownership. Update
-`ARCHITECTURE.md` and `PLAN.md` to link to this document.
+`ARCHITECTURE.md` to link to this document.
 
 **Exit gate:** One canonical Lore manifest validates identically in Rust and
 TypeScript; JSON Schemas and TypeScript declarations are generated from the

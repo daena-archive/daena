@@ -462,7 +462,7 @@ edits refresh live, and conflicting edits never overwrite an unsaved draft.
 - Add Git preflight validation and precise staging previews.
 - Update broker RPC schemas, generated SDK types, bundled modules, plugin test
   host, conformance tests, and administration state.
-- Update `docs/PLAN.md`, `docs/ARCHITECTURE.md`, plugin ADRs, SDK documentation,
+- Update `docs/ARCHITECTURE.md`, plugin ADRs, SDK documentation,
   and the example project so files are canonical and SQLite is explicitly
   derived.
 

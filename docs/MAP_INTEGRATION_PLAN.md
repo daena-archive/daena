@@ -4,8 +4,7 @@
 
 This document turns the product direction in
 [`MAP_OVERVIEW.md`](./MAP_OVERVIEW.md) into a phased implementation plan. It is
-subordinate to the project-wide contracts in [`PLAN.md`](./PLAN.md),
-[`ARCHITECTURE.md`](./ARCHITECTURE.md),
+subordinate to the project-wide contracts in [`ARCHITECTURE.md`](./ARCHITECTURE.md),
 [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md), and
 [`PLAIN_TEXT_STORAGE_PLAN.md`](./PLAIN_TEXT_STORAGE_PLAN.md).
 

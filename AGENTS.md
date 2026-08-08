@@ -11,7 +11,7 @@
 
 ## Architecture authorities
 
-- `docs/PLAN.md` defines the product and MVP direction.
+- `docs/ARCHITECTURE.md` defines the product and current architecture.
 - `docs/PLUGIN_PLATFORM_PLAN.md` defines plugin-platform acceptance criteria.
 - `docs/PLAIN_TEXT_STORAGE_PLAN.md` defines canonical project-storage behavior.
 - Project files are canonical. `.daena/index.sqlite` is disposable derived state and must be rebuildable from the canonical files.

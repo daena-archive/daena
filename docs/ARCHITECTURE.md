@@ -1,104 +1,272 @@
-# Daena Archive version-one architecture
+# Daena Archive architecture
 
-This document turns the MVP in `docs/PLAN.md` into the contract implemented by
-the host and bundled modules. The contract is intentionally small: the core
-owns durable data and modules own meaning and presentation.
+## Purpose and authority
 
-The plugin platform contract is defined in
-[`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md). Its Phase 0 schemas,
-Rust API types, generated SDK types, broker transport, bundled modules, test
-host, and ADRs are the shared authority for bundled and runtime plugins.
+Daena Archive is an offline-first authoring studio for fictional worlds and
+stories. This document is the project-wide architecture authority for the
+product model, host boundaries, canonical storage, bundled modules, and
+runtime plugins.
 
-For creating or packaging a plugin, use the [definitive plugin authoring
-guide](./PLUGIN_SDK.md).
+It consolidates the former product and architecture documents. Detailed
+contracts remain in the focused plans below:
 
-## Canonical data
+- [`PLAIN_TEXT_STORAGE_PLAN.md`](./PLAIN_TEXT_STORAGE_PLAN.md) defines the
+  canonical directory format, transactions, recovery, and disposable index.
+- [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md) defines plugin
+  isolation, package trust, broker authorization, lifecycle, and compatibility.
+- [`PLUGIN_SDK.md`](./PLUGIN_SDK.md) is the definitive plugin authoring guide.
+- [`GIT_INTEGRATION.md`](./GIT_INTEGRATION.md) defines the optional built-in Git
+  integration.
+- [`MAP_INTEGRATION_PLAN.md`](./MAP_INTEGRATION_PLAN.md) defines provider-backed
+  maps and map/entity integration.
+- [`AI_INTEGRATION.md`](./AI_INTEGRATION.md) defines the future AI subsystem.
 
-Each project is a portable directory containing `project.json`, canonical
-entity/document files, a disposable `.daena/index.sqlite` derived index, and
-an `assets/` tree divided into images, videos, maps, and other files. Git
-operations are explicit user actions. Before a built-in commit, the Rust core
-recovers pending file transactions, scans and validates canonical sources,
-checks the disposable index against current source hashes, rejects unmerged
-files and pre-staged noncanonical paths, and returns an exact staging preview
-of `project.json`, entity/plugin records, and assets. Only those previewed
-paths are staged; `.daena/` and SQLite files remain ignored derived state.
+Those documents may add detail but must not contradict the boundaries here.
+ADRs in [`adr/`](./adr/) record narrower decisions and security constraints.
 
-Every entity has an immutable UUID, a
-display name, an optional type, timestamps, and a soft-delete marker. Prose is
-stored as documents attached to an entity. Structured fields are namespaced by
-module and validated by that module's schema contribution. Relationships store
-source ID, target ID, relationship type, and optional metadata. Assets are
-registered by SHA-256 content hash and project-relative path; modules store
-references to assets, never copies of project files.
+## Product direction
 
-Names and other presentation properties are mutable; IDs are not. A reference
-always stores an ID, so renaming an entity cannot break links. Deleting an
-entity is a core operation that preserves an audit/tombstone record and leaves
-module data available for recovery or export.
+Daena is a private, local-first desktop workspace where authors build a shared
+world model and write from it. The product is organized around one durable
+entity graph rather than separate databases for lore, timelines, maps, or
+manuscripts.
 
-## Module boundary
+The current product direction includes:
 
-Modules are build-time registered packages. A manifest declares an ID, version,
-display name, capabilities, schemas, templates, views, commands, and
-migrations. The host passes a typed `ModuleContext` containing
-entity/query/document/field/relationship/asset operations and a
-mount point; it never passes a database handle, filesystem handle, or raw Tauri
-invoke function. Views return a cleanup callback and must release subscriptions
-when unmounted. Templates are also creation descriptors: the host aggregates
-templates from enabled modules into one creation flow, derives their inputs from
-the selected entity schema (including optional field-level entity type filters),
-applies each template's optional required-field overrides, and sends their
-entity, document, field presets, and relationship selections through one atomic
-core operation. Relationship fields are rendered as multi-select controls and
-persist as graph edges rather than serialized arrays. Disabled modules are excluded from that
-catalog and their RPC calls are rejected while inactive.
+- shared entities with stable identity, prose documents, typed fields,
+  relationships, and assets;
+- first-party Lore, Timeline, Writing Studio, and Maps experiences backed by
+  the same core records;
+- optional runtime plugins that use the same public contracts as bundled
+  modules;
+- deterministic, file-based project data that remains usable outside Daena;
+- explicit user-controlled Git snapshots around canonical project files; and
+- future provider-neutral AI assistance that never becomes a second data model
+  or mutation authority.
 
-Module-owned fields and assets use module namespaces and entity IDs. Disabling a
-module changes visibility and unregisters its commands/views, but does not
-delete its rows, documents, or assets. Enabled state is persisted in the
-project database so reopening a project does not silently re-enable a module.
+Collaboration, cloud synchronization, public publishing, mobile targets, and
+unrestricted native extensions are separate future products, not hidden
+assumptions in the core architecture.
 
-## Rust core boundary
+## Non-negotiable principles
 
-`crates/daena-core` owns the project store, SQLite schema, migrations,
-filesystem-backed assets, search, import/export, backup/restore, Git helpers,
-and module state. It exposes typed `CoreError` results and accepts an explicit
-`AuthorityContext`; Phase 1 currently provides only the trusted-shell authority.
+1. **Core owns durable truth.** The Rust core owns identity, persistence,
+   validation, revisions, migrations, indexing, recovery, and resource
+   authorization.
+2. **Project files are canonical.** Markdown, strict JSON, and native asset
+   bytes are authoritative. SQLite and other projections are disposable.
+3. **Modules add meaning, not storage silos.** A map pin, timeline event, and
+   manuscript reference can point to the same entity without duplicating it.
+4. **Rust is the authority boundary.** Frontend checks are advisory; requests
+   are authorized again at the host/core boundary.
+5. **Plugins are isolated.** Third-party code never enters the main webview and
+   never receives ambient Tauri, filesystem, shell, process, or network access.
+6. **Users control destructive or external actions.** Git commits, resets,
+   pushes, imports, plugin grants, and destructive data operations require
+   explicit host UI actions.
+7. **Derived state must be rebuildable.** Deleting `.daena/` must not delete
+   project content or make a valid project unrecoverable.
+8. **Public contracts are framework-neutral.** Svelte is the first-party UI
+   choice, not a requirement for modules or plugins.
 
-`src-tauri` is an adapter over `CoreService`. It resolves Tauri-specific paths,
-serializes command inputs/outputs, and runs blocking core operations through
-Tauri's blocking task pool. The core has no Tauri dependency and does not know
-about webviews, commands, or plugin runtimes.
+## System shape
 
-## Migrations
+```text
+                         Trusted application shell
+                    Svelte 5 / TypeScript / Tauri UI
+                         │                    │
+                         │ typed commands     │ plugin bootstrap + RPC
+                         ▼                    ▼
+                 ┌──────────────┐       ┌───────────────┐
+                 │ Tauri adapter│       │ Plugin host   │
+                 └──────┬───────┘       │ catalog       │
+                        │               │ grants        │
+                        │               │ sessions      │
+                        │               │ broker        │
+                        │               └──────┬────────┘
+                        ▼                      │ authorized core calls
+                 ┌────────────────────────────┴──────┐
+                 │ Rust core: project, storage, index │
+                 │ entities, docs, fields, links,    │
+                 │ assets, search, migrations, Git    │
+                 └────────────────┬───────────────────┘
+                                  │
+                     canonical project directory
+              Markdown / JSON / native assets / project manifest
+```
 
-Migrations are declarative operations (`create namespace`, `add field`,
-`rename field`, and `drop field` with an explicit backup policy). A migration
-has a unique ID, source and target versions, and a deterministic operation
-list. The core validates that versions are contiguous, operations are scoped
-to the declaring module, and destructive operations have a recovery policy.
+`daena-core` has no Tauri or plugin-runtime dependency. The Tauri adapter and
+plugin broker call typed core services with different authority contexts.
+Plugin webviews and WASM runtimes can reach project data only through the
+versioned broker contract.
 
-Before applying a migration, the core creates a JSON backup, validates the
-complete plan, and executes it in one SQLite transaction. On any error it rolls
-back and leaves the previous module version active. Successful migrations
-record their ID and serialized checksum so they cannot run twice or be
-replaced silently.
+## Canonical project model
 
-## Capabilities and versioning
+A directory project has this shape:
 
-Capabilities are explicit strings such as `entity.read`, `entity.write`,
-`asset.read`, and `search.query`. The host grants only declared capabilities;
-unknown capabilities and undeclared operations fail closed. The public API
-uses semantic versions. API major versions are incompatible; module manifest
-major versions must match the host-supported range. Stored data versions are
-separate from package versions and are advanced only by migrations.
+```text
+project.json
+entities/<entity-uuid>/
+  entity.json
+  document.md
+  fields/<plugin-id>--<namespace>.json
+  relationships.json
+  assets.json
+plugins/<plugin-id>.json
+assets/{images,videos,maps,files}/
+.daena/
+  index.sqlite
+  transactions/ backups/ conflicts/ local/
+.gitignore
+```
 
-## MVP sequencing
+The stable entity UUID is the filesystem address. Names, types, timestamps,
+and soft-delete state are metadata and may change without changing references.
+Documents contain author content in deterministic Markdown. Structured records
+use strict JSON. Assets retain their native bytes and are referenced by
+project-relative paths, hashes, MIME types, and ownership metadata.
 
-1. Ship this contract and the typed API package.
-2. Implement the Rust project store and narrow Tauri commands.
-3. Build the Svelte host and registry.
-4. Build Lore, Timeline, and Writing Studio using only the public context.
-5. Validate the Eldermere example through export/import, migration rollback,
-   disablement, renames, and search-index rebuild.
+The `.daena/` directory is machine-local derived state. It contains the SQLite
+index, transaction journals, recovery material, conflict copies, and other
+local state; it is never the source of project truth and remains ignored by
+Git. Plugin grants, installed packages, runtime sessions, and capability state
+are machine-local as well. Portable plugin interpretation state belongs in
+`plugins/<plugin-id>.json`.
+
+## Storage and consistency
+
+The repository-first storage path serializes a complete canonical snapshot,
+validates it, computes a deterministic changed set, journals replacements, and
+updates the disposable index only after canonical files are safely committed.
+Opening a project scans and validates canonical files; if `.daena/` is absent
+or stale, the core rebuilds the index and projections from those files.
+
+Invalid external edits are diagnostic-only and do not replace the last valid
+projection. Unmerged Git files, stale source hashes, malformed paths, invalid
+references, namespace violations, and asset-hash failures block operations that
+would otherwise interpret or commit the invalid state. External edits and
+unsaved drafts use typed conflict/recovery paths rather than silent overwrites.
+
+All mutable broker-visible records expose opaque revisions. Updates, deletes,
+document saves, field and relationship mutations, and asset registration use
+the observed revision. Retryable mutations retain request IDs across Rust,
+the SDK, bundled modules, and the test host.
+
+Search, map projections, relationship indexes, and other views are derived
+from canonical files. They may be rebuilt, discarded, or temporarily reported
+as stale without changing the project model.
+
+## Core and trusted shell
+
+`crates/daena-core` owns:
+
+- project open/create/close and canonical filesystem access;
+- stable entities, documents, fields, relationships, and assets;
+- deterministic serialization, validation, source hashes, and transactions;
+- search and disposable projections;
+- module/plugin project state, migrations, backups, and recovery;
+- typed `CoreError` results and authority-aware operations; and
+- explicit Git helpers for canonical preflight, snapshots, commits, resets,
+  remotes, and lease-protected pushes.
+
+`src-tauri` is the trusted application adapter. It resolves platform paths,
+assembles services, serializes command inputs/outputs, owns host dialogs and
+external URLs, and runs blocking core work through Tauri's task facilities.
+Its privileged commands are available to the main shell only. Git, raw file
+access, migration controls, backup/restore, and arbitrary Tauri commands are
+not part of the plugin broker.
+
+## Modules and plugins
+
+Bundled modules and runtime plugins use the same manifest, SDK, lifecycle, and
+broker-backed public contract. A manifest declares identity, version, kind,
+capabilities, schemas, templates, views, commands, dependencies, namespaces,
+and migrations. The Rust plugin API is the source for generated JSON Schemas,
+TypeScript declarations, and contract fixtures.
+
+The host aggregates enabled module templates and views into the workspace, but
+the module does not receive a database handle, filesystem handle, raw Tauri
+invoke function, or private host API. Views mount into a host-provided surface
+and return cleanup handles. Disabled modules disappear from navigation and
+command catalogs while their canonical data remains available for recovery and
+export.
+
+### Runtime isolation and authority
+
+Third-party UI runs in an isolated, application-controlled webview origin with
+no host DOM or ambient Tauri access. Background logic runs in bounded WASM/WASI
+when supported. Both communicate through a versioned broker envelope such as:
+
+```text
+plugin_rpc(session_id, request_id, method, payload)
+```
+
+Rust binds each session to the installed plugin identity and package digest,
+version, current project, runtime/webview instance, granted capabilities,
+activation generation, expiry, and revocation state. The broker validates the
+session, origin, payload schema, size, capability, namespace ownership, and
+revision before forwarding the request.
+
+Capabilities are declared by a manifest and granted by the user; they are not
+self-granted by plugin code. The vocabulary includes scoped entity/document
+reads and writes, namespace-owned fields/assets, search, relationships, events,
+and services. There is no generic filesystem, shell, process, dialog, Tauri, or
+unrestricted network capability. Disabling, upgrading, uninstalling, closing a
+project, or restarting a plugin revokes its sessions.
+
+## Migrations and versioning
+
+Package versions, host API versions, and stored data versions are separate.
+Public API major versions are incompatible; compatible minor changes are
+validated against the host-supported range. Stored data versions advance only
+through deterministic, declared migrations.
+
+Each migration has a unique ID, source and target versions, an operation list,
+and an explicit recovery policy for destructive operations. The core validates
+contiguity and namespace ownership, creates a canonical backup when required,
+executes the migration transactionally, and records the migration ID and
+checksum. Errors roll back the transaction and leave the prior version active.
+
+The alpha file format is intentionally reset-oriented: old SQLite-canonical
+projects do not require a legacy reader, migration path, or dual-write mode.
+Plugin data migrations remain required when a plugin package changes its own
+schema or stored data version.
+
+## Git and external integrations
+
+Git is an optional, user-controlled snapshot tool around canonical files. The
+Rust core performs transaction recovery, canonical validation, index freshness
+checks, unresolved-conflict rejection, and exact staging previews before a
+commit. The Settings → Git surface supports selective canonical commits,
+history browsing, read-only snapshot previews, explicit hard reset, remotes,
+and lease-protected remote recovery. `.daena/` and SQLite files are never
+staged by built-in Git helpers.
+
+Maps are normal shared entities, not a parallel identity table. Provider source
+files remain opaque native assets; map locations, roles, dates, relationships,
+and story metadata remain Daena-owned canonical fields and links. Provider
+adapters are replaceable and must not force provider-specific data into the
+shared entity model.
+
+AI, when implemented, must use core retrieval and broker authorization. It may
+assemble context and propose changes, but users accept every mutation and
+canonical files remain authoritative. Provider credentials, network access,
+temporary generations, and derived retrieval state do not become project
+canonical data.
+
+## Verification and evolution
+
+Changes to this architecture must preserve these exit properties:
+
+- a fresh project opens and a valid project recovers after deleting `.daena/`;
+- canonical round trips are deterministic and preserve external edits or report
+  typed conflicts;
+- revisions, request IDs, capability checks, namespace ownership, and session
+  revocation are enforced at the Rust boundary;
+- plugin UI and WASM remain isolated from the main webview and native shell;
+- Git never stages noncanonical paths or unresolved canonical state; and
+- derived search, map, relationship, and view projections can be rebuilt.
+
+Use the focused plans and ADRs for phase-specific acceptance criteria. When
+implementation and documentation diverge, verify the current source and tests,
+then update this architecture and the relevant focused authority together.

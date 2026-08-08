@@ -9,7 +9,8 @@ testing, and phased delivery.
 
 It supplements, and does not override, these authorities:
 
-- [`PLAN.md`](./PLAN.md) defines the product and shared entity/document model.
+- [`ARCHITECTURE.md`](./ARCHITECTURE.md) defines the product and shared
+  entity/document model.
 - [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md) defines plugin identity,
   isolation, capabilities, broker authorization, and public-contract rules.
 - [`PLAIN_TEXT_STORAGE_PLAN.md`](./PLAIN_TEXT_STORAGE_PLAN.md) defines canonical
@@ -1060,7 +1061,7 @@ Deliver:
 - a transport spike proving bounded streaming between Rust, the trusted shell,
   and an isolated plugin webview;
 - contract fixtures for text and structured generation;
-- documentation links from `PLAN.md` and relevant plugin/storage plans.
+- documentation links from `ARCHITECTURE.md` and relevant plugin/storage plans.
 
 Do not add a live provider, embeddings, or project mutation in this phase.
 
@@ -1211,7 +1212,7 @@ Agents implementing this plan must follow this protocol.
 ### 15.1 Before editing
 
 1. Read this document completely and identify the one approved phase/slice.
-2. Read `AGENTS.md`, `PLAN.md`, `PLUGIN_PLATFORM_PLAN.md`, and
+2. Read `AGENTS.md`, `ARCHITECTURE.md`, `PLUGIN_PLATFORM_PLAN.md`, and
    `PLAIN_TEXT_STORAGE_PLAN.md`; read the relevant ADRs and SDK guide.
 3. Run `rtk git status --short` and preserve unrelated staged, unstaged, and
    untracked work.

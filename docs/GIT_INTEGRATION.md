@@ -9,7 +9,8 @@ browsing, hard-reset restore, remotes, and post-reset remote recovery.
 
 It supplements, and does not override, these authorities:
 
-- [`PLAN.md`](./PLAN.md) defines the product and shared entity/document model.
+- [`ARCHITECTURE.md`](./ARCHITECTURE.md) defines the product and shared
+  entity/document model.
 - [`PLAIN_TEXT_STORAGE_PLAN.md`](./PLAIN_TEXT_STORAGE_PLAN.md) defines canonical
   project files, disposable indexes, and the Phase 5 Git preflight boundary.
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) defines shell-owned helpers vs plugin

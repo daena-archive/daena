@@ -316,6 +316,11 @@ normalization code as a full rebuild.
 
 ## Git Integration
 
+For Settings → Git UX, selective staging, history/snapshot browsing, hard
+reset, remotes, and post-reset remote recovery, see
+[`GIT_INTEGRATION.md`](./GIT_INTEGRATION.md). That document extends this
+section and must not weaken the preflight rules below.
+
 The generated `.gitignore` includes:
 
 ```gitignore

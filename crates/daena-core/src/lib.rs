@@ -12,9 +12,9 @@ pub use migrations::{FieldDefinition, Migration, Operation};
 pub use project::{
     Asset, AssetFileInput, AssetInput, AssetReplaceInput, CreateEntity, CreateEntry,
     CreateEntryDocument, CreateEntryField, Document, Entity, ExternalChangeReport, FieldValue,
-    GitLogEntry, GitPreflight, GitStatus, MigrationHistoryEntry, ModuleField, ModuleNamespace,
-    ModuleState, PluginBackup, ProjectInfo, ProjectSnapshot, ProjectStore, Relationship,
-    RelationshipInput, SaveDocument, SaveEntry,
+    GitLogEntry, GitPreflight, GitRemote, GitResetResult, GitStatus, GitToolInfo, GitUpstream,
+    MigrationHistoryEntry, ModuleField, ModuleNamespace, ModuleState, PluginBackup, ProjectInfo,
+    ProjectSnapshot, ProjectStore, Relationship, RelationshipInput, SaveDocument, SaveEntry,
 };
 pub use storage::{
     canonical_json_bytes, canonical_markdown, canonical_markdown_bytes, normalized_project_path,

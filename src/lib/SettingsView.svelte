@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
 
-  type SettingsSection = "general" | "plugins";
+  type SettingsSection = "general" | "plugins" | "git";
   type RecentProject = { name: string; root: string };
 
   let {
@@ -11,6 +11,7 @@
     onRemoveRecent,
     onClose,
     plugins,
+    git,
   }: {
     section?: SettingsSection;
     recentProjects: RecentProject[];
@@ -18,6 +19,7 @@
     onRemoveRecent: (root: string) => void;
     onClose: () => void;
     plugins: Snippet;
+    git: Snippet;
   } = $props();
 </script>
 
@@ -45,6 +47,12 @@
         class="settings-nav-button"
         onclick={() => (section = "plugins")}
       >Plugins</button>
+      <button
+        type="button"
+        class:active={section === "git"}
+        class="settings-nav-button"
+        onclick={() => (section = "git")}
+      >Git</button>
     </nav>
 
     <div class="settings-panel">
@@ -72,14 +80,18 @@
             {/each}
           </ul>
         {/if}
-      {:else if !projectOpen}
-        <div class="settings-section-heading">
-          <strong>Plugins</strong>
-          <p>Open a project to install, enable, and review plugin capabilities.</p>
-        </div>
-        <p class="settings-empty">No project is open.</p>
+      {:else if section === "plugins"}
+        {#if !projectOpen}
+          <div class="settings-section-heading">
+            <strong>Plugins</strong>
+            <p>Open a project to install, enable, and review plugin capabilities.</p>
+          </div>
+          <p class="settings-empty">No project is open.</p>
+        {:else}
+          {@render plugins()}
+        {/if}
       {:else}
-        {@render plugins()}
+        {@render git()}
       {/if}
     </div>
   </div>

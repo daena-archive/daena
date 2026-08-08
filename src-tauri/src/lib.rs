@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 
 use daena_core::{
     Asset, AssetFileInput, AssetInput, AssetReplaceInput, AuthorityContext, CoreError, CoreService,
-    CreateEntity, Entity, ExternalChangeReport, FieldValue, GitLogEntry, GitPreflight, GitStatus,
-    Migration, Operation, ProjectInfo, ProjectStore, Relationship, RelationshipInput, SaveDocument,
-    SaveEntry,
+    CreateEntity, Entity, ExternalChangeReport, FieldValue, GitLogEntry, GitPreflight, GitRemote,
+    GitResetResult, GitStatus, GitToolInfo, Migration, Operation, ProjectInfo, ProjectStore,
+    Relationship, RelationshipInput, SaveDocument, SaveEntry,
 };
 use daena_plugin_api::{
     CommandAction, MigrationOperation, PluginManifest, RpcRequest, RpcResponse, ViewComponent,
@@ -3758,6 +3758,11 @@ async fn project_save_recovery_copy(
 }
 
 #[tauri::command]
+fn git_tool_info() -> GitToolInfo {
+    ProjectStore::git_tool_info()
+}
+
+#[tauri::command]
 async fn project_git_status(state: tauri::State<'_, SharedCore>) -> Result<GitStatus, String> {
     with_core(state, |core| core.project(trusted_shell())?.git_status()).await
 }
@@ -3793,11 +3798,126 @@ async fn project_git_log(state: tauri::State<'_, SharedCore>) -> Result<Vec<GitL
 async fn project_git_commit(
     state: tauri::State<'_, SharedCore>,
     message: String,
+    paths: Option<Vec<String>>,
 ) -> Result<GitStatus, String> {
     with_core(state, move |core| {
-        core.project(trusted_shell())?.git_commit(message)
+        core.project(trusted_shell())?.git_commit(message, paths)
     })
     .await
+}
+
+#[tauri::command]
+async fn project_git_show_tree(
+    state: tauri::State<'_, SharedCore>,
+    hash: String,
+) -> Result<Vec<String>, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.git_show_tree(&hash)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_git_show_file(
+    state: tauri::State<'_, SharedCore>,
+    hash: String,
+    path: String,
+) -> Result<String, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.git_show_file(&hash, &path)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_git_reset_hard(
+    state: tauri::State<'_, SharedCore>,
+    hash: String,
+) -> Result<GitResetResult, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.git_reset_hard(&hash)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_git_remote_list(
+    state: tauri::State<'_, SharedCore>,
+) -> Result<Vec<GitRemote>, String> {
+    with_core(state, |core| core.project(trusted_shell())?.git_remote_list()).await
+}
+
+#[tauri::command]
+async fn project_git_remote_add(
+    state: tauri::State<'_, SharedCore>,
+    name: String,
+    url: String,
+) -> Result<Vec<GitRemote>, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.git_remote_add(&name, &url)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_git_remote_set_url(
+    state: tauri::State<'_, SharedCore>,
+    name: String,
+    url: String,
+) -> Result<Vec<GitRemote>, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .git_remote_set_url(&name, &url)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_git_remote_remove(
+    state: tauri::State<'_, SharedCore>,
+    name: String,
+) -> Result<Vec<GitRemote>, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.git_remote_remove(&name)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_git_push(
+    state: tauri::State<'_, SharedCore>,
+    remote: String,
+    branch: Option<String>,
+    force_with_lease: bool,
+) -> Result<GitStatus, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.git_push(
+            &remote,
+            branch.as_deref(),
+            force_with_lease,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_git_restore_from_upstream(
+    state: tauri::State<'_, SharedCore>,
+) -> Result<GitResetResult, String> {
+    with_core(state, |core| {
+        core.project(trusted_shell())?.git_restore_from_upstream()
+    })
+    .await
+}
+
+#[tauri::command]
+async fn open_external_url(url: String) -> Result<(), String> {
+    let allowed = url == "https://git-scm.com/downloads"
+        || url.starts_with("https://git-scm.com/");
+    if !allowed {
+        return Err("external URL is not allowlisted".into());
+    }
+    tauri_plugin_opener::open_url(url, None::<&str>).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -4642,6 +4762,8 @@ pub fn run() {
             greet,
             settings_get,
             settings_update,
+            git_tool_info,
+            open_external_url,
             plugin_bootstrap,
             plugin_rpc,
             plugin_open_webview,
@@ -4678,6 +4800,15 @@ pub fn run() {
             project_git_init,
             project_git_log,
             project_git_commit,
+            project_git_show_tree,
+            project_git_show_file,
+            project_git_reset_hard,
+            project_git_remote_list,
+            project_git_remote_add,
+            project_git_remote_set_url,
+            project_git_remote_remove,
+            project_git_push,
+            project_git_restore_from_upstream,
             project_open_memory,
             project_open_default,
             project_create_entity,

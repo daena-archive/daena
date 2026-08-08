@@ -35,6 +35,29 @@ export interface GitPreflight {
   unmerged_paths: string[];
 }
 export interface GitLogEntry { hash: string; date: string; subject: string; }
+export interface GitToolInfo {
+  available: boolean;
+  version: string | null;
+  error: string | null;
+}
+export interface GitRemote {
+  name: string;
+  fetchUrl: string;
+  pushUrl: string;
+}
+export interface GitUpstream {
+  remote: string;
+  branch: string;
+  remoteHash: string | null;
+}
+export interface GitResetResult {
+  status: GitStatus;
+  previousHead: string | null;
+  currentHead: string | null;
+  upstream: GitUpstream | null;
+  divergedFromUpstream: boolean;
+  rebuild: ExternalChangeReport;
+}
 export type { ModuleManifest };
 export type ProjectModuleManifest = ModuleManifest & { enabled: boolean };
 export interface InstalledPluginVersion { id: string; version: string; publisher: string; digest: string; signed: boolean; }
@@ -109,7 +132,20 @@ export const project = {
   gitStagingPreview: () => invoke<GitPreflight>("project_git_staging_preview"),
   gitInit: () => invoke<GitStatus>("project_git_init"),
   gitLog: () => invoke<GitLogEntry[]>("project_git_log"),
-  gitCommit: (message: string) => invoke<GitStatus>("project_git_commit", { message }),
+  gitCommit: (message: string, paths?: string[]) =>
+    invoke<GitStatus>("project_git_commit", { message, paths: paths ?? null }),
+  gitToolInfo: () => invoke<GitToolInfo>("git_tool_info"),
+  gitShowTree: (hash: string) => invoke<string[]>("project_git_show_tree", { hash }),
+  gitShowFile: (hash: string, path: string) => invoke<string>("project_git_show_file", { hash, path }),
+  gitResetHard: (hash: string) => invoke<GitResetResult>("project_git_reset_hard", { hash }),
+  gitRemoteList: () => invoke<GitRemote[]>("project_git_remote_list"),
+  gitRemoteAdd: (name: string, url: string) => invoke<GitRemote[]>("project_git_remote_add", { name, url }),
+  gitRemoteSetUrl: (name: string, url: string) => invoke<GitRemote[]>("project_git_remote_set_url", { name, url }),
+  gitRemoteRemove: (name: string) => invoke<GitRemote[]>("project_git_remote_remove", { name }),
+  gitPush: (remote: string, branch?: string | null, forceWithLease = false) =>
+    invoke<GitStatus>("project_git_push", { remote, branch: branch ?? null, forceWithLease }),
+  gitRestoreFromUpstream: () => invoke<GitResetResult>("project_git_restore_from_upstream"),
+  openExternalUrl: (url: string) => invoke<void>("open_external_url", { url }),
   listEntities: () => invoke<Entity[]>("project_list_entities"),
   search: (query: string) => invoke<Entity[]>("project_search", { query }),
   deleteEntity: (id: string, options?: MutationOptions) => invoke<void>("project_delete_entity", { id, expected_revision: options?.expectedRevision ?? null, request_id: requestId(options) }),

@@ -22,10 +22,10 @@ storage rule wins. Git must remain an optional, user-controlled helper around
 canonical files. It must not become a collaboration protocol, automatic sync
 engine, semantic merge resolver, or plugin-reachable filesystem API.
 
-Status as of 2026-08-08: **architecture approved by this document; expanded
-Settings → Git surface not fully implemented unless a later phase record says
-otherwise**. Agents must verify the worktree and current source before relying
-on that status.
+Status as of 2026-08-08: **architecture approved by this document; core APIs,
+Tauri commands, client bindings, and Settings → Git UI are implemented in
+source**. Agents must still verify the worktree and run focused tests before
+treating any behavior as complete.
 
 The governing rule is:
 
@@ -356,9 +356,11 @@ Wire each through `src-tauri/src/lib.rs` `generate_handler!` and
 Single scrollable panel with sections:
 
 1. **Git tool** — version, or missing + Open git-scm.com downloads.
-2. **Remotes** — list and manage.
-3. **Changes** — preflight diagnostics; checkbox list of `staging_paths`;
-   select all/none; message field; Generate message; Commit selected.
+2. **Remotes** — list all remotes; add via modal; edit URL via modal; remove.
+3. **Changes** — preflight diagnostics; entity-grouped checkboxes (project /
+   entity name / plugin / asset) derived from `staging_paths`; select all/none;
+   message field; Generate message uses group titles; Commit selected still
+   sends the underlying canonical paths.
 4. **History** — commit list; selecting a commit loads snapshot paths; selecting
    a path opens read-only preview; **Restore this snapshot…** triggers the
    danger confirm then hard reset.

@@ -9,6 +9,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   import SandboxView from "$lib/plugins/SandboxView.svelte";
   import ProjectionView from "$lib/ProjectionView.svelte";
   import SettingsView from "$lib/SettingsView.svelte";
+  import GitSettingsPanel from "$lib/GitSettingsPanel.svelte";
   import RelationshipPicker from "$lib/RelationshipPicker.svelte";
   import loreManifestJson from "../../packages/modules/lore/manifest.json";
   import timelineManifestJson from "../../packages/modules/timeline/manifest.json";
@@ -20,7 +21,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
 
   type InstalledModule = ProjectModuleManifest;
   type WorkspaceSection = "lore" | "timeline" | "writing" | "maps";
-  type SettingsSection = "general" | "plugins";
+  type SettingsSection = "general" | "plugins" | "git";
   type WritingView = "manuscripts" | "reference";
   type RecentProject = { name: string; root: string };
   type CreateOption = { key: string; module: InstalledModule; template: EntityTemplate };
@@ -116,8 +117,6 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   let searchMatches = $state<Entity[] | null>(null);
   let searchRequest = 0;
   let showCreateForm = $state(false);
-  let showCommitForm = $state(false);
-  let commitMessage = $state("");
   let dateEditorOpen = $state<Record<string, boolean>>({});
 
   const toastDurationMs = 3500;
@@ -127,7 +126,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     return () => window.clearTimeout(timeout);
   });
   $effect(() => {
-    const modalOpen = showCreateForm || showCommitForm || editorFullscreen || upgradePreview !== null || confirmAction !== null || deleteTarget !== null || installConsent !== null || deleteBackupPath !== "";
+    const modalOpen = showCreateForm || editorFullscreen || upgradePreview !== null || confirmAction !== null || deleteTarget !== null || installConsent !== null || deleteBackupPath !== "";
     document.body.classList.toggle("modal-open", modalOpen);
     return () => document.body.classList.remove("modal-open");
   });
@@ -525,7 +524,11 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   }
 
   function sectionLabel() {
-    if (showSettings) return settingsSection === "plugins" ? "Settings · Plugins" : "Settings";
+    if (showSettings) {
+      if (settingsSection === "plugins") return "Settings · Plugins";
+      if (settingsSection === "git") return "Settings · Git";
+      return "Settings";
+    }
     return section === "lore" ? "Lore library" : section === "timeline" ? "Timeline" : section === "writing" ? "Writing Studio" : "Maps";
   }
 
@@ -737,17 +740,8 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     gitBusy = true;
     gitMessage = "";
     try { await project.gitInit(); await refreshGit(); }
-    catch (cause) { gitMessage = friendlyError(cause); gitBusy = false; }
-  }
-  async function commitGit() {
-    const message = commitMessage.trim();
-    if (!message) return;
-    if (!(await flushAutoSave())) return;
-    showCommitForm = false;
-    gitBusy = true;
-    gitMessage = "";
-    try { await project.gitCommit(message); commitMessage = ""; await refreshGit(); }
-    catch (cause) { gitMessage = friendlyError(cause); gitBusy = false; }
+    catch (cause) { gitMessage = friendlyError(cause); }
+    finally { gitBusy = false; }
   }
 
   async function flushAutoSave() {
@@ -1518,7 +1512,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     <div class="rail-spacer"></div>
     {#if ready}
       <button aria-expanded={showGit} class:active={showGit} class="rail-button muted-button" onclick={() => { showGit = !showGit; if (showGit) void refreshGit(); }}><span class="rail-icon">⑂</span><span>Git</span></button>
-      {#if showGit}<div class="module-menu git-menu"><strong>{gitBusy ? "Checking Git…" : gitStatus?.repository ? `Git · ${gitStatus.branch || "detached"}` : "Git is not initialized"}</strong><small>{gitMessage || (gitStatus?.repository ? gitStatus.changes.length === 0 ? "Working tree clean" : `${gitStatus.changes.length} changed files` : "Initialize Git to track this project")}</small>{#if gitStatus?.repository}<button disabled={gitBusy} onclick={() => { commitMessage = ""; showCommitForm = true; }}>Commit changes</button>{:else}<button disabled={gitBusy} onclick={initializeGit}>{gitBusy ? "Initializing…" : "Initialize Git"}</button>{/if}{#if gitPreflight}<div class="git-preview"><strong>{gitPreflight.ready ? `${gitPreflight.staging_paths.length} canonical path${gitPreflight.staging_paths.length === 1 ? "" : "s"} ready` : "Commit preflight blocked"}</strong>{#if gitPreflight.ready && gitPreflight.staging_paths.length > 0}<small>{gitPreflight.staging_paths.join(" · ")}</small>{:else if gitPreflight.diagnostics.length > 0}<small>{gitPreflight.diagnostics[0]}</small>{/if}</div>{/if}</div>{/if}
+      {#if showGit}<div class="module-menu git-menu"><strong>{gitBusy ? "Checking Git…" : gitStatus?.repository ? `Git · ${gitStatus.branch || "detached"}` : "Git is not initialized"}</strong><small>{gitMessage || (gitStatus?.repository ? gitStatus.changes.length === 0 ? "Working tree clean" : `${gitStatus.changes.length} changed file${gitStatus.changes.length === 1 ? "" : "s"}` : "Initialize Git to track this project")}</small>{#if gitStatus?.repository}<button disabled={gitBusy} onclick={() => { showGit = false; void openSettings("git"); }}>Open Git settings</button>{:else}<button disabled={gitBusy} onclick={initializeGit}>{gitBusy ? "Initializing…" : "Initialize Git"}</button>{/if}{#if gitPreflight}<div class="git-preview"><strong>{gitPreflight.ready ? (gitPreflight.staging_paths.length === 0 ? "Nothing to commit" : `${gitPreflight.staging_paths.length} change${gitPreflight.staging_paths.length === 1 ? "" : "s"} ready`) : "Commit preflight blocked"}</strong>{#if gitPreflight.ready && gitPreflight.staging_paths.length > 0}<small>Review and commit in Git settings</small>{:else if gitPreflight.diagnostics.length > 0}<small>{gitPreflight.diagnostics[0]}</small>{/if}</div>{/if}</div>{/if}
     {/if}
     <button aria-expanded={showSettings} class:active={showSettings} class="rail-button muted-button" onclick={() => void openSettings()}><span class="rail-icon">⚙</span><span>Settings</span></button>
     <div class="rail-footer">v0.2 · local first</div>
@@ -1529,17 +1523,6 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     {#if ready && globalQuery.trim()}<div class="search-modal" role="dialog" aria-label="World search results"><div class="search-modal-heading"><strong>Search results</strong><button class="quiet-button" aria-label="Close search" onclick={() => globalQuery = ""}>×</button></div>{#if searchMatches === null}<p class="search-state">Searching the whole world…</p>{:else if searchMatches.length === 0}<p class="search-state">No matches found.</p>{:else}<div class="search-results">{#each searchMatches as result}<button class="search-result" onclick={() => selectSearchResult(result)}><span class={`entity-glyph ${entityGlyphClass(result)}`}>{entityGlyph(result)}</span><span><strong>{result.name}</strong><small>{result.entity_type ?? "Uncategorized"}</small></span></button>{/each}</div>{/if}</div>{/if}
     {#if showCreateForm}{@const createOption = selectedCreateOption()}<div class="modal-backdrop"><form class="dialog create-dialog" onsubmit={createEntity}><div class="create-dialog-heading"><div><span class="panel-kicker">CREATE SOMETHING NEW</span><strong>Choose a starting point</strong><p>Templates set the shape of your new entry. You can fill in the details before it is saved.</p></div><button type="button" class="new-form-close" aria-label="Close create dialog" onclick={closeCreateForm}>×</button></div><div class="create-dialog-body"><aside class="create-template-panel"><div class="create-panel-label">TEMPLATES</div><div class="create-template-list">{#each createGroups() as group}<div class="create-template-group"><span>{group.module.name}</span>{#each group.options as option}<button type="button" class:selected={option.key === selectedCreateKey} class="create-template-card" onclick={() => selectCreateOption(option.key)}><span class="create-template-icon">{option.template.icon ?? option.template.name.slice(0, 1)}</span><span class="create-template-copy"><strong>{option.template.name}</strong><small>{option.template.description ?? option.template.entityType}</small></span><span class="create-template-check">{option.key === selectedCreateKey ? "✓" : ""}</span></button>{/each}</div>{/each}</div></aside><section class="create-form-panel">{#if createOption}<div class="create-form-title"><span class="panel-kicker">{createOption.module.name.toUpperCase()}</span><h2>{createOption.template.name}</h2><p>{createOption.template.description ?? `Create a new ${createOption.template.entityType}.`}</p></div><label class="create-input-field" for="new-entity"><span>Name <b>*</b></span><input id="new-entity" bind:value={name} placeholder={`e.g. ${createOption.template.name}`} autocomplete="off" /></label>{#each createFieldsFor(createOption) as item}<div class="create-input-field"><label for={`create-${item.field.key}`}><span>{item.field.label} {#if item.required}<b>*</b>{/if}</span></label>{#if item.field.type === "relationship"}<RelationshipPicker field={item.field} entities={entities} selectedIds={createRelationshipValues(item.field.key)} onChange={(ids) => setCreateRelationshipValues(item.field.key, ids)} />{:else if item.field.type === "text"}<textarea id={`create-${item.field.key}`} rows="3" value={String(createFieldValues[item.field.key] ?? "")} placeholder={`Add ${item.field.label.toLowerCase()}`} oninput={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLTextAreaElement).value)}></textarea>{:else if item.field.type === "number"}<input id={`create-${item.field.key}`} type="number" value={String(createFieldValues[item.field.key] ?? "")} placeholder={`Add ${item.field.label.toLowerCase()}`} oninput={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).value)} />{:else if item.field.type === "boolean"}<label class="create-checkbox" for={`create-${item.field.key}`}><input id={`create-${item.field.key}`} type="checkbox" checked={createFieldValues[item.field.key] === true} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).checked)} /><span>Yes</span></label>{:else if item.field.type === "enum"}<select id={`create-${item.field.key}`} value={String(createFieldValues[item.field.key] ?? "")} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}><option value="">Choose {item.field.label.toLowerCase()}</option>{#each item.field.options ?? [] as option}<option value={option}>{option}</option>{/each}</select>{:else if item.field.type === "entity-ref"}<select id={`create-${item.field.key}`} value={String(createFieldValues[item.field.key] ?? "")} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}><option value="">Choose an entity</option>{#each entities.filter((entity) => !entity.deleted) as entity}<option value={entity.id}>{entity.name} · {entity.entity_type ?? "Uncategorized"}</option>{/each}</select>{:else if item.field.type === "date"}{#if createDateForField(item.field.key) || createDateEditorOpen[item.field.key]}{@const date = createDateDraftForField(item.field.key) ?? { calendar: "gregorian", era: "CE", precision: "day" }}<div class="date-editor"><div class="date-fields"><label for={`create-${item.field.key}-year`}>Year<input id={`create-${item.field.key}-year`} aria-label={`${item.field.label} year`} type="number" min="1" value={date.year ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "year", (event.currentTarget as HTMLInputElement).value, 1)} /></label><label for={`create-${item.field.key}-month`}>Month<input id={`create-${item.field.key}-month`} aria-label={`${item.field.label} month`} type="number" min="1" max="12" value={date.month ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "month", (event.currentTarget as HTMLInputElement).value, 1, 12)} /></label><label for={`create-${item.field.key}-day`}>Day<input id={`create-${item.field.key}-day`} aria-label={`${item.field.label} day`} type="number" min="1" max="31" value={date.day ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "day", (event.currentTarget as HTMLInputElement).value, 1, 31)} /></label></div><small class="date-preview">{typeof date.year === "number" ? formatCalendarDate(date) : "Add a date"}</small><button class="date-clear" type="button" onclick={() => clearCreateDateField(item.field.key)}>Clear date</button></div>{:else}<button class="date-empty" type="button" onclick={() => openCreateDateEditor(item.field.key)}>Add a date</button>{/if}{/if}</div>{/each}{#if createOption.template.document}<label class="create-input-field" for="create-document"><span>Opening note</span><textarea id="create-document" rows="5" bind:value={createDocumentBody} placeholder="Add a first note or leave the template text as-is"></textarea></label>{/if}{:else}<div class="create-form-empty">Select a template to begin.</div>{/if}</section></div><div class="create-dialog-actions"><button type="button" class="quiet-button" onclick={closeCreateForm}>Cancel</button><button class="primary-button" type="submit" disabled={!name.trim() || !createOption}>Create {createOption?.template.name ?? "entry"}</button></div></form></div>{/if}
     {#if showDiscardPrompt}<div class="discard-backdrop"><div class="discard-dialog" role="alertdialog" aria-modal="true" aria-labelledby="discard-create-title"><span class="panel-kicker">UNSAVED VALUES</span><h2 id="discard-create-title">Discard this creation?</h2><p>Your entered values will be cleared. You can keep editing or start over with the new template.</p><div class="discard-actions"><button type="button" class="quiet-button" onclick={keepCreateEditing}>Keep editing</button><button type="button" class="primary-button" onclick={discardCreateValues}>Discard values</button></div></div></div>{/if}
-    {#if showCommitForm}<div class="modal-backdrop"><form class="dialog commit-form" onsubmit={(event) => { event.preventDefault(); void commitGit(); }}><div class="new-form-heading"><div><span class="panel-kicker">VERSION CONTROL</span><strong>Commit changes</strong></div><button type="button" class="new-form-close" onclick={() => showCommitForm = false}>×</button></div><p>Only the canonical paths below will be staged.</p>{#if gitPreflight?.ready}<ul class="commit-preview">{#each gitPreflight.staging_paths as path}<li>{path}</li>{/each}</ul>{:else}<p class="commit-warning">{gitPreflight?.diagnostics[0] ?? "Git preflight has not completed."}</p>{/if}<input aria-label="Commit message" bind:value={commitMessage} placeholder="Describe the changes" /><div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => showCommitForm = false}>Cancel</button><button class="primary-button" type="submit" disabled={!commitMessage.trim() || gitBusy || !gitPreflight?.ready || gitPreflight.staging_paths.length === 0}>{gitBusy ? "Committing…" : "Commit changes"}</button></div></form></div>{/if}
-    {#if captureDialog}<div class="modal-backdrop"><form class="dialog capture-dialog" onsubmit={(event) => { event.preventDefault(); void submitMapCapture(); }}><div class="new-form-heading"><div><span class="panel-kicker">MAP LINK</span><strong>Link a map selection to the world</strong></div><button type="button" class="new-form-close" onclick={closeCaptureDialog}>×</button></div><p class="capture-preview"><span class="capture-preview-label">Selected</span><strong>{captureAnchorLabel()}</strong></p><label class="create-input-field" for="capture-role"><span>Role</span><input id="capture-role" bind:value={captureRole} placeholder="story-location" autocomplete="off" /></label><div class="capture-mode" role="tablist" aria-label="Link target"><button type="button" role="tab" aria-selected={captureMode === "existing"} class:active={captureMode === "existing"} onclick={() => captureMode = "existing"}>Link existing</button><button type="button" role="tab" aria-selected={captureMode === "create"} class:active={captureMode === "create"} onclick={() => captureMode = "create"}>Create new</button></div>{#if captureMode === "existing"}<label class="create-input-field" for="capture-entity"><span>Entity</span><select id="capture-entity" bind:value={captureEntityId}><option value="">Choose an entity…</option>{#each entities as entity}<option value={entity.id}>{entity.name} · {entityTypeLabel(entity.entity_type)}</option>{/each}</select></label>{:else}<label class="create-input-field" for="capture-template"><span>Template</span><select id="capture-template" bind:value={captureTemplateKey}><option value="">Choose a template…</option>{#each createGroups() as group}{#each group.options as option}<option value={option.key}>{group.module.name} · {option.template.name}</option>{/each}{/each}</select></label><label class="create-input-field" for="capture-name"><span>Name <b>*</b></span><input id="capture-name" bind:value={captureName} placeholder="e.g. Harrow Gate" autocomplete="off" /></label>{/if}<div class="new-form-actions"><button type="button" class="quiet-button" onclick={closeCaptureDialog}>Cancel</button><button class="primary-button" type="submit" disabled={!mapSelection || (captureMode === "existing" && !captureEntityId) || (captureMode === "create" && (!captureTemplateKey || !captureName.trim()))}>Link to map</button></div></form></div>{/if}
-    {#if installConsent}
-      <div class="modal-backdrop"><div class="dialog" role="alertdialog" aria-modal="true">
-        <div class="new-form-heading"><div><span class="panel-kicker">UNSIGNED PACKAGE</span><strong>Confirm unsigned install</strong></div><button type="button" class="new-form-close" onclick={() => installConsent = null}>×</button></div>
-        <p class="dialog-body-copy">This package is <strong>not signed by a trusted publisher</strong>. {installConsent.path.split(/[\\/]/).pop()} will run sandboxed, but its identity cannot be verified.</p>
-        <p class="dialog-body-copy">Reason: {installConsent.message}</p>
-        <p class="dialog-body-copy">Install it anyway? You can uninstall its code at any time.</p>
-        <div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => installConsent = null}>Cancel</button><button type="button" class="primary-button" onclick={installWithConsent} disabled={installing}>{installing ? "Installing…" : "Install anyway"}</button></div>
-      </div></div>
-    {/if}
     {#if upgradePreview}
       {@const preview = upgradePreview}
       <div class="modal-backdrop"><div class="dialog upgrade-dialog" role="dialog" aria-modal="true">
@@ -1740,6 +1723,13 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
               {/each}
             {/if}
           </div>
+        {/snippet}
+        {#snippet git()}
+          <GitSettingsPanel
+            projectOpen={ready}
+            onError={(message) => error = message}
+            beforeWrite={flushAutoSave}
+          />
         {/snippet}
       </SettingsView>
     {:else if !ready}
@@ -1972,9 +1962,6 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   .capability-item { padding: 6px 8px; border-bottom: 1px solid rgba(217, 205, 189, .65); font-size: 11px; line-height: 1.4; }
   .capability-item:last-child { border-bottom: 0; }
   .capability-empty { margin-top: -2px; }
-  .commit-form p { margin: 0 0 14px; color: var(--ink-soft); font-size: 12px; line-height: 1.5; }
-  .commit-form > input { width: 100%; padding: 11px 12px; border: 1px solid #d9cdbd; border-radius: 8px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 13px; }
-  .commit-form > input:focus { border-color: #b4773f; box-shadow: 0 0 0 3px rgba(180, 119, 63, .12); }
   .dialog .new-form-actions { margin-top: 20px; }
   .git-menu strong, .git-menu small { display: block; }
   .git-menu strong { color: #eef0e9; font-size: 11px; }
@@ -1982,8 +1969,6 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   .git-preview { display: grid; gap: 4px; margin-top: 5px; padding-top: 6px; border-top: 1px solid rgba(170, 185, 173, .2); }
   .git-preview strong { font-size: 10px; }
   .git-preview small { max-height: 72px; overflow: auto; line-height: 1.45; }
-  .commit-preview { max-height: 150px; overflow: auto; margin: 0 0 14px; padding: 9px 12px 9px 28px; border: 1px solid #e3dbcf; border-radius: 8px; background: #faf7f0; color: var(--ink-soft); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .commit-warning { color: #9b4c3e; }
   .git-menu button { width: 100%; margin-top: 7px; padding: 7px; border: 0; border-radius: 6px; background: #d5ab6c; color: #2c4032; font-size: 10px; cursor: pointer; }
   .git-menu button:disabled { opacity: .55; cursor: wait; }
   .search-modal { position: absolute; top: 58px; right: 40px; z-index: 5; width: min(460px, calc(100vw - 80px)); max-height: min(560px, calc(100vh - 100px)); overflow: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-lg); }

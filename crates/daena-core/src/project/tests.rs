@@ -178,7 +178,7 @@ fn git_unmerged_canonical_files_are_diagnostic_before_scanning() {
         .diagnostics
         .iter()
         .any(|diagnostic| diagnostic.starts_with("git.unmerged: project.json")));
-    let commit = store.git_commit("must not commit unresolved merge".into());
+    let commit = store.git_commit("must not commit unresolved merge".into(), None);
     assert!(matches!(commit, Err(CoreError::Conflict(_))));
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -236,6 +236,205 @@ fn git_preflight_lists_only_canonical_paths_and_rejects_staged_unrelated_files()
         .staging_paths
         .iter()
         .all(|path| { ProjectStore::is_canonical_git_path(path) }));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn git_tool_info_reports_system_git() {
+    let info = ProjectStore::git_tool_info();
+    assert!(info.available, "{:?}", info.error);
+    assert!(info
+        .version
+        .as_deref()
+        .is_some_and(|version| version.to_ascii_lowercase().contains("git")));
+}
+
+#[test]
+fn git_commit_rejects_paths_outside_preflight_and_accepts_subset() {
+    let root = std::env::temp_dir().join(format!("daena-git-select-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let run_git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .unwrap()
+    };
+    assert!(run_git(&["init", "-q"]).status.success());
+    assert!(run_git(&["config", "user.email", "tests@daena.local"])
+        .status
+        .success());
+    assert!(run_git(&["config", "user.name", "Daena tests"])
+        .status
+        .success());
+    assert!(run_git(&["config", "commit.gpgsign", "false"])
+        .status
+        .success());
+    assert!(run_git(&["add", "--all"]).status.success());
+    assert!(run_git(&["commit", "-qm", "base"]).status.success());
+
+    store
+        .create_entity(CreateEntity {
+            name: "Select entity".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    let preview = store.git_staging_preview().unwrap();
+    assert!(preview.ready);
+    let entity_json = preview
+        .staging_paths
+        .iter()
+        .find(|path| path.ends_with("/entity.json"))
+        .cloned()
+        .expect("entity.json in staging preview");
+
+    let rejected = store.git_commit(
+        "should fail".into(),
+        Some(vec!["README.md".into()]),
+    );
+    assert!(matches!(rejected, Err(CoreError::Git(_))));
+
+    store
+        .git_commit("select entity".into(), Some(vec![entity_json.clone()]))
+        .unwrap();
+    let after = store.git_staging_preview().unwrap();
+    assert!(!after.staging_paths.contains(&entity_json));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn git_commit_subset_does_not_include_previously_staged_canonical_paths() {
+    let root = std::env::temp_dir().join(format!("daena-git-select-staged-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let run_git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .unwrap()
+    };
+    assert!(run_git(&["init", "-q"]).status.success());
+    assert!(run_git(&["config", "user.email", "tests@daena.local"])
+        .status
+        .success());
+    assert!(run_git(&["config", "user.name", "Daena tests"])
+        .status
+        .success());
+    assert!(run_git(&["config", "commit.gpgsign", "false"])
+        .status
+        .success());
+    assert!(run_git(&["add", "--all"]).status.success());
+    assert!(run_git(&["commit", "-qm", "base"]).status.success());
+
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Select staged entity".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    store
+        .save_document(SaveDocument {
+            entity_id: entity.id.clone(),
+            body: "Document body\n".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    let preview = store.git_staging_preview().unwrap();
+    let entity_json = format!("entities/{}/entity.json", entity.id);
+    let document = format!("entities/{}/document.md", entity.id);
+    assert!(preview.staging_paths.contains(&entity_json));
+    assert!(preview.staging_paths.contains(&document));
+
+    assert!(run_git(&["add", "--", &document]).status.success());
+    store
+        .git_commit("select only identity".into(), Some(vec![entity_json.clone()]))
+        .unwrap();
+
+    let staged = String::from_utf8(run_git(&["diff", "--cached", "--name-only"]).stdout).unwrap();
+    assert!(!staged.lines().any(|path| path == document));
+    let working_tree = String::from_utf8(run_git(&["status", "--porcelain"]).stdout).unwrap();
+    assert!(working_tree.lines().any(|path| path.ends_with(&document)));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn git_show_tree_filters_to_canonical_paths_and_reset_moves_head() {
+    let root = std::env::temp_dir().join(format!("daena-git-reset-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let run_git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .unwrap()
+    };
+    assert!(run_git(&["init", "-q"]).status.success());
+    assert!(run_git(&["config", "user.email", "tests@daena.local"])
+        .status
+        .success());
+    assert!(run_git(&["config", "user.name", "Daena tests"])
+        .status
+        .success());
+    assert!(run_git(&["config", "commit.gpgsign", "false"])
+        .status
+        .success());
+    assert!(run_git(&["add", "--all"]).status.success());
+    assert!(run_git(&["commit", "-qm", "base"]).status.success());
+    let base = store.git_log().unwrap()[0].hash.clone();
+
+    store
+        .create_entity(CreateEntity {
+            name: "Later entity".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    let preview = store.git_staging_preview().unwrap();
+    store
+        .git_commit("later".into(), Some(preview.staging_paths.clone()))
+        .unwrap();
+    let later = store.git_log().unwrap()[0].hash.clone();
+    assert_ne!(base, later);
+
+    let tree = store.git_show_tree(&later).unwrap();
+    assert!(tree.iter().any(|path| path == "project.json"));
+    assert!(tree.iter().all(|path| ProjectStore::is_canonical_git_path(path)));
+    assert!(!tree.iter().any(|path| path.starts_with(".daena/")));
+
+    let body = store.git_show_file(&later, "project.json").unwrap();
+    assert!(body.contains("formatVersion") || body.contains("format_version") || body.contains("name"));
+
+    let reset = store.git_reset_hard(&base).unwrap();
+    assert_eq!(reset.current_head.as_deref(), store.git_rev_parse("HEAD").unwrap().as_deref());
+    assert!(!reset.diverged_from_upstream);
+    let entities = store.list_entities().unwrap();
+    assert!(entities.iter().all(|entity| entity.name != "Later entity"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn git_remote_add_list_and_remove_round_trip() {
+    let root = std::env::temp_dir().join(format!("daena-git-remote-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let run_git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .unwrap()
+    };
+    assert!(run_git(&["init", "-q"]).status.success());
+    let remotes = store
+        .git_remote_add("origin", "https://example.com/daena.git")
+        .unwrap();
+    assert_eq!(remotes.len(), 1);
+    assert_eq!(remotes[0].name, "origin");
+    assert_eq!(remotes[0].fetch_url, "https://example.com/daena.git");
+    let remotes = store
+        .git_remote_set_url("origin", "https://example.com/daena-archive.git")
+        .unwrap();
+    assert_eq!(remotes[0].fetch_url, "https://example.com/daena-archive.git");
+    let remotes = store.git_remote_remove("origin").unwrap();
+    assert!(remotes.is_empty());
     std::fs::remove_dir_all(root).unwrap();
 }
 

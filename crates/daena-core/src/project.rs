@@ -258,6 +258,43 @@ pub struct GitPreflight {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitToolInfo {
+    pub available: bool,
+    pub version: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRemote {
+    pub name: String,
+    pub fetch_url: String,
+    pub push_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitUpstream {
+    pub remote: String,
+    pub branch: String,
+    pub remote_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitResetResult {
+    pub status: GitStatus,
+    pub previous_head: Option<String>,
+    pub current_head: Option<String>,
+    pub upstream: Option<GitUpstream>,
+    pub diverged_from_upstream: bool,
+    pub rebuild: ExternalChangeReport,
+}
+
+const GIT_SHOW_FILE_MAX_BYTES: usize = 512 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalChangeReport {
     pub changed: bool,
     pub paths: Vec<String>,
@@ -1570,7 +1607,7 @@ impl ProjectStore {
         }
         let output = self.run_git(&[
             "log",
-            "-20",
+            "-50",
             "--date=short",
             "--pretty=format:%h%x09%ad%x09%s",
         ])?;
@@ -1692,7 +1729,11 @@ impl ProjectStore {
         self.git_preflight()
     }
 
-    pub fn git_commit(&self, message: String) -> Result<GitStatus, CoreError> {
+    pub fn git_commit(
+        &self,
+        message: String,
+        paths: Option<Vec<String>>,
+    ) -> Result<GitStatus, CoreError> {
         if message.trim().is_empty() {
             return Err(CoreError::NotFound("commit message cannot be empty".into()));
         }
@@ -1708,8 +1749,48 @@ impl ProjectStore {
                 "no canonical project changes to commit".into(),
             ));
         }
+        let selected = match paths {
+            Some(paths) if paths.is_empty() => {
+                return Err(CoreError::Git("no paths selected for commit".into()));
+            }
+            Some(paths) => {
+                let allowed = preflight.staging_paths.iter().cloned().collect::<BTreeSet<_>>();
+                for path in &paths {
+                    if !allowed.contains(path) {
+                        return Err(CoreError::Git(format!(
+                            "path is not in the canonical staging preview: {path}"
+                        )));
+                    }
+                    if !Self::is_canonical_git_path(path) {
+                        return Err(CoreError::Git(format!(
+                            "path is not a canonical project path: {path}"
+                        )));
+                    }
+                }
+                paths
+            }
+            None => preflight.staging_paths.clone(),
+        };
+        // Rebuild the canonical portion of the index so a selective commit
+        // cannot accidentally include canonical paths staged before the UI
+        // preview. `git reset` without a worktree target preserves all edits.
+        let mut reset_args = vec![
+            "reset".to_string(),
+            "--mixed".to_string(),
+            "HEAD".to_string(),
+            "--".to_string(),
+        ];
+        reset_args.extend(preflight.staging_paths.iter().cloned());
+        let reset_args = reset_args.iter().map(String::as_str).collect::<Vec<_>>();
+        let reset = self.run_git(&reset_args)?;
+        if !reset.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&reset.stderr).trim().into(),
+            ));
+        }
+
         let mut add_args = vec!["add".to_string(), "--all".to_string(), "--".to_string()];
-        add_args.extend(preflight.staging_paths.iter().cloned());
+        add_args.extend(selected);
         let add_args = add_args.iter().map(String::as_str).collect::<Vec<_>>();
         let add = self.run_git(&add_args)?;
         if !add.status.success() {
@@ -1724,6 +1805,356 @@ impl ProjectStore {
             ));
         }
         self.git_status()
+    }
+
+    pub fn git_tool_info() -> GitToolInfo {
+        match Command::new("git").args(["--version"]).output() {
+            Ok(output) if output.status.success() => {
+                let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                GitToolInfo {
+                    available: true,
+                    version: Some(version),
+                    error: None,
+                }
+            }
+            Ok(output) => {
+                let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                GitToolInfo {
+                    available: false,
+                    version: None,
+                    error: Some(if error.is_empty() {
+                        "git --version failed".into()
+                    } else {
+                        error
+                    }),
+                }
+            }
+            Err(error) => GitToolInfo {
+                available: false,
+                version: None,
+                error: Some(format!("git is unavailable: {error}")),
+            },
+        }
+    }
+
+    fn git_rev_parse(&self, rev: &str) -> Result<Option<String>, CoreError> {
+        let output = self.run_git(&["rev-parse", rev])?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok((!hash.is_empty()).then_some(hash))
+    }
+
+    fn git_upstream(&self) -> Result<Option<GitUpstream>, CoreError> {
+        let remote = self.run_git(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])?;
+        if !remote.status.success() {
+            return Ok(None);
+        }
+        let full = String::from_utf8_lossy(&remote.stdout).trim().to_string();
+        let Some((remote_name, branch)) = full.split_once('/') else {
+            return Ok(None);
+        };
+        let remote_hash = self.git_rev_parse("@{u}")?;
+        Ok(Some(GitUpstream {
+            remote: remote_name.to_string(),
+            branch: branch.to_string(),
+            remote_hash,
+        }))
+    }
+
+    fn validate_remote_url(url: &str) -> Result<(), CoreError> {
+        let url = url.trim();
+        if url.is_empty() {
+            return Err(CoreError::Validation("remote URL cannot be empty".into()));
+        }
+        let ok = url.starts_with("https://")
+            || url.starts_with("http://")
+            || url.starts_with("ssh://")
+            || url.starts_with("git://")
+            || url.starts_with("git@")
+            || url.starts_with("file://")
+            || Path::new(url).is_absolute();
+        if !ok {
+            return Err(CoreError::Validation(format!(
+                "unsupported remote URL: {url}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_remote_name(name: &str) -> Result<(), CoreError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(CoreError::Validation("remote name cannot be empty".into()));
+        }
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        {
+            return Err(CoreError::Validation(format!(
+                "invalid remote name: {name}"
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn git_show_tree(&self, hash: &str) -> Result<Vec<String>, CoreError> {
+        if !self.git_status()?.repository {
+            return Err(CoreError::Git("project is not a git repository".into()));
+        }
+        let hash = hash.trim();
+        if hash.is_empty() {
+            return Err(CoreError::Validation("commit hash cannot be empty".into()));
+        }
+        let output = self.run_git(&["ls-tree", "-r", "--name-only", hash])?;
+        if !output.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&output.stderr).trim().into(),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|path| !path.is_empty() && Self::is_canonical_git_path(path))
+            .map(str::to_string)
+            .collect())
+    }
+
+    pub fn git_show_file(&self, hash: &str, path: &str) -> Result<String, CoreError> {
+        if !self.git_status()?.repository {
+            return Err(CoreError::Git("project is not a git repository".into()));
+        }
+        let hash = hash.trim();
+        let path = path.trim();
+        if hash.is_empty() || path.is_empty() {
+            return Err(CoreError::Validation(
+                "commit hash and path are required".into(),
+            ));
+        }
+        if !Self::is_canonical_git_path(path) {
+            return Err(CoreError::Validation(format!(
+                "path is not a canonical project path: {path}"
+            )));
+        }
+        if path.contains('\0') || path.starts_with('-') {
+            return Err(CoreError::Validation("invalid snapshot path".into()));
+        }
+        let spec = format!("{hash}:{path}");
+        let output = self.run_git(&["show", &spec])?;
+        if !output.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&output.stderr).trim().into(),
+            ));
+        }
+        if output.stdout.len() > GIT_SHOW_FILE_MAX_BYTES {
+            return Err(CoreError::Validation(format!(
+                "snapshot file is too large to preview ({} bytes)",
+                output.stdout.len()
+            )));
+        }
+        if output.stdout.iter().any(|byte| *byte == 0) {
+            return Err(CoreError::Validation(
+                "binary snapshot files cannot be previewed".into(),
+            ));
+        }
+        String::from_utf8(output.stdout).map_err(|_| {
+            CoreError::Validation("snapshot file is not valid UTF-8 text".into())
+        })
+    }
+
+    pub fn git_reset_hard(&self, hash: &str) -> Result<GitResetResult, CoreError> {
+        if !self.git_status()?.repository {
+            return Err(CoreError::Git("project is not a git repository".into()));
+        }
+        let hash = hash.trim();
+        if hash.is_empty() {
+            return Err(CoreError::Validation("commit hash cannot be empty".into()));
+        }
+        let previous_head = self.git_rev_parse("HEAD")?;
+        let verify = self.run_git(&["rev-parse", "--verify", hash])?;
+        if !verify.status.success() {
+            return Err(CoreError::Git(format!(
+                "unknown commit: {}",
+                String::from_utf8_lossy(&verify.stderr).trim()
+            )));
+        }
+        let upstream_before = self.git_upstream()?;
+        let reset = self.run_git(&["reset", "--hard", hash])?;
+        if !reset.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&reset.stderr).trim().into(),
+            ));
+        }
+        let rebuild = self.reconcile_external_changes()?;
+        let current_head = self.git_rev_parse("HEAD")?;
+        let upstream = self.git_upstream()?.or(upstream_before);
+        let diverged_from_upstream = match (&upstream, &current_head) {
+            (Some(upstream), Some(head)) => {
+                upstream.remote_hash.as_ref().is_some_and(|remote| remote != head)
+            }
+            (Some(_), _) => true,
+            _ => false,
+        };
+        Ok(GitResetResult {
+            status: self.git_status()?,
+            previous_head,
+            current_head,
+            upstream,
+            diverged_from_upstream,
+            rebuild,
+        })
+    }
+
+    pub fn git_remote_list(&self) -> Result<Vec<GitRemote>, CoreError> {
+        if !self.git_status()?.repository {
+            return Ok(Vec::new());
+        }
+        let output = self.run_git(&["remote", "-v"])?;
+        if !output.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&output.stderr).trim().into(),
+            ));
+        }
+        let mut remotes = BTreeMap::<String, GitRemote>::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let mut parts = line.split_whitespace();
+            let Some(name) = parts.next() else { continue };
+            let Some(url) = parts.next() else { continue };
+            let mode = parts.next().unwrap_or("(fetch)");
+            let entry = remotes.entry(name.to_string()).or_insert(GitRemote {
+                name: name.to_string(),
+                fetch_url: String::new(),
+                push_url: String::new(),
+            });
+            if mode.contains("push") {
+                entry.push_url = url.to_string();
+            } else {
+                entry.fetch_url = url.to_string();
+            }
+        }
+        for remote in remotes.values_mut() {
+            if remote.push_url.is_empty() {
+                remote.push_url = remote.fetch_url.clone();
+            }
+            if remote.fetch_url.is_empty() {
+                remote.fetch_url = remote.push_url.clone();
+            }
+        }
+        Ok(remotes.into_values().collect())
+    }
+
+    pub fn git_remote_add(&self, name: &str, url: &str) -> Result<Vec<GitRemote>, CoreError> {
+        if !self.git_status()?.repository {
+            return Err(CoreError::Git("project is not a git repository".into()));
+        }
+        Self::validate_remote_name(name)?;
+        Self::validate_remote_url(url)?;
+        let output = self.run_git(&["remote", "add", name.trim(), url.trim()])?;
+        if !output.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&output.stderr).trim().into(),
+            ));
+        }
+        self.git_remote_list()
+    }
+
+    pub fn git_remote_set_url(&self, name: &str, url: &str) -> Result<Vec<GitRemote>, CoreError> {
+        if !self.git_status()?.repository {
+            return Err(CoreError::Git("project is not a git repository".into()));
+        }
+        Self::validate_remote_name(name)?;
+        Self::validate_remote_url(url)?;
+        let output = self.run_git(&["remote", "set-url", name.trim(), url.trim()])?;
+        if !output.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&output.stderr).trim().into(),
+            ));
+        }
+        self.git_remote_list()
+    }
+
+    pub fn git_remote_remove(&self, name: &str) -> Result<Vec<GitRemote>, CoreError> {
+        if !self.git_status()?.repository {
+            return Err(CoreError::Git("project is not a git repository".into()));
+        }
+        Self::validate_remote_name(name)?;
+        let output = self.run_git(&["remote", "remove", name.trim()])?;
+        if !output.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&output.stderr).trim().into(),
+            ));
+        }
+        self.git_remote_list()
+    }
+
+    pub fn git_push(
+        &self,
+        remote: &str,
+        branch: Option<&str>,
+        force_with_lease: bool,
+    ) -> Result<GitStatus, CoreError> {
+        if !self.git_status()?.repository {
+            return Err(CoreError::Git("project is not a git repository".into()));
+        }
+        Self::validate_remote_name(remote)?;
+        let branch = match branch {
+            Some(branch) if !branch.trim().is_empty() => branch.trim().to_string(),
+            _ => {
+                let status = self.git_status()?;
+                status.branch.filter(|value| !value.is_empty()).ok_or_else(|| {
+                    CoreError::Git("current branch is required for push".into())
+                })?
+            }
+        };
+        let mut args = vec!["push".to_string()];
+        if force_with_lease {
+            args.push("--force-with-lease".into());
+        }
+        args.push(remote.trim().into());
+        args.push(branch);
+        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+        let output = self.run_git(&args)?;
+        if !output.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&output.stderr).trim().into(),
+            ));
+        }
+        self.git_status()
+    }
+
+    pub fn git_restore_from_upstream(&self) -> Result<GitResetResult, CoreError> {
+        if !self.git_status()?.repository {
+            return Err(CoreError::Git("project is not a git repository".into()));
+        }
+        let upstream = self.git_upstream()?.ok_or_else(|| {
+            CoreError::Git("no upstream branch is configured for restore".into())
+        })?;
+        let previous_head = self.git_rev_parse("HEAD")?;
+        let fetch = self.run_git(&["fetch", &upstream.remote, &upstream.branch])?;
+        if !fetch.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&fetch.stderr).trim().into(),
+            ));
+        }
+        let upstream_ref = format!("{}/{}", upstream.remote, upstream.branch);
+        let reset = self.run_git(&["reset", "--hard", &upstream_ref])?;
+        if !reset.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&reset.stderr).trim().into(),
+            ));
+        }
+        let rebuild = self.reconcile_external_changes()?;
+        let current_head = self.git_rev_parse("HEAD")?;
+        let upstream = self.git_upstream()?;
+        Ok(GitResetResult {
+            status: self.git_status()?,
+            previous_head,
+            current_head,
+            upstream,
+            diverged_from_upstream: false,
+            rebuild,
+        })
     }
 
     fn initialize(&self) -> Result<(), CoreError> {

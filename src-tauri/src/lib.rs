@@ -1,6 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path};
 use std::io::{Cursor, Read};
@@ -2247,17 +2247,29 @@ fn sync_project_usage(project: &ProjectStore, host: &mut PluginHost) -> Result<(
         .info()
         .map(|info| info.root)
         .ok_or(CoreError::ProjectNotOpen)?;
-    for module in project.module_states()? {
-        if module.enabled {
-            if let Some(version) = module.package_version {
-                host.record_project_usage(&project_id, &module.module_id, &version)
+    let states = project
+        .module_states()?
+        .into_iter()
+        .map(|module| (module.module_id, (module.enabled, module.package_version)))
+        .collect::<BTreeMap<_, _>>();
+    let mut module_ids = states.keys().cloned().collect::<BTreeSet<_>>();
+    module_ids.extend(host.catalog.list().map(|entry| entry.manifest.id.clone()));
+
+    for module_id in module_ids {
+        let (enabled, package_version) = states
+            .get(&module_id)
+            .cloned()
+            .unwrap_or((true, None));
+        if enabled {
+            if let Some(version) = package_version {
+                host.record_project_usage(&project_id, &module_id, &version)
                     .map_err(|error| CoreError::Conflict(error.to_string()))?;
             }
-            host.activate_bundled(&project_id, &module.module_id)
+            host.activate_bundled(&project_id, &module_id)
                 .map_err(|error| CoreError::Validation(error.to_string()))?;
         } else {
-            host.deactivate_bundled(&project_id, &module.module_id);
-            host.clear_project_usage(&project_id, &module.module_id)
+            host.deactivate_bundled(&project_id, &module_id);
+            host.clear_project_usage(&project_id, &module_id)
                 .map_err(|error| CoreError::Conflict(error.to_string()))?;
         }
     }

@@ -18,7 +18,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   import { formatCalendarDate, isCompleteCalendarDate, parseCalendarDate, serializeCalendarDate, type CalendarDate } from "$lib/date";
 
   type InstalledModule = ProjectModuleManifest;
-  type WorkspaceSection = "lore" | "timeline" | "writing";
+  type WorkspaceSection = "lore" | "timeline" | "writing" | "maps";
   type WritingView = "manuscripts" | "reference";
   type RecentProject = { name: string; root: string };
   type CreateOption = { key: string; module: InstalledModule; template: EntityTemplate };
@@ -88,7 +88,13 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   let installSummary = $state<{ id: string; version: string; signed: boolean; digest: string } | null>(null);
   let upgradePreview = $state<{ entry: PluginAdminEntry; version: string; plan: PluginUpgradePlan } | null>(null);
   let upgradeBusy = $state(false);
-  let confirmAction = $state<{ title: string; message: string; confirmLabel: string; run: () => Promise<void> } | null>(null);
+  let confirmAction = $state<{
+    title: string;
+    message: string;
+    confirmLabel: string;
+    run: () => Promise<void>;
+    capabilities?: string[];
+  } | null>(null);
   let confirmBusy = $state(false);
   let deleteTarget = $state<PluginAdminEntry | null>(null);
   let deleteInput = $state("");
@@ -122,8 +128,18 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     return () => document.body.classList.remove("modal-open");
   });
 
-  const activeModuleId = () => section === "lore" ? "daena.lore" : section === "timeline" ? "daena.timeline" : "daena.writing";
-  const activeManifest = () => (section === "lore" ? loreManifestJson : section === "timeline" ? timelineManifestJson : writingManifestJson) as unknown as ModuleManifest;
+  const activeModuleId = () => section === "lore" ? "daena.lore" : section === "timeline" ? "daena.timeline" : section === "writing" ? "daena.writing" : "daena.maps";
+  const activeManifest = () => (section === "lore" ? loreManifestJson : section === "timeline" ? timelineManifestJson : section === "writing" ? writingManifestJson : null) as unknown as ModuleManifest | null;
+  const workspaceSectionOrder: WorkspaceSection[] = ["lore", "timeline", "writing", "maps"];
+  function workspaceModuleId(target: WorkspaceSection) {
+    return target === "lore" ? "daena.lore" : target === "timeline" ? "daena.timeline" : target === "writing" ? "daena.writing" : "daena.maps";
+  }
+  function enabledWorkspaceSections() {
+    return workspaceSectionOrder.filter((target) => modules.some((module) => module.id === workspaceModuleId(target) && module.enabled));
+  }
+  function sectionIcon(target: WorkspaceSection) {
+    return target === "lore" ? "✦" : target === "timeline" ? "◷" : target === "writing" ? "✎" : "◇";
+  }
   function fieldAppliesToEntity(field: FieldDefinition, entityType?: string | null) {
     return !field.entityTypes || !entityType || field.entityTypes.includes(entityType);
   }
@@ -267,6 +283,9 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   }
 
   function workspaceNavigationActive(target: WorkspaceSection) {
+    if (target === "maps") {
+      return section === "maps" && !hostView && !projectionView && (!sandboxView || sandboxView.plugin.id === "daena.maps");
+    }
     return !hostView && !sandboxView && !projectionView && section === target;
   }
 
@@ -438,6 +457,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
 
   function visibleEntities() {
     const term = query.trim().toLowerCase();
+    if (section === "maps") return [];
     return entities.filter((entity) => {
       const belongs = section === "timeline"
         ? entity.entity_type === "event"
@@ -470,11 +490,24 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
 
   async function switchSection(next: WorkspaceSection) {
     if (!(await flushAutoSave())) return;
+    if (section === next && (next !== "maps" || sandboxView?.plugin.id === "daena.maps")) return;
     await leavePluginView();
-    if (section === next) return;
     section = next;
     clearSelection();
     query = "";
+    if (next === "maps") {
+      const mapView = pluginViews().find((item) => item.plugin.id === "daena.maps");
+      if (mapView) await openPluginView(mapView);
+    }
+  }
+
+  async function reconcileWorkspaceSection() {
+    if (enabledWorkspaceSections().includes(section)) return;
+    await leavePluginView();
+    section = enabledWorkspaceSections()[0] ?? "lore";
+    clearSelection();
+    query = "";
+    editorFullscreen = false;
   }
 
   async function switchWritingView(next: WritingView) {
@@ -487,15 +520,15 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   }
 
   function sectionLabel() {
-    return section === "lore" ? "Lore library" : section === "timeline" ? "Timeline" : "Writing Studio";
+    return section === "lore" ? "Lore library" : section === "timeline" ? "Timeline" : section === "writing" ? "Writing Studio" : "Maps";
   }
 
   function collectionLabel() {
-    return section === "lore" ? "entries" : section === "timeline" ? "events" : writingView === "manuscripts" ? "manuscripts" : "reference pages";
+    return section === "lore" ? "entries" : section === "timeline" ? "events" : section === "writing" ? writingView === "manuscripts" ? "manuscripts" : "reference pages" : "maps";
   }
 
   function createLabel() {
-    return section === "lore" ? "entry" : section === "timeline" ? "event" : writingView === "manuscripts" ? "manuscript" : "reference page";
+    return section === "lore" ? "entry" : section === "timeline" ? "event" : section === "writing" ? writingView === "manuscripts" ? "manuscript" : "reference page" : "map";
   }
 
   function entityTypeLabel(entityType: string | null) {
@@ -614,6 +647,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     projectInfo = info ?? await project.info();
     if (!projectInfo) throw new Error("The project did not return an identity");
     modules = await project.listModuleManifests();
+    await reconcileWorkspaceSection();
     rememberProject(projectInfo);
     await loadEntities();
     await refreshGit();
@@ -1063,24 +1097,23 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     if (!installed.enabled) {
       askConfirm(
         "Grant plugin capabilities",
-        `Enable ${installed.name} with these requested capabilities?\n\n${installed.capabilities.map(capabilityLabel).join("\n") || "No capabilities requested."}`,
+        `Enable ${installed.name} with these requested capabilities?`,
         "Enable plugin",
         async () => {
           await project.enableModule(id, installed.capabilities);
           modules = await project.listModuleManifests();
+          await reconcileWorkspaceSection();
           await refreshAdmin();
         },
+        installed.capabilities,
       );
       return;
     }
     try {
       await project.disableModule(id);
       modules = await project.listModuleManifests();
+      await reconcileWorkspaceSection();
       await refreshAdmin();
-      if (!sectionEnabled()) {
-        selected = null;
-        editorFullscreen = false;
-      }
       if (!selectedCreateOption()) selectedCreateKey = "";
       if (showCreateForm && !selectedCreateOption()) closeCreateForm();
     } catch (cause) { error = friendlyError(cause); }
@@ -1159,8 +1192,8 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     } catch (cause) { error = friendlyError(cause); }
     finally { upgradeBusy = false; }
   }
-  function askConfirm(title: string, message: string, confirmLabel: string, run: () => Promise<void>) {
-    confirmAction = { title, message, confirmLabel, run };
+  function askConfirm(title: string, message: string, confirmLabel: string, run: () => Promise<void>, capabilities?: string[]) {
+    confirmAction = { title, message, confirmLabel, run, capabilities };
   }
   function selectedUninstallableVersion(plugin: PluginAdminEntry) {
     return plugin.installedVersions.find((version) => version.isSelected && !version.bundled) ?? null;
@@ -1207,6 +1240,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
       await project.retryPlugin(plugin.id);
       if (!plugin.enabled) await project.enableModule(plugin.id, plugin.capabilities);
       modules = await project.listModuleManifests();
+      await reconcileWorkspaceSection();
       await refreshAdmin();
       error = `Retried ${plugin.name}.`;
     } catch (cause) { error = friendlyError(cause); }
@@ -1232,18 +1266,20 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     if (!plugin.enabled) {
       askConfirm(
         "Grant plugin capabilities",
-        `Enable ${plugin.name} with these requested capabilities?\n\n${plugin.capabilities.map(capabilityLabel).join("\n") || "No capabilities requested."}`,
+        `Enable ${plugin.name} with these requested capabilities?`,
         "Enable plugin",
         async () => {
           pluginActionId = plugin.id;
           try {
             await project.enableModule(plugin.id, plugin.capabilities);
             modules = await project.listModuleManifests();
+            await reconcileWorkspaceSection();
             await refreshAdmin();
           } finally {
             pluginActionId = null;
           }
         },
+        plugin.capabilities,
       );
       return;
     }
@@ -1251,6 +1287,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     try {
       await project.disableModule(plugin.id);
       modules = await project.listModuleManifests();
+      await reconcileWorkspaceSection();
       setAdminPluginEnabled(plugin.id, false);
       await refreshAdmin();
       if (hostView?.plugin.id === plugin.id) hostView = null;
@@ -1261,7 +1298,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   async function reviewPluginCapabilities(plugin: PluginAdminEntry) {
     askConfirm(
       "Review plugin capabilities",
-      `Update ${plugin.name} with these requested capabilities?\n\n${plugin.capabilities.map(capabilityLabel).join("\n") || "No capabilities requested."}`,
+      `Update ${plugin.name} with these requested capabilities?`,
       "Update capabilities",
       async () => {
         pluginActionId = plugin.id;
@@ -1273,6 +1310,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
           pluginActionId = null;
         }
       },
+      plugin.capabilities,
     );
   }
   function capabilityLabel(capability: string) {
@@ -1416,17 +1454,19 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
           </div>
         {/if}
       </div>
-      <button aria-expanded={showCreateForm} class="rail-create-button" onclick={toggleCreateForm}><span class="rail-icon">＋</span><span>New entry</span></button>
-      <div class="rail-label">WORKSPACE</div>
-      <nav class="workspace-nav" aria-label="Workspace sections">
-        <button aria-current={workspaceNavigationActive("lore") ? "page" : undefined} class:active={workspaceNavigationActive("lore")} class="rail-button" onclick={() => switchSection("lore")}><span class="rail-icon">✦</span><span>Lore library</span></button>
-        <button aria-current={workspaceNavigationActive("timeline") ? "page" : undefined} class:active={workspaceNavigationActive("timeline")} class="rail-button" onclick={() => switchSection("timeline")}><span class="rail-icon">◷</span><span>Timeline</span></button>
-        <button aria-current={workspaceNavigationActive("writing") ? "page" : undefined} class:active={workspaceNavigationActive("writing")} class="rail-button" onclick={() => switchSection("writing")}><span class="rail-icon">✎</span><span>Writing Studio</span></button>
-      </nav>
-      {#if pluginViews().length > 0}
+      {#if enabledWorkspaceSections().length > 0}<button aria-expanded={showCreateForm} class="rail-create-button" onclick={toggleCreateForm}><span class="rail-icon">＋</span><span>New entry</span></button>{/if}
+      {#if enabledWorkspaceSections().length > 0}
+        <div class="rail-label">WORKSPACE</div>
+        <nav class="workspace-nav" aria-label="Workspace sections">
+          {#each enabledWorkspaceSections() as target (target)}
+            <button aria-current={workspaceNavigationActive(target) ? "page" : undefined} class:active={workspaceNavigationActive(target)} class="rail-button" onclick={() => void switchSection(target)}><span class="rail-icon">{sectionIcon(target)}</span><span>{target === "lore" ? "Lore library" : target === "timeline" ? "Timeline" : target === "writing" ? "Writing Studio" : "Maps"}</span></button>
+          {/each}
+        </nav>
+      {/if}
+      {#if pluginViews().some((item) => item.plugin.id !== "daena.maps")}
         <div class="rail-label plugin-views-label">PLUGIN VIEWS</div>
         <nav class="workspace-nav" aria-label="Plugin views">
-          {#each pluginViews() as item (item.key)}
+          {#each pluginViews().filter((item) => item.plugin.id !== "daena.maps") as item (item.key)}
             <div class="plugin-nav-row">
               <button class:active={pluginNavigationActive(item)} class="rail-button" title={pluginViewLabel(item)} aria-current={pluginNavigationActive(item) ? "page" : undefined} aria-label={`Open ${item.plugin.name}: ${item.view.title}`} onclick={() => void openPluginView(item)}><span class="rail-icon">◇</span><span class="plugin-nav-title">{pluginViewLabel(item)}</span></button>
             </div>
@@ -1622,6 +1662,17 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
         <div class="modal-backdrop plugin-confirm-modal"><div class="dialog" role="alertdialog" aria-modal="true">
           <div class="new-form-heading"><div><span class="panel-kicker">CONFIRM ACTION</span><strong>{confirmAction.title}</strong></div><button type="button" class="new-form-close" onclick={() => confirmAction = null}>×</button></div>
           <p class="dialog-body-copy">{confirmAction.message}</p>
+          {#if confirmAction.capabilities}
+            {#if confirmAction.capabilities.length > 0}
+              <div class="capability-list" role="list" aria-label="Requested capabilities">
+                {#each confirmAction.capabilities as capability}
+                  <div class="capability-item" role="listitem">{capabilityLabel(capability)}</div>
+                {/each}
+              </div>
+            {:else}
+              <p class="dialog-body-copy capability-empty">No capabilities requested.</p>
+            {/if}
+          {/if}
           <div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => confirmAction = null}>Cancel</button><button type="button" class="primary-button" onclick={runConfirm} disabled={confirmBusy}>{confirmBusy ? "Working…" : confirmAction.confirmLabel}</button></div>
         </div></div>
       {/if}
@@ -1707,8 +1758,8 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
           <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={sandboxView.plugin.name} mapEntityId={sandboxView.plugin.id === "daena.maps" && selected?.entity_type === "daena.maps:map" ? selected.id : undefined} />
         {/if}
       {/key}
-    {:else if !sectionEnabled()}
-      <section class="disabled-state"><div class="disabled-icon">◌</div><span class="overline">Module unavailable</span><h1>{sectionLabel()} is resting.</h1><p>Your project data is safe. Re-enable this module to continue working in this workspace.</p><button class="primary-button" onclick={() => toggleModule(activeModuleId() as ModuleId)}>Enable {sectionLabel()}</button></section>
+    {:else if enabledWorkspaceSections().length === 0}
+      <section class="empty-workspace-state"><div class="disabled-icon">◌</div><span class="overline">WORKSPACE READY</span><h1>Choose a workspace to begin.</h1><p>No workspace modules are enabled in this project. Enable one from the Plugins menu to start working.</p><button class="primary-button" onclick={() => void openPlugins()}>Open Plugins</button></section>
     {:else}
       {#if projectDiagnostics.length}<div class="project-diagnostics" role="alert"><strong>Canonical source diagnostics</strong>{#each projectDiagnostics as diagnostic}<span>{diagnostic}</span>{/each}<small>Editing is read-only until the source files are valid again.</small></div>{/if}
       <div class="workspace-heading"><div><span class="overline">{section === "lore" ? "WORLD BIBLE" : section === "timeline" ? "CHRONOLOGY" : "DRAFTING DESK"}</span><h1>{sectionLabel()}</h1><p>{section === "lore" ? "A living reference for every person, place, and power." : section === "timeline" ? "Events, eras, and the threads that connect them." : writingView === "manuscripts" ? "Draft stories, essays, and other long-form work." : "Build the pages, notes, and references behind the story."}</p></div><div class="heading-actions">{#if section !== "writing"}<button class="quiet-button" onclick={openProjection}>Open {section === "lore" ? "graph" : "timeline"} ↗</button>{/if}</div></div>
@@ -1724,7 +1775,6 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
           </div>
         </aside>
 
-        {#if selected}<section class="map-contribution panel-surface" aria-label="Maps contribution"><div class="section-title"><h3>Maps</h3><span>{mapLocations.length}</span></div><p>Shared locations remain on the entity even when Maps is disabled.</p><button class="quiet-button" type="button" onclick={() => void linkEntityToMap()}>＋ Link location</button>{#if mapLocations.length === 0}<small>No map links yet.</small>{:else}{#each mapLocations as location (location.id)}<div class="map-location-row"><div><strong>{location.label || location.role}</strong><small>{location.role} · {location.mapEntityId.slice(0, 8)}{#if location.resolution === "unresolved"} · <span class="map-unresolved-badge">Unresolved</span>{/if}</small></div><div>{#if location.resolution === "unresolved"}<span class="map-unresolved-note" title="The map feature this link pointed to was removed or renumbered.">Feature missing</span>{:else}<button class="quiet-button" type="button" onclick={() => void openMapLocation(location)}>Show on map</button>{/if}<button class="quiet-button" type="button" onclick={() => void editMapLocation(location)}>Edit</button><button class="quiet-button" type="button" onclick={() => void rebindMapLocation(location)}>Rebind</button><button class="quiet-button" type="button" onclick={() => void unlinkMapLocation(location)}>Unlink</button></div></div>{/each}{/if}</section>{/if}
         <article class:editor-fullscreen={editorFullscreen} class="editor-panel">
           <div class="editor-header">
             <div>
@@ -1756,7 +1806,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
           {/if}
         </article>
 
-        {#if selected}<aside class="inspector-panel panel-surface"><div class="inspector-heading"><div><span class="panel-kicker">INSPECTOR</span><strong>Details</strong></div><span class="inspector-type">{selected.entity_type}</span></div><section class="inspector-section"><h3>Properties</h3>{#each definitions().filter((candidate) => candidate.type !== "relationship") as definition}<div class="property-field"><span>{definition.label}{#if definition.required}<b>*</b>{/if}</span>{#if definition.type === "date"}{#if dateForField(definition.key) || dateEditorOpen[definition.key]}{@const date = dateDraftForField(definition.key) ?? { calendar: "gregorian", era: "CE", precision: "day" }}<div class="date-editor"><div class="date-fields"><label for={`${definition.key}-year`}>Year<input id={`${definition.key}-year`} aria-label={`${definition.label} year`} type="number" min="1" value={date.year ?? ""} onchange={(event) => updateDatePart(definition.key, "year", (event.currentTarget as HTMLInputElement).value, 1)} /></label><label for={`${definition.key}-month`}>Month<input id={`${definition.key}-month`} aria-label={`${definition.label} month`} type="number" min="1" max="12" value={date.month ?? ""} onchange={(event) => updateDatePart(definition.key, "month", (event.currentTarget as HTMLInputElement).value, 1, 12)} /></label><label for={`${definition.key}-day`}>Day<input id={`${definition.key}-day`} aria-label={`${definition.label} day`} type="number" min="1" max="31" value={date.day ?? ""} onchange={(event) => updateDatePart(definition.key, "day", (event.currentTarget as HTMLInputElement).value, 1, 31)} /></label></div><small class="date-preview">{typeof date.year === "number" ? formatCalendarDate(date) : "Add a date"}</small><button class="date-clear" type="button" onclick={() => clearDateField(definition.key)}>Clear date</button></div>{:else}<button class="date-empty" type="button" onclick={() => openDateEditor(definition.key)}>Add a date</button>{/if}{:else}<input type="text" value={fields[definition.key] ?? ""} placeholder="Add {definition.label.toLowerCase()}" oninput={(event) => updateField(definition.key, event)} />{/if}</div>{/each}</section>{#each definitions().filter((candidate) => candidate.type === "relationship") as definition}<section class="inspector-section"><div class="section-title"><h3>{definition.label}</h3><span>{selectedRelationshipIds(definition).length}</span></div><RelationshipPicker field={definition} entities={entities} selectedIds={selectedRelationshipIds(definition)} onChange={(ids) => void updateRelationshipField(definition, ids)} /></section>{/each}<section class="inspector-section"><div class="section-title"><h3>Attachments</h3><span>{assets.length}</span></div><button class="drop-zone" type="button" onclick={attachAsset}><span>＋</span><strong>Attach a file</strong><small>Copied into this project</small></button>{#each assets as asset}<div class="asset-row"><span class="asset-icon">□</span><span><strong>{asset.filename}</strong><small>{Math.max(1, Math.round(asset.size / 1024))} KB</small></span></div>{/each}</section></aside>{:else}<aside class="inspector-panel panel-surface inspector-empty"><span>INSPECTOR</span><p>Select an entry to see its properties, relationships, and attachments.</p></aside>{/if}
+        {#if selected}<aside class="inspector-panel panel-surface"><div class="inspector-heading"><div><span class="panel-kicker">INSPECTOR</span><strong>Details</strong></div><span class="inspector-type">{selected.entity_type}</span></div><section class="inspector-section"><h3>Properties</h3>{#each definitions().filter((candidate) => candidate.type !== "relationship") as definition}<div class="property-field"><span>{definition.label}{#if definition.required}<b>*</b>{/if}</span>{#if definition.type === "date"}{#if dateForField(definition.key) || dateEditorOpen[definition.key]}{@const date = dateDraftForField(definition.key) ?? { calendar: "gregorian", era: "CE", precision: "day" }}<div class="date-editor"><div class="date-fields"><label for={`${definition.key}-year`}>Year<input id={`${definition.key}-year`} aria-label={`${definition.label} year`} type="number" min="1" value={date.year ?? ""} onchange={(event) => updateDatePart(definition.key, "year", (event.currentTarget as HTMLInputElement).value, 1)} /></label><label for={`${definition.key}-month`}>Month<input id={`${definition.key}-month`} aria-label={`${definition.label} month`} type="number" min="1" max="12" value={date.month ?? ""} onchange={(event) => updateDatePart(definition.key, "month", (event.currentTarget as HTMLInputElement).value, 1, 12)} /></label><label for={`${definition.key}-day`}>Day<input id={`${definition.key}-day`} aria-label={`${definition.label} day`} type="number" min="1" max="31" value={date.day ?? ""} onchange={(event) => updateDatePart(definition.key, "day", (event.currentTarget as HTMLInputElement).value, 1, 31)} /></label></div><small class="date-preview">{typeof date.year === "number" ? formatCalendarDate(date) : "Add a date"}</small><button class="date-clear" type="button" onclick={() => clearDateField(definition.key)}>Clear date</button></div>{:else}<button class="date-empty" type="button" onclick={() => openDateEditor(definition.key)}>Add a date</button>{/if}{:else}<input type="text" value={fields[definition.key] ?? ""} placeholder="Add {definition.label.toLowerCase()}" oninput={(event) => updateField(definition.key, event)} />{/if}</div>{/each}</section>{#each definitions().filter((candidate) => candidate.type === "relationship") as definition}<section class="inspector-section"><div class="section-title"><h3>{definition.label}</h3><span>{selectedRelationshipIds(definition).length}</span></div><RelationshipPicker field={definition} entities={entities} selectedIds={selectedRelationshipIds(definition)} onChange={(ids) => void updateRelationshipField(definition, ids)} /></section>{/each}<section class="inspector-section"><div class="section-title"><h3>Attachments</h3><span>{assets.length}</span></div><button class="drop-zone" type="button" onclick={attachAsset}><span>＋</span><strong>Attach a file</strong><small>Copied into this project</small></button>{#each assets as asset}<div class="asset-row"><span class="asset-icon">□</span><span><strong>{asset.filename}</strong><small>{Math.max(1, Math.round(asset.size / 1024))} KB</small></span></div>{/each}</section><section class="inspector-section map-contribution" aria-label="Maps contribution"><div class="section-title"><h3>Maps</h3><span>{mapLocations.length}</span></div><p>Shared locations remain on the entity even when Maps is disabled.</p><button class="quiet-button" type="button" onclick={() => void linkEntityToMap()}>＋ Link location</button>{#if mapLocations.length === 0}<small>No map links yet.</small>{:else}{#each mapLocations as location (location.id)}<div class="map-location-row"><div><strong>{location.label || location.role}</strong><small>{location.role} · {location.mapEntityId.slice(0, 8)}{#if location.resolution === "unresolved"} · <span class="map-unresolved-badge">Unresolved</span>{/if}</small></div><div>{#if location.resolution === "unresolved"}<span class="map-unresolved-note" title="The map feature this link pointed to was removed or renumbered.">Feature missing</span>{:else}<button class="quiet-button" type="button" onclick={() => void openMapLocation(location)}>Show on map</button>{/if}<button class="quiet-button" type="button" onclick={() => void editMapLocation(location)}>Edit</button><button class="quiet-button" type="button" onclick={() => void rebindMapLocation(location)}>Rebind</button><button class="quiet-button" type="button" onclick={() => void unlinkMapLocation(location)}>Unlink</button></div></div>{/each}{/if}</section></aside>{:else}<aside class="inspector-panel panel-surface inspector-empty"><span>INSPECTOR</span><p>Select an entry to see its properties, relationships, and attachments.</p></aside>{/if}
       </section>
     {/if}
     {#if error}<div class="toast" role="alert" aria-live="assertive">{error}<button aria-label="Dismiss" onclick={() => error = ""}>×</button></div>{/if}
@@ -1785,9 +1835,21 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   .map-conflict-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 18px; border-bottom: 1px solid #e2b48c; background: #fff5e9; color: #765a39; }
   .map-conflict-copy strong { font-size: 12px; } .map-conflict-copy p { margin: 4px 0 0; font-size: 11px; line-height: 1.5; } .map-conflict-copy code { display: block; margin-top: 6px; font: 11px ui-monospace, monospace; }
   .map-conflict-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }
-  @media (max-width: 760px) { .map-conflict-banner { align-items: flex-start; flex-direction: column; } } .editor-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 14px; color: var(--ink-faint); font-size: 11px; } .editor-footer div { display: flex; gap: 4px; } .editor-empty { display: grid; place-items: center; min-height: 500px; padding: 30px; text-align: center; } .empty-mark, .disabled-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 16px; background: #f2e4d2; color: var(--accent); font-size: 23px; } .editor-empty h3 { margin: 18px 0 6px; font: 500 23px var(--font-display); } .editor-empty p, .disabled-state p { max-width: 280px; margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
+  @media (max-width: 760px) { .map-conflict-banner { align-items: flex-start; flex-direction: column; } } .editor-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 14px; color: var(--ink-faint); font-size: 11px; } .editor-footer div { display: flex; gap: 4px; } .editor-empty { display: grid; place-items: center; min-height: 500px; padding: 30px; text-align: center; } .empty-mark, .disabled-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 16px; background: #f2e4d2; color: var(--accent); font-size: 23px; } .editor-empty h3 { margin: 18px 0 6px; font: 500 23px var(--font-display); } .editor-empty p { max-width: 280px; margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
   .date-editor { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fcf8f1; } .date-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; } .date-fields label { display: grid; gap: 4px; color: var(--ink-faint); font-size: 9px; font-weight: 700; text-transform: uppercase; } .date-fields input { min-width: 0; width: 100%; padding: 8px 6px; border: 1px solid var(--line); border-radius: 7px; background: var(--canvas); color: var(--ink); font-size: 11px; } .date-fields input:focus { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180,119,63,.1); outline: 0; } .date-preview { color: var(--accent); font-size: 10px; font-weight: 700; } .date-clear, .date-empty { width: fit-content; padding: 0; border: 0; background: transparent; color: var(--ink-faint); font-size: 10px; cursor: pointer; } .date-empty { padding: 8px 10px; border: 1px dashed #d3c0a9; border-radius: 7px; color: var(--accent); } .inspector-heading { border-bottom: 1px solid var(--line); } .inspector-heading strong { display: block; margin-top: 7px; font: 500 20px var(--font-display); } .inspector-type { padding: 4px 7px; border-radius: 5px; background: #f2e4d2; color: var(--accent); font-size: 9px; font-weight: 800; text-transform: uppercase; } .inspector-section { padding: 18px 16px; border-bottom: 1px solid var(--line); } .inspector-section h3, .section-title h3 { margin: 0; color: var(--ink-soft); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; } .property-field { display: block; margin-top: 14px; } .property-field span { display: block; margin-bottom: 5px; color: var(--ink-soft); font-size: 10px; } .property-field b { margin-left: 3px; color: var(--accent); } .property-field input { width: 100%; padding: 8px 9px; border: 1px solid var(--line); border-radius: 7px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 11px; } .property-field input:focus { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180,119,63,.1); } .section-title { display: flex; align-items: center; justify-content: space-between; } .section-title span { color: var(--ink-faint); font-size: 11px; } .asset-row strong, .asset-row small { display: block; } .asset-row strong { font-size: 10px; } .asset-row small { margin-top: 3px; color: var(--ink-faint); font-size: 9px; } .drop-zone { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 12px; padding: 16px 8px; border: 1px dashed #d3c0a9; border-radius: 8px; background: #fcf8f1; color: var(--accent); text-align: center; cursor: pointer; } .drop-zone span { font-size: 22px; } .drop-zone strong { color: var(--ink-soft); font-size: 10px; } .drop-zone small { color: var(--ink-faint); font-size: 9px; } .asset-row { display: flex; align-items: center; gap: 8px; margin-top: 9px; } .asset-icon { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 6px; background: #ede9e0; color: var(--accent); }
-  .disabled-state { display: grid; min-height: calc(100vh - 58px); place-content: center; justify-items: center; padding: 40px; text-align: center; } .disabled-state h1 { margin: 12px 0 10px; font: 500 42px var(--font-display); } .disabled-state p { margin-bottom: 24px; } .toast { position: fixed; right: 24px; bottom: 24px; z-index: 60; max-width: 430px; padding: 13px 14px; border: 1px solid #e5d4ba; border-radius: 9px; background: #fff8ed; box-shadow: var(--shadow-lg); color: #765a39; font-size: 12px; } .toast button { margin-left: 10px; border: 0; background: none; color: inherit; cursor: pointer; font-size: 17px; } .inspector-empty { display: grid; place-items: center; min-height: 240px; padding: 30px; color: var(--ink-faint); text-align: center; font-size: 10px; } .inspector-empty p { max-width: 170px; margin-top: 13px; line-height: 1.6; }
+  .map-contribution p { margin: 9px 0 10px; color: var(--ink-soft); font-size: 10px; line-height: 1.5; }
+  .map-contribution > .quiet-button { margin: 0 0 8px; padding: 6px 8px; border: 1px solid #d9cdbd; border-radius: 7px; background: #fcf8f1; font-size: 10px; }
+  .map-contribution > small { display: block; color: var(--ink-faint); font-size: 10px; }
+  .map-location-row { display: grid; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+  .map-location-row > div:first-child { min-width: 0; }
+  .map-location-row strong, .map-location-row small { display: block; overflow-wrap: anywhere; }
+  .map-location-row strong { color: var(--ink); font-size: 10px; }
+  .map-location-row small { margin-top: 3px; color: var(--ink-faint); font-size: 9px; line-height: 1.4; }
+  .map-location-row > div:last-child { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
+  .map-location-row .quiet-button { padding: 5px 6px; font-size: 9px; }
+  .map-unresolved-badge { color: #a14f42; font-weight: 700; }
+  .map-unresolved-note { color: #a14f42; font-size: 9px; }
+  .empty-workspace-state { display: grid; min-height: calc(100vh - 58px); place-content: center; justify-items: center; padding: 40px; text-align: center; } .empty-workspace-state h1 { margin: 12px 0 10px; font: 500 42px var(--font-display); } .empty-workspace-state p { max-width: 360px; margin: 0 0 24px; color: var(--ink-soft); font-size: 13px; line-height: 1.6; } .toast { position: fixed; right: 24px; bottom: 24px; z-index: 60; max-width: 430px; padding: 13px 14px; border: 1px solid #e5d4ba; border-radius: 9px; background: #fff8ed; box-shadow: var(--shadow-lg); color: #765a39; font-size: 12px; } .toast button { margin-left: 10px; border: 0; background: none; color: inherit; cursor: pointer; font-size: 17px; } .inspector-empty { display: grid; place-items: center; min-height: 240px; padding: 30px; color: var(--ink-faint); text-align: center; font-size: 10px; } .inspector-empty p { max-width: 170px; margin-top: 13px; line-height: 1.6; }
   @media (max-width: 1180px) { .workspace-grid { grid-template-columns: 220px minmax(320px, 1fr); } .inspector-panel { grid-column: 1 / -1; min-height: auto; display: grid; grid-template-columns: repeat(3, 1fr); } .inspector-heading { grid-column: 1 / -1; } .inspector-section { border-right: 1px solid var(--line); border-bottom: 0; } }
   @media (max-width: 760px) { .studio-shell { display: block; } .rail { display: block; width: 100%; height: auto; padding: 12px 14px; } .startup-rail { min-height: 100vh; padding: 24px 14px; } .brand { padding: 0 4px 12px; } .rail-label, .rail-spacer, .rail-footer, .module-menu { display: none; } .startup-rail .rail-label, .startup-rail .recent-projects { display: block; } .startup-rail .recent-label { margin-top: 27px; } .startup-rail .rail-button { display: flex; width: 100%; margin: 0 0 5px; padding: 10px 11px; } .startup-rail .rail-button span:not(.rail-icon) { display: inline; } .rail-button { display: inline-flex; width: auto; margin: 0 3px 0 0; padding: 8px 10px; } .rail-button span:not(.rail-icon) { display: none; } .project-menu .rail-button { display: flex; width: 100%; margin: 0 0 3px; } .project-menu .rail-button span:not(.rail-icon) { display: inline; } .topbar { min-height: 58px; padding: 0 17px; } .breadcrumbs span:first-child, .sync-badge { display: none; } .global-search { width: 150px; } .welcome { min-height: calc(100vh - 58px); display: block; padding: 55px 24px; } .welcome h1 { font-size: 52px; } .welcome-art { width: 100%; height: 270px; margin-top: 35px; transform: scale(.84); transform-origin: left top; } .workspace-heading { display: block; padding: 30px 17px 18px; } .workspace-heading h1 { font-size: 33px; } .heading-actions { margin-top: 18px; } .projection-bar { margin: 0 17px 12px; } .workspace-grid { display: flex; flex-direction: column; padding: 0 17px 25px; } .collection-panel, .editor-panel, .inspector-panel { width: 100%; min-height: auto; } .collection-list { max-height: 260px; overflow-y: auto; } .inspector-panel { display: block; } .inspector-section { border-bottom: 1px solid var(--line); border-right: 0; } .editor-panel { padding: 18px 14px 14px; } .editor-header h2 { font-size: 24px; } .editor-footer { align-items: flex-end; gap: 10px; } .toast { right: 12px; bottom: 12px; left: 12px; } }
   :global(.projection-bar) { min-height: 0; padding: 0; border: 0; background: transparent; box-shadow: none; }
@@ -1858,6 +1920,10 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   .dialog .new-form-heading strong { font-size: 23px; }
   .dialog .new-form-close { width: 30px; height: 30px; border-radius: 7px; background: var(--surface-muted); color: var(--ink-soft); }
   .dialog .new-form-close:hover { background: #ebe6dd; color: var(--ink); }
+  .capability-list { display: grid; gap: 6px; max-height: min(240px, 35vh); margin: 2px 0 12px; padding: 10px; overflow-y: auto; border: 1px solid #d9cdbd; border-radius: 8px; background: var(--canvas); color: var(--ink-soft); }
+  .capability-item { padding: 6px 8px; border-bottom: 1px solid rgba(217, 205, 189, .65); font-size: 11px; line-height: 1.4; }
+  .capability-item:last-child { border-bottom: 0; }
+  .capability-empty { margin-top: -2px; }
   .commit-form p { margin: 0 0 14px; color: var(--ink-soft); font-size: 12px; line-height: 1.5; }
   .commit-form > input { width: 100%; padding: 11px 12px; border: 1px solid #d9cdbd; border-radius: 8px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 13px; }
   .commit-form > input:focus { border-color: #b4773f; box-shadow: 0 0 0 3px rgba(180, 119, 63, .12); }

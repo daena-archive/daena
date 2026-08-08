@@ -380,6 +380,17 @@ impl ProjectStore {
                 .map_err(|error| CoreError::NotFound(error.to_string()))?;
         }
         let canonical = repository.scan()?;
+        let index_path = project_database_path(root);
+        if index_path.is_file() {
+            if let Ok(store) = Self::open_database(&index_path, Some(root.to_path_buf())) {
+                if store
+                    .source_index_matches(&canonical.sources)?
+                    && store.verify_index(canonical.sources.len()).is_ok()
+                {
+                    return Ok(store);
+                }
+            }
+        }
         Self::rebuild_directory_index(root, &canonical)
     }
 
@@ -402,7 +413,13 @@ impl ProjectStore {
         let store = Self::open_database(&next_path, Some(root.to_path_buf()))?;
         let payload = serde_json::to_string(&canonical.snapshot)
             .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        store.import_json_with_mode_and_sync(&payload, true, false)?;
+        store.import_json_with_mode_and_sync_with_request_and_search(
+            &payload,
+            true,
+            false,
+            None,
+            false,
+        )?;
         store.replace_source_index(&canonical.sources)?;
         store.rebuild_search()?;
         store.verify_index(canonical.sources.len())?;
@@ -451,6 +468,119 @@ impl ProjectStore {
             )?;
         }
         transaction.commit()?;
+        Ok(())
+    }
+
+    fn update_source_index(
+        &self,
+        previous: &[crate::storage::CanonicalSource],
+        current: &[crate::storage::CanonicalSource],
+    ) -> Result<(), CoreError> {
+        let previous = previous
+            .iter()
+            .map(|source| (source.path.as_str(), source))
+            .collect::<BTreeMap<_, _>>();
+        let current = current
+            .iter()
+            .map(|source| (source.path.as_str(), source))
+            .collect::<BTreeMap<_, _>>();
+        let paths = previous
+            .keys()
+            .copied()
+            .chain(current.keys().copied())
+            .collect::<BTreeSet<_>>();
+        let transaction = self.connection.unchecked_transaction()?;
+        for path in paths {
+            match (previous.get(path), current.get(path)) {
+                (Some(before), Some(after)) if *before == *after => {}
+                (Some(_), Some(after)) => {
+                    transaction.execute(
+                        "INSERT INTO source_files(path,content_hash,format_version,logical_revision) VALUES (?1,?2,?3,?2) ON CONFLICT(path) DO UPDATE SET content_hash=excluded.content_hash,format_version=excluded.format_version,logical_revision=excluded.logical_revision",
+                        params![after.path, after.content_hash, after.format_version],
+                    )?;
+                }
+                (None, Some(after)) => {
+                    transaction.execute(
+                        "INSERT INTO source_files(path,content_hash,format_version,logical_revision) VALUES (?1,?2,?3,?2)",
+                        params![after.path, after.content_hash, after.format_version],
+                    )?;
+                }
+                (Some(_), None) => {
+                    transaction.execute("DELETE FROM source_files WHERE path=?1", params![path])?;
+                }
+                (None, None) => unreachable!("source path came from neither source set"),
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn update_source_index_from_hashes(
+        &self,
+        previous: &BTreeMap<String, String>,
+        current: &[crate::storage::CanonicalSource],
+    ) -> Result<(), CoreError> {
+        let current = current
+            .iter()
+            .map(|source| (source.path.as_str(), source))
+            .collect::<BTreeMap<_, _>>();
+        let paths = previous
+            .keys()
+            .map(|path| path.as_str())
+            .chain(current.keys().copied())
+            .collect::<BTreeSet<_>>();
+        let transaction = self.connection.unchecked_transaction()?;
+        for path in paths {
+            match (previous.get(path), current.get(path)) {
+                (Some(before), Some(after)) if before == &after.content_hash => {}
+                (Some(_), Some(after)) => {
+                    transaction.execute(
+                        "INSERT INTO source_files(path,content_hash,format_version,logical_revision) VALUES (?1,?2,?3,?2) ON CONFLICT(path) DO UPDATE SET content_hash=excluded.content_hash,format_version=excluded.format_version,logical_revision=excluded.logical_revision",
+                        params![after.path, after.content_hash, after.format_version],
+                    )?;
+                }
+                (None, Some(after)) => {
+                    transaction.execute(
+                        "INSERT INTO source_files(path,content_hash,format_version,logical_revision) VALUES (?1,?2,?3,?2)",
+                        params![after.path, after.content_hash, after.format_version],
+                    )?;
+                }
+                (Some(_), None) => {
+                    transaction.execute("DELETE FROM source_files WHERE path=?1", params![path])?;
+                }
+                (None, None) => unreachable!("source path came from neither source set"),
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn verify_index_after_mutation(&self, source_count: usize) -> Result<(), CoreError> {
+        let foreign_key_error: Option<String> = self
+            .connection
+            .query_row("PRAGMA foreign_key_check", [], |row| row.get(0))
+            .optional()?;
+        if let Some(error) = foreign_key_error {
+            return Err(CoreError::Validation(format!(
+                "index foreign-key check failed: {error}"
+            )));
+        }
+        let quick_check: String = self
+            .connection
+            .query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+        if quick_check != "ok" {
+            return Err(CoreError::Validation(format!(
+                "index quick check failed: {quick_check}"
+            )));
+        }
+        let actual: usize = self
+            .connection
+            .query_row("SELECT COUNT(*) FROM source_files", [], |row| row.get(0))?;
+        if actual != source_count {
+            return Err(CoreError::Validation(format!(
+                "index source count mismatch: expected {source_count}, found {actual}"
+            )));
+        }
         Ok(())
     }
 
@@ -513,6 +643,36 @@ impl ProjectStore {
             ));
         }
         Ok(())
+    }
+
+    fn source_index_matches(
+        &self,
+        sources: &[crate::storage::CanonicalSource],
+    ) -> Result<bool, CoreError> {
+        let expected = sources
+            .iter()
+            .map(|source| {
+                (
+                    source.path.clone(),
+                    (source.content_hash.clone(), source.format_version),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut actual = BTreeMap::new();
+        let mut statement = self
+            .connection
+            .prepare("SELECT path,content_hash,format_version FROM source_files")?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (row.get::<_, String>(1)?, row.get::<_, u32>(2)?),
+            ))
+        })?;
+        for row in rows {
+            let (path, source) = row?;
+            actual.insert(path, source);
+        }
+        Ok(actual == expected)
     }
 
     fn indexed_source_hashes(&self) -> Result<BTreeMap<String, String>, CoreError> {
@@ -583,10 +743,16 @@ impl ProjectStore {
 
         let payload = serde_json::to_string(&canonical.snapshot)
             .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        self.import_json_with_mode_and_sync(&payload, true, false)?;
-        self.replace_source_index(&canonical.sources)?;
+        self.import_json_with_mode_and_sync_with_request_and_search(
+            &payload,
+            true,
+            false,
+            None,
+            false,
+        )?;
+        self.update_source_index_from_hashes(&previous, &canonical.sources)?;
         self.rebuild_search()?;
-        self.verify_index(canonical.sources.len())?;
+        self.verify_index_after_mutation(canonical.sources.len())?;
         Ok(ExternalChangeReport {
             changed: true,
             paths,
@@ -998,7 +1164,7 @@ impl ProjectStore {
         let manifest_path = root.join("project.json");
         let manifest: crate::storage::ProjectManifest = crate::storage::read_json(&manifest_path)?;
         manifest.validate(&manifest_path)?;
-        let canonical = crate::storage::FilesystemRepository::open(root)?.scan()?;
+        let previous_canonical = crate::storage::FilesystemRepository::open(root)?.scan()?;
         let mut transaction = match crate::transactions::FileTransaction::begin(root, request_id)? {
             crate::transactions::TransactionStart::Ready(transaction) => transaction,
             crate::transactions::TransactionStart::AlreadyCommitted => {
@@ -1012,7 +1178,7 @@ impl ProjectStore {
             operation: "create canonical transaction staging root",
             source: error,
         })?;
-        for source in &canonical.sources {
+        for source in &previous_canonical.sources {
             let source_path = crate::storage::normalized_project_path(root, &source.path)?;
             let staged_path = crate::storage::normalized_project_path(&staging_root, &source.path)?;
             if let Some(parent) = staged_path.parent() {
@@ -1045,12 +1211,28 @@ impl ProjectStore {
         }
         crate::storage::write_canonical_project(&staging_root, &manifest, snapshot)?;
         let staged = crate::storage::FilesystemRepository::open(&staging_root)?.scan()?;
+        let canonical_hashes = previous_canonical
+            .sources
+            .iter()
+            .map(|source| (source.path.as_str(), source.content_hash.as_str()))
+            .collect::<BTreeMap<_, _>>();
         let staged_paths = staged
             .sources
             .iter()
             .map(|source| source.path.clone())
             .collect::<BTreeSet<_>>();
         for source in &staged.sources {
+            // Canonical serialization still provides the complete, validated
+            // projection in staging, but the transaction should contain only
+            // the actual change set.  This preserves the journal's optimistic
+            // revision checks and crash recovery while avoiding a staged file,
+            // hash, journal entry, and fsync for every unrelated source.
+            if canonical_hashes
+                .get(source.path.as_str())
+                .is_some_and(|hash| *hash == source.content_hash)
+            {
+                continue;
+            }
             let path = crate::storage::normalized_project_path(&staging_root, &source.path)?;
             let bytes = std::fs::read(&path).map_err(|error| CoreError::Io {
                 operation: "read staged canonical data",
@@ -1058,7 +1240,7 @@ impl ProjectStore {
             })?;
             transaction.stage_bytes(&source.path, &bytes)?;
         }
-        for source in &canonical.sources {
+        for source in &previous_canonical.sources {
             if !staged_paths.contains(&source.path) {
                 transaction.stage_remove(&source.path)?;
             }
@@ -1083,10 +1265,16 @@ impl ProjectStore {
         // The journal is the commit point.  Only after it succeeds do we
         // replace the disposable projection with a fresh interpretation of
         // the canonical files.
-        self.import_json_with_mode_and_sync(&payload, true, false)?;
-        self.replace_source_index(&canonical.sources)?;
+        self.import_json_with_mode_and_sync_with_request_and_search(
+            &payload,
+            true,
+            false,
+            None,
+            false,
+        )?;
+        self.update_source_index(&previous_canonical.sources, &canonical.sources)?;
         self.rebuild_search()?;
-        self.verify_index(canonical.sources.len())
+        self.verify_index_after_mutation(canonical.sources.len())
     }
 
     fn repository_first_mutation<T, F>(
@@ -2547,6 +2735,23 @@ impl ProjectStore {
         sync_canonical: bool,
         request_id: Option<&str>,
     ) -> Result<usize, CoreError> {
+        self.import_json_with_mode_and_sync_with_request_and_search(
+            payload,
+            replace,
+            sync_canonical,
+            request_id,
+            true,
+        )
+    }
+
+    fn import_json_with_mode_and_sync_with_request_and_search(
+        &self,
+        payload: &str,
+        replace: bool,
+        sync_canonical: bool,
+        request_id: Option<&str>,
+        rebuild_search: bool,
+    ) -> Result<usize, CoreError> {
         let snapshot: ProjectSnapshot = serde_json::from_str(payload)
             .map_err(|error| CoreError::NotFound(error.to_string()))?;
         if snapshot.format_version != current_snapshot_version() {
@@ -2613,7 +2818,9 @@ impl ProjectStore {
             )?;
         }
         transaction.commit()?;
-        self.rebuild_search()?;
+        if rebuild_search {
+            self.rebuild_search()?;
+        }
         if sync_canonical {
             let request_id = self.request_id(request_id)?;
             self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;

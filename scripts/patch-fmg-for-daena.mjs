@@ -68,15 +68,48 @@ html = html.replace(/\s(on(?:click|change|input|load|mouseover))="([^"]*)"/g, (_
   return ` data-daena-event="${id}"`;
 });
 html = html.replace(/\sstyle="([^"]*)"/g, (_match, style) => ` data-daena-style="${encodeURIComponent(style)}"`);
-if (!html.includes('href="daena-inline.css"')) {
-  html = html.replace("</head>", '    <link rel="stylesheet" href="daena-inline.css">\n  </head>');
-}
+// Styles are restored by daena-inline-bootstrap.js from data-daena-style. An
+// earlier patch pass linked a never-written daena-inline.css and 404'd on load.
+html = html.replace(/\s*<link rel="stylesheet" href="daena-inline\.css">\s*/g, "\n");
 writeFileSync(htmlPath, html);
 
 const mainPath = join(dist, "main.js");
 let main = readFileSync(mainPath, "utf8");
 if (!main.includes("if (DAENA_HOST) return;")) {
   main = main.replace("function toggleAssistant() {", "function toggleAssistant() {\n  if (DAENA_HOST) return;");
+}
+// Under Daena the bridge owns first paint: FMG must not generate a random
+// world (or reload IndexedDB) before the host streams the project .map.
+// Doing both doubles peak memory and is what froze the child webview.
+if (!main.includes("if (DAENA_HOST) return; // Daena bridge owns startup load")) {
+  main = main.replace(
+    "async function checkLoadParameters() {",
+    "async function checkLoadParameters() {\n  if (DAENA_HOST) return; // Daena bridge owns startup load",
+  );
+}
+// Allow Daena to boot when hostname is empty under the custom protocol.
+if (!main.includes("!location.hostname && !window.DAENA_HOST")) {
+  main = main.replace(
+    "  if (!location.hostname) {",
+    "  if (!location.hostname && !window.DAENA_HOST) {",
+  );
+}
+// Do not suppress FMG's hideLoading under Daena. Earlier experiments left the
+// loading rose up forever when the bridge did not own the overlay lifecycle.
+main = main.replace(
+  "  } else {\n    // Under Daena the bridge owns the loading rose until host load/generate finishes.\n    if (!window.DAENA_HOST) hideLoading();\n    await checkLoadParameters();\n  }",
+  "  } else {\n    hideLoading();\n    await checkLoadParameters();\n  }",
+);
+main = main.replace(
+  "  } else {\n    if (!window.DAENA_HOST) hideLoading();\n    await checkLoadParameters();\n  }",
+  "  } else {\n    hideLoading();\n    await checkLoadParameters();\n  }",
+);
+// plugin:// cannot register service workers; skip under the Daena host marker.
+if (!main.includes("!window.DAENA_HOST && \"serviceWorker\"")) {
+  main = main.replace(
+    'if (PRODUCTION && "serviceWorker" in navigator)',
+    'if (PRODUCTION && !window.DAENA_HOST && "serviceWorker" in navigator)',
+  );
 }
 // Daena is offline-first and does not ship FMG's browser-only assistant.
 // Remove the whole dynamic import branch so WebKit never reports a blocked
@@ -87,10 +120,37 @@ main = main.replace(
 );
 writeFileSync(mainPath, main);
 
+// Strip remote Google Font Face sources from the Vite module so FontFace()
+// never hits fonts.gstatic.com under the plugin CSP. Family names remain for
+// local/system fallbacks (Arial, Georgia, etc. and unmatched decorative names).
+// Also soften findCell while the Daena bridge still owns startup load.
+for (const name of readdirSync(dist)) {
+  if (!/^index-.*\.js$/.test(name)) continue;
+  const modulePath = join(dist, name);
+  let moduleSource = readFileSync(modulePath, "utf8");
+  let changed = false;
+  if (moduleSource.includes("fonts.gstatic.com")) {
+    moduleSource = moduleSource.replace(/,src:"url\(https:\/\/fonts\.gstatic\.com\/[^"]+\)"/g, "");
+    moduleSource = moduleSource.replace(/,unicodeRange:"[^"]*"/g, "");
+    changed = true;
+  }
+  if (
+    moduleSource.includes('if(!n.cells?.p)throw new Error("Pack cells not found")') &&
+    !moduleSource.includes("if(window.DAENA_HOST)return;throw new Error(\"Pack cells not found\")")
+  ) {
+    moduleSource = moduleSource.replace(
+      'if(!n.cells?.p)throw new Error("Pack cells not found")',
+      'if(!n.cells?.p){if(window.DAENA_HOST)return;throw new Error("Pack cells not found")}',
+    );
+    changed = true;
+  }
+  if (changed) writeFileSync(modulePath, moduleSource);
+}
+
 const bridgePath = join(dist, "daena-bridge.js");
-let bridgeSource = existsSync(bridgePath)
-  ? readFileSync(bridgePath, "utf8")
-  : readFileSync(bridgeTemplatePath, "utf8");
+// Always ship the repo template. Preferring a prior dist/daena-bridge.js left
+// orphan-repair and other bridge fixes stranded in ignored FMG checkout state.
+let bridgeSource = readFileSync(bridgeTemplatePath, "utf8");
 if (!bridgeSource.includes('const requestedMapEntityId = params.get("mapEntityId");')) {
   bridgeSource = bridgeSource.replace(
     '  const projectId = params.get("project");',

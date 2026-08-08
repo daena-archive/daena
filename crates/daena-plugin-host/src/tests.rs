@@ -280,6 +280,52 @@ fn capability_grants_survive_in_project_local_file() {
 }
 
 #[test]
+fn first_party_bundled_bootstrap_grants_declared_capabilities() {
+    let directory = tempfile::tempdir().unwrap();
+    let project_root = directory.path().join("project");
+    fs::create_dir_all(project_root.join(".daena/local")).unwrap();
+    let mut host = PluginHost::new();
+    host.register_bundled_json(include_str!("../../../packages/modules/maps/manifest.json"))
+        .unwrap();
+    host.bind_project_grants(&project_root, "project").unwrap();
+    assert!(host.grants.is_empty("project", "daena.maps"));
+
+    let session = host
+        .bootstrap("daena.maps", "project", "plugin:daena.maps")
+        .unwrap();
+    assert!(
+        session.grants.contains("entity.read"),
+        "Maps bootstrap must grant entity.read for firstMapAsset"
+    );
+    assert!(session.grants.contains("asset.write:self"));
+    assert_eq!(
+        host.grants.get("project", "daena.maps"),
+        host.catalog
+            .get("daena.maps")
+            .unwrap()
+            .manifest
+            .capabilities
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+    );
+
+    // Third-party publishers still default to deny-all without consent.
+    host.catalog
+        .insert_for_test(CatalogEntry {
+            manifest: manifest("com.example.other", "other"),
+            package_root: PathBuf::new(),
+            digest: "b".repeat(64),
+            embedded_wasm: None,
+        })
+        .unwrap();
+    let third_party = host
+        .bootstrap("com.example.other", "project", "plugin:com.example.other")
+        .unwrap();
+    assert!(third_party.grants.is_empty());
+}
+
+#[test]
 fn legacy_global_grants_migrate_into_project_local_file() {
     let directory = tempfile::tempdir().unwrap();
     let project_root = directory.path().join("world");

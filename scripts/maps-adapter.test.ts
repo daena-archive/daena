@@ -53,8 +53,14 @@ Deno.test("Maps bridge does not generate an FMG prompt after startup failure", a
   if (bridge.includes("window.daenaMapDiagnostic?.(error); if (!new URLSearchParams(location.search).get(\"mapEntityId\")) window.generateMapOnLoad?.()")) {
     throw new Error("startup failure still falls through to FMG generation");
   }
+  if (!bridge.includes('await rpc("asset.list", { entityId: map.id, namespace: "maps" })')) {
+    throw new Error("orphan repair asset.list must include maps namespace");
+  }
   if (!bridge.includes("if (!mapAsset) { await window.generateMapOnLoad?.(); return; }")) {
     throw new Error("empty-map generation path changed unexpectedly");
+  }
+  if (!bridge.includes("waitForUploadedPack") || !bridge.includes('"routes" in window.pack.cells')) {
+    throw new Error("saved-map load must wait for pack.cells.routes before prepareMapData");
   }
 });
 

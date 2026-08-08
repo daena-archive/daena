@@ -358,6 +358,7 @@ fn bundled_maps_shell_is_deterministic_and_provider_fail_closed() {
     assert_eq!(response.status(), 200);
     assert!(body.contains("Azgaar's Fantasy Map Generator"));
     assert!(body.contains("daena-bridge.js"));
+    assert!(!body.contains("daena-inline.css"));
     assert!(!body.contains("googletagmanager.com"));
     assert!(!body.contains("dataLayer"));
     assert!(
@@ -393,6 +394,8 @@ fn bundled_maps_shell_is_deterministic_and_provider_fail_closed() {
     assert!(bridge_body.contains("daena-map-diagnostic"));
     assert!(bridge_body.contains("asset.replace.commit"));
     assert!(bridge_body.contains("if (!mapAsset) { await window.generateMapOnLoad?.(); return; }"));
+    assert!(bridge_body.contains("waitForUploadedPack"));
+    assert!(bridge_body.contains(r#"asset.list", { entityId: map.id, namespace: "maps" }"#));
     assert!(bridge_body.contains("Daena Maps provider startup failed"));
 
     let bootstrap = tauri::http::Request::builder()
@@ -417,7 +420,11 @@ fn bundled_maps_shell_is_deterministic_and_provider_fail_closed() {
     let main_body = String::from_utf8_lossy(main_response.body());
     assert!(main_body.contains("function toggleAssistant()"));
     assert!(main_body.contains("if (DAENA_HOST) return;"));
+    assert!(main_body.contains(r#"!window.DAENA_HOST && "serviceWorker""#));
+    assert!(main_body.contains("hideLoading();\n    await checkLoadParameters();"));
+    assert!(main_body.contains("!location.hostname && !window.DAENA_HOST"));
     assert!(!main_body.contains("openwidget.min.js"));
+    assert!(!main_body.contains("if (!window.DAENA_HOST) hideLoading();"));
 
     let missing = tauri::http::Request::builder()
         .uri("plugin://daena.maps/dist/ui/fmg/not-present.js")
@@ -443,6 +450,15 @@ fn bundled_maps_shell_is_deterministic_and_provider_fail_closed() {
             "{path}"
         );
     }
+
+    let module = tauri::http::Request::builder()
+        .uri("plugin://daena.maps/dist/ui/fmg/index-B5l1uyn4.js")
+        .body(Vec::new())
+        .unwrap();
+    let module_response = plugin_asset_response("daena.maps", &module, None, None);
+    let module_body = String::from_utf8_lossy(module_response.body());
+    assert!(!module_body.contains("fonts.gstatic.com"));
+    assert!(module_body.contains("if(window.DAENA_HOST)return;throw new Error(\"Pack cells not found\")"));
 }
 
 #[test]
@@ -698,8 +714,8 @@ fn maps_asset_create_rpc_round_trips_source_asset() {
             .unwrap();
         assert_eq!(
             descriptor.value["sourceAssetId"],
-            serde_json::Value::Null,
-            "commit must not touch the descriptor; only the first save may"
+            serde_json::Value::String(saved_asset.id.clone()),
+            "first-save commit must link sourceAssetId so the map appears in Saved Maps"
         );
     }
 
@@ -713,26 +729,6 @@ fn maps_asset_create_rpc_round_trips_source_asset() {
     )
     .unwrap();
     assert_eq!(read["size"], 5);
-
-    {
-        let core = core.lock().unwrap();
-        let project = core.project(trusted_shell()).unwrap();
-        project
-                .set_field(FieldValue {
-                    entity_id: map_id,
-                    namespace: daena_core::maps::MAP_NAMESPACE.into(),
-                    key: "map".into(),
-                    value: serde_json::json!({
-                        "schemaVersion": 1,
-                        "provider": {"id": "azgaar-fmg", "adapterVersion": 1, "sourceFormat": "fmg-map"},
-                        "sourceAssetId": saved_asset.id,
-                        "previewAssetId": null,
-                        "defaultView": {"center": [0.5, 0.5], "zoom": 1}
-                    }),
-                    revision: String::new(),
-                })
-                .unwrap();
-    }
 
     std::fs::remove_dir_all(root).ok();
 }

@@ -37,6 +37,20 @@ type SharedSettings = Arc<Mutex<SettingsStore>>;
 const MAX_ASSET_TRANSFER_BYTES: usize = 64 * 1024 * 1024;
 const ASSET_TRANSFER_TTL: Duration = Duration::from_secs(60);
 const BUNDLED_FMG_ARCHIVE: &[u8] = include_bytes!("../plugin-assets/maps/fmg-v1.119.zip");
+// Child plugin webviews must not keep a usable Tauri IPC bridge. Newer WebKit
+// builds may already seal __TAURI_INTERNALS__; throwing here aborts Global Code
+// and prevents the Maps shell from loading, so neutralize fail-soft.
+const PLUGIN_WEBVIEW_ISOLATION_SCRIPT: &str = r#"(function () {
+  try {
+    var key = "__TAURI_INTERNALS__";
+    var desc = Object.getOwnPropertyDescriptor(window, key);
+    if (desc && desc.configurable === false) {
+      try { window[key] = undefined; } catch (_) {}
+      return;
+    }
+    Object.defineProperty(window, key, { value: undefined, configurable: false, writable: false });
+  } catch (_) {}
+})();"#;
 
 /// Set during `setup` so the custom protocol handler (which does not receive
 /// an `AppHandle`) can forward plugin state events to the shell.
@@ -1206,6 +1220,48 @@ fn dispatch_binary_asset_rpc(
                 .map_err(|e| e.to_string());
             let _ = std::fs::remove_file(&source_path);
             let asset = result?;
+            // Link the new source into the map descriptor in the same commit path.
+            // Leaving this to a follow-up field.set caused orphan .map assets when
+            // that call failed: retries then used asset.replace and reported Saved
+            // while sourceAssetId stayed null, so the welcome list hid the map.
+            let fields = project
+                .list_fields(entity_id.clone())
+                .map_err(|e| e.to_string())?;
+            let mut descriptor = fields
+                .into_iter()
+                .find(|field| {
+                    field.namespace == daena_core::maps::MAP_NAMESPACE && field.key == "map"
+                })
+                .map(|field| field.value)
+                .unwrap_or_else(|| {
+                    serde_json::json!({
+                        "schemaVersion": 1,
+                        "provider": {"id": "azgaar-fmg", "adapterVersion": 1, "sourceFormat": "fmg-map"},
+                        "sourceAssetId": null,
+                        "previewAssetId": null,
+                        "defaultView": {"center": [0.5, 0.5], "zoom": 1}
+                    })
+                });
+            if let Some(object) = descriptor.as_object_mut() {
+                object.insert(
+                    "sourceAssetId".into(),
+                    serde_json::Value::String(asset.id.clone()),
+                );
+            }
+            project
+                .set_field_with_request(
+                    FieldValue {
+                        entity_id,
+                        namespace: daena_core::maps::MAP_NAMESPACE.into(),
+                        key: "map".into(),
+                        value: descriptor,
+                        revision: String::new(),
+                    },
+                    // Always a fresh mutation id: reusing the upload request id
+                    // would no-op after register_asset already committed it.
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
             let mut manager = transfers
                 .lock()
                 .map_err(|_| "asset transfer state is unavailable".to_string())?;
@@ -1330,7 +1386,7 @@ fn open_plugin_webview(
         tauri::WebviewUrl::External(url.parse().map_err(|error| format!("invalid plugin URL: {error}"))?),
     )
     .use_https_scheme(true)
-    .initialization_script("Object.defineProperty(window, '__TAURI_INTERNALS__', { value: undefined, configurable: false });")
+    .initialization_script(PLUGIN_WEBVIEW_ISOLATION_SCRIPT)
     .title(entry.manifest.name.clone())
     .inner_size(980.0, 720.0)
     .visible(true)
@@ -1536,34 +1592,18 @@ async fn plugin_mount_webview(
         }
     }
 
-    let position = tauri::LogicalPosition::new(bounds.x, bounds.y);
-    let size = tauri::LogicalSize::new(bounds.width, bounds.height);
+    // Always recreate the embedded webview on mount. Reusing an existing
+    // child and only resizing it drops query params such as mapEntityId, so
+    // opening a saved map (or switching maps) would keep the previous source
+    // loaded and never hit asset.read / uploadMap for the requested entity.
     if let Some(window) = app.get_webview_window(&label) {
         window.close().map_err(|error| error.to_string())?;
     }
     if let Some(webview) = app.get_webview(&label) {
-        let ready = embedded_webview_states()
-            .lock()
-            .map(|mut states| {
-                let state = states
-                    .entry(label.clone())
-                    .or_insert(EmbeddedPluginWebviewState {
-                        bounds,
-                        ready: true,
-                    });
-                state.bounds = bounds;
-                state.ready
-            })
-            .map_err(|_| "embedded webview state lock poisoned".to_string())?;
-        if !ready {
-            return Ok(());
+        if let Ok(mut states) = embedded_webview_states().lock() {
+            states.remove(&label);
         }
-        webview
-            .set_position(position)
-            .map_err(|error| error.to_string())?;
-        webview.set_size(size).map_err(|error| error.to_string())?;
-        webview.set_focus().map_err(|error| error.to_string())?;
-        return Ok(());
+        webview.close().map_err(|error| error.to_string())?;
     }
 
     let main = app
@@ -1571,9 +1611,7 @@ async fn plugin_mount_webview(
         .ok_or_else(|| "main window is not available".to_string())?;
     let builder = tauri::WebviewBuilder::new(label.clone(), url)
         .use_https_scheme(true)
-        .initialization_script(
-            "Object.defineProperty(window, '__TAURI_INTERNALS__', { value: undefined, configurable: false });",
-        )
+        .initialization_script(PLUGIN_WEBVIEW_ISOLATION_SCRIPT)
         .on_page_load(move |webview, payload| {
             if matches!(
                 payload.event(),
@@ -2272,6 +2310,8 @@ fn sync_project_usage(project: &ProjectStore, host: &mut PluginHost) -> Result<(
                 host.record_project_usage(&project_id, &module_id, &version)
                     .map_err(|error| CoreError::Conflict(error.to_string()))?;
             }
+            host.ensure_first_party_bundled_grants(&project_id, &module_id)
+                .map_err(|error| CoreError::Validation(error.to_string()))?;
             host.activate_bundled(&project_id, &module_id)
                 .map_err(|error| CoreError::Validation(error.to_string()))?;
         } else {

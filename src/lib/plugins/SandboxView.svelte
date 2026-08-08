@@ -52,6 +52,11 @@
       await tick();
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
       if (!alive) return;
+      // Close any leftover child before mounting so mapEntityId / linkId query
+      // params are applied on a fresh document load rather than a reused view.
+      await project.unmountPluginWebview(pluginId).catch(() => undefined);
+      await project.closePluginWebview(pluginId).catch(() => undefined);
+      if (!alive) return;
       const bounds = currentBounds();
       if (!bounds) throw new Error("sandbox view container is unavailable");
       await project.mountPluginWebview(pluginId, viewId, bounds, mapEntityId, linkId);

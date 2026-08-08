@@ -20,7 +20,13 @@ assert.match(tauriSource, /WebviewWindowBuilder::new/);
 assert.match(tauriSource, /main\.add_child\(\s*builder/);
 assert.match(tauriSource, /PageLoadEvent::Finished/);
 assert.match(tauriSource, /LogicalSize::new\(1\.0, 1\.0\)/);
-assert.match(tauriSource, /plugin_mount_webview/);
+assert.match(tauriSource, /PLUGIN_WEBVIEW_ISOLATION_SCRIPT/);
+assert.match(tauriSource, /__TAURI_INTERNALS__/);
+assert.doesNotMatch(
+  tauriSource,
+  /initialization_script\("Object\.defineProperty\(window, '__TAURI_INTERNALS__'/,
+  "plugin isolation script must neutralize Tauri internals fail-soft",
+);
 assert.match(tauriSource, /plugin_unmount_webview/);
 assert.match(tauriSource, /use_https_scheme\(true\)/);
 assert.match(tauriSource, /register_uri_scheme_protocol\("plugin"/);

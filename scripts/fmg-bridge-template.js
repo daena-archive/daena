@@ -65,8 +65,20 @@ window.DAENA_HOST = true;
       if (requestedMapEntityId && map.id !== requestedMapEntityId) continue;
       const field = await rpc("field.read", { entityId: map.id, namespace: "maps", key: "map" });
       const descriptor = Array.isArray(field) ? field[0]?.value : field?.value ?? field;
-      if (requestedMapEntityId) return { mapId: map.id, assetId: descriptor?.sourceAssetId ?? null };
-      if (descriptor?.sourceAssetId) return { mapId: map.id, assetId: descriptor.sourceAssetId };
+      let assetId = descriptor?.sourceAssetId ?? null;
+      // Repair orphans where .map bytes exist but sourceAssetId was never linked.
+      if (!assetId) {
+        const assets = await rpc("asset.list", { entityId: map.id, namespace: "maps" });
+        const orphan = (Array.isArray(assets) ? assets : [])
+          .filter((asset) => asset.namespace === "maps" && asset.size > 0)
+          .sort((left, right) => String(right.created_at ?? "").localeCompare(String(left.created_at ?? "")))[0];
+        if (orphan) {
+          assetId = orphan.id;
+          await rpc("field.set", { entityId: map.id, namespace: "maps", key: "map", value: { schemaVersion: 1, provider: { id: "azgaar-fmg", adapterVersion: 1, sourceFormat: "fmg-map" }, sourceAssetId: orphan.id, previewAssetId: descriptor?.previewAssetId ?? null, defaultView: descriptor?.defaultView ?? { center: [0.5, 0.5], zoom: 1 } }, expectedRevision: "" });
+        }
+      }
+      if (requestedMapEntityId) return { mapId: map.id, assetId };
+      if (assetId) return { mapId: map.id, assetId };
     }
     if (requestedMapEntityId) throw new Error(`requested map is unavailable: ${requestedMapEntityId}`);
     return null;
@@ -328,9 +340,31 @@ window.DAENA_HOST = true;
       void rpc("event.publish", { type: "daena.maps/selection@1", payload: { mapEntityId: mapId, anchor } }).catch(() => undefined);
     }, 900);
   };
+  function packIsReadyForSerialize() {
+    // prepareMapData() reads pack.cells.routes; uploadMap parses asynchronously, so
+    // callers must wait until that field exists or they crash the child webview.
+    return Boolean(window.pack?.cells && "routes" in window.pack.cells && window.pack.cells.p);
+  }
+  async function waitForUploadedPack(timeoutMs = 120000) {
+    const started = performance.now();
+    while (performance.now() - started < timeoutMs) {
+      if (packIsReadyForSerialize()) {
+        try {
+          prepareMapData();
+          return;
+        } catch (_) {
+          // parseLoadedData is still mid-flight after assigning cells
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error("map source load timed out");
+  }
   async function loadMapSource(bytes) {
     if (!bytes.length) throw new Error("map source is empty");
-    await uploadMap(new File([bytes], "daena.map", { type: "application/octet-stream" }));
+    // uploadMap uses FileReader and does not return a Promise; wait for pack.
+    uploadMap(new File([bytes], "daena.map", { type: "application/octet-stream" }));
+    await waitForUploadedPack();
   }
   async function reloadSource() {
     if (!asset.assetId) { showDiagnostic(new Error("this map has no saved source yet")); return; }

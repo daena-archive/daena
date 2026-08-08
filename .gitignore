@@ -12,4 +12,5 @@ vite.config.ts.timestamp-*
 .codebase-memory/
 crates/**/target/
 /src-tauri/plugin-assets/maps/fmg-v1.119.zip
+/third_party/fantasy-map-generator/
 schemas/fixtures/manifest/

@@ -386,10 +386,42 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
         const entries: SavedMapEntry[] = [];
         for (const map of maps) {
           const fields = await project.listFields(map.id);
-          const descriptor = (fields.find((field) => field.namespace === "maps" && field.key === "map")?.value ?? null) as { sourceAssetId?: string | null } | null;
-          if (!descriptor?.sourceAssetId) continue;
+          const field = fields.find((item) => item.namespace === "maps" && item.key === "map") ?? null;
+          let descriptor = (field?.value ?? null) as {
+            schemaVersion?: number;
+            provider?: { id: string; adapterVersion: number; sourceFormat: string };
+            sourceAssetId?: string | null;
+            previewAssetId?: string | null;
+            defaultView?: { center: [number, number]; zoom: number };
+          } | null;
           const assets = await project.listAssets(map.id);
-          const source = assets.find((asset) => asset.namespace === "maps" && asset.id === descriptor.sourceAssetId && asset.size > 0);
+          const mapAssets = assets
+            .filter((asset) => asset.namespace === "maps" && asset.size > 0)
+            .sort((left, right) => right.created_at.localeCompare(left.created_at));
+          let sourceId = descriptor?.sourceAssetId ?? null;
+          // Repair orphan first-saves: bytes landed under assets/maps but the
+          // descriptor never received sourceAssetId, so Saved Maps stayed empty.
+          if (!sourceId && mapAssets.length > 0) {
+            const orphan = mapAssets[0];
+            const repaired = {
+              schemaVersion: 1,
+              provider: descriptor?.provider ?? { id: "azgaar-fmg", adapterVersion: 1, sourceFormat: "fmg-map" },
+              sourceAssetId: orphan.id,
+              previewAssetId: descriptor?.previewAssetId ?? null,
+              defaultView: descriptor?.defaultView ?? { center: [0.5, 0.5] as [number, number], zoom: 1 },
+            };
+            await project.setField({
+              entity_id: map.id,
+              namespace: "maps",
+              key: "map",
+              value: repaired,
+              revision: "",
+            });
+            descriptor = repaired;
+            sourceId = orphan.id;
+          }
+          if (!sourceId) continue;
+          const source = mapAssets.find((asset) => asset.id === sourceId);
           if (!source) continue;
           entries.push({ ...map, size: source.size });
         }
@@ -443,6 +475,8 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
 
   function mapSaveLabel(state: { status: string; detail: unknown } | null) {
     switch (state?.status) {
+      case "loading": return "Loading map…";
+      case "generating": return "Generating map…";
       case "dirty": return "Unsaved changes";
       case "saving": return "Saving…";
       case "saved": return "Saved";

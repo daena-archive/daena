@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 
 const scriptRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const archivePath = resolve(process.argv[2] ?? join(scriptRoot, "src-tauri/plugin-assets/maps/fmg-v1.119.zip"));
-const sourceRoot = process.argv[3] ?? process.env.DAENA_FMG_SOURCE;
+const defaultSource = join(scriptRoot, "third_party/fantasy-map-generator");
+const sourceRoot =
+  process.argv[3] ?? process.env.DAENA_FMG_SOURCE ?? (existsSync(defaultSource) ? defaultSource : undefined);
 const metadataPath = join(scriptRoot, "docs/maps/fmg-v1.119-vendor.json");
 const expectedHash = JSON.parse(readFileSync(metadataPath, "utf8")).archive.sha256;
 
@@ -25,7 +27,9 @@ if (existsSync(archivePath) && sha256(archivePath) === expectedHash) {
 
 if (!sourceRoot) {
   const actual = existsSync(archivePath) ? sha256(archivePath) : "missing";
-  fail(`${actual} does not match ${expectedHash}; set DAENA_FMG_SOURCE to the pinned FMG checkout to regenerate it`);
+  fail(
+    `${actual} does not match ${expectedHash}; clone the pinned FMG checkout into third_party/fantasy-map-generator (see docs/maps/phase-0-fmg-spike.md) or set DAENA_FMG_SOURCE`,
+  );
 }
 
 const sourcePath = resolve(sourceRoot);

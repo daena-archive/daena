@@ -1630,6 +1630,33 @@ impl PluginHost {
         self.persist_project_grants(project_id)
     }
 
+    /// First-party bundled modules default to enabled without a consent dialog.
+    /// When a project has no recorded grants yet, grant the full declared set
+    /// so sandboxed RPC (for example Maps `entity.list`) is not deny-all.
+    pub fn ensure_first_party_bundled_grants(
+        &mut self,
+        project_id: &str,
+        plugin_id: &str,
+    ) -> Result<(), HostError> {
+        let Some(entry) = self.runtime_entry(project_id, plugin_id) else {
+            return Ok(());
+        };
+        if !entry.package_root.as_os_str().is_empty() {
+            return Ok(());
+        }
+        if entry.manifest.publisher != "daena-archive" {
+            return Ok(());
+        }
+        if entry.manifest.capabilities.is_empty() || !self.grants.is_empty(project_id, plugin_id) {
+            return Ok(());
+        }
+        self.grant_capabilities(
+            project_id,
+            plugin_id,
+            entry.manifest.capabilities.iter().cloned().collect(),
+        )
+    }
+
     /// Bind an open project to its machine-local grants file, migrating any
     /// legacy global entries for that project on first open.
     pub fn bind_project_grants(
@@ -2108,6 +2135,7 @@ impl PluginHost {
         let entry = self
             .runtime_entry(project_id, plugin_id)
             .ok_or_else(|| HostError("plugin is not installed".into()))?;
+        self.ensure_first_party_bundled_grants(project_id, plugin_id)?;
         let grants = self.grants.get(project_id, plugin_id);
         Ok(self
             .sessions

@@ -8,6 +8,9 @@ pub enum CoreError {
         source: std::io::Error,
     },
     Serialization(String),
+    ResetRequired(String),
+    CorruptStorage(String),
+    RecoveryFailed(String),
     NotFound(String),
     Validation(String),
     Conflict(String),
@@ -24,6 +27,9 @@ impl fmt::Display for CoreError {
             Self::Database(error) => write!(f, "database error: {error}"),
             Self::Io { operation, source } => write!(f, "{operation} failed: {source}"),
             Self::Serialization(message) => write!(f, "serialization error: {message}"),
+            Self::ResetRequired(message)
+            | Self::CorruptStorage(message)
+            | Self::RecoveryFailed(message) => f.write_str(message),
             Self::NotFound(message)
             | Self::Validation(message)
             | Self::Conflict(message)

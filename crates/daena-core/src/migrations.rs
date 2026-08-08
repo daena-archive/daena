@@ -1,5 +1,5 @@
 use crate::error::CoreError;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -162,7 +162,10 @@ fn validate_schema(connection: &Connection, migration: &Migration) -> Result<(),
     Ok(())
 }
 
-pub fn apply(connection: &mut Connection, migration: &Migration) -> Result<(), CoreError> {
+pub fn apply_in_transaction(
+    connection: &Transaction<'_>,
+    migration: &Migration,
+) -> Result<(), CoreError> {
     let current: i64 = connection
         .query_row(
             "SELECT COALESCE(version, 0) FROM module_versions WHERE module_id=?1",
@@ -188,49 +191,51 @@ pub fn apply(connection: &mut Connection, migration: &Migration) -> Result<(), C
         }
         return Err("migration has already been applied".into());
     }
-    let tx = connection.transaction().map_err(|e| e.to_string())?;
-    tx.execute(
-        "INSERT OR IGNORE INTO module_versions(module_id,version) VALUES (?1,0)",
-        params![migration.module_id],
-    )
-    .map_err(|e| e.to_string())?;
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO module_versions(module_id,version) VALUES (?1,0)",
+            params![migration.module_id],
+        )
+        .map_err(|e| e.to_string())?;
     for operation in &migration.operations {
         match operation {
             Operation::CreateNamespace { namespace } => {
-                tx.execute(
+                connection.execute(
                     "INSERT OR IGNORE INTO module_namespaces(module_id,namespace) VALUES (?1,?2)",
                     params![migration.module_id, namespace],
                 )
                 .map_err(|e| e.to_string())?;
             }
             Operation::AddField { namespace, field } => {
-                tx.execute("INSERT INTO module_fields(module_id,namespace,key,field_type,required) VALUES (?1,?2,?3,?4,?5)", params![migration.module_id, namespace, field.key, field.field_type, field.required as i64]).map_err(|e| e.to_string())?;
+                connection.execute("INSERT INTO module_fields(module_id,namespace,key,field_type,required) VALUES (?1,?2,?3,?4,?5)", params![migration.module_id, namespace, field.key, field.field_type, field.required as i64]).map_err(|e| e.to_string())?;
             }
             Operation::RenameField {
                 namespace,
                 from,
                 to,
             } => {
-                tx.execute("UPDATE module_fields SET key=?4 WHERE module_id=?1 AND namespace=?2 AND key=?3", params![migration.module_id, namespace, from, to]).map_err(|e| e.to_string())?;
+                connection.execute("UPDATE module_fields SET key=?4 WHERE module_id=?1 AND namespace=?2 AND key=?3", params![migration.module_id, namespace, from, to]).map_err(|e| e.to_string())?;
             }
             Operation::DropField { namespace, key } => {
                 if migration.recovery != "preserve-data" {
                     return Err("drop-field requires preserve-data recovery".into());
                 }
-                tx.execute(
-                    "DELETE FROM module_fields WHERE module_id=?1 AND namespace=?2 AND key=?3",
-                    params![migration.module_id, namespace, key],
-                )
-                .map_err(|e| e.to_string())?;
+                connection
+                    .execute(
+                        "DELETE FROM module_fields WHERE module_id=?1 AND namespace=?2 AND key=?3",
+                        params![migration.module_id, namespace, key],
+                    )
+                    .map_err(|e| e.to_string())?;
             }
         }
     }
-    tx.execute(
-        "UPDATE module_versions SET version=?2 WHERE module_id=?1",
-        params![migration.module_id, migration.to],
-    )
-    .map_err(|e| e.to_string())?;
-    tx.execute(
+    connection
+        .execute(
+            "UPDATE module_versions SET version=?2 WHERE module_id=?1",
+            params![migration.module_id, migration.to],
+        )
+        .map_err(|e| e.to_string())?;
+    connection.execute(
         "INSERT INTO migration_history(module_id,migration_id,from_version,to_version,checksum,package_digest,applied_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
         params![
             migration.module_id,
@@ -242,7 +247,6 @@ pub fn apply(connection: &mut Connection, migration: &Migration) -> Result<(), C
             migration_applied_at(),
         ],
     ).map_err(|e| e.to_string())?;
-    tx.commit()?;
     Ok(())
 }
 

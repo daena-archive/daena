@@ -20,6 +20,12 @@ fn migration() -> Migration {
     }
 }
 
+fn apply(connection: &mut Connection, migration: &Migration) -> Result<(), CoreError> {
+    let transaction = connection.transaction().unwrap();
+    apply_in_transaction(&transaction, migration)?;
+    transaction.commit().map_err(CoreError::from)
+}
+
 #[test]
 fn rejects_invalid_field_operations() {
     let mut migration = migration();

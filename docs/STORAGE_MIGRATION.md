@@ -77,7 +77,7 @@ The implementation must follow these rules exactly.
 - `ProjectStore::sync_canonical*` as mutation paths;
 - full-project snapshot serialization for normal mutations;
 - `FileTransaction` as the project commit authority;
-- `.daena/transactions/committed` request receipts;
+- filesystem request receipts;
 - old `source_files` semantics as proof that a disposable index is current;
 - normal-open full portable scans;
 - snapshot-wide external reimport for ordinary changes;
@@ -102,7 +102,7 @@ The current implementation is repository-first:
   and commits files before refreshing SQLite.
 - `ProjectStore::reconcile_external_changes` reimports a complete valid
   snapshot.
-- `FileTransaction` and `.daena/transactions/` provide current crash recovery.
+- the former filesystem transaction implementation and `.daena/transactions/` recovery path.
 
 The pre-cut measurement work is recorded in
 [`STORAGE_MIGRATION_BASELINE.md`](./STORAGE_MIGRATION_BASELINE.md). It is a
@@ -325,8 +325,9 @@ Implement the correctness reference before adding background work:
 9. advance baselines and complete the batch in SQLite; and
 10. clean staging only after completion is durable.
 
-Reuse safe low-level primitives from `transactions.rs`, then delete or rename
-the old `FileTransaction` authority.
+Use the dedicated synchronous exporter in `crates/daena-core/src/sync.rs` and
+SQLite mutation receipts; do not reintroduce filesystem receipts as a runtime
+authority.
 
 ### 7.4 Port every mutation directly
 

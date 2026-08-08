@@ -42,7 +42,7 @@ storage or identity system. The main gaps are:
 3. stable adapters around FMG and each approved Watabou generator's internal
    model and UI lifecycle;
 4. contextual commands/services for opening and focusing a map view;
-5. derived spatial, layer, and temporal projections in the disposable index; and
+5. derived spatial, layer, and temporal projections in the runtime database; and
 6. packaged desktop tests for the real child-webview boundary.
 
 ## Architectural decisions
@@ -361,7 +361,7 @@ The Maps plugin subscribes to post-commit entity, field, relationship, asset,
 and plugin-state events. Events are invalidation hints only; the plugin
 re-queries authoritative records before updating an overlay.
 
-The disposable index gains derived projections for map descriptors, location
+The runtime database gains derived projections for map descriptors, location
 references, provider selectors, normalized bounding boxes, layer membership,
 validity intervals, resolution state, and reverse entity-to-map lookup. Every
 projection records its canonical source path/hash and is rebuilt by the same

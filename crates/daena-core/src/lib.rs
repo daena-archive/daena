@@ -4,7 +4,7 @@ pub mod maps;
 mod migrations;
 mod project;
 mod storage;
-mod transactions;
+mod sync;
 
 pub use authority::{Authority, AuthorityContext};
 pub use error::CoreError;

@@ -1,6 +1,8 @@
 use super::*;
 use std::collections::BTreeMap;
 
+static EXPORT_FAILURE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn canonical_files(root: &Path) -> BTreeMap<String, Vec<u8>> {
     fn visit(root: &Path, current: &Path, files: &mut BTreeMap<String, Vec<u8>>) {
         for entry in std::fs::read_dir(current).unwrap() {
@@ -31,6 +33,192 @@ fn canonical_files(root: &Path) -> BTreeMap<String, Vec<u8>> {
     let mut files = BTreeMap::new();
     visit(root, root, &mut files);
     files
+}
+
+#[test]
+fn directory_session_lock_rejects_second_writer_and_reclaims_dead_owner() {
+    let root = std::env::temp_dir().join(format!("daena-lock-{}", Uuid::new_v4()));
+    let first = ProjectStore::open_directory(&root).unwrap();
+    assert!(matches!(
+        ProjectStore::open_directory(&root),
+        Err(CoreError::Conflict(message)) if message.contains("already open")
+    ));
+    drop(first);
+    std::fs::write(
+        root.join(".daena/project.lock"),
+        format!("{}\ndead-owner\n", i32::MAX),
+    )
+    .unwrap();
+    let reclaimed = ProjectStore::open_directory(&root).unwrap();
+    drop(reclaimed);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn external_edit_before_mutation_fails_closed() {
+    let root = std::env::temp_dir().join(format!("daena-baseline-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Baseline owner".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let entity_path = root.join("entities").join(&entity.id).join("entity.json");
+    let mut file = std::fs::read_to_string(&entity_path).unwrap();
+    file = file.replace("Baseline owner", "External edit");
+    std::fs::write(entity_path, file).unwrap();
+    assert!(matches!(
+        store.update_entity(entity.id, Some("Local edit".into()), None),
+        Err(CoreError::Validation(_)) | Err(CoreError::Conflict(_))
+    ));
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rebuilding_disposable_index_invalidates_revisions_by_epoch() {
+    let root = std::env::temp_dir().join(format!("daena-epoch-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Epoch owner".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let revision = entity.revision;
+    drop(store);
+    std::fs::remove_file(root.join(".daena/index.sqlite")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    let rebuilt_revision = rebuilt.list_entities().unwrap()[0].revision.clone();
+    assert_ne!(revision, rebuilt_revision);
+    drop(rebuilt);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn interrupted_export_resumes_applied_items_after_reopen() {
+    let _guard = EXPORT_FAILURE_TEST_LOCK.lock().unwrap();
+    let root = std::env::temp_dir().join(format!("daena-recovery-{}", Uuid::new_v4()));
+    let request_id = Uuid::new_v4().to_string();
+    let store = ProjectStore::open_directory(&root).unwrap();
+    crate::sync::set_test_export_failure_after(Some(&request_id), 1);
+    let result = store.create_entity_with_request(
+        CreateEntity {
+            name: "Recovery owner".into(),
+            entity_type: None,
+        },
+        Some(&request_id),
+    );
+    crate::sync::set_test_export_failure_after(None, 0);
+    assert!(result.is_err());
+    store
+        .connection
+        .execute(
+            "UPDATE sync_batches SET state='exporting', last_error=NULL WHERE request_id=?1",
+            params![request_id],
+        )
+        .unwrap();
+    drop(store);
+
+    let reopened = ProjectStore::open_directory(&root).unwrap();
+    let entities = reopened.list_entities().unwrap();
+    assert_eq!(entities.len(), 1);
+    assert_eq!(entities[0].name, "Recovery owner");
+    let receipt_state: String = reopened
+        .connection
+        .query_row(
+            "SELECT state FROM mutation_receipts WHERE request_id=?1",
+            params![request_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(receipt_state, "completed");
+    drop(reopened);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn request_id_reuse_with_different_entity_input_fails_closed() {
+    let root = std::env::temp_dir().join(format!("daena-request-fingerprint-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let request_id = Uuid::new_v4().to_string();
+    store
+        .create_entity_with_request(
+            CreateEntity {
+                name: "First request".into(),
+                entity_type: None,
+            },
+            Some(&request_id),
+        )
+        .unwrap();
+    let retry = store.create_entity_with_request(
+        CreateEntity {
+            name: "Incompatible retry".into(),
+            entity_type: None,
+        },
+        Some(&request_id),
+    );
+    assert!(
+        matches!(retry, Err(CoreError::Conflict(message)) if message.contains("different inputs"))
+    );
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn interrupted_asset_export_resumes_from_persisted_input() {
+    let _guard = EXPORT_FAILURE_TEST_LOCK.lock().unwrap();
+    let root = std::env::temp_dir().join(format!("daena-asset-recovery-{}", Uuid::new_v4()));
+    let source = root.with_extension("source.bin");
+    std::fs::write(&source, b"before").unwrap();
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Asset recovery owner".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let asset = store
+        .register_asset_file(AssetFileInput {
+            entity_id: entity.id,
+            namespace: "core".into(),
+            source_path: source.to_string_lossy().into_owned(),
+            filename: "payload.bin".into(),
+            mime_type: "application/octet-stream".into(),
+        })
+        .unwrap();
+    let request_id = Uuid::new_v4().to_string();
+    let bytes = b"after-persisted".to_vec();
+    crate::sync::set_test_export_failure_after(Some(&request_id), 1);
+    let result = store.replace_asset_bytes_with_request(
+        AssetReplaceInput {
+            asset_id: asset.id.clone(),
+            content_hash: format!("sha256:{}", digest_bytes(&bytes)),
+            size: bytes.len() as i64,
+            mime_type: "application/octet-stream".into(),
+        },
+        bytes.clone(),
+        &asset.revision,
+        Some(&request_id),
+    );
+    crate::sync::set_test_export_failure_after(None, 0);
+    assert!(result.is_err());
+    store
+        .connection
+        .execute(
+            "UPDATE sync_batches SET state='exporting',last_error=NULL WHERE request_id=?1",
+            params![request_id],
+        )
+        .unwrap();
+    drop(store);
+
+    let reopened = ProjectStore::open_directory(&root).unwrap();
+    let path = reopened.asset(asset.id).unwrap().path;
+    assert_eq!(std::fs::read(root.join(path)).unwrap(), bytes);
+    drop(reopened);
+    std::fs::remove_file(source).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -465,8 +653,8 @@ fn directory_mutations_return_revisions_and_replay_requests() {
     let replay = store
         .create_entity_with_request(
             CreateEntity {
-                name: "This must not duplicate".into(),
-                entity_type: None,
+                name: "Revisioned entity".into(),
+                entity_type: Some("place".into()),
             },
             Some(&request_id),
         )
@@ -598,6 +786,112 @@ fn file_backed_project_paths_are_rejected() {
     };
     assert!(error.to_string().contains("opened from a directory"));
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn pre_cut_runtime_database_requires_reset() {
+    let root = std::env::temp_dir().join(format!("daena-pre-cut-db-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    drop(store);
+
+    let database = root.join(".daena/index.sqlite");
+    std::fs::remove_file(&database).unwrap();
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE project_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO project_meta(key, value) VALUES ('schema_version', '1');",
+        )
+        .unwrap();
+    drop(connection);
+
+    let error = match ProjectStore::open_directory(&root) {
+        Ok(_) => panic!("pre-cut runtime database must be rejected"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("remove .daena"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn directory_mutation_records_completed_export_batch() {
+    let root = std::env::temp_dir().join(format!("daena-export-batch-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    store
+        .create_entity(CreateEntity {
+            name: "Exported record".into(),
+            entity_type: None,
+        })
+        .unwrap();
+
+    let batch_state: String = store
+        .connection
+        .query_row(
+            "SELECT state FROM sync_batches ORDER BY created_at DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let sync_state: String = store
+        .connection
+        .query_row(
+            "SELECT sync_state FROM runtime_meta WHERE key='runtime'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(batch_state, "completed");
+    assert_eq!(sync_state, "clean");
+    assert!(root.join(".daena/sync").is_dir());
+    assert!(!root.join(".daena/transactions").exists());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unchanged_export_item_is_applied() {
+    let root = std::env::temp_dir().join(format!("daena-unchanged-export-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Unchanged export".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    store
+        .save_document(SaveDocument {
+            entity_id: entity.id.clone(),
+            body: "Same body\n".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    store
+        .save_document(SaveDocument {
+            entity_id: entity.id,
+            body: "Same body\n".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+
+    let batch_state: String = store
+        .connection
+        .query_row(
+            "SELECT state FROM sync_batches ORDER BY created_at DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let sync_state: String = store
+        .connection
+        .query_row(
+            "SELECT sync_state FROM runtime_meta WHERE key='runtime'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(batch_state, "completed");
+    assert_eq!(sync_state, "clean");
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -1093,7 +1387,7 @@ fn seed_example_is_repeatable_after_modules_are_initialized() {
 }
 
 #[test]
-fn seed_example_is_repository_first_and_survives_reopen() {
+fn seed_example_survives_reopen() {
     let root = std::env::temp_dir().join(format!("daena-seed-example-{}", Uuid::new_v4()));
     let mut store = ProjectStore::open_directory(&root).unwrap();
 
@@ -1120,6 +1414,7 @@ fn seed_example_is_repository_first_and_survives_reopen() {
         1
     );
 
+    drop(store);
     let reopened = ProjectStore::open_directory(&root).unwrap();
     assert_eq!(reopened.list_entities().unwrap().len(), 26);
     assert_eq!(
@@ -1131,10 +1426,12 @@ fn seed_example_is_repository_first_and_survives_reopen() {
             .count(),
         1
     );
+    drop(reopened);
 
     let mut again = ProjectStore::open_directory(&root).unwrap();
     assert_eq!(again.seed_example().unwrap(), 26);
     assert_eq!(again.list_entities().unwrap().len(), 26);
+    drop(again);
     std::fs::remove_dir_all(&root).unwrap();
 }
 
@@ -1297,7 +1594,7 @@ fn directory_projects_create_portable_layout() {
     assert_eq!(manifest.name, root.file_name().unwrap().to_string_lossy());
     assert_eq!(
         std::fs::read_to_string(root.join(".gitignore")).unwrap(),
-        ".daena/\ndaena.sqlite\ndaena.sqlite-*\n"
+        ".daena/\n"
     );
     assert!(root.join("assets/images").is_dir());
     assert!(root.join("assets/videos").is_dir());
@@ -1469,7 +1766,7 @@ fn canonical_files_survive_disposable_index_deletion() {
     assert!(!root.join(".daena/index.sqlite.next").exists());
     let document_path = root.join("entities").join(&source.id).join("document.md");
     std::fs::write(&document_path, b"# External change\n").unwrap();
-    assert!(reopened.search("Canonical prose".into()).is_err());
+    assert!(reopened.search("Canonical prose".into()).is_ok());
     drop(reopened);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -1918,7 +2215,7 @@ fn transaction_request_ids_must_be_uuids_but_may_be_absent() {
         &revision,
         None,
     );
-    assert!(accepted.is_ok());
+    assert!(accepted.is_ok(), "{accepted:?}");
     store
         .set_field_with_request(
             FieldValue {

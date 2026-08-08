@@ -161,9 +161,9 @@ pub struct CanonicalProject {
 
 /// A canonical file that was part of a successful project scan.
 ///
-/// The disposable index stores these rows verbatim.  Keeping the source path
-/// and hash beside derived data makes it possible to explain where an index
-/// row came from and prevents a database-only interpretation of a project.
+/// The runtime database stores these source checkpoints verbatim. Keeping the
+/// source path and hash beside derived data explains each export checkpoint
+/// without making the database a second canonical content store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalSource {
     pub path: String,
@@ -638,6 +638,212 @@ pub fn write_canonical_project(
         };
         write_json(&path, &state)?;
     }
+    Ok(())
+}
+
+/// Render only one entity's canonical records. This is the mutation-path
+/// writer; the full-project writer above remains reserved for rebuild/import.
+pub(crate) fn write_canonical_entity(
+    root: &Path,
+    manifest: &ProjectManifest,
+    snapshot: &ProjectSnapshot,
+    entity_id: &str,
+) -> Result<(), CoreError> {
+    let manifest_path = root.join("project.json");
+    let entity = snapshot
+        .entities
+        .iter()
+        .find(|entity| entity.id == entity_id)
+        .ok_or_else(|| codec_error(&manifest_path, "entity.reference", "entity is missing"))?;
+    let entity_dir = normalized_project_path(root, &format!("entities/{entity_id}"))?;
+    fs::create_dir_all(&entity_dir)
+        .map_err(|error| codec_error(&entity_dir, "entity.mkdir", error))?;
+    let document = snapshot
+        .documents
+        .iter()
+        .find(|document| document.entity_id == entity_id)
+        .map(|document| EntityDocumentRef {
+            id: document.id.clone(),
+            path: "document.md".into(),
+        });
+    write_json(
+        &entity_dir.join("entity.json"),
+        &EntityFile {
+            id: entity.id.clone(),
+            name: entity.name.clone(),
+            entity_type: entity.entity_type.clone(),
+            deleted: entity.deleted,
+            created_at: entity.created_at.clone(),
+            updated_at: entity.updated_at.clone(),
+            document,
+        },
+    )?;
+
+    let document_path = entity_dir.join("document.md");
+    if let Some(document) = snapshot
+        .documents
+        .iter()
+        .find(|document| document.entity_id == entity_id)
+    {
+        fs::write(
+            &document_path,
+            canonical_markdown(&document.body).as_bytes(),
+        )
+        .map_err(|error| codec_error(&document_path, "markdown.write", error))?;
+    } else if document_path.exists() {
+        fs::remove_file(&document_path)
+            .map_err(|error| codec_error(&document_path, "markdown.remove", error))?;
+    }
+
+    let fields_dir = entity_dir.join("fields");
+    fs::create_dir_all(&fields_dir)
+        .map_err(|error| codec_error(&fields_dir, "fields.mkdir", error))?;
+    clear_json_files(&fields_dir)?;
+    let owners = namespace_owners(snapshot)?;
+    let mut grouped = BTreeMap::<(String, String), FieldsFile>::new();
+    for field in snapshot
+        .fields
+        .iter()
+        .filter(|field| field.entity_id == entity_id)
+    {
+        let owner = owners
+            .get(&field.namespace)
+            .cloned()
+            .unwrap_or_else(|| CORE_PLUGIN_ID.to_string());
+        grouped
+            .entry((owner, field.namespace.clone()))
+            .or_default()
+            .insert(field.key.clone(), field.value.clone());
+    }
+    for ((owner, namespace), fields) in grouped {
+        write_json(
+            &fields_dir.join(format!("{owner}--{namespace}.json")),
+            &fields,
+        )?;
+    }
+
+    let relationships_path = entity_dir.join("relationships.json");
+    let mut relationships = snapshot
+        .relationships
+        .iter()
+        .filter(|relationship| relationship.source_id == entity_id)
+        .map(|relationship| {
+            Ok(CanonicalRelationship {
+                id: relationship.id.clone(),
+                target_id: relationship.target_id.clone(),
+                relationship_type: relationship.relationship_type.clone(),
+                metadata: serde_json::from_str(&relationship.metadata).map_err(|error| {
+                    codec_error(&relationships_path, "relationship.metadata", error)
+                })?,
+            })
+        })
+        .collect::<Result<Vec<_>, CoreError>>()?;
+    relationships.sort_by(|left, right| left.id.cmp(&right.id));
+    if relationships.is_empty() {
+        if relationships_path.exists() {
+            fs::remove_file(&relationships_path)
+                .map_err(|error| codec_error(&relationships_path, "relationships.remove", error))?;
+        }
+    } else {
+        write_json(&relationships_path, &RelationshipsFile { relationships })?;
+    }
+
+    let assets_path = entity_dir.join("assets.json");
+    let mut assets = snapshot
+        .assets
+        .iter()
+        .filter(|asset| asset.entity_id == entity_id)
+        .map(|asset| CanonicalAsset {
+            id: asset.id.clone(),
+            namespace: asset.namespace.clone(),
+            filename: asset.filename.clone(),
+            content_hash: asset.content_hash.clone(),
+            size: asset.size,
+            mime_type: asset.mime_type.clone(),
+            path: asset.path.clone(),
+            created_at: asset.created_at.clone(),
+        })
+        .collect::<Vec<_>>();
+    assets.sort_by(|left, right| left.id.cmp(&right.id));
+    if assets.is_empty() {
+        if assets_path.exists() {
+            fs::remove_file(&assets_path)
+                .map_err(|error| codec_error(&assets_path, "assets.remove", error))?;
+        }
+    } else {
+        write_json(&assets_path, &AssetsFile { assets })?;
+    }
+    let _ = manifest;
+    Ok(())
+}
+
+pub(crate) fn write_canonical_plugin(
+    root: &Path,
+    _manifest: &ProjectManifest,
+    snapshot: &ProjectSnapshot,
+    plugin_id: &str,
+) -> Result<(), CoreError> {
+    let manifest_path = root.join("project.json");
+    validate_component(plugin_id, &manifest_path, "plugin.id")?;
+    let plugins_dir = normalized_project_path(root, "plugins")?;
+    fs::create_dir_all(&plugins_dir)
+        .map_err(|error| codec_error(&plugins_dir, "plugin.mkdir", error))?;
+    let module = snapshot
+        .modules
+        .iter()
+        .find(|module| module.module_id == plugin_id);
+    let mut namespaces = snapshot
+        .module_namespaces
+        .iter()
+        .filter(|namespace| namespace.module_id == plugin_id)
+        .map(|namespace| namespace.namespace.clone())
+        .collect::<Vec<_>>();
+    namespaces.sort();
+    namespaces.dedup();
+    let schema_fields = snapshot
+        .module_fields
+        .iter()
+        .filter(|field| field.module_id == plugin_id)
+        .collect::<Vec<_>>();
+    let path = normalized_project_path(root, &format!("plugins/{plugin_id}.json"))?;
+    let existing_state = read_existing_plugin_state(&path)?;
+    let schema_checksum = if schema_fields.is_empty() {
+        existing_state
+            .as_ref()
+            .map(|state| state.schema_checksum.clone())
+            .unwrap_or(digest_bytes(&canonical_json_bytes(&schema_fields)?))
+    } else {
+        digest_bytes(&canonical_json_bytes(&schema_fields)?)
+    };
+    let migrations = snapshot
+        .migration_history
+        .iter()
+        .filter(|migration| migration.module_id == plugin_id)
+        .map(|migration| CanonicalMigration {
+            id: migration.migration_id.clone(),
+            from_version: migration.from_version,
+            to_version: migration.to_version,
+            checksum: migration.checksum.clone(),
+            package_digest: migration.package_digest.clone(),
+            applied_at: migration.applied_at.clone(),
+        })
+        .collect::<Vec<_>>();
+    write_json(
+        &path,
+        &PluginStateFile {
+            plugin_id: plugin_id.into(),
+            namespaces,
+            enabled: module.map(|module| module.enabled).unwrap_or(true),
+            data_version: module.map(|module| module.version).unwrap_or_default(),
+            schema_version: module.map(|module| module.version).unwrap_or_default(),
+            schema_checksum,
+            selected_package_version: module.and_then(|module| module.package_version.clone()),
+            migrations,
+            preserved_state: existing_state
+                .map(|state| state.preserved_state)
+                .unwrap_or_else(|| serde_json::json!({})),
+        },
+    )?;
     Ok(())
 }
 

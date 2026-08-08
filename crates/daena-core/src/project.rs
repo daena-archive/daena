@@ -2,7 +2,9 @@ use crate::error::CoreError;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -340,10 +342,37 @@ fn project_database_path(root: &Path) -> PathBuf {
     root.join(".daena/index.sqlite")
 }
 
+const RUNTIME_STORAGE_ROLE: &str = "daena.runtime";
+const RUNTIME_SCHEMA_VERSION: i64 = 1;
+const EXPORTER_CONTRACT_VERSION: &str = "1";
+const RECONCILER_CONTRACT_VERSION: &str = "1";
+
+fn reset_required_error() -> CoreError {
+    CoreError::ResetRequired(
+        "unsupported Daena runtime storage; close Daena and remove .daena/ before reopening this project".into(),
+    )
+}
+
 pub struct ProjectStore {
     connection: Connection,
     root: Option<PathBuf>,
     pending_asset_imports: Mutex<BTreeMap<String, Vec<u8>>>,
+    pending_asset_sources: Mutex<BTreeMap<String, PathBuf>>,
+    suppress_sync: Cell<bool>,
+    shutdown_ready: Cell<bool>,
+    _session_lock: Option<crate::sync::ProjectSessionLock>,
+}
+
+impl Drop for ProjectStore {
+    fn drop(&mut self) {
+        if !self.shutdown_ready.get() {
+            return;
+        }
+        let _ = self.connection.execute(
+            "UPDATE runtime_meta SET clean_shutdown=1 WHERE key='runtime' AND sync_state='clean' AND dirty_count=0",
+            [],
+        );
+    }
 }
 
 impl ProjectStore {
@@ -365,12 +394,15 @@ impl ProjectStore {
                 "legacy daena.sqlite projects are not supported by format version 2".into(),
             ));
         }
+        std::fs::create_dir_all(root.join(".daena"))
+            .map_err(|error| CoreError::NotFound(error.to_string()))?;
+        let session_lock = crate::sync::ProjectSessionLock::acquire(root)?;
         let repository = crate::storage::FilesystemRepository::open(root)?;
         for directory in [
             "entities",
             "plugins",
             ".daena",
-            ".daena/transactions",
+            ".daena/sync",
             ".daena/backups",
             ".daena/conflicts",
             ".daena/local",
@@ -386,7 +418,6 @@ impl ProjectStore {
             .map_err(|error| CoreError::NotFound(error.to_string()))?;
         std::fs::create_dir_all(root.join("assets/files"))
             .map_err(|error| CoreError::NotFound(error.to_string()))?;
-        crate::transactions::recover_transactions(root)?;
         let metadata_path = root.join("project.json");
         if !metadata_path.exists() {
             let name = root
@@ -402,7 +433,7 @@ impl ProjectStore {
             metadata.validate(&metadata_path)?;
         }
         let gitignore = root.join(".gitignore");
-        let required_gitignore = [".daena/", "daena.sqlite", "daena.sqlite-*"];
+        let required_gitignore = [".daena/"];
         let existing_gitignore = if gitignore.exists() {
             std::fs::read_to_string(&gitignore)
                 .map_err(|error| CoreError::NotFound(error.to_string()))?
@@ -426,23 +457,23 @@ impl ProjectStore {
             std::fs::write(&gitignore, gitignore_content)
                 .map_err(|error| CoreError::NotFound(error.to_string()))?;
         }
-        let canonical = repository.scan()?;
         let index_path = project_database_path(root);
         if index_path.is_file() {
-            if let Ok(store) = Self::open_database(&index_path, Some(root.to_path_buf())) {
-                if store.source_index_matches(&canonical.sources)?
-                    && store.verify_index(canonical.sources.len()).is_ok()
-                {
-                    return Ok(store);
-                }
-            }
+            return Self::open_database(
+                &index_path,
+                Some(root.to_path_buf()),
+                Some(session_lock),
+                false,
+            );
         }
-        Self::rebuild_directory_index(root, &canonical)
+        let canonical = repository.scan()?;
+        Self::rebuild_directory_index(root, &canonical, session_lock)
     }
 
     fn rebuild_directory_index(
         root: &Path,
         canonical: &crate::storage::CanonicalProject,
+        session_lock: crate::sync::ProjectSessionLock,
     ) -> Result<Self, CoreError> {
         let index_path = project_database_path(root);
         let next_path = root.join(".daena/index.sqlite.next");
@@ -456,7 +487,7 @@ impl ProjectStore {
             }
         }
 
-        let store = Self::open_database(&next_path, Some(root.to_path_buf()))?;
+        let store = Self::open_database(&next_path, Some(root.to_path_buf()), None, false)?;
         let payload = serde_json::to_string(&canonical.snapshot)
             .map_err(|error| CoreError::Serialization(error.to_string()))?;
         store.import_json_with_mode_and_sync_with_request_and_search(
@@ -475,26 +506,167 @@ impl ProjectStore {
         // local filesystems.  The old index is never opened or modified while
         // the new database is being built.
         std::fs::rename(&next_path, &index_path).map_err(|error| CoreError::Io {
-            operation: "replace disposable index",
+            operation: "replace runtime index",
             source: error,
         })?;
         for suffix in ["-wal", "-shm", "-journal"] {
             let path = PathBuf::from(format!("{}{}", index_path.display(), suffix));
             let _ = std::fs::remove_file(path);
         }
-        Self::open_database(&index_path, Some(root.to_path_buf()))
+        Self::open_database(
+            &index_path,
+            Some(root.to_path_buf()),
+            Some(session_lock),
+            false,
+        )
     }
 
-    fn open_database(path: impl AsRef<Path>, root: Option<PathBuf>) -> Result<Self, CoreError> {
+    fn open_database(
+        path: impl AsRef<Path>,
+        root: Option<PathBuf>,
+        session_lock: Option<crate::sync::ProjectSessionLock>,
+        acquire_session_lock: bool,
+    ) -> Result<Self, CoreError> {
+        let path = path.as_ref();
+        let existing_database = path != Path::new(":memory:") && path.is_file();
         let connection = Connection::open(path)?;
         connection.pragma_update(None, "foreign_keys", true)?;
+        if existing_database {
+            Self::validate_runtime_metadata(&connection, root.as_deref())?;
+        }
+        let session_lock = match session_lock {
+            Some(lock) => Some(lock),
+            None if acquire_session_lock => root
+                .as_deref()
+                .map(crate::sync::ProjectSessionLock::acquire)
+                .transpose()?,
+            None => None,
+        };
         let store = Self {
             connection,
             root,
             pending_asset_imports: Mutex::new(BTreeMap::new()),
+            pending_asset_sources: Mutex::new(BTreeMap::new()),
+            suppress_sync: Cell::new(false),
+            shutdown_ready: Cell::new(false),
+            _session_lock: session_lock,
         };
         store.initialize()?;
+        store.recover_interrupted_batches()?;
+        store.shutdown_ready.set(true);
         Ok(store)
+    }
+
+    fn recover_interrupted_batches(&self) -> Result<(), CoreError> {
+        let requests = self
+            .connection
+            .prepare(
+                "SELECT request_id FROM sync_batches WHERE state='exporting' ORDER BY created_at",
+            )?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let failed = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_batches WHERE state='failed')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if failed {
+            self.connection.execute(
+                "UPDATE runtime_meta SET sync_state='failed', dirty_count=MAX(dirty_count, 1), clean_shutdown=0 WHERE key='runtime'",
+                [],
+            )?;
+        }
+        for request_id in requests {
+            if self
+                .sync_canonical_with_request_id_inner(&request_id, None)
+                .is_err()
+            {
+                self.connection.execute(
+                    "UPDATE runtime_meta SET sync_state='failed', dirty_count=MAX(dirty_count, 1), clean_shutdown=0 WHERE key='runtime'",
+                    [],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_schema_column(
+        &self,
+        table: &str,
+        column: &str,
+        definition: &str,
+    ) -> Result<(), CoreError> {
+        let exists: Option<String> = self
+            .connection
+            .query_row(
+                &format!("SELECT name FROM pragma_table_info('{table}') WHERE name=?1"),
+                params![column],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if exists.is_none() {
+            self.connection.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+                [],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn validate_runtime_metadata(
+        connection: &Connection,
+        root: Option<&Path>,
+    ) -> Result<(), CoreError> {
+        let runtime_table: Option<String> = connection
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='runtime_meta'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if runtime_table.is_none() {
+            return Err(reset_required_error());
+        }
+        let metadata = connection
+            .query_row(
+                "SELECT storage_role, schema_version, project_id, portable_format_version, exporter_version, reconciler_version FROM runtime_meta WHERE key='runtime'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => reset_required_error(),
+                other => CoreError::CorruptStorage(format!("runtime metadata is corrupt: {other}")),
+            })?;
+        let expected_project_id = root
+            .map(|root| {
+                crate::storage::read_json::<crate::storage::ProjectManifest>(
+                    &root.join("project.json"),
+                )
+                .map(|manifest| manifest.id)
+            })
+            .transpose()?;
+        let project_matches = expected_project_id
+            .as_deref()
+            .is_none_or(|project_id| project_id == metadata.2);
+        if metadata.0 != RUNTIME_STORAGE_ROLE
+            || metadata.1 != RUNTIME_SCHEMA_VERSION
+            || metadata.3 != crate::storage::PROJECT_FORMAT_VERSION as i64
+            || metadata.4 != EXPORTER_CONTRACT_VERSION
+            || metadata.5 != RECONCILER_CONTRACT_VERSION
+            || !project_matches
+        {
+            return Err(reset_required_error());
+        }
+        Ok(())
     }
 
     fn replace_source_index(
@@ -510,6 +682,7 @@ impl ProjectStore {
             )?;
         }
         transaction.commit()?;
+        self.refresh_baselines_from_index()?;
         Ok(())
     }
 
@@ -554,6 +727,7 @@ impl ProjectStore {
             }
         }
         transaction.commit()?;
+        self.refresh_baselines_from_index()?;
         Ok(())
     }
 
@@ -597,35 +771,6 @@ impl ProjectStore {
         Ok(())
     }
 
-    fn verify_index_after_mutation(&self, source_count: usize) -> Result<(), CoreError> {
-        let foreign_key_error: Option<String> = self
-            .connection
-            .query_row("PRAGMA foreign_key_check", [], |row| row.get(0))
-            .optional()?;
-        if let Some(error) = foreign_key_error {
-            return Err(CoreError::Validation(format!(
-                "index foreign-key check failed: {error}"
-            )));
-        }
-        let quick_check: String = self
-            .connection
-            .query_row("PRAGMA quick_check", [], |row| row.get(0))?;
-        if quick_check != "ok" {
-            return Err(CoreError::Validation(format!(
-                "index quick check failed: {quick_check}"
-            )));
-        }
-        let actual: usize =
-            self.connection
-                .query_row("SELECT COUNT(*) FROM source_files", [], |row| row.get(0))?;
-        if actual != source_count {
-            return Err(CoreError::Validation(format!(
-                "index source count mismatch: expected {source_count}, found {actual}"
-            )));
-        }
-        Ok(())
-    }
-
     fn verify_index(&self, source_count: usize) -> Result<(), CoreError> {
         let foreign_key_error: Option<String> = self
             .connection
@@ -655,68 +800,6 @@ impl ProjectStore {
         Ok(())
     }
 
-    fn ensure_source_index_current(&self) -> Result<(), CoreError> {
-        let Some(root) = self.root.as_deref() else {
-            return Ok(());
-        };
-        let canonical = crate::storage::FilesystemRepository::open(root)?.scan()?;
-        let expected = canonical
-            .sources
-            .into_iter()
-            .map(|source| (source.path, (source.content_hash, source.format_version)))
-            .collect::<BTreeMap<_, _>>();
-        let mut actual = BTreeMap::new();
-        let mut statement = self
-            .connection
-            .prepare("SELECT path,content_hash,format_version FROM source_files")?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                (row.get::<_, String>(1)?, row.get::<_, u32>(2)?),
-            ))
-        })?;
-        for row in rows {
-            let (path, source) = row?;
-            actual.insert(path, source);
-        }
-        if actual != expected {
-            return Err(CoreError::Validation(
-                "disposable index is stale relative to canonical source files".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn source_index_matches(
-        &self,
-        sources: &[crate::storage::CanonicalSource],
-    ) -> Result<bool, CoreError> {
-        let expected = sources
-            .iter()
-            .map(|source| {
-                (
-                    source.path.clone(),
-                    (source.content_hash.clone(), source.format_version),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        let mut actual = BTreeMap::new();
-        let mut statement = self
-            .connection
-            .prepare("SELECT path,content_hash,format_version FROM source_files")?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                (row.get::<_, String>(1)?, row.get::<_, u32>(2)?),
-            ))
-        })?;
-        for row in rows {
-            let (path, source) = row?;
-            actual.insert(path, source);
-        }
-        Ok(actual == expected)
-    }
-
     fn indexed_source_hashes(&self) -> Result<BTreeMap<String, String>, CoreError> {
         let mut statement = self
             .connection
@@ -726,10 +809,24 @@ impl ProjectStore {
             .map_err(CoreError::from)
     }
 
+    fn indexed_sources(&self) -> Result<Vec<crate::storage::CanonicalSource>, CoreError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT path,content_hash,format_version FROM source_files ORDER BY path")?;
+        let rows = statement.query_map([], |row| {
+            Ok(crate::storage::CanonicalSource {
+                path: row.get(0)?,
+                content_hash: row.get(1)?,
+                format_version: row.get(2)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
+    }
+
     /// Reconcile canonical files after an external filesystem change.
     ///
     /// The scanner is deliberately authoritative here: a valid snapshot is
-    /// imported into the disposable index, while an invalid snapshot is only
+    /// imported into the runtime database, while an invalid snapshot is only
     /// reported and never replaces the last valid projection.
     pub fn reconcile_external_changes(&self) -> Result<ExternalChangeReport, CoreError> {
         let Some(root) = self.root.as_deref() else {
@@ -755,6 +852,10 @@ impl ProjectStore {
         let canonical = match repository.scan() {
             Ok(canonical) => canonical,
             Err(error) => {
+                self.connection.execute(
+                    "UPDATE runtime_meta SET sync_state='failed', dirty_count=MAX(dirty_count, 1), clean_shutdown=0 WHERE key='runtime'",
+                    [],
+                )?;
                 return Ok(ExternalChangeReport {
                     changed: false,
                     paths: Vec::new(),
@@ -790,7 +891,7 @@ impl ProjectStore {
         )?;
         self.update_source_index_from_hashes(&previous, &canonical.sources)?;
         self.rebuild_search()?;
-        self.verify_index_after_mutation(canonical.sources.len())?;
+        self.verify_index(canonical.sources.len())?;
         Ok(ExternalChangeReport {
             changed: true,
             paths,
@@ -1053,7 +1154,7 @@ impl ProjectStore {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         let source_hashes = self.canonical_source_hashes(&format!("entities/{entity_id}/%"))?;
-        let revision = revision_digest(&(
+        let revision = self.revision_digest(&(
             entity,
             documents,
             fields,
@@ -1080,13 +1181,13 @@ impl ProjectStore {
         )?;
         let source_hashes =
             self.canonical_source_hashes(&format!("entities/{}/document.md", value.1))?;
-        revision_digest(&(value, source_hashes))
+        self.revision_digest(&(value, source_hashes))
     }
 
     fn revision_for_field(&self, field: &FieldValue) -> Result<String, CoreError> {
         let source_hashes =
             self.canonical_source_hashes(&format!("entities/{}/fields/%", field.entity_id))?;
-        revision_digest(&(
+        self.revision_digest(&(
             &field.entity_id,
             &field.namespace,
             &field.key,
@@ -1111,7 +1212,7 @@ impl ProjectStore {
         )?;
         let source_hashes =
             self.canonical_source_hashes(&format!("entities/{}/relationships.json", value.1))?;
-        revision_digest(&(value, source_hashes))
+        self.revision_digest(&(value, source_hashes))
     }
 
     fn revision_for_asset(&self, id: &str) -> Result<String, CoreError> {
@@ -1133,7 +1234,7 @@ impl ProjectStore {
             },
         )?;
         let source_hashes = self.canonical_source_hashes(&value.7)?;
-        revision_digest(&(value, source_hashes))
+        self.revision_digest(&(value, source_hashes))
     }
 
     fn canonical_source_hashes(&self, pattern: &str) -> Result<Vec<(String, String)>, CoreError> {
@@ -1144,6 +1245,15 @@ impl ProjectStore {
             .query_map(params![pattern], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(CoreError::from)
+    }
+
+    fn revision_digest<T: Serialize>(&self, value: &T) -> Result<String, CoreError> {
+        let epoch: String = self.connection.query_row(
+            "SELECT database_epoch FROM runtime_meta WHERE key='runtime'",
+            [],
+            |row| row.get(0),
+        )?;
+        revision_digest(&(epoch, value))
     }
 
     fn sync_canonical(&self) -> Result<(), CoreError> {
@@ -1164,127 +1274,637 @@ impl ProjectStore {
         request_id: &str,
         result: Option<&serde_json::Value>,
     ) -> Result<(), CoreError> {
+        if self.suppress_sync.get() {
+            return Ok(());
+        }
         let Some(root) = self.root.as_deref() else {
             return Ok(());
         };
         let manifest_path = root.join("project.json");
         let manifest: crate::storage::ProjectManifest = crate::storage::read_json(&manifest_path)?;
         manifest.validate(&manifest_path)?;
-        let snapshot: ProjectSnapshot = serde_json::from_str(&self.export_json_inner()?)
-            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let existing_batch: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT id FROM sync_batches WHERE request_id=?1 AND state IN ('exporting','failed')",
+                params![request_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let snapshot = if let Some(batch_id) = existing_batch.as_deref() {
+            self.snapshot_for_batch(batch_id)?
+        } else {
+            serde_json::from_str(&self.export_json_inner()?)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?
+        };
+        let batch_id = match existing_batch {
+            Some(batch_id) => batch_id,
+            None => {
+                let canonical = crate::storage::FilesystemRepository::open(root)?.scan()?;
+                let previous_hashes = self.indexed_source_hashes()?;
+                let current_hashes = canonical
+                    .sources
+                    .iter()
+                    .map(|source| (source.path.clone(), source.content_hash.clone()))
+                    .collect::<BTreeMap<_, _>>();
+                let mut changed = canonical
+                    .sources
+                    .iter()
+                    .filter(|source| {
+                        previous_hashes.get(&source.path) != Some(&source.content_hash)
+                    })
+                    .map(|source| {
+                        (
+                            source.path.clone(),
+                            "replace",
+                            previous_hashes.get(&source.path).cloned(),
+                            Some(source.content_hash.clone()),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                changed.extend(
+                    previous_hashes
+                        .iter()
+                        .filter(|(path, _)| !current_hashes.contains_key(*path))
+                        .map(|(path, hash)| (path.clone(), "remove", Some(hash.clone()), None)),
+                );
+                self.preflight_portable_baselines(root)?;
+                self.begin_export_batch(request_id, &changed, result)?
+            }
+        };
         let pending_assets = self
             .pending_asset_imports
             .lock()
             .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
             .clone();
-        self.commit_canonical_snapshot(
+        let pending_asset_sources = self
+            .pending_asset_sources
+            .lock()
+            .map_err(|_| CoreError::Conflict("asset source state is poisoned".into()))?
+            .clone();
+        let mut pending_asset_sources = pending_asset_sources;
+        self.restore_staged_asset_sources(root, request_id, &mut pending_asset_sources)?;
+        let export = self.export_portable_snapshot(
             root,
             &snapshot,
             request_id,
             result,
             &pending_assets,
+            &pending_asset_sources,
             &BTreeMap::new(),
-        )
+        );
+        match export {
+            Ok(()) => {
+                self.complete_export_batch(&batch_id, None)?;
+                self.record_mutation_receipt(request_id, result)?;
+                Ok(())
+            }
+            Err(error) => {
+                self.complete_export_batch(&batch_id, Some(&error.to_string()))?;
+                Err(error)
+            }
+        }
     }
 
-    fn commit_canonical_snapshot(
+    fn preflight_portable_baselines(&self, root: &Path) -> Result<(), CoreError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT path,baseline_exists,baseline_hash FROM portable_baselines")?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, bool>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (path, existed, expected) = row?;
+            let actual = crate::sync::hash_path(root, &path)?;
+            if actual != if existed { expected } else { None } {
+                return Err(CoreError::Conflict(format!(
+                    "portable baseline changed for {path}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn snapshot_for_batch(&self, batch_id: &str) -> Result<ProjectSnapshot, CoreError> {
+        let paths = self
+            .connection
+            .prepare("SELECT target_path FROM sync_items WHERE batch_id=?1")?
+            .query_map(params![batch_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut entity_ids = BTreeSet::new();
+        let mut plugin_ids = BTreeSet::new();
+        for path in &paths {
+            let parts = path.split('/').collect::<Vec<_>>();
+            match parts.as_slice() {
+                ["entities", entity_id, ..] => {
+                    entity_ids.insert((*entity_id).to_owned());
+                }
+                ["plugins", plugin, ..] => {
+                    plugin_ids.insert(plugin.trim_end_matches(".json").to_owned());
+                }
+                ["assets", ..] => {
+                    if let Some(entity_id) = self
+                        .connection
+                        .query_row(
+                            "SELECT entity_id FROM assets WHERE path=?1",
+                            params![path],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .optional()?
+                    {
+                        entity_ids.insert(entity_id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut entities = Vec::new();
+        let mut documents = Vec::new();
+        let mut fields = Vec::new();
+        let mut relationships = Vec::new();
+        let mut assets = Vec::new();
+        for entity_id in entity_ids {
+            let entity = self.connection.query_row(
+                "SELECT id,name,entity_type,deleted,created_at,updated_at FROM entities WHERE id=?1",
+                params![entity_id],
+                |row| Ok(Entity { id: row.get(0)?, name: row.get(1)?, entity_type: row.get(2)?, deleted: row.get::<_, i64>(3)? != 0, created_at: row.get(4)?, updated_at: row.get(5)?, revision: String::new() }),
+            ).optional()?;
+            let Some(entity) = entity else { continue };
+            documents.extend(self.list_documents_unchecked(entity.id.clone())?);
+            fields.extend(self.list_fields_unchecked(entity.id.clone())?);
+            assets.extend(self.list_assets_unchecked(entity.id.clone())?);
+            relationships.extend(self.list_relationships_unchecked(entity.id.clone())?);
+            entities.push(entity);
+        }
+        relationships.sort_by(|left, right| left.id.cmp(&right.id));
+        relationships.dedup_by(|left, right| left.id == right.id);
+        let mut modules = Vec::new();
+        let module_namespaces = self
+            .connection
+            .prepare(
+                "SELECT module_id,namespace FROM module_namespaces ORDER BY module_id,namespace",
+            )?
+            .query_map([], |row| {
+                Ok(ModuleNamespace {
+                    module_id: row.get(0)?,
+                    namespace: row.get(1)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut module_fields = Vec::new();
+        let mut migration_history = Vec::new();
+        for plugin_id in plugin_ids {
+            if let Some(module) = self.connection.query_row(
+                "SELECT m.module_id,COALESCE(s.enabled,1),m.version,p.package_version FROM module_versions m LEFT JOIN module_state s ON s.module_id=m.module_id LEFT JOIN module_package_versions p ON p.module_id=m.module_id WHERE m.module_id=?1",
+                params![plugin_id],
+                |row| Ok(ModuleState { module_id: row.get(0)?, enabled: row.get::<_, i64>(1)? != 0, version: row.get(2)?, package_version: row.get(3)? }),
+            ).optional()? { modules.push(module); }
+            module_fields.extend(self.connection.prepare("SELECT module_id,namespace,key,field_type,required FROM module_fields WHERE module_id=?1 ORDER BY namespace,key")?.query_map(params![plugin_id], |row| Ok(ModuleField { module_id: row.get(0)?, namespace: row.get(1)?, key: row.get(2)?, field_type: row.get(3)?, required: row.get::<_, i64>(4)? != 0 }))?.collect::<Result<Vec<_>, _>>()?);
+            migration_history.extend(self.connection.prepare("SELECT module_id,migration_id,from_version,to_version,checksum,package_digest,applied_at FROM migration_history WHERE module_id=?1 ORDER BY migration_id")?.query_map(params![plugin_id], |row| Ok(MigrationHistoryEntry { module_id: row.get(0)?, migration_id: row.get(1)?, from_version: row.get(2)?, to_version: row.get(3)?, checksum: row.get(4)?, package_digest: row.get(5)?, applied_at: row.get(6)? }))?.collect::<Result<Vec<_>, _>>()?);
+        }
+        Ok(ProjectSnapshot {
+            format_version: current_snapshot_version(),
+            entities,
+            documents,
+            fields,
+            relationships,
+            assets,
+            modules,
+            module_namespaces,
+            module_fields,
+            migration_history,
+        })
+    }
+
+    fn begin_mutation<'a>(
+        &'a self,
+        request_id: &str,
+        result: Option<&serde_json::Value>,
+        affected_prefixes: &[String],
+    ) -> Result<(rusqlite::Transaction<'a>, String), CoreError> {
+        let fingerprint = result
+            .map(|value| digest_bytes(value.to_string().as_bytes()))
+            .unwrap_or_else(|| digest_bytes(b"null"));
+        self.begin_mutation_with_fingerprint(request_id, result, affected_prefixes, &fingerprint)
+    }
+
+    fn begin_mutation_with_fingerprint<'a>(
+        &'a self,
+        request_id: &str,
+        result: Option<&serde_json::Value>,
+        affected_prefixes: &[String],
+        fingerprint: &str,
+    ) -> Result<(rusqlite::Transaction<'a>, String), CoreError> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let mut paths = BTreeSet::new();
+        for prefix in affected_prefixes {
+            let pattern = format!("{prefix}%");
+            let mut statement = transaction.prepare(
+                "SELECT path FROM source_files WHERE path=?1 OR path LIKE ?2 ORDER BY path",
+            )?;
+            let rows =
+                statement.query_map(params![prefix, pattern], |row| row.get::<_, String>(0))?;
+            for row in rows {
+                paths.insert(row?);
+            }
+            if prefix.starts_with("entities/") {
+                let entity_id = prefix.trim_start_matches("entities/").trim_end_matches('/');
+                if !entity_id.is_empty() {
+                    paths.insert(format!("entities/{entity_id}/entity.json"));
+                }
+            }
+            if !prefix.ends_with('/') {
+                paths.insert(prefix.clone());
+            }
+        }
+        for path in &paths {
+            let expected: Option<String> = transaction
+                .query_row(
+                    "SELECT baseline_hash FROM portable_baselines WHERE path=?1 AND baseline_exists=1",
+                    params![path],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let actual = self
+                .root
+                .as_deref()
+                .map(|root| crate::sync::hash_path(root, path))
+                .transpose()?
+                .flatten();
+            if actual != expected {
+                return Err(CoreError::Conflict(format!(
+                    "portable baseline changed for {path}"
+                )));
+            }
+        }
+        let result_json = result
+            .map(serde_json::Value::to_string)
+            .unwrap_or_else(|| "null".into());
+        let stored_fingerprint: Option<String> = transaction
+            .query_row(
+                "SELECT fingerprint FROM mutation_receipts WHERE request_id=?1",
+                params![request_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(stored_fingerprint) = stored_fingerprint {
+            if stored_fingerprint != fingerprint {
+                return Err(CoreError::Conflict(
+                    "request ID was reused with different inputs".into(),
+                ));
+            }
+        }
+        let batch_id: String = transaction
+            .query_row(
+                "SELECT id FROM sync_batches WHERE request_id=?1",
+                params![request_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let now = chrono_like_now();
+        transaction.execute(
+            "INSERT INTO sync_batches(id,request_id,state,created_at,result_json) VALUES (?1,?2,'exporting',?3,?4) ON CONFLICT(request_id) DO UPDATE SET state='exporting',completed_at=NULL,last_error=NULL,result_json=excluded.result_json",
+            params![batch_id, request_id, now, result_json],
+        )?;
+        transaction.execute(
+            "DELETE FROM sync_items WHERE batch_id=?1",
+            params![batch_id],
+        )?;
+        for path in paths {
+            let expected: Option<String> = transaction
+                .query_row(
+                    "SELECT baseline_hash FROM portable_baselines WHERE path=?1 AND baseline_exists=1",
+                    params![path],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            transaction.execute(
+                "INSERT INTO sync_items(batch_id,target_path,operation,state,expected_old_hash) VALUES (?1,?2,'replace','pending',?3)",
+                params![batch_id, path, expected],
+            )?;
+        }
+        transaction.execute(
+            "UPDATE runtime_meta SET sync_state='exporting',dirty_count=dirty_count+1,clean_shutdown=0 WHERE key='runtime'",
+            [],
+        )?;
+        transaction.execute(
+            "INSERT INTO mutation_receipts(request_id,result,fingerprint,committed_at,state) VALUES (?1,?2,?3,?4,'pending') ON CONFLICT(request_id) DO UPDATE SET result=excluded.result,fingerprint=excluded.fingerprint,committed_at=excluded.committed_at,state='pending'",
+            params![request_id, result_json, fingerprint, chrono_like_now()],
+        )?;
+        Ok((transaction, batch_id))
+    }
+
+    fn begin_export_batch(
+        &self,
+        request_id: &str,
+        items: &[(String, &str, Option<String>, Option<String>)],
+        result: Option<&serde_json::Value>,
+    ) -> Result<String, CoreError> {
+        let result_json = result.map(serde_json::Value::to_string);
+        let batch_id: String = self
+            .connection
+            .query_row(
+                "SELECT id FROM sync_batches WHERE request_id=?1",
+                params![request_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let now = chrono_like_now();
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
+            "INSERT INTO sync_batches(id,request_id,state,created_at,result_json) VALUES (?1,?2,'exporting',?3,?4) ON CONFLICT(request_id) DO UPDATE SET state='exporting',completed_at=NULL,last_error=NULL,result_json=excluded.result_json",
+            params![batch_id, request_id, now, result_json],
+        )?;
+        transaction.execute(
+            "DELETE FROM sync_items WHERE batch_id=?1",
+            params![batch_id],
+        )?;
+        for (path, operation, expected_old_hash, new_hash) in items {
+            transaction.execute(
+                "INSERT INTO sync_items(batch_id,target_path,operation,state,expected_old_hash,new_hash) VALUES (?1,?2,?3,'pending',?4,?5)",
+                params![batch_id, path, operation, expected_old_hash, new_hash],
+            )?;
+        }
+        transaction.execute(
+            "UPDATE runtime_meta SET sync_state='exporting', dirty_count=dirty_count+1, clean_shutdown=0 WHERE key='runtime'",
+            [],
+        )?;
+        transaction.commit()?;
+        Ok(batch_id)
+    }
+
+    fn complete_export_batch(&self, batch_id: &str, error: Option<&str>) -> Result<(), CoreError> {
+        let unapplied: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM sync_items WHERE batch_id=?1 AND state <> 'applied'",
+            params![batch_id],
+            |row| row.get(0),
+        )?;
+        let effective_error =
+            error.or_else(|| (unapplied > 0).then_some("export batch has unapplied items"));
+        let state = if effective_error.is_some() {
+            "failed"
+        } else {
+            "completed"
+        };
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
+            "UPDATE sync_batches SET state=?2, completed_at=?3, last_error=?4 WHERE id=?1",
+            params![batch_id, state, chrono_like_now(), effective_error],
+        )?;
+        transaction.execute(
+            "UPDATE sync_items SET state=?2, last_error=?3 WHERE batch_id=?1 AND state <> 'applied'",
+            params![batch_id, state, effective_error],
+        )?;
+        transaction.execute(
+            "UPDATE mutation_receipts SET state=?1 WHERE request_id=(SELECT request_id FROM sync_batches WHERE id=?2) AND ?1='completed'",
+            params![state, batch_id],
+        )?;
+        let (sync_state, dirty_count): (String, i64) = transaction.query_row(
+            "SELECT CASE WHEN EXISTS(SELECT 1 FROM sync_batches WHERE state='failed') THEN 'failed' WHEN EXISTS(SELECT 1 FROM sync_batches WHERE state='exporting') THEN 'exporting' ELSE 'clean' END, COUNT(*) FROM sync_batches WHERE state <> 'completed'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        transaction.execute(
+            "UPDATE runtime_meta SET sync_state=?1, dirty_count=?2, clean_shutdown=CASE WHEN ?1='clean' THEN clean_shutdown ELSE 0 END WHERE key='runtime'",
+            params![sync_state, dirty_count],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn record_mutation_receipt(
+        &self,
+        request_id: &str,
+        result: Option<&serde_json::Value>,
+    ) -> Result<(), CoreError> {
+        let serialized = serde_json::to_string(result.unwrap_or(&serde_json::Value::Null))
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        self.connection.execute(
+            "INSERT OR IGNORE INTO mutation_receipts(request_id,result,committed_at,state) VALUES (?1,?2,?3,'completed')",
+            params![request_id, serialized, chrono_like_now()],
+        )?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn export_portable_snapshot(
         &self,
         root: &Path,
         snapshot: &ProjectSnapshot,
         request_id: &str,
         result: Option<&serde_json::Value>,
         pending_assets: &BTreeMap<String, Vec<u8>>,
+        pending_asset_sources: &BTreeMap<String, PathBuf>,
         additional_files: &BTreeMap<String, Vec<u8>>,
     ) -> Result<(), CoreError> {
         let manifest_path = root.join("project.json");
         let manifest: crate::storage::ProjectManifest = crate::storage::read_json(&manifest_path)?;
         manifest.validate(&manifest_path)?;
-        let previous_canonical = crate::storage::FilesystemRepository::open(root)?.scan()?;
-        let mut transaction = match crate::transactions::FileTransaction::begin(root, request_id)? {
-            crate::transactions::TransactionStart::Ready(transaction) => transaction,
-            crate::transactions::TransactionStart::AlreadyCommitted => {
-                return Err(CoreError::Conflict(
-                    "generated transaction request ID was already committed".into(),
-                ));
-            }
-        };
+        let previous_sources = self.indexed_sources()?;
+        let mut transaction = crate::sync::SyncExporter::begin(root, request_id)?;
         let staging_root = transaction.staging_root();
         std::fs::create_dir_all(&staging_root).map_err(|error| CoreError::Io {
             operation: "create canonical transaction staging root",
             source: error,
         })?;
-        for source in &previous_canonical.sources {
-            let source_path = crate::storage::normalized_project_path(root, &source.path)?;
-            let staged_path = crate::storage::normalized_project_path(&staging_root, &source.path)?;
-            if let Some(parent) = staged_path.parent() {
-                std::fs::create_dir_all(parent).map_err(|error| CoreError::Io {
-                    operation: "create canonical transaction staging parent",
-                    source: error,
-                })?;
-            }
-            std::fs::copy(&source_path, &staged_path).map_err(|error| CoreError::Io {
-                operation: "copy canonical data into transaction staging",
-                source: error,
-            })?;
-        }
-        for (relative_path, bytes) in pending_assets {
-            let staged_path =
-                crate::storage::normalized_project_path(&staging_root, relative_path)?;
-            if let Some(parent) = staged_path.parent() {
-                std::fs::create_dir_all(parent).map_err(|error| CoreError::Io {
-                    operation: "create staged asset parent",
-                    source: error,
-                })?;
-            }
-            std::fs::write(&staged_path, bytes).map_err(|error| CoreError::Io {
-                operation: "write staged asset import",
-                source: error,
-            })?;
-        }
         for (target, bytes) in additional_files {
             transaction.stage_bytes(target, bytes)?;
         }
-        crate::storage::write_canonical_project(&staging_root, &manifest, snapshot)?;
-        let staged = crate::storage::FilesystemRepository::open(&staging_root)?.scan()?;
-        let canonical_hashes = previous_canonical
-            .sources
+        for (relative_path, bytes) in pending_assets {
+            let expected = self
+                .connection
+                .query_row(
+                    "SELECT baseline_hash FROM portable_baselines WHERE path=?1 AND baseline_exists=1",
+                    params![relative_path],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            transaction.stage_bytes_with_expected(relative_path, bytes, expected)?;
+            self.record_sync_item_target_hash(
+                request_id,
+                relative_path,
+                &format!("sha256:{:x}", Sha256::digest(bytes)),
+            )?;
+        }
+        for (relative_path, source_path) in pending_asset_sources {
+            let expected = self
+                .connection
+                .query_row(
+                    "SELECT baseline_hash FROM portable_baselines WHERE path=?1 AND baseline_exists=1",
+                    params![relative_path],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let (new_hash, _) = streamed_file_digest(source_path)?;
+            transaction.stage_file_with_expected(relative_path, source_path, expected)?;
+            self.record_sync_item_target_hash(request_id, relative_path, &new_hash)?;
+        }
+        for entity in &snapshot.entities {
+            crate::storage::write_canonical_entity(&staging_root, &manifest, snapshot, &entity.id)?;
+        }
+        for module in &snapshot.modules {
+            crate::storage::write_canonical_plugin(
+                &staging_root,
+                &manifest,
+                snapshot,
+                &module.module_id,
+            )?;
+        }
+        let affected_roots = snapshot
+            .entities
+            .iter()
+            .map(|entity| format!("entities/{}/", entity.id))
+            .chain(
+                snapshot
+                    .modules
+                    .iter()
+                    .map(|module| format!("plugins/{}.json", module.module_id)),
+            )
+            .chain(pending_assets.keys().cloned())
+            .chain(pending_asset_sources.keys().cloned())
+            .collect::<Vec<_>>();
+        let mut targeted_sources = staged_canonical_sources(&staging_root, snapshot)?;
+        for (path, bytes) in pending_assets {
+            targeted_sources.push(crate::storage::CanonicalSource {
+                path: path.clone(),
+                content_hash: format!("sha256:{:x}", Sha256::digest(bytes)),
+                format_version: crate::storage::PROJECT_FORMAT_VERSION,
+            });
+        }
+        for (path, source) in pending_asset_sources {
+            let (content_hash, _) = streamed_file_digest(source)?;
+            targeted_sources.push(crate::storage::CanonicalSource {
+                path: path.clone(),
+                content_hash,
+                format_version: crate::storage::PROJECT_FORMAT_VERSION,
+            });
+        }
+        let staged_sources = previous_sources
+            .iter()
+            .filter(|source| {
+                !affected_roots
+                    .iter()
+                    .any(|root| source.path.starts_with(root))
+            })
+            .cloned()
+            .chain(targeted_sources)
+            .fold(BTreeMap::new(), |mut sources, source| {
+                sources.insert(source.path.clone(), source);
+                sources
+            })
+            .into_values()
+            .collect::<Vec<_>>();
+        let canonical_hashes = previous_sources
             .iter()
             .map(|source| (source.path.as_str(), source.content_hash.as_str()))
             .collect::<BTreeMap<_, _>>();
-        let staged_paths = staged
-            .sources
+        let staged_paths = staged_sources
             .iter()
             .map(|source| source.path.clone())
             .collect::<BTreeSet<_>>();
-        for source in &staged.sources {
-            // Canonical serialization still provides the complete, validated
-            // projection in staging, but the transaction should contain only
-            // the actual change set.  This preserves the journal's optimistic
-            // revision checks and crash recovery while avoiding a staged file,
-            // hash, journal entry, and fsync for every unrelated source.
+        for source in &staged_sources {
             if canonical_hashes
                 .get(source.path.as_str())
                 .is_some_and(|hash| *hash == source.content_hash)
             {
+                let item_exists: bool = self.connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sync_items WHERE batch_id=(SELECT id FROM sync_batches WHERE request_id=?1) AND target_path=?2)",
+                    params![request_id, source.path],
+                    |row| row.get(0),
+                )?;
+                if item_exists
+                    && crate::sync::hash_path(root, &source.path)?.as_deref()
+                        == Some(source.content_hash.as_str())
+                {
+                    self.mark_sync_item_applied(request_id, &source.path)?;
+                }
                 continue;
             }
             let path = crate::storage::normalized_project_path(&staging_root, &source.path)?;
-            let bytes = std::fs::read(&path).map_err(|error| CoreError::Io {
-                operation: "read staged canonical data",
-                source: error,
-            })?;
-            transaction.stage_bytes(&source.path, &bytes)?;
+            let expected = self
+                .connection
+                .query_row(
+                    "SELECT baseline_hash FROM portable_baselines WHERE path=?1 AND baseline_exists=1",
+                    params![source.path],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let item_state: Option<(String, Option<String>)> = self
+                .connection
+                .query_row(
+                    "SELECT state,new_hash FROM sync_items WHERE batch_id=(SELECT id FROM sync_batches WHERE request_id=?1) AND target_path=?2",
+                    params![request_id, source.path],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if let Some((state, target_hash)) = item_state {
+                if state == "applied"
+                    || target_hash.as_deref() == Some(source.content_hash.as_str())
+                        && crate::sync::hash_path(root, &source.path)?.as_deref()
+                            == Some(source.content_hash.as_str())
+                {
+                    self.mark_sync_item_applied(request_id, &source.path)?;
+                    continue;
+                }
+            }
+            if let Some(asset_source) = pending_asset_sources.get(&source.path) {
+                transaction.stage_file_with_expected(&source.path, asset_source, expected)?;
+            } else {
+                let bytes = std::fs::read(&path).map_err(|error| CoreError::Io {
+                    operation: "read staged canonical data",
+                    source: error,
+                })?;
+                transaction.stage_bytes_with_expected(&source.path, &bytes, expected)?;
+            }
+            self.record_sync_item_target_hash(request_id, &source.path, &source.content_hash)?;
         }
-        for source in &previous_canonical.sources {
-            if !staged_paths.contains(&source.path) {
+        for source in &previous_sources {
+            let item_exists: bool = self.connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_items WHERE batch_id=(SELECT id FROM sync_batches WHERE request_id=?1) AND target_path=?2)",
+                params![request_id, source.path],
+                |row| row.get(0),
+            )?;
+            if (affected_roots
+                .iter()
+                .any(|root| source.path.starts_with(root))
+                || item_exists)
+                && !staged_paths.contains(&source.path)
+            {
+                let item_state: Option<(String, Option<String>)> = self
+                    .connection
+                    .query_row(
+                        "SELECT state,new_hash FROM sync_items WHERE batch_id=(SELECT id FROM sync_batches WHERE request_id=?1) AND target_path=?2",
+                        params![request_id, source.path],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
+                if let Some((state, target_hash)) = item_state {
+                    if state == "applied"
+                        || target_hash.is_none()
+                            && crate::sync::hash_path(root, &source.path)?.is_none()
+                    {
+                        self.mark_sync_item_applied(request_id, &source.path)?;
+                        continue;
+                    }
+                }
                 transaction.stage_remove(&source.path)?;
             }
         }
-        if let Some(result) = result {
-            transaction.commit_with_result(result)?;
-        } else {
-            transaction.commit()?;
+        let applied = transaction.commit(result)?;
+        let applied_transaction = self.connection.unchecked_transaction()?;
+        for path in applied {
+            applied_transaction.execute(
+                "UPDATE sync_items SET state='applied',last_error=NULL WHERE batch_id=(SELECT id FROM sync_batches WHERE request_id=?1) AND target_path=?2",
+                params![request_id, path],
+            )?;
         }
+        applied_transaction.commit()?;
         if !pending_assets.is_empty() {
             let mut pending = self
                 .pending_asset_imports
@@ -1294,94 +1914,42 @@ impl ProjectStore {
                 pending.remove(path);
             }
         }
-        let canonical = crate::storage::FilesystemRepository::open(root)?.scan()?;
-        let payload = serde_json::to_string(&canonical.snapshot)
-            .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        // The journal is the commit point.  Only after it succeeds do we
-        // replace the disposable projection with a fresh interpretation of
-        // the canonical files.
-        self.import_json_with_mode_and_sync_with_request_and_search(
-            &payload, true, false, None, false,
-        )?;
-        self.update_source_index(&previous_canonical.sources, &canonical.sources)?;
-        self.rebuild_search()?;
-        self.verify_index_after_mutation(canonical.sources.len())
-    }
-
-    fn repository_first_mutation<T, F>(
-        &self,
-        request_id: Option<&str>,
-        operation: F,
-    ) -> Result<T, CoreError>
-    where
-        T: Serialize + DeserializeOwned,
-        F: FnOnce(&mut ProjectStore, &str) -> Result<T, CoreError>,
-    {
-        let Some(root) = self.root.as_deref() else {
-            return Err(CoreError::Validation(
-                "repository-first mutation requires a directory-backed project".into(),
-            ));
-        };
-        if let Some(result) = self.committed_mutation::<T>(request_id)? {
-            return self.refresh_mutation_revision(result);
+        if !pending_asset_sources.is_empty() {
+            let mut pending = self
+                .pending_asset_sources
+                .lock()
+                .map_err(|_| CoreError::Conflict("asset source state is poisoned".into()))?;
+            for path in pending_asset_sources.keys() {
+                pending.remove(path);
+            }
         }
-        let request_id = self.request_id(request_id)?;
-        let canonical = crate::storage::FilesystemRepository::open(root)?.scan()?;
-        let mut projection = Self::open_database(":memory:", None)?;
-        let payload = serde_json::to_string(&canonical.snapshot)
-            .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        projection.import_json_with_mode_and_sync(&payload, true, false)?;
-        projection.replace_source_index(&canonical.sources)?;
-        let result = operation(&mut projection, &request_id)?;
-        let snapshot: ProjectSnapshot = serde_json::from_str(&projection.export_json_inner()?)
-            .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        let pending_assets = projection
-            .pending_asset_imports
-            .lock()
-            .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
-            .clone();
-        let result_value = serde_json::to_value(&result)
-            .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        self.commit_canonical_snapshot(
-            root,
-            &snapshot,
-            &request_id,
-            Some(&result_value),
-            &pending_assets,
-            &BTreeMap::new(),
-        )?;
-        self.refresh_mutation_revision(result)
+        self.update_source_index(&previous_sources, &staged_sources)?;
+        Ok(())
     }
 
-    fn refresh_mutation_revision<T>(&self, result: T) -> Result<T, CoreError>
-    where
-        T: Serialize + DeserializeOwned,
-    {
-        let mut value = serde_json::to_value(result)
-            .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        let Some(object) = value.as_object_mut() else {
-            return serde_json::from_value(value)
-                .map_err(|error| CoreError::Serialization(error.to_string()));
-        };
-        let Some(id) = object.get("id").and_then(serde_json::Value::as_str) else {
-            return serde_json::from_value(value)
-                .map_err(|error| CoreError::Serialization(error.to_string()));
-        };
-        let revision = if object.contains_key("source_id") {
-            self.revision_for_relationship(id)?
-        } else if object.contains_key("path") && object.contains_key("content_hash") {
-            self.revision_for_asset(id)?
-        } else if object.contains_key("entity_id") && object.contains_key("format") {
-            self.revision_for_document(id)?
-        } else {
-            self.revision_for_entity(id)?
-        };
-        object.insert("revision".into(), serde_json::Value::String(revision));
-        serde_json::from_value(value).map_err(|error| CoreError::Serialization(error.to_string()))
+    fn record_sync_item_target_hash(
+        &self,
+        request_id: &str,
+        path: &str,
+        new_hash: &str,
+    ) -> Result<(), CoreError> {
+        self.connection.execute(
+            "UPDATE sync_items SET new_hash=?1 WHERE batch_id=(SELECT id FROM sync_batches WHERE request_id=?2) AND target_path=?3",
+            params![new_hash, request_id, path],
+        )?;
+        Ok(())
+    }
+
+    fn mark_sync_item_applied(&self, request_id: &str, path: &str) -> Result<(), CoreError> {
+        self.connection.execute(
+            "UPDATE sync_items SET state='applied',last_error=NULL WHERE batch_id=(SELECT id FROM sync_batches WHERE request_id=?1) AND target_path=?2",
+            params![request_id, path],
+        )?;
+        Ok(())
     }
 
     pub fn in_memory() -> Result<Self, CoreError> {
-        Self::open_database(":memory:", None)
+        Self::open_database(":memory:", None, None, true)
     }
 
     pub fn info(&self) -> Option<ProjectInfo> {
@@ -1398,12 +1966,22 @@ impl ProjectStore {
                     .to_string()
             }),
             root: root.to_string_lossy().to_string(),
-            index_status: if self.ensure_source_index_current().is_ok() {
-                "ready"
-            } else {
-                "diagnostic"
-            }
-            .into(),
+            index_status: self
+                .connection
+                .query_row(
+                    "SELECT sync_state FROM runtime_meta WHERE key='runtime'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map(|state| {
+                    if state == "clean" {
+                        "ready"
+                    } else {
+                        "diagnostic"
+                    }
+                })
+                .unwrap_or("diagnostic")
+                .into(),
             assets: root.join("assets").to_string_lossy().to_string(),
         })
     }
@@ -1419,7 +1997,7 @@ impl ProjectStore {
             .map(str::to_owned)
             .unwrap_or_else(|| Uuid::new_v4().to_string());
         Uuid::parse_str(&request_id)
-            .map_err(|_| CoreError::Validation("mutation request ID must be a UUID".into()))?;
+            .map_err(|_| CoreError::Validation("transaction request ID must be a UUID".into()))?;
         Ok(request_id)
     }
 
@@ -1427,15 +2005,75 @@ impl ProjectStore {
         &self,
         request_id: Option<&str>,
     ) -> Result<Option<T>, CoreError> {
+        self.committed_mutation_with_fingerprint(request_id, None)
+    }
+
+    fn committed_mutation_with_fingerprint<T: DeserializeOwned>(
+        &self,
+        request_id: Option<&str>,
+        fingerprint: Option<&str>,
+    ) -> Result<Option<T>, CoreError> {
         let Some(request_id) = request_id else {
             return Ok(None);
         };
-        let Some(root) = self.root.as_deref() else {
+        self.request_id(Some(request_id))?;
+        let Some(_root) = self.root.as_deref() else {
             return Ok(None);
         };
-        let Some(result) = crate::transactions::committed_result(root, request_id)? else {
-            return Ok(None);
+        if let Some(fingerprint) = fingerprint {
+            let stored: Option<String> = self
+                .connection
+                .query_row(
+                    "SELECT fingerprint FROM mutation_receipts WHERE request_id=?1",
+                    params![request_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(stored) = stored {
+                if stored != fingerprint {
+                    return Err(CoreError::Conflict(
+                        "request ID was reused with different inputs".into(),
+                    ));
+                }
+            }
+        }
+        let receipt: Option<(String, String)> = self
+            .connection
+            .query_row(
+                "SELECT result,fingerprint FROM mutation_receipts WHERE request_id=?1 AND state='completed'",
+                params![request_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let result = match receipt {
+            Some((result, stored_fingerprint)) => {
+                if let Some(fingerprint) = fingerprint {
+                    if fingerprint != stored_fingerprint {
+                        return Err(CoreError::Conflict(
+                            "request ID was reused with different inputs".into(),
+                        ));
+                    }
+                }
+                result
+            }
+            None => {
+                let pending: Option<Option<String>> = self.connection.query_row(
+                    "SELECT result_json FROM sync_batches WHERE request_id=?1 AND state IN ('failed','exporting')",
+                    params![request_id],
+                    |row| row.get(0),
+                ).optional()?;
+                let Some(result) = pending.flatten() else {
+                    return Ok(None);
+                };
+                self.sync_canonical_with_request_id_inner(
+                    request_id,
+                    serde_json::from_str(&result).ok().as_ref(),
+                )?;
+                result.to_string()
+            }
         };
+        let result = serde_json::from_str(&result)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
         serde_json::from_value(result)
             .map(Some)
             .map_err(|error| CoreError::Serialization(error.to_string()))
@@ -1639,8 +2277,6 @@ impl ProjectStore {
             });
         }
 
-        let root = self.project_root()?;
-        crate::transactions::recover_transactions(root)?;
         let entries = self.git_status_entries()?;
         let staged_paths = self.git_staged_paths()?;
         let mut diagnostics = Vec::new();
@@ -1670,10 +2306,16 @@ impl ProjectStore {
 
         let report = self.reconcile_external_changes()?;
         diagnostics.extend(report.diagnostics);
-        if diagnostics.is_empty() {
-            if let Err(error) = self.ensure_source_index_current() {
-                diagnostics.push(format!("index.stale: {error}"));
-            }
+        let sync_state: String = self
+            .connection
+            .query_row(
+                "SELECT sync_state FROM runtime_meta WHERE key='runtime'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| "diagnostic".into());
+        if sync_state != "clean" {
+            diagnostics.push(format!("index.state: {sync_state}"));
         }
 
         let noncanonical_staged = staged_paths
@@ -1952,7 +2594,7 @@ impl ProjectStore {
                 output.stdout.len()
             )));
         }
-        if output.stdout.iter().any(|byte| *byte == 0) {
+        if output.stdout.contains(&0) {
             return Err(CoreError::Validation(
                 "binary snapshot files cannot be previewed".into(),
             ));
@@ -2160,6 +2802,46 @@ impl ProjectStore {
     fn initialize(&self) -> Result<(), CoreError> {
         self.connection.execute_batch(
             "PRAGMA journal_mode = WAL;
+             CREATE TABLE IF NOT EXISTS runtime_meta (
+               key TEXT PRIMARY KEY,
+               storage_role TEXT NOT NULL,
+               schema_version INTEGER NOT NULL,
+               project_id TEXT NOT NULL,
+               portable_format_version INTEGER NOT NULL,
+               database_epoch TEXT NOT NULL,
+               exporter_version TEXT NOT NULL,
+               reconciler_version TEXT NOT NULL,
+               clean_shutdown INTEGER NOT NULL DEFAULT 0,
+               sync_state TEXT NOT NULL DEFAULT 'clean',
+               dirty_count INTEGER NOT NULL DEFAULT 0,
+               last_git_identity TEXT
+             );
+             CREATE TABLE IF NOT EXISTS sync_batches (
+               id TEXT PRIMARY KEY,
+               request_id TEXT NOT NULL UNIQUE,
+               state TEXT NOT NULL,
+               created_at TEXT NOT NULL,
+               completed_at TEXT,
+               last_error TEXT,
+               result_json TEXT
+             );
+             CREATE TABLE IF NOT EXISTS sync_items (
+               batch_id TEXT NOT NULL REFERENCES sync_batches(id) ON DELETE CASCADE,
+               target_path TEXT NOT NULL,
+               operation TEXT NOT NULL,
+               state TEXT NOT NULL,
+               last_error TEXT,
+               expected_old_hash TEXT,
+               new_hash TEXT,
+               PRIMARY KEY(batch_id, target_path)
+             );
+             CREATE TABLE IF NOT EXISTS mutation_receipts (
+               request_id TEXT PRIMARY KEY,
+               result TEXT NOT NULL,
+               fingerprint TEXT NOT NULL DEFAULT '',
+               committed_at TEXT NOT NULL,
+               state TEXT NOT NULL DEFAULT 'pending'
+             );
              CREATE TABLE IF NOT EXISTS project_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
              INSERT OR IGNORE INTO project_meta(key, value) VALUES ('schema_version', '1');
              CREATE TABLE IF NOT EXISTS entities (
@@ -2183,8 +2865,39 @@ impl ProjectStore {
                content_hash TEXT NOT NULL,
                format_version INTEGER NOT NULL,
                logical_revision TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS portable_baselines (
+               path TEXT PRIMARY KEY,
+               baseline_exists INTEGER NOT NULL,
+               baseline_hash TEXT,
+               db_hash TEXT,
+               state TEXT NOT NULL DEFAULT 'clean'
              );"
         )?;
+        self.ensure_schema_column("sync_batches", "result_json", "TEXT")?;
+        self.ensure_schema_column("sync_items", "expected_old_hash", "TEXT")?;
+        self.ensure_schema_column("sync_items", "new_hash", "TEXT")?;
+        self.ensure_schema_column(
+            "mutation_receipts",
+            "state",
+            "TEXT NOT NULL DEFAULT 'pending'",
+        )?;
+        self.ensure_schema_column(
+            "mutation_receipts",
+            "fingerprint",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        let baseline_count: i64 =
+            self.connection
+                .query_row("SELECT COUNT(*) FROM portable_baselines", [], |row| {
+                    row.get(0)
+                })?;
+        let source_count: i64 =
+            self.connection
+                .query_row("SELECT COUNT(*) FROM source_files", [], |row| row.get(0))?;
+        if baseline_count == 0 && source_count > 0 {
+            self.refresh_baselines_from_index()?;
+        }
         self.connection.execute_batch("CREATE TABLE IF NOT EXISTS module_versions(module_id TEXT PRIMARY KEY, version INTEGER NOT NULL DEFAULT 0);
               CREATE TABLE IF NOT EXISTS module_state(module_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1);
               CREATE TABLE IF NOT EXISTS module_package_versions(module_id TEXT PRIMARY KEY, package_version TEXT NOT NULL);
@@ -2197,19 +2910,49 @@ impl ProjectStore {
              CREATE INDEX IF NOT EXISTS map_location_entity_idx ON map_location_projection(entity_id);
              CREATE INDEX IF NOT EXISTS map_location_map_idx ON map_location_projection(map_entity_id);")?;
         self.connection.execute_batch("CREATE TABLE IF NOT EXISTS migration_history(module_id TEXT NOT NULL, migration_id TEXT NOT NULL, from_version INTEGER NOT NULL, to_version INTEGER NOT NULL, checksum TEXT NOT NULL, package_digest TEXT NOT NULL DEFAULT '', applied_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(module_id, migration_id)); CREATE TABLE IF NOT EXISTS plugin_backups(id TEXT PRIMARY KEY, module_id TEXT NOT NULL, from_package_version TEXT, to_package_version TEXT, data_version INTEGER NOT NULL, path TEXT NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL);")?;
-        let _ = self.connection.execute(
-            "ALTER TABLE migration_history ADD COLUMN package_digest TEXT NOT NULL DEFAULT ''",
-            [],
-        );
-        let _ = self.connection.execute(
-            "ALTER TABLE migration_history ADD COLUMN applied_at TEXT NOT NULL DEFAULT ''",
-            [],
-        );
-        let _ = self.connection.execute(
-            "ALTER TABLE map_location_projection ADD COLUMN label TEXT",
-            [],
-        );
+        if self
+            .connection
+            .query_row("SELECT 1 FROM runtime_meta WHERE key='runtime'", [], |_| {
+                Ok(())
+            })
+            .is_err()
+        {
+            let project_id = self
+                .root
+                .as_deref()
+                .map(|root| {
+                    crate::storage::read_json::<crate::storage::ProjectManifest>(
+                        &root.join("project.json"),
+                    )
+                    .map(|manifest| manifest.id)
+                })
+                .transpose()?
+                .unwrap_or_default();
+            self.connection.execute(
+                "INSERT INTO runtime_meta(key,storage_role,schema_version,project_id,portable_format_version,database_epoch,exporter_version,reconciler_version) VALUES ('runtime',?1,?2,?3,?4,?5,?6,?7)",
+                params![
+                    RUNTIME_STORAGE_ROLE,
+                    RUNTIME_SCHEMA_VERSION,
+                    project_id,
+                    crate::storage::PROJECT_FORMAT_VERSION as i64,
+                    Uuid::new_v4().to_string(),
+                    EXPORTER_CONTRACT_VERSION,
+                    RECONCILER_CONTRACT_VERSION,
+                ],
+            )?;
+        }
         self.rebuild_search()?;
+        Ok(())
+    }
+
+    fn refresh_baselines_from_index(&self) -> Result<(), CoreError> {
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute("DELETE FROM portable_baselines", [])?;
+        transaction.execute(
+            "INSERT INTO portable_baselines(path,baseline_exists,baseline_hash,db_hash,state) SELECT path,1,content_hash,content_hash,'clean' FROM source_files",
+            [],
+        )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -2222,12 +2965,13 @@ impl ProjectStore {
         input: CreateEntity,
         request_id: Option<&str>,
     ) -> Result<Entity, CoreError> {
-        if self.root.is_some() {
-            return self.repository_first_mutation(request_id, move |projection, request_id| {
-                projection.create_entity_with_request(input, Some(request_id))
-            });
-        }
-        if let Some(mut entity) = self.committed_mutation::<Entity>(request_id)? {
+        let input_fingerprint = digest_bytes(
+            &serde_json::to_vec(&input)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if let Some(mut entity) = self
+            .committed_mutation_with_fingerprint::<Entity>(request_id, Some(&input_fingerprint))?
+        {
             entity.revision = self.revision_for_entity(&entity.id)?;
             return Ok(entity);
         }
@@ -2237,11 +2981,6 @@ impl ProjectStore {
         let entity_type = input.entity_type.map(|value| value.trim().to_owned());
         let id = Uuid::new_v4().to_string();
         let now = chrono_like_now();
-        self.connection.execute(
-            "INSERT INTO entities(id,name,entity_type,created_at,updated_at) VALUES (?1,?2,?3,?4,?4)",
-            params![id, input.name.trim(), entity_type, now],
-        )?;
-        self.rebuild_search()?;
         let request_id = self.request_id(request_id)?;
         let result = serde_json::to_value(&Entity {
             id: id.clone(),
@@ -2253,6 +2992,17 @@ impl ProjectStore {
             revision: String::new(),
         })
         .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let (transaction, _batch_id) = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&result),
+            &[format!("entities/{id}/")],
+            &input_fingerprint,
+        )?;
+        transaction.execute(
+            "INSERT INTO entities(id,name,entity_type,created_at,updated_at) VALUES (?1,?2,?3,?4,?4)",
+            params![id, input.name.trim(), entity_type, now],
+        )?;
+        transaction.commit()?;
         self.sync_canonical_with_request_id(&request_id, Some(&result))?;
         let revision = self.revision_for_entity(&id)?;
         Ok(Entity {
@@ -2282,11 +3032,6 @@ impl ProjectStore {
                 .and_then(|document| document.format.as_deref()),
             self.root.is_some(),
         )?;
-        if self.root.is_some() {
-            return self.repository_first_mutation(request_id, move |projection, request_id| {
-                projection.create_entry_with_request(input, Some(request_id))
-            });
-        }
         if let Some(mut entity) = self.committed_mutation::<Entity>(request_id)? {
             entity.revision = self.revision_for_entity(&entity.id)?;
             return Ok(entity);
@@ -2347,7 +3092,18 @@ impl ProjectStore {
                 ));
             }
         }
-        let transaction = self.connection.unchecked_transaction()?;
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&Entity {
+            id: id.clone(),
+            name: input.name.trim().into(),
+            entity_type: entity_type.clone(),
+            deleted: false,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            revision: String::new(),
+        })?;
+        let (transaction, _batch_id) =
+            self.begin_mutation(&request_id, Some(&result), &[format!("entities/{id}/")])?;
         transaction.execute(
             "INSERT INTO entities(id,name,entity_type,created_at,updated_at) VALUES (?1,?2,?3,?4,?4)",
             params![id, input.name.trim(), entity_type, now],
@@ -2374,18 +3130,6 @@ impl ProjectStore {
             )?;
         }
         transaction.commit()?;
-        self.rebuild_search()?;
-        let request_id = self.request_id(request_id)?;
-        let result = serde_json::to_value(&Entity {
-            id: id.clone(),
-            name: input.name.trim().into(),
-            entity_type: entity_type.clone(),
-            deleted: false,
-            created_at: now.clone(),
-            updated_at: now.clone(),
-            revision: String::new(),
-        })
-        .map_err(|error| CoreError::Serialization(error.to_string()))?;
         self.sync_canonical_with_request_id(&request_id, Some(&result))?;
         let revision = self.revision_for_entity(&id)?;
         Ok(Entity {
@@ -2400,7 +3144,6 @@ impl ProjectStore {
     }
 
     pub fn list_entities(&self) -> Result<Vec<Entity>, CoreError> {
-        self.ensure_source_index_current()?;
         self.list_entities_where("WHERE deleted=0")
     }
 
@@ -2445,23 +3188,9 @@ impl ProjectStore {
         expected_revision: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<Entity, CoreError> {
-        if self.root.is_some() {
-            return self.repository_first_mutation(request_id, move |projection, request_id| {
-                projection.update_entity_with_options(
-                    id,
-                    name,
-                    entity_type,
-                    expected_revision,
-                    Some(request_id),
-                )
-            });
-        }
         if let Some(mut entity) = self.committed_mutation::<Entity>(request_id)? {
             entity.revision = self.revision_for_entity(&entity.id)?;
             return Ok(entity);
-        }
-        if self.root.is_some() {
-            self.ensure_source_index_current()?;
         }
         Self::ensure_expected_revision(
             expected_revision,
@@ -2473,9 +3202,36 @@ impl ProjectStore {
                 return Err(CoreError::NotFound("entity name cannot be empty".into()));
             }
         }
+        let current = self
+            .connection
+            .query_row(
+                "SELECT name,entity_type,created_at FROM entities WHERE id=?1 AND deleted=0",
+                params![id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| CoreError::NotFound("entity not found".into()))?;
         let now = chrono_like_now();
-        if self.connection.execute("UPDATE entities SET name=COALESCE(?2,name), entity_type=COALESCE(?3,entity_type), updated_at=?4 WHERE id=?1 AND deleted=0", params![id, name, entity_type, now])? == 0 { return Err(CoreError::NotFound("entity not found".into())); }
-        self.rebuild_search()?;
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&Entity {
+            id: id.clone(),
+            name: name.as_deref().map(str::trim).unwrap_or(&current.0).into(),
+            entity_type: entity_type.clone().or(current.1.clone()),
+            deleted: false,
+            created_at: current.2.clone(),
+            updated_at: now.clone(),
+            revision: String::new(),
+        })?;
+        let (transaction, _batch_id) =
+            self.begin_mutation(&request_id, Some(&result), &[format!("entities/{id}/")])?;
+        if transaction.execute("UPDATE entities SET name=COALESCE(?2,name), entity_type=COALESCE(?3,entity_type), updated_at=?4 WHERE id=?1 AND deleted=0", params![id, name, entity_type, now])? == 0 { return Err(CoreError::NotFound("entity not found".into())); }
+        transaction.commit()?;
         let mut entity = self.connection.query_row(
             "SELECT id,name,entity_type,deleted,created_at,updated_at FROM entities WHERE id=?1",
             params![id],
@@ -2491,9 +3247,6 @@ impl ProjectStore {
                 })
             },
         )?;
-        let request_id = self.request_id(request_id)?;
-        let result = serde_json::to_value(&entity)
-            .map_err(|error| CoreError::Serialization(error.to_string()))?;
         self.sync_canonical_with_request_id(&request_id, Some(&result))?;
         entity.revision = self.revision_for_entity(&entity.id)?;
         Ok(entity)
@@ -2533,34 +3286,32 @@ impl ProjectStore {
         expected_revision: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<(), CoreError> {
-        if self.root.is_some() {
-            return self.repository_first_mutation(request_id, move |projection, request_id| {
-                projection.delete_entity_with_options(id, expected_revision, Some(request_id))
-            });
-        }
         if self
             .committed_mutation::<serde_json::Value>(request_id)?
             .is_some()
         {
             return Ok(());
         }
-        if self.root.is_some() {
-            self.ensure_source_index_current()?;
-        }
         Self::ensure_expected_revision(
             expected_revision,
             self.revision_for_entity(&id)?,
             "entity",
         )?;
-        if self.connection.execute(
+        let request_id = self.request_id(request_id)?;
+        let (transaction, _batch_id) = self.begin_mutation(
+            &request_id,
+            Some(&serde_json::Value::Null),
+            &[format!("entities/{id}/")],
+        )?;
+        if transaction.execute(
             "UPDATE entities SET deleted=1, updated_at=?2 WHERE id=?1 AND deleted=0",
             params![id, chrono_like_now()],
         )? == 0
         {
             return Err(CoreError::NotFound("entity not found".into()));
         }
-        self.rebuild_search()?;
-        let request_id = self.request_id(request_id)?;
+        transaction.commit()?;
+        self.refresh_maps_projection_for_entities(std::slice::from_ref(&id))?;
         self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
         Ok(())
     }
@@ -2596,11 +3347,6 @@ impl ProjectStore {
         request_id: Option<&str>,
     ) -> Result<(), CoreError> {
         validate_document_format(input.document.format.as_deref(), self.root.is_some())?;
-        if self.root.is_some() {
-            return self.repository_first_mutation(request_id, move |projection, request_id| {
-                projection.save_entry_with_options(input, expected_revision, Some(request_id))
-            });
-        }
         if self
             .committed_mutation::<serde_json::Value>(request_id)?
             .is_some()
@@ -2707,7 +3453,12 @@ impl ProjectStore {
                 |row| row.get(0),
             )
             .optional()?;
-        let transaction = self.connection.unchecked_transaction()?;
+        let request_id = self.request_id(request_id)?;
+        let (transaction, _batch_id) = self.begin_mutation(
+            &request_id,
+            Some(&serde_json::Value::Null),
+            &[format!("entities/{}/", document.entity_id)],
+        )?;
         if let Some(document_id) = document_id {
             transaction.execute(
                 "UPDATE documents SET format=?2, body=?3, updated_at=?4 WHERE id=?1",
@@ -2723,14 +3474,11 @@ impl ProjectStore {
             transaction.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value", params![field.entity_id, field.namespace, field.key, value])?;
         }
         transaction.commit()?;
-        self.rebuild_search()?;
-        let request_id = self.request_id(request_id)?;
         self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
         Ok(())
     }
 
     pub fn list_documents(&self, entity_id: String) -> Result<Vec<Document>, CoreError> {
-        self.ensure_source_index_current()?;
         self.list_documents_unchecked(entity_id)
     }
 
@@ -2761,11 +3509,6 @@ impl ProjectStore {
         field: FieldValue,
         request_id: Option<&str>,
     ) -> Result<(), CoreError> {
-        if self.root.is_some() {
-            return self.repository_first_mutation(request_id, move |projection, request_id| {
-                projection.set_field_with_request(field, Some(request_id))
-            });
-        }
         if self
             .committed_mutation::<serde_json::Value>(request_id)?
             .is_some()
@@ -2824,14 +3567,19 @@ impl ProjectStore {
             )?;
         }
         let value = encode_field_value(&field.value)?;
-        self.connection.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value", params![field.entity_id, field.namespace, field.key, value])?;
-        self.rebuild_search()?;
         let request_id = self.request_id(request_id)?;
+        let (transaction, _batch_id) = self.begin_mutation(
+            &request_id,
+            Some(&serde_json::Value::Null),
+            &[format!("entities/{}/", field.entity_id)],
+        )?;
+        transaction.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value", params![field.entity_id, field.namespace, field.key, value])?;
+        transaction.commit()?;
+        self.refresh_maps_projection_for_entities(std::slice::from_ref(&field.entity_id))?;
         self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
         Ok(())
     }
     pub fn list_fields(&self, entity_id: String) -> Result<Vec<FieldValue>, CoreError> {
-        self.ensure_source_index_current()?;
         self.list_fields_unchecked(entity_id)
     }
 
@@ -2874,15 +3622,6 @@ impl ProjectStore {
         expected_revision: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<Relationship, CoreError> {
-        if self.root.is_some() {
-            return self.repository_first_mutation(request_id, move |projection, request_id| {
-                projection.create_relationship_with_options(
-                    input,
-                    expected_revision,
-                    Some(request_id),
-                )
-            });
-        }
         if let Some(relationship) = self.committed_mutation::<Relationship>(request_id)? {
             let mut relationship = relationship;
             relationship.revision = self.revision_for_relationship(&relationship.id)?;
@@ -2913,7 +3652,6 @@ impl ProjectStore {
         )?;
         let id = Uuid::new_v4().to_string();
         let metadata = input.metadata.unwrap_or_else(|| "{}".into());
-        self.connection.execute("INSERT INTO relationships(id,source_id,target_id,relationship_type,metadata) VALUES (?1,?2,?3,?4,?5)", params![id, input.source_id, input.target_id, input.relationship_type, metadata])?;
         let request_id = self.request_id(request_id)?;
         let result = serde_json::to_value(&Relationship {
             id: id.clone(),
@@ -2924,6 +3662,16 @@ impl ProjectStore {
             revision: String::new(),
         })
         .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let (transaction, _batch_id) = self.begin_mutation(
+            &request_id,
+            Some(&result),
+            &[
+                format!("entities/{}/", input.source_id),
+                format!("entities/{}/", input.target_id),
+            ],
+        )?;
+        transaction.execute("INSERT INTO relationships(id,source_id,target_id,relationship_type,metadata) VALUES (?1,?2,?3,?4,?5)", params![id, input.source_id, input.target_id, input.relationship_type, metadata])?;
+        transaction.commit()?;
         self.sync_canonical_with_request_id(&request_id, Some(&result))?;
         let revision = self.revision_for_relationship(&id)?;
         Ok(Relationship {
@@ -2946,11 +3694,6 @@ impl ProjectStore {
         expected_revision: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<(), CoreError> {
-        if self.root.is_some() {
-            return self.repository_first_mutation(request_id, move |projection, request_id| {
-                projection.delete_relationship_with_options(id, expected_revision, Some(request_id))
-            });
-        }
         if self
             .committed_mutation::<serde_json::Value>(request_id)?
             .is_some()
@@ -2962,20 +3705,29 @@ impl ProjectStore {
             self.revision_for_relationship(&id)?,
             "relationship",
         )?;
-        if self
-            .connection
-            .execute("DELETE FROM relationships WHERE id=?1", params![id])?
-            == 0
-        {
+        let (source_id, target_id): (String, String) = self.connection.query_row(
+            "SELECT source_id,target_id FROM relationships WHERE id=?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let request_id = self.request_id(request_id)?;
+        let (transaction, _batch_id) = self.begin_mutation(
+            &request_id,
+            Some(&serde_json::Value::Null),
+            &[
+                format!("entities/{source_id}/"),
+                format!("entities/{target_id}/"),
+            ],
+        )?;
+        if transaction.execute("DELETE FROM relationships WHERE id=?1", params![id])? == 0 {
             return Err(CoreError::NotFound("relationship not found".into()));
         }
-        let request_id = self.request_id(request_id)?;
+        transaction.commit()?;
         self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
         Ok(())
     }
 
     pub fn relationship(&self, id: String) -> Result<Relationship, CoreError> {
-        self.ensure_source_index_current()?;
         self.connection
             .query_row(
                 "SELECT id,source_id,target_id,relationship_type,metadata FROM relationships WHERE id=?1",
@@ -3000,7 +3752,6 @@ impl ProjectStore {
     }
 
     pub fn list_relationships(&self, entity_id: String) -> Result<Vec<Relationship>, CoreError> {
-        self.ensure_source_index_current()?;
         self.list_relationships_unchecked(entity_id)
     }
 
@@ -3027,7 +3778,6 @@ impl ProjectStore {
     }
 
     pub fn search(&self, query: String) -> Result<Vec<Entity>, CoreError> {
-        self.ensure_source_index_current()?;
         if query.trim().is_empty() {
             return self.list_entities();
         }
@@ -3062,7 +3812,6 @@ impl ProjectStore {
         query: String,
         limit: usize,
     ) -> Result<Vec<SearchPassage>, CoreError> {
-        self.ensure_source_index_current()?;
         if query.trim().is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
@@ -3104,7 +3853,6 @@ impl ProjectStore {
     }
 
     pub fn export_json(&self) -> Result<String, CoreError> {
-        self.ensure_source_index_current()?;
         self.export_json_inner()
     }
 
@@ -3234,7 +3982,21 @@ impl ProjectStore {
                 snapshot.format_version
             )));
         }
-        let transaction = self.connection.unchecked_transaction()?;
+        let mutation_request_id = if sync_canonical {
+            Some(self.request_id(request_id)?)
+        } else {
+            None
+        };
+        let transaction = if let Some(ref request_id) = mutation_request_id {
+            self.begin_mutation(
+                request_id,
+                Some(&serde_json::Value::Null),
+                &["entities/".into(), "plugins/".into()],
+            )?
+            .0
+        } else {
+            self.connection.unchecked_transaction()?
+        };
         if replace {
             transaction.execute_batch(
                 "DELETE FROM assets;
@@ -3296,7 +4058,7 @@ impl ProjectStore {
             self.rebuild_search()?;
         }
         if sync_canonical {
-            let request_id = self.request_id(request_id)?;
+            let request_id = mutation_request_id.expect("request ID exists when sync is enabled");
             self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
         }
         Ok(snapshot.entities.len())
@@ -3320,11 +4082,6 @@ impl ProjectStore {
         expected_revision: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<Asset, CoreError> {
-        if self.root.is_some() {
-            return self.repository_first_mutation(request_id, move |projection, request_id| {
-                projection.register_asset_with_options(input, expected_revision, Some(request_id))
-            });
-        }
         if let Some(mut asset) = self.committed_mutation::<Asset>(request_id)? {
             asset.revision = self.revision_for_asset(&asset.id)?;
             return Ok(asset);
@@ -3347,10 +4104,6 @@ impl ProjectStore {
         )?;
         let id = Uuid::new_v4().to_string();
         let now = chrono_like_now();
-        self.connection.execute(
-            "INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-            params![id, input.entity_id, input.namespace, input.filename, input.content_hash, input.size, input.mime_type, input.path, now],
-        )?;
         let request_id = self.request_id(request_id)?;
         let result = serde_json::to_value(&Asset {
             id: id.clone(),
@@ -3365,6 +4118,17 @@ impl ProjectStore {
             revision: String::new(),
         })
         .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let (transaction, _batch_id) = self.begin_mutation(
+            &request_id,
+            Some(&result),
+            &[format!("entities/{}/", input.entity_id), input.path.clone()],
+        )?;
+        transaction.execute(
+            "INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![id, input.entity_id, input.namespace, input.filename, input.content_hash, input.size, input.mime_type, input.path, now],
+        )?;
+        transaction.commit()?;
+        self.refresh_maps_projection_for_entities(std::slice::from_ref(&input.entity_id))?;
         self.sync_canonical_with_request_id(&request_id, Some(&result))?;
         let revision = self.revision_for_asset(&id)?;
         Ok(Asset {
@@ -3399,15 +4163,6 @@ impl ProjectStore {
         expected_revision: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<Asset, CoreError> {
-        if self.root.is_some() {
-            return self.repository_first_mutation(request_id, move |projection, request_id| {
-                projection.register_asset_file_with_options(
-                    input,
-                    expected_revision,
-                    Some(request_id),
-                )
-            });
-        }
         let source = Path::new(&input.source_path);
         let metadata =
             std::fs::metadata(source).map_err(|error| CoreError::NotFound(error.to_string()))?;
@@ -3435,41 +4190,38 @@ impl ProjectStore {
         } else {
             "files"
         };
-        let bytes =
-            std::fs::read(source).map_err(|error| CoreError::NotFound(error.to_string()))?;
+        let (content_hash, size) = streamed_file_digest(source)?;
         let relative_path = format!("assets/{category}/{}-{}", Uuid::new_v4(), filename);
-        self.pending_asset_imports
+        self.pending_asset_sources
             .lock()
-            .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
-            .insert(relative_path.clone(), bytes.clone());
+            .map_err(|_| CoreError::Conflict("asset source state is poisoned".into()))?
+            .insert(relative_path.clone(), source.to_path_buf());
         let result = self.register_asset_with_options(
             AssetInput {
                 entity_id: input.entity_id,
                 namespace: input.namespace,
                 filename: filename.into(),
-                content_hash: format!("sha256:{:x}", Sha256::digest(&bytes)),
-                size: bytes.len() as i64,
+                content_hash,
+                size,
                 mime_type: input.mime_type,
-                path: relative_path,
+                path: relative_path.clone(),
             },
             expected_revision,
             request_id,
         );
         if result.is_err() {
-            if let Ok(mut pending) = self.pending_asset_imports.lock() {
-                pending.retain(|_, value| value != &bytes);
+            if let Ok(mut pending) = self.pending_asset_sources.lock() {
+                pending.remove(&relative_path);
             }
         }
         result
     }
 
     pub fn list_assets(&self, entity_id: String) -> Result<Vec<Asset>, CoreError> {
-        self.ensure_source_index_current()?;
         self.list_assets_unchecked(entity_id)
     }
 
     pub fn asset(&self, asset_id: String) -> Result<Asset, CoreError> {
-        self.ensure_source_index_current()?;
         self.asset_unchecked(&asset_id)
     }
 
@@ -3507,15 +4259,8 @@ impl ProjectStore {
         expected_revision: &str,
         request_id: Option<&str>,
     ) -> Result<Asset, CoreError> {
-        if self.root.is_some() {
-            return self.repository_first_mutation(request_id, move |projection, request_id| {
-                projection.replace_asset_bytes_with_request(
-                    input,
-                    bytes,
-                    expected_revision,
-                    Some(request_id),
-                )
-            });
+        if let Some(request_id) = request_id {
+            self.request_id(Some(request_id))?;
         }
         if let Some(mut asset) = self.committed_mutation::<Asset>(request_id)? {
             asset.revision = self.revision_for_asset(&asset.id)?;
@@ -3539,26 +4284,136 @@ impl ProjectStore {
                 "asset replacement MIME type is required".into(),
             ));
         }
-        self.pending_asset_imports
-            .lock()
-            .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
-            .insert(asset.path.clone(), bytes);
-        self.connection.execute(
-            "UPDATE assets SET content_hash=?1,size=?2,mime_type=?3 WHERE id=?4",
-            params![
-                input.content_hash,
-                input.size,
-                input.mime_type,
-                input.asset_id
-            ],
-        )?;
         let request_id = self.request_id(request_id)?;
+        let mut staged_input = None;
+        if let Some(root) = self.root.as_deref() {
+            let staging = root.join(".daena/sync").join(&request_id).join("input");
+            std::fs::create_dir_all(&staging).map_err(|source| CoreError::Io {
+                operation: "create streamed asset input directory",
+                source,
+            })?;
+            let source_path = staging.join(format!("asset-{}", Uuid::new_v4()));
+            staged_input = Some(source_path.clone());
+            let write_result = (|| -> Result<(), CoreError> {
+                let mut file =
+                    std::fs::File::create(&source_path).map_err(|source| CoreError::Io {
+                        operation: "create streamed asset input",
+                        source,
+                    })?;
+                file.write_all(&bytes).map_err(|source| CoreError::Io {
+                    operation: "write streamed asset input",
+                    source,
+                })?;
+                file.sync_all().map_err(|source| CoreError::Io {
+                    operation: "sync streamed asset input",
+                    source,
+                })?;
+                Ok(())
+            })();
+            if let Err(error) = write_result {
+                self.cleanup_pending_asset_input(&asset.path, staged_input.as_deref());
+                return Err(error);
+            }
+            let mut pending = match self.pending_asset_sources.lock() {
+                Ok(pending) => pending,
+                Err(_) => {
+                    self.cleanup_pending_asset_input(&asset.path, staged_input.as_deref());
+                    return Err(CoreError::Conflict("asset source state is poisoned".into()));
+                }
+            };
+            pending.insert(asset.path.clone(), source_path);
+        } else {
+            self.pending_asset_imports
+                .lock()
+                .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
+                .insert(asset.path.clone(), bytes);
+        }
+        let (transaction, _batch_id) = match self.begin_mutation(
+            &request_id,
+            Some(&serde_json::Value::Null),
+            &[format!("entities/{}/", asset.entity_id), asset.path.clone()],
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                self.cleanup_pending_asset_input(&asset.path, staged_input.as_deref());
+                return Err(error);
+            }
+        };
+        let mutation = (|| -> Result<(), CoreError> {
+            transaction.execute(
+                "UPDATE assets SET content_hash=?1,size=?2,mime_type=?3 WHERE id=?4",
+                params![
+                    input.content_hash,
+                    input.size,
+                    input.mime_type,
+                    input.asset_id
+                ],
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })();
+        if let Err(error) = mutation {
+            self.cleanup_pending_asset_input(&asset.path, staged_input.as_deref());
+            return Err(error);
+        }
+        self.refresh_maps_projection_for_entities(std::slice::from_ref(&asset.entity_id))?;
+        // Keep the durable input under the request staging directory so
+        // reopen can resume an asset export after a crash or exporter
+        // failure. Transaction/preflight failures clean it up above.
         self.sync_canonical_with_request_id(&request_id, None)?;
         asset.content_hash = input.content_hash;
         asset.size = input.size;
         asset.mime_type = input.mime_type;
         asset.revision = self.revision_for_asset(&asset.id)?;
         Ok(asset)
+    }
+
+    fn cleanup_pending_asset_input(&self, asset_path: &str, staged_input: Option<&Path>) {
+        if let Some(path) = staged_input {
+            let _ = std::fs::remove_file(path);
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::remove_dir(parent);
+            }
+        }
+        if let Ok(mut pending) = self.pending_asset_sources.lock() {
+            pending.remove(asset_path);
+        }
+    }
+
+    fn restore_staged_asset_sources(
+        &self,
+        root: &Path,
+        request_id: &str,
+        pending: &mut BTreeMap<String, PathBuf>,
+    ) -> Result<(), CoreError> {
+        let input = root.join(".daena/sync").join(request_id).join("input");
+        if !input.is_dir() {
+            return Ok(());
+        }
+        let mut files = std::fs::read_dir(&input)
+            .map_err(|source| CoreError::Io {
+                operation: "read staged asset inputs",
+                source,
+            })?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file())
+            .collect::<Vec<_>>();
+        if files.len() != 1 {
+            return Ok(());
+        }
+        let target: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT target_path FROM sync_items WHERE batch_id=(SELECT id FROM sync_batches WHERE request_id=?1) AND target_path LIKE 'assets/%' AND state <> 'applied' LIMIT 1",
+                params![request_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(target) = target {
+            pending.entry(target).or_insert_with(|| files.remove(0));
+        }
+        Ok(())
     }
 
     fn list_assets_unchecked(&self, entity_id: String) -> Result<Vec<Asset>, CoreError> {
@@ -3669,21 +4524,11 @@ impl ProjectStore {
             created_at,
         };
         let request_id = self.request_id(request_id)?;
-        let mut transaction = match crate::transactions::FileTransaction::begin(&root, &request_id)?
-        {
-            crate::transactions::TransactionStart::Ready(transaction) => transaction,
-            crate::transactions::TransactionStart::AlreadyCommitted => {
-                return self
-                    .committed_mutation::<PluginBackup>(Some(&request_id))?
-                    .ok_or_else(|| {
-                        CoreError::Conflict("backup request was already committed".into())
-                    });
-            }
-        };
+        let mut transaction = crate::sync::SyncExporter::begin(&root, &request_id)?;
         transaction.stage_bytes(&relative_path, payload.as_bytes())?;
         let result = serde_json::to_value(&backup)
             .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        transaction.commit_with_result(&result)?;
+        transaction.commit(Some(&result))?;
         let result = self.connection.execute(
             "INSERT INTO plugin_backups(id,module_id,from_package_version,to_package_version,data_version,path,content_hash,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             params![backup.id, backup.module_id, backup.from_package_version, backup.to_package_version, backup.data_version, backup.path, backup.content_hash, backup.created_at],
@@ -3703,7 +4548,6 @@ impl ProjectStore {
         request_id: Option<&str>,
     ) -> Result<PluginBackup, CoreError> {
         if let Some(backup) = self.committed_mutation::<PluginBackup>(request_id)? {
-            self.insert_plugin_backup_index(&backup)?;
             return Ok(backup);
         }
         if module_id.trim().is_empty() {
@@ -3740,9 +4584,18 @@ impl ProjectStore {
             created_at,
         };
         let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&backup)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let (transaction, _batch_id) = self.begin_mutation(
+            &request_id,
+            Some(&result),
+            std::slice::from_ref(&relative_path),
+        )?;
+        self.insert_plugin_backup_index_on(&transaction, &backup)?;
+        transaction.commit()?;
         let mut additional_files = BTreeMap::new();
         additional_files.insert(relative_path, payload);
-        self.commit_canonical_snapshot(
+        self.export_portable_snapshot(
             &root,
             &canonical.snapshot,
             &request_id,
@@ -3751,18 +4604,21 @@ impl ProjectStore {
                     .map_err(|error| CoreError::Serialization(error.to_string()))?,
             ),
             &BTreeMap::new(),
+            &BTreeMap::new(),
             &additional_files,
         )?;
-        self.insert_plugin_backup_index(&backup)?;
         Ok(backup)
     }
 
-    fn insert_plugin_backup_index(&self, backup: &PluginBackup) -> Result<(), CoreError> {
-        self.connection.execute(
+    fn insert_plugin_backup_index_on(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        backup: &PluginBackup,
+    ) -> Result<(), CoreError> {
+        transaction.execute(
             "INSERT OR IGNORE INTO plugin_backups(id,module_id,from_package_version,to_package_version,data_version,path,content_hash,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             params![backup.id, backup.module_id, backup.from_package_version, backup.to_package_version, backup.data_version, backup.path, backup.content_hash, backup.created_at],
         )?;
-        self.rebuild_maps_projection()?;
         Ok(())
     }
 
@@ -3882,11 +4738,111 @@ impl ProjectStore {
         Ok(())
     }
 
+    fn refresh_maps_projection_for_entities(&self, entity_ids: &[String]) -> Result<(), CoreError> {
+        let ids = entity_ids.iter().collect::<BTreeSet<_>>();
+        for entity_id in &ids {
+            self.connection.execute(
+                "DELETE FROM map_projection WHERE map_entity_id=?1",
+                params![entity_id],
+            )?;
+            self.connection.execute(
+                "DELETE FROM map_location_projection WHERE entity_id=?1 OR map_entity_id=?1",
+                params![entity_id],
+            )?;
+            let map = self.connection.query_row(
+                "SELECT e.id,json_extract(f.value,'$.provider.id'),json_extract(f.value,'$.sourceAssetId'),a.path,a.content_hash FROM entities e JOIN entity_fields f ON f.entity_id=e.id AND f.namespace=?1 AND f.key='map' LEFT JOIN assets a ON a.id=json_extract(f.value,'$.sourceAssetId') WHERE e.id=?2 AND e.entity_type='daena.maps:map' AND e.deleted=0",
+                params![crate::maps::MAP_NAMESPACE, entity_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?.unwrap_or_default(), row.get::<_, Option<String>>(2)?.unwrap_or_default(), row.get::<_, Option<String>>(3)?, row.get::<_, Option<String>>(4)?)),
+            ).optional()?;
+            if let Some((id, provider, asset, path, hash)) = map {
+                self.connection.execute(
+                    "INSERT INTO map_projection(map_entity_id,provider,source_asset_id,source_path,source_hash) VALUES (?1,?2,?3,?4,?5)",
+                    params![id, provider, asset, path, hash],
+                )?;
+            }
+            let mut location_owners = BTreeSet::from([(*entity_id).clone()]);
+            let referenced_owners = self
+                .connection
+                .prepare("SELECT DISTINCT f.entity_id FROM entity_fields f,json_each(json_extract(f.value,'$.locations')) WHERE f.namespace=?1 AND f.key='locations' AND json_extract(json_each.value,'$.mapEntityId')=?2")?
+                .query_map(params![crate::maps::MAP_NAMESPACE, entity_id], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            location_owners.extend(referenced_owners);
+            let mut locations = self.connection.prepare(
+                "SELECT f.entity_id,json_each.value FROM entity_fields f,json_each(json_extract(f.value,'$.locations')) WHERE f.entity_id=?1 AND f.namespace=?2 AND f.key='locations'",
+            )?;
+            for owner in location_owners {
+                let locations = locations
+                    .query_map(params![owner, crate::maps::MAP_NAMESPACE], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                for (owner, raw) in locations {
+                    self.insert_map_location_projection(&owner, &raw)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn insert_map_location_projection(&self, entity_id: &str, raw: &str) -> Result<(), CoreError> {
+        let location: serde_json::Value = serde_json::from_str(raw)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let anchor = location.get("anchor").cloned().unwrap_or_default();
+        let kind = anchor
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        let bounds = match kind {
+            "point" => bounds_for_points(anchor.get("point").and_then(serde_json::Value::as_array)),
+            "provider-feature" => bounds_for_points(
+                anchor
+                    .get("fallbackPoint")
+                    .and_then(serde_json::Value::as_array),
+            ),
+            "path" => bounds_for_points(anchor.get("points").and_then(serde_json::Value::as_array)),
+            "area" => anchor
+                .get("rings")
+                .and_then(serde_json::Value::as_array)
+                .map(|rings| {
+                    bounds_for_points(Some(
+                        &rings
+                            .iter()
+                            .filter_map(serde_json::Value::as_array)
+                            .flatten()
+                            .cloned()
+                            .collect::<Vec<_>>(),
+                    ))
+                })
+                .unwrap_or((None, None, None, None)),
+            _ => (None, None, None, None),
+        };
+        let resolution = if kind == "provider-feature" {
+            self.provider_feature_resolution(
+                location
+                    .get("mapEntityId")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+                anchor
+                    .get("featureKind")
+                    .and_then(serde_json::Value::as_str),
+                anchor.get("featureId").and_then(serde_json::Value::as_str),
+            )
+        } else {
+            "resolved"
+        };
+        self.connection.execute(
+            "INSERT OR REPLACE INTO map_location_projection(location_id,entity_id,map_entity_id,label,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+            params![location.get("id").and_then(serde_json::Value::as_str).unwrap_or_default(), entity_id, location.get("mapEntityId").and_then(serde_json::Value::as_str).unwrap_or_default(), location.get("label").and_then(serde_json::Value::as_str), location.get("role").and_then(serde_json::Value::as_str).unwrap_or_default(), kind, anchor.get("provider").and_then(serde_json::Value::as_str), anchor.get("featureKind").and_then(serde_json::Value::as_str), anchor.get("featureId").and_then(serde_json::Value::as_str), bounds.0, bounds.1, bounds.2, bounds.3, location.pointer("/validity/from").filter(|value| !value.is_null()).map(ToString::to_string), location.pointer("/validity/to").filter(|value| !value.is_null()).map(ToString::to_string), resolution],
+        )?;
+        Ok(())
+    }
+
     pub fn map_locations_for_entity(
         &self,
         entity_id: String,
     ) -> Result<Vec<serde_json::Value>, CoreError> {
-        self.ensure_source_index_current()?;
         let mut statement = self.connection.prepare("SELECT location_id,map_entity_id,label,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution FROM map_location_projection WHERE entity_id=?1 ORDER BY location_id")?;
         let rows = statement.query_map(rusqlite::params![entity_id], |row| Ok(serde_json::json!({"id":row.get::<_,String>(0)?,"mapEntityId":row.get::<_,String>(1)?,"label":row.get::<_,Option<String>>(2)?,"role":row.get::<_,String>(3)?,"anchorKind":row.get::<_,String>(4)?,"provider":row.get::<_,Option<String>>(5)?,"featureKind":row.get::<_,Option<String>>(6)?,"featureId":row.get::<_,Option<String>>(7)?,"bounds":[row.get::<_,Option<f64>>(8)?,row.get::<_,Option<f64>>(9)?,row.get::<_,Option<f64>>(10)?,row.get::<_,Option<f64>>(11)?],"validity":{"from":row.get::<_,Option<String>>(12)?,"to":row.get::<_,Option<String>>(13)?},"resolution":row.get::<_,String>(14)?})))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
@@ -3900,7 +4856,6 @@ impl ProjectStore {
         &self,
         map_entity_id: String,
     ) -> Result<Vec<serde_json::Value>, CoreError> {
-        self.ensure_source_index_current()?;
         let mut statement = self.connection.prepare("SELECT location_id,entity_id,label,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution FROM map_location_projection WHERE map_entity_id=?1 ORDER BY location_id")?;
         let rows = statement.query_map(rusqlite::params![map_entity_id], |row| Ok(serde_json::json!({"id":row.get::<_,String>(0)?,"entityId":row.get::<_,String>(1)?,"label":row.get::<_,Option<String>>(2)?,"role":row.get::<_,String>(3)?,"anchorKind":row.get::<_,String>(4)?,"provider":row.get::<_,Option<String>>(5)?,"featureKind":row.get::<_,Option<String>>(6)?,"featureId":row.get::<_,Option<String>>(7)?,"bounds":[row.get::<_,Option<f64>>(8)?,row.get::<_,Option<f64>>(9)?,row.get::<_,Option<f64>>(10)?,row.get::<_,Option<f64>>(11)?],"validity":{"from":row.get::<_,Option<String>>(12)?,"to":row.get::<_,Option<String>>(13)?},"resolution":row.get::<_,String>(14)?})))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
@@ -4070,12 +5025,6 @@ impl ProjectStore {
         payload: &str,
         request_id: Option<&str>,
     ) -> Result<(), CoreError> {
-        if self.root.is_some() {
-            let payload = payload.to_owned();
-            return self.repository_first_mutation(request_id, move |projection, request_id| {
-                projection.restore_payload_with_request(&payload, Some(request_id))
-            });
-        }
         if self
             .committed_mutation::<serde_json::Value>(request_id)?
             .is_some()
@@ -4103,15 +5052,6 @@ impl ProjectStore {
         confirmation: &str,
         request_id: Option<&str>,
     ) -> Result<String, CoreError> {
-        if self.root.is_some() {
-            return self.repository_first_mutation(request_id, move |projection, request_id| {
-                projection.delete_plugin_data_with_request(
-                    plugin_id,
-                    confirmation,
-                    Some(request_id),
-                )
-            });
-        }
         if let Some(backup) = self.committed_mutation::<String>(request_id)? {
             return Ok(backup);
         }
@@ -4121,7 +5061,13 @@ impl ProjectStore {
             });
         }
         let backup = self.backup()?;
-        let transaction = self.connection.unchecked_transaction()?;
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&backup)?;
+        let (transaction, _batch_id) = self.begin_mutation(
+            &request_id,
+            Some(&result),
+            &["entities/".into(), "plugins/".into(), "assets/".into()],
+        )?;
         transaction.execute(
             "DELETE FROM entity_fields WHERE namespace IN (SELECT namespace FROM module_namespaces WHERE module_id=?1)",
             params![plugin_id],
@@ -4155,9 +5101,6 @@ impl ProjectStore {
             params![plugin_id],
         )?;
         transaction.commit()?;
-        let request_id = self.request_id(request_id)?;
-        let result = serde_json::to_value(&backup)
-            .map_err(|error| CoreError::Serialization(error.to_string()))?;
         self.sync_canonical_with_request_id(&request_id, Some(&result))?;
         Ok(backup)
     }
@@ -4170,29 +5113,35 @@ impl ProjectStore {
              DROP TRIGGER IF EXISTS documents_search_update;
              DROP TRIGGER IF EXISTS entity_fields_search_insert;
              DROP TRIGGER IF EXISTS entity_fields_search_update;
+             DROP TRIGGER IF EXISTS entity_fields_search_delete;
              DROP TABLE IF EXISTS world_search;
              CREATE VIRTUAL TABLE world_search USING fts5(entity_id UNINDEXED, source_path UNINDEXED, source_hash UNINDEXED, content);
              INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT e.id, COALESCE(sf.path, 'entities/' || e.id || '/entity.json'), COALESCE(sf.content_hash, ''), e.name || ' ' || COALESCE(e.entity_type, '') FROM entities e LEFT JOIN source_files sf ON sf.path = 'entities/' || e.id || '/entity.json' WHERE e.deleted=0;
              INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT d.entity_id, COALESCE(sf.path, 'entities/' || d.entity_id || '/document.md'), COALESCE(sf.content_hash, ''), d.body FROM documents d JOIN entities e ON e.id = d.entity_id LEFT JOIN source_files sf ON sf.path = 'entities/' || d.entity_id || '/document.md' WHERE e.deleted=0;
              INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT f.entity_id, COALESCE(sf.path, ''), COALESCE(sf.content_hash, ''), f.namespace || ' ' || f.key || ' ' || f.value FROM entity_fields f JOIN entities e ON e.id = f.entity_id LEFT JOIN source_files sf ON sf.path LIKE 'entities/' || f.entity_id || '/fields/%.json' WHERE e.deleted=0;
-             CREATE TRIGGER entities_search_insert AFTER INSERT ON entities BEGIN INSERT INTO world_search(entity_id, content) SELECT new.id, new.name || ' ' || COALESCE(new.entity_type, '') WHERE new.deleted=0; END;
-             CREATE TRIGGER entities_search_update AFTER UPDATE OF name, entity_type, deleted ON entities BEGIN DELETE FROM world_search WHERE entity_id = old.id; INSERT INTO world_search(entity_id, content) SELECT new.id, new.name || ' ' || COALESCE(new.entity_type, '') WHERE new.deleted=0; INSERT INTO world_search(entity_id, content) SELECT documents.entity_id, documents.body FROM documents WHERE documents.entity_id = new.id AND new.deleted=0; INSERT INTO world_search(entity_id, content) SELECT entity_fields.entity_id, entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields WHERE entity_fields.entity_id = new.id AND new.deleted=0; END;
-             CREATE TRIGGER documents_search_insert AFTER INSERT ON documents BEGIN INSERT INTO world_search(entity_id, content) VALUES (new.entity_id, new.body); END;
-             CREATE TRIGGER documents_search_update AFTER UPDATE OF body ON documents BEGIN DELETE FROM world_search WHERE entity_id = old.entity_id; INSERT INTO world_search(entity_id, content) SELECT id, name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = new.entity_id AND deleted=0; INSERT INTO world_search(entity_id, content) SELECT documents.entity_id, documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE documents.entity_id = new.entity_id AND entities.deleted=0; INSERT INTO world_search(entity_id, content) SELECT entity_fields.entity_id, entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entity_fields.entity_id = new.entity_id AND entities.deleted=0; END;
-             CREATE TRIGGER entity_fields_search_insert AFTER INSERT ON entity_fields BEGIN DELETE FROM world_search WHERE entity_id = new.entity_id; INSERT INTO world_search(entity_id, content) SELECT id, name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = new.entity_id AND deleted=0; INSERT INTO world_search(entity_id, content) SELECT documents.entity_id, documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE documents.entity_id = new.entity_id AND entities.deleted=0; INSERT INTO world_search(entity_id, content) SELECT entity_fields.entity_id, entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entity_fields.entity_id = new.entity_id AND entities.deleted=0; END;
-             CREATE TRIGGER entity_fields_search_update AFTER UPDATE OF namespace, key, value ON entity_fields BEGIN DELETE FROM world_search WHERE entity_id = new.entity_id; INSERT INTO world_search(entity_id, content) SELECT id, name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = new.entity_id AND deleted=0; INSERT INTO world_search(entity_id, content) SELECT documents.entity_id, documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE documents.entity_id = new.entity_id AND entities.deleted=0; INSERT INTO world_search(entity_id, content) SELECT entity_fields.entity_id, entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entity_fields.entity_id = new.entity_id AND entities.deleted=0; END;"
+             CREATE TRIGGER entities_search_insert AFTER INSERT ON entities BEGIN INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT new.id, 'entities/' || new.id || '/entity.json', '', new.name || ' ' || COALESCE(new.entity_type, '') WHERE new.deleted=0; END;
+             CREATE TRIGGER entities_search_update AFTER UPDATE OF name, entity_type, deleted ON entities BEGIN DELETE FROM world_search WHERE entity_id = old.id; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT new.id, 'entities/' || new.id || '/entity.json', '', new.name || ' ' || COALESCE(new.entity_type, '') WHERE new.deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT documents.entity_id, 'entities/' || documents.entity_id || '/document.md', '', documents.body FROM documents WHERE documents.entity_id = new.id AND new.deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT entity_fields.entity_id, 'entities/' || entity_fields.entity_id || '/fields', '', entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields WHERE entity_fields.entity_id = new.id AND new.deleted=0; END;
+             CREATE TRIGGER documents_search_insert AFTER INSERT ON documents BEGIN INSERT INTO world_search(entity_id, source_path, source_hash, content) VALUES (new.entity_id, 'entities/' || new.entity_id || '/document.md', '', new.body); END;
+             CREATE TRIGGER documents_search_update AFTER UPDATE OF body ON documents BEGIN DELETE FROM world_search WHERE entity_id = old.entity_id; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT id, 'entities/' || id || '/entity.json', '', name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = new.entity_id AND deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT documents.entity_id, 'entities/' || documents.entity_id || '/document.md', '', documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE documents.entity_id = new.entity_id AND entities.deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT entity_fields.entity_id, 'entities/' || entity_fields.entity_id || '/fields', '', entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entity_fields.entity_id = new.entity_id AND entities.deleted=0; END;
+             CREATE TRIGGER entity_fields_search_insert AFTER INSERT ON entity_fields BEGIN DELETE FROM world_search WHERE entity_id = new.entity_id; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT id, 'entities/' || id || '/entity.json', '', name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = new.entity_id AND deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT documents.entity_id, 'entities/' || documents.entity_id || '/document.md', '', documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE documents.entity_id = new.entity_id AND entities.deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT entity_fields.entity_id, 'entities/' || entity_fields.entity_id || '/fields', '', entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entity_fields.entity_id = new.entity_id AND entities.deleted=0; END;
+             CREATE TRIGGER entity_fields_search_update AFTER UPDATE OF namespace, key, value ON entity_fields BEGIN DELETE FROM world_search WHERE entity_id = new.entity_id; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT id, 'entities/' || id || '/entity.json', '', name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = new.entity_id AND deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT documents.entity_id, 'entities/' || documents.entity_id || '/document.md', '', documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE documents.entity_id = new.entity_id AND entities.deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT entity_fields.entity_id, 'entities/' || entity_fields.entity_id || '/fields', '', entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entity_fields.entity_id = new.entity_id AND entities.deleted=0; END;
+             CREATE TRIGGER entity_fields_search_delete AFTER DELETE ON entity_fields BEGIN DELETE FROM world_search WHERE entity_id = old.entity_id; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT id, 'entities/' || id || '/entity.json', '', name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = old.entity_id AND deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT documents.entity_id, 'entities/' || documents.entity_id || '/document.md', '', documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE documents.entity_id = old.entity_id AND entities.deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT entity_fields.entity_id, 'entities/' || entity_fields.entity_id || '/fields', '', entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entity_fields.entity_id = old.entity_id AND entities.deleted=0; END;"
         )?;
         self.rebuild_maps_projection()?;
         Ok(())
     }
 
     pub fn seed_example(&mut self) -> Result<usize, CoreError> {
-        if self.root.is_some() {
-            return self.repository_first_mutation(None, |projection, _request_id| {
-                projection.seed_example_unchecked()
-            });
+        if self.root.is_none() {
+            return self.seed_example_unchecked();
         }
-        self.seed_example_unchecked()
+        self.suppress_sync.set(true);
+        let result = self.seed_example_unchecked();
+        self.suppress_sync.set(false);
+        result.and_then(|count| {
+            self.sync_canonical()?;
+            Ok(count)
+        })
     }
 
     fn seed_example_unchecked(&mut self) -> Result<usize, CoreError> {
@@ -4490,7 +5439,6 @@ impl ProjectStore {
     }
 
     pub fn get_module_version(&self, module_id: &str) -> Result<i64, CoreError> {
-        self.ensure_source_index_current()?;
         self.connection
             .query_row(
                 "SELECT COALESCE(version, 0) FROM module_versions WHERE module_id=?1",
@@ -4508,7 +5456,6 @@ impl ProjectStore {
     }
 
     pub fn module_states(&self) -> Result<Vec<ModuleState>, CoreError> {
-        self.ensure_source_index_current()?;
         let mut statement = self.connection.prepare("SELECT m.module_id, COALESCE(s.enabled, 1), m.version, p.package_version FROM module_versions m LEFT JOIN module_state s ON s.module_id = m.module_id LEFT JOIN module_package_versions p ON p.module_id = m.module_id ORDER BY m.module_id")?;
         let rows = statement.query_map([], |row| {
             Ok(ModuleState {
@@ -4539,32 +5486,32 @@ impl ProjectStore {
         enabled: bool,
         request_id: Option<&str>,
     ) -> Result<(), CoreError> {
-        if self.root.is_some() {
-            return self.repository_first_mutation(request_id, move |projection, request_id| {
-                projection.set_module_enabled_with_request(module_id, enabled, Some(request_id))
-            });
-        }
         if self
             .committed_mutation::<serde_json::Value>(request_id)?
             .is_some()
         {
             return Ok(());
         }
-        self.connection.execute(
+        let request_id = self.request_id(request_id)?;
+        let (transaction, _batch_id) = self.begin_mutation(
+            &request_id,
+            Some(&serde_json::Value::Null),
+            &[format!("plugins/{module_id}.json")],
+        )?;
+        transaction.execute(
             "INSERT OR IGNORE INTO module_versions(module_id,version) VALUES (?1,0)",
             params![module_id],
         )?;
-        self.connection.execute(
+        transaction.execute(
             "INSERT INTO module_state(module_id, enabled) VALUES (?1, ?2) ON CONFLICT(module_id) DO UPDATE SET enabled=excluded.enabled",
             params![module_id, enabled as i64],
         )?;
-        let request_id = self.request_id(request_id)?;
+        transaction.commit()?;
         self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
         Ok(())
     }
 
     pub fn is_module_enabled(&self, module_id: &str) -> Result<bool, CoreError> {
-        self.ensure_source_index_current()?;
         Ok(self
             .connection
             .query_row(
@@ -4591,48 +5538,42 @@ impl ProjectStore {
         package_version: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<(), CoreError> {
-        if self.root.is_some() {
-            let module_id = module_id.to_owned();
-            let package_version = package_version.map(str::to_owned);
-            return self.repository_first_mutation(request_id, move |projection, request_id| {
-                projection.set_module_package_version_with_request(
-                    &module_id,
-                    package_version.as_deref(),
-                    Some(request_id),
-                )
-            });
-        }
         if self
             .committed_mutation::<serde_json::Value>(request_id)?
             .is_some()
         {
             return Ok(());
         }
+        let request_id = self.request_id(request_id)?;
+        let (transaction, _batch_id) = self.begin_mutation(
+            &request_id,
+            Some(&serde_json::Value::Null),
+            &[format!("plugins/{module_id}.json")],
+        )?;
         match package_version {
             Some(version) => {
-                self.connection.execute(
+                transaction.execute(
                     "INSERT OR IGNORE INTO module_versions(module_id,version) VALUES (?1,0)",
                     params![module_id],
                 )?;
-                self.connection.execute(
+                transaction.execute(
                     "INSERT INTO module_package_versions(module_id,package_version) VALUES (?1,?2) ON CONFLICT(module_id) DO UPDATE SET package_version=excluded.package_version",
                     params![module_id, version],
                 )?;
             }
             None => {
-                self.connection.execute(
+                transaction.execute(
                     "DELETE FROM module_package_versions WHERE module_id=?1",
                     params![module_id],
                 )?;
             }
         }
-        let request_id = self.request_id(request_id)?;
+        transaction.commit()?;
         self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
         Ok(())
     }
 
     pub fn module_package_version(&self, module_id: &str) -> Result<Option<String>, CoreError> {
-        self.ensure_source_index_current()?;
         self.connection
             .query_row(
                 "SELECT package_version FROM module_package_versions WHERE module_id=?1",
@@ -4666,33 +5607,25 @@ impl ProjectStore {
         migrations: &[crate::migrations::Migration],
         request_id: Option<&str>,
     ) -> Result<String, CoreError> {
-        if self.root.is_some() {
-            let migrations = migrations.to_vec();
-            return self.repository_first_mutation(request_id, move |projection, request_id| {
-                projection.apply_migrations_with_request(&migrations, Some(request_id))
-            });
-        }
         if let Some(backup) = self.committed_mutation::<String>(request_id)? {
             return Ok(backup);
         }
         let backup = self
             .backup()
             .map_err(|error| CoreError::Validation(error.to_string()))?;
-        for migration in migrations {
-            if let Err(error) = crate::migrations::apply(&mut self.connection, migration) {
-                let restore_result = self.restore(backup.clone());
-                return match restore_result {
-                    Ok(()) => Err(error),
-                    Err(restore_error) => Err(CoreError::Validation(format!(
-                        "migration failed and backup restore failed: {error}; {restore_error}"
-                    ))),
-                };
-            }
-        }
-        self.rebuild_search()?;
         let request_id = self.request_id(request_id)?;
         let result = serde_json::to_value(&backup)
             .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let affected = migrations
+            .iter()
+            .map(|migration| format!("plugins/{}.json", migration.module_id))
+            .collect::<Vec<_>>();
+        let (transaction, _batch_id) =
+            self.begin_mutation(&request_id, Some(&result), &affected)?;
+        for migration in migrations {
+            crate::migrations::apply_in_transaction(&transaction, migration)?;
+        }
+        transaction.commit()?;
         self.sync_canonical_with_request_id(&request_id, Some(&result))?;
         Ok(backup)
     }
@@ -4730,6 +5663,96 @@ fn digest_bytes(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn streamed_file_digest(path: &Path) -> Result<(String, i64), CoreError> {
+    let mut file =
+        std::fs::File::open(path).map_err(|error| CoreError::NotFound(error.to_string()))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 128 * 1024];
+    let mut size = 0_i64;
+    loop {
+        let count = std::io::Read::read(&mut file, &mut buffer).map_err(|error| CoreError::Io {
+            operation: "read asset source",
+            source: error,
+        })?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+        size = size
+            .checked_add(count as i64)
+            .ok_or_else(|| CoreError::Validation("asset is too large".into()))?;
+    }
+    Ok((format!("sha256:{:x}", digest.finalize()), size))
+}
+
+fn staged_canonical_sources(
+    root: &Path,
+    snapshot: &ProjectSnapshot,
+) -> Result<Vec<crate::storage::CanonicalSource>, CoreError> {
+    fn visit(root: &Path, current: &Path, paths: &mut Vec<String>) -> Result<(), CoreError> {
+        for entry in std::fs::read_dir(current).map_err(|source| CoreError::Io {
+            operation: "read targeted staging directory",
+            source,
+        })? {
+            let entry = entry.map_err(|source| CoreError::Io {
+                operation: "read targeted staging entry",
+                source,
+            })?;
+            let path = entry.path();
+            if path.is_dir() {
+                visit(root, &path, paths)?;
+            } else if path.is_file() {
+                paths.push(
+                    path.strip_prefix(root)
+                        .map_err(|error| CoreError::Validation(error.to_string()))?
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    let mut paths = Vec::new();
+    for entity in &snapshot.entities {
+        let path =
+            crate::storage::normalized_project_path(root, &format!("entities/{}", entity.id))?;
+        if path.is_dir() {
+            visit(root, &path, &mut paths)?;
+        }
+    }
+    for module in &snapshot.modules {
+        let path = crate::storage::normalized_project_path(
+            root,
+            &format!("plugins/{}.json", module.module_id),
+        )?;
+        if path.is_file() {
+            paths.push(format!("plugins/{}.json", module.module_id));
+        }
+    }
+    for asset in &snapshot.assets {
+        let path = crate::storage::normalized_project_path(root, &asset.path)?;
+        if path.is_file() {
+            paths.push(asset.path.clone());
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+        .into_iter()
+        .map(|path| {
+            let content_hash = crate::sync::hash_path(root, &path)?.ok_or_else(|| {
+                CoreError::Validation(format!("targeted staged source is missing: {path}"))
+            })?;
+            Ok(crate::storage::CanonicalSource {
+                path,
+                content_hash,
+                format_version: crate::storage::PROJECT_FORMAT_VERSION,
+            })
+        })
         .collect()
 }
 

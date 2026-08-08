@@ -13,9 +13,9 @@ contracts remain in the focused plans below:
 - [`STORAGE.md`](./STORAGE.md) defines the authoritative runtime database,
   portable project format, synchronization, recovery, and rebuild contracts.
 - [`STORAGE_MIGRATION.md`](./STORAGE_MIGRATION.md) defines the alpha hard cut
-  from the implemented repository-first storage path.
+  to the database-first writer and durable exporter.
 - [`PLAIN_TEXT_STORAGE_PLAN.md`](./PLAIN_TEXT_STORAGE_PLAN.md) records the
-  historical repository-first implementation plan and portable format work.
+  historical portable format and file-canonical planning work.
 - [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md) defines plugin
   isolation, package trust, broker authorization, lifecycle, and compatibility.
 - [`PLUGIN_SDK.md`](./PLUGIN_SDK.md) is the definitive plugin authoring guide.
@@ -125,8 +125,10 @@ entities/<entity-uuid>/
 plugins/<plugin-id>.json
 assets/{images,videos,maps,files}/
 .daena/
-  index.sqlite
-  transactions/ backups/ conflicts/ local/
+  index.sqlite                 # authoritative runtime database
+  sync/<request-id>/new/
+  project.lock  export.lock
+  backups/ conflicts/ local/
 .gitignore
 ```
 
@@ -174,10 +176,12 @@ Search, map projections, relationship indexes, and other views are derived
 from durable runtime rows. They may be rebuilt, discarded, or temporarily
 reported as stale without changing project content.
 
-The current source remains repository-first until the direct replacement in
-[`STORAGE_MIGRATION.md`](./STORAGE_MIGRATION.md). The new writer must replace
-and delete the old writer in the same hard-cut phase; no dual-authority mode or
-fallback is permitted.
+The database-first writer is the current hard-cut storage boundary. Each
+mutation commits runtime rows, derived updates, its receipt, and exact sync
+intent together; the exporter then updates only the affected portable files
+from durable staging under `.daena/sync/`. There is no dual-authority writer
+or fallback writer. See [`STORAGE_MIGRATION.md`](./STORAGE_MIGRATION.md)
+for the recovery and synchronization contract.
 
 ## Core and trusted shell
 

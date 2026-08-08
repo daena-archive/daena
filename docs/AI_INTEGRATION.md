@@ -13,8 +13,8 @@ It supplements, and does not override, these authorities:
   entity/document model.
 - [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md) defines plugin identity,
   isolation, capabilities, broker authorization, and public-contract rules.
-- [`PLAIN_TEXT_STORAGE_PLAN.md`](./PLAIN_TEXT_STORAGE_PLAN.md) defines canonical
-  project files, revisions, external-edit reconciliation, and disposable indexes.
+- [`STORAGE.md`](./STORAGE.md) defines the database-first runtime, canonical
+  project files, revisions, external-edit reconciliation, and derived views.
 
 If this document conflicts with those boundaries, the stricter authority and
 storage rule wins. AI must not become an alternative data model, plugin bridge,

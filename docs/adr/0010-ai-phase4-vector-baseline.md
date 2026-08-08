@@ -32,7 +32,7 @@ and makes the semantic index require rebuilding.
   generation atomically. Rebuild cancellation preserves the prior generation
   and reports a stale state for lexical fallback.
 - Trusted-shell `ai_index_search` now exercises semantic search and lexical plus
-  reciprocal-rank fusion over the disposable index; plugin retrieval remains
+  reciprocal-rank fusion over derived runtime search views; plugin retrieval remains
   broker-authorized and cannot call this shell-only command.
 - The fixture benchmark threshold is Recall@3 >= 1.0 and nDCG@3 >= 1.0 for the
   two authorized queries, with zero forbidden-source candidates for the private

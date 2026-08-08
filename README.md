@@ -70,7 +70,7 @@ My World/
 │   ├── videos/
 │   ├── maps/
 │   └── files/
-├── .daena/                 # disposable index and local recovery state
+├── .daena/                 # authoritative runtime DB and local sync state
 └── .gitignore
 ```
 

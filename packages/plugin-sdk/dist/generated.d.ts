@@ -255,6 +255,16 @@ export interface EntityCreateRelationship {
     relationship_type: string;
     target_ids: string[];
 }
+export type AiRetrievalMode = "none" | "explicit_only" | "related" | "project";
+export interface AiRetrievalPolicyPayload {
+    allowedSourceKinds: string[];
+    includeSharedFields: boolean;
+    mode: AiRetrievalMode;
+    passageCount: number;
+    query?: string | null;
+    relationshipDepth: number;
+    seedIds: string[];
+}
 export interface AiRequestIdPayload {
     requestId: string;
 }
@@ -263,6 +273,7 @@ export interface AiRequestStartPayload {
     immediateContext: unknown;
     operation: string;
     outputContract?: unknown;
+    retrievalPolicy?: AiRetrievalPolicyPayload | null;
     taskId: string;
     userInstruction: string;
 }
@@ -409,6 +420,7 @@ export interface ServiceCallPayload {
 }
 export interface BrokerMethodPayloads {
     "ai.request.cancel": AiRequestIdPayload;
+    "ai.request.citations": AiRequestIdPayload;
     "ai.request.poll": AiRequestIdPayload;
     "ai.request.result": AiRequestIdPayload;
     "ai.request.start": AiRequestStartPayload;

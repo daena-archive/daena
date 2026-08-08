@@ -312,12 +312,14 @@ export function buildModuleContext(
           immediateContext: request.immediateContext,
           outputContract: request.outputContract,
           deadlineMs: request.deadlineMs,
+          retrievalPolicy: request.retrievalPolicy,
         });
         return {
           requestId: started.requestId,
           poll: () => rpc.pollAiRequest(started.requestId),
           cancel: () => rpc.cancelAiRequest(started.requestId),
           result: () => rpc.getAiResult(started.requestId),
+          citations: () => rpc.getAiCitations(started.requestId),
         };
       },
     },

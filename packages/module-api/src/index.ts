@@ -63,6 +63,15 @@ export interface StructuredAiRequest {
   immediateContext: Record<string, unknown>;
   outputContract: Record<string, unknown>;
   deadlineMs?: number;
+  retrievalPolicy?: {
+    mode: "none" | "explicit_only" | "related" | "project";
+    query?: string;
+    seedIds: string[];
+    allowedSourceKinds: string[];
+    relationshipDepth: number;
+    passageCount: number;
+    includeSharedFields: boolean;
+  };
 }
 
 export interface StructuredAiHandle {
@@ -70,6 +79,7 @@ export interface StructuredAiHandle {
   poll(): Promise<unknown[]>;
   cancel(): Promise<void>;
   result(): Promise<unknown>;
+  citations(): Promise<unknown[]>;
 }
 
 export interface ProposalPreviewOptions {
@@ -77,8 +87,22 @@ export interface ProposalPreviewOptions {
   proposal: string;
   original?: string;
   acceptLabel?: string;
+  citations?: AiCitation[];
   onAccept(value: string): Promise<void>;
   onDiscard(): void;
+}
+
+export interface AiCitation {
+  sourceKind: string;
+  entityId?: string | null;
+  documentId?: string | null;
+  canonicalPath?: string | null;
+  revision: string;
+  contentHash: string;
+  byteStart?: number | null;
+  byteEnd?: number | null;
+  excerptHash: string;
+  stale?: boolean;
 }
 
 /** Shared editable proposal surface for bundled and third-party module views. */
@@ -113,6 +137,25 @@ export function createProposalPreview(options: ProposalPreviewOptions): HTMLElem
     heading.textContent = cause instanceof Error ? cause.message : String(cause);
   });
   actions.append(discard, accept);
+  if (options.citations?.length) {
+    const inspector = document.createElement("details");
+    inspector.className = "ai-citation-inspector";
+    const summary = document.createElement("summary");
+    summary.textContent = `Sources (${options.citations.length})`;
+    inspector.append(summary);
+    const list = document.createElement("ul");
+    for (const citation of options.citations) {
+      const item = document.createElement("li");
+      const source = citation.canonicalPath ?? citation.sourceKind;
+      item.textContent = `${citation.stale ? "Stale · " : ""}${source} · revision ${citation.revision}`;
+      if (citation.byteStart !== null && citation.byteStart !== undefined && citation.byteEnd !== null && citation.byteEnd !== undefined) {
+        item.textContent += ` · bytes ${citation.byteStart}-${citation.byteEnd}`;
+      }
+      list.append(item);
+    }
+    inspector.append(list);
+    root.append(inspector);
+  }
   root.append(heading, editor, actions);
   return root;
 }

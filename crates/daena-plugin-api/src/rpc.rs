@@ -419,6 +419,38 @@ pub struct ServiceCallPayload {
     pub deadline_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub enum AiRetrievalMode {
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "explicit_only")]
+    ExplicitOnly,
+    #[serde(rename = "related")]
+    Related,
+    #[serde(rename = "project")]
+    Project,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AiRetrievalPolicyPayload {
+    pub mode: AiRetrievalMode,
+    pub query: Option<String>,
+    #[serde(rename = "seedIds")]
+    pub seed_ids: Vec<String>,
+    #[serde(rename = "allowedSourceKinds")]
+    pub allowed_source_kinds: Vec<String>,
+    #[serde(rename = "relationshipDepth")]
+    pub relationship_depth: u8,
+    #[serde(rename = "passageCount")]
+    pub passage_count: u16,
+    #[serde(rename = "includeSharedFields")]
+    pub include_shared_fields: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -434,6 +466,8 @@ pub struct AiRequestStartPayload {
     pub output_contract: Option<Value>,
     #[serde(rename = "deadlineMs")]
     pub deadline_ms: Option<u64>,
+    #[serde(rename = "retrievalPolicy")]
+    pub retrieval_policy: Option<AiRetrievalPolicyPayload>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -498,9 +532,10 @@ mod tests {
         .unwrap();
         assert_eq!(service.deadline_ms, Some(500));
 
-        let publish: EventPublishPayload =
-            serde_json::from_value(serde_json::json!({ "type": "daena.maps/state", "payload": {} }))
-                .unwrap();
+        let publish: EventPublishPayload = serde_json::from_value(
+            serde_json::json!({ "type": "daena.maps/state", "payload": {} }),
+        )
+        .unwrap();
         assert_eq!(publish.r#type, "daena.maps/state");
     }
 
@@ -555,8 +590,8 @@ mod tests {
             ok: true,
             result: serde_json::json!({ "ok": true }),
         };
-        let parsed: RpcSuccess = serde_json::from_value(serde_json::to_value(&success).unwrap())
-            .unwrap();
+        let parsed: RpcSuccess =
+            serde_json::from_value(serde_json::to_value(&success).unwrap()).unwrap();
         assert_eq!(parsed, success);
 
         let failure = RpcFailure {
@@ -570,8 +605,8 @@ mod tests {
                 details: None,
             },
         };
-        let parsed: RpcFailure = serde_json::from_value(serde_json::to_value(&failure).unwrap())
-            .unwrap();
+        let parsed: RpcFailure =
+            serde_json::from_value(serde_json::to_value(&failure).unwrap()).unwrap();
         assert_eq!(parsed, failure);
     }
 }

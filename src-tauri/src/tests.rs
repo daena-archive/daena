@@ -9,9 +9,18 @@ fn ai_test_host() -> SharedPluginHost {
 fn ai_test_context(runtime: ai::SharedAiRuntime) -> AiBrokerContext {
     AiBrokerContext {
         app: None,
+        core: None,
         settings: None,
         ai_runtime: runtime,
         session_id: "test-session".into(),
+        caller: daena_ai::AiCaller::authorized_plugin(
+            "daena.lore",
+            "project",
+            Vec::new(),
+            vec!["project:project".into()],
+            1,
+            "pending",
+        ),
     }
 }
 
@@ -210,6 +219,319 @@ fn broker_ai_deadline_emits_terminal_deadline_event() {
         "deadline_exceeded"
     );
     assert!(ai::ai_request_result(&runtime, request_id).is_err());
+}
+
+#[test]
+fn retrieval_context_is_provenance_bearing_and_denies_missing_data_grants() {
+    let project = ProjectStore::in_memory().unwrap();
+    let entity = project
+        .create_entity(CreateEntity {
+            name: "Retrieval target".into(),
+            entity_type: Some("person".into()),
+        })
+        .unwrap();
+    project
+        .save_document(SaveDocument {
+            entity_id: entity.id.clone(),
+            body: "The archivist guards the salt library.".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    let policy = daena_plugin_api::AiRetrievalPolicyPayload {
+        mode: daena_plugin_api::AiRetrievalMode::ExplicitOnly,
+        query: None,
+        seed_ids: vec![entity.id.clone()],
+        allowed_source_kinds: vec!["document".into()],
+        relationship_depth: 0,
+        passage_count: 4,
+        include_shared_fields: false,
+    };
+    let caller = daena_ai::AiCaller::authorized_plugin(
+        "daena.lore",
+        "project",
+        vec!["document.read".into()],
+        vec!["project:project".into()],
+        1,
+        "request",
+    );
+    let (context, citations) = ai::build_retrieval_context(&project, &caller, &policy).unwrap();
+    assert!(context.contains("[UNTRUSTED_PROJECT_DATA]"));
+    assert_eq!(citations.len(), 1);
+    assert_eq!(citations[0].entity_id.as_deref(), Some(entity.id.as_str()));
+    assert!(citations[0].document_id.is_some());
+
+    let denied = daena_ai::AiCaller::authorized_plugin(
+        "daena.lore",
+        "project",
+        Vec::new(),
+        Vec::new(),
+        1,
+        "request",
+    );
+    assert_eq!(
+        ai::build_retrieval_context(&project, &denied, &policy).unwrap_err(),
+        "RemoteContextDenied"
+    );
+
+    let related_policy = daena_plugin_api::AiRetrievalPolicyPayload {
+        mode: daena_plugin_api::AiRetrievalMode::Related,
+        query: None,
+        seed_ids: vec![entity.id],
+        allowed_source_kinds: vec!["document".into()],
+        relationship_depth: 1,
+        passage_count: 4,
+        include_shared_fields: false,
+    };
+    assert_eq!(
+        ai::build_retrieval_context(&project, &caller, &related_policy).unwrap_err(),
+        "RemoteContextDenied"
+    );
+}
+
+#[test]
+fn broker_retrieval_attaches_citations_until_inspected() {
+    let core = Arc::new(Mutex::new(CoreService::new()));
+    core.lock().unwrap().open_memory(trusted_shell()).unwrap();
+    let entity = core
+        .lock()
+        .unwrap()
+        .project(trusted_shell())
+        .unwrap()
+        .create_entity(CreateEntity {
+            name: "Broker retrieval".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    core.lock()
+        .unwrap()
+        .project(trusted_shell())
+        .unwrap()
+        .save_document(SaveDocument {
+            entity_id: entity.id.clone(),
+            body: "A cited archive passage.".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    let runtime = Arc::new(Mutex::new(ai::AiRuntime::with_provider(Arc::new(
+        ai::FakeLoopbackProvider,
+    ))));
+    let plugins = ai_test_host();
+    let mut context = ai_test_context(runtime.clone());
+    context.core = Some(core);
+    context.caller.capabilities = vec!["document.read".into()];
+    let started = dispatch_host_rpc(
+        &plugins,
+        "daena.lore",
+        "project",
+        "ai.request.start",
+        serde_json::json!({
+            "operation": "generate_text",
+            "taskId": "cited",
+            "userInstruction": "rewrite",
+            "immediateContext": {"selection": "hello"},
+            "retrievalPolicy": {
+                "mode": "explicit_only",
+                "seedIds": [entity.id],
+                "allowedSourceKinds": ["document"],
+                "relationshipDepth": 0,
+                "passageCount": 4,
+                "includeSharedFields": false
+            }
+        }),
+        context,
+    )
+    .unwrap();
+    let request_id = started["requestId"].as_str().unwrap();
+    assert_eq!(
+        wait_ai_terminal(&runtime, request_id).last().unwrap().phase,
+        "completed"
+    );
+    let mut result_context = ai_test_context(runtime.clone());
+    let core_for_result = Arc::new(Mutex::new(CoreService::new()));
+    result_context.core = Some(core_for_result);
+    let result = dispatch_host_rpc(
+        &plugins,
+        "daena.lore",
+        "project",
+        "ai.request.result",
+        serde_json::json!({"requestId": request_id}),
+        result_context,
+    )
+    .unwrap();
+    assert!(result["output"].as_str().unwrap().contains("cited archive"));
+    let citations = dispatch_host_rpc(
+        &plugins,
+        "daena.lore",
+        "project",
+        "ai.request.citations",
+        serde_json::json!({"requestId": request_id}),
+        ai_test_context(runtime),
+    )
+    .unwrap();
+    assert_eq!(citations.as_array().unwrap().len(), 1);
+    assert_eq!(citations[0]["sourceKind"], "document");
+}
+
+#[test]
+fn broker_structured_retrieval_passes_context_to_provider() {
+    let core = Arc::new(Mutex::new(CoreService::new()));
+    core.lock().unwrap().open_memory(trusted_shell()).unwrap();
+    let entity = core
+        .lock()
+        .unwrap()
+        .project(trusted_shell())
+        .unwrap()
+        .create_entity(CreateEntity {
+            name: "Structured retrieval".into(),
+            entity_type: Some("person".into()),
+        })
+        .unwrap();
+    core.lock()
+        .unwrap()
+        .project(trusted_shell())
+        .unwrap()
+        .save_document(SaveDocument {
+            entity_id: entity.id.clone(),
+            body: "The grounded passage must reach structured generation.".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    let runtime = Arc::new(Mutex::new(ai::AiRuntime::with_provider(Arc::new(
+        ai::FakeLoopbackProvider,
+    ))));
+    let plugins = ai_test_host();
+    let mut context = ai_test_context(runtime.clone());
+    context.core = Some(core);
+    context.caller.capabilities = vec!["document.read".into()];
+    let started = dispatch_host_rpc(
+        &plugins,
+        "daena.lore",
+        "project",
+        "ai.request.start",
+        serde_json::json!({
+            "operation": "generate_structured",
+            "taskId": "structured-cited",
+            "userInstruction": "draft",
+            "immediateContext": {"entity": "subject"},
+            "outputContract": {"type":"object","properties":{"summary":{"type":"string","maxLength":4000}},"required":["summary"],"additionalProperties":false},
+            "retrievalPolicy": {"mode":"explicit_only","seedIds":[entity.id],"allowedSourceKinds":["document"],"relationshipDepth":0,"passageCount":4,"includeSharedFields":false}
+        }),
+        context,
+    )
+    .unwrap();
+    let request_id = started["requestId"].as_str().unwrap();
+    assert_eq!(
+        wait_ai_terminal(&runtime, request_id).last().unwrap().phase,
+        "completed"
+    );
+    let result = dispatch_host_rpc(
+        &plugins,
+        "daena.lore",
+        "project",
+        "ai.request.result",
+        serde_json::json!({"requestId": request_id}),
+        ai_test_context(runtime),
+    )
+    .unwrap();
+    assert!(result["summary"]
+        .as_str()
+        .unwrap()
+        .contains("grounded passage must reach structured generation"));
+}
+
+#[test]
+fn retrieval_evaluation_corpus_matches_expected_sources_without_forbidden_markers() {
+    let corpus: serde_json::Value = serde_json::from_str(include_str!(
+        "../../crates/daena-ai/fixtures/retrieval-evaluation.json"
+    ))
+    .unwrap();
+    let project = ProjectStore::in_memory().unwrap();
+    let mut ids = std::collections::BTreeMap::new();
+    for entity in corpus["entities"].as_array().unwrap() {
+        let created = project
+            .create_entity(CreateEntity {
+                name: entity["id"].as_str().unwrap().into(),
+                entity_type: Some("fixture".into()),
+            })
+            .unwrap();
+        project
+            .save_document(SaveDocument {
+                entity_id: created.id.clone(),
+                body: entity["document"].as_str().unwrap().into(),
+                format: Some("markdown".into()),
+            })
+            .unwrap();
+        for field in entity["fields"].as_array().into_iter().flatten() {
+            project
+                .set_field(FieldValue {
+                    entity_id: created.id.clone(),
+                    namespace: field["namespace"].as_str().unwrap().into(),
+                    key: field["key"].as_str().unwrap().into(),
+                    value: serde_json::Value::String(field["value"].as_str().unwrap().into()),
+                    revision: String::new(),
+                })
+                .unwrap();
+        }
+        ids.insert(entity["id"].as_str().unwrap().to_string(), created.id);
+    }
+    for query in corpus["queries"].as_array().unwrap() {
+        let passages = project
+            .search_passages(query["query"].as_str().unwrap().into(), 8)
+            .unwrap();
+        let actual = passages
+            .iter()
+            .filter(|passage| passage.source_kind == "document")
+            .map(|passage| passage.entity_id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected = query["expectedSourceIds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|id| ids[id.as_str().unwrap()].clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual, expected);
+        assert!(passages
+            .iter()
+            .filter(|passage| passage.source_kind == "document")
+            .all(|passage| !passage.content.contains("PRIVATE_NAMESPACE_MARKER")));
+    }
+    let caller = daena_ai::AiCaller::authorized_plugin(
+        "daena.lore",
+        "project",
+        vec!["document.read".into(), "search.query".into()],
+        vec!["project:project".into()],
+        1,
+        "project-query",
+    );
+    let policy = daena_plugin_api::AiRetrievalPolicyPayload {
+        mode: daena_plugin_api::AiRetrievalMode::Project,
+        query: Some("moonstone".into()),
+        seed_ids: Vec::new(),
+        allowed_source_kinds: vec!["document".into()],
+        relationship_depth: 0,
+        passage_count: 1,
+        include_shared_fields: false,
+    };
+    let (context, citations) = ai::build_retrieval_context(&project, &caller, &policy).unwrap();
+    assert!(context.contains("The hero carries the moonstone."));
+    assert_eq!(citations.len(), 1);
+    assert_eq!(
+        citations[0].entity_id.as_deref(),
+        Some(ids["hero"].as_str())
+    );
+    let forbidden_policy = daena_plugin_api::AiRetrievalPolicyPayload {
+        mode: daena_plugin_api::AiRetrievalMode::Project,
+        query: Some("PRIVATE_NAMESPACE_MARKER".into()),
+        seed_ids: Vec::new(),
+        allowed_source_kinds: vec!["document".into()],
+        relationship_depth: 0,
+        passage_count: 4,
+        include_shared_fields: false,
+    };
+    let (forbidden_context, forbidden_citations) =
+        ai::build_retrieval_context(&project, &caller, &forbidden_policy).unwrap();
+    assert!(forbidden_context.is_empty());
+    assert!(forbidden_citations.is_empty());
 }
 
 #[test]

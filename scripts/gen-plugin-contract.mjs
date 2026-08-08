@@ -260,6 +260,8 @@ rpcLines.push(`export interface RevisionedAssetPayload { entityId: string; names
 for (const name of ["EntityCreateDocument", "EntityCreateField", "EntityCreateRelationship"]) {
   rpcLines.push(defToDeclaration(name, rpcDefs[name]));
 }
+rpcLines.push(defToDeclaration("AiRetrievalMode", rpcDefs.AiRetrievalMode));
+rpcLines.push(defToDeclaration("AiRetrievalPolicyPayload", rpcDefs.AiRetrievalPolicyPayload));
 
 // Per-method payload interfaces, in x-methods order (deduplicated — some
 // methods share a payload type).

@@ -46,8 +46,10 @@ export interface RevisionedAssetPayload { entityId: string; namespace: string; f
 export interface EntityCreateDocument { body: string; format?: string | null }
 export interface EntityCreateField { key: string; namespace: string; value: unknown }
 export interface EntityCreateRelationship { relationship_type: string; target_ids: string[] }
+export type AiRetrievalMode = "none" | "explicit_only" | "related" | "project";
+export interface AiRetrievalPolicyPayload { allowedSourceKinds: string[]; includeSharedFields: boolean; mode: AiRetrievalMode; passageCount: number; query?: string | null; relationshipDepth: number; seedIds: string[] }
 export interface AiRequestIdPayload { requestId: string }
-export interface AiRequestStartPayload { deadlineMs?: number | null; immediateContext: unknown; operation: string; outputContract?: unknown; taskId: string; userInstruction: string }
+export interface AiRequestStartPayload { deadlineMs?: number | null; immediateContext: unknown; operation: string; outputContract?: unknown; retrievalPolicy?: AiRetrievalPolicyPayload | null; taskId: string; userInstruction: string }
 export interface AssetListPayload { entityId: string; namespace?: string | null }
 export interface AssetReadBeginPayload { assetId: string; namespace: string }
 export interface AssetRegisterPayload { content_hash: string; entity_id: string; expectedRevision: string; filename: string; mime_type: string; namespace: string; path: string; size: number }
@@ -81,6 +83,7 @@ export interface SearchQueryPayload { query: string }
 export interface ServiceCallPayload { deadlineMs?: number | null; major: number; name: string; payload: unknown }
 export interface BrokerMethodPayloads {
   "ai.request.cancel": AiRequestIdPayload;
+  "ai.request.citations": AiRequestIdPayload;
   "ai.request.poll": AiRequestIdPayload;
   "ai.request.result": AiRequestIdPayload;
   "ai.request.start": AiRequestStartPayload;

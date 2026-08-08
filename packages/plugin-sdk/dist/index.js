@@ -197,6 +197,7 @@ export function createPluginRpcClient(transport) {
         pollAiRequest: (requestId) => callTransport(transport, "ai.request.poll", { requestId }),
         cancelAiRequest: (requestId) => callTransport(transport, "ai.request.cancel", { requestId }),
         getAiResult: (requestId) => callTransport(transport, "ai.request.result", { requestId }),
+        getAiCitations: (requestId) => callTransport(transport, "ai.request.citations", { requestId }),
     };
 }
 export async function uploadAssetChunks(transfer, bytes, fetcher = globalThis.fetch) {

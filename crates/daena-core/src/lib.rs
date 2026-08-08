@@ -15,6 +15,7 @@ pub use project::{
     GitLogEntry, GitPreflight, GitRemote, GitResetResult, GitStatus, GitToolInfo, GitUpstream,
     MigrationHistoryEntry, ModuleField, ModuleNamespace, ModuleState, PluginBackup, ProjectInfo,
     ProjectSnapshot, ProjectStore, Relationship, RelationshipInput, SaveDocument, SaveEntry,
+    SearchPassage,
 };
 pub use storage::{
     canonical_json_bytes, canonical_markdown, canonical_markdown_bytes, normalized_project_path,

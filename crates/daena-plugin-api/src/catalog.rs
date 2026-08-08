@@ -70,40 +70,35 @@ impl RpcCapability {
         context: &RpcAuthorizationContext,
     ) -> Result<Vec<String>, RpcError> {
         match self {
-            RpcCapability::Static(capabilities) => {
-                Ok(capabilities.iter().map(|capability| capability.to_string()).collect())
-            }
-            RpcCapability::AnyStatic(capabilities) => {
-                Ok(vec![capabilities.join("|")])
-            }
-            RpcCapability::AiRequest => {
-                match payload.get("operation").and_then(Value::as_str) {
-                    Some("generate_text") => Ok(vec!["ai.text.generate".into()]),
-                    Some("generate_structured") => Ok(vec!["ai.text.generate-structured".into()]),
-                    _ => Err(deny("payload.invalid", "unsupported AI operation")),
-                }
-            }
+            RpcCapability::Static(capabilities) => Ok(capabilities
+                .iter()
+                .map(|capability| capability.to_string())
+                .collect()),
+            RpcCapability::AnyStatic(capabilities) => Ok(vec![capabilities.join("|")]),
+            RpcCapability::AiRequest => match payload.get("operation").and_then(Value::as_str) {
+                Some("generate_text") => Ok(vec!["ai.text.generate".into()]),
+                Some("generate_structured") => Ok(vec!["ai.text.generate-structured".into()]),
+                _ => Err(deny("payload.invalid", "unsupported AI operation")),
+            },
             RpcCapability::EntityCreate => {
                 let mut capabilities = vec!["entity.write".into()];
                 if payload.get("document").is_some() {
                     capabilities.push("document.write".into());
                 }
                 if let Some(fields) = payload.get("fields") {
-                    let fields = fields.as_array().ok_or_else(|| {
-                        deny("payload.invalid", "entity fields must be an array")
-                    })?;
+                    let fields = fields
+                        .as_array()
+                        .ok_or_else(|| deny("payload.invalid", "entity fields must be an array"))?;
                     for field in fields {
-                        let namespace = field
-                            .get("namespace")
-                            .and_then(Value::as_str)
-                            .ok_or_else(|| {
-                                deny("payload.invalid", "entity fields require namespace")
-                            })?;
+                        let namespace =
+                            field
+                                .get("namespace")
+                                .and_then(Value::as_str)
+                                .ok_or_else(|| {
+                                    deny("payload.invalid", "entity fields require namespace")
+                                })?;
                         if context.namespaces.owner(namespace) != Some(context.plugin_id) {
-                            return Err(deny(
-                                "namespace.denied",
-                                "plugin does not own namespace",
-                            ));
+                            return Err(deny("namespace.denied", "plugin does not own namespace"));
                         }
                     }
                     if !fields.is_empty() {
@@ -112,10 +107,7 @@ impl RpcCapability {
                 }
                 if let Some(relationships) = payload.get("relationships") {
                     let relationships = relationships.as_array().ok_or_else(|| {
-                        deny(
-                            "payload.invalid",
-                            "entity relationships must be an array",
-                        )
+                        deny("payload.invalid", "entity relationships must be an array")
                     })?;
                     if !relationships.is_empty() {
                         capabilities.push("relationship.write".into());
@@ -133,10 +125,7 @@ impl RpcCapability {
                 }
                 if let Some(key) = payload.get("key").and_then(Value::as_str) {
                     if !context.namespaces.field_is_shared(namespace, key) {
-                        return Err(deny(
-                            "namespace.denied",
-                            "field is not explicitly shared",
-                        ));
+                        return Err(deny("namespace.denied", "field is not explicitly shared"));
                     }
                 } else if !context.namespaces.namespace_has_shared_fields(namespace) {
                     return Err(deny(
@@ -163,9 +152,7 @@ impl RpcCapability {
                 let event_type = payload
                     .get("type")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        deny("payload.invalid", "event operations require type")
-                    })?;
+                    .ok_or_else(|| deny("payload.invalid", "event operations require type"))?;
                 let action = match self {
                     RpcCapability::EventPublish => "publish",
                     _ => "subscribe",
@@ -176,32 +163,26 @@ impl RpcCapability {
                 let name = payload
                     .get("name")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        deny("payload.invalid", "service operations require name")
-                    })?;
+                    .ok_or_else(|| deny("payload.invalid", "service operations require name"))?;
                 let major = payload
                     .get("major")
                     .and_then(Value::as_u64)
                     .and_then(|major| u32::try_from(major).ok())
-                    .ok_or_else(|| {
-                        deny("payload.invalid", "service operations require major")
-                    })?;
+                    .ok_or_else(|| deny("payload.invalid", "service operations require major"))?;
                 Ok(vec![format!("service.call:{name}@{major}")])
             }
             RpcCapability::OwnedNamespace(capabilities) => {
                 let namespace = payload
                     .get("namespace")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        deny("payload.invalid", "operation requires namespace")
-                    })?;
+                    .ok_or_else(|| deny("payload.invalid", "operation requires namespace"))?;
                 if context.namespaces.owner(namespace) != Some(context.plugin_id) {
-                    return Err(deny(
-                        "namespace.denied",
-                        "plugin does not own namespace",
-                    ));
+                    return Err(deny("namespace.denied", "plugin does not own namespace"));
                 }
-                Ok(capabilities.iter().map(|capability| capability.to_string()).collect())
+                Ok(capabilities
+                    .iter()
+                    .map(|capability| capability.to_string())
+                    .collect())
             }
         }
     }
@@ -224,42 +205,228 @@ pub struct RpcMethodDef {
 /// (see `docs/PLUGIN_PLATFORM_PLAN.md`, "Contract reconciliation and
 /// generation record", § "Resolved contract decisions").
 pub const RPC_METHOD_CATALOG: &[RpcMethodDef] = &[
-    RpcMethodDef { name: "entity.list", payload_schema: "EntityListPayload", requires_revision: false, capability: RpcCapability::Static(&["entity.read"]) },
-    RpcMethodDef { name: "entity.get", payload_schema: "EntityGetPayload", requires_revision: false, capability: RpcCapability::Static(&["entity.read"]) },
-    RpcMethodDef { name: "entity.create", payload_schema: "EntityCreatePayload", requires_revision: false, capability: RpcCapability::EntityCreate },
-    RpcMethodDef { name: "entity.update", payload_schema: "EntityUpdatePayload", requires_revision: true, capability: RpcCapability::Static(&["entity.write"]) },
-    RpcMethodDef { name: "entity.delete", payload_schema: "EntityDeletePayload", requires_revision: true, capability: RpcCapability::Static(&["entity.delete"]) },
-    RpcMethodDef { name: "document.list", payload_schema: "DocumentListPayload", requires_revision: false, capability: RpcCapability::Static(&["document.read"]) },
-    RpcMethodDef { name: "document.save", payload_schema: "DocumentSavePayload", requires_revision: true, capability: RpcCapability::Static(&["document.write"]) },
-    RpcMethodDef { name: "field.read", payload_schema: "FieldReadPayload", requires_revision: false, capability: RpcCapability::FieldRead },
-    RpcMethodDef { name: "field.list", payload_schema: "FieldListPayload", requires_revision: false, capability: RpcCapability::FieldRead },
-    RpcMethodDef { name: "field.set", payload_schema: "FieldSetPayload", requires_revision: true, capability: RpcCapability::FieldWrite },
-    RpcMethodDef { name: "relationship.list", payload_schema: "RelationshipListPayload", requires_revision: false, capability: RpcCapability::Static(&["relationship.read"]) },
-    RpcMethodDef { name: "relationship.create", payload_schema: "RelationshipCreatePayload", requires_revision: true, capability: RpcCapability::Static(&["relationship.write"]) },
-    RpcMethodDef { name: "relationship.delete", payload_schema: "RelationshipDeletePayload", requires_revision: true, capability: RpcCapability::Static(&["relationship.write"]) },
-    RpcMethodDef { name: "asset.list", payload_schema: "AssetListPayload", requires_revision: false, capability: RpcCapability::OwnedNamespace(&["asset.read:self"]) },
-    RpcMethodDef { name: "asset.register", payload_schema: "AssetRegisterPayload", requires_revision: true, capability: RpcCapability::OwnedNamespace(&["asset.register"]) },
-    RpcMethodDef { name: "asset.read.begin", payload_schema: "AssetReadBeginPayload", requires_revision: false, capability: RpcCapability::OwnedNamespace(&["asset.read:self"]) },
-    RpcMethodDef { name: "asset.replace.begin", payload_schema: "AssetReplaceBeginPayload", requires_revision: true, capability: RpcCapability::OwnedNamespace(&["asset.write:self"]) },
-    RpcMethodDef { name: "asset.replace.commit", payload_schema: "AssetReplaceCommitPayload", requires_revision: false, capability: RpcCapability::Static(&["asset.write:self"]) },
-    RpcMethodDef { name: "asset.transfer.cancel", payload_schema: "AssetTransferCancelPayload", requires_revision: false, capability: RpcCapability::Static(&[]) },
-    RpcMethodDef { name: "search.query", payload_schema: "SearchQueryPayload", requires_revision: false, capability: RpcCapability::Static(&["search.query"]) },
-    RpcMethodDef { name: "maps.asset.create.begin", payload_schema: "MapsAssetCreateBeginPayload", requires_revision: false, capability: RpcCapability::Static(&["asset.write:self"]) },
-    RpcMethodDef { name: "maps.asset.create.commit", payload_schema: "MapsAssetCreateCommitPayload", requires_revision: false, capability: RpcCapability::Static(&["asset.write:self"]) },
-    RpcMethodDef { name: "maps.recovery.export.begin", payload_schema: "MapsRecoveryExportBeginPayload", requires_revision: false, capability: RpcCapability::Static(&["asset.write:self"]) },
-    RpcMethodDef { name: "maps.recovery.export.commit", payload_schema: "MapsRecoveryExportCommitPayload", requires_revision: false, capability: RpcCapability::Static(&["asset.write:self"]) },
-    RpcMethodDef { name: "maps.recovery.restore", payload_schema: "MapsRecoveryRestorePayload", requires_revision: false, capability: RpcCapability::Static(&["asset.write:self"]) },
-    RpcMethodDef { name: "maps.recovery.list", payload_schema: "MapsRecoveryListPayload", requires_revision: false, capability: RpcCapability::Static(&["asset.read:self"]) },
-    RpcMethodDef { name: "maps.locations.list", payload_schema: "MapsLocationsListPayload", requires_revision: false, capability: RpcCapability::Static(&["asset.read:self"]) },
-    RpcMethodDef { name: "maps.reconcile.links", payload_schema: "MapsReconcileLinksPayload", requires_revision: false, capability: RpcCapability::Static(&["asset.read:self"]) },
-    RpcMethodDef { name: "event.publish", payload_schema: "EventPublishPayload", requires_revision: false, capability: RpcCapability::EventPublish },
-    RpcMethodDef { name: "event.subscribe", payload_schema: "EventTypePayload", requires_revision: false, capability: RpcCapability::EventSubscribe },
-    RpcMethodDef { name: "event.poll", payload_schema: "EventTypePayload", requires_revision: false, capability: RpcCapability::EventSubscribe },
-    RpcMethodDef { name: "service.call", payload_schema: "ServiceCallPayload", requires_revision: false, capability: RpcCapability::ServiceCall },
-    RpcMethodDef { name: "ai.request.start", payload_schema: "AiRequestStartPayload", requires_revision: false, capability: RpcCapability::AiRequest },
-    RpcMethodDef { name: "ai.request.poll", payload_schema: "AiRequestIdPayload", requires_revision: false, capability: RpcCapability::AnyStatic(&["ai.text.generate", "ai.text.generate-structured"]) },
-    RpcMethodDef { name: "ai.request.cancel", payload_schema: "AiRequestIdPayload", requires_revision: false, capability: RpcCapability::AnyStatic(&["ai.text.generate", "ai.text.generate-structured"]) },
-    RpcMethodDef { name: "ai.request.result", payload_schema: "AiRequestIdPayload", requires_revision: false, capability: RpcCapability::AnyStatic(&["ai.text.generate", "ai.text.generate-structured"]) },
+    RpcMethodDef {
+        name: "entity.list",
+        payload_schema: "EntityListPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["entity.read"]),
+    },
+    RpcMethodDef {
+        name: "entity.get",
+        payload_schema: "EntityGetPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["entity.read"]),
+    },
+    RpcMethodDef {
+        name: "entity.create",
+        payload_schema: "EntityCreatePayload",
+        requires_revision: false,
+        capability: RpcCapability::EntityCreate,
+    },
+    RpcMethodDef {
+        name: "entity.update",
+        payload_schema: "EntityUpdatePayload",
+        requires_revision: true,
+        capability: RpcCapability::Static(&["entity.write"]),
+    },
+    RpcMethodDef {
+        name: "entity.delete",
+        payload_schema: "EntityDeletePayload",
+        requires_revision: true,
+        capability: RpcCapability::Static(&["entity.delete"]),
+    },
+    RpcMethodDef {
+        name: "document.list",
+        payload_schema: "DocumentListPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["document.read"]),
+    },
+    RpcMethodDef {
+        name: "document.save",
+        payload_schema: "DocumentSavePayload",
+        requires_revision: true,
+        capability: RpcCapability::Static(&["document.write"]),
+    },
+    RpcMethodDef {
+        name: "field.read",
+        payload_schema: "FieldReadPayload",
+        requires_revision: false,
+        capability: RpcCapability::FieldRead,
+    },
+    RpcMethodDef {
+        name: "field.list",
+        payload_schema: "FieldListPayload",
+        requires_revision: false,
+        capability: RpcCapability::FieldRead,
+    },
+    RpcMethodDef {
+        name: "field.set",
+        payload_schema: "FieldSetPayload",
+        requires_revision: true,
+        capability: RpcCapability::FieldWrite,
+    },
+    RpcMethodDef {
+        name: "relationship.list",
+        payload_schema: "RelationshipListPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["relationship.read"]),
+    },
+    RpcMethodDef {
+        name: "relationship.create",
+        payload_schema: "RelationshipCreatePayload",
+        requires_revision: true,
+        capability: RpcCapability::Static(&["relationship.write"]),
+    },
+    RpcMethodDef {
+        name: "relationship.delete",
+        payload_schema: "RelationshipDeletePayload",
+        requires_revision: true,
+        capability: RpcCapability::Static(&["relationship.write"]),
+    },
+    RpcMethodDef {
+        name: "asset.list",
+        payload_schema: "AssetListPayload",
+        requires_revision: false,
+        capability: RpcCapability::OwnedNamespace(&["asset.read:self"]),
+    },
+    RpcMethodDef {
+        name: "asset.register",
+        payload_schema: "AssetRegisterPayload",
+        requires_revision: true,
+        capability: RpcCapability::OwnedNamespace(&["asset.register"]),
+    },
+    RpcMethodDef {
+        name: "asset.read.begin",
+        payload_schema: "AssetReadBeginPayload",
+        requires_revision: false,
+        capability: RpcCapability::OwnedNamespace(&["asset.read:self"]),
+    },
+    RpcMethodDef {
+        name: "asset.replace.begin",
+        payload_schema: "AssetReplaceBeginPayload",
+        requires_revision: true,
+        capability: RpcCapability::OwnedNamespace(&["asset.write:self"]),
+    },
+    RpcMethodDef {
+        name: "asset.replace.commit",
+        payload_schema: "AssetReplaceCommitPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["asset.write:self"]),
+    },
+    RpcMethodDef {
+        name: "asset.transfer.cancel",
+        payload_schema: "AssetTransferCancelPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&[]),
+    },
+    RpcMethodDef {
+        name: "search.query",
+        payload_schema: "SearchQueryPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["search.query"]),
+    },
+    RpcMethodDef {
+        name: "maps.asset.create.begin",
+        payload_schema: "MapsAssetCreateBeginPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["asset.write:self"]),
+    },
+    RpcMethodDef {
+        name: "maps.asset.create.commit",
+        payload_schema: "MapsAssetCreateCommitPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["asset.write:self"]),
+    },
+    RpcMethodDef {
+        name: "maps.recovery.export.begin",
+        payload_schema: "MapsRecoveryExportBeginPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["asset.write:self"]),
+    },
+    RpcMethodDef {
+        name: "maps.recovery.export.commit",
+        payload_schema: "MapsRecoveryExportCommitPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["asset.write:self"]),
+    },
+    RpcMethodDef {
+        name: "maps.recovery.restore",
+        payload_schema: "MapsRecoveryRestorePayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["asset.write:self"]),
+    },
+    RpcMethodDef {
+        name: "maps.recovery.list",
+        payload_schema: "MapsRecoveryListPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["asset.read:self"]),
+    },
+    RpcMethodDef {
+        name: "maps.locations.list",
+        payload_schema: "MapsLocationsListPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["asset.read:self"]),
+    },
+    RpcMethodDef {
+        name: "maps.reconcile.links",
+        payload_schema: "MapsReconcileLinksPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["asset.read:self"]),
+    },
+    RpcMethodDef {
+        name: "event.publish",
+        payload_schema: "EventPublishPayload",
+        requires_revision: false,
+        capability: RpcCapability::EventPublish,
+    },
+    RpcMethodDef {
+        name: "event.subscribe",
+        payload_schema: "EventTypePayload",
+        requires_revision: false,
+        capability: RpcCapability::EventSubscribe,
+    },
+    RpcMethodDef {
+        name: "event.poll",
+        payload_schema: "EventTypePayload",
+        requires_revision: false,
+        capability: RpcCapability::EventSubscribe,
+    },
+    RpcMethodDef {
+        name: "service.call",
+        payload_schema: "ServiceCallPayload",
+        requires_revision: false,
+        capability: RpcCapability::ServiceCall,
+    },
+    RpcMethodDef {
+        name: "ai.request.start",
+        payload_schema: "AiRequestStartPayload",
+        requires_revision: false,
+        capability: RpcCapability::AiRequest,
+    },
+    RpcMethodDef {
+        name: "ai.request.poll",
+        payload_schema: "AiRequestIdPayload",
+        requires_revision: false,
+        capability: RpcCapability::AnyStatic(&["ai.text.generate", "ai.text.generate-structured"]),
+    },
+    RpcMethodDef {
+        name: "ai.request.cancel",
+        payload_schema: "AiRequestIdPayload",
+        requires_revision: false,
+        capability: RpcCapability::AnyStatic(&["ai.text.generate", "ai.text.generate-structured"]),
+    },
+    RpcMethodDef {
+        name: "ai.request.result",
+        payload_schema: "AiRequestIdPayload",
+        requires_revision: false,
+        capability: RpcCapability::AnyStatic(&["ai.text.generate", "ai.text.generate-structured"]),
+    },
+    RpcMethodDef {
+        name: "ai.request.citations",
+        payload_schema: "AiRequestIdPayload",
+        requires_revision: false,
+        capability: RpcCapability::AnyStatic(&["ai.text.generate", "ai.text.generate-structured"]),
+    },
 ];
 
 pub fn rpc_method(name: &str) -> Option<&'static RpcMethodDef> {
@@ -278,7 +445,7 @@ mod tests {
             assert!(!entry.payload_schema.is_empty());
             assert!(!entry.name.is_empty());
         }
-        assert_eq!(RPC_METHOD_CATALOG.len(), 36);
+        assert_eq!(RPC_METHOD_CATALOG.len(), 37);
         let revision_methods = RPC_METHOD_CATALOG
             .iter()
             .filter(|entry| entry.requires_revision)

@@ -78,6 +78,16 @@ pub struct Document {
     #[serde(default)]
     pub revision: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchPassage {
+    pub entity_id: String,
+    pub source_path: String,
+    pub source_hash: String,
+    pub content: String,
+    pub lexical_rank: f64,
+    pub source_kind: String,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldValue {
     pub entity_id: String,
@@ -420,8 +430,7 @@ impl ProjectStore {
         let index_path = project_database_path(root);
         if index_path.is_file() {
             if let Ok(store) = Self::open_database(&index_path, Some(root.to_path_buf())) {
-                if store
-                    .source_index_matches(&canonical.sources)?
+                if store.source_index_matches(&canonical.sources)?
                     && store.verify_index(canonical.sources.len()).is_ok()
                 {
                     return Ok(store);
@@ -451,11 +460,7 @@ impl ProjectStore {
         let payload = serde_json::to_string(&canonical.snapshot)
             .map_err(|error| CoreError::Serialization(error.to_string()))?;
         store.import_json_with_mode_and_sync_with_request_and_search(
-            &payload,
-            true,
-            false,
-            None,
-            false,
+            &payload, true, false, None, false,
         )?;
         store.replace_source_index(&canonical.sources)?;
         store.rebuild_search()?;
@@ -610,9 +615,9 @@ impl ProjectStore {
                 "index quick check failed: {quick_check}"
             )));
         }
-        let actual: usize = self
-            .connection
-            .query_row("SELECT COUNT(*) FROM source_files", [], |row| row.get(0))?;
+        let actual: usize =
+            self.connection
+                .query_row("SELECT COUNT(*) FROM source_files", [], |row| row.get(0))?;
         if actual != source_count {
             return Err(CoreError::Validation(format!(
                 "index source count mismatch: expected {source_count}, found {actual}"
@@ -781,11 +786,7 @@ impl ProjectStore {
         let payload = serde_json::to_string(&canonical.snapshot)
             .map_err(|error| CoreError::Serialization(error.to_string()))?;
         self.import_json_with_mode_and_sync_with_request_and_search(
-            &payload,
-            true,
-            false,
-            None,
-            false,
+            &payload, true, false, None, false,
         )?;
         self.update_source_index_from_hashes(&previous, &canonical.sources)?;
         self.rebuild_search()?;
@@ -954,9 +955,7 @@ impl ProjectStore {
         let descriptor: crate::maps::MapDescriptor = self
             .list_fields(entity_id.into())?
             .into_iter()
-            .find(|field| {
-                field.namespace == crate::maps::MAP_NAMESPACE && field.key == "map"
-            })
+            .find(|field| field.namespace == crate::maps::MAP_NAMESPACE && field.key == "map")
             .map(|field| {
                 serde_json::from_value(field.value)
                     .map_err(|error| CoreError::Serialization(error.to_string()))
@@ -983,7 +982,6 @@ impl ProjectStore {
             request_id,
         )
     }
-
 
     fn revision_for_entity(&self, entity_id: &str) -> Result<String, CoreError> {
         let entity = self.connection.query_row(
@@ -1303,11 +1301,7 @@ impl ProjectStore {
         // replace the disposable projection with a fresh interpretation of
         // the canonical files.
         self.import_json_with_mode_and_sync_with_request_and_search(
-            &payload,
-            true,
-            false,
-            None,
-            false,
+            &payload, true, false, None, false,
         )?;
         self.update_source_index(&previous_canonical.sources, &canonical.sources)?;
         self.rebuild_search()?;
@@ -1754,7 +1748,11 @@ impl ProjectStore {
                 return Err(CoreError::Git("no paths selected for commit".into()));
             }
             Some(paths) => {
-                let allowed = preflight.staging_paths.iter().cloned().collect::<BTreeSet<_>>();
+                let allowed = preflight
+                    .staging_paths
+                    .iter()
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
                 for path in &paths {
                     if !allowed.contains(path) {
                         return Err(CoreError::Git(format!(
@@ -1847,7 +1845,8 @@ impl ProjectStore {
     }
 
     fn git_upstream(&self) -> Result<Option<GitUpstream>, CoreError> {
-        let remote = self.run_git(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])?;
+        let remote =
+            self.run_git(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])?;
         if !remote.status.success() {
             return Ok(None);
         }
@@ -1958,9 +1957,8 @@ impl ProjectStore {
                 "binary snapshot files cannot be previewed".into(),
             ));
         }
-        String::from_utf8(output.stdout).map_err(|_| {
-            CoreError::Validation("snapshot file is not valid UTF-8 text".into())
-        })
+        String::from_utf8(output.stdout)
+            .map_err(|_| CoreError::Validation("snapshot file is not valid UTF-8 text".into()))
     }
 
     pub fn git_reset_hard(&self, hash: &str) -> Result<GitResetResult, CoreError> {
@@ -1990,9 +1988,10 @@ impl ProjectStore {
         let current_head = self.git_rev_parse("HEAD")?;
         let upstream = self.git_upstream()?.or(upstream_before);
         let diverged_from_upstream = match (&upstream, &current_head) {
-            (Some(upstream), Some(head)) => {
-                upstream.remote_hash.as_ref().is_some_and(|remote| remote != head)
-            }
+            (Some(upstream), Some(head)) => upstream
+                .remote_hash
+                .as_ref()
+                .is_some_and(|remote| remote != head),
             (Some(_), _) => true,
             _ => false,
         };
@@ -2102,9 +2101,10 @@ impl ProjectStore {
             Some(branch) if !branch.trim().is_empty() => branch.trim().to_string(),
             _ => {
                 let status = self.git_status()?;
-                status.branch.filter(|value| !value.is_empty()).ok_or_else(|| {
-                    CoreError::Git("current branch is required for push".into())
-                })?
+                status
+                    .branch
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| CoreError::Git("current branch is required for push".into()))?
             }
         };
         let mut args = vec!["push".to_string()];
@@ -2127,9 +2127,9 @@ impl ProjectStore {
         if !self.git_status()?.repository {
             return Err(CoreError::Git("project is not a git repository".into()));
         }
-        let upstream = self.git_upstream()?.ok_or_else(|| {
-            CoreError::Git("no upstream branch is configured for restore".into())
-        })?;
+        let upstream = self
+            .git_upstream()?
+            .ok_or_else(|| CoreError::Git("no upstream branch is configured for restore".into()))?;
         let previous_head = self.git_rev_parse("HEAD")?;
         let fetch = self.run_git(&["fetch", &upstream.remote, &upstream.branch])?;
         if !fetch.status.success() {
@@ -2360,12 +2360,7 @@ impl ProjectStore {
         }
         for (field, value) in encoded_fields {
             if field.namespace == crate::maps::MAP_NAMESPACE {
-                crate::maps::validate_field(
-                    &transaction,
-                    &id,
-                    &field.key,
-                    &field.value,
-                )?;
+                crate::maps::validate_field(&transaction, &id, &field.key, &field.value)?;
             }
             transaction.execute(
                 "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
@@ -3060,6 +3055,54 @@ impl ProjectStore {
         Ok(entities)
     }
 
+    /// Return ranked FTS rows rather than collapsing matches to entities. The
+    /// AI context builder adds authorization, byte ranges, and prompt framing.
+    pub fn search_passages(
+        &self,
+        query: String,
+        limit: usize,
+    ) -> Result<Vec<SearchPassage>, CoreError> {
+        self.ensure_source_index_current()?;
+        if query.trim().is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let terms = query
+            .split_whitespace()
+            .map(|term| format!("\"{}\"*", term.replace('"', "")))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let mut statement = self.connection.prepare(
+            "SELECT entity_id,source_path,source_hash,content,rank FROM world_search WHERE world_search MATCH ?1 ORDER BY rank LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![terms, limit as i64], |row| {
+            Ok(SearchPassage {
+                entity_id: row.get(0)?,
+                source_path: row.get(1)?,
+                source_hash: row.get(2)?,
+                content: row.get(3)?,
+                lexical_rank: row.get(4)?,
+                source_kind: {
+                    let path: String = row.get(1)?;
+                    if path.ends_with("/document.md") {
+                        "document".into()
+                    } else if path.contains("/fields/") {
+                        "field".into()
+                    } else {
+                        "entity".into()
+                    }
+                },
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map(|mut passages| {
+                for (rank, passage) in passages.iter_mut().enumerate() {
+                    passage.lexical_rank = rank as f64;
+                }
+                passages
+            })
+            .map_err(CoreError::from)
+    }
+
     pub fn export_json(&self) -> Result<String, CoreError> {
         self.ensure_source_index_current()?;
         self.export_json_inner()
@@ -3723,21 +3766,43 @@ impl ProjectStore {
         Ok(())
     }
 
-    fn provider_feature_resolution(&self, map_entity_id: &str, feature_kind: Option<&str>, feature_id: Option<&str>) -> &'static str {
-        let (Some(feature_kind), Some(feature_id)) = (feature_kind, feature_id) else { return "resolved"; };
+    fn provider_feature_resolution(
+        &self,
+        map_entity_id: &str,
+        feature_kind: Option<&str>,
+        feature_id: Option<&str>,
+    ) -> &'static str {
+        let (Some(feature_kind), Some(feature_id)) = (feature_kind, feature_id) else {
+            return "resolved";
+        };
         let source_path: Option<String> = self.connection.query_row(
             "SELECT a.path FROM entity_fields f JOIN assets a ON a.id=json_extract(f.value, '$.sourceAssetId') WHERE f.entity_id=?1 AND f.namespace=?2 AND f.key='map'",
             rusqlite::params![map_entity_id, crate::maps::MAP_NAMESPACE], |row| row.get(0)).optional().ok().flatten();
-        let Some(source_path) = source_path else { return "unresolved"; };
+        let Some(source_path) = source_path else {
+            return "unresolved";
+        };
         let source_path = self
             .root
             .as_ref()
             .map(|root| root.join(&source_path))
             .unwrap_or_else(|| PathBuf::from(source_path));
-        let Ok(bytes) = std::fs::read(source_path) else { return "unresolved"; };
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return "resolved"; };
-        let Some(features) = value.get("features").and_then(serde_json::Value::as_array) else { return "unresolved"; };
-        if features.iter().any(|feature| feature.get("kind").and_then(serde_json::Value::as_str) == Some(feature_kind) && feature.get("id").and_then(serde_json::Value::as_str) == Some(feature_id)) { "resolved" } else { "unresolved" }
+        let Ok(bytes) = std::fs::read(source_path) else {
+            return "unresolved";
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            return "resolved";
+        };
+        let Some(features) = value.get("features").and_then(serde_json::Value::as_array) else {
+            return "unresolved";
+        };
+        if features.iter().any(|feature| {
+            feature.get("kind").and_then(serde_json::Value::as_str) == Some(feature_kind)
+                && feature.get("id").and_then(serde_json::Value::as_str) == Some(feature_id)
+        }) {
+            "resolved"
+        } else {
+            "unresolved"
+        }
     }
 
     fn rebuild_maps_projection(&self) -> Result<(), CoreError> {
@@ -3798,7 +3863,20 @@ impl ProjectStore {
                     .unwrap_or((None, None, None, None)),
                 _ => (None, None, None, None),
             };
-            let resolution = if kind == "provider-feature" { self.provider_feature_resolution(location.get("mapEntityId").and_then(serde_json::Value::as_str).unwrap_or_default(), anchor.get("featureKind").and_then(serde_json::Value::as_str), anchor.get("featureId").and_then(serde_json::Value::as_str)) } else { "resolved" };
+            let resolution = if kind == "provider-feature" {
+                self.provider_feature_resolution(
+                    location
+                        .get("mapEntityId")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default(),
+                    anchor
+                        .get("featureKind")
+                        .and_then(serde_json::Value::as_str),
+                    anchor.get("featureId").and_then(serde_json::Value::as_str),
+                )
+            } else {
+                "resolved"
+            };
             self.connection.execute("INSERT INTO map_location_projection(location_id,entity_id,map_entity_id,label,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)", rusqlite::params![location.get("id").and_then(serde_json::Value::as_str).unwrap_or_default(), entity_id, location.get("mapEntityId").and_then(serde_json::Value::as_str).unwrap_or_default(), location.get("label").and_then(serde_json::Value::as_str), location.get("role").and_then(serde_json::Value::as_str).unwrap_or_default(), kind, anchor.get("provider").and_then(serde_json::Value::as_str), anchor.get("featureKind").and_then(serde_json::Value::as_str), anchor.get("featureId").and_then(serde_json::Value::as_str), bounds.0, bounds.1, bounds.2, bounds.3, location.pointer("/validity/from").filter(|v| !v.is_null()).map(ToString::to_string), location.pointer("/validity/to").filter(|v| !v.is_null()).map(ToString::to_string), resolution])?;
         }
         Ok(())
@@ -3848,15 +3926,32 @@ impl ProjectStore {
     /// Returns the canonical location references owned by an entity.  The
     /// disposable projection is intentionally not used for mutation: the
     /// JSON field remains the source of truth and is rewritten atomically.
-    pub fn map_locations(&self, entity_id: String) -> Result<Vec<crate::maps::LocationReference>, CoreError> {
-        let field = self
-            .list_fields(entity_id)?
-            .into_iter()
-            .find(|field| field.namespace == crate::maps::MAP_NAMESPACE && field.key == "locations");
-        let Some(field) = field else { return Ok(Vec::new()); };
-        let object = field.value.as_object().ok_or_else(|| CoreError::Serialization("maps.locations is not an object".into()))?;
-        let locations = object.get("locations").and_then(serde_json::Value::as_array).ok_or_else(|| CoreError::Serialization("maps.locations is not an array".into()))?;
-        locations.iter().cloned().map(|value| serde_json::from_value(value).map_err(|error| CoreError::Serialization(error.to_string()))).collect()
+    pub fn map_locations(
+        &self,
+        entity_id: String,
+    ) -> Result<Vec<crate::maps::LocationReference>, CoreError> {
+        let field = self.list_fields(entity_id)?.into_iter().find(|field| {
+            field.namespace == crate::maps::MAP_NAMESPACE && field.key == "locations"
+        });
+        let Some(field) = field else {
+            return Ok(Vec::new());
+        };
+        let object = field
+            .value
+            .as_object()
+            .ok_or_else(|| CoreError::Serialization("maps.locations is not an object".into()))?;
+        let locations = object
+            .get("locations")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| CoreError::Serialization("maps.locations is not an array".into()))?;
+        locations
+            .iter()
+            .cloned()
+            .map(|value| {
+                serde_json::from_value(value)
+                    .map_err(|error| CoreError::Serialization(error.to_string()))
+            })
+            .collect()
     }
 
     pub fn upsert_map_location(
@@ -3871,27 +3966,40 @@ impl ProjectStore {
         } else {
             locations.push(location);
         }
-        self.set_field_with_request(FieldValue {
-            entity_id,
-            namespace: crate::maps::MAP_NAMESPACE.into(),
-            key: "locations".into(),
-            value: serde_json::json!({"schemaVersion": 1, "locations": locations}),
-            revision: String::new(),
-        }, request_id)
+        self.set_field_with_request(
+            FieldValue {
+                entity_id,
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "locations".into(),
+                value: serde_json::json!({"schemaVersion": 1, "locations": locations}),
+                revision: String::new(),
+            },
+            request_id,
+        )
     }
 
-    pub fn unlink_map_location(&self, entity_id: String, location_id: String, request_id: Option<&str>) -> Result<(), CoreError> {
+    pub fn unlink_map_location(
+        &self,
+        entity_id: String,
+        location_id: String,
+        request_id: Option<&str>,
+    ) -> Result<(), CoreError> {
         let mut locations = self.map_locations(entity_id.clone())?;
         let before = locations.len();
         locations.retain(|location| location.id != location_id);
-        if locations.len() == before { return Err(CoreError::NotFound("map location not found".into())); }
-        self.set_field_with_request(FieldValue {
-            entity_id,
-            namespace: crate::maps::MAP_NAMESPACE.into(),
-            key: "locations".into(),
-            value: serde_json::json!({"schemaVersion": 1, "locations": locations}),
-            revision: String::new(),
-        }, request_id)
+        if locations.len() == before {
+            return Err(CoreError::NotFound("map location not found".into()));
+        }
+        self.set_field_with_request(
+            FieldValue {
+                entity_id,
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "locations".into(),
+                value: serde_json::json!({"schemaVersion": 1, "locations": locations}),
+                revision: String::new(),
+            },
+            request_id,
+        )
     }
 
     pub fn latest_plugin_backup(
@@ -4314,11 +4422,46 @@ impl ProjectStore {
         let map = self.create_map("The Known Coast".into())?;
         for (entity_id, role, label, feature_id, x, y) in [
             (eldermere_id, "capital", "Eldermere", "101", 0.62, 0.44),
-            (glass_coast_id, "region", "The Glass Coast", "102", 0.18, 0.71),
-            (frostgate_id, "frontier", "Frostgate Pass", "103", 0.85, 0.12),
-            (lantern_marsh_id, "region", "Lantern Marsh", "104", 0.77, 0.38),
-            (mira_vale_id, "home", "Mira Vale's workshop", "105", 0.55, 0.63),
-            (crown_salt_id, "resting-place", "Crown of Salt", "106", 0.31, 0.29),
+            (
+                glass_coast_id,
+                "region",
+                "The Glass Coast",
+                "102",
+                0.18,
+                0.71,
+            ),
+            (
+                frostgate_id,
+                "frontier",
+                "Frostgate Pass",
+                "103",
+                0.85,
+                0.12,
+            ),
+            (
+                lantern_marsh_id,
+                "region",
+                "Lantern Marsh",
+                "104",
+                0.77,
+                0.38,
+            ),
+            (
+                mira_vale_id,
+                "home",
+                "Mira Vale's workshop",
+                "105",
+                0.55,
+                0.63,
+            ),
+            (
+                crown_salt_id,
+                "resting-place",
+                "Crown of Salt",
+                "106",
+                0.31,
+                0.29,
+            ),
         ] {
             self.upsert_map_location(
                 entity_id,

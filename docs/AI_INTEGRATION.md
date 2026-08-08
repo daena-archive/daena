@@ -21,8 +21,8 @@ storage rule wins. AI must not become an alternative data model, plugin bridge,
 filesystem API, network capability, or mutation authority.
 
 Status as of 2026-08-08: **architecture approved; Phase 0 is complete, Phase
-1 implementation is present, and Phase 2 broker implementation is present in
-the worktree**. The `daena-ai` contracts,
+1 implementation is present, Phase 2 broker implementation is present, and
+Phase 3 implementation is complete in the worktree**. The `daena-ai` contracts,
 deterministic fake-provider tests, hard limits, ADRs, bounded-stream transport
 decision/tests, LM Studio local discovery, normalized streaming/error handling,
 buffered event lifecycle, and trusted-shell rewrite preview path are present.
@@ -32,6 +32,14 @@ and oversized-output evidence is complete, while rendered Tauri/LM Studio
 validation remains pending; embeddings, remote providers, and project-wide
 retrieval remain later phases. Agents must verify the worktree and current source before relying on
 this status.
+
+The Phase 3 implementation adds host-derived `AiCaller` propagation, a bounded
+typed retrieval policy with lexical queries, authorization against
+document/field capabilities, deterministic relationship-aware context
+assembly, ranked passage-level FTS results with source identity, a shared
+proposal citation inspector with stale markers, adversarial retrieval fixtures,
+and an inspectable citation lifecycle through the broker. The deterministic
+Phase 3 checks pass; rendered citation navigation remains a manual UI check.
 
 The product goal is not a generic chatbot embedded in Daena. The goal is to make
 Daena's canonical documents, shared entity graph, structured fields,
@@ -1019,6 +1027,11 @@ Measure at least:
 - incremental update/delete behavior;
 - behavior during stale/failed embedding state;
 - latency and memory on small, medium, and stress fixtures.
+
+The Phase 3 seed corpus is checked in at
+`crates/daena-ai/fixtures/retrieval-evaluation.json`. It includes related
+entities, a private marker, and adversarial instructions; the AI crate test
+loads it and asserts deterministic structure and byte identity.
 
 ### 13.3 Generation evaluations
 

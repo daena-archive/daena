@@ -288,10 +288,7 @@ fn git_commit_rejects_paths_outside_preflight_and_accepts_subset() {
         .cloned()
         .expect("entity.json in staging preview");
 
-    let rejected = store.git_commit(
-        "should fail".into(),
-        Some(vec!["README.md".into()]),
-    );
+    let rejected = store.git_commit("should fail".into(), Some(vec!["README.md".into()]));
     assert!(matches!(rejected, Err(CoreError::Git(_))));
 
     store
@@ -347,7 +344,10 @@ fn git_commit_subset_does_not_include_previously_staged_canonical_paths() {
 
     assert!(run_git(&["add", "--", &document]).status.success());
     store
-        .git_commit("select only identity".into(), Some(vec![entity_json.clone()]))
+        .git_commit(
+            "select only identity".into(),
+            Some(vec![entity_json.clone()]),
+        )
         .unwrap();
 
     let staged = String::from_utf8(run_git(&["diff", "--cached", "--name-only"]).stdout).unwrap();
@@ -397,14 +397,21 @@ fn git_show_tree_filters_to_canonical_paths_and_reset_moves_head() {
 
     let tree = store.git_show_tree(&later).unwrap();
     assert!(tree.iter().any(|path| path == "project.json"));
-    assert!(tree.iter().all(|path| ProjectStore::is_canonical_git_path(path)));
+    assert!(tree
+        .iter()
+        .all(|path| ProjectStore::is_canonical_git_path(path)));
     assert!(!tree.iter().any(|path| path.starts_with(".daena/")));
 
     let body = store.git_show_file(&later, "project.json").unwrap();
-    assert!(body.contains("formatVersion") || body.contains("format_version") || body.contains("name"));
+    assert!(
+        body.contains("formatVersion") || body.contains("format_version") || body.contains("name")
+    );
 
     let reset = store.git_reset_hard(&base).unwrap();
-    assert_eq!(reset.current_head.as_deref(), store.git_rev_parse("HEAD").unwrap().as_deref());
+    assert_eq!(
+        reset.current_head.as_deref(),
+        store.git_rev_parse("HEAD").unwrap().as_deref()
+    );
     assert!(!reset.diverged_from_upstream);
     let entities = store.list_entities().unwrap();
     assert!(entities.iter().all(|entity| entity.name != "Later entity"));
@@ -432,7 +439,10 @@ fn git_remote_add_list_and_remove_round_trip() {
     let remotes = store
         .git_remote_set_url("origin", "https://example.com/daena-archive.git")
         .unwrap();
-    assert_eq!(remotes[0].fetch_url, "https://example.com/daena-archive.git");
+    assert_eq!(
+        remotes[0].fetch_url,
+        "https://example.com/daena-archive.git"
+    );
     let remotes = store.git_remote_remove("origin").unwrap();
     assert!(remotes.is_empty());
     std::fs::remove_dir_all(root).unwrap();
@@ -872,6 +882,30 @@ fn opening_and_updating_rebuilds_search_for_documents_and_fields() {
 
     drop(store);
     std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn passage_search_preserves_ranked_source_identity() {
+    let store = ProjectStore::in_memory().unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Passage target".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    store
+        .save_document(SaveDocument {
+            entity_id: entity.id.clone(),
+            body: "The silver harbor keeps the oldest bell.".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    let passages = store.search_passages("silver harbor".into(), 8).unwrap();
+    assert_eq!(passages.len(), 1);
+    assert_eq!(passages[0].entity_id, entity.id);
+    assert!(passages[0].source_path.ends_with("/document.md"));
+    assert!(passages[0].content.contains("oldest bell"));
+    assert!(passages[0].lexical_rank.is_finite());
 }
 
 #[test]

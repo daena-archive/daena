@@ -37,6 +37,7 @@ export interface PluginRpcClient {
     pollAiRequest(requestId: string): Promise<unknown[]>;
     cancelAiRequest(requestId: string): Promise<void>;
     getAiResult(requestId: string): Promise<unknown>;
+    getAiCitations(requestId: string): Promise<unknown[]>;
 }
 export interface AssetReadHandle {
     handle: string;

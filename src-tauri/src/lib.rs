@@ -50,6 +50,7 @@ fn cancel_ai_requests_for(
         .map_err(|_| "plugin host lock poisoned".to_string())?;
     for request_id in host.ai_request_ids_for(project_id, plugin_id) {
         let _ = ai::cancel_ai_request(runtime, &request_id);
+        let _ = ai::remove_ai_citations(runtime, &request_id);
         host.remove_ai_request(&request_id);
     }
     Ok(())
@@ -965,6 +966,7 @@ fn plugin_protocol_response(
                         | "ai.request.poll"
                         | "ai.request.cancel"
                         | "ai.request.result"
+                        | "ai.request.citations"
                 ) {
                     dispatch_host_rpc(
                         plugins,
@@ -974,9 +976,18 @@ fn plugin_protocol_response(
                         request.payload,
                         AiBrokerContext {
                             app: APP_HANDLE.get().cloned(),
+                            core: Some(core.clone()),
                             settings: None,
                             ai_runtime: ai_runtime.clone(),
                             session_id: session.id.clone(),
+                            caller: daena_ai::AiCaller::authorized_plugin(
+                                session.plugin_id.clone(),
+                                session.project_id.clone(),
+                                session.grants.iter().cloned().collect(),
+                                vec![format!("project:{}", session.project_id)],
+                                session.generation,
+                                "pending",
+                            ),
                         },
                     )?
                 } else {
@@ -2176,6 +2187,7 @@ async fn plugin_rpc(
             | "ai.request.poll"
             | "ai.request.cancel"
             | "ai.request.result"
+            | "ai.request.citations"
     ) {
         dispatch_host_rpc(
             &state,
@@ -2185,9 +2197,18 @@ async fn plugin_rpc(
             payload,
             AiBrokerContext {
                 app: Some(window.app_handle().clone()),
+                core: Some(core.inner().clone()),
                 settings: Some(settings.inner().clone()),
                 ai_runtime: ai_runtime.inner().clone(),
                 session_id: session.id.clone(),
+                caller: daena_ai::AiCaller::authorized_plugin(
+                    session.plugin_id.clone(),
+                    session.project_id.clone(),
+                    session.grants.iter().cloned().collect(),
+                    vec![format!("project:{}", session.project_id)],
+                    session.generation,
+                    "pending",
+                ),
             },
         )
     } else {
@@ -2236,9 +2257,11 @@ async fn plugin_rpc(
 
 struct AiBrokerContext {
     app: Option<tauri::AppHandle>,
+    core: Option<SharedCore>,
     settings: Option<SharedSettings>,
     ai_runtime: ai::SharedAiRuntime,
     session_id: String,
+    caller: daena_ai::AiCaller,
 }
 
 fn dispatch_host_rpc(
@@ -2311,6 +2334,32 @@ fn dispatch_host_rpc(
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_string();
+            let retrieval_policy = payload
+                .get("retrievalPolicy")
+                .cloned()
+                .map(serde_json::from_value::<daena_plugin_api::AiRetrievalPolicyPayload>)
+                .transpose()
+                .map_err(|error| format!("invalid retrieval policy: {error}"))?;
+            let (retrieved_context, citations) = if let Some(policy) = retrieval_policy {
+                let core = context
+                    .core
+                    .as_ref()
+                    .ok_or_else(|| "AI retrieval requires an open project".to_string())?;
+                let core = core.lock().map_err(|_| "core lock poisoned".to_string())?;
+                let project = core
+                    .project(trusted_shell())
+                    .map_err(|error| error.to_string())?;
+                ai::build_retrieval_context(project, &context.caller, &policy)?
+            } else {
+                (String::new(), Vec::new())
+            };
+            let selection = if retrieved_context.is_empty() {
+                selection
+            } else {
+                format!(
+                    "{selection}\n\n[RETRIEVED_CONTEXT]\n{retrieved_context}\n[/RETRIEVED_CONTEXT]"
+                )
+            };
             let settings = context
                 .settings
                 .map(|settings| {
@@ -2325,12 +2374,14 @@ fn dispatch_host_rpc(
                 "generate_text" => ai::start_ai_request(
                     context.app.clone(),
                     context.ai_runtime.clone(),
+                    context.caller.clone(),
                     settings.ai.local_endpoint,
                     settings.ai.local_model,
                     instruction.to_string(),
                     selection,
                     None,
                     std::time::Duration::from_millis(deadline_ms),
+                    citations.clone(),
                 )?,
                 "generate_structured" => {
                     let contract = payload.get("outputContract").cloned().ok_or_else(|| {
@@ -2340,12 +2391,18 @@ fn dispatch_host_rpc(
                     ai::start_ai_request(
                         context.app.clone(),
                         context.ai_runtime.clone(),
+                        context.caller.clone(),
                         settings.ai.local_endpoint,
                         settings.ai.local_model,
                         instruction.to_string(),
-                        immediate_context.to_string(),
+                        if retrieved_context.is_empty() {
+                            immediate_context.to_string()
+                        } else {
+                            selection.clone()
+                        },
                         Some(contract),
                         std::time::Duration::from_millis(deadline_ms),
+                        citations,
                     )?
                 }
                 _ => return Err("unsupported AI operation".into()),
@@ -2383,18 +2440,32 @@ fn dispatch_host_rpc(
                 ai::cancel_ai_request(&context.ai_runtime, target)?;
                 return Ok(serde_json::Value::Null);
             }
+            "ai.request.citations" => {
+                let citations = ai::ai_request_citations(&context.ai_runtime, target)?;
+                host.remove_ai_request(target);
+                ai::remove_ai_citations(&context.ai_runtime, target)?;
+                return serde_json::to_value(citations).map_err(|error| error.to_string());
+            }
             "ai.request.result" => {
                 let output = ai::ai_request_result(&context.ai_runtime, target)?;
+                let has_citations =
+                    !ai::ai_request_citations(&context.ai_runtime, target)?.is_empty();
                 if operation == "generate_structured" {
                     let value: serde_json::Value = serde_json::from_str(&output)
                         .map_err(|_| "structured AI output is not valid JSON".to_string())?;
                     if let Some(contract) = contract.as_ref() {
                         ai::validate_structured_output(contract, &value)?;
                     }
-                    host.remove_ai_request(target);
+                    if !has_citations {
+                        host.remove_ai_request(target);
+                        ai::remove_ai_citations(&context.ai_runtime, target)?;
+                    }
                     return Ok(value);
                 }
-                host.remove_ai_request(target);
+                if !has_citations {
+                    host.remove_ai_request(target);
+                    ai::remove_ai_citations(&context.ai_runtime, target)?;
+                }
                 return Ok(serde_json::json!({ "output": output }));
             }
             _ => return Err("unknown AI request method".into()),
@@ -2791,6 +2862,7 @@ async fn module_disable(
             .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
         for request_id in host.ai_request_ids_for(&project_id, Some(&id)) {
             let _ = ai::cancel_ai_request(&ai_runtime, &request_id);
+            let _ = ai::remove_ai_citations(&ai_runtime, &request_id);
             host.remove_ai_request(&request_id);
         }
         if let Err(error) = host.clear_project_usage(&project_id, &id) {
@@ -3468,9 +3540,11 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
         "service.call" => (&["name", "major", "payload"], &["deadlineMs"]),
         "ai.request.start" => (
             &["operation", "taskId", "userInstruction", "immediateContext"],
-            &["outputContract", "deadlineMs"],
+            &["outputContract", "deadlineMs", "retrievalPolicy"],
         ),
-        "ai.request.poll" | "ai.request.cancel" | "ai.request.result" => (&["requestId"], &[]),
+        "ai.request.poll" | "ai.request.cancel" | "ai.request.result" | "ai.request.citations" => {
+            (&["requestId"], &[])
+        }
         _ => {
             return Err(CoreError::Validation(format!(
                 "unknown plugin RPC method: {method}"
@@ -3779,11 +3853,16 @@ async fn trusted_module_rpc(
     if method.starts_with("ai.request.") {
         let plugin_id =
             plugin_id.ok_or_else(|| "bundled AI requests require plugin identity".to_string())?;
-        plugins
-            .lock()
-            .map_err(|_| "plugin host lock poisoned".to_string())?
-            .authorize_bundled(&plugin_id, &project_id, &method, payload.clone())
-            .map_err(|error| error.to_string())?;
+        let granted_capabilities = {
+            let mut host = plugins
+                .lock()
+                .map_err(|_| "plugin host lock poisoned".to_string())?;
+            host.authorize_bundled(&plugin_id, &project_id, &method, payload.clone())
+                .map_err(|error| error.to_string())?;
+            host.ensure_bundled_session(&plugin_id, &project_id)
+                .map_err(|error| error.to_string())?
+                .grants
+        };
         return dispatch_host_rpc(
             plugins.inner(),
             &plugin_id,
@@ -3792,9 +3871,18 @@ async fn trusted_module_rpc(
             payload,
             AiBrokerContext {
                 app: Some(app),
+                core: Some(state.inner().clone()),
                 settings: Some(settings.inner().clone()),
                 ai_runtime: ai_runtime.inner().clone(),
                 session_id: format!("bundled:{plugin_id}"),
+                caller: daena_ai::AiCaller::authorized_plugin(
+                    plugin_id.clone(),
+                    project_id.clone(),
+                    granted_capabilities.into_iter().collect(),
+                    vec![format!("project:{project_id}")],
+                    0,
+                    "pending",
+                ),
             },
         );
     }
@@ -3963,6 +4051,7 @@ async fn project_close(
                 .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
             for request_id in host.ai_request_ids_for(&project_id, None) {
                 let _ = ai::cancel_ai_request(&ai_runtime, &request_id);
+                let _ = ai::remove_ai_citations(&ai_runtime, &request_id);
                 host.remove_ai_request(&request_id);
             }
             host.deactivate_project(&project_id);

@@ -1,11 +1,17 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::net::{IpAddr, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use daena_ai::{AiError, DEFAULT_LIMITS, PROMPT_TEMPLATE_VERSION};
+use daena_ai::{
+    AiCaller, AiError, ContextBudget, RetrievalMode, RetrievalPolicy, RetrievedPassage, SourceRef,
+    DEFAULT_LIMITS, PROMPT_TEMPLATE_VERSION,
+};
+use daena_core::ProjectStore;
+use daena_plugin_api::{AiRetrievalMode, AiRetrievalPolicyPayload};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
@@ -19,12 +25,14 @@ pub struct AiRuntime {
     events: HashMap<String, VecDeque<AiStreamEvent>>,
     request_order: VecDeque<String>,
     provider: Option<Arc<dyn AiProvider>>,
+    citations: HashMap<String, Vec<SourceRef>>,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ProviderRequest {
     pub request_id: String,
+    pub caller: daena_ai::AiCaller,
     pub model: String,
     pub instruction: String,
     pub context: String,
@@ -170,6 +178,237 @@ pub struct AiStreamEvent {
     pub delta: Option<String>,
     pub output: Option<String>,
     pub error: Option<String>,
+}
+
+fn has_capability(caller: &AiCaller, capability: &str) -> bool {
+    matches!(caller.kind, daena_ai::CallerKind::TrustedShell)
+        || caller
+            .capabilities
+            .iter()
+            .any(|granted| granted == capability)
+}
+
+fn has_project_scope(caller: &AiCaller) -> bool {
+    matches!(caller.kind, daena_ai::CallerKind::TrustedShell)
+        || caller
+            .resource_scopes
+            .iter()
+            .any(|scope| scope == &format!("project:{}", caller.project_id) || scope == "project:*")
+}
+
+fn source_allowed(policy: &RetrievalPolicy, source_kind: &str) -> bool {
+    policy.allowed_source_kinds.is_empty()
+        || policy
+            .allowed_source_kinds
+            .iter()
+            .any(|kind| kind == source_kind)
+}
+
+fn hash_text(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+pub fn build_retrieval_context(
+    project: &ProjectStore,
+    caller: &AiCaller,
+    payload: &AiRetrievalPolicyPayload,
+) -> Result<(String, Vec<SourceRef>), String> {
+    let mode = match payload.mode {
+        AiRetrievalMode::None => RetrievalMode::None,
+        AiRetrievalMode::ExplicitOnly => RetrievalMode::ExplicitOnly,
+        AiRetrievalMode::Related => RetrievalMode::Related,
+        AiRetrievalMode::Project => RetrievalMode::Project,
+    };
+    if payload.relationship_depth > 2 || payload.passage_count > 32 {
+        return Err("retrieval policy exceeds the host bounds".into());
+    }
+    if !matches!(mode, RetrievalMode::None) && payload.passage_count == 0 {
+        return Err("retrieval policy requires passageCount".into());
+    }
+    if matches!(mode, RetrievalMode::Project) && !has_capability(caller, "search.query") {
+        return Err(AiError::RemoteContextDenied.to_string());
+    }
+    let policy = RetrievalPolicy {
+        mode: mode.clone(),
+        seed_ids: payload.seed_ids.clone(),
+        allowed_source_kinds: payload.allowed_source_kinds.clone(),
+        relationship_depth: payload.relationship_depth,
+        passage_count: payload.passage_count,
+        include_shared_fields: payload.include_shared_fields,
+    };
+    if matches!(mode, RetrievalMode::None) {
+        return Ok((String::new(), Vec::new()));
+    }
+    if policy.seed_ids.is_empty() && !matches!(mode, RetrievalMode::Project) {
+        return Err("retrieval policy requires seedIds".into());
+    }
+    if !has_capability(caller, "document.read") {
+        return Err(AiError::RemoteContextDenied.to_string());
+    }
+    if !has_project_scope(caller) {
+        return Err(AiError::RemoteContextDenied.to_string());
+    }
+    if matches!(mode, RetrievalMode::Related)
+        && policy.relationship_depth > 0
+        && !has_capability(caller, "relationship.read")
+    {
+        return Err(AiError::RemoteContextDenied.to_string());
+    }
+    let mut entity_ids = policy
+        .seed_ids
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    if matches!(mode, RetrievalMode::Project) {
+        entity_ids.extend(
+            project
+                .list_entities()
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|entity| entity.id),
+        );
+    } else if matches!(mode, RetrievalMode::Related) {
+        for _ in 0..policy.relationship_depth {
+            let current = entity_ids.iter().cloned().collect::<Vec<_>>();
+            for entity_id in current {
+                for relationship in project
+                    .list_relationships(entity_id)
+                    .map_err(|error| error.to_string())?
+                {
+                    entity_ids.insert(relationship.source_id);
+                    entity_ids.insert(relationship.target_id);
+                }
+            }
+        }
+    }
+    let mut passages = Vec::new();
+    let mut retrieved_document_ids = HashSet::new();
+    if matches!(mode, RetrievalMode::Project) {
+        if let Some(query) = payload
+            .query
+            .as_deref()
+            .filter(|query| !query.trim().is_empty())
+        {
+            for passage in project
+                .search_passages(query.to_string(), policy.passage_count as usize)
+                .map_err(|error| error.to_string())?
+            {
+                if !source_allowed(&policy, &passage.source_kind)
+                    || passage.source_kind != "document"
+                {
+                    continue;
+                }
+                let document = project
+                    .list_documents(passage.entity_id.clone())
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .find(|document| document.body == passage.content);
+                let Some(document) = document else {
+                    continue;
+                };
+                let hash = hash_text(&passage.content);
+                retrieved_document_ids.insert(document.id.clone());
+                passages.push(RetrievedPassage {
+                    source: SourceRef {
+                        source_kind: "document".into(),
+                        entity_id: Some(passage.entity_id),
+                        document_id: Some(document.id),
+                        canonical_path: Some(passage.source_path),
+                        revision: document.revision,
+                        content_hash: if passage.source_hash.is_empty() {
+                            hash.clone()
+                        } else {
+                            passage.source_hash
+                        },
+                        byte_start: Some(0),
+                        byte_end: Some(passage.content.len() as u64),
+                        excerpt_hash: hash,
+                    },
+                    text: passage.content,
+                    lexical_rank: passage.lexical_rank as u32,
+                });
+            }
+        }
+    }
+    let use_entity_fallback = !matches!(mode, RetrievalMode::Project)
+        || payload
+            .query
+            .as_deref()
+            .is_none_or(|query| query.trim().is_empty());
+    let fallback_rank_start = passages.len() as u32;
+    if use_entity_fallback {
+        for (rank, entity_id) in entity_ids.into_iter().enumerate() {
+            let documents = project
+                .list_documents(entity_id.clone())
+                .map_err(|error| error.to_string())?;
+            if source_allowed(&policy, "document") {
+                for document in documents {
+                    if retrieved_document_ids.contains(&document.id) {
+                        continue;
+                    }
+                    let source = SourceRef {
+                        source_kind: "document".into(),
+                        entity_id: Some(entity_id.clone()),
+                        document_id: Some(document.id.clone()),
+                        canonical_path: Some(format!("entities/{}/document.md", entity_id)),
+                        revision: document.revision,
+                        content_hash: hash_text(&document.body),
+                        byte_start: Some(0),
+                        byte_end: Some(document.body.len() as u64),
+                        excerpt_hash: hash_text(&document.body),
+                    };
+                    passages.push(RetrievedPassage {
+                        source,
+                        text: document.body,
+                        lexical_rank: fallback_rank_start + rank as u32,
+                    });
+                }
+            }
+            if policy.include_shared_fields && source_allowed(&policy, "field") {
+                if !has_capability(caller, "field.read:self") {
+                    return Err(AiError::RemoteContextDenied.to_string());
+                }
+                for field in project
+                    .list_fields(entity_id.clone())
+                    .map_err(|error| error.to_string())?
+                {
+                    let text = format!("{} {} {}", field.namespace, field.key, field.value);
+                    let hash = hash_text(&text);
+                    passages.push(RetrievedPassage {
+                        source: SourceRef {
+                            source_kind: "field".into(),
+                            entity_id: Some(entity_id.clone()),
+                            document_id: None,
+                            canonical_path: Some(format!(
+                                "entities/{}/fields/{}-{}.json",
+                                entity_id, field.namespace, field.key
+                            )),
+                            revision: field.revision,
+                            content_hash: hash.clone(),
+                            byte_start: Some(0),
+                            byte_end: Some(text.len() as u64),
+                            excerpt_hash: hash,
+                        },
+                        text,
+                        lexical_rank: rank as u32 + 1,
+                    });
+                }
+            }
+        }
+    }
+    let built = daena_ai::build_context(
+        &passages,
+        ContextBudget {
+            max_bytes: DEFAULT_LIMITS.max_input_bytes,
+            max_passages: policy.passage_count as usize,
+        },
+    );
+    Ok((
+        daena_ai::render_context_blocks(&built),
+        built.blocks.into_iter().map(|block| block.source).collect(),
+    ))
 }
 
 struct LocalEndpoint {
@@ -344,6 +583,7 @@ fn register_request(
     if runtime.events.len() >= MAX_BUFFERED_REQUESTS {
         if let Some(oldest) = runtime.request_order.pop_front() {
             runtime.events.remove(&oldest);
+            runtime.citations.remove(&oldest);
         }
     }
     runtime.request_order.push_back(request_id.to_string());
@@ -415,12 +655,14 @@ pub fn ai_generate_text(
     start_ai_request(
         Some(app),
         runtime.inner().clone(),
+        daena_ai::AiCaller::trusted_shell("trusted-shell", "pending"),
         endpoint,
         model,
         instruction,
         selection,
         None,
         DEFAULT_LIMITS.default_deadline,
+        Vec::new(),
     )
 }
 
@@ -428,12 +670,14 @@ pub fn ai_generate_text(
 pub fn start_ai_request(
     app: Option<AppHandle>,
     runtime: SharedAiRuntime,
+    mut caller: daena_ai::AiCaller,
     endpoint: String,
     model: String,
     instruction: String,
     selection: String,
     output_contract: Option<serde_json::Value>,
     deadline: Duration,
+    citations: Vec<SourceRef>,
 ) -> Result<String, String> {
     if instruction.trim().is_empty() || selection.trim().is_empty() {
         return Err("An AI instruction and context are required".to_string());
@@ -452,9 +696,15 @@ pub fn start_ai_request(
         parse_local_endpoint(&endpoint)?;
     }
     let request_id = Uuid::new_v4().to_string();
+    caller.request_id = request_id.clone();
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     register_request(&runtime, &request_id, cancelled.clone())
         .map_err(|error| error.to_string())?;
+    runtime
+        .lock()
+        .map_err(|_| "AI runtime lock poisoned".to_string())?
+        .citations
+        .insert(request_id.clone(), citations);
     let event_name = format!("ai-stream:{request_id}");
     let request_id_for_task = request_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -494,6 +744,7 @@ pub fn start_ai_request(
             let events = provider.generate(
                 ProviderRequest {
                     request_id: request_id_for_task.clone(),
+                    caller,
                     model,
                     instruction,
                     context: selection,
@@ -789,6 +1040,29 @@ pub fn ai_request_result(runtime: &SharedAiRuntime, request_id: &str) -> Result<
             .unwrap_or_else(|| "AI request failed".into())),
         None => Err("AI request is still running".into()),
     }
+}
+
+pub fn ai_request_citations(
+    runtime: &SharedAiRuntime,
+    request_id: &str,
+) -> Result<Vec<SourceRef>, String> {
+    let runtime = runtime
+        .lock()
+        .map_err(|_| "AI runtime lock poisoned".to_string())?;
+    Ok(runtime
+        .citations
+        .get(request_id)
+        .cloned()
+        .unwrap_or_default())
+}
+
+pub fn remove_ai_citations(runtime: &SharedAiRuntime, request_id: &str) -> Result<(), String> {
+    runtime
+        .lock()
+        .map_err(|_| "AI runtime lock poisoned".to_string())?
+        .citations
+        .remove(request_id);
+    Ok(())
 }
 
 pub fn validate_structured_output(

@@ -55,6 +55,7 @@ export interface PluginRpcClient {
   pollAiRequest(requestId: string): Promise<unknown[]>;
   cancelAiRequest(requestId: string): Promise<void>;
   getAiResult(requestId: string): Promise<unknown>;
+  getAiCitations(requestId: string): Promise<unknown[]>;
 }
 
 export interface AssetReadHandle {
@@ -281,6 +282,7 @@ export function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcC
     pollAiRequest: (requestId) => callTransport<unknown[]>(transport, "ai.request.poll", { requestId }),
     cancelAiRequest: (requestId) => callTransport<void>(transport, "ai.request.cancel", { requestId }),
     getAiResult: (requestId) => callTransport<unknown>(transport, "ai.request.result", { requestId }),
+    getAiCitations: (requestId) => callTransport<unknown[]>(transport, "ai.request.citations", { requestId }),
   };
 }
 

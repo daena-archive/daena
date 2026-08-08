@@ -1,5 +1,5 @@
 import type { Core, ElementDefinition, NodeSingular } from "cytoscape";
-import { createProposalPreview, type EntitySummary, type ModuleContext, type DaenaModule, type Relationship } from "../../../module-api/src/index";
+import { createProposalPreview, type AiCitation, type EntitySummary, type ModuleContext, type DaenaModule, type Relationship } from "../../../module-api/src/index";
 import type { ModuleManifest } from "../../../module-api/src/index";
 import manifestJson from "../manifest.json";
 
@@ -182,6 +182,14 @@ async function generateBiography(details: HTMLElement, entity: EntitySummary, co
       fields: record.fields,
       document: record.documents[0]?.body ?? "",
     },
+    retrievalPolicy: {
+      mode: "related",
+      seedIds: [entity.id],
+      allowedSourceKinds: ["document", "field"],
+      relationshipDepth: 2,
+      passageCount: 8,
+      includeSharedFields: false,
+    },
     outputContract: {
       type: "object",
       properties: { summary: { type: "string", maxLength: 4000 } },
@@ -206,10 +214,24 @@ async function generateBiography(details: HTMLElement, entity: EntitySummary, co
   }
   const result = await handle.result() as { summary?: unknown };
   if (typeof result.summary !== "string" || !result.summary.trim()) throw new Error("The AI biography proposal was invalid.");
+  const citations = await Promise.all((await handle.citations() as AiCitation[]).map(async (citation) => {
+    if (!citation.entityId) return citation;
+    const current = await context.entities.get(citation.entityId as EntitySummary["id"]);
+    if (!current) return { ...citation, stale: true };
+    if (citation.sourceKind === "document") {
+      return { ...citation, stale: current.documents.every((document) => document.revision !== citation.revision) };
+    }
+    if (citation.sourceKind === "field") {
+      const fields = await context.fields.listRecords(citation.entityId as EntitySummary["id"]);
+      return { ...citation, stale: fields.every((field) => field.revision !== citation.revision) };
+    }
+    return citation;
+  }));
   details.replaceChildren();
   const preview = createProposalPreview({
     title: "Biography proposal",
     proposal: result.summary,
+    citations,
     acceptLabel: "Accept summary",
     onDiscard: () => renderSelection(details, entity, new Map([[entity.id, entity]]), [], context),
     onAccept: async (value) => {

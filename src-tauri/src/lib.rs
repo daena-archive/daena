@@ -55,6 +55,18 @@ fn cancel_ai_requests_for(
     }
     Ok(())
 }
+
+fn refresh_ai_index(core: &SharedCore, ai_runtime: &ai::SharedAiRuntime) {
+    ai::detach_project_index(ai_runtime);
+    let root = core
+        .lock()
+        .ok()
+        .and_then(|core| core.info().map(|info| info.root));
+    match root {
+        Some(root) if !root.is_empty() => ai::attach_project_index(ai_runtime, &root),
+        _ => ai::detach_project_index(ai_runtime),
+    }
+}
 // Child plugin webviews must not keep a usable Tauri IPC bridge. Newer WebKit
 // builds may already seal __TAURI_INTERNALS__; throwing here aborts Global Code
 // and prevents the Maps shell from loading, so neutralize fail-soft.
@@ -3938,9 +3950,10 @@ async fn project_open(
     let plugins = plugins.inner().clone();
     let ai_runtime = ai_runtime.inner().clone();
     let core = state.inner().clone();
+    let request_runtime = ai_runtime.clone();
     let result = with_core(state, move |core| {
         if let Some(previous_project) = core.info().map(|info| info.root) {
-            cancel_ai_requests_for(&plugins, &ai_runtime, &previous_project, None)
+            cancel_ai_requests_for(&plugins, &request_runtime, &previous_project, None)
                 .map_err(CoreError::Conflict)?;
             plugins
                 .lock()
@@ -3956,6 +3969,7 @@ async fn project_open(
     })
     .await;
     if result.is_ok() {
+        refresh_ai_index(&core, &ai_runtime);
         start_project_watcher(&app, &core, watcher.inner())?;
     }
     result
@@ -3973,9 +3987,10 @@ async fn project_open_directory(
     let plugins = plugins.inner().clone();
     let ai_runtime = ai_runtime.inner().clone();
     let core = state.inner().clone();
+    let request_runtime = ai_runtime.clone();
     let result = with_core(state, move |core| {
         if let Some(previous_project) = core.info().map(|info| info.root) {
-            cancel_ai_requests_for(&plugins, &ai_runtime, &previous_project, None)
+            cancel_ai_requests_for(&plugins, &request_runtime, &previous_project, None)
                 .map_err(CoreError::Conflict)?;
             plugins
                 .lock()
@@ -3991,6 +4006,7 @@ async fn project_open_directory(
     })
     .await;
     if result.is_ok() {
+        refresh_ai_index(&core, &ai_runtime);
         start_project_watcher(&app, &core, watcher.inner())?;
     }
     result
@@ -4008,9 +4024,10 @@ async fn project_new(
     let plugins = plugins.inner().clone();
     let ai_runtime = ai_runtime.inner().clone();
     let core = state.inner().clone();
+    let request_runtime = ai_runtime.clone();
     let result = with_core(state, move |core| {
         if let Some(previous_project) = core.info().map(|info| info.root) {
-            cancel_ai_requests_for(&plugins, &ai_runtime, &previous_project, None)
+            cancel_ai_requests_for(&plugins, &request_runtime, &previous_project, None)
                 .map_err(CoreError::Conflict)?;
             plugins
                 .lock()
@@ -4026,6 +4043,7 @@ async fn project_new(
     })
     .await;
     if result.is_ok() {
+        refresh_ai_index(&core, &ai_runtime);
         start_project_watcher(&app, &core, watcher.inner())?;
     }
     result
@@ -4045,6 +4063,7 @@ async fn project_close(
     with_core(state, move |core| {
         let project_id = core.info().map(|info| info.root);
         core.close(trusted_shell())?;
+        ai::detach_project_index(&ai_runtime);
         if let Some(project_id) = project_id {
             let mut host = plugins
                 .lock()
@@ -4262,10 +4281,16 @@ async fn open_external_url(url: String) -> Result<(), String> {
 #[tauri::command]
 async fn project_open_memory(
     state: tauri::State<'_, SharedCore>,
+    ai_runtime: tauri::State<'_, ai::SharedAiRuntime>,
     watcher: tauri::State<'_, SharedProjectWatcher>,
 ) -> Result<(), String> {
     stop_project_watcher(watcher.inner())?;
-    with_core(state, |core| core.open_memory(trusted_shell())).await
+    let core = state.inner().clone();
+    let result = with_core(state, |core| core.open_memory(trusted_shell())).await;
+    if result.is_ok() {
+        refresh_ai_index(&core, ai_runtime.inner());
+    }
+    result
 }
 
 #[tauri::command]
@@ -4273,6 +4298,7 @@ async fn project_open_default(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
+    ai_runtime: tauri::State<'_, ai::SharedAiRuntime>,
     watcher: tauri::State<'_, SharedProjectWatcher>,
 ) -> Result<(), String> {
     let directory = app
@@ -4281,6 +4307,7 @@ async fn project_open_default(
         .map_err(|error| error.to_string())?;
     let plugins = plugins.inner().clone();
     let core = state.inner().clone();
+    let ai_runtime = ai_runtime.inner().clone();
     let result = with_core(state, move |core| {
         std::fs::create_dir_all(&directory).map_err(|error| CoreError::Io {
             operation: "create app data directory",
@@ -4301,6 +4328,7 @@ async fn project_open_default(
     })
     .await;
     if result.is_ok() {
+        refresh_ai_index(&core, &ai_runtime);
         start_project_watcher(&app, &core, watcher.inner())?;
     }
     result
@@ -5118,6 +5146,10 @@ pub fn run() {
             settings_get,
             settings_update,
             ai::ai_local_status,
+            ai::ai_index_status,
+            ai::ai_index_rebuild,
+            ai::ai_index_cancel,
+            ai::ai_index_search,
             ai::ai_generate_text,
             ai::ai_cancel_text,
             ai::ai_poll_text,

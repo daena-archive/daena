@@ -14,8 +14,14 @@
     git,
     aiSettings,
     aiStatus,
+    aiIndexStatus,
+    aiIndexBusy,
+    aiIndexMessage,
     onAiSettingsChange,
     onAiCheck,
+    onAiIndexRefresh,
+    onAiIndexRebuild,
+    onAiIndexCancel,
   }: {
     section?: SettingsSection;
     recentProjects: RecentProject[];
@@ -26,8 +32,14 @@
     git: Snippet;
     aiSettings: { localEndpoint: string; localModel: string };
     aiStatus: { available: boolean; modelAvailable: boolean; error: string | null } | null;
+    aiIndexStatus: { available: boolean; state: string | null } | null;
+    aiIndexBusy: boolean;
+    aiIndexMessage: string;
     onAiSettingsChange: (key: "localEndpoint" | "localModel", value: string) => void;
     onAiCheck: () => void;
+    onAiIndexRefresh: () => void;
+    onAiIndexRebuild: () => void;
+    onAiIndexCancel: () => void;
   } = $props();
 </script>
 
@@ -98,6 +110,17 @@
           <label>LM Studio endpoint<input value={aiSettings.localEndpoint} oninput={(event) => onAiSettingsChange("localEndpoint", (event.currentTarget as HTMLInputElement).value)} /></label>
           <label>Loaded model ID<input value={aiSettings.localModel} placeholder="Copy the model ID from LM Studio" oninput={(event) => onAiSettingsChange("localModel", (event.currentTarget as HTMLInputElement).value)} /></label>
           <div class="ai-settings-actions"><button type="button" class="primary-button" onclick={onAiCheck}>Check LM Studio</button>{#if aiStatus}<span class:ok={aiStatus.available && aiStatus.modelAvailable} class="ai-status">{aiStatus.available ? aiStatus.modelAvailable ? "Ready" : "LM Studio is running; model is missing" : aiStatus.error ?? "LM Studio unavailable"}</span>{/if}</div>
+          <div class="ai-index-panel">
+            <strong>Project retrieval index</strong>
+            <p class="muted-note">Embeddings are disposable and local. Lexical retrieval remains available while the semantic index is absent or rebuilding.</p>
+            <div class="ai-settings-actions">
+              <span class="ai-status">{aiIndexStatus?.available ? aiIndexStatus.state ?? "unknown" : "not attached"}</span>
+              <button type="button" class="quiet-button" onclick={onAiIndexRefresh}>Refresh</button>
+              {#if aiIndexBusy}<button type="button" class="quiet-button" onclick={onAiIndexCancel}>Cancel</button>{/if}
+              <button type="button" class="primary-button" onclick={onAiIndexRebuild} disabled={aiIndexBusy || !aiStatus?.available || !aiStatus.modelAvailable}>{aiIndexBusy ? "Rebuilding…" : "Build semantic index"}</button>
+            </div>
+            {#if aiIndexMessage}<p class="muted-note">{aiIndexMessage}</p>{/if}
+          </div>
         </div>
       {:else if section === "plugins"}
         {#if !projectOpen}

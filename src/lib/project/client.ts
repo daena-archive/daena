@@ -110,6 +110,22 @@ export interface AiProviderStatus {
   modelAvailable: boolean;
   error: string | null;
 }
+export interface AiIndexStatus {
+  available: boolean;
+  state: "disabled" | "absent" | "indexing" | "ready" | "partially_stale" | "incompatible" | "failed" | null;
+}
+export interface AiIndexRebuildResult {
+  chunkCount: number;
+  embeddedCount: number;
+  reusedCount: number;
+  state: AiIndexStatus["state"];
+}
+export interface AiHybridMatch {
+  chunkId: string;
+  sourceId: string;
+  sourceKind: string;
+  score: number;
+}
 export interface AiStreamEvent {
   sequence: number;
   requestId: string;
@@ -250,6 +266,11 @@ export const project = {
   settingsGet: () => invoke<AppSettings>("settings_get"),
   settingsUpdate: (update: AppSettingsUpdate) => invoke<AppSettings>("settings_update", { update }),
   aiLocalStatus: (endpoint: string, model: string) => invoke<AiProviderStatus>("ai_local_status", { endpoint, model }),
+  aiIndexStatus: () => invoke<AiIndexStatus>("ai_index_status"),
+  aiIndexRebuild: (endpoint: string, model: string) => invoke<AiIndexRebuildResult>("ai_index_rebuild", { endpoint, model }),
+  aiIndexCancel: () => invoke<void>("ai_index_cancel"),
+  aiIndexSearch: (endpoint: string, model: string, query: string, limit = 8) =>
+    invoke<AiHybridMatch[]>("ai_index_search", { endpoint, model, query, limit }),
   aiGenerateText: (endpoint: string, model: string, instruction: string, selection: string) =>
     invoke<string>("ai_generate_text", { endpoint, model, instruction, selection }),
   aiCancelText: (requestId: string) => invoke<void>("ai_cancel_text", { requestId }),

@@ -1,14 +1,17 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::net::{IpAddr, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use daena_ai::index::{
+    AiIndex, ChunkSource, EmbeddingMetadata, EmbeddingProvider, IndexError, IndexState, TextChunk,
+};
 use daena_ai::{
     AiCaller, AiError, ContextBudget, RetrievalMode, RetrievalPolicy, RetrievedPassage, SourceRef,
     DEFAULT_LIMITS, PROMPT_TEMPLATE_VERSION,
 };
-use daena_core::ProjectStore;
+use daena_core::{AuthorityContext, CoreService, ProjectStore};
 use daena_plugin_api::{AiRetrievalMode, AiRetrievalPolicyPayload};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -26,6 +29,9 @@ pub struct AiRuntime {
     request_order: VecDeque<String>,
     provider: Option<Arc<dyn AiProvider>>,
     citations: HashMap<String, Vec<SourceRef>>,
+    index: Option<AiIndex>,
+    index_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    index_state: Option<IndexState>,
 }
 
 #[allow(dead_code)]
@@ -115,6 +121,342 @@ impl AiRuntime {
     }
 }
 
+pub fn attach_project_index(runtime: &SharedAiRuntime, project_root: &str) {
+    let index = if project_root.trim().is_empty() {
+        None
+    } else {
+        AiIndex::open(std::path::Path::new(project_root).join(".daena/ai/index.sqlite")).ok()
+    };
+    if let Ok(mut runtime) = runtime.lock() {
+        runtime.index = index;
+        runtime.index_cancel = None;
+        runtime.index_state = if runtime.index.is_some() {
+            None
+        } else {
+            Some(IndexState::Failed)
+        };
+    }
+}
+
+pub fn detach_project_index(runtime: &SharedAiRuntime) {
+    if let Ok(mut runtime) = runtime.lock() {
+        if let Some(cancel) = runtime.index_cancel.as_ref() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        runtime.index = None;
+        runtime.index_cancel = None;
+        runtime.index_state = None;
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiIndexStatus {
+    pub available: bool,
+    pub state: Option<IndexState>,
+}
+
+pub fn index_status(runtime: &SharedAiRuntime) -> AiIndexStatus {
+    let Ok(runtime) = runtime.lock() else {
+        return AiIndexStatus {
+            available: false,
+            state: None,
+        };
+    };
+    if runtime.index.is_none() && runtime.index_cancel.is_some() {
+        return AiIndexStatus {
+            available: false,
+            state: Some(IndexState::Indexing),
+        };
+    }
+    let Some(index) = runtime.index.as_ref() else {
+        return AiIndexStatus {
+            available: false,
+            state: runtime.index_state,
+        };
+    };
+    match index.state() {
+        Ok(state) => AiIndexStatus {
+            available: true,
+            state: Some(state),
+        },
+        Err(_) => AiIndexStatus {
+            available: false,
+            state: Some(IndexState::Failed),
+        },
+    }
+}
+
+#[tauri::command]
+pub fn ai_index_cancel(runtime: State<'_, SharedAiRuntime>) -> Result<(), String> {
+    let runtime = runtime
+        .lock()
+        .map_err(|_| "AI runtime lock poisoned".to_string())?;
+    if let Some(cancel) = runtime.index_cancel.as_ref() {
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn ai_index_status(runtime: State<'_, SharedAiRuntime>) -> AiIndexStatus {
+    index_status(runtime.inner())
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiIndexRebuildResult {
+    pub chunk_count: usize,
+    pub embedded_count: usize,
+    pub reused_count: usize,
+    pub state: IndexState,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiHybridMatch {
+    pub chunk_id: String,
+    pub source_id: String,
+    pub source_kind: String,
+    pub score: f32,
+}
+
+#[tauri::command]
+pub async fn ai_index_search(
+    runtime: State<'_, SharedAiRuntime>,
+    endpoint: String,
+    model: String,
+    query: String,
+    limit: usize,
+) -> Result<Vec<AiHybridMatch>, String> {
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let limit = limit.clamp(1, 32);
+    let runtime = runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let runtime = runtime
+            .lock()
+            .map_err(|_| "AI runtime lock poisoned".to_string())?;
+        let index = runtime
+            .index
+            .as_ref()
+            .ok_or_else(|| "No directory-backed project AI index is attached".to_string())?;
+        let provider = LmStudioEmbeddingProvider { endpoint, model };
+        let query_vector = provider
+            .embed(std::slice::from_ref(&query))
+            .map_err(|error| error.to_string())?
+            .pop()
+            .ok_or_else(|| "embedding provider returned no query vector".to_string())?;
+        let records = index.records().map_err(|error| error.to_string())?;
+        let semantic = daena_ai::index::exact_cosine_search(&records, &query_vector, limit);
+        let terms = query
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>();
+        let lexical = records
+            .iter()
+            .filter(|record| {
+                let text = record.chunk.text.to_lowercase();
+                terms.iter().all(|term| text.contains(term))
+            })
+            .enumerate()
+            .map(|(rank, record)| (record.chunk.id.clone(), rank))
+            .collect::<Vec<_>>();
+        let fused = daena_ai::index::reciprocal_rank_fusion(&lexical, &semantic, limit);
+        Ok(fused
+            .into_iter()
+            .filter_map(|(chunk_id, score)| {
+                records
+                    .iter()
+                    .find(|record| record.chunk.id == chunk_id)
+                    .map(|record| AiHybridMatch {
+                        chunk_id,
+                        source_id: record.chunk.source.source_id.clone(),
+                        source_kind: record.chunk.source.source_kind.clone(),
+                        score,
+                    })
+            })
+            .collect())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn project_chunks(project: &ProjectStore) -> Result<Vec<TextChunk>, String> {
+    let mut chunks = Vec::new();
+    for entity in project.list_entities().map_err(|error| error.to_string())? {
+        for document in project
+            .list_documents(entity.id.clone())
+            .map_err(|error| error.to_string())?
+        {
+            if document.format != "markdown" && document.format != "plain-text" {
+                continue;
+            }
+            chunks.extend(daena_ai::index::chunk_markdown(
+                ChunkSource {
+                    source_id: document.id,
+                    source_kind: "document".into(),
+                    revision: document.revision,
+                    source_hash: daena_ai::index::hash_text(&document.body),
+                },
+                &document.body,
+                16 * 1024,
+            ));
+        }
+        for field in project
+            .list_fields(entity.id.clone())
+            .map_err(|error| error.to_string())?
+        {
+            let value = serde_json::json!({
+                "entityId": field.entity_id,
+                "namespace": field.namespace,
+                "key": field.key,
+                "value": field.value,
+            });
+            let text = serde_json::to_string(&value).map_err(|error| error.to_string())?;
+            chunks.extend(daena_ai::index::chunk_structured(
+                ChunkSource {
+                    source_id: format!("field:{}:{}:{}", entity.id, field.namespace, field.key),
+                    source_kind: "field".into(),
+                    revision: field.revision,
+                    source_hash: daena_ai::index::hash_text(&text),
+                },
+                &value,
+                16 * 1024,
+            ));
+        }
+        for relationship in project
+            .list_relationships(entity.id.clone())
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|relationship| relationship.source_id == entity.id)
+        {
+            let value = serde_json::json!({
+                "id": relationship.id,
+                "sourceId": relationship.source_id,
+                "targetId": relationship.target_id,
+                "type": relationship.relationship_type,
+                "metadata": relationship.metadata,
+            });
+            let text = serde_json::to_string(&value).map_err(|error| error.to_string())?;
+            chunks.extend(daena_ai::index::chunk_structured(
+                ChunkSource {
+                    source_id: format!("relationship:{}", relationship.id),
+                    source_kind: "relationship".into(),
+                    revision: relationship.revision,
+                    source_hash: daena_ai::index::hash_text(&text),
+                },
+                &value,
+                16 * 1024,
+            ));
+        }
+    }
+    Ok(chunks)
+}
+
+#[tauri::command]
+pub async fn ai_index_rebuild(
+    core: State<'_, Arc<Mutex<CoreService>>>,
+    runtime: State<'_, SharedAiRuntime>,
+    endpoint: String,
+    model: String,
+) -> Result<AiIndexRebuildResult, String> {
+    if model.trim().is_empty() {
+        return Err("An embedding model ID is required".into());
+    }
+    let chunks = {
+        let core = core.lock().map_err(|_| "core lock poisoned".to_string())?;
+        project_chunks(
+            core.project(AuthorityContext::trusted_shell())
+                .map_err(|error| error.to_string())?,
+        )?
+    };
+    let runtime = runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (index, cancel) = {
+            let mut runtime = runtime
+                .lock()
+                .map_err(|_| "AI runtime lock poisoned".to_string())?;
+            let index = runtime
+                .index
+                .take()
+                .ok_or_else(|| "No directory-backed project AI index is attached".to_string())?;
+            let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            runtime.index_cancel = Some(cancel.clone());
+            (index, cancel)
+        };
+        let outcome = (|| {
+            let previous = index
+                .embedding_metadata()
+                .map_err(|error| error.to_string())?;
+            let provider = LmStudioEmbeddingProvider {
+                endpoint,
+                model: model.clone(),
+            };
+            let mut metadata = EmbeddingMetadata {
+                provider_id: "lm-studio".into(),
+                model_id: model,
+                dimension: previous
+                    .filter(|metadata| {
+                        metadata.provider_id == "lm-studio" && metadata.model_id == provider.model
+                    })
+                    .map(|metadata| metadata.dimension)
+                    .unwrap_or(0),
+                normalized: true,
+                serializer_version: daena_ai::index::EMBEDDING_SERIALIZER_VERSION.into(),
+            };
+            let mut sources = BTreeMap::<String, Vec<TextChunk>>::new();
+            for chunk in chunks {
+                sources
+                    .entry(chunk.source.source_id.clone())
+                    .or_default()
+                    .push(chunk);
+            }
+            let mut chunk_count = 0;
+            let mut embedded_count = 0;
+            let mut reused_count = 0;
+            for source_chunks in sources.values() {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err("AI index rebuild cancelled".to_string());
+                }
+                let report = index
+                    .index_source(source_chunks, &metadata, &provider, || {
+                        cancel.load(std::sync::atomic::Ordering::Relaxed)
+                    })
+                    .map_err(|error| error.to_string())?;
+                chunk_count += report.chunk_count;
+                embedded_count += report.embedded_count;
+                reused_count += report.reused_count;
+                metadata = index
+                    .embedding_metadata()
+                    .map_err(|error| error.to_string())?
+                    .unwrap_or(metadata);
+            }
+            Ok(AiIndexRebuildResult {
+                chunk_count,
+                embedded_count,
+                reused_count,
+                state: index.state().map_err(|error| error.to_string())?,
+            })
+        })();
+        if let Ok(mut runtime) = runtime.lock() {
+            let owns_rebuild = runtime
+                .index_cancel
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &cancel));
+            if owns_rebuild {
+                runtime.index = Some(index);
+                runtime.index_cancel = None;
+                runtime.index_state = None;
+            }
+        }
+        outcome
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 struct RequestCleanup {
     runtime: SharedAiRuntime,
     request_id: String,
@@ -147,6 +489,71 @@ struct OpenAiModels {
 #[derive(Debug, Clone, Deserialize)]
 struct OpenAiModel {
     id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiEmbeddingsResponse {
+    #[serde(default)]
+    data: Vec<OpenAiEmbedding>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiEmbedding {
+    embedding: Vec<f32>,
+}
+
+struct LmStudioEmbeddingProvider {
+    endpoint: String,
+    model: String,
+}
+
+impl EmbeddingProvider for LmStudioEmbeddingProvider {
+    fn embed(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>, IndexError> {
+        let body = serde_json::json!({"model": self.model, "input": inputs}).to_string();
+        let stream = connect_request(
+            &self.endpoint,
+            "POST",
+            "embeddings",
+            Some(&body),
+            DEFAULT_LIMITS.default_deadline,
+        )
+        .map_err(IndexError::Serialization)?;
+        let (status, bytes) = read_response(stream).map_err(IndexError::Serialization)?;
+        if status / 100 != 2 {
+            return Err(IndexError::Serialization(
+                normalized_http_error(status).to_string(),
+            ));
+        }
+        let response: OpenAiEmbeddingsResponse = serde_json::from_slice(&bytes)
+            .map_err(|error| IndexError::Serialization(error.to_string()))?;
+        if response.data.len() != inputs.len() {
+            return Err(IndexError::InvalidEmbedding(
+                "embedding provider returned the wrong batch length".into(),
+            ));
+        }
+        response
+            .data
+            .into_iter()
+            .map(|embedding| {
+                let norm = embedding
+                    .embedding
+                    .iter()
+                    .map(|value| value * value)
+                    .sum::<f32>()
+                    .sqrt();
+                if norm == 0.0 || !norm.is_finite() {
+                    return Err(IndexError::InvalidEmbedding(
+                        "provider returned a zero or non-finite vector".into(),
+                    ));
+                }
+                Ok(embedding
+                    .embedding
+                    .into_iter()
+                    .map(|value| value / norm)
+                    .collect())
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

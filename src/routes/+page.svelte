@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   const logoUrl = "/branding/logo.png";
-import { project, type Asset, type Entity, type Relationship, type MapLocation, type ProjectModuleManifest, type ProjectInfo, type GitStatus, type GitPreflight, type GitLogEntry, type PluginAdminEntry, type PluginUpgradePlan, type ExternalChangeReport, type AiSettings, type AiProviderStatus, type AiStreamEvent } from "$lib/project/client";
+import { project, type Asset, type Entity, type Relationship, type MapLocation, type ProjectModuleManifest, type ProjectInfo, type GitStatus, type GitPreflight, type GitLogEntry, type PluginAdminEntry, type PluginUpgradePlan, type ExternalChangeReport, type AiSettings, type AiProviderStatus, type AiStreamEvent, type AiIndexStatus } from "$lib/project/client";
   import type { EntityTemplate, FieldDefinition, ModuleContext, ModuleId, UUID, ModuleManifest, DaenaModule } from "../../packages/module-api/src/index";
   import { buildModuleContext } from "$lib/modules/context";
   import HostView from "$lib/plugins/HostView.svelte";
@@ -85,6 +85,9 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   let settingsSection = $state<SettingsSection>("general");
   let aiSettings = $state<AiSettings>({ localEndpoint: "http://127.0.0.1:1234/v1", localModel: "" });
   let aiStatus = $state<AiProviderStatus | null>(null);
+  let aiIndexStatus = $state<AiIndexStatus | null>(null);
+  let aiIndexBusy = $state(false);
+  let aiIndexMessage = $state("");
   let aiRewriteOpen = $state(false);
   let aiBusy = $state(false);
   let aiRequestId = $state<string | null>(null);
@@ -678,6 +681,24 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   async function checkAiProvider() {
     try { aiStatus = await project.aiLocalStatus(aiSettings.localEndpoint, aiSettings.localModel); }
     catch (cause) { aiStatus = { endpoint: aiSettings.localEndpoint, model: aiSettings.localModel, available: false, modelAvailable: false, error: friendlyError(cause) }; }
+  }
+  async function refreshAiIndexStatus() {
+    try { aiIndexStatus = await project.aiIndexStatus(); }
+    catch (cause) { aiIndexStatus = { available: false, state: null }; aiIndexMessage = friendlyError(cause); }
+  }
+  async function rebuildAiIndex() {
+    aiIndexBusy = true;
+    aiIndexMessage = "";
+    try {
+      const result = await project.aiIndexRebuild(aiSettings.localEndpoint, aiSettings.localModel);
+      aiIndexStatus = { available: true, state: result.state };
+      aiIndexMessage = `Indexed ${result.chunkCount} chunks (${result.embeddedCount} embedded, ${result.reusedCount} reused).`;
+    } catch (cause) { aiIndexMessage = friendlyError(cause); }
+    finally { aiIndexBusy = false; }
+  }
+  async function cancelAiIndex() {
+    try { await project.aiIndexCancel(); aiIndexMessage = "Cancellation requested."; }
+    catch (cause) { aiIndexMessage = friendlyError(cause); }
   }
   function setAiSelection(markdown: string, plainText: string) {
     if (!aiBusy && !aiPreviewOutput) {
@@ -1323,6 +1344,10 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
       adminPlugins = null;
       await refreshAdmin();
     }
+    if (section === "ai" && ready) {
+      aiIndexMessage = "";
+      await refreshAiIndexStatus();
+    }
   }
   function closeSettings() {
     showSettings = false;
@@ -1747,8 +1772,14 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
         onClose={closeSettings}
         aiSettings={aiSettings}
         aiStatus={aiStatus}
+        aiIndexStatus={aiIndexStatus}
+        aiIndexBusy={aiIndexBusy}
+        aiIndexMessage={aiIndexMessage}
         onAiSettingsChange={updateAiSetting}
         onAiCheck={() => void checkAiProvider()}
+        onAiIndexRefresh={() => void refreshAiIndexStatus()}
+        onAiIndexRebuild={() => void rebuildAiIndex()}
+        onAiIndexCancel={() => void cancelAiIndex()}
       >
         {#snippet plugins()}
           <div class="settings-section-heading plugins-settings-heading">

@@ -8,6 +8,8 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::time::{Duration, Instant};
 
+pub mod index;
+
 pub const PROMPT_TEMPLATE_VERSION: &str = "ai.prompt.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

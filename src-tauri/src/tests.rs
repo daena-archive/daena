@@ -6,6 +6,23 @@ fn ai_test_host() -> SharedPluginHost {
     ))
 }
 
+#[test]
+fn ai_index_lifecycle_is_project_bound_and_non_blocking() {
+    let runtime = Arc::new(Mutex::new(ai::AiRuntime::default()));
+    assert!(!ai::index_status(&runtime).available);
+    let root =
+        std::env::temp_dir().join(format!("daena-ai-index-lifecycle-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    ai::attach_project_index(&runtime, root.to_str().unwrap());
+    let status = ai::index_status(&runtime);
+    assert!(status.available);
+    assert_eq!(status.state, Some(daena_ai::index::IndexState::Absent));
+    assert!(root.join(".daena/ai/index.sqlite").is_file());
+    ai::detach_project_index(&runtime);
+    assert!(!ai::index_status(&runtime).available);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn ai_test_context(runtime: ai::SharedAiRuntime) -> AiBrokerContext {
     AiBrokerContext {
         app: None,

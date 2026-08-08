@@ -21,17 +21,22 @@ storage rule wins. AI must not become an alternative data model, plugin bridge,
 filesystem API, network capability, or mutation authority.
 
 Status as of 2026-08-08: **architecture approved; Phase 0 is complete, Phase
-1 implementation is present, Phase 2 broker implementation is present, and
-Phase 3 implementation is complete in the worktree**. The `daena-ai` contracts,
+1 implementation is present, Phase 2 broker implementation is present, Phase 3
+implementation is complete, and Phase 4 provider-neutral vector primitives are
+implemented in the worktree**. Phase 4 disposable-index persistence, structured
+chunking, LM Studio embedding rebuild, cancellation, reuse, hybrid search, and
+shell status controls are now implemented; live LM Studio embedding/rebuild and
+rendered-control checks remain manual evidence. The `daena-ai` contracts,
 deterministic fake-provider tests, hard limits, ADRs, bounded-stream transport
 decision/tests, LM Studio local discovery, normalized streaming/error handling,
 buffered event lifecycle, and trusted-shell rewrite preview path are present.
 The remaining Phase 1 evidence is a rendered Tauri validation with a running LM
 Studio instance; Phase 2 broker execution, conformance, lifecycle, deadline,
 and oversized-output evidence is complete, while rendered Tauri/LM Studio
-validation remains pending; embeddings, remote providers, and project-wide
-retrieval remain later phases. Agents must verify the worktree and current source before relying on
-this status.
+validation remains pending; Phase 4 implementation evidence is present, while
+live provider, rendered-control, and automatic watcher scheduling evidence
+remains pending. Agents must verify the worktree and
+current source before relying on this status.
 
 The Phase 3 implementation adds host-derived `AiCaller` propagation, a bounded
 typed retrieval policy with lexical queries, authorization against

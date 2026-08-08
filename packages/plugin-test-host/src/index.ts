@@ -42,6 +42,9 @@ export class FakePluginHost implements PluginRpcTransport {
   private readonly queues = new Map<string, unknown[]>();
   private readonly subscriptions = new Set<string>();
   private readonly services = new Map<string, ServiceHandler>();
+  private readonly aiResults = new Map<string, unknown>();
+  private readonly aiEvents = new Map<string, unknown[]>();
+  private readonly aiCapabilities = new Map<string, string>();
   private nextEntity = 1;
   private nextRevision = 1;
   private revoked = false;
@@ -112,6 +115,10 @@ export class FakePluginHost implements PluginRpcTransport {
         case "event.subscribe": this.requireDynamic("event.subscribe", payload); return this.subscribe(payload);
         case "event.poll": this.requireDynamic("event.subscribe", payload); return this.poll(payload);
         case "service.call": this.requireDynamic("service.call", payload); return await this.callService(payload);
+        case "ai.request.start": return this.startAi(payload);
+        case "ai.request.poll": return this.pollAi(payload);
+        case "ai.request.cancel": return this.cancelAi(payload);
+        case "ai.request.result": return this.resultAi(payload);
         default: throw failure("unknown-method", `unsupported plugin method: ${method}`);
         }
       })();
@@ -140,6 +147,53 @@ export class FakePluginHost implements PluginRpcTransport {
 
   private require(capability: string): void {
     if (!this.grants.has(capability)) throw failure("capability-denied", `capability is not granted: ${capability}`);
+  }
+
+  private startAi(payload: unknown): { requestId: string } {
+    const value = payload as { operation?: unknown; taskId?: unknown; userInstruction?: unknown; immediateContext?: unknown; outputContract?: unknown };
+    const operation = value.operation;
+    const capability = operation === "generate_structured" ? "ai.text.generate-structured" : "ai.text.generate";
+    this.require(capability);
+    if (!(["generate_text", "generate_structured"].includes(String(operation))) || typeof value.userInstruction !== "string" || !value.userInstruction.trim()) {
+      throw failure("invalid-payload", "ai.request.start requires a supported operation and instruction");
+    }
+    const requestId = `${this.manifest.id}:ai:${this.aiResults.size + 1}`;
+    const output = operation === "generate_structured"
+      ? structuredClone(value.immediateContext ?? {})
+      : `${value.userInstruction}: ${String((value.immediateContext as { selection?: unknown } | undefined)?.selection ?? "")}`;
+    if (operation === "generate_structured") validateFakeAiOutput(value.outputContract, output);
+    this.aiResults.set(requestId, output);
+    this.aiCapabilities.set(requestId, capability);
+    this.aiEvents.set(requestId, [{ sequence: 0, requestId, phase: "started" }, { sequence: 1, requestId, phase: "completed", output }]);
+    return { requestId };
+  }
+
+  private pollAi(payload: unknown): unknown[] {
+    const requestId = (payload as { requestId?: unknown }).requestId;
+    if (typeof requestId !== "string" || !this.aiEvents.has(requestId)) throw failure("not-found", "AI request does not exist");
+    this.requireAi(requestId);
+    return structuredClone(this.aiEvents.get(requestId) ?? []);
+  }
+
+  private cancelAi(payload: unknown): void {
+    const requestId = (payload as { requestId?: unknown }).requestId;
+    if (typeof requestId !== "string" || !this.aiResults.has(requestId)) throw failure("not-found", "AI request does not exist");
+    this.requireAi(requestId);
+    this.aiResults.delete(requestId);
+    this.aiEvents.set(requestId, [{ sequence: 0, requestId, phase: "cancelled" }]);
+  }
+
+  private resultAi(payload: unknown): unknown {
+    const requestId = (payload as { requestId?: unknown }).requestId;
+    if (typeof requestId !== "string" || !this.aiResults.has(requestId)) throw failure("not-found", "AI result does not exist");
+    this.requireAi(requestId);
+    return structuredClone(this.aiResults.get(requestId));
+  }
+
+  private requireAi(requestId: string): void {
+    const capability = this.aiCapabilities.get(requestId);
+    if (!capability) throw failure("not-found", "AI request does not exist");
+    this.require(capability);
   }
 
   private requireDynamic(prefix: string, payload: unknown): void {
@@ -228,6 +282,27 @@ export class FakePluginHost implements PluginRpcTransport {
     const handler = this.services.get(`${value.name}@${value.major}`);
     if (!handler) throw failure("provider-unavailable", "service provider is unavailable", true);
     return handler(value.payload, { pluginId: this.manifest.id, projectId: this.projectId, deadlineMs: typeof value.deadlineMs === "number" ? value.deadlineMs : 5000 });
+  }
+}
+
+function validateFakeAiOutput(schema: unknown, value: unknown): void {
+  if (!schema || typeof schema !== "object") throw failure("invalid-output", "structured output contract is required");
+  const node = schema as Record<string, unknown>;
+  switch (node.type) {
+    case "object": {
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw failure("invalid-output", "structured output must be an object");
+      const properties = (node.properties && typeof node.properties === "object") ? node.properties as Record<string, unknown> : {};
+      for (const required of Array.isArray(node.required) ? node.required : []) if (typeof required === "string" && !(required in value)) throw failure("invalid-output", `missing structured field: ${required}`);
+      if (node.additionalProperties === false) for (const key of Object.keys(value)) if (!(key in properties)) throw failure("invalid-output", `unknown structured field: ${key}`);
+      for (const [key, child] of Object.entries(properties)) if (key in value) validateFakeAiOutput(child, (value as Record<string, unknown>)[key]);
+      return;
+    }
+    case "string":
+      if (typeof value !== "string" || (typeof node.maxLength === "number" && value.length > node.maxLength)) throw failure("invalid-output", "structured string is invalid");
+      return;
+    case "boolean": if (typeof value !== "boolean") throw failure("invalid-output", "structured boolean is invalid"); return;
+    case "number": case "integer": if (typeof value !== "number") throw failure("invalid-output", "structured number is invalid"); return;
+    default: throw failure("invalid-output", "unsupported structured output type");
   }
 }
 

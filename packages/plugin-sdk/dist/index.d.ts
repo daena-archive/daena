@@ -1,4 +1,4 @@
-import type { EntityRecord, Event, Migration, MigrationAuthoringOptions, MigrationOperation, PluginManifest, PluginRpcError, PluginBootstrap, Service, MutationOptions } from "./generated.js";
+import type { EntityRecord, Event, Migration, MigrationAuthoringOptions, MigrationOperation, PluginManifest, PluginRpcError, PluginBootstrap, Service, MutationOptions, AiRequestStartPayload, AiRequestIdPayload } from "./generated.js";
 export * from "./generated.js";
 export * from "./maps.js";
 export interface PluginRpcTransport {
@@ -33,6 +33,10 @@ export interface PluginRpcClient {
     beginAssetReplace(input: AssetReplaceRequest, options?: MutationOptions): Promise<AssetReplaceHandle>;
     commitAssetReplace(handle: string, contentHash: string, options?: MutationOptions): Promise<unknown>;
     cancelAssetTransfer(handle: string): Promise<void>;
+    startAiRequest(request: AiRequestStartPayload): Promise<AiRequestIdPayload>;
+    pollAiRequest(requestId: string): Promise<unknown[]>;
+    cancelAiRequest(requestId: string): Promise<void>;
+    getAiResult(requestId: string): Promise<unknown>;
 }
 export interface AssetReadHandle {
     handle: string;

@@ -1,5 +1,48 @@
 {
   "$defs": {
+    "AiRequestIdPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "requestId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "requestId"
+      ],
+      "type": "object"
+    },
+    "AiRequestStartPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "deadlineMs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "immediateContext": true,
+        "operation": {
+          "type": "string"
+        },
+        "outputContract": true,
+        "taskId": {
+          "type": "string"
+        },
+        "userInstruction": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "immediateContext",
+        "operation",
+        "taskId",
+        "userInstruction"
+      ],
+      "type": "object"
+    },
     "AssetListPayload": {
       "additionalProperties": false,
       "properties": {
@@ -1278,6 +1321,70 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "ai.request.start"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/AiRequestStartPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "ai.request.poll"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/AiRequestIdPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "ai.request.cancel"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/AiRequestIdPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "ai.request.result"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/AiRequestIdPayload"
+              }
+            }
+          }
         }
       ],
       "properties": {
@@ -1314,7 +1421,11 @@
             "event.publish",
             "event.subscribe",
             "event.poll",
-            "service.call"
+            "service.call",
+            "ai.request.start",
+            "ai.request.poll",
+            "ai.request.cancel",
+            "ai.request.result"
           ]
         },
         "payload": {},
@@ -1420,6 +1531,22 @@
   ],
   "title": "Daena Archive Plugin RPC v1",
   "x-methods": {
+    "ai.request.cancel": {
+      "payload": "AiRequestIdPayload",
+      "requestId": "envelope"
+    },
+    "ai.request.poll": {
+      "payload": "AiRequestIdPayload",
+      "requestId": "envelope"
+    },
+    "ai.request.result": {
+      "payload": "AiRequestIdPayload",
+      "requestId": "envelope"
+    },
+    "ai.request.start": {
+      "payload": "AiRequestStartPayload",
+      "requestId": "envelope"
+    },
     "asset.list": {
       "payload": "AssetListPayload",
       "requestId": "envelope"

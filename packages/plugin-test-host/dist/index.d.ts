@@ -30,6 +30,9 @@ export declare class FakePluginHost implements PluginRpcTransport {
     private readonly queues;
     private readonly subscriptions;
     private readonly services;
+    private readonly aiResults;
+    private readonly aiEvents;
+    private readonly aiCapabilities;
     private nextEntity;
     private nextRevision;
     private revoked;
@@ -48,6 +51,11 @@ export declare class FakePluginHost implements PluginRpcTransport {
     call(method: string, payload: unknown, requestId?: string): Promise<unknown>;
     private bootstrap;
     private require;
+    private startAi;
+    private pollAi;
+    private cancelAi;
+    private resultAi;
+    private requireAi;
     private requireDynamic;
     private list;
     private create;

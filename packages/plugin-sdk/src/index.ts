@@ -10,6 +10,8 @@ import type {
   PluginBootstrap,
   Service,
   MutationOptions,
+  AiRequestStartPayload,
+  AiRequestIdPayload,
 } from "./generated.js";
 
 export * from "./generated.js";
@@ -49,6 +51,10 @@ export interface PluginRpcClient {
   beginAssetReplace(input: AssetReplaceRequest, options?: MutationOptions): Promise<AssetReplaceHandle>;
   commitAssetReplace(handle: string, contentHash: string, options?: MutationOptions): Promise<unknown>;
   cancelAssetTransfer(handle: string): Promise<void>;
+  startAiRequest(request: AiRequestStartPayload): Promise<AiRequestIdPayload>;
+  pollAiRequest(requestId: string): Promise<unknown[]>;
+  cancelAiRequest(requestId: string): Promise<void>;
+  getAiResult(requestId: string): Promise<unknown>;
 }
 
 export interface AssetReadHandle {
@@ -271,6 +277,10 @@ export function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcC
     beginAssetReplace: (input, options) => callTransport<AssetReplaceHandle>(transport, "asset.replace.begin", input, options?.requestId),
     commitAssetReplace: (handle, contentHash, options) => callTransport<unknown>(transport, "asset.replace.commit", { handle, contentHash }, options?.requestId),
     cancelAssetTransfer: (handle) => callTransport<void>(transport, "asset.transfer.cancel", { handle }),
+    startAiRequest: (request) => callTransport<AiRequestIdPayload>(transport, "ai.request.start", request),
+    pollAiRequest: (requestId) => callTransport<unknown[]>(transport, "ai.request.poll", { requestId }),
+    cancelAiRequest: (requestId) => callTransport<void>(transport, "ai.request.cancel", { requestId }),
+    getAiResult: (requestId) => callTransport<unknown>(transport, "ai.request.result", { requestId }),
   };
 }
 
@@ -288,6 +298,7 @@ export async function uploadAssetChunks(
 }
 
 const knownCapabilities = new Set([
+  "ai.text.generate", "ai.text.generate-structured",
   "entity.read", "entity.write", "entity.delete", "document.read", "document.write",
   "field.read:self", "field.read:shared", "field.write:self", "relationship.read",
   "relationship.write", "asset.read:self", "asset.write:self", "asset.register", "search.query",

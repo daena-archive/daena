@@ -55,6 +55,12 @@ pub enum RpcCapability {
     ServiceCall,
     /// Asset methods that first require ownership of the payload namespace.
     OwnedNamespace(&'static [&'static str]),
+    /// AI lifecycle methods retain the operation grant without exposing the
+    /// provider or caller identity to the plugin.
+    AiRequest,
+    /// Lifecycle methods accept either text AI grant; the host still binds the
+    /// request ID to the authorized session before dispatch.
+    AnyStatic(&'static [&'static str]),
 }
 
 impl RpcCapability {
@@ -66,6 +72,16 @@ impl RpcCapability {
         match self {
             RpcCapability::Static(capabilities) => {
                 Ok(capabilities.iter().map(|capability| capability.to_string()).collect())
+            }
+            RpcCapability::AnyStatic(capabilities) => {
+                Ok(vec![capabilities.join("|")])
+            }
+            RpcCapability::AiRequest => {
+                match payload.get("operation").and_then(Value::as_str) {
+                    Some("generate_text") => Ok(vec!["ai.text.generate".into()]),
+                    Some("generate_structured") => Ok(vec!["ai.text.generate-structured".into()]),
+                    _ => Err(deny("payload.invalid", "unsupported AI operation")),
+                }
             }
             RpcCapability::EntityCreate => {
                 let mut capabilities = vec!["entity.write".into()];
@@ -240,6 +256,10 @@ pub const RPC_METHOD_CATALOG: &[RpcMethodDef] = &[
     RpcMethodDef { name: "event.subscribe", payload_schema: "EventTypePayload", requires_revision: false, capability: RpcCapability::EventSubscribe },
     RpcMethodDef { name: "event.poll", payload_schema: "EventTypePayload", requires_revision: false, capability: RpcCapability::EventSubscribe },
     RpcMethodDef { name: "service.call", payload_schema: "ServiceCallPayload", requires_revision: false, capability: RpcCapability::ServiceCall },
+    RpcMethodDef { name: "ai.request.start", payload_schema: "AiRequestStartPayload", requires_revision: false, capability: RpcCapability::AiRequest },
+    RpcMethodDef { name: "ai.request.poll", payload_schema: "AiRequestIdPayload", requires_revision: false, capability: RpcCapability::AnyStatic(&["ai.text.generate", "ai.text.generate-structured"]) },
+    RpcMethodDef { name: "ai.request.cancel", payload_schema: "AiRequestIdPayload", requires_revision: false, capability: RpcCapability::AnyStatic(&["ai.text.generate", "ai.text.generate-structured"]) },
+    RpcMethodDef { name: "ai.request.result", payload_schema: "AiRequestIdPayload", requires_revision: false, capability: RpcCapability::AnyStatic(&["ai.text.generate", "ai.text.generate-structured"]) },
 ];
 
 pub fn rpc_method(name: &str) -> Option<&'static RpcMethodDef> {
@@ -258,7 +278,7 @@ mod tests {
             assert!(!entry.payload_schema.is_empty());
             assert!(!entry.name.is_empty());
         }
-        assert_eq!(RPC_METHOD_CATALOG.len(), 32);
+        assert_eq!(RPC_METHOD_CATALOG.len(), 36);
         let revision_methods = RPC_METHOD_CATALOG
             .iter()
             .filter(|entry| entry.requires_revision)

@@ -2,8 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Component, Path};
 use std::io::{Cursor, Read};
+use std::path::{Component, Path};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -25,8 +25,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
 
-mod settings;
 mod ai;
+mod settings;
 
 use settings::{AppSettings, AppSettingsUpdate, SettingsStore};
 
@@ -38,6 +38,22 @@ type SharedSettings = Arc<Mutex<SettingsStore>>;
 const MAX_ASSET_TRANSFER_BYTES: usize = 64 * 1024 * 1024;
 const ASSET_TRANSFER_TTL: Duration = Duration::from_secs(60);
 const BUNDLED_FMG_ARCHIVE: &[u8] = include_bytes!("../plugin-assets/maps/fmg-v1.119.zip");
+
+fn cancel_ai_requests_for(
+    plugins: &SharedPluginHost,
+    runtime: &ai::SharedAiRuntime,
+    project_id: &str,
+    plugin_id: Option<&str>,
+) -> Result<(), String> {
+    let mut host = plugins
+        .lock()
+        .map_err(|_| "plugin host lock poisoned".to_string())?;
+    for request_id in host.ai_request_ids_for(project_id, plugin_id) {
+        let _ = ai::cancel_ai_request(runtime, &request_id);
+        host.remove_ai_request(&request_id);
+    }
+    Ok(())
+}
 // Child plugin webviews must not keep a usable Tauri IPC bridge. Newer WebKit
 // builds may already seal __TAURI_INTERNALS__; throwing here aborts Global Code
 // and prevents the Maps shell from loading, so neutralize fail-soft.
@@ -279,10 +295,7 @@ impl BinaryTransferManager {
                 if bytes.len() != *declared_size {
                     return Err("asset upload is incomplete".into());
                 }
-                let digest = format!(
-                    "sha256:{:x}",
-                    Sha256::digest(bytes)
-                );
+                let digest = format!("sha256:{:x}", Sha256::digest(bytes));
                 if digest != content_hash {
                     return Err("asset upload content hash does not match bytes".into());
                 }
@@ -321,10 +334,7 @@ impl BinaryTransferManager {
                 if bytes.len() != *declared_size {
                     return Err("asset upload is incomplete".into());
                 }
-                let digest = format!(
-                    "sha256:{:x}",
-                    Sha256::digest(bytes)
-                );
+                let digest = format!("sha256:{:x}", Sha256::digest(bytes));
                 if digest != content_hash {
                     return Err("asset upload content hash does not match bytes".into());
                 }
@@ -334,7 +344,12 @@ impl BinaryTransferManager {
         }
     }
 
-    fn complete_upload(&mut self, token: &str, plugin_id: &str, session_id: &str) -> Result<(), String> {
+    fn complete_upload(
+        &mut self,
+        token: &str,
+        plugin_id: &str,
+        session_id: &str,
+    ) -> Result<(), String> {
         let Some(transfer) = self.transfers.remove(token) else {
             return Err("asset upload handle is invalid or expired".into());
         };
@@ -471,7 +486,8 @@ fn sanitize_bundled_maps_html(bytes: Vec<u8>) -> Vec<u8> {
         Ok(html) => html,
         Err(error) => return error.into_bytes(),
     };
-    let Some(start) = html.find("<script async src=\"https://www.googletagmanager.com/gtag/js") else {
+    let Some(start) = html.find("<script async src=\"https://www.googletagmanager.com/gtag/js")
+    else {
         return html.into_bytes();
     };
     let Some(external_end) = html[start..].find("</script>") else {
@@ -503,7 +519,9 @@ fn bundled_maps_asset(path: &str) -> Option<(Vec<u8>, &'static str)> {
         path.strip_prefix("/Fantasy-Map-Generator/")?
     };
     if relative.is_empty()
-        || relative.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        || relative
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
     {
         return None;
     }
@@ -517,7 +535,10 @@ fn bundled_maps_asset(path: &str) -> Option<(Vec<u8>, &'static str)> {
     if relative == "index.html" {
         bytes = sanitize_bundled_maps_html(bytes);
     }
-    let content_type = match Path::new(relative).extension().and_then(|value| value.to_str()) {
+    let content_type = match Path::new(relative)
+        .extension()
+        .and_then(|value| value.to_str())
+    {
         Some("html") => "text/html",
         Some("js") | Some("mjs") => "text/javascript",
         Some("css") => "text/css",
@@ -630,43 +651,43 @@ fn plugin_asset_response(
                     .unwrap();
             }
         } else {
-        let (bytes, content_type): (&[u8], &str) = match (plugin_id, path) {
-            ("daena.lore", "/dist/ui/index.html") => (
-                include_bytes!("../plugin-assets/lore/index.html"),
-                "text/html",
-            ),
-            ("daena.timeline", "/dist/ui/index.html") => (
-                include_bytes!("../plugin-assets/timeline/index.html"),
-                "text/html",
-            ),
-            ("daena.writing", "/dist/ui/index.html") => (
-                include_bytes!("../plugin-assets/writing/index.html"),
-                "text/html",
-            ),
-            (_, "/dist/ui/plugin.js") => (
-                include_bytes!("../plugin-assets/shared/plugin.js"),
-                "text/javascript",
-            ),
-            (_, "/dist/ui/plugin-sdk.js") => (
-                include_bytes!("../../packages/plugin-sdk/dist/index.js"),
-                "text/javascript",
-            ),
-            (_, "/dist/ui/generated.js") => (
-                include_bytes!("../../packages/plugin-sdk/dist/generated.js"),
-                "text/javascript",
-            ),
-            (_, "/dist/ui/plugin.css") => (
-                include_bytes!("../plugin-assets/shared/plugin.css"),
-                "text/css",
-            ),
-            _ => {
-                return tauri::http::Response::builder()
-                    .status(404)
-                    .body(Vec::new())
-                    .unwrap()
-            }
-        };
-        (bytes.to_vec(), content_type)
+            let (bytes, content_type): (&[u8], &str) = match (plugin_id, path) {
+                ("daena.lore", "/dist/ui/index.html") => (
+                    include_bytes!("../plugin-assets/lore/index.html"),
+                    "text/html",
+                ),
+                ("daena.timeline", "/dist/ui/index.html") => (
+                    include_bytes!("../plugin-assets/timeline/index.html"),
+                    "text/html",
+                ),
+                ("daena.writing", "/dist/ui/index.html") => (
+                    include_bytes!("../plugin-assets/writing/index.html"),
+                    "text/html",
+                ),
+                (_, "/dist/ui/plugin.js") => (
+                    include_bytes!("../plugin-assets/shared/plugin.js"),
+                    "text/javascript",
+                ),
+                (_, "/dist/ui/plugin-sdk.js") => (
+                    include_bytes!("../../packages/plugin-sdk/dist/index.js"),
+                    "text/javascript",
+                ),
+                (_, "/dist/ui/generated.js") => (
+                    include_bytes!("../../packages/plugin-sdk/dist/generated.js"),
+                    "text/javascript",
+                ),
+                (_, "/dist/ui/plugin.css") => (
+                    include_bytes!("../plugin-assets/shared/plugin.css"),
+                    "text/css",
+                ),
+                _ => {
+                    return tauri::http::Response::builder()
+                        .status(404)
+                        .body(Vec::new())
+                        .unwrap()
+                }
+            };
+            (bytes.to_vec(), content_type)
         }
     };
     let manifest = package_manifest.cloned().or_else(|| {
@@ -781,6 +802,7 @@ fn plugin_protocol_response(
     core: &SharedCore,
     plugins: &SharedPluginHost,
     transfers: &SharedBinaryTransfers,
+    ai_runtime: &ai::SharedAiRuntime,
 ) -> tauri::http::Response<Vec<u8>> {
     if request.body().len() > daena_plugin_host::runtime::MAX_RPC_BYTES {
         return json_response(
@@ -912,8 +934,8 @@ fn plugin_protocol_response(
                 if current_project.as_deref() != Some(session.project_id.as_str()) {
                     return Err("plugin session is not bound to the open project".into());
                 }
-                let publish_payload = (request.method == "event.publish")
-                    .then(|| request.payload.clone());
+                let publish_payload =
+                    (request.method == "event.publish").then(|| request.payload.clone());
                 let value = if matches!(
                     request.method.as_str(),
                     "asset.read.begin"
@@ -935,7 +957,14 @@ fn plugin_protocol_response(
                     )?
                 } else if matches!(
                     request.method.as_str(),
-                    "event.subscribe" | "event.poll" | "event.publish" | "service.call"
+                    "event.subscribe"
+                        | "event.poll"
+                        | "event.publish"
+                        | "service.call"
+                        | "ai.request.start"
+                        | "ai.request.poll"
+                        | "ai.request.cancel"
+                        | "ai.request.result"
                 ) {
                     dispatch_host_rpc(
                         plugins,
@@ -943,6 +972,12 @@ fn plugin_protocol_response(
                         &session.project_id,
                         &request.method,
                         request.payload,
+                        AiBrokerContext {
+                            app: APP_HANDLE.get().cloned(),
+                            settings: None,
+                            ai_runtime: ai_runtime.clone(),
+                            session_id: session.id.clone(),
+                        },
                     )?
                 } else {
                     let mut core = core.lock().map_err(|_| "core lock poisoned".to_string())?;
@@ -1153,8 +1188,7 @@ fn dispatch_binary_asset_rpc(
                 .into_iter()
                 .any(|entity| {
                     entity.id == entity_id
-                        && entity.entity_type.as_deref()
-                            == Some(daena_core::maps::MAP_ENTITY_TYPE)
+                        && entity.entity_type.as_deref() == Some(daena_core::maps::MAP_ENTITY_TYPE)
                 });
             if !exists {
                 return Err("map entity not found".into());
@@ -1204,9 +1238,8 @@ fn dispatch_binary_asset_rpc(
             )?;
             drop(manager);
             let source_path = std::env::temp_dir().join(format!("daena-map-{entity_id}.map"));
-            std::fs::write(&source_path, &bytes).map_err(|error| {
-                format!("write map source temp file: {error}")
-            })?;
+            std::fs::write(&source_path, &bytes)
+                .map_err(|error| format!("write map source temp file: {error}"))?;
             let result = project
                 .register_asset_file_with_request(
                     AssetFileInput {
@@ -1280,8 +1313,7 @@ fn dispatch_binary_asset_rpc(
                 .into_iter()
                 .any(|entity| {
                     entity.id == entity_id
-                        && entity.entity_type.as_deref()
-                            == Some(daena_core::maps::MAP_ENTITY_TYPE)
+                        && entity.entity_type.as_deref() == Some(daena_core::maps::MAP_ENTITY_TYPE)
                 });
             if !exists {
                 return Err("map entity not found".into());
@@ -1332,11 +1364,7 @@ fn dispatch_binary_asset_rpc(
                 .lock()
                 .map_err(|_| "asset transfer state is unavailable".to_string())?;
             manager.complete_upload(token, &session.plugin_id, &session.id)?;
-            let file_name = path
-                .rsplit('/')
-                .next()
-                .unwrap_or(&path)
-                .to_string();
+            let file_name = path.rsplit('/').next().unwrap_or(&path).to_string();
             Ok(serde_json::json!({"path": path, "fileName": file_name}))
         }
         _ => Err("unknown binary asset operation".into()),
@@ -1384,7 +1412,10 @@ fn open_plugin_webview(
     tauri::WebviewWindowBuilder::new(
         app,
         policy.label,
-        tauri::WebviewUrl::External(url.parse().map_err(|error| format!("invalid plugin URL: {error}"))?),
+        tauri::WebviewUrl::External(
+            url.parse()
+                .map_err(|error| format!("invalid plugin URL: {error}"))?,
+        ),
     )
     .use_https_scheme(true)
     .initialization_script(PLUGIN_WEBVIEW_ISOLATION_SCRIPT)
@@ -1614,10 +1645,7 @@ async fn plugin_mount_webview(
         .use_https_scheme(true)
         .initialization_script(PLUGIN_WEBVIEW_ISOLATION_SCRIPT)
         .on_page_load(move |webview, payload| {
-            if matches!(
-                payload.event(),
-                tauri::webview::PageLoadEvent::Finished
-            ) {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 let bounds = embedded_webview_states()
                     .lock()
                     .ok()
@@ -2071,6 +2099,8 @@ async fn plugin_rpc(
     window: tauri::WebviewWindow,
     core: tauri::State<'_, SharedCore>,
     state: tauri::State<'_, SharedPluginHost>,
+    settings: tauri::State<'_, SharedSettings>,
+    ai_runtime: tauri::State<'_, ai::SharedAiRuntime>,
     request: RpcRequest,
 ) -> Result<RpcResponse, String> {
     let mut request = request;
@@ -2138,7 +2168,14 @@ async fn plugin_rpc(
         Err("plugin session is not bound to the open project".to_string())
     } else if matches!(
         method.as_str(),
-        "event.subscribe" | "event.poll" | "event.publish" | "service.call"
+        "event.subscribe"
+            | "event.poll"
+            | "event.publish"
+            | "service.call"
+            | "ai.request.start"
+            | "ai.request.poll"
+            | "ai.request.cancel"
+            | "ai.request.result"
     ) {
         dispatch_host_rpc(
             &state,
@@ -2146,11 +2183,16 @@ async fn plugin_rpc(
             &session.project_id,
             &method,
             payload,
+            AiBrokerContext {
+                app: Some(window.app_handle().clone()),
+                settings: Some(settings.inner().clone()),
+                ai_runtime: ai_runtime.inner().clone(),
+                session_id: session.id.clone(),
+            },
         )
     } else {
         let project_id = session.project_id;
-        let request_id_for_dispatch =
-            sanitize_mutation_request_id(&request_id).map(str::to_owned);
+        let request_id_for_dispatch = sanitize_mutation_request_id(&request_id).map(str::to_owned);
         with_core(core, move |core| {
             let current_project = core
                 .info()
@@ -2192,12 +2234,20 @@ async fn plugin_rpc(
     }
 }
 
+struct AiBrokerContext {
+    app: Option<tauri::AppHandle>,
+    settings: Option<SharedSettings>,
+    ai_runtime: ai::SharedAiRuntime,
+    session_id: String,
+}
+
 fn dispatch_host_rpc(
     plugins: &SharedPluginHost,
     plugin_id: &str,
     project_id: &str,
     method: &str,
     payload: serde_json::Value,
+    context: AiBrokerContext,
 ) -> Result<serde_json::Value, String> {
     let mut host = plugins
         .lock()
@@ -2230,6 +2280,125 @@ fn dispatch_host_rpc(
                 std::time::Duration::from_millis(deadline_ms),
             )
             .map_err(|error| error.to_string());
+    }
+
+    if method.starts_with("ai.request.") {
+        drop(host);
+        let request_id_value = payload.get("requestId").and_then(serde_json::Value::as_str);
+        if method == "ai.request.start" {
+            let operation = payload
+                .get("operation")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "AI operation is required".to_string())?;
+            let instruction = payload
+                .get("userInstruction")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "AI instruction is required".to_string())?;
+            let immediate_context = payload
+                .get("immediateContext")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let deadline_ms = payload
+                .get("deadlineMs")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(daena_ai::DEFAULT_LIMITS.default_deadline.as_millis() as u64)
+                .clamp(
+                    1,
+                    daena_ai::DEFAULT_LIMITS.default_deadline.as_millis() as u64,
+                );
+            let selection = immediate_context
+                .get("selection")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let settings = context
+                .settings
+                .map(|settings| {
+                    settings
+                        .lock()
+                        .map_err(|_| "settings lock poisoned".to_string())
+                        .and_then(|store| store.load())
+                })
+                .transpose()?
+                .unwrap_or_default();
+            let started = match operation {
+                "generate_text" => ai::start_ai_request(
+                    context.app.clone(),
+                    context.ai_runtime.clone(),
+                    settings.ai.local_endpoint,
+                    settings.ai.local_model,
+                    instruction.to_string(),
+                    selection,
+                    None,
+                    std::time::Duration::from_millis(deadline_ms),
+                )?,
+                "generate_structured" => {
+                    let contract = payload.get("outputContract").cloned().ok_or_else(|| {
+                        "structured AI requests require outputContract".to_string()
+                    })?;
+                    ai::validate_structured_schema(&contract)?;
+                    ai::start_ai_request(
+                        context.app.clone(),
+                        context.ai_runtime.clone(),
+                        settings.ai.local_endpoint,
+                        settings.ai.local_model,
+                        instruction.to_string(),
+                        immediate_context.to_string(),
+                        Some(contract),
+                        std::time::Duration::from_millis(deadline_ms),
+                    )?
+                }
+                _ => return Err("unsupported AI operation".into()),
+            };
+            let mut host = plugins
+                .lock()
+                .map_err(|_| "plugin host lock poisoned".to_string())?;
+            host.register_ai_request(
+                &started,
+                project_id,
+                plugin_id,
+                &context.session_id,
+                operation,
+                payload.get("outputContract").cloned(),
+            );
+            return Ok(serde_json::json!({ "requestId": started }));
+        }
+        let target = request_id_value.ok_or_else(|| "AI requestId is required".to_string())?;
+        let mut host = plugins
+            .lock()
+            .map_err(|_| "plugin host lock poisoned".to_string())?;
+        let operation = host
+            .authorize_ai_request(target, project_id, plugin_id, &context.session_id)
+            .map_err(|error| error.to_string())?;
+        let contract = host.ai_contract(target);
+        match method {
+            "ai.request.poll" => {
+                return serde_json::to_value(
+                    ai::poll_ai_events(&context.ai_runtime, target)
+                        .map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())
+            }
+            "ai.request.cancel" => {
+                ai::cancel_ai_request(&context.ai_runtime, target)?;
+                return Ok(serde_json::Value::Null);
+            }
+            "ai.request.result" => {
+                let output = ai::ai_request_result(&context.ai_runtime, target)?;
+                if operation == "generate_structured" {
+                    let value: serde_json::Value = serde_json::from_str(&output)
+                        .map_err(|_| "structured AI output is not valid JSON".to_string())?;
+                    if let Some(contract) = contract.as_ref() {
+                        ai::validate_structured_output(contract, &value)?;
+                    }
+                    host.remove_ai_request(target);
+                    return Ok(value);
+                }
+                host.remove_ai_request(target);
+                return Ok(serde_json::json!({ "output": output }));
+            }
+            _ => return Err("unknown AI request method".into()),
+        }
     }
 
     let event_type = payload
@@ -2302,10 +2471,7 @@ fn sync_project_usage(project: &ProjectStore, host: &mut PluginHost) -> Result<(
     module_ids.extend(host.catalog.list().map(|entry| entry.manifest.id.clone()));
 
     for module_id in module_ids {
-        let (enabled, package_version) = states
-            .get(&module_id)
-            .cloned()
-            .unwrap_or((true, None));
+        let (enabled, package_version) = states.get(&module_id).cloned().unwrap_or((true, None));
         if enabled {
             if let Some(version) = package_version {
                 host.record_project_usage(&project_id, &module_id, &version)
@@ -2374,17 +2540,11 @@ fn bundled_plugin_host(core: SharedCore) -> Result<PluginHost, String> {
     // Native provider for the public navigation service. Registered before
     // project activation so the manifest-declared WASM stub is skipped and
     // Lore/Timeline consumers reach the same resolution as the shell command.
-        let navigation = maps_navigation_service_handler(core);
-        host.register_declared_service_provider(
-            "daena.maps",
-            "daena.maps/navigation",
-            1,
-            navigation,
-        )
+    let navigation = maps_navigation_service_handler(core);
+    host.register_declared_service_provider("daena.maps", "daena.maps/navigation", 1, navigation)
         .map_err(|error| error.to_string())?;
     Ok(host)
 }
-
 
 fn core_migrations(
     manifest: &PluginManifest,
@@ -2515,12 +2675,8 @@ async fn module_enable(
             let mut host = plugins
                 .lock()
                 .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
-            host.grant_capabilities(
-                &project_id,
-                &id,
-                granted_capabilities.into_iter().collect(),
-            )
-            .map_err(|error| CoreError::Validation(error.to_string()))?;
+            host.grant_capabilities(&project_id, &id, granted_capabilities.into_iter().collect())
+                .map_err(|error| CoreError::Validation(error.to_string()))?;
             return Ok(());
         }
         let (manifest, package_digest) = {
@@ -2609,6 +2765,7 @@ async fn module_disable(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
+    ai_runtime: tauri::State<'_, ai::SharedAiRuntime>,
     id: String,
 ) -> Result<(), String> {
     let known = plugins
@@ -2621,6 +2778,7 @@ async fn module_disable(
         return Err(format!("unknown bundled plugin: {id}"));
     }
     let plugins = plugins.inner().clone();
+    let ai_runtime = ai_runtime.inner().clone();
     with_core(state, move |core| {
         let project = core.project_mut(trusted_shell())?;
         let project_id = project
@@ -2631,6 +2789,10 @@ async fn module_disable(
         let mut host = plugins
             .lock()
             .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        for request_id in host.ai_request_ids_for(&project_id, Some(&id)) {
+            let _ = ai::cancel_ai_request(&ai_runtime, &request_id);
+            host.remove_ai_request(&request_id);
+        }
         if let Err(error) = host.clear_project_usage(&project_id, &id) {
             project.set_module_enabled(id, true)?;
             return Err(CoreError::Conflict(error.to_string()));
@@ -3304,6 +3466,11 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
         "event.publish" => (&["type", "payload"], &[]),
         "event.subscribe" | "event.poll" => (&["type"], &[]),
         "service.call" => (&["name", "major", "payload"], &["deadlineMs"]),
+        "ai.request.start" => (
+            &["operation", "taskId", "userInstruction", "immediateContext"],
+            &["outputContract", "deadlineMs"],
+        ),
+        "ai.request.poll" | "ai.request.cancel" | "ai.request.result" => (&["requestId"], &[]),
         _ => {
             return Err(CoreError::Validation(format!(
                 "unknown plugin RPC method: {method}"
@@ -3564,11 +3731,9 @@ fn dispatch_module_rpc(
         "maps.recovery.restore" => {
             let entity_id = payload_string(&payload, "mapEntityId")?;
             let file_name = payload_string(&payload, "fileName")?;
-            serde_json::to_value(project.restore_map_recovery_copy(
-                &entity_id,
-                &file_name,
-                request_id,
-            )?)
+            serde_json::to_value(
+                project.restore_map_recovery_copy(&entity_id, &file_name, request_id)?,
+            )
             .map_err(|error| CoreError::Validation(error.to_string()))
         }
         "maps.locations.list" => {
@@ -3591,9 +3756,14 @@ fn dispatch_module_rpc(
 /// has no plugin or project identity parameters; third-party webviews use the
 /// session-bound `plugin_rpc` surface above.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn trusted_module_rpc(
+    app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
+    settings: tauri::State<'_, SharedSettings>,
+    ai_runtime: tauri::State<'_, ai::SharedAiRuntime>,
+    plugin_id: Option<String>,
     method: String,
     payload: serde_json::Value,
     request_id: Option<String>,
@@ -3606,6 +3776,28 @@ async fn trusted_module_rpc(
         .map(|info| info.root)
         .ok_or_else(|| "project is not open".to_string())?;
     let event_method = method.clone();
+    if method.starts_with("ai.request.") {
+        let plugin_id =
+            plugin_id.ok_or_else(|| "bundled AI requests require plugin identity".to_string())?;
+        plugins
+            .lock()
+            .map_err(|_| "plugin host lock poisoned".to_string())?
+            .authorize_bundled(&plugin_id, &project_id, &method, payload.clone())
+            .map_err(|error| error.to_string())?;
+        return dispatch_host_rpc(
+            plugins.inner(),
+            &plugin_id,
+            &project_id,
+            &method,
+            payload,
+            AiBrokerContext {
+                app: Some(app),
+                settings: Some(settings.inner().clone()),
+                ai_runtime: ai_runtime.inner().clone(),
+                session_id: format!("bundled:{plugin_id}"),
+            },
+        );
+    }
     let result = with_core(state, move |core| {
         dispatch_module_rpc(core, &method, payload, request_id.as_deref())
     })
@@ -3651,13 +3843,17 @@ async fn project_open(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
+    ai_runtime: tauri::State<'_, ai::SharedAiRuntime>,
     watcher: tauri::State<'_, SharedProjectWatcher>,
     path: String,
 ) -> Result<(), String> {
     let plugins = plugins.inner().clone();
+    let ai_runtime = ai_runtime.inner().clone();
     let core = state.inner().clone();
     let result = with_core(state, move |core| {
         if let Some(previous_project) = core.info().map(|info| info.root) {
+            cancel_ai_requests_for(&plugins, &ai_runtime, &previous_project, None)
+                .map_err(CoreError::Conflict)?;
             plugins
                 .lock()
                 .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
@@ -3682,13 +3878,17 @@ async fn project_open_directory(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
+    ai_runtime: tauri::State<'_, ai::SharedAiRuntime>,
     watcher: tauri::State<'_, SharedProjectWatcher>,
     path: String,
 ) -> Result<ProjectInfo, String> {
     let plugins = plugins.inner().clone();
+    let ai_runtime = ai_runtime.inner().clone();
     let core = state.inner().clone();
     let result = with_core(state, move |core| {
         if let Some(previous_project) = core.info().map(|info| info.root) {
+            cancel_ai_requests_for(&plugins, &ai_runtime, &previous_project, None)
+                .map_err(CoreError::Conflict)?;
             plugins
                 .lock()
                 .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
@@ -3713,13 +3913,17 @@ async fn project_new(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
+    ai_runtime: tauri::State<'_, ai::SharedAiRuntime>,
     watcher: tauri::State<'_, SharedProjectWatcher>,
     path: String,
 ) -> Result<ProjectInfo, String> {
     let plugins = plugins.inner().clone();
+    let ai_runtime = ai_runtime.inner().clone();
     let core = state.inner().clone();
     let result = with_core(state, move |core| {
         if let Some(previous_project) = core.info().map(|info| info.root) {
+            cancel_ai_requests_for(&plugins, &ai_runtime, &previous_project, None)
+                .map_err(CoreError::Conflict)?;
             plugins
                 .lock()
                 .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
@@ -3744,18 +3948,24 @@ async fn project_close(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
+    ai_runtime: tauri::State<'_, ai::SharedAiRuntime>,
     watcher: tauri::State<'_, SharedProjectWatcher>,
 ) -> Result<(), String> {
     stop_project_watcher(watcher.inner())?;
     let plugins = plugins.inner().clone();
+    let ai_runtime = ai_runtime.inner().clone();
     with_core(state, move |core| {
         let project_id = core.info().map(|info| info.root);
         core.close(trusted_shell())?;
         if let Some(project_id) = project_id {
-            plugins
+            let mut host = plugins
                 .lock()
-                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
-                .deactivate_project(&project_id);
+                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+            for request_id in host.ai_request_ids_for(&project_id, None) {
+                let _ = ai::cancel_ai_request(&ai_runtime, &request_id);
+                host.remove_ai_request(&request_id);
+            }
+            host.deactivate_project(&project_id);
             for entry in plugins
                 .lock()
                 .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
@@ -3885,7 +4095,10 @@ async fn project_git_reset_hard(
 async fn project_git_remote_list(
     state: tauri::State<'_, SharedCore>,
 ) -> Result<Vec<GitRemote>, String> {
-    with_core(state, |core| core.project(trusted_shell())?.git_remote_list()).await
+    with_core(state, |core| {
+        core.project(trusted_shell())?.git_remote_list()
+    })
+    .await
 }
 
 #[tauri::command]
@@ -3932,11 +4145,8 @@ async fn project_git_push(
     force_with_lease: bool,
 ) -> Result<GitStatus, String> {
     with_core(state, move |core| {
-        core.project(trusted_shell())?.git_push(
-            &remote,
-            branch.as_deref(),
-            force_with_lease,
-        )
+        core.project(trusted_shell())?
+            .git_push(&remote, branch.as_deref(), force_with_lease)
     })
     .await
 }
@@ -3953,8 +4163,7 @@ async fn project_git_restore_from_upstream(
 
 #[tauri::command]
 async fn open_external_url(url: String) -> Result<(), String> {
-    let allowed = url == "https://git-scm.com/downloads"
-        || url.starts_with("https://git-scm.com/");
+    let allowed = url == "https://git-scm.com/downloads" || url.starts_with("https://git-scm.com/");
     if !allowed {
         return Err("external URL is not allowlisted".into());
     }
@@ -4026,7 +4235,10 @@ async fn project_create_map(
     state: tauri::State<'_, SharedCore>,
     name: String,
 ) -> Result<Entity, String> {
-    with_core(state, move |core| core.project(trusted_shell())?.create_map(name)).await
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.create_map(name)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -4186,7 +4398,10 @@ async fn project_list_map_locations(
     state: tauri::State<'_, SharedCore>,
     entity_id: String,
 ) -> Result<Vec<daena_core::maps::LocationReference>, String> {
-    with_core(state, move |core| core.project(trusted_shell())?.map_locations(entity_id)).await
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.map_locations(entity_id)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -4196,7 +4411,14 @@ async fn project_upsert_map_location(
     location: daena_core::maps::LocationReference,
     request_id: Option<String>,
 ) -> Result<(), String> {
-    with_core(state, move |core| core.project(trusted_shell())?.upsert_map_location(entity_id, location, request_id.as_deref())).await
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.upsert_map_location(
+            entity_id,
+            location,
+            request_id.as_deref(),
+        )
+    })
+    .await
 }
 
 #[tauri::command]
@@ -4206,7 +4428,14 @@ async fn project_unlink_map_location(
     location_id: String,
     request_id: Option<String>,
 ) -> Result<(), String> {
-    with_core(state, move |core| core.project(trusted_shell())?.unlink_map_location(entity_id, location_id, request_id.as_deref())).await
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.unlink_map_location(
+            entity_id,
+            location_id,
+            request_id.as_deref(),
+        )
+    })
+    .await
 }
 
 /// Versioned host handoff for the public `daena.maps/navigation@1` service.
@@ -4247,25 +4476,22 @@ fn resolve_maps_navigation(
         .map_err(|error| error.to_string())?;
     let outcome = match request.operation.as_str() {
         "openMap" => {
-            let id = request.map_entity_id.clone().ok_or_else(|| {
-                "map-unavailable: mapEntityId is required".to_string()
-            })?;
+            let id = request
+                .map_entity_id
+                .clone()
+                .ok_or_else(|| "map-unavailable: mapEntityId is required".to_string())?;
             let exists = project
                 .list_entities()
                 .map_err(|error| error.to_string())?
                 .into_iter()
                 .any(|entity| {
                     entity.id == id
-                        && entity.entity_type.as_deref()
-                            == Some(daena_core::maps::MAP_ENTITY_TYPE)
+                        && entity.entity_type.as_deref() == Some(daena_core::maps::MAP_ENTITY_TYPE)
                 });
             if !exists {
                 return Err("map-unavailable".into());
             }
-            let link = request
-                .link_id
-                .clone()
-                .map(serde_json::Value::String);
+            let link = request.link_id.clone().map(serde_json::Value::String);
             MapsNavigationOutcome {
                 emit: Some((id.clone(), link)),
                 result: Ok(serde_json::json!({
@@ -4312,10 +4538,7 @@ fn resolve_maps_navigation(
                     }))
                 };
                 MapsNavigationOutcome {
-                    emit: Some((
-                        map_id,
-                        Some(serde_json::Value::String(link_id.to_string())),
-                    )),
+                    emit: Some((map_id, Some(serde_json::Value::String(link_id.to_string())))),
                     result,
                 }
             } else if filtered.is_empty() {
@@ -4346,10 +4569,7 @@ fn resolve_maps_navigation(
                     }))
                 };
                 MapsNavigationOutcome {
-                    emit: Some((
-                        map_id,
-                        Some(serde_json::Value::String(link_id)),
-                    )),
+                    emit: Some((map_id, Some(serde_json::Value::String(link_id)))),
                     result,
                 }
             }
@@ -4458,8 +4678,7 @@ async fn maps_navigation(
         entity_ids,
     };
     let outcome = with_core(state, move |core| {
-        resolve_maps_navigation(core, &request)
-            .map_err(daena_core::CoreError::Validation)
+        resolve_maps_navigation(core, &request).map_err(daena_core::CoreError::Validation)
     })
     .await?;
     if let Some((map_id, link)) = &outcome.emit {
@@ -4476,23 +4695,20 @@ async fn maps_navigation(
 /// on the plugin host before project activation so the manifest-declared WASM
 /// stub is skipped; consumers such as Lore and Timeline reach the same
 /// resolution and shell handoff as the `maps_navigation` Tauri command.
-fn maps_navigation_service_handler(
-    core: SharedCore,
-) -> daena_plugin_host::ServiceHandler {
+fn maps_navigation_service_handler(core: SharedCore) -> daena_plugin_host::ServiceHandler {
     use daena_plugin_host::{HostError, ServiceRequest};
     std::sync::Arc::new(move |request: ServiceRequest| {
         let app = APP_HANDLE
             .get()
             .ok_or_else(|| HostError("map editor is not open".into()))?;
-        let request: MapsNavigationRequest =
-            serde_json::from_value(request.payload.clone()).map_err(|error| {
+        let request: MapsNavigationRequest = serde_json::from_value(request.payload.clone())
+            .map_err(|error| {
                 HostError(format!("invalid daena.maps/navigation@1 payload: {error}"))
             })?;
         let mut core = core
             .lock()
             .map_err(|_| HostError("core lock poisoned".into()))?;
-        let outcome =
-            resolve_maps_navigation(&mut core, &request).map_err(HostError)?;
+        let outcome = resolve_maps_navigation(&mut core, &request).map_err(HostError)?;
         if let Some((map_id, link)) = &outcome.emit {
             let _ = app.emit(
                 "maps-navigation",
@@ -4562,8 +4778,8 @@ async fn maps_editor_set_date(
     let webview = app
         .get_webview(&label)
         .ok_or_else(|| "the map editor is not open".to_string())?;
-    let date = serde_json::to_string(&date)
-        .map_err(|error| format!("serialize overlay date: {error}"))?;
+    let date =
+        serde_json::to_string(&date).map_err(|error| format!("serialize overlay date: {error}"))?;
     webview
         .eval(format!(
             "window.daenaMapProvider && window.daenaMapProvider.setDate && window.daenaMapProvider.setDate({date})"
@@ -4578,8 +4794,8 @@ async fn maps_editor_focus_link(app: tauri::AppHandle, link_id: String) -> Resul
     let webview = app
         .get_webview(&label)
         .ok_or_else(|| "the map editor is not open".to_string())?;
-    let link_id = serde_json::to_string(&link_id)
-        .map_err(|error| format!("serialize link id: {error}"))?;
+    let link_id =
+        serde_json::to_string(&link_id).map_err(|error| format!("serialize link id: {error}"))?;
     webview
         .eval(format!(
             "window.daenaMapProvider && window.daenaMapProvider.focusByLink && window.daenaMapProvider.focusByLink({link_id})"
@@ -4593,7 +4809,8 @@ async fn maps_recovery_list(
     entity_id: String,
 ) -> Result<Vec<daena_core::maps::MapRecoveryCopy>, String> {
     with_core(state, move |core| {
-        core.project(trusted_shell())?.list_map_recovery_copies(&entity_id)
+        core.project(trusted_shell())?
+            .list_map_recovery_copies(&entity_id)
     })
     .await
 }
@@ -4606,8 +4823,11 @@ async fn maps_recovery_restore(
     request_id: Option<String>,
 ) -> Result<Asset, String> {
     with_core(state, move |core| {
-        core.project(trusted_shell())?
-            .restore_map_recovery_copy(&entity_id, &file_name, request_id.as_deref())
+        core.project(trusted_shell())?.restore_map_recovery_copy(
+            &entity_id,
+            &file_name,
+            request_id.as_deref(),
+        )
     })
     .await
 }
@@ -4751,15 +4971,17 @@ async fn migration_apply(
 pub fn run() {
     let core = Arc::new(Mutex::new(CoreService::new()));
     let plugins = Arc::new(Mutex::new(
-        bundled_plugin_host(core.clone()).expect("canonical bundled plugin manifests must validate"),
+        bundled_plugin_host(core.clone())
+            .expect("canonical bundled plugin manifests must validate"),
     ));
     let protocol_core = core.clone();
     let protocol_plugins = plugins.clone();
     let transfers = Arc::new(Mutex::new(BinaryTransferManager::default()));
     let protocol_transfers = transfers.clone();
+    let protocol_ai_runtime = Arc::new(Mutex::new(ai::AiRuntime::default()));
     let startup_plugins = plugins.clone();
     let watcher = Arc::new(Mutex::new(ProjectWatcher::default()));
-    let ai_runtime = Arc::new(Mutex::new(ai::AiRuntime::default()));
+    let ai_runtime = protocol_ai_runtime.clone();
     tauri::Builder::default()
         .setup(move |app| {
             let _ = APP_HANDLE.set(app.handle().clone());
@@ -4792,6 +5014,7 @@ pub fn run() {
                 &protocol_core,
                 &protocol_plugins,
                 &protocol_transfers,
+                &protocol_ai_runtime,
             )
         })
         .plugin(tauri_plugin_opener::init())

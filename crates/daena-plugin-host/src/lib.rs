@@ -4,6 +4,12 @@
 //! owns the facts needed to attribute and authorize a plugin request before a
 //! future core service is called.
 
+use daena_plugin_api::{
+    command_exposes, lifecycle_transition, parse_manifest, validate_command_value, Command,
+    CommandAction, CommandExposure, LifecycleState, NamespaceView, PluginManifest,
+    RpcAuthorizationContext, RpcError, RpcRequest, RpcResponse, View, ViewComponent,
+    RPC_METHOD_CATALOG, RPC_VERSION,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -13,12 +19,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
-use daena_plugin_api::{
-    command_exposes, lifecycle_transition, parse_manifest, validate_command_value, Command,
-    CommandAction, CommandExposure, LifecycleState, NamespaceView, PluginManifest,
-    RpcAuthorizationContext, RpcError, RpcRequest, RpcResponse, View, ViewComponent,
-    RPC_METHOD_CATALOG, RPC_VERSION,
-};
 
 pub mod package;
 pub mod runtime;
@@ -324,10 +324,7 @@ mod grant_store_format {
         LegacyEmpty(BTreeMap<String, BTreeSet<String>>),
     }
 
-    pub fn serialize<S>(
-        grants: &CapabilityGrants,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(grants: &CapabilityGrants, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -342,9 +339,7 @@ mod grant_store_format {
             .serialize(serializer)
     }
 
-    pub fn deserialize<'de, D>(
-        deserializer: D,
-    ) -> Result<CapabilityGrants, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<CapabilityGrants, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -402,18 +397,14 @@ impl GrantStore {
         self.get(project_id, plugin_id).is_empty()
     }
 
-    pub fn insert_loaded(
-        &mut self,
-        project_id: &str,
-        plugin_id: &str,
-        granted: BTreeSet<String>,
-    ) {
+    pub fn insert_loaded(&mut self, project_id: &str, plugin_id: &str, granted: BTreeSet<String>) {
         self.grants
             .insert((project_id.into(), plugin_id.into()), granted);
     }
 
     pub fn clear_project(&mut self, project_id: &str) {
-        self.grants.retain(|(entry_project, _), _| entry_project != project_id);
+        self.grants
+            .retain(|(entry_project, _), _| entry_project != project_id);
     }
 
     pub fn take_project(&mut self, project_id: &str) -> Vec<(String, BTreeSet<String>)> {
@@ -1468,6 +1459,7 @@ pub struct PluginHost {
     legacy_grants: GrantStore,
     /// Open-project grant file paths keyed by project id (directory root).
     project_grant_paths: BTreeMap<String, PathBuf>,
+    ai_requests: BTreeMap<String, (String, String, String, String, Option<serde_json::Value>)>,
 }
 
 impl Default for PluginHost {
@@ -1494,6 +1486,7 @@ impl PluginHost {
             project_usage: BTreeMap::new(),
             legacy_grants: GrantStore::default(),
             project_grant_paths: BTreeMap::new(),
+            ai_requests: BTreeMap::new(),
         }
     }
 
@@ -2612,6 +2605,72 @@ impl PluginHost {
         self.authorize(&session.origin, &request)
             .map_err(|error| HostError(format!("{}: {}", error.code, error.message)))
     }
+
+    pub fn register_ai_request(
+        &mut self,
+        request_id: &str,
+        project_id: &str,
+        plugin_id: &str,
+        session_id: &str,
+        operation: &str,
+        output_contract: Option<serde_json::Value>,
+    ) {
+        if self.ai_requests.len() >= 256 {
+            if let Some(oldest) = self.ai_requests.keys().next().cloned() {
+                self.ai_requests.remove(&oldest);
+            }
+        }
+        self.ai_requests.insert(
+            request_id.to_string(),
+            (
+                project_id.to_string(),
+                plugin_id.to_string(),
+                session_id.to_string(),
+                operation.to_string(),
+                output_contract,
+            ),
+        );
+    }
+
+    pub fn authorize_ai_request(
+        &self,
+        request_id: &str,
+        project_id: &str,
+        plugin_id: &str,
+        session_id: &str,
+    ) -> Result<String, HostError> {
+        let Some((bound_project, bound_plugin, bound_session, operation, _contract)) =
+            self.ai_requests.get(request_id)
+        else {
+            return Err(HostError("AI request does not exist".into()));
+        };
+        if bound_project != project_id || bound_plugin != plugin_id || bound_session != session_id {
+            return Err(HostError(
+                "AI request is not bound to this plugin session".into(),
+            ));
+        }
+        Ok(operation.clone())
+    }
+
+    pub fn ai_contract(&self, request_id: &str) -> Option<serde_json::Value> {
+        self.ai_requests
+            .get(request_id)
+            .and_then(|entry| entry.4.clone())
+    }
+
+    pub fn ai_request_ids_for(&self, project_id: &str, plugin_id: Option<&str>) -> Vec<String> {
+        self.ai_requests
+            .iter()
+            .filter_map(|(id, (project, plugin, ..))| {
+                (project == project_id && plugin_id.is_none_or(|expected| expected == plugin))
+                    .then(|| id.clone())
+            })
+            .collect()
+    }
+
+    pub fn remove_ai_request(&mut self, request_id: &str) {
+        self.ai_requests.remove(request_id);
+    }
     pub fn rpc(&self, origin: &str, request: &RpcRequest) -> RpcResponse {
         let result = self
             .authorize_rpc(origin, request)
@@ -2665,9 +2724,11 @@ impl PluginHost {
         let missing = capabilities
             .iter()
             .filter(|capability| {
-                !grants
-                    .iter()
-                    .any(|grant| capability_matches(grant, capability))
+                !capability.split('|').any(|candidate| {
+                    grants
+                        .iter()
+                        .any(|grant| capability_matches(grant, candidate))
+                })
             })
             .map(String::as_str)
             .collect::<Vec<_>>();
@@ -2860,10 +2921,7 @@ fn validate_schema_resource(
                 ));
             }
         }
-        "asset.list"
-        | "asset.register"
-        | "asset.read.begin"
-        | "asset.replace.begin" => {
+        "asset.list" | "asset.register" | "asset.read.begin" | "asset.replace.begin" => {
             let namespace = payload
                 .get("namespace")
                 .and_then(serde_json::Value::as_str)
@@ -3048,7 +3106,13 @@ fn required_capabilities(
     let entry = RPC_METHOD_CATALOG
         .iter()
         .find(|entry| entry.name == method)
-        .ok_or_else(|| rpc_error("method.unknown", "unknown or unavailable plugin method", false))?;
+        .ok_or_else(|| {
+            rpc_error(
+                "method.unknown",
+                "unknown or unavailable plugin method",
+                false,
+            )
+        })?;
     let context = RpcAuthorizationContext {
         plugin_id: &session.plugin_id,
         namespaces,

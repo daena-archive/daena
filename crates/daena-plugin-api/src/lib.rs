@@ -13,6 +13,8 @@ pub const MANIFEST_VERSION: u32 = 1;
 pub const RPC_VERSION: u32 = 1;
 
 pub const KNOWN_CAPABILITIES: &[&str] = &[
+    "ai.text.generate",
+    "ai.text.generate-structured",
     "entity.read",
     "entity.write",
     "entity.delete",
@@ -44,6 +46,8 @@ pub struct CapabilityEntry {
 }
 
 pub const CAPABILITY_REGISTRY: &[CapabilityEntry] = &[
+    CapabilityEntry { id: "ai.text.generate", resource: "ai.inference", operations: &["text"], confirmation: None },
+    CapabilityEntry { id: "ai.text.generate-structured", resource: "ai.inference", operations: &["structured-text"], confirmation: None },
     CapabilityEntry { id: "entity.read", resource: "project.entities", operations: &["read"], confirmation: None },
     CapabilityEntry { id: "entity.write", resource: "project.entities", operations: &["create", "update"], confirmation: None },
     CapabilityEntry { id: "entity.delete", resource: "project.entities", operations: &["delete"], confirmation: Some("interactive") },

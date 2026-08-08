@@ -64,4 +64,30 @@ await assert.rejects(
   (error) => error?.code === "revision-conflict",
 );
 await revisionClient.deleteEntity(created.id, { expectedRevision: updated.revision });
+
+const aiHost = new FakePluginHost({
+  manifest,
+  grants: ["ai.text.generate-structured"],
+});
+const aiClient = aiHost.client();
+const aiRequest = await aiClient.startAiRequest({
+  operation: "generate_structured",
+  taskId: "conformance.biography",
+  userInstruction: "draft a biography",
+  immediateContext: { name: "Ada" },
+  outputContract: { type: "object", properties: { name: { type: "string" } }, required: ["name"], additionalProperties: false },
+});
+const aiEvents = await aiClient.pollAiRequest(aiRequest.requestId);
+assert.equal(aiEvents.at(-1)?.phase, "completed");
+assert.deepEqual(await aiClient.getAiResult(aiRequest.requestId), { name: "Ada" });
+await assert.rejects(
+  aiClient.startAiRequest({
+    operation: "generate_text",
+    taskId: "conformance.text",
+    userInstruction: "text",
+    immediateContext: {},
+    outputContract: null,
+  }),
+  (error) => error?.code === "capability-denied",
+);
 console.log(`plugin conformance passed (${brokerChecks} broker checks across ${fixturePaths.length} fixtures + lifecycle install/enable/upgrade/rollback/uninstall checks)`);

@@ -12,6 +12,8 @@ import type {
   Relationship,
   UUID,
   MutationOptions,
+  StructuredAiHandle,
+  StructuredAiRequest,
 } from "../../../packages/module-api/src/index";
 import { invoke } from "@tauri-apps/api/core";
 import { createPluginRpcClient } from "../../../packages/plugin-sdk/src/index";
@@ -158,11 +160,12 @@ export function buildModuleContext(
   projectId: string,
 ): ModuleContext {
   void projectId;
-  const rpc = createPluginRpcClient({
+      const rpc = createPluginRpcClient({
     call: (method, payload, requestId) => invoke("trusted_module_rpc", {
       method,
       payload,
       requestId: requestId ?? crypto.randomUUID(),
+      pluginId: manifest.id,
     }),
   });
   return {
@@ -298,6 +301,25 @@ export function buildModuleContext(
       checkCapability(manifest, "search.query");
       const entities = await rpc.call<RawEntity[]>("search.query", { query });
       return entities.map(toEntitySummary);
+    },
+    ai: {
+      startStructured: async (request: StructuredAiRequest): Promise<StructuredAiHandle> => {
+        checkCapability(manifest, "ai.text.generate-structured");
+        const started = await rpc.startAiRequest({
+          operation: "generate_structured",
+          taskId: request.taskId,
+          userInstruction: request.userInstruction,
+          immediateContext: request.immediateContext,
+          outputContract: request.outputContract,
+          deadlineMs: request.deadlineMs,
+        });
+        return {
+          requestId: started.requestId,
+          poll: () => rpc.pollAiRequest(started.requestId),
+          cancel: () => rpc.cancelAiRequest(started.requestId),
+          result: () => rpc.getAiResult(started.requestId),
+        };
+      },
     },
     maps: {
       openMap: async (input) => await invoke("maps_navigation", { operation: "openMap", map_entity_id: input.mapEntityId, link_id: input.linkId ?? null, entity_id: null }),

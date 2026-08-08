@@ -255,6 +255,17 @@ export interface EntityCreateRelationship {
     relationship_type: string;
     target_ids: string[];
 }
+export interface AiRequestIdPayload {
+    requestId: string;
+}
+export interface AiRequestStartPayload {
+    deadlineMs?: number | null;
+    immediateContext: unknown;
+    operation: string;
+    outputContract?: unknown;
+    taskId: string;
+    userInstruction: string;
+}
 export interface AssetListPayload {
     entityId: string;
     namespace?: string | null;
@@ -397,6 +408,10 @@ export interface ServiceCallPayload {
     payload: unknown;
 }
 export interface BrokerMethodPayloads {
+    "ai.request.cancel": AiRequestIdPayload;
+    "ai.request.poll": AiRequestIdPayload;
+    "ai.request.result": AiRequestIdPayload;
+    "ai.request.start": AiRequestStartPayload;
     "asset.list": AssetListPayload;
     "asset.read.begin": AssetReadBeginPayload;
     "asset.register": AssetRegisterPayload;

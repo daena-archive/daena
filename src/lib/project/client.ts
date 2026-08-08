@@ -113,7 +113,7 @@ export interface AiProviderStatus {
 export interface AiStreamEvent {
   sequence: number;
   requestId: string;
-  phase: "started" | "delta" | "completed" | "cancelled" | "failed";
+  phase: "started" | "delta" | "completed" | "cancelled" | "deadline_exceeded" | "failed";
   delta: string | null;
   output: string | null;
   error: string | null;

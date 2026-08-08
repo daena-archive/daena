@@ -20,15 +20,18 @@ If this document conflicts with those boundaries, the stricter authority and
 storage rule wins. AI must not become an alternative data model, plugin bridge,
 filesystem API, network capability, or mutation authority.
 
-Status as of 2026-08-08: **architecture approved; Phase 0 is complete and Phase
-1 implementation is present in the worktree**. The `daena-ai` contracts,
+Status as of 2026-08-08: **architecture approved; Phase 0 is complete, Phase
+1 implementation is present, and Phase 2 broker implementation is present in
+the worktree**. The `daena-ai` contracts,
 deterministic fake-provider tests, hard limits, ADRs, bounded-stream transport
 decision/tests, LM Studio local discovery, normalized streaming/error handling,
 buffered event lifecycle, and trusted-shell rewrite preview path are present.
 The remaining Phase 1 evidence is a rendered Tauri validation with a running LM
-Studio instance; embeddings, remote providers, plugin AI access, and
-project-wide retrieval remain later phases. Agents must verify the worktree and
-current source before relying on this status.
+Studio instance; Phase 2 broker execution, conformance, lifecycle, deadline,
+and oversized-output evidence is complete, while rendered Tauri/LM Studio
+validation remains pending; embeddings, remote providers, and project-wide
+retrieval remain later phases. Agents must verify the worktree and current source before relying on
+this status.
 
 The product goal is not a generic chatbot embedded in Daena. The goal is to make
 Daena's canonical documents, shared entity graph, structured fields,
@@ -1127,6 +1130,12 @@ Deliver:
 
 Context remains explicit and caller-supplied from already-readable data. No
 semantic index or implicit project-wide retrieval yet.
+
+For `generate_text`, `immediateContext` is an object containing a non-empty
+`selection` string. For `generate_structured`, `immediateContext` is arbitrary
+caller-supplied JSON and the required `outputContract` defines the strict
+result shape. Both requests are bounded by the host deadline and output limit;
+the provider never receives broker identity or capability data.
 
 **Exit gate:** a bundled plugin and an external conformance fixture can generate
 text/structured proposals through the public broker without provider details or

@@ -57,6 +57,66 @@ export interface MutationOptions {
   requestId?: string;
 }
 
+export interface StructuredAiRequest {
+  taskId: string;
+  userInstruction: string;
+  immediateContext: Record<string, unknown>;
+  outputContract: Record<string, unknown>;
+  deadlineMs?: number;
+}
+
+export interface StructuredAiHandle {
+  requestId: string;
+  poll(): Promise<unknown[]>;
+  cancel(): Promise<void>;
+  result(): Promise<unknown>;
+}
+
+export interface ProposalPreviewOptions {
+  title: string;
+  proposal: string;
+  original?: string;
+  acceptLabel?: string;
+  onAccept(value: string): Promise<void>;
+  onDiscard(): void;
+}
+
+/** Shared editable proposal surface for bundled and third-party module views. */
+export function createProposalPreview(options: ProposalPreviewOptions): HTMLElement {
+  const root = document.createElement("div");
+  const heading = document.createElement("strong");
+  heading.textContent = options.title;
+  const editor = document.createElement("textarea");
+  editor.value = options.proposal;
+  editor.rows = 6;
+  editor.setAttribute("aria-label", "Editable AI proposal");
+  if (options.original !== undefined) {
+    const before = document.createElement("pre");
+    before.textContent = options.original;
+    before.setAttribute("aria-label", "Original value");
+    root.append(before);
+  }
+  const actions = document.createElement("div");
+  actions.className = "lore-graph-toolbar-actions";
+  const discard = document.createElement("button");
+  discard.type = "button";
+  discard.textContent = "Discard";
+  discard.onclick = options.onDiscard;
+  const accept = document.createElement("button");
+  accept.type = "button";
+  accept.textContent = options.acceptLabel ?? "Accept proposal";
+  accept.onclick = () => void options.onAccept(editor.value).then(() => {
+    heading.textContent = "Proposal accepted";
+    accept.disabled = true;
+    discard.disabled = true;
+  }).catch((cause) => {
+    heading.textContent = cause instanceof Error ? cause.message : String(cause);
+  });
+  actions.append(discard, accept);
+  root.append(heading, editor, actions);
+  return root;
+}
+
 export interface FieldRecord {
   entityId: UUID;
   namespace: string;
@@ -122,6 +182,9 @@ export interface ModuleContext {
     register(input: Omit<AssetRecord, "id" | "createdAt" | "revision" | "entityId"> & { entityId: UUID }, options?: MutationOptions): Promise<AssetRecord>;
   };
   search(query: string): Promise<EntitySummary[]>;
+  ai: {
+    startStructured(request: StructuredAiRequest): Promise<StructuredAiHandle>;
+  };
   maps: MapNavigationService & MapLocationsMutations;
 }
 

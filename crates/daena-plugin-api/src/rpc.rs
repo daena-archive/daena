@@ -419,6 +419,31 @@ pub struct ServiceCallPayload {
     pub deadline_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AiRequestStartPayload {
+    pub operation: String,
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+    #[serde(rename = "userInstruction")]
+    pub user_instruction: String,
+    #[serde(rename = "immediateContext")]
+    pub immediate_context: Value,
+    #[serde(rename = "outputContract")]
+    pub output_contract: Option<Value>,
+    #[serde(rename = "deadlineMs")]
+    pub deadline_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AiRequestIdPayload {
+    #[serde(rename = "requestId")]
+    pub request_id: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

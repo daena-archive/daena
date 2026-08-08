@@ -3,6 +3,20 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "capabilities": [
     {
+      "id": "ai.text.generate",
+      "operations": [
+        "text"
+      ],
+      "resource": "ai.inference"
+    },
+    {
+      "id": "ai.text.generate-structured",
+      "operations": [
+        "structured-text"
+      ],
+      "resource": "ai.inference"
+    },
+    {
       "id": "entity.read",
       "operations": [
         "read"

@@ -21,7 +21,7 @@ use daena_plugin_api::rpc::{
     MapsLocationsListPayload, MapsReconcileLinksPayload, MapsRecoveryExportBeginPayload,
     MapsRecoveryExportCommitPayload, MapsRecoveryListPayload, MapsRecoveryRestorePayload,
     PluginBootstrap, RelationshipCreatePayload, RelationshipDeletePayload, RelationshipListPayload,
-    SearchQueryPayload, ServiceCallPayload,
+    SearchQueryPayload, ServiceCallPayload, AiRequestIdPayload, AiRequestStartPayload,
 };
 use daena_plugin_api::{
     PluginManifest, RpcError, CAPABILITY_REGISTRY, DENIED_BY_DEFAULT_CAPABILITIES,
@@ -323,6 +323,8 @@ fn register_payload(gen: &mut SchemaGenerator, payload_schema: &str) {
         "EventPublishPayload" => gen.subschema_for::<EventPublishPayload>(),
         "EventTypePayload" => gen.subschema_for::<EventTypePayload>(),
         "ServiceCallPayload" => gen.subschema_for::<ServiceCallPayload>(),
+        "AiRequestStartPayload" => gen.subschema_for::<AiRequestStartPayload>(),
+        "AiRequestIdPayload" => gen.subschema_for::<AiRequestIdPayload>(),
         other => panic!("catalog references unknown payload schema {other}"),
     };
 }

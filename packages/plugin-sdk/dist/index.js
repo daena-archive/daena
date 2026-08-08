@@ -193,6 +193,10 @@ export function createPluginRpcClient(transport) {
         beginAssetReplace: (input, options) => callTransport(transport, "asset.replace.begin", input, options?.requestId),
         commitAssetReplace: (handle, contentHash, options) => callTransport(transport, "asset.replace.commit", { handle, contentHash }, options?.requestId),
         cancelAssetTransfer: (handle) => callTransport(transport, "asset.transfer.cancel", { handle }),
+        startAiRequest: (request) => callTransport(transport, "ai.request.start", request),
+        pollAiRequest: (requestId) => callTransport(transport, "ai.request.poll", { requestId }),
+        cancelAiRequest: (requestId) => callTransport(transport, "ai.request.cancel", { requestId }),
+        getAiResult: (requestId) => callTransport(transport, "ai.request.result", { requestId }),
     };
 }
 export async function uploadAssetChunks(transfer, bytes, fetcher = globalThis.fetch) {
@@ -207,6 +211,7 @@ export async function uploadAssetChunks(transfer, bytes, fetcher = globalThis.fe
     }
 }
 const knownCapabilities = new Set([
+    "ai.text.generate", "ai.text.generate-structured",
     "entity.read", "entity.write", "entity.delete", "document.read", "document.write",
     "field.read:self", "field.read:shared", "field.write:self", "relationship.read",
     "relationship.write", "asset.read:self", "asset.write:self", "asset.register", "search.query",

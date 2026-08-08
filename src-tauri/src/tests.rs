@@ -1,5 +1,255 @@
 use super::*;
 
+fn ai_test_host() -> SharedPluginHost {
+    Arc::new(Mutex::new(
+        bundled_plugin_host(Arc::new(Mutex::new(CoreService::new()))).unwrap(),
+    ))
+}
+
+fn ai_test_context(runtime: ai::SharedAiRuntime) -> AiBrokerContext {
+    AiBrokerContext {
+        app: None,
+        settings: None,
+        ai_runtime: runtime,
+        session_id: "test-session".into(),
+    }
+}
+
+fn wait_ai_terminal(runtime: &ai::SharedAiRuntime, request_id: &str) -> Vec<ai::AiStreamEvent> {
+    for _ in 0..100 {
+        let events = ai::poll_ai_events(runtime, request_id).unwrap();
+        if events.iter().any(|event| {
+            matches!(
+                event.phase.as_str(),
+                "completed" | "failed" | "cancelled" | "deadline_exceeded"
+            )
+        }) {
+            return events;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    panic!("AI test provider did not reach a terminal state")
+}
+
+struct CancellationProvider;
+
+impl ai::AiProvider for CancellationProvider {
+    fn generate(
+        &self,
+        request: ai::ProviderRequest,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Vec<ai::AiStreamEvent> {
+        for _ in 0..100 {
+            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                return vec![ai::AiStreamEvent {
+                    sequence: 0,
+                    request_id: request.request_id,
+                    phase: "cancelled".into(),
+                    delta: None,
+                    output: None,
+                    error: None,
+                }];
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        vec![ai::AiStreamEvent {
+            sequence: 0,
+            request_id: request.request_id.clone(),
+            phase: "completed".into(),
+            delta: None,
+            output: Some("late".into()),
+            error: None,
+        }]
+    }
+}
+
+struct OversizedProvider;
+
+impl ai::AiProvider for OversizedProvider {
+    fn generate(
+        &self,
+        request: ai::ProviderRequest,
+        _cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Vec<ai::AiStreamEvent> {
+        vec![ai::AiStreamEvent {
+            sequence: 0,
+            request_id: request.request_id,
+            phase: "completed".into(),
+            delta: None,
+            output: Some("x".repeat(daena_ai::DEFAULT_LIMITS.max_output_bytes + 1)),
+            error: None,
+        }]
+    }
+}
+
+#[test]
+fn broker_ai_lifecycle_supports_text_and_structured_requests_without_provider() {
+    let runtime = Arc::new(Mutex::new(ai::AiRuntime::with_provider(Arc::new(
+        ai::FakeLoopbackProvider,
+    ))));
+    let plugins = ai_test_host();
+    let text = dispatch_host_rpc(&plugins, "daena.lore", "project", "ai.request.start", serde_json::json!({
+        "operation": "generate_text", "taskId": "text", "userInstruction": "rewrite", "immediateContext": {"selection": "hello"}
+    }), ai_test_context(runtime.clone())).unwrap();
+    let text_id = text["requestId"].as_str().unwrap();
+    let text_events = wait_ai_terminal(&runtime, text_id);
+    assert_eq!(text_events.last().unwrap().phase, "completed");
+    let text_result = dispatch_host_rpc(
+        &plugins,
+        "daena.lore",
+        "project",
+        "ai.request.result",
+        serde_json::json!({"requestId": text_id}),
+        ai_test_context(runtime.clone()),
+    )
+    .unwrap();
+    assert!(text_result["output"].as_str().unwrap().contains("hello"));
+
+    let contract = serde_json::json!({"type":"object","properties":{"summary":{"type":"string","maxLength":4000}},"required":["summary"],"additionalProperties":false});
+    let structured = dispatch_host_rpc(&plugins, "daena.lore", "project", "ai.request.start", serde_json::json!({
+        "operation": "generate_structured", "taskId": "structured", "userInstruction": "draft", "immediateContext": {"entity":"Ada"}, "outputContract": contract
+    }), ai_test_context(runtime.clone())).unwrap();
+    let structured_id = structured["requestId"].as_str().unwrap();
+    assert_eq!(
+        wait_ai_terminal(&runtime, structured_id)
+            .last()
+            .unwrap()
+            .phase,
+        "completed"
+    );
+    let structured_result = dispatch_host_rpc(
+        &plugins,
+        "daena.lore",
+        "project",
+        "ai.request.result",
+        serde_json::json!({"requestId": structured_id}),
+        ai_test_context(runtime),
+    )
+    .unwrap();
+    assert!(structured_result["summary"]
+        .as_str()
+        .unwrap()
+        .contains("Ada"));
+}
+
+#[test]
+fn broker_ai_request_ids_are_session_bound() {
+    let runtime = Arc::new(Mutex::new(ai::AiRuntime::with_provider(Arc::new(
+        ai::FakeLoopbackProvider,
+    ))));
+    let plugins = ai_test_host();
+    let started = dispatch_host_rpc(&plugins, "daena.lore", "project", "ai.request.start", serde_json::json!({
+        "operation": "generate_text", "taskId": "text", "userInstruction": "rewrite", "immediateContext": {"selection": "hello"}
+    }), ai_test_context(runtime.clone())).unwrap();
+    let request_id = started["requestId"].as_str().unwrap();
+    let mut other = ai_test_context(runtime);
+    other.session_id = "other-session".into();
+    let error = dispatch_host_rpc(
+        &plugins,
+        "daena.lore",
+        "project",
+        "ai.request.poll",
+        serde_json::json!({"requestId": request_id}),
+        other,
+    )
+    .unwrap_err();
+    assert!(error.contains("not bound"));
+}
+
+#[test]
+fn broker_ai_rejects_invalid_schema_and_cancels_through_lifecycle() {
+    let runtime = Arc::new(Mutex::new(ai::AiRuntime::with_provider(Arc::new(
+        CancellationProvider,
+    ))));
+    let plugins = ai_test_host();
+    let invalid = dispatch_host_rpc(&plugins, "daena.lore", "project", "ai.request.start", serde_json::json!({
+        "operation": "generate_structured", "taskId": "bad", "userInstruction": "draft", "immediateContext": {}, "outputContract": {"type":"object"}
+    }), ai_test_context(runtime.clone())).unwrap_err();
+    assert!(invalid.contains("requires properties"));
+
+    let started = dispatch_host_rpc(&plugins, "daena.lore", "project", "ai.request.start", serde_json::json!({
+        "operation": "generate_text", "taskId": "cancel", "userInstruction": "rewrite", "immediateContext": {"selection": "hello"}
+    }), ai_test_context(runtime.clone())).unwrap();
+    let request_id = started["requestId"].as_str().unwrap();
+    dispatch_host_rpc(
+        &plugins,
+        "daena.lore",
+        "project",
+        "ai.request.cancel",
+        serde_json::json!({"requestId": request_id}),
+        ai_test_context(runtime.clone()),
+    )
+    .unwrap();
+    assert_eq!(
+        wait_ai_terminal(&runtime, request_id).last().unwrap().phase,
+        "cancelled"
+    );
+    let result = dispatch_host_rpc(
+        &plugins,
+        "daena.lore",
+        "project",
+        "ai.request.result",
+        serde_json::json!({"requestId": request_id}),
+        ai_test_context(runtime),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn broker_ai_deadline_emits_terminal_deadline_event() {
+    let runtime = Arc::new(Mutex::new(ai::AiRuntime::with_provider(Arc::new(
+        CancellationProvider,
+    ))));
+    let plugins = ai_test_host();
+    let started = dispatch_host_rpc(&plugins, "daena.lore", "project", "ai.request.start", serde_json::json!({
+        "operation": "generate_text", "taskId": "deadline", "userInstruction": "rewrite", "immediateContext": {"selection": "hello"}, "deadlineMs": 5
+    }), ai_test_context(runtime.clone())).unwrap();
+    let request_id = started["requestId"].as_str().unwrap();
+    assert_eq!(
+        wait_ai_terminal(&runtime, request_id).last().unwrap().phase,
+        "deadline_exceeded"
+    );
+    assert!(ai::ai_request_result(&runtime, request_id).is_err());
+}
+
+#[test]
+fn broker_ai_oversized_provider_output_fails_closed() {
+    let runtime = Arc::new(Mutex::new(ai::AiRuntime::with_provider(Arc::new(
+        OversizedProvider,
+    ))));
+    let plugins = ai_test_host();
+    let started = dispatch_host_rpc(
+        &plugins,
+        "daena.lore",
+        "project",
+        "ai.request.start",
+        serde_json::json!({
+            "operation": "generate_text",
+            "taskId": "oversized",
+            "userInstruction": "rewrite",
+            "immediateContext": {"selection": "hello"}
+        }),
+        ai_test_context(runtime.clone()),
+    )
+    .unwrap();
+    let request_id = started["requestId"].as_str().unwrap();
+    let events = wait_ai_terminal(&runtime, request_id);
+    assert_eq!(events.last().unwrap().phase, "failed");
+    assert_eq!(
+        events.last().unwrap().error.as_deref(),
+        Some("OutputValidationFailed")
+    );
+    assert!(dispatch_host_rpc(
+        &plugins,
+        "daena.lore",
+        "project",
+        "ai.request.result",
+        serde_json::json!({"requestId": request_id}),
+        ai_test_context(runtime),
+    )
+    .is_err());
+}
+
 fn core_migration(manifest: &PluginManifest) -> Result<Option<Migration>, String> {
     Ok(core_migrations(manifest, "")?.into_iter().next())
 }
@@ -458,7 +708,8 @@ fn bundled_maps_shell_is_deterministic_and_provider_fail_closed() {
     let module_response = plugin_asset_response("daena.maps", &module, None, None);
     let module_body = String::from_utf8_lossy(module_response.body());
     assert!(!module_body.contains("fonts.gstatic.com"));
-    assert!(module_body.contains("if(window.DAENA_HOST)return;throw new Error(\"Pack cells not found\")"));
+    assert!(module_body
+        .contains("if(window.DAENA_HOST)return;throw new Error(\"Pack cells not found\")"));
 }
 
 #[test]

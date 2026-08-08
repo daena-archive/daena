@@ -16,6 +16,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   import writingManifestJson from "../../packages/modules/writing/manifest.json";
   import { projectionModule } from "$lib/modules/projections";
   import RichTextEditor from "$lib/editor/RichTextEditor.svelte";
+  import AiProposalPreview from "$lib/ai/AiProposalPreview.svelte";
   import { htmlToMarkdown } from "$lib/editor/markdown";
   import { formatCalendarDate, isCompleteCalendarDate, parseCalendarDate, serializeCalendarDate, type CalendarDate } from "$lib/date";
 
@@ -717,10 +718,11 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
       aiBusy = false;
       aiRequestId = null;
       clearAiStreamListener();
-    } else if (payload.phase === "cancelled") {
+    } else if (payload.phase === "cancelled" || payload.phase === "deadline_exceeded") {
       aiBusy = false;
       aiRequestId = null;
       clearAiStreamListener();
+      if (payload.phase === "deadline_exceeded") error = payload.error ?? "AI request exceeded its deadline";
     } else if (payload.phase === "failed") {
       aiBusy = false;
       aiRequestId = null;
@@ -1994,8 +1996,16 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
               <section class="ai-rewrite-panel" aria-label="AI rewrite proposal">
                 <div class="ai-rewrite-heading"><div><span class="panel-kicker">LOCAL AI · LM STUDIO</span><strong>{aiBusy ? "Rewriting selection…" : aiPreviewOutput ? "Review rewrite" : "Rewrite selection"}</strong></div><button class="quiet-button" type="button" onclick={closeAiRewrite}>Discard</button></div>
                 {#if !aiPreviewOutput}<label class="ai-instruction">Instruction<textarea rows="2" bind:value={aiInstruction} disabled={aiBusy} placeholder="Tell LM Studio how to rewrite the selection"></textarea></label>{/if}
-                {#if aiBusy}<pre class="ai-stream-output" aria-live="polite">{aiStreamText || "Waiting for LM Studio…"}</pre>{:else if aiPreviewOutput}<div class="ai-diff-grid"><div><span>Original</span><pre>{aiSourceSelectionPlain}</pre></div><div><span>Editable proposal</span><textarea class="ai-proposal-editor" rows="8" bind:value={aiPreviewOutput}></textarea></div></div>{/if}
-                <div class="ai-rewrite-actions">{#if aiBusy}<button class="quiet-button" type="button" onclick={() => aiRequestId && void project.aiCancelText(aiRequestId)}>Cancel</button>{:else if aiPreviewOutput}<button class="quiet-button" type="button" onclick={closeAiRewrite}>Discard</button><button class="primary-button" type="button" onclick={() => void acceptAiRewrite()}>Accept rewrite</button>{:else}<button class="quiet-button" type="button" onclick={closeAiRewrite}>Cancel</button><button class="primary-button" type="button" disabled={!aiSourceSelection.trim() || !aiInstruction.trim()} onclick={() => void startAiRewrite()}>Generate rewrite</button>{/if}</div>
+                <AiProposalPreview
+                  original={aiSourceSelectionPlain}
+                  bind:proposal={aiPreviewOutput}
+                  streamText={aiStreamText}
+                  busy={aiBusy}
+                  onCancel={() => aiBusy && aiRequestId ? void project.aiCancelText(aiRequestId) : closeAiRewrite()}
+                  onDiscard={closeAiRewrite}
+                  onAccept={() => void acceptAiRewrite()}
+                />
+                {#if !aiBusy && !aiPreviewOutput}<div class="ai-rewrite-actions"><button class="primary-button" type="button" disabled={!aiSourceSelection.trim() || !aiInstruction.trim()} onclick={() => void startAiRewrite()}>Generate rewrite</button></div>{/if}
               </section>
             {/if}
             <RichTextEditor value={documentBody} editable={projectDiagnostics.length === 0 && !aiBusy} fullscreen={editorFullscreen} onChange={updateDocumentBody} onSelectionChange={setAiSelection} onFullscreenChange={setEditorFullscreen} placeholder={section === "writing" ? writingView === "manuscripts" ? "Write your manuscript…" : "Write this reference page…" : "Write the canonical story of this entry…"} />

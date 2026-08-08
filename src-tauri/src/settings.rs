@@ -31,6 +31,42 @@ pub struct AiSettings {
     pub local_endpoint: String,
     #[serde(default = "default_ai_model")]
     pub local_model: String,
+    #[serde(default)]
+    pub remote_policy: AiRemotePolicy,
+    #[serde(default)]
+    pub remote: RemoteAiSettings,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AiRemotePolicy {
+    Disabled,
+    #[default]
+    LocalOnly,
+    Ask,
+    ApprovedPairs,
+    RemoteAllowed,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteAiSettings {
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub endpoint: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub consents: Vec<RemoteConsent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteConsent {
+    pub project_id: String,
+    pub provider: String,
+    pub endpoint: String,
 }
 
 fn default_ai_endpoint() -> String {
@@ -45,6 +81,8 @@ impl Default for AiSettings {
         Self {
             local_endpoint: default_ai_endpoint(),
             local_model: default_ai_model(),
+            remote_policy: AiRemotePolicy::default(),
+            remote: RemoteAiSettings::default(),
         }
     }
 }
@@ -80,6 +118,16 @@ pub struct GeneralSettingsUpdate {
 pub struct AiSettingsUpdate {
     pub local_endpoint: Option<String>,
     pub local_model: Option<String>,
+    pub remote_policy: Option<AiRemotePolicy>,
+    pub remote: Option<RemoteAiSettingsUpdate>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteAiSettingsUpdate {
+    pub provider: Option<String>,
+    pub endpoint: Option<String>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -151,8 +199,46 @@ impl SettingsStore {
             if let Some(model) = ai.local_model {
                 settings.ai.local_model = model;
             }
+            if let Some(remote_policy) = ai.remote_policy {
+                settings.ai.remote_policy = remote_policy;
+            }
+            if let Some(remote) = ai.remote {
+                if let Some(provider) = remote.provider {
+                    settings.ai.remote.provider = provider;
+                }
+                if let Some(endpoint) = remote.endpoint {
+                    settings.ai.remote.endpoint = endpoint;
+                }
+                if let Some(model) = remote.model {
+                    settings.ai.remote.model = model;
+                }
+            }
         }
         settings = normalize(settings);
+        self.save(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn set_remote_consent(
+        &self,
+        project_id: &str,
+        provider: &str,
+        endpoint: &str,
+        allowed: bool,
+    ) -> Result<AppSettings, String> {
+        let mut settings = self.load()?;
+        settings
+            .ai
+            .remote
+            .consents
+            .retain(|consent| !(consent.project_id == project_id && consent.provider == provider));
+        if allowed {
+            settings.ai.remote.consents.push(RemoteConsent {
+                project_id: project_id.to_string(),
+                provider: provider.to_string(),
+                endpoint: endpoint.to_string(),
+            });
+        }
         self.save(&settings)?;
         Ok(settings)
     }
@@ -245,6 +331,32 @@ mod tests {
         .unwrap();
         let store = SettingsStore::new(&directory);
         assert!(store.load().unwrap_err().contains("invalid settings.json"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn remote_consent_replaces_endpoint_and_revocation_fails_closed() {
+        let directory =
+            std::env::temp_dir().join(format!("daena-settings-{}", uuid::Uuid::new_v4()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let store = SettingsStore::new(&directory);
+        store
+            .set_remote_consent("project", "provider", "https://one.example/v1", true)
+            .unwrap();
+        store
+            .set_remote_consent("project", "provider", "https://two.example/v1", true)
+            .unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.ai.remote.consents.len(), 1);
+        assert_eq!(
+            loaded.ai.remote.consents[0].endpoint,
+            "https://two.example/v1"
+        );
+        store
+            .set_remote_consent("project", "provider", "https://two.example/v1", false)
+            .unwrap();
+        assert!(store.load().unwrap().ai.remote.consents.is_empty());
         let _ = fs::remove_dir_all(directory);
     }
 }

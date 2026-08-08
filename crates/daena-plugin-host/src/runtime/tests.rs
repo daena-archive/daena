@@ -8,6 +8,8 @@ fn manifest(kind: PluginKind) -> PluginManifest {
         name: "Plugin".into(),
         version: "1.0.0".into(),
         publisher: "com.example".into(),
+        enabled_by_default: None,
+        stability: None,
         host_api: ">=1.0.0 <2.0.0".into(),
         kind,
         entrypoints: Entrypoints {

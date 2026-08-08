@@ -499,6 +499,12 @@
           },
           "type": "object"
         },
+        "enabledByDefault": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "entrypoints": {
           "$ref": "#/$defs/Entrypoints"
         },
@@ -546,6 +552,16 @@
         "services": {
           "$ref": "#/$defs/Services"
         },
+        "stability": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PluginStability"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "templates": {
           "items": {
             "$ref": "#/$defs/EntityTemplate"
@@ -583,6 +599,14 @@
         "views"
       ],
       "type": "object"
+    },
+    "PluginStability": {
+      "enum": [
+        "stable",
+        "beta",
+        "experimental"
+      ],
+      "type": "string"
     },
     "SchemaContribution": {
       "additionalProperties": false,
@@ -904,6 +928,9 @@
       },
       "type": "object"
     },
+    "enabledByDefault": {
+      "type": "boolean"
+    },
     "entrypoints": {
       "$ref": "#/$defs/Entrypoints"
     },
@@ -953,6 +980,9 @@
     },
     "services": {
       "$ref": "#/$defs/Services"
+    },
+    "stability": {
+      "$ref": "#/$defs/PluginStability"
     },
     "templates": {
       "items": {

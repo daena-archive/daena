@@ -182,6 +182,7 @@ const MANIFEST_DEF_ORDER = [
   "CommandProperty",
   "CommandSchema",
   "Command",
+  "PluginStability",
   "Service",
   "Event",
   "Services",

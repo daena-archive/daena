@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
-use std::net::{IpAddr, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use daena_ai::index::{
     AiIndex, ChunkSource, EmbeddingMetadata, EmbeddingProvider, IndexError, IndexState, TextChunk,
@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
+
+use crate::settings::{AiRemotePolicy, SettingsStore};
 
 pub type SharedAiRuntime = Arc<Mutex<AiRuntime>>;
 const MAX_BUFFERED_REQUESTS: usize = 32;
@@ -824,10 +826,11 @@ struct LocalEndpoint {
     base_path: String,
 }
 
-fn parse_local_endpoint(endpoint: &str) -> Result<LocalEndpoint, String> {
-    let raw = endpoint.trim().strip_prefix("http://").ok_or_else(|| {
-        "Phase 1 only permits a loopback LM Studio endpoint over http".to_string()
-    })?;
+fn parse_loopback_endpoint(endpoint: &str) -> Result<LocalEndpoint, String> {
+    let raw = endpoint
+        .trim()
+        .strip_prefix("http://")
+        .ok_or_else(|| "Local providers require a loopback HTTP endpoint".to_string())?;
     let authority = raw.split('/').next().unwrap_or_default();
     let base_path = raw
         .strip_prefix(authority)
@@ -855,7 +858,7 @@ fn parse_local_endpoint(endpoint: &str) -> Result<LocalEndpoint, String> {
         .map(|ip| ip.is_loopback())
         .unwrap_or(false);
     if host != "localhost" && host != "localhost.localdomain" && !ip_is_local {
-        return Err("Phase 1 only permits a loopback LM Studio endpoint".to_string());
+        return Err("Local providers require a loopback endpoint".to_string());
     }
     let port = port
         .parse::<u16>()
@@ -867,6 +870,394 @@ fn parse_local_endpoint(endpoint: &str) -> Result<LocalEndpoint, String> {
     })
 }
 
+/// Validate a remote origin before any credential-bearing request is created.
+/// Redirects are disabled on the client as well, so the approved HTTPS origin
+/// remains the origin that receives the request.
+pub fn validate_remote_endpoint(endpoint: &str) -> Result<reqwest::Url, String> {
+    let url = reqwest::Url::parse(endpoint.trim())
+        .map_err(|_| "Remote AI endpoint is not a valid URL".to_string())?;
+    if url.scheme() != "https" || url.username() != "" || url.password().is_some() {
+        return Err("Remote AI endpoints must use HTTPS without embedded credentials".into());
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err("Remote AI endpoints cannot contain a query or fragment".into());
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| "Remote AI endpoint has no host".to_string())?;
+    let host_for_ip = host.trim_matches(['[', ']']);
+    if host.eq_ignore_ascii_case("localhost")
+        || host.ends_with(".localhost")
+        || host.eq_ignore_ascii_case("localhost.localdomain")
+    {
+        return Err("Remote AI endpoints cannot target localhost".into());
+    }
+    if host_for_ip
+        .parse::<IpAddr>()
+        .is_ok_and(is_private_or_local_ip)
+    {
+        return Err("Remote AI endpoints cannot target private or local addresses".into());
+    }
+    Ok(url)
+}
+
+fn is_private_or_local_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || octets[0] == 100 && (64..=127).contains(&octets[1])
+                || octets[0] == 192 && octets[1] == 0 && octets[2] == 0
+                || octets[0] == 198 && (18..=19).contains(&octets[1])
+                || octets[0] == 203 && octets[1] == 0 && octets[2] == 113
+        }
+        IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return is_private_or_local_ip(IpAddr::V4(mapped));
+            }
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || (ip.segments()[0] & 0xfe00) == 0xfc00
+                || (ip.segments()[0] & 0xffc0) == 0xfe80
+                || (ip.segments()[0] == 0x2001 && ip.segments()[1] == 0x0db8)
+        }
+    }
+}
+
+fn resolve_remote_destination(url: &reqwest::Url) -> Result<(String, SocketAddr), AiError> {
+    let host = url
+        .host_str()
+        .ok_or(AiError::InvalidProviderResponse)?
+        .trim_matches(['[', ']'])
+        .to_string();
+    let port = url
+        .port_or_known_default()
+        .ok_or(AiError::InvalidProviderResponse)?;
+    let mut addresses = (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|_| AiError::ProviderUnavailable)?;
+    let address = addresses
+        .find(|address| !is_private_or_local_ip(address.ip()))
+        .ok_or(AiError::RemoteContextDenied)?;
+    Ok((host, address))
+}
+
+fn remote_secret_service(provider: &str) -> String {
+    format!("com.daena.ai.remote.{}", provider.trim())
+}
+
+fn read_remote_api_key(provider: &str) -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(&remote_secret_service(provider), "daena")
+        .map_err(|error| format!("OS secret storage unavailable: {error}"))?;
+    match entry.get_password() {
+        Ok(value) if !value.trim().is_empty() => Ok(Some(value)),
+        Ok(_) => Ok(None),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(format!("OS secret storage unavailable: {error}")),
+    }
+}
+
+fn import_remote_api_key(provider: &str, api_key: &str) -> Result<(), String> {
+    let entry = keyring::Entry::new(&remote_secret_service(provider), "daena")
+        .map_err(|error| format!("OS secret storage unavailable: {error}"))?;
+    entry
+        .set_password(api_key)
+        .map_err(|error| format!("OS secret storage rejected the credential: {error}"))
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteCredentialStatus {
+    pub provider: String,
+    pub configured: bool,
+}
+
+#[tauri::command]
+pub fn ai_remote_credential_status(provider: String) -> Result<RemoteCredentialStatus, String> {
+    Ok(RemoteCredentialStatus {
+        configured: read_remote_api_key(&provider)?.is_some(),
+        provider,
+    })
+}
+
+/// Imports a key from the process environment into OS-backed storage. The key
+/// is intentionally not a command argument, so it never crosses the frontend
+/// or plugin bridge. Launch the app with DAENA_REMOTE_API_KEY set once, then
+/// remove it from the environment.
+#[tauri::command]
+pub fn ai_remote_import_credential(provider: String) -> Result<RemoteCredentialStatus, String> {
+    let key = std::env::var("DAENA_REMOTE_API_KEY")
+        .map_err(|_| "DAENA_REMOTE_API_KEY is not set for this import".to_string())?;
+    if key.trim().is_empty() {
+        return Err("DAENA_REMOTE_API_KEY is empty".into());
+    }
+    import_remote_api_key(&provider, key.trim())?;
+    Ok(RemoteCredentialStatus {
+        provider,
+        configured: true,
+    })
+}
+
+#[tauri::command]
+pub fn ai_remote_set_consent(
+    settings: State<'_, Arc<Mutex<SettingsStore>>>,
+    project_id: String,
+    provider: String,
+    endpoint: String,
+    allowed: bool,
+) -> Result<(), String> {
+    validate_remote_endpoint(&endpoint)?;
+    settings
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_string())?
+        .set_remote_consent(&project_id, &provider, &endpoint, allowed)
+        .map(|_| ())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn ai_generate_remote_text(
+    app: AppHandle,
+    runtime: State<'_, SharedAiRuntime>,
+    settings: State<'_, Arc<Mutex<SettingsStore>>>,
+    project_id: String,
+    provider: String,
+    endpoint: String,
+    model: String,
+    instruction: String,
+    selection: String,
+) -> Result<String, String> {
+    validate_remote_endpoint(&endpoint)?;
+    let configured = settings
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_string())?
+        .load()?;
+    if !remote_policy_allows(&configured, &project_id, &provider, &endpoint) {
+        return Err(AiError::RemoteContextDenied.to_string());
+    }
+    let api_key =
+        read_remote_api_key(&provider)?.ok_or_else(|| AiError::AuthenticationFailed.to_string())?;
+    start_ai_request_mode(
+        Some(app),
+        runtime.inner().clone(),
+        daena_ai::AiCaller::trusted_shell("trusted-shell", &project_id),
+        endpoint,
+        model,
+        instruction,
+        selection,
+        None,
+        DEFAULT_LIMITS.default_deadline,
+        Vec::new(),
+        true,
+        Some(api_key),
+    )
+}
+
+fn remote_consent_matches(
+    settings: &crate::settings::AppSettings,
+    project_id: &str,
+    provider: &str,
+    endpoint: &str,
+) -> bool {
+    settings.ai.remote.consents.iter().any(|consent| {
+        consent.project_id == project_id
+            && consent.provider == provider
+            && consent.endpoint == endpoint
+    })
+}
+
+fn remote_policy_allows(
+    settings: &crate::settings::AppSettings,
+    project_id: &str,
+    provider: &str,
+    endpoint: &str,
+) -> bool {
+    if matches!(
+        settings.ai.remote_policy,
+        AiRemotePolicy::Disabled | AiRemotePolicy::LocalOnly
+    ) {
+        return false;
+    }
+    matches!(settings.ai.remote_policy, AiRemotePolicy::RemoteAllowed)
+        || remote_consent_matches(settings, project_id, provider, endpoint)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RemoteCompletionResponse {
+    #[serde(default)]
+    choices: Vec<RemoteChoice>,
+    #[serde(default)]
+    usage: Option<RemoteUsage>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RemoteUsage {
+    #[serde(default)]
+    prompt_tokens: usize,
+    #[serde(default)]
+    completion_tokens: usize,
+    #[serde(default)]
+    total_tokens: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RemoteChoice {
+    message: RemoteMessage,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RemoteMessage {
+    #[serde(default)]
+    content: Option<String>,
+}
+
+fn request_remote_completion(
+    client: &reqwest::blocking::Client,
+    url: reqwest::Url,
+    api_key: &str,
+    body: &serde_json::Value,
+) -> Result<RemoteCompletionResponse, AiError> {
+    let response = match client.post(url).bearer_auth(api_key).json(body).send() {
+        Ok(response) => response,
+        Err(error) => {
+            let _redacted_diagnostic = redact_diagnostic(&error.to_string(), api_key);
+            return Err(AiError::ProviderUnavailable);
+        }
+    };
+    let status = response.status().as_u16();
+    if let Some(error) = remote_status_error(status) {
+        return Err(error);
+    }
+    response
+        .json::<RemoteCompletionResponse>()
+        .map_err(|_| AiError::InvalidProviderResponse)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn generate_remote_events(
+    endpoint: &str,
+    api_key: &str,
+    model: &str,
+    instruction: &str,
+    selection: &str,
+    output_contract: Option<&serde_json::Value>,
+    request_id: &str,
+    cancelled: &std::sync::atomic::AtomicBool,
+    deadline: Duration,
+) -> Vec<AiStreamEvent> {
+    let fail = |error: AiError| {
+        vec![AiStreamEvent {
+            sequence: 0,
+            request_id: request_id.to_string(),
+            phase: "failed".into(),
+            delta: None,
+            output: None,
+            error: Some(error.to_string()),
+        }]
+    };
+    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        return vec![AiStreamEvent {
+            sequence: 0,
+            request_id: request_id.to_string(),
+            phase: "cancelled".into(),
+            delta: None,
+            output: None,
+            error: Some(AiError::Cancelled.to_string()),
+        }];
+    }
+    let Ok(mut url) = validate_remote_endpoint(endpoint) else {
+        return fail(AiError::InvalidProviderResponse);
+    };
+    let (resolved_host, resolved_address) = match resolve_remote_destination(&url) {
+        Ok(destination) => destination,
+        Err(error) => return fail(error),
+    };
+    url.path_segments_mut()
+        .map(|mut segments| {
+            segments.push("chat").push("completions");
+        })
+        .ok();
+    let (system_prompt, user_prompt) =
+        build_generation_prompt(instruction, selection, output_contract);
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": system_prompt },
+            { "role": "user", "content": user_prompt }
+        ],
+        "stream": false
+    });
+    let client = match reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve(&resolved_host, resolved_address)
+        .timeout(deadline)
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return fail(AiError::ProviderUnavailable),
+    };
+    let parsed = match request_remote_completion(&client, url, api_key, &body) {
+        Ok(parsed) => parsed,
+        Err(error) => return fail(error),
+    };
+    let usage = parsed.usage;
+    let Some(output) = parsed
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|choice| choice.message.content)
+    else {
+        return fail(AiError::InvalidProviderResponse);
+    };
+    if output.len() > DEFAULT_LIMITS.max_output_bytes {
+        return fail(AiError::OutputValidationFailed);
+    }
+    let mut events = vec![
+        AiStreamEvent {
+            sequence: 0,
+            request_id: request_id.to_string(),
+            phase: "delta".into(),
+            delta: Some(output.clone()),
+            output: None,
+            error: None,
+        },
+        AiStreamEvent {
+            sequence: 0,
+            request_id: request_id.to_string(),
+            phase: "completed".into(),
+            delta: None,
+            output: Some(output),
+            error: None,
+        },
+    ];
+    if let Some(usage) = usage {
+        events.insert(
+            1,
+            AiStreamEvent {
+                sequence: 0,
+                request_id: request_id.to_string(),
+                phase: "usage".into(),
+                delta: None,
+                output: Some(
+                    serde_json::json!({
+                        "inputTokens": usage.prompt_tokens,
+                        "outputTokens": usage.completion_tokens,
+                        "totalTokens": usage.total_tokens,
+                    })
+                    .to_string(),
+                ),
+                error: None,
+            },
+        );
+    }
+    events
+}
+
 fn connect_request(
     endpoint: &str,
     method: &str,
@@ -874,10 +1265,10 @@ fn connect_request(
     body: Option<&str>,
     deadline: Duration,
 ) -> Result<TcpStream, String> {
-    let endpoint = parse_local_endpoint(endpoint)?;
+    let endpoint = parse_loopback_endpoint(endpoint)?;
     let path = format!("{}/{}", endpoint.base_path, suffix.trim_start_matches('/'));
     let mut stream = TcpStream::connect((endpoint.host.as_str(), endpoint.port))
-        .map_err(|error| format!("LM Studio is unavailable: {error}"))?;
+        .map_err(|error| format!("Local AI provider is unavailable: {error}"))?;
     stream
         .set_read_timeout(Some(deadline))
         .map_err(|error| error.to_string())?;
@@ -896,13 +1287,13 @@ fn parse_http_response(bytes: &[u8]) -> Result<(u16, Vec<u8>), String> {
     let split = bytes
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
-        .ok_or_else(|| "LM Studio returned an invalid HTTP response".to_string())?;
+        .ok_or_else(|| "Local AI provider returned an invalid HTTP response".to_string())?;
     let headers = String::from_utf8_lossy(&bytes[..split]);
     let status = headers
         .split_whitespace()
         .nth(1)
         .and_then(|value| value.parse::<u16>().ok())
-        .ok_or_else(|| "LM Studio returned an invalid HTTP status".to_string())?;
+        .ok_or_else(|| "Local AI provider returned an invalid HTTP status".to_string())?;
     Ok((status, bytes[split + 4..].to_vec()))
 }
 
@@ -920,14 +1311,16 @@ fn read_http_headers(stream: &mut TcpStream) -> Result<(u16, Vec<u8>), String> {
     loop {
         let read = stream.read(&mut chunk).map_err(|error| error.to_string())?;
         if read == 0 {
-            return Err("LM Studio closed the connection before sending HTTP headers".to_string());
+            return Err(
+                "Local AI provider closed the connection before sending HTTP headers".to_string(),
+            );
         }
         bytes.extend_from_slice(&chunk[..read]);
         if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
             return parse_http_response(&bytes);
         }
         if bytes.len() > 64 * 1024 {
-            return Err("LM Studio returned oversized HTTP headers".to_string());
+            return Err("Local AI provider returned oversized HTTP headers".to_string());
         }
     }
 }
@@ -939,6 +1332,40 @@ fn normalized_http_error(status: u16) -> AiError {
         408 | 429 => AiError::RateLimited,
         500..=599 => AiError::ProviderUnavailable,
         _ => AiError::InvalidProviderResponse,
+    }
+}
+
+fn remote_status_error(status: u16) -> Option<AiError> {
+    (status / 100 != 2).then(|| normalized_http_error(status))
+}
+
+fn redact_diagnostic(value: &str, secret: &str) -> String {
+    if secret.is_empty() {
+        return value.to_string();
+    }
+    value.replace(secret, "[REDACTED]")
+}
+
+fn remote_terminal_event(request_id: &str, deadline: bool) -> AiStreamEvent {
+    AiStreamEvent {
+        sequence: 0,
+        request_id: request_id.to_string(),
+        phase: if deadline {
+            "deadline_exceeded"
+        } else {
+            "cancelled"
+        }
+        .into(),
+        delta: None,
+        output: None,
+        error: Some(
+            if deadline {
+                AiError::DeadlineExceeded
+            } else {
+                AiError::Cancelled
+            }
+            .to_string(),
+        ),
     }
 }
 
@@ -1077,7 +1504,7 @@ pub fn ai_generate_text(
 pub fn start_ai_request(
     app: Option<AppHandle>,
     runtime: SharedAiRuntime,
-    mut caller: daena_ai::AiCaller,
+    caller: daena_ai::AiCaller,
     endpoint: String,
     model: String,
     instruction: String,
@@ -1086,6 +1513,37 @@ pub fn start_ai_request(
     deadline: Duration,
     citations: Vec<SourceRef>,
 ) -> Result<String, String> {
+    start_ai_request_mode(
+        app,
+        runtime,
+        caller,
+        endpoint,
+        model,
+        instruction,
+        selection,
+        output_contract,
+        deadline,
+        citations,
+        false,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn start_ai_request_mode(
+    app: Option<AppHandle>,
+    runtime: SharedAiRuntime,
+    mut caller: daena_ai::AiCaller,
+    endpoint: String,
+    model: String,
+    instruction: String,
+    selection: String,
+    output_contract: Option<serde_json::Value>,
+    deadline: Duration,
+    citations: Vec<SourceRef>,
+    remote: bool,
+    api_key: Option<String>,
+) -> Result<String, String> {
     if instruction.trim().is_empty() || selection.trim().is_empty() {
         return Err("An AI instruction and context are required".to_string());
     }
@@ -1093,14 +1551,25 @@ pub fn start_ai_request(
         .lock()
         .ok()
         .and_then(|runtime| runtime.provider.clone());
-    if model.trim().is_empty() && provider.is_none() {
-        return Err("A loaded LM Studio model is required".to_string());
+    if model.trim().is_empty() {
+        if remote {
+            return Err("A remote AI model ID is required".to_string());
+        }
+        if provider.is_none() {
+            return Err("A loaded local AI provider model is required".to_string());
+        }
     }
     if instruction.len() + selection.len() > DEFAULT_LIMITS.max_input_bytes {
         return Err(AiError::ContextTooLarge.to_string());
     }
-    if provider.is_none() {
-        parse_local_endpoint(&endpoint)?;
+    if provider.is_none() && !remote {
+        parse_loopback_endpoint(&endpoint)?;
+    }
+    if remote {
+        validate_remote_endpoint(&endpoint)?;
+        if api_key.as_deref().is_none_or(str::is_empty) {
+            return Err(AiError::AuthenticationFailed.to_string());
+        }
     }
     let request_id = Uuid::new_v4().to_string();
     caller.request_id = request_id.clone();
@@ -1135,6 +1604,7 @@ pub fn start_ai_request(
             output: None,
             error: None,
         });
+        let request_started = Instant::now();
         let deadline_exceeded = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let provider_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let deadline_flag = deadline_exceeded.clone();
@@ -1147,6 +1617,33 @@ pub fn start_ai_request(
                 deadline_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
             }
         });
+        if remote {
+            let events = generate_remote_events(
+                &endpoint,
+                api_key.as_deref().unwrap_or_default(),
+                &model,
+                &instruction,
+                &selection,
+                output_contract.as_ref(),
+                &request_id_for_task,
+                &cancelled,
+                deadline,
+            );
+            provider_finished.store(true, std::sync::atomic::Ordering::Relaxed);
+            let deadline_hit = deadline_exceeded.load(std::sync::atomic::Ordering::Relaxed)
+                || request_started.elapsed() >= deadline;
+            let cancelled_hit = cancelled.load(std::sync::atomic::Ordering::Relaxed);
+            if deadline_hit {
+                emit(remote_terminal_event(&request_id_for_task, true));
+            } else if cancelled_hit {
+                emit(remote_terminal_event(&request_id_for_task, false));
+            } else {
+                for event in events {
+                    emit(event);
+                }
+            }
+            return;
+        }
         if let Some(provider) = provider {
             let events = provider.generate(
                 ProviderRequest {
@@ -1639,14 +2136,123 @@ mod tests {
 
     #[test]
     fn endpoint_validation_is_loopback_only() {
-        assert!(parse_local_endpoint("http://127.0.0.1:1234/v1").is_ok());
-        assert!(parse_local_endpoint("http://localhost:1234/v1").is_ok());
-        assert!(parse_local_endpoint("http://[::1]:1234/v1").is_ok());
-        assert!(parse_local_endpoint("http://[::1]/v1").is_ok());
-        assert!(parse_local_endpoint("http://127.0.0.1:bad/v1").is_err());
-        assert!(parse_local_endpoint("http://127.0.0.1:65536/v1").is_err());
-        assert!(parse_local_endpoint("https://example.com").is_err());
-        assert!(parse_local_endpoint("file:///tmp/model").is_err());
+        assert!(parse_loopback_endpoint("http://127.0.0.1:1234/v1").is_ok());
+        assert!(parse_loopback_endpoint("http://localhost:1234/v1").is_ok());
+        assert!(parse_loopback_endpoint("http://[::1]:1234/v1").is_ok());
+        assert!(parse_loopback_endpoint("http://[::1]/v1").is_ok());
+        assert!(parse_loopback_endpoint("http://127.0.0.1:bad/v1").is_err());
+        assert!(parse_loopback_endpoint("http://127.0.0.1:65536/v1").is_err());
+        assert!(parse_loopback_endpoint("https://example.com").is_err());
+        assert!(parse_loopback_endpoint("file:///tmp/model").is_err());
+    }
+
+    #[test]
+    fn remote_endpoint_validation_is_https_and_ssrf_safe() {
+        assert!(validate_remote_endpoint("https://api.example.com/v1").is_ok());
+        assert!(validate_remote_endpoint("http://api.example.com/v1").is_err());
+        assert!(validate_remote_endpoint("https://user:secret@example.com/v1").is_err());
+        assert!(validate_remote_endpoint("https://api.example.com/v1?token=x").is_err());
+        assert!(validate_remote_endpoint("https://127.0.0.1/v1").is_err());
+        assert!(validate_remote_endpoint("https://10.0.0.8/v1").is_err());
+        assert!(validate_remote_endpoint("https://[::1]/v1").is_err());
+        assert!(validate_remote_endpoint("https://[::ffff:127.0.0.1]/v1").is_err());
+        assert!(validate_remote_endpoint("https://[::ffff:10.0.0.8]/v1").is_err());
+        assert!(validate_remote_endpoint("https://[::ffff:169.254.1.1]/v1").is_err());
+        assert!(validate_remote_endpoint("https://192.0.0.8/v1").is_err());
+        assert!(validate_remote_endpoint("https://198.18.0.8/v1").is_err());
+        assert!(validate_remote_endpoint("https://[2001:db8::1]/v1").is_err());
+        assert!(validate_remote_endpoint("https://localhost/v1").is_err());
+    }
+
+    #[test]
+    fn remote_completion_usage_is_bounded_and_typed() {
+        let response: RemoteCompletionResponse = serde_json::from_str(
+            r#"{"choices":[{"message":{"content":"draft"}}],"usage":{"prompt_tokens":12,"completion_tokens":7,"total_tokens":19}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            response.choices[0].message.content.as_deref(),
+            Some("draft")
+        );
+        let usage = response.usage.unwrap();
+        assert_eq!(
+            (
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total_tokens
+            ),
+            (12, 7, 19)
+        );
+    }
+
+    #[test]
+    fn remote_redirects_and_provider_secrets_are_redacted() {
+        assert_eq!(
+            remote_status_error(307),
+            Some(AiError::InvalidProviderResponse)
+        );
+        assert_eq!(remote_status_error(200), None);
+        let diagnostic =
+            redact_diagnostic("provider rejected Bearer sk-test-secret", "sk-test-secret");
+        assert!(!diagnostic.contains("sk-test-secret"));
+        assert!(diagnostic.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn remote_policy_denies_without_exact_consent_before_transport() {
+        let mut settings = crate::settings::AppSettings::default();
+        assert!(!remote_policy_allows(
+            &settings,
+            "/project",
+            "provider",
+            "https://api.example.com/v1"
+        ));
+        settings.ai.remote_policy = AiRemotePolicy::RemoteAllowed;
+        assert!(remote_policy_allows(
+            &settings,
+            "/project",
+            "provider",
+            "https://api.example.com/v1"
+        ));
+    }
+
+    #[test]
+    fn remote_dns_resolution_rejects_local_destinations() {
+        let url = reqwest::Url::parse("https://127.0.0.1/v1").unwrap();
+        assert_eq!(
+            resolve_remote_destination(&url),
+            Err(AiError::RemoteContextDenied)
+        );
+    }
+
+    #[test]
+    fn remote_deadline_produces_one_deadline_terminal_event() {
+        let event = remote_terminal_event("request", true);
+        assert_eq!(event.phase, "deadline_exceeded");
+        assert_eq!(event.error.as_deref(), Some("DeadlineExceeded"));
+    }
+
+    #[test]
+    fn remote_dispatch_precedes_injected_local_provider() {
+        let runtime = Arc::new(Mutex::new(AiRuntime::with_provider(Arc::new(
+            FakeLoopbackProvider,
+        ))));
+        let error = start_ai_request_mode(
+            None,
+            runtime,
+            AiCaller::trusted_shell("trusted-shell", "/project"),
+            "https://api.example.com/v1".into(),
+            String::new(),
+            "rewrite".into(),
+            "selection".into(),
+            None,
+            DEFAULT_LIMITS.default_deadline,
+            Vec::new(),
+            true,
+            Some("test-secret".into()),
+        )
+        .unwrap_err();
+        assert_eq!(error, "A remote AI model ID is required");
     }
 
     #[test]

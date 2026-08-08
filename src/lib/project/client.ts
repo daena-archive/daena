@@ -98,10 +98,22 @@ export interface AppSettings {
 export interface AiSettings {
   localEndpoint: string;
   localModel: string;
+  remotePolicy: "disabled" | "localOnly" | "ask" | "approvedPairs" | "remoteAllowed";
+  remote: RemoteAiSettings;
+}
+export interface RemoteAiSettings {
+  provider: string;
+  endpoint: string;
+  model: string;
+  consents: Array<{ projectId: string; provider: string; endpoint: string }>;
+}
+export interface RemoteCredentialStatus {
+  provider: string;
+  configured: boolean;
 }
 export interface AppSettingsUpdate {
   general?: { recentProjects?: RecentProjectSetting[] };
-  ai?: Partial<AiSettings>;
+  ai?: { localEndpoint?: string; localModel?: string; remotePolicy?: AiSettings["remotePolicy"]; remote?: Partial<RemoteAiSettings> };
 }
 export interface AiProviderStatus {
   endpoint: string;
@@ -129,7 +141,7 @@ export interface AiHybridMatch {
 export interface AiStreamEvent {
   sequence: number;
   requestId: string;
-  phase: "started" | "delta" | "completed" | "cancelled" | "deadline_exceeded" | "failed";
+  phase: "started" | "delta" | "usage" | "completed" | "cancelled" | "deadline_exceeded" | "failed";
   delta: string | null;
   output: string | null;
   error: string | null;
@@ -266,6 +278,12 @@ export const project = {
   settingsGet: () => invoke<AppSettings>("settings_get"),
   settingsUpdate: (update: AppSettingsUpdate) => invoke<AppSettings>("settings_update", { update }),
   aiLocalStatus: (endpoint: string, model: string) => invoke<AiProviderStatus>("ai_local_status", { endpoint, model }),
+  aiRemoteCredentialStatus: (provider: string) => invoke<RemoteCredentialStatus>("ai_remote_credential_status", { provider }),
+  aiRemoteImportCredential: (provider: string) => invoke<RemoteCredentialStatus>("ai_remote_import_credential", { provider }),
+  aiRemoteSetConsent: (projectId: string, provider: string, endpoint: string, allowed: boolean) =>
+    invoke<void>("ai_remote_set_consent", { projectId, provider, endpoint, allowed }),
+  aiGenerateRemoteText: (projectId: string, provider: string, endpoint: string, model: string, instruction: string, selection: string) =>
+    invoke<string>("ai_generate_remote_text", { projectId, provider, endpoint, model, instruction, selection }),
   aiIndexStatus: () => invoke<AiIndexStatus>("ai_index_status"),
   aiIndexRebuild: (endpoint: string, model: string) => invoke<AiIndexRebuildResult>("ai_index_rebuild", { endpoint, model }),
   aiIndexCancel: () => invoke<void>("ai_index_cancel"),

@@ -348,16 +348,18 @@ function validateCommandSchema(value: unknown, label: string, errors: string[]):
 
 export function validatePluginManifest(manifest: PluginManifest): string[] {
   const errors: string[] = [];
-  const knownManifestKeys = new Set(["manifestVersion", "id", "name", "version", "publisher", "hostApi", "kind", "entrypoints", "capabilities", "dependencies", "namespaces", "schemas", "templates", "views", "commands", "services", "events", "migrations"]);
+  const knownManifestKeys = new Set(["manifestVersion", "id", "name", "version", "publisher", "enabledByDefault", "stability", "hostApi", "kind", "entrypoints", "capabilities", "dependencies", "namespaces", "schemas", "templates", "views", "commands", "services", "events", "migrations"]);
   const value = manifest as unknown as Record<string, unknown>;
   for (const key of Object.keys(value)) if (!knownManifestKeys.has(key)) errors.push(`unknown manifest key: ${key}`);
-  for (const key of knownManifestKeys) if (!(key in value)) errors.push(`missing manifest key: ${key}`);
+  for (const key of knownManifestKeys) if (key !== "enabledByDefault" && !(key in value)) errors.push(`missing manifest key: ${key}`);
   if (value.manifestVersion !== 1) errors.push("manifestVersion must be 1");
   if (typeof value.id !== "string" || !isPluginIdentifier(value.id)) errors.push("id is invalid");
   if (typeof value.publisher !== "string" || !isPluginIdentifier(value.publisher)) errors.push("publisher is invalid");
   if (typeof value.name !== "string" || !value.name.trim()) errors.push("name is required");
   if (typeof value.version !== "string" || !isSemanticVersion(value.version)) errors.push("version is invalid");
   if (typeof value.hostApi !== "string" || !isHostApiRange(value.hostApi)) errors.push("hostApi is invalid");
+  if (value.enabledByDefault !== undefined && typeof value.enabledByDefault !== "boolean") errors.push("enabledByDefault must be a boolean");
+  if (value.stability !== undefined && !["stable", "beta", "experimental"].includes(value.stability as string)) errors.push("stability is invalid");
   if (value.kind !== "declarative" && value.kind !== "sandboxed") errors.push("kind is invalid");
   const entrypoints = value.entrypoints;
   if (!entrypoints || typeof entrypoints !== "object" || Array.isArray(entrypoints)) errors.push("entrypoints must be an object");

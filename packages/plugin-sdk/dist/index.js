@@ -265,13 +265,13 @@ function validateCommandSchema(value, label, errors) {
 }
 export function validatePluginManifest(manifest) {
     const errors = [];
-    const knownManifestKeys = new Set(["manifestVersion", "id", "name", "version", "publisher", "hostApi", "kind", "entrypoints", "capabilities", "dependencies", "namespaces", "schemas", "templates", "views", "commands", "services", "events", "migrations"]);
+    const knownManifestKeys = new Set(["manifestVersion", "id", "name", "version", "publisher", "enabledByDefault", "stability", "hostApi", "kind", "entrypoints", "capabilities", "dependencies", "namespaces", "schemas", "templates", "views", "commands", "services", "events", "migrations"]);
     const value = manifest;
     for (const key of Object.keys(value))
         if (!knownManifestKeys.has(key))
             errors.push(`unknown manifest key: ${key}`);
     for (const key of knownManifestKeys)
-        if (!(key in value))
+        if (key !== "enabledByDefault" && !(key in value))
             errors.push(`missing manifest key: ${key}`);
     if (value.manifestVersion !== 1)
         errors.push("manifestVersion must be 1");
@@ -285,6 +285,10 @@ export function validatePluginManifest(manifest) {
         errors.push("version is invalid");
     if (typeof value.hostApi !== "string" || !isHostApiRange(value.hostApi))
         errors.push("hostApi is invalid");
+    if (value.enabledByDefault !== undefined && typeof value.enabledByDefault !== "boolean")
+        errors.push("enabledByDefault must be a boolean");
+    if (value.stability !== undefined && !["stable", "beta", "experimental"].includes(value.stability))
+        errors.push("stability is invalid");
     if (value.kind !== "declarative" && value.kind !== "sandboxed")
         errors.push("kind is invalid");
     const entrypoints = value.entrypoints;

@@ -2554,7 +2554,19 @@ fn sync_project_usage(project: &ProjectStore, host: &mut PluginHost) -> Result<(
     module_ids.extend(host.catalog.list().map(|entry| entry.manifest.id.clone()));
 
     for module_id in module_ids {
-        let (enabled, package_version) = states.get(&module_id).cloned().unwrap_or((true, None));
+        let (enabled, package_version) = if let Some(state) = states.get(&module_id).cloned() {
+            state
+        } else {
+            let enabled = host
+                .catalog
+                .get(&module_id)
+                .and_then(|entry| entry.manifest.enabled_by_default)
+                .unwrap_or(true);
+            if !enabled {
+                project.set_module_enabled(module_id.clone(), false)?;
+            }
+            (enabled, None)
+        };
         if enabled {
             if let Some(version) = package_version {
                 host.record_project_usage(&project_id, &module_id, &version)
@@ -5146,6 +5158,10 @@ pub fn run() {
             settings_get,
             settings_update,
             ai::ai_local_status,
+            ai::ai_remote_credential_status,
+            ai::ai_remote_import_credential,
+            ai::ai_remote_set_consent,
+            ai::ai_generate_remote_text,
             ai::ai_index_status,
             ai::ai_index_rebuild,
             ai::ai_index_cancel,

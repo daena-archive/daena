@@ -93,6 +93,15 @@ pub enum PluginKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum PluginStability {
+    Stable,
+    Beta,
+    Experimental,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Entrypoints {
     pub ui: Option<String>,
@@ -353,6 +362,9 @@ pub struct PluginManifest {
     pub name: String,
     pub version: String,
     pub publisher: String,
+    #[serde(rename = "enabledByDefault")]
+    pub enabled_by_default: Option<bool>,
+    pub stability: Option<PluginStability>,
     #[serde(rename = "hostApi")]
     pub host_api: String,
     pub kind: PluginKind,

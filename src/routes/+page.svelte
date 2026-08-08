@@ -83,11 +83,19 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   let projectDiagnostics = $state<string[]>([]);
   let showSettings = $state(false);
   let settingsSection = $state<SettingsSection>("general");
-  let aiSettings = $state<AiSettings>({ localEndpoint: "http://127.0.0.1:1234/v1", localModel: "" });
+  let aiSettings = $state<AiSettings>({
+    localEndpoint: "http://127.0.0.1:1234/v1",
+    localModel: "",
+    remotePolicy: "localOnly",
+    remote: { provider: "", endpoint: "", model: "", consents: [] },
+  });
   let aiStatus = $state<AiProviderStatus | null>(null);
   let aiIndexStatus = $state<AiIndexStatus | null>(null);
   let aiIndexBusy = $state(false);
   let aiIndexMessage = $state("");
+  let remoteCredential = $state<{ provider: string; configured: boolean } | null>(null);
+  let aiUseRemote = $state(false);
+  let aiUsage = $state<{ inputTokens: number; outputTokens: number; totalTokens: number } | null>(null);
   let aiRewriteOpen = $state(false);
   let aiBusy = $state(false);
   let aiRequestId = $state<string | null>(null);
@@ -678,6 +686,34 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     aiStatus = null;
     void project.settingsUpdate({ ai: { [key]: value } });
   }
+  function updateAiRemoteSetting(key: "provider" | "endpoint" | "model", value: string) {
+    aiSettings = { ...aiSettings, remote: { ...aiSettings.remote, [key]: value } };
+    remoteCredential = null;
+    void project.settingsUpdate({ ai: { remote: { [key]: value } } });
+  }
+  function updateAiRemotePolicy(value: AiSettings["remotePolicy"]) {
+    aiSettings = { ...aiSettings, remotePolicy: value };
+    void project.settingsUpdate({ ai: { remotePolicy: value } });
+  }
+  async function refreshRemoteCredential() {
+    if (!aiSettings.remote.provider.trim()) { remoteCredential = null; return; }
+    try { remoteCredential = await project.aiRemoteCredentialStatus(aiSettings.remote.provider); }
+    catch (_) { remoteCredential = { provider: aiSettings.remote.provider, configured: false }; }
+  }
+  async function importRemoteCredential() {
+    if (!aiSettings.remote.provider.trim()) return;
+    try {
+      remoteCredential = await project.aiRemoteImportCredential(aiSettings.remote.provider);
+    } catch (cause) { aiIndexMessage = friendlyError(cause); }
+  }
+  async function setRemoteConsent(allowed: boolean) {
+    if (!projectInfo?.root || !aiSettings.remote.provider || !aiSettings.remote.endpoint) return;
+    try {
+      await project.aiRemoteSetConsent(projectInfo.root, aiSettings.remote.provider, aiSettings.remote.endpoint, allowed);
+      const consents = aiSettings.remote.consents.filter((consent) => !(consent.projectId === projectInfo?.root && consent.provider === aiSettings.remote.provider));
+      aiSettings = { ...aiSettings, remote: { ...aiSettings.remote, consents: allowed ? [...consents, { projectId: projectInfo.root, provider: aiSettings.remote.provider, endpoint: aiSettings.remote.endpoint }] : consents } };
+    } catch (cause) { aiIndexMessage = friendlyError(cause); }
+  }
   async function checkAiProvider() {
     try { aiStatus = await project.aiLocalStatus(aiSettings.localEndpoint, aiSettings.localModel); }
     catch (cause) { aiStatus = { endpoint: aiSettings.localEndpoint, model: aiSettings.localModel, available: false, modelAvailable: false, error: friendlyError(cause) }; }
@@ -718,6 +754,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     aiRequestId = null;
     aiStreamText = "";
     aiPreviewOutput = "";
+    aiUsage = null;
     aiSourceSelection = "";
     aiSourceSelectionPlain = "";
     aiLastSequence = -1;
@@ -734,6 +771,9 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     if (payload.sequence <= aiLastSequence) return;
     aiLastSequence = payload.sequence;
     if (payload.phase === "delta" && payload.delta) aiStreamText += payload.delta;
+    if (payload.phase === "usage" && payload.output) {
+      try { aiUsage = JSON.parse(payload.output); } catch (_) { aiUsage = null; }
+    }
     if (payload.phase === "completed") {
       aiPreviewOutput = payload.output ?? aiStreamText;
       aiBusy = false;
@@ -761,7 +801,13 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     aiLastSequence = -1;
     aiBusy = true;
     try {
-      const requestId = await project.aiGenerateText(aiSettings.localEndpoint, aiSettings.localModel, aiInstruction, aiSourceSelection);
+      const remoteConsent = aiSettings.remote.consents.some((consent) => consent.projectId === projectInfo?.root && consent.provider === aiSettings.remote.provider && consent.endpoint === aiSettings.remote.endpoint);
+      if (aiUseRemote && (!projectInfo?.root || !remoteConsent || !remoteCredential?.configured)) {
+        throw new Error("Remote AI requires an approved provider, endpoint, and OS credential for this project.");
+      }
+      const requestId = aiUseRemote
+        ? await project.aiGenerateRemoteText(projectInfo!.root, aiSettings.remote.provider, aiSettings.remote.endpoint, aiSettings.remote.model, aiInstruction, aiSourceSelection)
+        : await project.aiGenerateText(aiSettings.localEndpoint, aiSettings.localModel, aiInstruction, aiSourceSelection);
       aiRequestId = requestId;
       aiUnlisten = await listen<AiStreamEvent>(`ai-stream:${requestId}`, (event) => {
         handleAiEvent(event.payload);
@@ -815,6 +861,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
       const settings = await project.settingsGet();
       recentProjects = settings.general.recentProjects.slice(0, 6);
       aiSettings = settings.ai;
+      await refreshRemoteCredential();
       if (recentProjects.length > 0 || settingsMigrated) return;
       const stored = JSON.parse(localStorage.getItem(recentProjectsKey) ?? "[]");
       if (Array.isArray(stored)) {
@@ -1673,7 +1720,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
         <div class="rail-label">WORKSPACE</div>
         <nav class="workspace-nav" aria-label="Workspace sections">
           {#each enabledWorkspaceSections() as target (target)}
-            <button aria-current={workspaceNavigationActive(target) ? "page" : undefined} class:active={workspaceNavigationActive(target)} class="rail-button" onclick={() => void switchSection(target)}><span class="rail-icon">{sectionIcon(target)}</span><span>{target === "lore" ? "Lore library" : target === "timeline" ? "Timeline" : target === "writing" ? "Writing Studio" : "Maps"}</span></button>
+            <button title={target === "maps" ? "Maps · Beta plugin — may be unstable" : undefined} aria-current={workspaceNavigationActive(target) ? "page" : undefined} class:active={workspaceNavigationActive(target)} class="rail-button" onclick={() => void switchSection(target)}><span class="rail-icon">{sectionIcon(target)}</span><span>{target === "lore" ? "Lore library" : target === "timeline" ? "Timeline" : target === "writing" ? "Writing Studio" : "Maps"}{#if target === "maps"}<em class="workspace-beta">Beta</em>{/if}</span></button>
           {/each}
         </nav>
       {/if}
@@ -1780,6 +1827,11 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
         onAiIndexRefresh={() => void refreshAiIndexStatus()}
         onAiIndexRebuild={() => void rebuildAiIndex()}
         onAiIndexCancel={() => void cancelAiIndex()}
+        onAiRemoteSettingsChange={updateAiRemoteSetting}
+        onAiRemotePolicyChange={updateAiRemotePolicy}
+        remoteCredential={remoteCredential}
+        onAiRemoteConsent={(allowed) => void setRemoteConsent(allowed)}
+        onAiRemoteImport={() => void importRemoteCredential()}
       >
         {#snippet plugins()}
           <div class="settings-section-heading plugins-settings-heading">
@@ -1805,6 +1857,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
                     <div class="plugin-card-title"><strong>{plugin.name}</strong><span class="plugin-id">{plugin.id}</span></div>
                     <div class="plugin-badges">
                       <span class:badge-off={!plugin.enabled} class="plugin-badge">{plugin.enabled ? "Enabled" : "Disabled"}</span>
+                      {#if plugin.stability === "beta"}<span class="plugin-badge beta" title="Beta release: this plugin is useful but may be unstable">Beta · unstable</span>{:else if plugin.stability === "experimental"}<span class="plugin-badge experimental" title="Experimental release: behavior may change">Experimental</span>{/if}
                       <span class="plugin-badge">{plugin.kind}</span>
                       <span class="plugin-badge" title={`Lifecycle: ${plugin.lifecycle.state}`}>{plugin.lifecycle.state}</span>
                       {#if plugin.lifecycle.failures > 0}<span class="plugin-badge danger" title={plugin.lifecycle.lastError ?? ""}>{plugin.lifecycle.failures} failure{plugin.lifecycle.failures === 1 ? "" : "s"}</span>{/if}
@@ -2025,7 +2078,8 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
             {/if}
             {#if aiRewriteOpen}
               <section class="ai-rewrite-panel" aria-label="AI rewrite proposal">
-                <div class="ai-rewrite-heading"><div><span class="panel-kicker">LOCAL AI · LM STUDIO</span><strong>{aiBusy ? "Rewriting selection…" : aiPreviewOutput ? "Review rewrite" : "Rewrite selection"}</strong></div><button class="quiet-button" type="button" onclick={closeAiRewrite}>Discard</button></div>
+                <div class="ai-rewrite-heading"><div><span class="panel-kicker">{aiUseRemote ? "REMOTE AI · APPROVED PROVIDER" : "LOCAL AI · LM STUDIO"}</span><strong>{aiBusy ? "Rewriting selection…" : aiPreviewOutput ? "Review rewrite" : "Rewrite selection"}</strong></div><button class="quiet-button" type="button" onclick={closeAiRewrite}>Discard</button></div>
+                {#if !aiPreviewOutput && aiSettings.remote.provider && aiSettings.remote.endpoint}<label class="ai-remote-choice"><input type="checkbox" bind:checked={aiUseRemote} disabled={aiBusy} /> Use the approved remote provider for this request</label>{/if}
                 {#if !aiPreviewOutput}<label class="ai-instruction">Instruction<textarea rows="2" bind:value={aiInstruction} disabled={aiBusy} placeholder="Tell LM Studio how to rewrite the selection"></textarea></label>{/if}
                 <AiProposalPreview
                   original={aiSourceSelectionPlain}
@@ -2036,6 +2090,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
                   onDiscard={closeAiRewrite}
                   onAccept={() => void acceptAiRewrite()}
                 />
+                {#if aiUsage}<p class="muted-note">Provider usage: {aiUsage.inputTokens} input + {aiUsage.outputTokens} output tokens.</p>{/if}
                 {#if !aiBusy && !aiPreviewOutput}<div class="ai-rewrite-actions"><button class="primary-button" type="button" disabled={!aiSourceSelection.trim() || !aiInstruction.trim()} onclick={() => void startAiRewrite()}>Generate rewrite</button></div>{/if}
               </section>
             {/if}
@@ -2065,7 +2120,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   .studio-shell { min-height: 100vh; display: flex; } .rail { width: 248px; flex: 0 0 248px; display: flex; flex-direction: column; padding: 25px 15px 18px; background: #283a30; color: #eef0e9; } .startup-rail { padding-top: 34px; } .brand { display: flex; align-items: center; gap: 11px; padding: 0 10px 40px; } .rail:not(.startup-rail) .brand { padding-bottom: 20px; } .brand-mark { display: grid; place-items: start center; width: 31px; height: 31px; overflow: hidden; border-radius: 9px; background: #d5ab6c; } .project-card strong, .recent-project strong, .recent-project small { display: block; } .recent-project small { margin-top: 3px; color: #aab9ad; font-size: 11px; } .rail-label { margin: 0 10px 9px; color: #819688; font-size: 10px; font-weight: 700; letter-spacing: .16em; } .recent-label { margin-top: 27px; } .rail-button { width: 100%; display: flex; align-items: center; gap: 11px; padding: 10px 11px; margin-bottom: 3px; border: 0; border-radius: 8px; background: transparent; color: #b9c8bc; text-align: left; cursor: pointer; } .rail-button:hover, .rail-button.active { background: #3b5243; color: #fff; } .startup-primary { margin-top: 8px; background: #d5ab6c; color: #2c4032; font-weight: 700; } .startup-primary:hover { background: #e1bc82; color: #2c4032; } .rail-icon { width: 18px; color: #d5ab6c; text-align: center; } .startup-primary .rail-icon { color: #2c4032; } .muted-button { color: #91a397; } .rail-spacer { flex: 1; } .rail-footer { padding: 17px 10px 0; color: #708476; font-size: 11px; } .project-switcher { margin-bottom: 18px; } .project-card { display: flex; align-items: center; width: 100%; gap: 10px; padding: 10px; border: 0; border-radius: 8px; background: transparent; color: #eef0e9; font: inherit; text-align: left; cursor: pointer; } .project-card:hover, .project-card.active { background: #3b5243; } .project-copy { min-width: 0; flex: 1; } .project-chevron { flex: 0 0 auto; color: #aab9ad; font-size: 16px; line-height: 1; transform: translateY(-3px); } .project-card strong, .recent-project strong { font-size: 13px; max-width: 185px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .project-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: #777f78; } .project-dot.online { background: #88c18e; box-shadow: 0 0 0 4px rgba(136,193,142,.12); } .recent-projects { display: grid; gap: 3px; } .recent-project { width: 100%; display: flex; align-items: flex-start; gap: 10px; padding: 10px; border: 0; border-radius: 8px; background: transparent; color: #eef0e9; text-align: left; cursor: pointer; } .recent-project:hover { background: #3b5243; } .recent-project small { overflow: hidden; max-width: 180px; text-overflow: ellipsis; white-space: nowrap; } .project-menu { margin: 3px 0 8px 8px; padding-left: 8px; border-left: 1px solid #486052; } .project-menu .rail-button { padding: 8px 9px; color: #aab9ad; font-size: 11px; } .module-menu { margin: 6px 8px 12px; padding: 8px 10px; border: 1px solid #486052; border-radius: 8px; background: #30483a; }
   .app-main { min-width: 0; flex: 1; } .app-main.sandbox-active { display: flex; min-height: 0; flex-direction: column; overflow: hidden; } .app-main.sandbox-active > .topbar { flex: 0 0 auto; } .topbar { display: flex; align-items: center; justify-content: space-between; min-height: 58px; padding: 0 40px 0; border-bottom: 1px solid var(--line); background: rgba(255,254,250,.78); } .breadcrumbs, .top-actions { display: flex; align-items: center; gap: 10px; } .breadcrumbs { min-width: 0; color: var(--ink-faint); font-size: 12px; } .breadcrumbs strong { color: var(--ink-soft); } .breadcrumbs span:last-child { overflow: hidden; max-width: 180px; text-overflow: ellipsis; white-space: nowrap; } .breadcrumbs i { color: #d0ccc2; font-style: normal; } .global-search { display: flex; align-items: center; gap: 8px; width: 230px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink-faint); } .global-search input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 12px; } .sync-badge { color: var(--ink-faint); font-size: 10px; } .sync-badge { display: flex; align-items: center; gap: 6px; color: var(--ink-soft); } .sync-badge span { width: 6px; height: 6px; border-radius: 50%; background: #72a97a; }
   .welcome, .disabled-state { max-width: 1080px; min-height: calc(100vh - 58px); margin: auto; padding: 10vh 7vw; display: flex; align-items: center; gap: 8vw; } .welcome-copy { flex: 1; } .overline, .panel-kicker { display: block; color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: .18em; } .welcome h1 { margin: 20px 0 18px; font: 500 clamp(48px, 6vw, 78px)/.98 var(--font-display); letter-spacing: -.04em; } .welcome h1 em { color: var(--accent); font-style: italic; } .welcome p { max-width: 380px; margin: 0; color: var(--ink-soft); font-size: 16px; line-height: 1.7; } .welcome-art { position: relative; width: 360px; height: 390px; } .orb { position: absolute; border-radius: 50%; } .orb-one { top: 16px; right: 15px; width: 275px; height: 275px; background: radial-gradient(circle at 33% 30%, #eed5a5, #c2794d 64%, #7b4d3f); box-shadow: 30px 35px 60px rgba(115,74,56,.22); } .orb-two { left: 10px; bottom: 36px; width: 140px; height: 140px; background: #365342; box-shadow: 14px 16px 30px rgba(45,71,54,.2); } .art-card { position: absolute; right: -10px; bottom: 0; width: 235px; padding: 22px; border: 1px solid rgba(255,255,255,.65); border-radius: 12px; background: rgba(255,254,250,.86); box-shadow: var(--shadow-lg); } .art-card span, .art-card small { display: block; color: var(--accent); font-size: 9px; font-weight: 800; letter-spacing: .16em; } .art-card strong { display: block; margin: 17px 0 27px; font: 500 20px/1.18 var(--font-display); } .art-card small { color: var(--ink-faint); font-weight: 500; letter-spacing: 0; }
-  .primary-button, .quiet-button, .add-button { border: 0; border-radius: 8px; cursor: pointer; } .primary-button { padding: 10px 15px; background: var(--accent-dark); color: #fff; font-weight: 700; font-size: 12px; box-shadow: 0 5px 12px rgba(42,68,51,.14); } .primary-button:hover { background: #2b4535; } .primary-button:disabled { opacity: .55; cursor: wait; } .quiet-button { padding: 10px 12px; background: transparent; color: var(--ink-soft); font-size: 12px; } .quiet-button:hover { background: var(--surface-muted); color: var(--ink); } .maps-welcome { align-items: stretch; } .maps-welcome-actions { display: flex; gap: 8px; margin-top: 26px; } .maps-welcome-list { flex: 0 0 380px; display: flex; width: 380px; min-height: 380px; max-height: calc(100vh - 220px); flex-direction: column; } .maps-welcome-list .panel-heading { flex: 0 0 auto; } .maps-welcome-list .collection-list { max-height: none; flex: 1 1 auto; overflow-y: auto; }
+  .primary-button, .quiet-button, .add-button { border: 0; border-radius: 8px; cursor: pointer; } .primary-button { padding: 10px 15px; border: 1px solid rgba(255,255,255,.08); background: var(--accent-dark); color: #fff; font-weight: 700; font-size: 12px; box-shadow: 0 2px 0 #263d30, 0 7px 16px rgba(42,68,51,.16); transition: background .16s ease, box-shadow .16s ease, transform .16s ease; } .primary-button:hover { background: #2b4535; box-shadow: 0 2px 0 #263d30, 0 10px 20px rgba(42,68,51,.2); transform: translateY(-1px); } .primary-button:active { box-shadow: 0 1px 0 #263d30, 0 3px 8px rgba(42,68,51,.14); transform: translateY(1px); } .primary-button:focus-visible { outline: 3px solid rgba(180,119,63,.32); outline-offset: 2px; } .primary-button:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; transform: none; } .quiet-button { padding: 10px 12px; border: 1px solid #ded8cd; background: var(--surface); color: var(--ink-soft); font-size: 12px; box-shadow: 0 1px 2px rgba(48,45,38,.05); transition: background .16s ease, border-color .16s ease, box-shadow .16s ease, color .16s ease, transform .16s ease; } .quiet-button:hover { border-color: #cbbda9; background: var(--surface-muted); color: var(--ink); box-shadow: 0 3px 8px rgba(48,45,38,.08); transform: translateY(-1px); } .quiet-button:active { box-shadow: 0 1px 2px rgba(48,45,38,.05); transform: translateY(1px); } .quiet-button:focus-visible { outline: 3px solid rgba(180,119,63,.24); outline-offset: 2px; } .quiet-button:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; transform: none; } .maps-welcome { align-items: stretch; } .maps-welcome-actions { display: flex; gap: 8px; margin-top: 26px; } .maps-welcome-list { flex: 0 0 380px; display: flex; width: 380px; min-height: 380px; max-height: calc(100vh - 220px); flex-direction: column; } .maps-welcome-list .panel-heading { flex: 0 0 auto; } .maps-welcome-list .collection-list { max-height: none; flex: 1 1 auto; overflow-y: auto; }
   .workspace-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; padding: 42px 40px 25px; } .workspace-heading h1 { margin: 8px 0 4px; font: 500 38px/1 var(--font-display); } .workspace-heading p { margin: 0; color: var(--ink-soft); font-size: 13px; } .heading-actions { display: flex; gap: 7px; } .projection-bar { min-height: 42px; margin: 0 40px 15px; padding: 0 14px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,254,250,.72); } .projection-bar:empty { display: none; } .workspace-grid { display: grid; grid-template-columns: 245px minmax(360px, 1fr) 270px; gap: 14px; padding: 0 40px 40px; align-items: start; } .panel-surface, .editor-panel { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-sm); } .collection-panel, .inspector-panel { min-height: 650px; } .collection-panel { display: flex; flex-direction: column; } .panel-heading, .inspector-heading { display: flex; align-items: center; justify-content: space-between; padding: 18px 17px 12px; } .panel-heading strong { display: block; margin-top: 5px; font: 500 28px var(--font-display); }
   .project-diagnostics { display: grid; gap: 5px; margin: 0 25px 14px; padding: 12px 14px; border: 1px solid #e2b48c; border-radius: 9px; background: #fff5e9; color: #765a39; font-size: 11px; } .project-diagnostics strong { font-size: 12px; } .project-diagnostics small { margin-top: 3px; color: #9a7957; } .editor-panel { min-height: 650px; padding: 24px 25px 18px; } .editor-header { display: flex; align-items: flex-start; justify-content: space-between; min-height: 72px; } .editor-header h2 { margin: 8px 0 0; font: 500 28px/1.1 var(--font-display); } .editor-status { color: var(--ink-faint); font-size: 11px; } .saving-dot, .saved-dot { display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: #d6a35f; } .saved-dot { width: auto; height: auto; margin: 0 4px 0 0; color: #6fa276; background: transparent; } .document-conflict { margin: -4px 0 16px; padding: 13px 14px; border: 1px solid #e2b48c; border-radius: 9px; background: #fff5e9; color: #765a39; } .document-conflict strong { font-size: 12px; } .document-conflict p { margin: 5px 0 10px; font-size: 11px; line-height: 1.5; } .conflict-compare { margin: 8px 0 10px; padding: 8px 10px; border: 1px solid #ead7c2; border-radius: 7px; background: #fffaf3; } .conflict-compare summary { cursor: pointer; font-size: 11px; font-weight: 700; } .conflict-compare pre { max-height: 180px; margin: 8px 0 0; overflow: auto; white-space: pre-wrap; font: 11px/1.5 ui-monospace, monospace; }   .conflict-actions { display: flex; flex-wrap: wrap; gap: 6px; }
   .map-editor-shell { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; }
@@ -2083,10 +2138,9 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   .ai-rewrite-heading strong { display: block; margin-top: 4px; color: var(--ink); font-size: 14px; }
   .ai-instruction { display: grid; gap: 5px; color: var(--ink-soft); font-size: 10px; font-weight: 700; }
   .ai-instruction textarea { width: 100%; resize: vertical; padding: 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); font: 12px/1.45 var(--font-body); }
-  .ai-stream-output, .ai-diff-grid pre, .ai-proposal-editor { max-height: 220px; overflow: auto; margin: 0; padding: 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); white-space: pre-wrap; font: 12px/1.55 var(--font-body); }
+  .ai-stream-output, .ai-proposal-editor { max-height: 220px; overflow: auto; margin: 0; padding: 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); white-space: pre-wrap; font: 12px/1.55 var(--font-body); }
   .ai-proposal-editor { width: 100%; resize: vertical; }
   .ai-diff-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-  .ai-diff-grid > div > span { display: block; margin-bottom: 5px; color: var(--ink-faint); font-size: 10px; font-weight: 700; text-transform: uppercase; }
   @media (max-width: 620px) { .ai-diff-grid { grid-template-columns: 1fr; } }
   @media (max-width: 760px) { .map-conflict-banner { align-items: flex-start; flex-direction: column; } } .editor-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 14px; color: var(--ink-faint); font-size: 11px; } .editor-footer div { display: flex; gap: 4px; } .editor-empty { display: grid; place-items: center; min-height: 500px; padding: 30px; text-align: center; } .empty-mark, .disabled-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 16px; background: #f2e4d2; color: var(--accent); font-size: 23px; } .editor-empty h3 { margin: 18px 0 6px; font: 500 23px var(--font-display); } .editor-empty p { max-width: 280px; margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
   .date-editor { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fcf8f1; } .date-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; } .date-fields label { display: grid; gap: 4px; color: var(--ink-faint); font-size: 9px; font-weight: 700; text-transform: uppercase; } .date-fields input { min-width: 0; width: 100%; padding: 8px 6px; border: 1px solid var(--line); border-radius: 7px; background: var(--canvas); color: var(--ink); font-size: 11px; } .date-fields input:focus { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180,119,63,.1); outline: 0; } .date-preview { color: var(--accent); font-size: 10px; font-weight: 700; } .date-clear, .date-empty { width: fit-content; padding: 0; border: 0; background: transparent; color: var(--ink-faint); font-size: 10px; cursor: pointer; } .date-empty { padding: 8px 10px; border: 1px dashed #d3c0a9; border-radius: 7px; color: var(--accent); } .inspector-heading { border-bottom: 1px solid var(--line); } .inspector-heading strong { display: block; margin-top: 7px; font: 500 20px var(--font-display); } .inspector-type { padding: 4px 7px; border-radius: 5px; background: #f2e4d2; color: var(--accent); font-size: 9px; font-weight: 800; text-transform: uppercase; } .inspector-section { padding: 18px 16px; border-bottom: 1px solid var(--line); } .inspector-section h3, .section-title h3 { margin: 0; color: var(--ink-soft); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; } .property-field { display: block; margin-top: 14px; } .property-field span { display: block; margin-bottom: 5px; color: var(--ink-soft); font-size: 10px; } .property-field b { margin-left: 3px; color: var(--accent); } .property-field input { width: 100%; padding: 8px 9px; border: 1px solid var(--line); border-radius: 7px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 11px; } .property-field input:focus { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180,119,63,.1); } .section-title { display: flex; align-items: center; justify-content: space-between; } .section-title span { color: var(--ink-faint); font-size: 11px; } .asset-row strong, .asset-row small { display: block; } .asset-row strong { font-size: 10px; } .asset-row small { margin-top: 3px; color: var(--ink-faint); font-size: 9px; } .drop-zone { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 12px; padding: 16px 8px; border: 1px dashed #d3c0a9; border-radius: 8px; background: #fcf8f1; color: var(--accent); text-align: center; cursor: pointer; } .drop-zone span { font-size: 22px; } .drop-zone strong { color: var(--ink-soft); font-size: 10px; } .drop-zone small { color: var(--ink-faint); font-size: 9px; } .asset-row { display: flex; align-items: center; gap: 8px; margin-top: 9px; } .asset-icon { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 6px; background: #ede9e0; color: var(--accent); }
@@ -2336,10 +2390,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   .capture-dialog { width: min(420px, 100%); padding: 22px; }
   .capture-preview { display: grid; gap: 4px; margin: 14px 0 2px; padding: 10px 12px; border: 1px dashed #d3c0a9; border-radius: 8px; background: #fcf8f1; }
   .capture-preview-label { color: var(--ink-faint); font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
-  .capture-preview strong { color: var(--accent-dark); font-size: 12px; }
   .capture-mode { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 17px; padding: 4px; border: 1px solid #d9cdbd; border-radius: 9px; background: var(--canvas); }
-  .capture-mode button { padding: 8px; border: 0; border-radius: 7px; background: transparent; color: var(--ink-soft); font-size: 12px; cursor: pointer; }
-  .capture-mode button.active { background: var(--surface); color: var(--ink); box-shadow: var(--shadow-sm); font-weight: 700; }
   .map-reconcile-notice { min-width: 0; overflow: hidden; color: #8a6a3b; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
   .map-unresolved-badge { display: inline-block; padding: 1px 6px; border-radius: 5px; background: #f7e6dd; color: #a14f42; font-weight: 700; }
   .map-unresolved-note { color: #a14f42; font-size: 10px; font-weight: 700; white-space: nowrap; }
@@ -2400,10 +2451,13 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   .plugin-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
   .plugin-badge { padding: 3px 7px; border-radius: 5px; background: #f0ece5; color: var(--ink-soft); font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; }
   .plugin-badge.badge-off { background: #efe9dd; color: var(--ink-faint); }
+  .plugin-badge.beta { background: #f7ead3; color: #936525; }
+  .plugin-badge.experimental { background: #f5e0da; color: #a1482f; }
   .plugin-badge.danger { background: #f5e0da; color: #a1482f; }
   .plugin-card-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 13px; margin-top: 10px; color: var(--ink-faint); font-size: 10px; }
   .runtime-dot { color: #6fa276; font-size: 10px; }
   .runtime-dot.runtime-off { color: #c0b7a8; }
+  .workspace-beta { margin-left: 5px; color: #936525; font-size: 9px; font-style: normal; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
   .plugin-warning { margin: 10px 0 0; padding: 8px 10px; border: 1px solid #ecd9bb; border-radius: 7px; background: #fcf5ea; color: #8a5f24; font-size: 11px; line-height: 1.45; }
   .plugin-error { margin: 8px 0 0; color: #a1482f; font-size: 11px; line-height: 1.45; }
   .plugin-muted { margin: 8px 0 0; color: var(--ink-faint); font-size: 10px; }

@@ -24,18 +24,22 @@ Status as of 2026-08-08: **architecture approved; Phase 0 is complete, Phase
 1 implementation is present, Phase 2 broker implementation is present, Phase 3
 implementation is complete, and Phase 4 provider-neutral vector primitives are
 implemented in the worktree**. Phase 4 disposable-index persistence, structured
-chunking, LM Studio embedding rebuild, cancellation, reuse, hybrid search, and
-shell status controls are now implemented; live LM Studio embedding/rebuild and
+chunking, local-provider embedding rebuild, cancellation, reuse, hybrid search, and
+shell status controls are now implemented; live local-provider embedding/rebuild and
 rendered-control checks remain manual evidence. The `daena-ai` contracts,
 deterministic fake-provider tests, hard limits, ADRs, bounded-stream transport
-decision/tests, LM Studio local discovery, normalized streaming/error handling,
+decision/tests, local-provider discovery, normalized streaming/error handling,
 buffered event lifecycle, and trusted-shell rewrite preview path are present.
 The remaining Phase 1 evidence is a rendered Tauri validation with a running LM
 Studio instance; Phase 2 broker execution, conformance, lifecycle, deadline,
-and oversized-output evidence is complete, while rendered Tauri/LM Studio
+and oversized-output evidence is complete, while rendered Tauri/local-provider
 validation remains pending; Phase 4 implementation evidence is present, while
 live provider, rendered-control, and automatic watcher scheduling evidence
-remains pending. Agents must verify the worktree and
+remains pending. Phase 5 remote-provider privacy controls are implemented in
+the worktree with explicit consent, cross-platform native credential storage, strict
+HTTPS/SSRF validation, redirect blocking, and no-silent-fallback routing;
+live remote/keychain/rendered privacy evidence remains pending. Agents must
+verify the worktree and
 current source before relying on this status.
 
 The Phase 3 implementation adds host-derived `AiCaller` propagation, a bounded
@@ -89,7 +93,7 @@ Important corrections to earlier proposals:
 3. `AuthorityContext::plugin()` carries no plugin ID or grant set. AI retrieval
    from a plugin call must retain the already-authorized broker session scope; it
    must not infer access from `AuthorityContext` alone.
-4. Local HTTP inference, such as LM Studio on loopback, still uses a network
+4. Local HTTP inference through a loopback provider still uses a network
    transport. It is local because of the endpoint and data path, not because no
    socket is involved. Plugins receive no network authority either way.
 
@@ -564,7 +568,7 @@ AiRequest
 - deadline
 ```
 
-Avoid exposing provider-specific values such as LM Studio loading/runtime
+Avoid exposing provider-specific values such as local-provider loading/runtime
 options, OpenAI reasoning flags, sampler names, or raw HTTP options in the
 plugin contract.
 Trusted settings may offer advanced provider-specific controls separately.
@@ -902,10 +906,10 @@ IPC transport, or an explicitly trusted local runtime. A user label alone does
 not make an arbitrary host local. Remote endpoints require HTTPS. Redirects are
 disabled by default and must never change the approved origin silently.
 
-LM Studio is the first recommended adapter because its local server exposes
-OpenAI-compatible model discovery and chat streaming without making that API
-the public Daena contract. Capability probing and strict response limits are
-still required because compatible endpoints vary.
+Local providers should use an adapter boundary for model discovery and chat
+streaming without making any vendor API the public Daena contract. Capability
+probing and strict response limits are still required because compatible
+endpoints vary.
 
 ### 10.3 Remote disclosure policy
 
@@ -1015,7 +1019,7 @@ can script:
 - rate limits, authentication failures, disconnects, and cancellation races;
 - image handles/bytes in later phases.
 
-No required CI test depends on LM Studio, internet access, a paid API, or
+No required CI test depends on a local provider, internet access, a paid API, or
 nondeterministic model quality.
 
 ### 13.2 Retrieval evaluation corpus
@@ -1114,7 +1118,7 @@ recorded, and all existing checks still pass.
 Deliver:
 
 - provider registry and model capability discovery;
-- LM Studio adapter for OpenAI-compatible text generation and streaming;
+- local-provider adapter for OpenAI-compatible text generation and streaming;
 - machine-local settings without credentials;
 - local endpoint validation and clear unavailable/model-missing states;
 - host-owned prompt builder with explicit context only;
@@ -1126,7 +1130,7 @@ Deliver:
 
 No plugin AI API, remote provider, structured fields, or RAG yet.
 
-**Exit gate:** in the rendered Tauri app, a user can configure local LM Studio,
+**Exit gate:** in the rendered Tauri app, a user can configure a local provider,
 rewrite a selection, cancel mid-stream, inspect a diff, and accept through the
 normal document save path. Provider failure and document revision conflict cause
 no data loss. The same workflow must also pass deterministically with the fake

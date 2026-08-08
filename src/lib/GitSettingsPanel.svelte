@@ -648,8 +648,14 @@
     font-size: 12px;
     padding: 9px 12px;
   }
-  .primary-button { background: var(--accent, #b4773f); color: #fff; }
-  .quiet-button { background: #efe6d6; color: var(--ink, #2b2a24); }
+  .primary-button { border: 1px solid rgba(255,255,255,.08); background: var(--accent-dark, #365342); color: #fff; box-shadow: 0 2px 0 #263d30, 0 7px 16px rgba(42,68,51,.16); transition: background .16s ease, box-shadow .16s ease, transform .16s ease; }
+  .primary-button:hover { background: #2b4535; box-shadow: 0 2px 0 #263d30, 0 10px 20px rgba(42,68,51,.2); transform: translateY(-1px); }
+  .primary-button:active { box-shadow: 0 1px 0 #263d30, 0 3px 8px rgba(42,68,51,.14); transform: translateY(1px); }
+  .primary-button:focus-visible { outline: 3px solid rgba(180,119,63,.32); outline-offset: 2px; }
+  .quiet-button { border: 1px solid #ded8cd; background: var(--surface, #fffefa); color: var(--ink-soft, #6f6a60); box-shadow: 0 1px 2px rgba(48,45,38,.05); transition: background .16s ease, border-color .16s ease, box-shadow .16s ease, color .16s ease, transform .16s ease; }
+  .quiet-button:hover { border-color: #cbbda9; background: #f7f3eb; color: var(--ink, #2b2a24); box-shadow: 0 3px 8px rgba(48,45,38,.08); transform: translateY(-1px); }
+  .quiet-button:active { box-shadow: 0 1px 2px rgba(48,45,38,.05); transform: translateY(1px); }
+  .quiet-button:focus-visible { outline: 3px solid rgba(180,119,63,.24); outline-offset: 2px; }
   .danger-button, :global(.danger-button) { background: #a1482f; color: #fff; }
   .primary-button:disabled, .quiet-button:disabled, .danger-button:disabled { opacity: 0.55; cursor: default; }
   .create-input-field {

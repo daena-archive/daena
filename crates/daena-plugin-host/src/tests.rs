@@ -9,6 +9,8 @@ fn manifest(id: &str, namespace: &str) -> PluginManifest {
         name: id.into(),
         version: "1.0.0".into(),
         publisher: "example".into(),
+        enabled_by_default: None,
+        stability: None,
         host_api: ">=1.0.0 <2.0.0".into(),
         kind: PluginKind::Sandboxed,
         entrypoints: Entrypoints {

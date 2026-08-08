@@ -23,11 +23,12 @@ export type CommandValueType = "object" | "string" | "number" | "boolean" | "arr
 export interface CommandProperty { type: CommandValueType }
 export interface CommandSchema { additionalProperties?: boolean; properties?: Record<string, CommandProperty>; required?: string[]; type: "object" }
 export interface Command { action?: CommandAction; capabilities?: string[]; exposure?: CommandExposure[]; id: string; input?: CommandSchema | null; output?: CommandSchema | null; title: string }
+export type PluginStability = "stable" | "beta" | "experimental";
 export interface Service { major: number; name: string }
 export interface Event { name: string; version: number }
 export interface Services { consumes: Service[]; provides: Service[] }
 export interface Events { publishes: Event[]; subscribes: Event[] }
-export interface PluginManifest { capabilities: string[]; commands: Command[]; dependencies: Record<string, Dependency>; entrypoints: Entrypoints; events: Events; hostApi: string; id: string; kind: PluginKind; manifestVersion: 1; migrations: Migration[]; name: string; namespaces: string[]; publisher: string; schemas: SchemaContribution[]; services: Services; templates: EntityTemplate[]; version: string; views: View[] }
+export interface PluginManifest { capabilities: string[]; commands: Command[]; dependencies: Record<string, Dependency>; enabledByDefault?: boolean; entrypoints: Entrypoints; events: Events; hostApi: string; id: string; kind: PluginKind; manifestVersion: 1; migrations: Migration[]; name: string; namespaces: string[]; publisher: string; schemas: SchemaContribution[]; services: Services; stability?: PluginStability; templates: EntityTemplate[]; version: string; views: View[] }
 
 export interface RpcRequest { rpcVersion: 1; sessionId: string; requestId: string; method: string; payload: unknown }
 export interface RpcError { code: string; details?: unknown; message: string; retryable: boolean }

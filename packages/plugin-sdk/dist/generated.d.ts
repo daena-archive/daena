@@ -125,6 +125,7 @@ export interface Command {
     output?: CommandSchema | null;
     title: string;
 }
+export type PluginStability = "stable" | "beta" | "experimental";
 export interface Service {
     major: number;
     name: string;
@@ -145,6 +146,7 @@ export interface PluginManifest {
     capabilities: string[];
     commands: Command[];
     dependencies: Record<string, Dependency>;
+    enabledByDefault?: boolean;
     entrypoints: Entrypoints;
     events: Events;
     hostApi: string;
@@ -157,6 +159,7 @@ export interface PluginManifest {
     publisher: string;
     schemas: SchemaContribution[];
     services: Services;
+    stability?: PluginStability;
     templates: EntityTemplate[];
     version: string;
     views: View[];

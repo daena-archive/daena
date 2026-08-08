@@ -128,6 +128,8 @@ fn manifest_schema() -> Value {
             "name": {"type": "string", "minLength": 1, "maxLength": 128},
             "version": ref_to("semver"),
             "publisher": ref_to("identifier"),
+            "enabledByDefault": {"type": "boolean"},
+            "stability": ref_to("PluginStability"),
             "hostApi": {"type": "string", "minLength": 1, "maxLength": 128},
             "kind": ref_to("PluginKind"),
             "entrypoints": ref_to("Entrypoints"),

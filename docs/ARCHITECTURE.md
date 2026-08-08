@@ -4,14 +4,18 @@
 
 Daena Archive is an offline-first authoring studio for fictional worlds and
 stories. This document is the project-wide architecture authority for the
-product model, host boundaries, canonical storage, bundled modules, and
+product model, host boundaries, project storage, bundled modules, and
 runtime plugins.
 
 It consolidates the former product and architecture documents. Detailed
 contracts remain in the focused plans below:
 
-- [`PLAIN_TEXT_STORAGE_PLAN.md`](./PLAIN_TEXT_STORAGE_PLAN.md) defines the
-  canonical directory format, transactions, recovery, and disposable index.
+- [`STORAGE.md`](./STORAGE.md) defines the authoritative runtime database,
+  portable project format, synchronization, recovery, and rebuild contracts.
+- [`STORAGE_MIGRATION.md`](./STORAGE_MIGRATION.md) defines the alpha hard cut
+  from the implemented repository-first storage path.
+- [`PLAIN_TEXT_STORAGE_PLAN.md`](./PLAIN_TEXT_STORAGE_PLAN.md) records the
+  historical repository-first implementation plan and portable format work.
 - [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md) defines plugin
   isolation, package trust, broker authorization, lifecycle, and compatibility.
 - [`PLUGIN_SDK.md`](./PLUGIN_SDK.md) is the definitive plugin authoring guide.
@@ -40,7 +44,7 @@ The current product direction includes:
 - optional runtime plugins that use the same public contracts as bundled
   modules;
 - deterministic, file-based project data that remains usable outside Daena;
-- explicit user-controlled Git snapshots around canonical project files; and
+- explicit user-controlled Git snapshots around portable project files; and
 - future provider-neutral AI assistance that never becomes a second data model
   or mutation authority.
 
@@ -53,8 +57,10 @@ assumptions in the core architecture.
 1. **Core owns durable truth.** The Rust core owns identity, persistence,
    validation, revisions, migrations, indexing, recovery, and resource
    authorization.
-2. **Project files are canonical.** Markdown, strict JSON, and native asset
-   bytes are authoritative. SQLite and other projections are disposable.
+2. **SQLite owns runtime truth; files own portability.** Runtime mutations are
+   authoritative in SQLite. Markdown, strict JSON, and native asset bytes form
+   clean portable checkpoints for Git, inspection, external editing, and
+   reconstruction.
 3. **Modules add meaning, not storage silos.** A map pin, timeline event, and
    manuscript reference can point to the same entity without duplicating it.
 4. **Rust is the authority boundary.** Frontend checks are advisory; requests
@@ -64,8 +70,9 @@ assumptions in the core architecture.
 6. **Users control destructive or external actions.** Git commits, resets,
    pushes, imports, plugin grants, and destructive data operations require
    explicit host UI actions.
-7. **Derived state must be rebuildable.** Deleting `.daena/` must not delete
-   project content or make a valid project unrecoverable.
+7. **Clean checkpoints must rebuild.** Derived projections are disposable, and
+   a clean portable checkpoint must reconstruct the project. Dirty runtime
+   database state is not disposable and must never be silently discarded.
 8. **Public contracts are framework-neutral.** Svelte is the first-party UI
    choice, not a requirement for modules or plugins.
 
@@ -86,12 +93,15 @@ assumptions in the core architecture.
                         │               └──────┬────────┘
                         ▼                      │ authorized core calls
                  ┌────────────────────────────┴──────┐
-                 │ Rust core: project, storage, index │
+                 │ Rust core: project, storage, sync  │
                  │ entities, docs, fields, links,    │
                  │ assets, search, migrations, Git    │
                  └────────────────┬───────────────────┘
                                   │
-                     canonical project directory
+                    SQLite runtime transaction store
+                      │ durable synchronization
+                      ▼
+                     portable project directory
               Markdown / JSON / native assets / project manifest
 ```
 
@@ -100,7 +110,7 @@ plugin broker call typed core services with different authority contexts.
 Plugin webviews and WASM runtimes can reach project data only through the
 versioned broker contract.
 
-## Canonical project model
+## Portable project model
 
 A directory project has this shape:
 
@@ -126,26 +136,34 @@ Documents contain author content in deterministic Markdown. Structured records
 use strict JSON. Assets retain their native bytes and are referenced by
 project-relative paths, hashes, MIME types, and ownership metadata.
 
-The `.daena/` directory is machine-local derived state. It contains the SQLite
-index, transaction journals, recovery material, conflict copies, and other
-local state; it is never the source of project truth and remains ignored by
-Git. Plugin grants, installed packages, runtime sessions, and capability state
-are machine-local as well. Portable plugin interpretation state belongs in
-`plugins/<plugin-id>.json`.
+The `.daena/` directory is machine-local and ignored by Git. It contains the
+authoritative runtime database, durable synchronization state, recovery
+material, conflict copies, and derived indexes. When synchronization is clean,
+the portable files reconstruct the same durable project content. When it is
+dirty, `.daena/index.sqlite` may contain newer committed work and is not safe
+to delete. Plugin grants, installed packages, runtime sessions, and capability
+state are machine-local as well. Portable plugin interpretation state belongs
+in `plugins/<plugin-id>.json`.
 
 ## Storage and consistency
 
-The repository-first storage path serializes a complete canonical snapshot,
-validates it, computes a deterministic changed set, journals replacements, and
-updates the disposable index only after canonical files are safely committed.
-Opening a project scans and validates canonical files; if `.daena/` is absent
-or stale, the core rebuilds the index and projections from those files.
+The target database-first path commits runtime rows, opaque revisions,
+idempotency receipts, and durable portable-export intent in one SQLite
+transaction. A synchronization worker renders only affected deterministic
+records, verifies their last-sync baselines, and advances the portable
+checkpoint. Git, backup, export, close, and rebuild use explicit flush barriers.
+
+An existing valid database may serve reads without a blocking full-tree scan.
+Offline file reconciliation continues in the background, while writes verify
+the affected portable baselines before committing. If no usable database
+exists, the core validates the complete portable representation and constructs
+a new runtime database and derived projections.
 
 Invalid external edits are diagnostic-only and do not replace the last valid
-projection. Unmerged Git files, stale source hashes, malformed paths, invalid
-references, namespace violations, and asset-hash failures block operations that
-would otherwise interpret or commit the invalid state. External edits and
-unsaved drafts use typed conflict/recovery paths rather than silent overwrites.
+runtime rows. Unmerged Git files, malformed paths, invalid references,
+namespace violations, and asset-hash failures block affected operations.
+External-only edits may import after validation; two-sided changes and unsaved
+drafts use typed conflict/recovery paths rather than silent overwrites.
 
 All mutable broker-visible records expose opaque revisions. Updates, deletes,
 document saves, field and relationship mutations, and asset registration use
@@ -153,20 +171,26 @@ the observed revision. Retryable mutations retain request IDs across Rust,
 the SDK, bundled modules, and the test host.
 
 Search, map projections, relationship indexes, and other views are derived
-from canonical files. They may be rebuilt, discarded, or temporarily reported
-as stale without changing the project model.
+from durable runtime rows. They may be rebuilt, discarded, or temporarily
+reported as stale without changing project content.
+
+The current source remains repository-first until the direct replacement in
+[`STORAGE_MIGRATION.md`](./STORAGE_MIGRATION.md). The new writer must replace
+and delete the old writer in the same hard-cut phase; no dual-authority mode or
+fallback is permitted.
 
 ## Core and trusted shell
 
 `crates/daena-core` owns:
 
-- project open/create/close and canonical filesystem access;
+- project open/create/close, runtime database access, and portable codecs;
 - stable entities, documents, fields, relationships, and assets;
-- deterministic serialization, validation, source hashes, and transactions;
+- deterministic serialization, validation, synchronization baselines, runtime
+  transactions, and durable export queues;
 - search and disposable projections;
 - module/plugin project state, migrations, backups, and recovery;
 - typed `CoreError` results and authority-aware operations; and
-- explicit Git helpers for canonical preflight, snapshots, commits, resets,
+- explicit Git helpers for portable preflight, snapshots, commits, resets,
   remotes, and lease-protected pushes.
 
 `src-tauri` is the trusted application adapter. It resolves platform paths,
@@ -188,7 +212,7 @@ The host aggregates enabled module templates and views into the workspace, but
 the module does not receive a database handle, filesystem handle, raw Tauri
 invoke function, or private host API. Views mount into a host-provided surface
 and return cleanup handles. Disabled modules disappear from navigation and
-command catalogs while their canonical data remains available for recovery and
+command catalogs while their portable data remains available for recovery and
 export.
 
 ### Runtime isolation and authority
@@ -223,48 +247,51 @@ through deterministic, declared migrations.
 
 Each migration has a unique ID, source and target versions, an operation list,
 and an explicit recovery policy for destructive operations. The core validates
-contiguity and namespace ownership, creates a canonical backup when required,
+contiguity and namespace ownership, creates a recovery backup when required,
 executes the migration transactionally, and records the migration ID and
 checksum. Errors roll back the transaction and leave the prior version active.
 
-The alpha file format is intentionally reset-oriented: old SQLite-canonical
-projects do not require a legacy reader, migration path, or dual-write mode.
-Plugin data migrations remain required when a plugin package changes its own
-schema or stored data version.
+The alpha cut is reset-oriented: pre-format-version-2 projects and pre-cut
+`.daena/` runtime state receive no legacy reader, migration, feature flag, or
+dual-write path. Existing version-2 portable files initialize a new runtime
+database after `.daena/` is removed. Plugin data migrations remain required
+when a plugin package changes its own schema or stored data version.
 
 ## Git and external integrations
 
-Git is an optional, user-controlled snapshot tool around canonical files. The
-Rust core performs transaction recovery, canonical validation, index freshness
-checks, unresolved-conflict rejection, and exact staging previews before a
-commit. The Settings → Git surface supports selective canonical commits,
-history browsing, read-only snapshot previews, explicit hard reset, remotes,
-and lease-protected remote recovery. `.daena/` and SQLite files are never
-staged by built-in Git helpers.
+Git is an optional, user-controlled snapshot tool around portable files. The
+Rust core flushes committed runtime changes, validates the resulting portable
+checkpoint, rejects unresolved conflicts, and presents exact staging paths
+before a commit. The Settings → Git surface supports selective portable
+commits, history browsing, read-only snapshot previews, explicit hard reset,
+remotes, and lease-protected remote recovery. `.daena/` and SQLite files are
+never staged by built-in Git helpers.
 
 Maps are normal shared entities, not a parallel identity table. Provider source
 files remain opaque native assets; map locations, roles, dates, relationships,
-and story metadata remain Daena-owned canonical fields and links. Provider
+and story metadata remain Daena-owned project fields and links. Provider
 adapters are replaceable and must not force provider-specific data into the
 shared entity model.
 
 AI, when implemented, must use core retrieval and broker authorization. It may
-assemble context and propose changes, but users accept every mutation and
-canonical files remain authoritative. Provider credentials, network access,
-temporary generations, and derived retrieval state do not become project
-canonical data.
+assemble context and propose changes, but users accept every mutation through
+the same revision-aware runtime transaction and portable synchronization path.
+Provider credentials, network access, temporary generations, and derived
+retrieval state do not become portable project data.
 
 ## Verification and evolution
 
 Changes to this architecture must preserve these exit properties:
 
-- a fresh project opens and a valid project recovers after deleting `.daena/`;
-- canonical round trips are deterministic and preserve external edits or report
+- a fresh project opens and a clean portable checkpoint reconstructs after
+  deleting `.daena/`;
+- dirty runtime state cannot be silently rebuilt or discarded;
+- portable round trips are deterministic and preserve external edits or report
   typed conflicts;
 - revisions, request IDs, capability checks, namespace ownership, and session
   revocation are enforced at the Rust boundary;
 - plugin UI and WASM remain isolated from the main webview and native shell;
-- Git never stages noncanonical paths or unresolved canonical state; and
+- Git never stages nonportable paths or unresolved/unflushed portable state;
 - derived search, map, relationship, and view projections can be rebuilt.
 
 Use the focused plans and ADRs for phase-specific acceptance criteria. When

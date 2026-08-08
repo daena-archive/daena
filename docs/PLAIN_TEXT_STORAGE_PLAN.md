@@ -1,5 +1,13 @@
 # Plain-Text Project Storage Architecture Plan
 
+> **Historical status:** This plan describes the implemented repository-first
+> format-version-2 architecture. [`STORAGE.md`](./STORAGE.md) now defines the
+> target database-first architecture, and
+> [`STORAGE_MIGRATION.md`](./STORAGE_MIGRATION.md) governs the alpha hard cut.
+> Retain
+> this document for portable-format history and current-code context; do not use
+> its source-of-truth or disposable-SQLite decisions for new implementation.
+
 ## Summary
 
 Daena projects will use ordinary files as the only canonical source of project

@@ -25,9 +25,14 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
 
+mod settings;
+
+use settings::{AppSettings, AppSettingsUpdate, SettingsStore};
+
 type SharedCore = Arc<Mutex<CoreService>>;
 type SharedPluginHost = Arc<Mutex<PluginHost>>;
 type SharedBinaryTransfers = Arc<Mutex<BinaryTransferManager>>;
+type SharedSettings = Arc<Mutex<SettingsStore>>;
 
 const MAX_ASSET_TRANSFER_BYTES: usize = 64 * 1024 * 1024;
 const ASSET_TRANSFER_TTL: Duration = Duration::from_secs(60);
@@ -2247,6 +2252,8 @@ fn sync_project_usage(project: &ProjectStore, host: &mut PluginHost) -> Result<(
         .info()
         .map(|info| info.root)
         .ok_or(CoreError::ProjectNotOpen)?;
+    host.bind_project_grants(Path::new(&project_id), &project_id)
+        .map_err(|error| CoreError::Conflict(error.to_string()))?;
     let states = project
         .module_states()?
         .into_iter()
@@ -2279,6 +2286,25 @@ fn sync_project_usage(project: &ProjectStore, host: &mut PluginHost) -> Result<(
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {name}! You've been greeted from Rust!")
+}
+
+#[tauri::command]
+fn settings_get(settings: tauri::State<'_, SharedSettings>) -> Result<AppSettings, String> {
+    settings
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_string())?
+        .load()
+}
+
+#[tauri::command]
+fn settings_update(
+    settings: tauri::State<'_, SharedSettings>,
+    update: AppSettingsUpdate,
+) -> Result<AppSettings, String> {
+    settings
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_string())?
+        .update(update)
 }
 
 fn bundled_plugin_host(core: SharedCore) -> Result<PluginHost, String> {
@@ -2685,6 +2711,8 @@ async fn plugin_upgrade(
             host.grants
                 .set(&project_id, &plugin_id, &requested, next_grants)
                 .map_err(|error| CoreError::Validation(error.to_string()))?;
+            host.persist_project_grants(&project_id)
+                .map_err(|error| CoreError::Conflict(error.to_string()))?;
         }
         let migrations = core_migrations(&target_manifest, &target_digest)
             .map_err(|error| CoreError::Validation(error.to_string()))?
@@ -2706,6 +2734,8 @@ async fn plugin_upgrade(
                     old_grants.clone(),
                 )
                 .map_err(|restore| CoreError::Validation(restore.to_string()))?;
+            host.persist_project_grants(&project_id)
+                .map_err(|restore| CoreError::Conflict(restore.to_string()))?;
             let _ = host.activate_bundled(&project_id, &plugin_id);
             return Err(error);
         }
@@ -2728,6 +2758,8 @@ async fn plugin_upgrade(
                     old_grants,
                 )
                 .map_err(|restore| CoreError::Validation(restore.to_string()))?;
+            host.persist_project_grants(&project_id)
+                .map_err(|restore| CoreError::Conflict(restore.to_string()))?;
             let _ = host.activate_bundled(&project_id, &plugin_id);
             return Err(CoreError::Validation(error.to_string()));
         }
@@ -4573,6 +4605,7 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .map_err(|error| error.to_string())?;
+            app.manage(Arc::new(Mutex::new(SettingsStore::new(&app_data))) as SharedSettings);
             let install_root = app_data.join("plugins");
             let state_path = app_data.join("plugin-state.json");
             let rejected = startup_plugins
@@ -4607,6 +4640,8 @@ pub fn run() {
         .manage(watcher)
         .invoke_handler(tauri::generate_handler![
             greet,
+            settings_get,
+            settings_update,
             plugin_bootstrap,
             plugin_rpc,
             plugin_open_webview,

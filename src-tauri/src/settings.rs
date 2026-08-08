@@ -1,0 +1,205 @@
+//! Application-profile settings (`{app_data}/settings.json`).
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+pub const SETTINGS_FORMAT_VERSION: u32 = 1;
+const MAX_RECENT_PROJECTS: usize = 6;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecentProject {
+    pub name: String,
+    pub root: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GeneralSettings {
+    #[serde(default)]
+    pub recent_projects: Vec<RecentProject>,
+}
+
+impl Default for GeneralSettings {
+    fn default() -> Self {
+        Self {
+            recent_projects: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AppSettings {
+    pub format_version: u32,
+    #[serde(default)]
+    pub general: GeneralSettings,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            format_version: SETTINGS_FORMAT_VERSION,
+            general: GeneralSettings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GeneralSettingsUpdate {
+    pub recent_projects: Option<Vec<RecentProject>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AppSettingsUpdate {
+    pub general: Option<GeneralSettingsUpdate>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SettingsStore {
+    path: PathBuf,
+}
+
+impl SettingsStore {
+    pub fn new(app_data_dir: impl AsRef<Path>) -> Self {
+        Self {
+            path: app_data_dir.as_ref().join("settings.json"),
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn load(&self) -> Result<AppSettings, String> {
+        if !self.path.is_file() {
+            return Ok(AppSettings::default());
+        }
+        let bytes = fs::read(&self.path).map_err(|error| error.to_string())?;
+        let settings: AppSettings =
+            serde_json::from_slice(&bytes).map_err(|error| format!("invalid settings.json: {error}"))?;
+        if settings.format_version != SETTINGS_FORMAT_VERSION {
+            return Err(format!(
+                "unsupported settings format version {}",
+                settings.format_version
+            ));
+        }
+        Ok(normalize(settings))
+    }
+
+    pub fn save(&self, settings: &AppSettings) -> Result<(), String> {
+        let normalized = normalize(settings.clone());
+        if normalized.format_version != SETTINGS_FORMAT_VERSION {
+            return Err(format!(
+                "unsupported settings format version {}",
+                normalized.format_version
+            ));
+        }
+        let mut bytes = serde_json::to_vec_pretty(&normalized).map_err(|error| error.to_string())?;
+        bytes.push(b'\n');
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        let temporary = self.path.with_extension("json.tmp");
+        fs::write(&temporary, &bytes).map_err(|error| error.to_string())?;
+        fs::rename(&temporary, &self.path).map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    pub fn update(&self, update: AppSettingsUpdate) -> Result<AppSettings, String> {
+        let mut settings = self.load()?;
+        if let Some(general) = update.general {
+            if let Some(recent_projects) = general.recent_projects {
+                settings.general.recent_projects = recent_projects;
+            }
+        }
+        settings = normalize(settings);
+        self.save(&settings)?;
+        Ok(settings)
+    }
+}
+
+fn normalize(mut settings: AppSettings) -> AppSettings {
+    settings.format_version = SETTINGS_FORMAT_VERSION;
+    settings.general.recent_projects = settings
+        .general
+        .recent_projects
+        .into_iter()
+        .filter(|project| !project.name.trim().is_empty() && !project.root.trim().is_empty())
+        .take(MAX_RECENT_PROJECTS)
+        .collect();
+    settings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_file_loads_defaults() {
+        let directory = std::env::temp_dir().join(format!("daena-settings-{}", uuid::Uuid::new_v4()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let store = SettingsStore::new(&directory);
+        assert_eq!(store.load().unwrap(), AppSettings::default());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn round_trip_preserves_recent_projects() {
+        let directory = std::env::temp_dir().join(format!("daena-settings-{}", uuid::Uuid::new_v4()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let store = SettingsStore::new(&directory);
+        let settings = AppSettings {
+            format_version: SETTINGS_FORMAT_VERSION,
+            general: GeneralSettings {
+                recent_projects: vec![RecentProject {
+                    name: "Atlas".into(),
+                    root: "/tmp/atlas".into(),
+                }],
+            },
+        };
+        store.save(&settings).unwrap();
+        assert_eq!(store.load().unwrap(), settings);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn update_merges_recent_projects() {
+        let directory = std::env::temp_dir().join(format!("daena-settings-{}", uuid::Uuid::new_v4()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let store = SettingsStore::new(&directory);
+        store
+            .update(AppSettingsUpdate {
+                general: Some(GeneralSettingsUpdate {
+                    recent_projects: Some(vec![RecentProject {
+                        name: "One".into(),
+                        root: "/one".into(),
+                    }]),
+                }),
+            })
+            .unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.general.recent_projects.len(), 1);
+        assert_eq!(loaded.general.recent_projects[0].name, "One");
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn unknown_fields_are_rejected() {
+        let directory = std::env::temp_dir().join(format!("daena-settings-{}", uuid::Uuid::new_v4()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("settings.json");
+        fs::write(&path, b"{\"formatVersion\":1,\"general\":{},\"extra\":true}\n").unwrap();
+        let store = SettingsStore::new(&directory);
+        assert!(store.load().unwrap_err().contains("invalid settings.json"));
+        let _ = fs::remove_dir_all(directory);
+    }
+}

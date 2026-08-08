@@ -8,6 +8,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   import HostView from "$lib/plugins/HostView.svelte";
   import SandboxView from "$lib/plugins/SandboxView.svelte";
   import ProjectionView from "$lib/ProjectionView.svelte";
+  import SettingsView from "$lib/SettingsView.svelte";
   import RelationshipPicker from "$lib/RelationshipPicker.svelte";
   import loreManifestJson from "../../packages/modules/lore/manifest.json";
   import timelineManifestJson from "../../packages/modules/timeline/manifest.json";
@@ -19,6 +20,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
 
   type InstalledModule = ProjectModuleManifest;
   type WorkspaceSection = "lore" | "timeline" | "writing" | "maps";
+  type SettingsSection = "general" | "plugins";
   type WritingView = "manuscripts" | "reference";
   type RecentProject = { name: string; root: string };
   type CreateOption = { key: string; module: InstalledModule; template: EntityTemplate };
@@ -32,6 +34,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   };
 
   const recentProjectsKey = "daena.recent-projects";
+  let settingsMigrated = false;
 
   let ready = $state(false);
   let error = $state("");
@@ -76,7 +79,8 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   let captureRole = $state("story-location");
   let mapReconcileNotice = $state("");
   let projectDiagnostics = $state<string[]>([]);
-  let showPlugins = $state(false);
+  let showSettings = $state(false);
+  let settingsSection = $state<SettingsSection>("general");
   let adminPlugins = $state<PluginAdminEntry[] | null>(null);
   let hostView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] } | null>(null);
   let sandboxView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] | null } | null>(null);
@@ -123,7 +127,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     return () => window.clearTimeout(timeout);
   });
   $effect(() => {
-    const modalOpen = showCreateForm || showCommitForm || editorFullscreen || showPlugins || upgradePreview !== null || confirmAction !== null || deleteTarget !== null || installConsent !== null || deleteBackupPath !== "";
+    const modalOpen = showCreateForm || showCommitForm || editorFullscreen || upgradePreview !== null || confirmAction !== null || deleteTarget !== null || installConsent !== null || deleteBackupPath !== "";
     document.body.classList.toggle("modal-open", modalOpen);
     return () => document.body.classList.remove("modal-open");
   });
@@ -301,7 +305,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     await closeNativePluginWebviews();
     hostView = { plugin, view };
     sandboxView = null;
-    showPlugins = false;
+    showSettings = false;
   }
 
   function pluginViews() {
@@ -320,7 +324,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
 
   async function openPluginView(item: PluginNavigationItem) {
     if (item.plugin.id === "daena.maps") {
-      showPlugins = false;
+      showSettings = false;
       const mapId = currentMapId();
       if (sandboxView?.plugin.id === "daena.maps") {
         const mapsWelcome = sandboxView.view === null;
@@ -340,7 +344,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     await closeNativePluginWebviews();
     hostView = null;
     sandboxView = { plugin: item.plugin, view: item.view };
-    showPlugins = false;
+    showSettings = false;
   }
 
   async function createMap() {
@@ -490,7 +494,8 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
 
   async function switchSection(next: WorkspaceSection) {
     if (!(await flushAutoSave())) return;
-    if (section === next && (next !== "maps" || sandboxView?.plugin.id === "daena.maps")) return;
+    if (section === next && (next !== "maps" || sandboxView?.plugin.id === "daena.maps") && !showSettings) return;
+    showSettings = false;
     await leavePluginView();
     section = next;
     clearSelection();
@@ -520,6 +525,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   }
 
   function sectionLabel() {
+    if (showSettings) return settingsSection === "plugins" ? "Settings · Plugins" : "Settings";
     return section === "lore" ? "Lore library" : section === "timeline" ? "Timeline" : section === "writing" ? "Writing Studio" : "Maps";
   }
 
@@ -612,20 +618,44 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     const message = cause instanceof Error ? cause.message : String(cause);
     return message.includes("invoke") || message.includes("undefined") ? "The desktop bridge is unavailable. Open this workspace in the Tauri app to use local project storage." : message;
   }
+  async function persistRecentProjects(next: RecentProject[]) {
+    recentProjects = next;
+    try {
+      const settings = await project.settingsUpdate({ general: { recentProjects: next } });
+      recentProjects = settings.general.recentProjects;
+    } catch {
+      localStorage.setItem(recentProjectsKey, JSON.stringify(next));
+    }
+  }
   function rememberProject(info: ProjectInfo) {
-    recentProjects = [{ name: info.name, root: info.root }, ...recentProjects.filter((project) => project.root !== info.root)].slice(0, 6);
-    localStorage.setItem(recentProjectsKey, JSON.stringify(recentProjects));
+    void persistRecentProjects([{ name: info.name, root: info.root }, ...recentProjects.filter((entry) => entry.root !== info.root)].slice(0, 6));
   }
   function removeRecentProject(root: string) {
-    recentProjects = recentProjects.filter((project) => project.root !== root);
-    localStorage.setItem(recentProjectsKey, JSON.stringify(recentProjects));
+    void persistRecentProjects(recentProjects.filter((entry) => entry.root !== root));
   }
-  function loadRecentProjects() {
+  async function loadRecentProjects() {
     try {
+      const settings = await project.settingsGet();
+      recentProjects = settings.general.recentProjects.slice(0, 6);
+      if (recentProjects.length > 0 || settingsMigrated) return;
       const stored = JSON.parse(localStorage.getItem(recentProjectsKey) ?? "[]");
-      if (Array.isArray(stored)) recentProjects = stored.filter((item): item is RecentProject => typeof item?.name === "string" && typeof item?.root === "string").slice(0, 6);
+      if (Array.isArray(stored)) {
+        const migrated = stored
+          .filter((item): item is RecentProject => typeof item?.name === "string" && typeof item?.root === "string")
+          .slice(0, 6);
+        if (migrated.length > 0) {
+          await persistRecentProjects(migrated);
+          localStorage.removeItem(recentProjectsKey);
+        }
+      }
+      settingsMigrated = true;
     } catch {
-      recentProjects = [];
+      try {
+        const stored = JSON.parse(localStorage.getItem(recentProjectsKey) ?? "[]");
+        if (Array.isArray(stored)) recentProjects = stored.filter((item): item is RecentProject => typeof item?.name === "string" && typeof item?.root === "string").slice(0, 6);
+      } catch {
+        recentProjects = [];
+      }
     }
   }
   async function loadEntities() {
@@ -1134,14 +1164,25 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
         : plugin,
     );
   }
-  async function openPlugins() {
-    showPlugins = true;
+  async function openSettings(section: SettingsSection = "general") {
+    showSettings = true;
+    settingsSection = section;
     await leavePluginView();
-    adminPlugins = null;
+    projectionView = null;
     installSummary = null;
     deleteBackupPath = "";
-    await refreshAdmin();
+    if (section === "plugins" && ready) {
+      adminPlugins = null;
+      await refreshAdmin();
+    }
   }
+  function closeSettings() {
+    showSettings = false;
+  }
+  $effect(() => {
+    if (!showSettings || settingsSection !== "plugins" || !ready) return;
+    void refreshAdmin();
+  });
   async function installFromPicker() {
     try {
       const selection = await project.pickPluginPackage();
@@ -1383,7 +1424,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     });
   });
   onMount(() => {
-    loadRecentProjects();
+    void loadRecentProjects();
     void closeNativePluginWebviews();
     let unlisten: (() => void) | undefined;
     void listen<ExternalChangeReport>("project-external-change", (event) => void handleExternalChange(event.payload)).then((cleanup) => { unlisten = cleanup; }).catch(() => {});
@@ -1478,8 +1519,8 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     {#if ready}
       <button aria-expanded={showGit} class:active={showGit} class="rail-button muted-button" onclick={() => { showGit = !showGit; if (showGit) void refreshGit(); }}><span class="rail-icon">⑂</span><span>Git</span></button>
       {#if showGit}<div class="module-menu git-menu"><strong>{gitBusy ? "Checking Git…" : gitStatus?.repository ? `Git · ${gitStatus.branch || "detached"}` : "Git is not initialized"}</strong><small>{gitMessage || (gitStatus?.repository ? gitStatus.changes.length === 0 ? "Working tree clean" : `${gitStatus.changes.length} changed files` : "Initialize Git to track this project")}</small>{#if gitStatus?.repository}<button disabled={gitBusy} onclick={() => { commitMessage = ""; showCommitForm = true; }}>Commit changes</button>{:else}<button disabled={gitBusy} onclick={initializeGit}>{gitBusy ? "Initializing…" : "Initialize Git"}</button>{/if}{#if gitPreflight}<div class="git-preview"><strong>{gitPreflight.ready ? `${gitPreflight.staging_paths.length} canonical path${gitPreflight.staging_paths.length === 1 ? "" : "s"} ready` : "Commit preflight blocked"}</strong>{#if gitPreflight.ready && gitPreflight.staging_paths.length > 0}<small>{gitPreflight.staging_paths.join(" · ")}</small>{:else if gitPreflight.diagnostics.length > 0}<small>{gitPreflight.diagnostics[0]}</small>{/if}</div>{/if}</div>{/if}
-      <button aria-expanded={showPlugins} class:active={showPlugins} class="rail-button muted-button" onclick={() => void openPlugins()}><span class="rail-icon">▦</span><span>Plugins</span></button>
     {/if}
+    <button aria-expanded={showSettings} class:active={showSettings} class="rail-button muted-button" onclick={() => void openSettings()}><span class="rail-icon">⚙</span><span>Settings</span></button>
     <div class="rail-footer">v0.2 · local first</div>
   </aside>
 
@@ -1490,11 +1531,89 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     {#if showDiscardPrompt}<div class="discard-backdrop"><div class="discard-dialog" role="alertdialog" aria-modal="true" aria-labelledby="discard-create-title"><span class="panel-kicker">UNSAVED VALUES</span><h2 id="discard-create-title">Discard this creation?</h2><p>Your entered values will be cleared. You can keep editing or start over with the new template.</p><div class="discard-actions"><button type="button" class="quiet-button" onclick={keepCreateEditing}>Keep editing</button><button type="button" class="primary-button" onclick={discardCreateValues}>Discard values</button></div></div></div>{/if}
     {#if showCommitForm}<div class="modal-backdrop"><form class="dialog commit-form" onsubmit={(event) => { event.preventDefault(); void commitGit(); }}><div class="new-form-heading"><div><span class="panel-kicker">VERSION CONTROL</span><strong>Commit changes</strong></div><button type="button" class="new-form-close" onclick={() => showCommitForm = false}>×</button></div><p>Only the canonical paths below will be staged.</p>{#if gitPreflight?.ready}<ul class="commit-preview">{#each gitPreflight.staging_paths as path}<li>{path}</li>{/each}</ul>{:else}<p class="commit-warning">{gitPreflight?.diagnostics[0] ?? "Git preflight has not completed."}</p>{/if}<input aria-label="Commit message" bind:value={commitMessage} placeholder="Describe the changes" /><div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => showCommitForm = false}>Cancel</button><button class="primary-button" type="submit" disabled={!commitMessage.trim() || gitBusy || !gitPreflight?.ready || gitPreflight.staging_paths.length === 0}>{gitBusy ? "Committing…" : "Commit changes"}</button></div></form></div>{/if}
     {#if captureDialog}<div class="modal-backdrop"><form class="dialog capture-dialog" onsubmit={(event) => { event.preventDefault(); void submitMapCapture(); }}><div class="new-form-heading"><div><span class="panel-kicker">MAP LINK</span><strong>Link a map selection to the world</strong></div><button type="button" class="new-form-close" onclick={closeCaptureDialog}>×</button></div><p class="capture-preview"><span class="capture-preview-label">Selected</span><strong>{captureAnchorLabel()}</strong></p><label class="create-input-field" for="capture-role"><span>Role</span><input id="capture-role" bind:value={captureRole} placeholder="story-location" autocomplete="off" /></label><div class="capture-mode" role="tablist" aria-label="Link target"><button type="button" role="tab" aria-selected={captureMode === "existing"} class:active={captureMode === "existing"} onclick={() => captureMode = "existing"}>Link existing</button><button type="button" role="tab" aria-selected={captureMode === "create"} class:active={captureMode === "create"} onclick={() => captureMode = "create"}>Create new</button></div>{#if captureMode === "existing"}<label class="create-input-field" for="capture-entity"><span>Entity</span><select id="capture-entity" bind:value={captureEntityId}><option value="">Choose an entity…</option>{#each entities as entity}<option value={entity.id}>{entity.name} · {entityTypeLabel(entity.entity_type)}</option>{/each}</select></label>{:else}<label class="create-input-field" for="capture-template"><span>Template</span><select id="capture-template" bind:value={captureTemplateKey}><option value="">Choose a template…</option>{#each createGroups() as group}{#each group.options as option}<option value={option.key}>{group.module.name} · {option.template.name}</option>{/each}{/each}</select></label><label class="create-input-field" for="capture-name"><span>Name <b>*</b></span><input id="capture-name" bind:value={captureName} placeholder="e.g. Harrow Gate" autocomplete="off" /></label>{/if}<div class="new-form-actions"><button type="button" class="quiet-button" onclick={closeCaptureDialog}>Cancel</button><button class="primary-button" type="submit" disabled={!mapSelection || (captureMode === "existing" && !captureEntityId) || (captureMode === "create" && (!captureTemplateKey || !captureName.trim()))}>Link to map</button></div></form></div>{/if}
-    {#if showPlugins}
-      <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) showPlugins = false; }} onkeydown={(event) => { if (event.key === "Escape") showPlugins = false; }}>
-        <div class="dialog plugins-dialog">
-          <div class="new-form-heading plugins-heading"><div><span class="panel-kicker">PLUGIN LIBRARY</span><strong>Plugins</strong></div><button type="button" class="new-form-close" onclick={() => showPlugins = false}>×</button></div>
-          <p class="plugins-intro">Extensions that power this project. Every install, upgrade, and rollback is verified and reversible.</p>
+    {#if installConsent}
+      <div class="modal-backdrop"><div class="dialog" role="alertdialog" aria-modal="true">
+        <div class="new-form-heading"><div><span class="panel-kicker">UNSIGNED PACKAGE</span><strong>Confirm unsigned install</strong></div><button type="button" class="new-form-close" onclick={() => installConsent = null}>×</button></div>
+        <p class="dialog-body-copy">This package is <strong>not signed by a trusted publisher</strong>. {installConsent.path.split(/[\\/]/).pop()} will run sandboxed, but its identity cannot be verified.</p>
+        <p class="dialog-body-copy">Reason: {installConsent.message}</p>
+        <p class="dialog-body-copy">Install it anyway? You can uninstall its code at any time.</p>
+        <div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => installConsent = null}>Cancel</button><button type="button" class="primary-button" onclick={installWithConsent} disabled={installing}>{installing ? "Installing…" : "Install anyway"}</button></div>
+      </div></div>
+    {/if}
+    {#if upgradePreview}
+      {@const preview = upgradePreview}
+      <div class="modal-backdrop"><div class="dialog upgrade-dialog" role="dialog" aria-modal="true">
+        <div class="new-form-heading"><div><span class="panel-kicker">UPDATE PLUGIN</span><strong>Update {preview.entry.name} to v{preview.version}</strong></div><button type="button" class="new-form-close" onclick={() => upgradePreview = null}>×</button></div>
+        <p class="dialog-body-copy">From <code>v{preview.plan.fromVersion ?? preview.entry.version}</code> to <code>v{preview.plan.toVersion}</code>{preview.plan.target.signed ? ", signed by" : ", unsigned — "}{preview.plan.target.publisher}.</p>
+        {#if preview.plan.consent.requiresRenewal}
+          <p class="plugin-warning">This update requests new capabilities. Your consent is required before they are granted.</p>
+        {/if}
+        {#if preview.plan.consent.added.length > 0}
+          <h4 class="plugin-subhead">New capabilities</h4>
+          <ul class="plugin-detail-list">{#each preview.plan.consent.added as capability}<li class="provides">{capabilityLabel(capability)}</li>{/each}</ul>
+        {/if}
+        {#if preview.plan.consent.removed.length > 0}
+          <h4 class="plugin-subhead">Removed capabilities</h4>
+          <ul class="plugin-detail-list">{#each preview.plan.consent.removed as capability}<li class="consumes">{capabilityLabel(capability)}</li>{/each}</ul>
+        {/if}
+        <h4 class="plugin-subhead">Data migrations</h4>
+        {#if preview.plan.migrations.migrationIds.length > 0}
+          <p class="dialog-body-copy">Data will migrate from <code>v{preview.plan.migrations.from}</code> to <code>v{preview.plan.migrations.to}</code>{preview.plan.migrations.requiresBackup ? ". A backup is created before migrating." : "."}</p>
+          <ul class="plugin-detail-list">{#each preview.plan.migrations.migrationIds as id}<li>{id}</li>{/each}</ul>
+        {:else}
+          <p class="dialog-body-copy">No data migrations required.</p>
+        {/if}
+        <div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => upgradePreview = null}>Cancel</button><button type="button" class="primary-button" onclick={confirmUpgrade} disabled={upgradeBusy}>{upgradeBusy ? "Updating…" : "Confirm update"}</button></div>
+      </div></div>
+    {/if}
+    {#if confirmAction}
+      <div class="modal-backdrop plugin-confirm-modal"><div class="dialog" role="alertdialog" aria-modal="true">
+        <div class="new-form-heading"><div><span class="panel-kicker">CONFIRM ACTION</span><strong>{confirmAction.title}</strong></div><button type="button" class="new-form-close" onclick={() => confirmAction = null}>×</button></div>
+        <p class="dialog-body-copy">{confirmAction.message}</p>
+        {#if confirmAction.capabilities}
+          {#if confirmAction.capabilities.length > 0}
+            <div class="capability-list" role="list" aria-label="Requested capabilities">
+              {#each confirmAction.capabilities as capability}
+                <div class="capability-item" role="listitem">{capabilityLabel(capability)}</div>
+              {/each}
+            </div>
+          {:else}
+            <p class="dialog-body-copy capability-empty">No capabilities requested.</p>
+          {/if}
+        {/if}
+        <div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => confirmAction = null}>Cancel</button><button type="button" class="primary-button" onclick={runConfirm} disabled={confirmBusy}>{confirmBusy ? "Working…" : confirmAction.confirmLabel}</button></div>
+      </div></div>
+    {/if}
+    {#if deleteTarget}
+      <div class="modal-backdrop"><div class="dialog" role="alertdialog" aria-modal="true">
+        <div class="new-form-heading"><div><span class="panel-kicker">DELETE PROJECT DATA</span><strong>Delete {deleteTarget.name} data?</strong></div><button type="button" class="new-form-close" onclick={() => deleteTarget = null}>×</button></div>
+        <p class="dialog-body-copy">All entities, documents, fields, relationships, and assets owned by <code>{deleteTarget.id}</code> in this project will be deleted. A backup is kept on disk.</p>
+        <p class="dialog-body-copy">Type <code>{deleteTarget.id}</code> to confirm.</p>
+        <input aria-label="Delete confirmation" bind:value={deleteInput} placeholder={deleteTarget.id} />
+        <div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => deleteTarget = null}>Cancel</button><button type="button" class="primary-button danger-button" onclick={confirmDeleteData} disabled={deleteBusy || deleteInput.trim() !== deleteTarget.id}>{deleteBusy ? "Deleting…" : "Delete project data"}</button></div>
+      </div></div>
+    {/if}
+    {#if deleteBackupPath}
+      <div class="modal-backdrop"><div class="dialog" role="alertdialog" aria-modal="true">
+        <div class="new-form-heading"><div><span class="panel-kicker">DATA DELETED</span><strong>Plugin data deleted</strong></div><button type="button" class="new-form-close" onclick={() => deleteBackupPath = ""}>×</button></div>
+        <p class="dialog-body-copy">A backup was kept at:</p>
+        <code class="backup-path">{deleteBackupPath}</code>
+        <div class="new-form-actions"><button type="button" class="primary-button" onclick={() => deleteBackupPath = ""}>Done</button></div>
+      </div></div>
+    {/if}
+    {#if showSettings}
+      <SettingsView
+        bind:section={settingsSection}
+        recentProjects={recentProjects}
+        projectOpen={ready}
+        onRemoveRecent={removeRecentProject}
+        onClose={closeSettings}
+      >
+        {#snippet plugins()}
+          <div class="settings-section-heading plugins-settings-heading">
+            <strong>Plugins</strong>
+            <p>Extensions that power this project. Every install, upgrade, and rollback is verified and reversible.</p>
+          </div>
           <div class="plugins-toolbar">
             <button type="button" class="primary-button" disabled={installing || adminBusy} onclick={() => void installFromPicker()}>{installing ? "Installing…" : "Install package…"}</button>
             <span class="muted-note">{adminBusy ? "Refreshing…" : ""}</span>
@@ -1621,80 +1740,9 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
               {/each}
             {/if}
           </div>
-        </div>
-      </div>
-      {#if installConsent}
-        <div class="modal-backdrop"><div class="dialog" role="alertdialog" aria-modal="true">
-          <div class="new-form-heading"><div><span class="panel-kicker">UNSIGNED PACKAGE</span><strong>Confirm unsigned install</strong></div><button type="button" class="new-form-close" onclick={() => installConsent = null}>×</button></div>
-          <p class="dialog-body-copy">This package is <strong>not signed by a trusted publisher</strong>. {installConsent.path.split(/[\\/]/).pop()} will run sandboxed, but its identity cannot be verified.</p>
-          <p class="dialog-body-copy">Reason: {installConsent.message}</p>
-          <p class="dialog-body-copy">Install it anyway? You can uninstall its code at any time.</p>
-          <div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => installConsent = null}>Cancel</button><button type="button" class="primary-button" onclick={installWithConsent} disabled={installing}>{installing ? "Installing…" : "Install anyway"}</button></div>
-        </div></div>
-      {/if}
-      {#if upgradePreview}
-        {@const preview = upgradePreview}
-        <div class="modal-backdrop"><div class="dialog upgrade-dialog" role="dialog" aria-modal="true">
-          <div class="new-form-heading"><div><span class="panel-kicker">UPDATE PLUGIN</span><strong>Update {preview.entry.name} to v{preview.version}</strong></div><button type="button" class="new-form-close" onclick={() => upgradePreview = null}>×</button></div>
-          <p class="dialog-body-copy">From <code>v{preview.plan.fromVersion ?? preview.entry.version}</code> to <code>v{preview.plan.toVersion}</code>{preview.plan.target.signed ? ", signed by" : ", unsigned — "}{preview.plan.target.publisher}.</p>
-          {#if preview.plan.consent.requiresRenewal}
-            <p class="plugin-warning">This update requests new capabilities. Your consent is required before they are granted.</p>
-          {/if}
-          {#if preview.plan.consent.added.length > 0}
-            <h4 class="plugin-subhead">New capabilities</h4>
-            <ul class="plugin-detail-list">{#each preview.plan.consent.added as capability}<li class="provides">{capabilityLabel(capability)}</li>{/each}</ul>
-          {/if}
-          {#if preview.plan.consent.removed.length > 0}
-            <h4 class="plugin-subhead">Removed capabilities</h4>
-            <ul class="plugin-detail-list">{#each preview.plan.consent.removed as capability}<li class="consumes">{capabilityLabel(capability)}</li>{/each}</ul>
-          {/if}
-          <h4 class="plugin-subhead">Data migrations</h4>
-          {#if preview.plan.migrations.migrationIds.length > 0}
-            <p class="dialog-body-copy">Data will migrate from <code>v{preview.plan.migrations.from}</code> to <code>v{preview.plan.migrations.to}</code>{preview.plan.migrations.requiresBackup ? ". A backup is created before migrating." : "."}</p>
-            <ul class="plugin-detail-list">{#each preview.plan.migrations.migrationIds as id}<li>{id}</li>{/each}</ul>
-          {:else}
-            <p class="dialog-body-copy">No data migrations required.</p>
-          {/if}
-          <div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => upgradePreview = null}>Cancel</button><button type="button" class="primary-button" onclick={confirmUpgrade} disabled={upgradeBusy}>{upgradeBusy ? "Updating…" : "Confirm update"}</button></div>
-        </div></div>
-      {/if}
-      {#if confirmAction}
-        <div class="modal-backdrop plugin-confirm-modal"><div class="dialog" role="alertdialog" aria-modal="true">
-          <div class="new-form-heading"><div><span class="panel-kicker">CONFIRM ACTION</span><strong>{confirmAction.title}</strong></div><button type="button" class="new-form-close" onclick={() => confirmAction = null}>×</button></div>
-          <p class="dialog-body-copy">{confirmAction.message}</p>
-          {#if confirmAction.capabilities}
-            {#if confirmAction.capabilities.length > 0}
-              <div class="capability-list" role="list" aria-label="Requested capabilities">
-                {#each confirmAction.capabilities as capability}
-                  <div class="capability-item" role="listitem">{capabilityLabel(capability)}</div>
-                {/each}
-              </div>
-            {:else}
-              <p class="dialog-body-copy capability-empty">No capabilities requested.</p>
-            {/if}
-          {/if}
-          <div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => confirmAction = null}>Cancel</button><button type="button" class="primary-button" onclick={runConfirm} disabled={confirmBusy}>{confirmBusy ? "Working…" : confirmAction.confirmLabel}</button></div>
-        </div></div>
-      {/if}
-      {#if deleteTarget}
-        <div class="modal-backdrop"><div class="dialog" role="alertdialog" aria-modal="true">
-          <div class="new-form-heading"><div><span class="panel-kicker">DELETE PROJECT DATA</span><strong>Delete {deleteTarget.name} data?</strong></div><button type="button" class="new-form-close" onclick={() => deleteTarget = null}>×</button></div>
-          <p class="dialog-body-copy">All entities, documents, fields, relationships, and assets owned by <code>{deleteTarget.id}</code> in this project will be deleted. A backup is kept on disk.</p>
-          <p class="dialog-body-copy">Type <code>{deleteTarget.id}</code> to confirm.</p>
-          <input aria-label="Delete confirmation" bind:value={deleteInput} placeholder={deleteTarget.id} />
-          <div class="new-form-actions"><button type="button" class="quiet-button" onclick={() => deleteTarget = null}>Cancel</button><button type="button" class="primary-button danger-button" onclick={confirmDeleteData} disabled={deleteBusy || deleteInput.trim() !== deleteTarget.id}>{deleteBusy ? "Deleting…" : "Delete project data"}</button></div>
-        </div></div>
-      {/if}
-      {#if deleteBackupPath}
-        <div class="modal-backdrop"><div class="dialog" role="alertdialog" aria-modal="true">
-          <div class="new-form-heading"><div><span class="panel-kicker">DATA DELETED</span><strong>Plugin data deleted</strong></div><button type="button" class="new-form-close" onclick={() => deleteBackupPath = ""}>×</button></div>
-          <p class="dialog-body-copy">A backup was kept at:</p>
-          <code class="backup-path">{deleteBackupPath}</code>
-          <div class="new-form-actions"><button type="button" class="primary-button" onclick={() => deleteBackupPath = ""}>Done</button></div>
-        </div></div>
-      {/if}
-    {/if}
-    {#if !ready}
+        {/snippet}
+      </SettingsView>
+    {:else if !ready}
       <section class="welcome"><div class="welcome-copy"><span class="overline">A private place for impossible worlds</span><h1>Build the world<br /><em>behind the story.</em></h1><p>Shape characters, places, factions, and history in one calm, local-first studio.</p></div><div class="welcome-art"><div class="orb orb-one"></div><div class="orb orb-two"></div><div class="art-card"><span>ELDERMERE</span><strong>The sea remembers<br />what kingdoms forget.</strong><small>Fragments · 12</small></div></div></section>
     {:else if projectionView}
       {#key projectionView.title}
@@ -1759,7 +1807,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
         {/if}
       {/key}
     {:else if enabledWorkspaceSections().length === 0}
-      <section class="empty-workspace-state"><div class="disabled-icon">◌</div><span class="overline">WORKSPACE READY</span><h1>Choose a workspace to begin.</h1><p>No workspace modules are enabled in this project. Enable one from the Plugins menu to start working.</p><button class="primary-button" onclick={() => void openPlugins()}>Open Plugins</button></section>
+      <section class="empty-workspace-state"><div class="disabled-icon">◌</div><span class="overline">WORKSPACE READY</span><h1>Choose a workspace to begin.</h1><p>No workspace modules are enabled in this project. Enable one from Settings → Plugins to start working.</p><button class="primary-button" onclick={() => void openSettings("plugins")}>Open Plugins</button></section>
     {:else}
       {#if projectDiagnostics.length}<div class="project-diagnostics" role="alert"><strong>Canonical source diagnostics</strong>{#each projectDiagnostics as diagnostic}<span>{diagnostic}</span>{/each}<small>Editing is read-only until the source files are valid again.</small></div>{/if}
       <div class="workspace-heading"><div><span class="overline">{section === "lore" ? "WORLD BIBLE" : section === "timeline" ? "CHRONOLOGY" : "DRAFTING DESK"}</span><h1>{sectionLabel()}</h1><p>{section === "lore" ? "A living reference for every person, place, and power." : section === "timeline" ? "Events, eras, and the threads that connect them." : writingView === "manuscripts" ? "Draft stories, essays, and other long-form work." : "Build the pages, notes, and references behind the story."}</p></div><div class="heading-actions">{#if section !== "writing"}<button class="quiet-button" onclick={openProjection}>Open {section === "lore" ? "graph" : "timeline"} ↗</button>{/if}</div></div>
@@ -2136,14 +2184,13 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     .list-empty strong { font-size: 21px; }
   }
 
-  .plugins-dialog { display: flex; flex-direction: column; width: min(900px, 100%); max-height: min(780px, calc(100vh - 32px)); padding: 0; overflow: hidden; }
-  .plugins-heading { padding: 22px 24px 16px; border-bottom: 1px solid var(--line); }
-  .plugins-heading strong { font-size: 26px; }
-  .plugins-intro { margin: 0; padding: 14px 24px 0; color: var(--ink-soft); font-size: 12px; line-height: 1.55; }
-  .plugins-toolbar { display: flex; align-items: center; gap: 10px; padding: 14px 24px 12px; }
+  .plugins-toolbar { display: flex; align-items: center; gap: 10px; padding: 0 0 12px; }
   .muted-note { color: var(--ink-faint); font-size: 10px; }
-  .plugins-note { margin: 0 24px 10px; padding: 9px 12px; border: 1px solid #d9e6db; border-radius: 8px; background: #f2f8f3; color: #3f6b4c; font-size: 11px; }
-  .plugins-list { min-height: 200px; overflow-y: auto; padding: 4px 24px 22px; }
+  .plugins-note { margin: 0 0 10px; padding: 9px 12px; border: 1px solid #d9e6db; border-radius: 8px; background: #f2f8f3; color: #3f6b4c; font-size: 11px; }
+  .plugins-list { min-height: 200px; max-height: min(620px, calc(100vh - 260px)); overflow-y: auto; padding: 4px 0 8px; }
+  .plugins-settings-heading { margin-bottom: 14px; }
+  .plugins-settings-heading strong { display: block; font-size: 16px; }
+  .plugins-settings-heading p { margin: 6px 0 0; color: var(--ink-soft); font-size: 12px; line-height: 1.5; }
   .plugin-card { padding: 16px 17px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); box-shadow: var(--shadow-sm); }
   .plugin-card + .plugin-card { margin-top: 11px; }
   .plugin-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
@@ -2209,9 +2256,6 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   .brand-logo { display: block; width: min(100%, 220px); height: auto; }
 
   @media (max-width: 600px) {
-    .plugins-list { padding-inline: 14px; }
-    .plugins-toolbar, .plugins-intro { padding-inline: 16px; }
-    .plugins-heading { padding-inline: 16px; }
     .version-row { align-items: flex-start; flex-direction: column; }
     .version-actions { justify-content: flex-start; }
     .plugin-card-head { flex-direction: column; }

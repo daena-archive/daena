@@ -45,10 +45,29 @@ pub struct ProjectPluginUsage {
 struct PersistentHostState {
     #[serde(default)]
     packages: PackageCatalog,
+    /// Legacy global grants. New writes keep only unmigrated entries; active
+    /// project grants live under `{project}/.daena/local/plugin-grants.json`.
     #[serde(default)]
     grants: GrantStore,
     #[serde(default)]
     project_usage: Vec<ProjectPluginUsage>,
+}
+
+const PROJECT_GRANTS_FORMAT_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProjectGrantsFile {
+    format_version: u32,
+    #[serde(default)]
+    grants: Vec<ProjectGrantEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProjectGrantEntry {
+    plugin_id: String,
+    grants: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -381,6 +400,44 @@ impl GrantStore {
 
     pub fn is_empty(&self, project_id: &str, plugin_id: &str) -> bool {
         self.get(project_id, plugin_id).is_empty()
+    }
+
+    pub fn insert_loaded(
+        &mut self,
+        project_id: &str,
+        plugin_id: &str,
+        granted: BTreeSet<String>,
+    ) {
+        self.grants
+            .insert((project_id.into(), plugin_id.into()), granted);
+    }
+
+    pub fn clear_project(&mut self, project_id: &str) {
+        self.grants.retain(|(entry_project, _), _| entry_project != project_id);
+    }
+
+    pub fn take_project(&mut self, project_id: &str) -> Vec<(String, BTreeSet<String>)> {
+        let keys = self
+            .grants
+            .keys()
+            .filter(|(entry_project, _)| entry_project == project_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.into_iter()
+            .filter_map(|key| {
+                let plugin_id = key.1.clone();
+                self.grants.remove(&key).map(|grants| (plugin_id, grants))
+            })
+            .collect()
+    }
+
+    pub fn plugin_ids_for(&self, project_id: &str) -> Vec<String> {
+        self.grants
+            .keys()
+            .filter_map(|(entry_project, plugin_id)| {
+                (entry_project == project_id).then(|| plugin_id.clone())
+            })
+            .collect()
     }
 }
 
@@ -1407,6 +1464,10 @@ pub struct PluginHost {
     pub wasm: WasmRuntimeRegistry,
     state_path: Option<PathBuf>,
     project_usage: BTreeMap<(String, String), String>,
+    /// Unmigrated grants still present in the global plugin-state file.
+    legacy_grants: GrantStore,
+    /// Open-project grant file paths keyed by project id (directory root).
+    project_grant_paths: BTreeMap<String, PathBuf>,
 }
 
 impl Default for PluginHost {
@@ -1431,6 +1492,8 @@ impl PluginHost {
             wasm: WasmRuntimeRegistry::default(),
             state_path: None,
             project_usage: BTreeMap::new(),
+            legacy_grants: GrantStore::default(),
+            project_grant_paths: BTreeMap::new(),
         }
     }
 
@@ -1453,7 +1516,9 @@ impl PluginHost {
             PersistentHostState::default()
         };
         self.packages = state.packages;
-        self.grants = state.grants;
+        self.legacy_grants = state.grants;
+        self.grants = GrantStore::default();
+        self.project_grant_paths.clear();
         self.project_usage = state
             .project_usage
             .into_iter()
@@ -1510,7 +1575,7 @@ impl PluginHost {
             .collect();
         let state = PersistentHostState {
             packages: self.packages.clone(),
-            grants: self.grants.clone(),
+            grants: self.legacy_grants.clone(),
             project_usage,
         };
         let bytes = serde_json::to_vec_pretty(&state)
@@ -1562,7 +1627,104 @@ impl PluginHost {
             .ok_or_else(|| HostError("plugin is not installed".into()))?;
         self.grants
             .set(project_id, plugin_id, &entry.manifest.capabilities, granted)?;
-        self.persist_state()
+        self.persist_project_grants(project_id)
+    }
+
+    /// Bind an open project to its machine-local grants file, migrating any
+    /// legacy global entries for that project on first open.
+    pub fn bind_project_grants(
+        &mut self,
+        project_root: impl AsRef<Path>,
+        project_id: &str,
+    ) -> Result<(), HostError> {
+        let grants_path = project_root
+            .as_ref()
+            .join(".daena")
+            .join("local")
+            .join("plugin-grants.json");
+        self.project_grant_paths
+            .insert(project_id.to_owned(), grants_path.clone());
+        self.grants.clear_project(project_id);
+
+        if grants_path.is_file() {
+            let file = Self::read_project_grants_file(&grants_path)?;
+            for entry in file.grants {
+                self.grants
+                    .insert_loaded(project_id, &entry.plugin_id, entry.grants);
+            }
+            return Ok(());
+        }
+
+        let migrated = self.legacy_grants.take_project(project_id);
+        if migrated.is_empty() {
+            return Ok(());
+        }
+        for (plugin_id, grants) in &migrated {
+            self.grants
+                .insert_loaded(project_id, plugin_id, grants.clone());
+        }
+        self.write_project_grants_file(&grants_path, &migrated)?;
+        self.persist_state()?;
+        Ok(())
+    }
+
+    pub fn persist_project_grants(&self, project_id: &str) -> Result<(), HostError> {
+        let Some(path) = self.project_grant_paths.get(project_id) else {
+            return Ok(());
+        };
+        let entries = self
+            .grants
+            .plugin_ids_for(project_id)
+            .into_iter()
+            .map(|plugin_id| {
+                let grants = self.grants.get(project_id, &plugin_id);
+                (plugin_id, grants)
+            })
+            .collect::<Vec<_>>();
+        self.write_project_grants_file(path, &entries)
+    }
+
+    fn read_project_grants_file(path: &Path) -> Result<ProjectGrantsFile, HostError> {
+        let bytes = fs::read(path).map_err(io_error)?;
+        let file: ProjectGrantsFile = serde_json::from_slice(&bytes)
+            .map_err(|error| HostError(format!("invalid project plugin grants: {error}")))?;
+        if file.format_version != PROJECT_GRANTS_FORMAT_VERSION {
+            return Err(HostError(format!(
+                "unsupported project plugin grants format version {}",
+                file.format_version
+            )));
+        }
+        Ok(file)
+    }
+
+    fn write_project_grants_file(
+        &self,
+        path: &Path,
+        entries: &[(String, BTreeSet<String>)],
+    ) -> Result<(), HostError> {
+        let file = ProjectGrantsFile {
+            format_version: PROJECT_GRANTS_FORMAT_VERSION,
+            grants: entries
+                .iter()
+                .map(|(plugin_id, grants)| ProjectGrantEntry {
+                    plugin_id: plugin_id.clone(),
+                    grants: grants.clone(),
+                })
+                .collect(),
+        };
+        let mut bytes = serde_json::to_vec_pretty(&file)
+            .map_err(|error| HostError(format!("serialize project plugin grants: {error}")))?;
+        bytes.push(b'\n');
+        let parent = path
+            .parent()
+            .ok_or_else(|| HostError("project plugin grants path has no parent".into()))?;
+        fs::create_dir_all(parent).map_err(io_error)?;
+        let temporary = tempfile::NamedTempFile::new_in(parent).map_err(io_error)?;
+        fs::write(temporary.path(), bytes).map_err(io_error)?;
+        temporary
+            .persist(path)
+            .map_err(|error| HostError(error.error.to_string()))?;
+        Ok(())
     }
 
     pub fn clear_project_usage(

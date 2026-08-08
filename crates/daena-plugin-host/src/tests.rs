@@ -231,8 +231,10 @@ fn project_usage_survives_host_restart_for_uninstall_protection() {
 }
 
 #[test]
-fn capability_grants_survive_host_restart_with_json_safe_keys() {
+fn capability_grants_survive_in_project_local_file() {
     let directory = tempfile::tempdir().unwrap();
+    let project_root = directory.path().join("project");
+    fs::create_dir_all(project_root.join(".daena/local")).unwrap();
     let state_path = directory.path().join("plugin-state.json");
     let install_root = directory.path().join("plugins");
     let expected = ["entity.read".into(), "field.read:self".into()]
@@ -241,7 +243,12 @@ fn capability_grants_survive_host_restart_with_json_safe_keys() {
 
     let mut first = host();
     first.state_path = Some(state_path.clone());
-    first.persist_state().unwrap();
+    first
+        .bind_project_grants(&project_root, "project")
+        .unwrap();
+    first
+        .grant_capabilities("project", "com.example.one", expected.clone())
+        .unwrap();
 
     let mut restarted = PluginHost::new();
     restarted
@@ -252,8 +259,58 @@ fn capability_grants_survive_host_restart_with_json_safe_keys() {
             VerificationPolicy::default(),
         )
         .unwrap();
-
+    restarted
+        .catalog
+        .insert_for_test(CatalogEntry {
+            manifest: manifest("com.example.one", "one"),
+            package_root: PathBuf::new(),
+            digest: "a".repeat(64),
+            embedded_wasm: None,
+        })
+        .unwrap();
+    restarted
+        .bind_project_grants(&project_root, "project")
+        .unwrap();
     assert_eq!(restarted.grants.get("project", "com.example.one"), expected);
+    assert!(!state_path
+        .exists()
+        .then(|| fs::read_to_string(&state_path).unwrap_or_default())
+        .unwrap_or_default()
+        .contains("entity.read"));
+}
+
+#[test]
+fn legacy_global_grants_migrate_into_project_local_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let project_root = directory.path().join("world");
+    fs::create_dir_all(project_root.join(".daena/local")).unwrap();
+    let state_path = directory.path().join("plugin-state.json");
+    let install_root = directory.path().join("plugins");
+    let expected = ["entity.read".into()].into_iter().collect::<BTreeSet<_>>();
+
+    let mut seeded = PluginHost::new();
+    seeded.state_path = Some(state_path.clone());
+    seeded
+        .legacy_grants
+        .insert_loaded("world-id", "com.example.one", expected.clone());
+    seeded.persist_state().unwrap();
+
+    let mut host = PluginHost::new();
+    host.load_installed_packages(
+        &install_root,
+        &state_path,
+        ArchiveLimits::default(),
+        VerificationPolicy::default(),
+    )
+    .unwrap();
+    host.bind_project_grants(&project_root, "world-id").unwrap();
+    assert_eq!(host.grants.get("world-id", "com.example.one"), expected);
+    assert!(project_root
+        .join(".daena/local/plugin-grants.json")
+        .is_file());
+    let rewritten: serde_json::Value =
+        serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert_eq!(rewritten["grants"]["grants"], serde_json::json!([]));
 }
 
 #[test]

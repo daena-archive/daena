@@ -63,6 +63,17 @@ export interface PluginAdminEntry extends ProjectModuleManifest {
   dependencyState: DependencyState;
 }
 export interface PluginAdminView { plugins: PluginAdminEntry[]; }
+export interface RecentProjectSetting { name: string; root: string; }
+export interface GeneralSettings {
+  recentProjects: RecentProjectSetting[];
+}
+export interface AppSettings {
+  formatVersion: number;
+  general: GeneralSettings;
+}
+export interface AppSettingsUpdate {
+  general?: { recentProjects?: RecentProjectSetting[] };
+}
 export interface HostViewData {
   lists: Record<string, Entity[]>;
   selected: Entity | null;
@@ -179,4 +190,6 @@ export const project = {
       filters: [{ name: "Daena Archive plugin", extensions: ["wbplugin"] }],
       },
     }),
+  settingsGet: () => invoke<AppSettings>("settings_get"),
+  settingsUpdate: (update: AppSettingsUpdate) => invoke<AppSettings>("settings_update", { update }),
 };

@@ -1,5 +1,7 @@
 # Daena Archive
 
+![logo](static/branding/logo.png)
+
 > “Daēnā (Avestan pronunciation: [dʌeːnaː]) is a Zoroastrian concept representing insight and revelation.”
 >
 > — [Wikipedia](https://en.wikipedia.org/wiki/Daena)

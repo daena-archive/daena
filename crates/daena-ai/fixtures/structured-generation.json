@@ -1,0 +1,12 @@
+{
+  "operation": "GenerateStructured",
+  "task_id": "suggest-biography",
+  "stream": true,
+  "output_contract": {
+    "type": "object",
+    "required": ["biography"],
+    "additionalProperties": false,
+    "properties": {"biography": {"type": "string", "maxLength": 2000}}
+  },
+  "expected_events": ["Started", "StructuredDelta", "Completed"]
+}

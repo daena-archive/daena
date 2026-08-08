@@ -1,0 +1,12 @@
+{
+  "operation": "GenerateText",
+  "task_id": "rewrite-selection",
+  "stream": true,
+  "user_instruction": "Rewrite the selected passage while preserving established facts.",
+  "immediate_context": {
+    "source_id": "document-1",
+    "revision": "rev-1",
+    "selection": "The gate opened at dawn."
+  },
+  "expected_events": ["Started", "TextDelta", "Completed"]
+}

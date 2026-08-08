@@ -24,6 +24,9 @@ Bundled and third-party plugin UIs run in isolated webviews and communicate
 through the versioned RPC contract. Frontend checks remain advisory; the Rust
 broker is the enforcement boundary.
 
+For the future AI broker surface, see [`AI_INTEGRATION.md`](./AI_INTEGRATION.md).
+AI grants do not imply project-data grants, provider access, or network access.
+
 The target platform has one non-negotiable rule:
 
 > Every third-party operation is attributed to a host-assigned plugin identity

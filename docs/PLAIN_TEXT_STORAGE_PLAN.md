@@ -11,6 +11,10 @@ and recover all of its content when the database is absent. The database and
 all other machine-local state will be ignored by Git and rebuilt from the
 canonical files.
 
+AI retrieval state follows the same rule and is isolated below `.daena/ai/`;
+see [`AI_INTEGRATION.md`](./AI_INTEGRATION.md). AI must not introduce a second
+canonical data model.
+
 This is an alpha format reset. Existing SQLite projects do not need a migration
 path, compatibility reader, or dual-write period.
 

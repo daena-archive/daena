@@ -20,9 +20,11 @@ If this document conflicts with those boundaries, the stricter authority and
 storage rule wins. AI must not become an alternative data model, plugin bridge,
 filesystem API, network capability, or mutation authority.
 
-Status as of 2026-08-08: **architecture approved by this document; implementation
-not started unless a later phase record says otherwise**. Agents must verify the
-worktree and current source before relying on that status.
+Status as of 2026-08-08: **architecture approved; Phase 0 foundation is ready in
+the worktree**. The `daena-ai` contracts, deterministic fake-provider tests,
+hard limits, ADRs, and bounded-stream transport decision/tests are present;
+live providers, embeddings, and project mutation remain later phases. Agents
+must verify the worktree and current source before relying on this status.
 
 The product goal is not a generic chatbot embedded in Daena. The goal is to make
 Daena's canonical documents, shared entity graph, structured fields,
@@ -840,6 +842,15 @@ webview behavior. Requirements are fixed: origin/session binding, sequence
 numbers, bounded queues, backpressure, one terminal state, project/plugin
 revocation, and no cross-session polling.
 
+Phase 0 transport decision: use short-lived `ai.request.start`, status/delta
+events or bounded polling, explicit cancel, and final result operations for
+plugin requests; trusted-shell requests use the same normalized events through
+host-owned application events. The broker never holds an unbounded provider
+stream open. `daena-ai::BoundedEventStream` and `FakeProvider` provide the
+contract-level evidence for sequence ordering, queue bounds, one terminal
+state, cancellation, and deadlines. Running Tauri/webview validation remains
+part of Phases 1 and 2.
+
 ---
 
 ## 10. Provider settings, secrets, privacy, and cost
@@ -1036,8 +1047,9 @@ CI. Record model/version because results drift.
 ### 13.5 Resource defaults
 
 Phase 0 must set tested conservative defaults for per-request input/output bytes,
-schema size/depth, stream queue length, concurrent requests per project/plugin,
-embedding batch size, image bytes/count, deadlines, and temporary-result TTL.
+schema size/depth, stream queue length, concurrent requests per project/plugin
+scope, embedding batch size, image bytes/count, deadlines, and temporary-result
+TTL.
 Limits belong in host policy and are mirrored for early SDK feedback; Rust
 enforcement is authoritative.
 
@@ -1058,8 +1070,9 @@ Deliver:
   caller, policy, and provenance types;
 - fake provider and cancellation/deadline primitives;
 - explicit hard limits and normalized error semantics;
-- a transport spike proving bounded streaming between Rust, the trusted shell,
-  and an isolated plugin webview;
+- a recorded transport decision and contract-level bounded-stream tests;
+  running Tauri/trusted-shell and isolated-plugin-webview validation is
+  explicitly deferred to Phases 1 and 2;
 - contract fixtures for text and structured generation;
 - documentation links from `ARCHITECTURE.md` and relevant plugin/storage plans.
 
@@ -1252,6 +1265,7 @@ Use focused tests plus the relevant full checks. The normal command forms are:
 rtk cargo fmt --manifest-path src-tauri/Cargo.toml --check
 rtk cargo test --manifest-path src-tauri/Cargo.toml --locked --offline
 rtk cargo clippy --manifest-path src-tauri/Cargo.toml --locked --offline --all-targets -- -D warnings
+rtk cargo test --manifest-path crates/daena-ai/Cargo.toml --locked --offline
 rtk npm run check
 rtk npm run check:plugin-contract
 rtk npm run test:plugin-conformance
@@ -1262,7 +1276,9 @@ Run only commands supported by the current manifests/scripts and document any
 sandbox or missing-cache limitation separately from source failures. AI UI
 acceptance requires a rendered Tauri-native check; browser-only automation does
 not prove native behavior. Live providers are optional verification, never the
-only proof.
+only proof. `daena-ai` is intentionally a standalone crate rather than a
+`daena-core` or Tauri dependency; its own `Cargo.lock` is therefore expected
+and the explicit crate test above is part of standard Phase 0 verification.
 
 For storage/RAG phases also prove:
 

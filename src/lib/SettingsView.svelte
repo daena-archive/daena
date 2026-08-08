@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
 
-  type SettingsSection = "general" | "plugins" | "git";
+  type SettingsSection = "general" | "ai" | "plugins" | "git";
   type RecentProject = { name: string; root: string };
 
   let {
@@ -12,6 +12,10 @@
     onClose,
     plugins,
     git,
+    aiSettings,
+    aiStatus,
+    onAiSettingsChange,
+    onAiCheck,
   }: {
     section?: SettingsSection;
     recentProjects: RecentProject[];
@@ -20,6 +24,10 @@
     onClose: () => void;
     plugins: Snippet;
     git: Snippet;
+    aiSettings: { localEndpoint: string; localModel: string };
+    aiStatus: { available: boolean; modelAvailable: boolean; error: string | null } | null;
+    onAiSettingsChange: (key: "localEndpoint" | "localModel", value: string) => void;
+    onAiCheck: () => void;
   } = $props();
 </script>
 
@@ -41,6 +49,7 @@
         class="settings-nav-button"
         onclick={() => (section = "general")}
       >General</button>
+      <button type="button" class:active={section === "ai"} class="settings-nav-button" onclick={() => (section = "ai")}>AI</button>
       <button
         type="button"
         class:active={section === "plugins"}
@@ -80,6 +89,16 @@
             {/each}
           </ul>
         {/if}
+      {:else if section === "ai"}
+        <div class="settings-section-heading">
+          <strong>Local AI</strong>
+          <p>Phase 1 uses only a loopback LM Studio server. No credentials or project content are stored here.</p>
+        </div>
+        <div class="ai-settings-form">
+          <label>LM Studio endpoint<input value={aiSettings.localEndpoint} oninput={(event) => onAiSettingsChange("localEndpoint", (event.currentTarget as HTMLInputElement).value)} /></label>
+          <label>Loaded model ID<input value={aiSettings.localModel} placeholder="Copy the model ID from LM Studio" oninput={(event) => onAiSettingsChange("localModel", (event.currentTarget as HTMLInputElement).value)} /></label>
+          <div class="ai-settings-actions"><button type="button" class="primary-button" onclick={onAiCheck}>Check LM Studio</button>{#if aiStatus}<span class:ok={aiStatus.available && aiStatus.modelAvailable} class="ai-status">{aiStatus.available ? aiStatus.modelAvailable ? "Ready" : "LM Studio is running; model is missing" : aiStatus.error ?? "LM Studio unavailable"}</span>{/if}</div>
+        </div>
       {:else if section === "plugins"}
         {#if !projectOpen}
           <div class="settings-section-heading">
@@ -177,6 +196,12 @@
     color: var(--ink-soft);
     font-size: 13px;
   }
+  .ai-settings-form { display: grid; gap: 14px; max-width: 560px; }
+  .ai-settings-form label { display: grid; gap: 6px; color: var(--ink-soft); font-size: 11px; font-weight: 700; }
+  .ai-settings-form input { padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--canvas); color: var(--ink); font: inherit; font-weight: 400; }
+  .ai-settings-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .ai-status { color: #9d5b42; font-size: 11px; }
+  .ai-status.ok { color: #557d63; font-weight: 700; }
   .settings-recent-list {
     list-style: none;
     margin: 0;

@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 pub const SETTINGS_FORMAT_VERSION: u32 = 1;
 const MAX_RECENT_PROJECTS: usize = 6;
+const DEFAULT_AI_ENDPOINT: &str = "http://127.0.0.1:1234/v1";
+const DEFAULT_AI_MODEL: &str = "";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -15,17 +17,34 @@ pub struct RecentProject {
     pub root: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GeneralSettings {
     #[serde(default)]
     pub recent_projects: Vec<RecentProject>,
 }
 
-impl Default for GeneralSettings {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AiSettings {
+    #[serde(default = "default_ai_endpoint")]
+    pub local_endpoint: String,
+    #[serde(default = "default_ai_model")]
+    pub local_model: String,
+}
+
+fn default_ai_endpoint() -> String {
+    DEFAULT_AI_ENDPOINT.to_string()
+}
+fn default_ai_model() -> String {
+    DEFAULT_AI_MODEL.to_string()
+}
+
+impl Default for AiSettings {
     fn default() -> Self {
         Self {
-            recent_projects: Vec::new(),
+            local_endpoint: default_ai_endpoint(),
+            local_model: default_ai_model(),
         }
     }
 }
@@ -36,6 +55,8 @@ pub struct AppSettings {
     pub format_version: u32,
     #[serde(default)]
     pub general: GeneralSettings,
+    #[serde(default)]
+    pub ai: AiSettings,
 }
 
 impl Default for AppSettings {
@@ -43,6 +64,7 @@ impl Default for AppSettings {
         Self {
             format_version: SETTINGS_FORMAT_VERSION,
             general: GeneralSettings::default(),
+            ai: AiSettings::default(),
         }
     }
 }
@@ -55,8 +77,16 @@ pub struct GeneralSettingsUpdate {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AiSettingsUpdate {
+    pub local_endpoint: Option<String>,
+    pub local_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppSettingsUpdate {
     pub general: Option<GeneralSettingsUpdate>,
+    pub ai: Option<AiSettingsUpdate>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,17 +101,13 @@ impl SettingsStore {
         }
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
     pub fn load(&self) -> Result<AppSettings, String> {
         if !self.path.is_file() {
             return Ok(AppSettings::default());
         }
         let bytes = fs::read(&self.path).map_err(|error| error.to_string())?;
-        let settings: AppSettings =
-            serde_json::from_slice(&bytes).map_err(|error| format!("invalid settings.json: {error}"))?;
+        let settings: AppSettings = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("invalid settings.json: {error}"))?;
         if settings.format_version != SETTINGS_FORMAT_VERSION {
             return Err(format!(
                 "unsupported settings format version {}",
@@ -99,7 +125,8 @@ impl SettingsStore {
                 normalized.format_version
             ));
         }
-        let mut bytes = serde_json::to_vec_pretty(&normalized).map_err(|error| error.to_string())?;
+        let mut bytes =
+            serde_json::to_vec_pretty(&normalized).map_err(|error| error.to_string())?;
         bytes.push(b'\n');
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -115,6 +142,14 @@ impl SettingsStore {
         if let Some(general) = update.general {
             if let Some(recent_projects) = general.recent_projects {
                 settings.general.recent_projects = recent_projects;
+            }
+        }
+        if let Some(ai) = update.ai {
+            if let Some(endpoint) = ai.local_endpoint {
+                settings.ai.local_endpoint = endpoint;
+            }
+            if let Some(model) = ai.local_model {
+                settings.ai.local_model = model;
             }
         }
         settings = normalize(settings);
@@ -141,7 +176,8 @@ mod tests {
 
     #[test]
     fn missing_file_loads_defaults() {
-        let directory = std::env::temp_dir().join(format!("daena-settings-{}", uuid::Uuid::new_v4()));
+        let directory =
+            std::env::temp_dir().join(format!("daena-settings-{}", uuid::Uuid::new_v4()));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).unwrap();
         let store = SettingsStore::new(&directory);
@@ -151,7 +187,8 @@ mod tests {
 
     #[test]
     fn round_trip_preserves_recent_projects() {
-        let directory = std::env::temp_dir().join(format!("daena-settings-{}", uuid::Uuid::new_v4()));
+        let directory =
+            std::env::temp_dir().join(format!("daena-settings-{}", uuid::Uuid::new_v4()));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).unwrap();
         let store = SettingsStore::new(&directory);
@@ -163,6 +200,7 @@ mod tests {
                     root: "/tmp/atlas".into(),
                 }],
             },
+            ai: AiSettings::default(),
         };
         store.save(&settings).unwrap();
         assert_eq!(store.load().unwrap(), settings);
@@ -171,7 +209,8 @@ mod tests {
 
     #[test]
     fn update_merges_recent_projects() {
-        let directory = std::env::temp_dir().join(format!("daena-settings-{}", uuid::Uuid::new_v4()));
+        let directory =
+            std::env::temp_dir().join(format!("daena-settings-{}", uuid::Uuid::new_v4()));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).unwrap();
         let store = SettingsStore::new(&directory);
@@ -183,6 +222,7 @@ mod tests {
                         root: "/one".into(),
                     }]),
                 }),
+                ai: None,
             })
             .unwrap();
         let loaded = store.load().unwrap();
@@ -193,11 +233,16 @@ mod tests {
 
     #[test]
     fn unknown_fields_are_rejected() {
-        let directory = std::env::temp_dir().join(format!("daena-settings-{}", uuid::Uuid::new_v4()));
+        let directory =
+            std::env::temp_dir().join(format!("daena-settings-{}", uuid::Uuid::new_v4()));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).unwrap();
         let path = directory.join("settings.json");
-        fs::write(&path, b"{\"formatVersion\":1,\"general\":{},\"extra\":true}\n").unwrap();
+        fs::write(
+            &path,
+            b"{\"formatVersion\":1,\"general\":{},\"extra\":true}\n",
+        )
+        .unwrap();
         let store = SettingsStore::new(&directory);
         assert!(store.load().unwrap_err().contains("invalid settings.json"));
         let _ = fs::remove_dir_all(directory);

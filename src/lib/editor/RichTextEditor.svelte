@@ -22,6 +22,7 @@
   export let value = "";
   export let placeholder = "Start writing…";
   export let onChange: (value: string) => void = () => {};
+  export let onSelectionChange: (markdown: string, plainText: string) => void = () => {};
   export let editable = true;
   export let fullscreen = false;
   export let onFullscreenChange: (value: boolean) => void = () => {};
@@ -57,6 +58,28 @@
     editorText = editor.view.dom.textContent ?? "";
     currentMarkdown = htmlToMarkdown(editor.getHTML());
     onChange(currentMarkdown);
+  }
+
+  function emitSelection() {
+    if (!editor) return;
+    const { from, to } = editor.state.selection;
+    if (from === to) {
+      onSelectionChange("", "");
+      return;
+    }
+    const plainText = editor.state.doc.textBetween(from, to, "\n");
+    try {
+      const start = editor.view.domAtPos(from);
+      const end = editor.view.domAtPos(to);
+      const range = document.createRange();
+      range.setStart(start.node, start.offset);
+      range.setEnd(end.node, end.offset);
+      const wrapper = document.createElement("div");
+      wrapper.appendChild(range.cloneContents());
+      onSelectionChange(htmlToMarkdown(wrapper.innerHTML), plainText);
+    } catch {
+      onSelectionChange(plainText, plainText);
+    }
   }
 
   function run(command: (currentEditor: Editor) => boolean) {
@@ -162,6 +185,7 @@
       onTransaction: ({ editor: nextEditor }) => {
         editorState = nextEditor;
         editorText = nextEditor.view.dom.textContent ?? "";
+        emitSelection();
       },
     });
     editorState = editor;

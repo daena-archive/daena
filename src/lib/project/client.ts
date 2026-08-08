@@ -93,9 +93,30 @@ export interface GeneralSettings {
 export interface AppSettings {
   formatVersion: number;
   general: GeneralSettings;
+  ai: AiSettings;
+}
+export interface AiSettings {
+  localEndpoint: string;
+  localModel: string;
 }
 export interface AppSettingsUpdate {
   general?: { recentProjects?: RecentProjectSetting[] };
+  ai?: Partial<AiSettings>;
+}
+export interface AiProviderStatus {
+  endpoint: string;
+  model: string;
+  available: boolean;
+  modelAvailable: boolean;
+  error: string | null;
+}
+export interface AiStreamEvent {
+  sequence: number;
+  requestId: string;
+  phase: "started" | "delta" | "completed" | "cancelled" | "failed";
+  delta: string | null;
+  output: string | null;
+  error: string | null;
 }
 export interface HostViewData {
   lists: Record<string, Entity[]>;
@@ -228,4 +249,9 @@ export const project = {
     }),
   settingsGet: () => invoke<AppSettings>("settings_get"),
   settingsUpdate: (update: AppSettingsUpdate) => invoke<AppSettings>("settings_update", { update }),
+  aiLocalStatus: (endpoint: string, model: string) => invoke<AiProviderStatus>("ai_local_status", { endpoint, model }),
+  aiGenerateText: (endpoint: string, model: string, instruction: string, selection: string) =>
+    invoke<string>("ai_generate_text", { endpoint, model, instruction, selection }),
+  aiCancelText: (requestId: string) => invoke<void>("ai_cancel_text", { requestId }),
+  aiPollText: (requestId: string) => invoke<AiStreamEvent[]>("ai_poll_text", { requestId }),
 };

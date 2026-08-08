@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   const logoUrl = "/branding/logo.png";
-import { project, type Asset, type Entity, type Relationship, type MapLocation, type ProjectModuleManifest, type ProjectInfo, type GitStatus, type GitPreflight, type GitLogEntry, type PluginAdminEntry, type PluginUpgradePlan, type ExternalChangeReport } from "$lib/project/client";
+import { project, type Asset, type Entity, type Relationship, type MapLocation, type ProjectModuleManifest, type ProjectInfo, type GitStatus, type GitPreflight, type GitLogEntry, type PluginAdminEntry, type PluginUpgradePlan, type ExternalChangeReport, type AiSettings, type AiProviderStatus, type AiStreamEvent } from "$lib/project/client";
   import type { EntityTemplate, FieldDefinition, ModuleContext, ModuleId, UUID, ModuleManifest, DaenaModule } from "../../packages/module-api/src/index";
   import { buildModuleContext } from "$lib/modules/context";
   import HostView from "$lib/plugins/HostView.svelte";
@@ -21,7 +21,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
 
   type InstalledModule = ProjectModuleManifest;
   type WorkspaceSection = "lore" | "timeline" | "writing" | "maps";
-  type SettingsSection = "general" | "plugins" | "git";
+  type SettingsSection = "general" | "ai" | "plugins" | "git";
   type WritingView = "manuscripts" | "reference";
   type RecentProject = { name: string; root: string };
   type CreateOption = { key: string; module: InstalledModule; template: EntityTemplate };
@@ -82,6 +82,20 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   let projectDiagnostics = $state<string[]>([]);
   let showSettings = $state(false);
   let settingsSection = $state<SettingsSection>("general");
+  let aiSettings = $state<AiSettings>({ localEndpoint: "http://127.0.0.1:1234/v1", localModel: "" });
+  let aiStatus = $state<AiProviderStatus | null>(null);
+  let aiRewriteOpen = $state(false);
+  let aiBusy = $state(false);
+  let aiRequestId = $state<string | null>(null);
+  let aiInstruction = $state("Rewrite this to be more vivid while preserving the meaning.");
+  let aiStreamText = $state("");
+  let aiPreviewOutput = $state("");
+  let aiSourceSelection = $state("");
+  let aiSourceSelectionPlain = $state("");
+  let aiSourceBody = $state("");
+  let aiSourceRevision = $state("");
+  let aiLastSequence = $state(-1);
+  let aiUnlisten: (() => void) | null = null;
   let adminPlugins = $state<PluginAdminEntry[] | null>(null);
   let hostView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] } | null>(null);
   let sandboxView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] | null } | null>(null);
@@ -655,6 +669,109 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     const message = cause instanceof Error ? cause.message : String(cause);
     return message.includes("invoke") || message.includes("undefined") ? "The desktop bridge is unavailable. Open this workspace in the Tauri app to use local project storage." : message;
   }
+  function updateAiSetting(key: "localEndpoint" | "localModel", value: string) {
+    aiSettings = { ...aiSettings, [key]: value };
+    aiStatus = null;
+    void project.settingsUpdate({ ai: { [key]: value } });
+  }
+  async function checkAiProvider() {
+    try { aiStatus = await project.aiLocalStatus(aiSettings.localEndpoint, aiSettings.localModel); }
+    catch (cause) { aiStatus = { endpoint: aiSettings.localEndpoint, model: aiSettings.localModel, available: false, modelAvailable: false, error: friendlyError(cause) }; }
+  }
+  function setAiSelection(markdown: string, plainText: string) {
+    if (!aiBusy && !aiPreviewOutput) {
+      aiSourceSelection = markdown;
+      aiSourceSelectionPlain = plainText;
+    }
+  }
+  function clearAiStreamListener() {
+    aiUnlisten?.();
+    aiUnlisten = null;
+  }
+  function closeAiRewrite() {
+    if (aiRequestId) void project.aiCancelText(aiRequestId).catch(() => {});
+    clearAiStreamListener();
+    aiRewriteOpen = false;
+    aiBusy = false;
+    aiRequestId = null;
+    aiStreamText = "";
+    aiPreviewOutput = "";
+    aiSourceSelection = "";
+    aiSourceSelectionPlain = "";
+    aiLastSequence = -1;
+  }
+  function validateAiProposal(value: string): string | null {
+    if (!value.trim()) return "LM Studio returned an empty proposal.";
+    if (/(^|\n)\s*(#{1,6}\s|>\s|[-*+]\s|\d+\.\s|```|~~~)/.test(value)) {
+      return "The proposal contains block-level Markdown. Edit it to plain text before accepting.";
+    }
+    if (/<\/?[a-z][^>]*>/i.test(value)) return "The proposal contains HTML markup. Edit it to plain text before accepting.";
+    return null;
+  }
+  function handleAiEvent(payload: AiStreamEvent) {
+    if (payload.sequence <= aiLastSequence) return;
+    aiLastSequence = payload.sequence;
+    if (payload.phase === "delta" && payload.delta) aiStreamText += payload.delta;
+    if (payload.phase === "completed") {
+      aiPreviewOutput = payload.output ?? aiStreamText;
+      aiBusy = false;
+      aiRequestId = null;
+      clearAiStreamListener();
+    } else if (payload.phase === "cancelled") {
+      aiBusy = false;
+      aiRequestId = null;
+      clearAiStreamListener();
+    } else if (payload.phase === "failed") {
+      aiBusy = false;
+      aiRequestId = null;
+      clearAiStreamListener();
+      error = payload.error ?? "LM Studio rewrite failed";
+    }
+  }
+  async function startAiRewrite() {
+    if (!selected || !aiSourceSelection.trim() || !aiInstruction.trim() || aiBusy) return;
+    if (!(await flushAutoSave())) return;
+    aiSourceBody = documentBody;
+    aiSourceRevision = loadedDocumentRevision;
+    aiStreamText = "";
+    aiPreviewOutput = "";
+    aiLastSequence = -1;
+    aiBusy = true;
+    try {
+      const requestId = await project.aiGenerateText(aiSettings.localEndpoint, aiSettings.localModel, aiInstruction, aiSourceSelection);
+      aiRequestId = requestId;
+      aiUnlisten = await listen<AiStreamEvent>(`ai-stream:${requestId}`, (event) => {
+        handleAiEvent(event.payload);
+      });
+      const buffered = await project.aiPollText(requestId);
+      for (const event of buffered) handleAiEvent(event);
+    } catch (cause) {
+      clearAiStreamListener();
+      aiBusy = false;
+      aiRequestId = null;
+      error = friendlyError(cause);
+    }
+  }
+  async function acceptAiRewrite() {
+    if (!selected || !aiPreviewOutput || aiBusy) return;
+    if (documentBody !== aiSourceBody || loadedDocumentRevision !== aiSourceRevision) {
+      error = "The document changed while the rewrite was being prepared. Discard it and try again.";
+      return;
+    }
+    const validationError = validateAiProposal(aiPreviewOutput);
+    if (validationError) {
+      error = validationError;
+      return;
+    }
+    const start = documentBody.indexOf(aiSourceSelection);
+    if (start < 0) {
+      error = "The selected Markdown is no longer present in the document. Discard it and try again.";
+      return;
+    }
+    documentBody = `${documentBody.slice(0, start)}${aiPreviewOutput}${documentBody.slice(start + aiSourceSelection.length)}`;
+    markEntryDirty();
+    if (await saveDocument()) closeAiRewrite();
+  }
   async function persistRecentProjects(next: RecentProject[]) {
     recentProjects = next;
     try {
@@ -674,6 +791,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     try {
       const settings = await project.settingsGet();
       recentProjects = settings.general.recentProjects.slice(0, 6);
+      aiSettings = settings.ai;
       if (recentProjects.length > 0 || settingsMigrated) return;
       const stored = JSON.parse(localStorage.getItem(recentProjectsKey) ?? "[]");
       if (Array.isArray(stored)) {
@@ -1625,6 +1743,10 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
         projectOpen={ready}
         onRemoveRecent={removeRecentProject}
         onClose={closeSettings}
+        aiSettings={aiSettings}
+        aiStatus={aiStatus}
+        onAiSettingsChange={updateAiSetting}
+        onAiCheck={() => void checkAiProvider()}
       >
         {#snippet plugins()}
           <div class="settings-section-heading plugins-settings-heading">
@@ -1868,10 +1990,18 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
                 <div class="conflict-actions"><button class="quiet-button" type="button" onclick={reloadConflict}>Reload disk</button><button class="quiet-button" type="button" onclick={overwriteConflict} disabled={documentConflict.diagnostics.length > 0}>Overwrite as new revision</button><button class="quiet-button" type="button" onclick={saveConflictRecoveryCopy}>Save recovery copy</button></div>
               </div>
             {/if}
-            <RichTextEditor value={documentBody} editable={projectDiagnostics.length === 0} fullscreen={editorFullscreen} onChange={updateDocumentBody} onFullscreenChange={setEditorFullscreen} placeholder={section === "writing" ? writingView === "manuscripts" ? "Write your manuscript…" : "Write this reference page…" : "Write the canonical story of this entry…"} />
+            {#if aiRewriteOpen}
+              <section class="ai-rewrite-panel" aria-label="AI rewrite proposal">
+                <div class="ai-rewrite-heading"><div><span class="panel-kicker">LOCAL AI · LM STUDIO</span><strong>{aiBusy ? "Rewriting selection…" : aiPreviewOutput ? "Review rewrite" : "Rewrite selection"}</strong></div><button class="quiet-button" type="button" onclick={closeAiRewrite}>Discard</button></div>
+                {#if !aiPreviewOutput}<label class="ai-instruction">Instruction<textarea rows="2" bind:value={aiInstruction} disabled={aiBusy} placeholder="Tell LM Studio how to rewrite the selection"></textarea></label>{/if}
+                {#if aiBusy}<pre class="ai-stream-output" aria-live="polite">{aiStreamText || "Waiting for LM Studio…"}</pre>{:else if aiPreviewOutput}<div class="ai-diff-grid"><div><span>Original</span><pre>{aiSourceSelectionPlain}</pre></div><div><span>Editable proposal</span><textarea class="ai-proposal-editor" rows="8" bind:value={aiPreviewOutput}></textarea></div></div>{/if}
+                <div class="ai-rewrite-actions">{#if aiBusy}<button class="quiet-button" type="button" onclick={() => aiRequestId && void project.aiCancelText(aiRequestId)}>Cancel</button>{:else if aiPreviewOutput}<button class="quiet-button" type="button" onclick={closeAiRewrite}>Discard</button><button class="primary-button" type="button" onclick={() => void acceptAiRewrite()}>Accept rewrite</button>{:else}<button class="quiet-button" type="button" onclick={closeAiRewrite}>Cancel</button><button class="primary-button" type="button" disabled={!aiSourceSelection.trim() || !aiInstruction.trim()} onclick={() => void startAiRewrite()}>Generate rewrite</button>{/if}</div>
+              </section>
+            {/if}
+            <RichTextEditor value={documentBody} editable={projectDiagnostics.length === 0 && !aiBusy} fullscreen={editorFullscreen} onChange={updateDocumentBody} onSelectionChange={setAiSelection} onFullscreenChange={setEditorFullscreen} placeholder={section === "writing" ? writingView === "manuscripts" ? "Write your manuscript…" : "Write this reference page…" : "Write the canonical story of this entry…"} />
             <div class="editor-footer">
               <span>{wordCount()} words</span>
-              <div><button class="quiet-button" onclick={archiveSelected}>Archive</button></div>
+              <div>{#if aiSourceSelection.trim() && !aiRewriteOpen}<button class="quiet-button" type="button" onclick={() => aiRewriteOpen = true}>Rewrite selection</button>{/if}<button class="quiet-button" onclick={archiveSelected}>Archive</button></div>
             </div>
           {:else}
             <div class="editor-empty"><div class="empty-mark">✦</div><h3>{section === "writing" ? writingView === "manuscripts" ? "Your draft is waiting." : "Your reference desk is waiting." : "Your canvas is waiting."}</h3><p>Select an entry from the library, or create something new to begin writing.</p></div>
@@ -1907,6 +2037,16 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   .map-conflict-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 18px; border-bottom: 1px solid #e2b48c; background: #fff5e9; color: #765a39; }
   .map-conflict-copy strong { font-size: 12px; } .map-conflict-copy p { margin: 4px 0 0; font-size: 11px; line-height: 1.5; } .map-conflict-copy code { display: block; margin-top: 6px; font: 11px ui-monospace, monospace; }
   .map-conflict-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }
+  .ai-rewrite-panel { display: grid; gap: 12px; margin-bottom: 14px; padding: 14px; border: 1px solid #d8c3a5; border-radius: 10px; background: #fff8ed; }
+  .ai-rewrite-heading, .ai-rewrite-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .ai-rewrite-heading strong { display: block; margin-top: 4px; color: var(--ink); font-size: 14px; }
+  .ai-instruction { display: grid; gap: 5px; color: var(--ink-soft); font-size: 10px; font-weight: 700; }
+  .ai-instruction textarea { width: 100%; resize: vertical; padding: 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); font: 12px/1.45 var(--font-body); }
+  .ai-stream-output, .ai-diff-grid pre, .ai-proposal-editor { max-height: 220px; overflow: auto; margin: 0; padding: 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); white-space: pre-wrap; font: 12px/1.55 var(--font-body); }
+  .ai-proposal-editor { width: 100%; resize: vertical; }
+  .ai-diff-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .ai-diff-grid > div > span { display: block; margin-bottom: 5px; color: var(--ink-faint); font-size: 10px; font-weight: 700; text-transform: uppercase; }
+  @media (max-width: 620px) { .ai-diff-grid { grid-template-columns: 1fr; } }
   @media (max-width: 760px) { .map-conflict-banner { align-items: flex-start; flex-direction: column; } } .editor-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 14px; color: var(--ink-faint); font-size: 11px; } .editor-footer div { display: flex; gap: 4px; } .editor-empty { display: grid; place-items: center; min-height: 500px; padding: 30px; text-align: center; } .empty-mark, .disabled-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 16px; background: #f2e4d2; color: var(--accent); font-size: 23px; } .editor-empty h3 { margin: 18px 0 6px; font: 500 23px var(--font-display); } .editor-empty p { max-width: 280px; margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
   .date-editor { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fcf8f1; } .date-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; } .date-fields label { display: grid; gap: 4px; color: var(--ink-faint); font-size: 9px; font-weight: 700; text-transform: uppercase; } .date-fields input { min-width: 0; width: 100%; padding: 8px 6px; border: 1px solid var(--line); border-radius: 7px; background: var(--canvas); color: var(--ink); font-size: 11px; } .date-fields input:focus { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180,119,63,.1); outline: 0; } .date-preview { color: var(--accent); font-size: 10px; font-weight: 700; } .date-clear, .date-empty { width: fit-content; padding: 0; border: 0; background: transparent; color: var(--ink-faint); font-size: 10px; cursor: pointer; } .date-empty { padding: 8px 10px; border: 1px dashed #d3c0a9; border-radius: 7px; color: var(--accent); } .inspector-heading { border-bottom: 1px solid var(--line); } .inspector-heading strong { display: block; margin-top: 7px; font: 500 20px var(--font-display); } .inspector-type { padding: 4px 7px; border-radius: 5px; background: #f2e4d2; color: var(--accent); font-size: 9px; font-weight: 800; text-transform: uppercase; } .inspector-section { padding: 18px 16px; border-bottom: 1px solid var(--line); } .inspector-section h3, .section-title h3 { margin: 0; color: var(--ink-soft); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; } .property-field { display: block; margin-top: 14px; } .property-field span { display: block; margin-bottom: 5px; color: var(--ink-soft); font-size: 10px; } .property-field b { margin-left: 3px; color: var(--accent); } .property-field input { width: 100%; padding: 8px 9px; border: 1px solid var(--line); border-radius: 7px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 11px; } .property-field input:focus { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180,119,63,.1); } .section-title { display: flex; align-items: center; justify-content: space-between; } .section-title span { color: var(--ink-faint); font-size: 11px; } .asset-row strong, .asset-row small { display: block; } .asset-row strong { font-size: 10px; } .asset-row small { margin-top: 3px; color: var(--ink-faint); font-size: 9px; } .drop-zone { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 12px; padding: 16px 8px; border: 1px dashed #d3c0a9; border-radius: 8px; background: #fcf8f1; color: var(--accent); text-align: center; cursor: pointer; } .drop-zone span { font-size: 22px; } .drop-zone strong { color: var(--ink-soft); font-size: 10px; } .drop-zone small { color: var(--ink-faint); font-size: 9px; } .asset-row { display: flex; align-items: center; gap: 8px; margin-top: 9px; } .asset-icon { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 6px; background: #ede9e0; color: var(--accent); }
   .map-contribution p { margin: 9px 0 10px; color: var(--ink-soft); font-size: 10px; line-height: 1.5; }

@@ -26,6 +26,7 @@ use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
 
 mod settings;
+mod ai;
 
 use settings::{AppSettings, AppSettingsUpdate, SettingsStore};
 
@@ -4758,6 +4759,7 @@ pub fn run() {
     let protocol_transfers = transfers.clone();
     let startup_plugins = plugins.clone();
     let watcher = Arc::new(Mutex::new(ProjectWatcher::default()));
+    let ai_runtime = Arc::new(Mutex::new(ai::AiRuntime::default()));
     tauri::Builder::default()
         .setup(move |app| {
             let _ = APP_HANDLE.set(app.handle().clone());
@@ -4798,10 +4800,15 @@ pub fn run() {
         .manage(plugins)
         .manage(transfers)
         .manage(watcher)
+        .manage(ai_runtime)
         .invoke_handler(tauri::generate_handler![
             greet,
             settings_get,
             settings_update,
+            ai::ai_local_status,
+            ai::ai_generate_text,
+            ai::ai_cancel_text,
+            ai::ai_poll_text,
             git_tool_info,
             open_external_url,
             plugin_bootstrap,

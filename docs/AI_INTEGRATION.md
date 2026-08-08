@@ -20,11 +20,15 @@ If this document conflicts with those boundaries, the stricter authority and
 storage rule wins. AI must not become an alternative data model, plugin bridge,
 filesystem API, network capability, or mutation authority.
 
-Status as of 2026-08-08: **architecture approved; Phase 0 foundation is ready in
-the worktree**. The `daena-ai` contracts, deterministic fake-provider tests,
-hard limits, ADRs, and bounded-stream transport decision/tests are present;
-live providers, embeddings, and project mutation remain later phases. Agents
-must verify the worktree and current source before relying on this status.
+Status as of 2026-08-08: **architecture approved; Phase 0 is complete and Phase
+1 implementation is present in the worktree**. The `daena-ai` contracts,
+deterministic fake-provider tests, hard limits, ADRs, bounded-stream transport
+decision/tests, LM Studio local discovery, normalized streaming/error handling,
+buffered event lifecycle, and trusted-shell rewrite preview path are present.
+The remaining Phase 1 evidence is a rendered Tauri validation with a running LM
+Studio instance; embeddings, remote providers, plugin AI access, and
+project-wide retrieval remain later phases. Agents must verify the worktree and
+current source before relying on this status.
 
 The product goal is not a generic chatbot embedded in Daena. The goal is to make
 Daena's canonical documents, shared entity graph, structured fields,
@@ -69,7 +73,7 @@ Important corrections to earlier proposals:
 3. `AuthorityContext::plugin()` carries no plugin ID or grant set. AI retrieval
    from a plugin call must retain the already-authorized broker session scope; it
    must not infer access from `AuthorityContext` alone.
-4. Local HTTP inference, such as Ollama on loopback, still uses a network
+4. Local HTTP inference, such as LM Studio on loopback, still uses a network
    transport. It is local because of the endpoint and data path, not because no
    socket is involved. Plugins receive no network authority either way.
 
@@ -544,8 +548,9 @@ AiRequest
 - deadline
 ```
 
-Avoid exposing provider-specific values such as Ollama `keep_alive`, OpenAI
-reasoning flags, sampler names, or raw HTTP options in the plugin contract.
+Avoid exposing provider-specific values such as LM Studio loading/runtime
+options, OpenAI reasoning flags, sampler names, or raw HTTP options in the
+plugin contract.
 Trusted settings may offer advanced provider-specific controls separately.
 
 ### 7.2 Retrieval policy
@@ -881,10 +886,10 @@ IPC transport, or an explicitly trusted local runtime. A user label alone does
 not make an arbitrary host local. Remote endpoints require HTTPS. Redirects are
 disabled by default and must never change the approved origin silently.
 
-Ollama is the first recommended adapter because it exercises local discovery,
-generation, embeddings, streaming, and cancellation without making its API the
-public Daena contract. An OpenAI-compatible adapter can follow, but “compatible”
-endpoints vary; capability probing and strict response limits are required.
+LM Studio is the first recommended adapter because its local server exposes
+OpenAI-compatible model discovery and chat streaming without making that API
+the public Daena contract. Capability probing and strict response limits are
+still required because compatible endpoints vary.
 
 ### 10.3 Remote disclosure policy
 
@@ -994,7 +999,7 @@ can script:
 - rate limits, authentication failures, disconnects, and cancellation races;
 - image handles/bytes in later phases.
 
-No required CI test depends on Ollama, internet access, a paid API, or
+No required CI test depends on LM Studio, internet access, a paid API, or
 nondeterministic model quality.
 
 ### 13.2 Retrieval evaluation corpus
@@ -1088,20 +1093,23 @@ recorded, and all existing checks still pass.
 Deliver:
 
 - provider registry and model capability discovery;
-- Ollama adapter for text generation and streaming;
+- LM Studio adapter for OpenAI-compatible text generation and streaming;
 - machine-local settings without credentials;
 - local endpoint validation and clear unavailable/model-missing states;
 - host-owned prompt builder with explicit context only;
 - shell UI for one vertical slice: rewrite selected document text;
 - streaming, cancel, diff, discard, and revision-checked acceptance;
-- redacted diagnostics and fake-provider UI tests.
+- redacted diagnostics and deterministic Rust-level fake-provider rewrite-path
+  tests; rendered fake-provider UI evidence is part of the remaining Tauri
+  validation.
 
 No plugin AI API, remote provider, structured fields, or RAG yet.
 
-**Exit gate:** in the rendered Tauri app, a user can configure local Ollama,
+**Exit gate:** in the rendered Tauri app, a user can configure local LM Studio,
 rewrite a selection, cancel mid-stream, inspect a diff, and accept through the
 normal document save path. Provider failure and document revision conflict cause
-no data loss. The same workflow passes deterministically with the fake provider.
+no data loss. The same workflow must also pass deterministically with the fake
+provider; rendered evidence for both paths remains pending.
 
 ### Phase 2 — structured generation and plugin broker API
 

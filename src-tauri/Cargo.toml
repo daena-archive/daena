@@ -29,5 +29,6 @@ uuid = { version = "1", features = ["v4"] }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
 daena-core = { path = "../crates/daena-core" }
+daena-ai = { path = "../crates/daena-ai" }
 daena-plugin-api = { path = "../crates/daena-plugin-api" }
 daena-plugin-host = { path = "../crates/daena-plugin-host" }

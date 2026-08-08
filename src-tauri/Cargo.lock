@@ -844,6 +844,7 @@ dependencies = [
 name = "daena"
 version = "0.1.0"
 dependencies = [
+ "daena-ai",
  "daena-core",
  "daena-plugin-api",
  "daena-plugin-host",
@@ -856,6 +857,14 @@ dependencies = [
  "tauri-plugin-opener",
  "uuid",
  "zip",
+]
+
+[[package]]
+name = "daena-ai"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -2830,7 +2830,7 @@ fn sync_project_usage(project: &ProjectStore, host: &mut PluginHost) -> Result<(
     Ok(())
 }
 
-async fn sync_project_usage_nonblocking(
+async fn sync_project_usage_and_wait(
     core: SharedCore,
     plugins: SharedPluginHost,
 ) -> Result<(), String> {
@@ -4285,7 +4285,7 @@ async fn project_open(
     })
     .await;
     if result.is_ok() {
-        sync_project_usage_nonblocking(core.clone(), sync_plugins).await?;
+        sync_project_usage_and_wait(core.clone(), sync_plugins).await?;
         flush_project_checkpoint_for_shared_core(core.clone(), "project startup synchronization")
             .await?;
         schedule_ai_index_refresh(&core, &ai_runtime);
@@ -4323,7 +4323,7 @@ async fn project_open_directory(
     })
     .await;
     if result.is_ok() {
-        sync_project_usage_nonblocking(core.clone(), sync_plugins).await?;
+        sync_project_usage_and_wait(core.clone(), sync_plugins).await?;
         flush_project_checkpoint_for_shared_core(core.clone(), "project startup synchronization")
             .await?;
         schedule_ai_index_refresh(&core, &ai_runtime);
@@ -4361,7 +4361,7 @@ async fn project_new(
     })
     .await;
     if result.is_ok() {
-        sync_project_usage_nonblocking(core.clone(), sync_plugins).await?;
+        sync_project_usage_and_wait(core.clone(), sync_plugins).await?;
         flush_project_checkpoint_for_shared_core(core.clone(), "project startup synchronization")
             .await?;
         schedule_ai_index_refresh(&core, &ai_runtime);
@@ -4387,22 +4387,23 @@ async fn project_close(
         core.close_without_flush(trusted_shell())?;
         ai::detach_project_index(&ai_runtime);
         if let Some(project_id) = project_id {
-            let mut host = plugins
-                .lock()
-                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
-            for request_id in host.ai_request_ids_for(&project_id, None) {
-                let _ = ai::cancel_ai_request(&ai_runtime, &request_id);
-                let _ = ai::remove_ai_citations(&ai_runtime, &request_id);
-                host.remove_ai_request(&request_id);
-            }
-            host.deactivate_project(&project_id);
-            for entry in plugins
-                .lock()
-                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
-                .catalog
-                .list()
-            {
-                close_plugin_webview(&app, &entry.manifest.id);
+            let plugin_ids = {
+                let mut host = plugins
+                    .lock()
+                    .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+                for request_id in host.ai_request_ids_for(&project_id, None) {
+                    let _ = ai::cancel_ai_request(&ai_runtime, &request_id);
+                    let _ = ai::remove_ai_citations(&ai_runtime, &request_id);
+                    host.remove_ai_request(&request_id);
+                }
+                host.deactivate_project(&project_id);
+                host.catalog
+                    .list()
+                    .map(|entry| entry.manifest.id.clone())
+                    .collect::<Vec<_>>()
+            };
+            for plugin_id in plugin_ids {
+                close_plugin_webview(&app, &plugin_id);
             }
         }
         Ok(())
@@ -4644,7 +4645,7 @@ async fn project_open_default(
     })
     .await;
     if result.is_ok() {
-        sync_project_usage_nonblocking(core.clone(), sync_plugins).await?;
+        sync_project_usage_and_wait(core.clone(), sync_plugins).await?;
         flush_project_checkpoint_for_shared_core(core.clone(), "project startup synchronization")
             .await?;
         schedule_ai_index_refresh(&core, &ai_runtime);
@@ -5478,6 +5479,7 @@ pub fn run() {
             settings_get,
             settings_update,
             ai::ai_local_status,
+            ai::ai_local_models,
             ai::ai_remote_credential_status,
             ai::ai_remote_import_credential,
             ai::ai_remote_set_consent,

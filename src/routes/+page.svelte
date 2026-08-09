@@ -40,6 +40,8 @@
 
   let ready = $state(false);
   let error = $state("");
+  let projectTransitionBusy = $state(false);
+  let projectTransitionMessage = $state("");
   let section = $state<WorkspaceSection>("lore");
   let writingView = $state<WritingView>("manuscripts");
   let entities = $state<Entity[]>([]);
@@ -86,10 +88,15 @@
   let aiSettings = $state<AiSettings>({
     localEndpoint: "http://127.0.0.1:1234/v1",
     localModel: "",
+    localEmbeddingModel: "",
     remotePolicy: "localOnly",
     remote: { provider: "", endpoint: "", model: "", consents: [] },
   });
   let aiStatus = $state<AiProviderStatus | null>(null);
+  let aiModels = $state<string[]>([]);
+  let aiModelsBusy = $state(false);
+  let aiModelsMessage = $state("");
+  let aiModelsMessageTimer: number | null = null;
   let aiIndexStatus = $state<AiIndexStatus | null>(null);
   let aiIndexBusy = $state(false);
   let aiIndexMessage = $state("");
@@ -689,7 +696,7 @@
     const message = cause instanceof Error ? cause.message : String(cause);
     return message.includes("invoke") || message.includes("undefined") ? "The desktop bridge is unavailable. Open this workspace in the Tauri app to use local project storage." : message;
   }
-  function updateAiSetting(key: "localEndpoint" | "localModel", value: string) {
+  function updateAiSetting(key: "localEndpoint" | "localModel" | "localEmbeddingModel", value: string) {
     aiSettings = { ...aiSettings, [key]: value };
     aiStatus = null;
     void project.settingsUpdate({ ai: { [key]: value } });
@@ -726,15 +733,48 @@
     try { aiStatus = await project.aiLocalStatus(aiSettings.localEndpoint, aiSettings.localModel); }
     catch (cause) { aiStatus = { endpoint: aiSettings.localEndpoint, model: aiSettings.localModel, available: false, modelAvailable: false, error: friendlyError(cause) }; }
   }
+  async function loadAiModels() {
+    const endpoint = aiSettings.localEndpoint.trim();
+    if (!endpoint) {
+      aiModelsMessage = "Enter a local endpoint before loading models.";
+      return;
+    }
+    aiModelsBusy = true;
+    aiModelsMessage = "";
+    try {
+      aiModels = await project.aiLocalModels(endpoint);
+      if (aiModels.length === 0) {
+        aiModelsMessage = "No models were returned by the local provider.";
+      } else {
+        aiModelsMessage = `${aiModels.length} model${aiModels.length === 1 ? "" : "s"} available.`;
+        if (aiModelsMessageTimer !== null) window.clearTimeout(aiModelsMessageTimer);
+        aiModelsMessageTimer = window.setTimeout(() => {
+          aiModelsMessage = "";
+          aiModelsMessageTimer = null;
+        }, toastDurationMs);
+        if (!aiSettings.localModel.trim() && aiModels.length === 1) updateAiSetting("localModel", aiModels[0]);
+      }
+    } catch (cause) {
+      aiModels = [];
+      aiModelsMessage = friendlyError(cause);
+    } finally { aiModelsBusy = false; }
+  }
   async function refreshAiIndexStatus() {
     try { aiIndexStatus = await project.aiIndexStatus(); }
     catch (cause) { aiIndexStatus = { available: false, state: null }; aiIndexMessage = friendlyError(cause); }
   }
   async function rebuildAiIndex() {
+    const endpoint = aiSettings.localEndpoint.trim();
+    const chatModel = aiSettings.localModel.trim();
+    if (!endpoint || !chatModel) {
+      aiIndexMessage = "Configure a local endpoint and chat model in AI providers before building the semantic index.";
+      return;
+    }
     aiIndexBusy = true;
     aiIndexMessage = "";
     try {
-      const result = await project.aiIndexRebuild(aiSettings.localEndpoint, aiSettings.localModel);
+      const embeddingModel = aiSettings.localEmbeddingModel.trim() || chatModel;
+      const result = await project.aiIndexRebuild(endpoint, embeddingModel);
       aiIndexStatus = { available: true, state: result.state };
       aiIndexMessage = `Indexed ${result.chunkCount} chunks (${result.embeddedCount} embedded, ${result.reusedCount} reused).`;
     } catch (cause) { aiIndexMessage = friendlyError(cause); }
@@ -918,40 +958,58 @@
     ready = true;
   }
 
-  async function openWorkspace() {
+  async function runProjectTransition(message: string, operation: () => Promise<void>) {
+    if (projectTransitionBusy) return;
+    projectTransitionBusy = true;
+    projectTransitionMessage = message;
     error = "";
     try {
+      await operation();
+    } catch (cause) {
+      error = friendlyError(cause);
+    } finally {
+      projectTransitionBusy = false;
+      projectTransitionMessage = "";
+    }
+  }
+
+  async function openWorkspace() {
+    await runProjectTransition("Opening workspace…", async () => {
       await project.openDefault();
       await finishOpening();
-    } catch (cause) { error = friendlyError(cause); }
+    });
   }
 
   async function openProjectDirectory() {
+    if (projectTransitionBusy) return;
     showProjectMenu = false;
     try {
       const selection = await project.pickDirectory();
       const path = typeof selection === "string" ? selection : null;
       if (!path) return;
-      if (!(await flushAutoSave())) return;
-      await project.close();
-      await finishOpening(await project.openDirectory(path));
+      await runProjectTransition("Opening project…", async () => {
+        if (!(await flushAutoSave())) return;
+        await project.close();
+        await finishOpening(await project.openDirectory(path));
+      });
     } catch (cause) { error = friendlyError(cause); }
   }
 
   async function openRecentProject(path: string) {
-    error = "";
+    if (projectTransitionBusy) return;
     showProjectMenu = false;
-    if (!(await flushAutoSave())) return;
-    try {
+    await runProjectTransition("Opening project…", async () => {
+      if (!(await flushAutoSave())) return;
       await project.close();
       await finishOpening(await project.openDirectory(path));
-    } catch (cause) { error = friendlyError(cause); }
+    });
   }
 
   async function closeProject() {
+    if (projectTransitionBusy) return;
     showProjectMenu = false;
-    if (!(await flushAutoSave())) return;
-    try {
+    await runProjectTransition("Closing project…", async () => {
+      if (!(await flushAutoSave())) return;
       await leavePluginView();
       await project.close();
       clearSelection();
@@ -963,7 +1021,7 @@
       gitPreflight = null;
       gitLog = [];
       ready = false;
-    } catch (cause) { error = friendlyError(cause); }
+    });
   }
 
   async function initializeGit() {
@@ -1699,13 +1757,29 @@
       if (!ready) return;
       void project.info().then((info) => { if (info) projectInfo = info; }).catch(() => {});
     }, 1000);
-    return () => { window.clearInterval(syncTimer); unlisten?.(); unlistenMaps?.(); unlistenMapsState?.(); unlistenMapsSelection?.(); };
+    return () => {
+      window.clearInterval(syncTimer);
+      if (aiModelsMessageTimer !== null) window.clearTimeout(aiModelsMessageTimer);
+      unlisten?.();
+      unlistenMaps?.();
+      unlistenMapsState?.();
+      unlistenMapsSelection?.();
+    };
   });
 </script>
 
 <svelte:head><title>Daena Archive</title><link rel="icon" href={logoUrl} /></svelte:head>
 
 <main class="studio-shell" aria-label="Daena Archive">
+  {#if projectTransitionBusy}
+    <div class="project-transition-backdrop" role="status" aria-live="polite" aria-busy="true">
+      <div class="project-transition-card">
+        <span class="project-transition-spinner" aria-hidden="true"></span>
+        <strong>{projectTransitionMessage}</strong>
+        <small>{projectTransitionMessage === "Closing project…" ? "Returning to the project launcher." : "Your project will be ready in a moment."}</small>
+      </div>
+    </div>
+  {/if}
   <aside class:startup-rail={!ready} class="rail">
     <div class="brand"><img class="brand-logo" src={logoUrl} alt="Daena Archive" /></div>
     {#if !ready}
@@ -1839,11 +1913,15 @@
         onClose={closeSettings}
         aiSettings={aiSettings}
         aiStatus={aiStatus}
+        aiModels={aiModels}
+        aiModelsBusy={aiModelsBusy}
+        aiModelsMessage={aiModelsMessage}
         aiIndexStatus={aiIndexStatus}
         aiIndexBusy={aiIndexBusy}
         aiIndexMessage={aiIndexMessage}
         onAiSettingsChange={updateAiSetting}
         onAiCheck={() => void checkAiProvider()}
+        onAiModelsLoad={() => void loadAiModels()}
         onAiIndexRefresh={() => void refreshAiIndexStatus()}
         onAiIndexRebuild={() => void rebuildAiIndex()}
         onAiIndexCancel={() => void cancelAiIndex()}
@@ -2179,7 +2257,7 @@
   .map-location-row .quiet-button { padding: 5px 6px; font-size: 9px; }
   .map-unresolved-badge { color: #a14f42; font-weight: 700; }
   .map-unresolved-note { color: #a14f42; font-size: 9px; }
-  .empty-workspace-state { display: grid; min-height: calc(100vh - 58px); place-content: center; justify-items: center; padding: 40px; text-align: center; } .empty-workspace-state h1 { margin: 12px 0 10px; font: 500 42px var(--font-display); } .empty-workspace-state p { max-width: 360px; margin: 0 0 24px; color: var(--ink-soft); font-size: 13px; line-height: 1.6; } .toast { position: fixed; right: 24px; bottom: 24px; z-index: 60; max-width: 430px; padding: 13px 14px; border: 1px solid #e5d4ba; border-radius: 9px; background: #fff8ed; box-shadow: var(--shadow-lg); color: #765a39; font-size: 12px; } .toast button { margin-left: 10px; border: 0; background: none; color: inherit; cursor: pointer; font-size: 17px; } .inspector-empty { display: grid; place-items: center; min-height: 240px; padding: 30px; color: var(--ink-faint); text-align: center; font-size: 10px; } .inspector-empty p { max-width: 170px; margin-top: 13px; line-height: 1.6; }
+  .empty-workspace-state { display: grid; min-height: calc(100vh - 58px); place-content: center; justify-items: center; padding: 40px; text-align: center; } .empty-workspace-state h1 { margin: 12px 0 10px; font: 500 42px var(--font-display); } .empty-workspace-state p { max-width: 360px; margin: 0 0 24px; color: var(--ink-soft); font-size: 13px; line-height: 1.6; } .project-transition-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: rgba(37, 37, 31, .34); } .project-transition-card { display: grid; justify-items: center; gap: 10px; min-width: 230px; padding: 24px 28px; border: 1px solid #d8cdbd; border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-lg); color: var(--ink); text-align: center; } .project-transition-card strong { font: 500 20px var(--font-display); } .project-transition-card small { color: var(--ink-soft); font-size: 11px; } .project-transition-spinner { width: 22px; height: 22px; border: 3px solid #eadfce; border-top-color: var(--accent); border-radius: 50%; animation: project-transition-spin .8s linear infinite; } @keyframes project-transition-spin { to { transform: rotate(360deg); } } .toast { position: fixed; right: 24px; bottom: 24px; z-index: 60; max-width: 430px; padding: 13px 14px; border: 1px solid #e5d4ba; border-radius: 9px; background: #fff8ed; box-shadow: var(--shadow-lg); color: #765a39; font-size: 12px; } .toast button { margin-left: 10px; border: 0; background: none; color: inherit; cursor: pointer; font-size: 17px; } .inspector-empty { display: grid; place-items: center; min-height: 240px; padding: 30px; color: var(--ink-faint); text-align: center; font-size: 10px; } .inspector-empty p { max-width: 170px; margin-top: 13px; line-height: 1.6; }
   @media (max-width: 1180px) { .workspace-grid { grid-template-columns: 220px minmax(320px, 1fr); } .inspector-panel { grid-column: 1 / -1; min-height: auto; display: grid; grid-template-columns: repeat(3, 1fr); } .inspector-heading { grid-column: 1 / -1; } .inspector-section { border-right: 1px solid var(--line); border-bottom: 0; } }
   @media (max-width: 760px) { .studio-shell { display: block; } .rail { display: block; width: 100%; height: auto; padding: 12px 14px; } .startup-rail { min-height: 100vh; padding: 24px 14px; } .brand { padding: 0 4px 12px; } .rail-label, .rail-spacer, .rail-footer, .module-menu { display: none; } .startup-rail .rail-label, .startup-rail .recent-projects { display: block; } .startup-rail .recent-label { margin-top: 27px; } .startup-rail .rail-button { display: flex; width: 100%; margin: 0 0 5px; padding: 10px 11px; } .startup-rail .rail-button span:not(.rail-icon) { display: inline; } .rail-button { display: inline-flex; width: auto; margin: 0 3px 0 0; padding: 8px 10px; } .rail-button span:not(.rail-icon) { display: none; } .project-menu .rail-button { display: flex; width: 100%; margin: 0 0 3px; } .project-menu .rail-button span:not(.rail-icon) { display: inline; } .topbar { min-height: 58px; padding: 0 17px; } .breadcrumbs span:first-child, .sync-badge { display: none; } .global-search { width: 150px; } .welcome { min-height: calc(100vh - 58px); display: block; padding: 55px 24px; } .welcome h1 { font-size: 52px; } .welcome-art { width: 100%; height: 270px; margin-top: 35px; transform: scale(.84); transform-origin: left top; } .workspace-heading { display: block; padding: 30px 17px 18px; } .workspace-heading h1 { font-size: 33px; } .heading-actions { margin-top: 18px; } .projection-bar { margin: 0 17px 12px; } .workspace-grid { display: flex; flex-direction: column; padding: 0 17px 25px; } .collection-panel, .editor-panel, .inspector-panel { width: 100%; min-height: auto; } .collection-list { max-height: 260px; overflow-y: auto; } .inspector-panel { display: block; } .inspector-section { border-bottom: 1px solid var(--line); border-right: 0; } .editor-panel { padding: 18px 14px 14px; } .editor-header h2 { font-size: 24px; } .editor-footer { align-items: flex-end; gap: 10px; } .toast { right: 12px; bottom: 12px; left: 12px; } }
   :global(.projection-bar) { min-height: 0; padding: 0; border: 0; background: transparent; box-shadow: none; }

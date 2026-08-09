@@ -32,6 +32,8 @@ pub struct AiSettings {
     #[serde(default = "default_ai_model")]
     pub local_model: String,
     #[serde(default)]
+    pub local_embedding_model: String,
+    #[serde(default)]
     pub remote_policy: AiRemotePolicy,
     #[serde(default)]
     pub remote: RemoteAiSettings,
@@ -81,6 +83,7 @@ impl Default for AiSettings {
         Self {
             local_endpoint: default_ai_endpoint(),
             local_model: default_ai_model(),
+            local_embedding_model: String::new(),
             remote_policy: AiRemotePolicy::default(),
             remote: RemoteAiSettings::default(),
         }
@@ -118,6 +121,7 @@ pub struct GeneralSettingsUpdate {
 pub struct AiSettingsUpdate {
     pub local_endpoint: Option<String>,
     pub local_model: Option<String>,
+    pub local_embedding_model: Option<String>,
     pub remote_policy: Option<AiRemotePolicy>,
     pub remote: Option<RemoteAiSettingsUpdate>,
 }
@@ -198,6 +202,9 @@ impl SettingsStore {
             }
             if let Some(model) = ai.local_model {
                 settings.ai.local_model = model;
+            }
+            if let Some(model) = ai.local_embedding_model {
+                settings.ai.local_embedding_model = model;
             }
             if let Some(remote_policy) = ai.remote_policy {
                 settings.ai.remote_policy = remote_policy;

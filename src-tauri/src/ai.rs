@@ -11,7 +11,7 @@ use daena_ai::{
     AiCaller, AiError, ContextBudget, RetrievalMode, RetrievalPolicy, RetrievedPassage, SourceRef,
     DEFAULT_LIMITS, PROMPT_TEMPLATE_VERSION,
 };
-use daena_core::{AuthorityContext, CoreService, ProjectStore};
+use daena_core::{CoreError, ProjectStore};
 use daena_plugin_api::{AiRetrievalMode, AiRetrievalPolicyPayload};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -359,7 +359,7 @@ fn project_chunks(project: &ProjectStore) -> Result<Vec<TextChunk>, String> {
 
 #[tauri::command]
 pub async fn ai_index_rebuild(
-    core: State<'_, Arc<Mutex<CoreService>>>,
+    core: State<'_, crate::SharedCore>,
     runtime: State<'_, SharedAiRuntime>,
     endpoint: String,
     model: String,
@@ -367,13 +367,10 @@ pub async fn ai_index_rebuild(
     if model.trim().is_empty() {
         return Err("An embedding model ID is required".into());
     }
-    let chunks = {
-        let core = core.lock().map_err(|_| "core lock poisoned".to_string())?;
-        project_chunks(
-            core.project(AuthorityContext::trusted_shell())
-                .map_err(|error| error.to_string())?,
-        )?
-    };
+    let chunks = crate::with_read_project(core, |project| {
+        project_chunks(project).map_err(CoreError::Conflict)
+    })
+    .await?;
     let runtime = runtime.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let (index, cancel) = {
@@ -1475,6 +1472,34 @@ async fn provider_status(endpoint: String, model: String) -> AiProviderStatus {
 #[tauri::command]
 pub async fn ai_local_status(endpoint: String, model: String) -> Result<AiProviderStatus, String> {
     Ok(provider_status(endpoint, model).await)
+}
+
+#[tauri::command]
+pub async fn ai_local_models(endpoint: String) -> Result<Vec<String>, String> {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let stream = connect_request(
+            &endpoint,
+            "GET",
+            "models",
+            None,
+            DEFAULT_LIMITS.default_deadline,
+        )?;
+        read_response(stream)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    if result.0 / 100 != 2 {
+        return Err(normalized_http_error(result.0).to_string());
+    }
+    let mut models = serde_json::from_slice::<OpenAiModels>(&result.1)
+        .map_err(|_| AiError::InvalidProviderResponse.to_string())?
+        .data
+        .into_iter()
+        .map(|model| model.id)
+        .collect::<Vec<_>>();
+    models.sort();
+    models.dedup();
+    Ok(models)
 }
 
 #[tauri::command]

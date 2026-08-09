@@ -14,6 +14,9 @@
     git,
     aiSettings,
     aiStatus,
+    aiModels,
+    aiModelsBusy,
+    aiModelsMessage,
     aiIndexStatus,
     aiIndexBusy,
     aiIndexMessage,
@@ -27,6 +30,7 @@
     onRestoreRecoveryBackup,
     onAiSettingsChange,
     onAiCheck,
+    onAiModelsLoad,
     onAiIndexRefresh,
     onAiIndexRebuild,
     onAiIndexCancel,
@@ -38,13 +42,17 @@
     onClose: () => void;
     plugins: Snippet;
     git: Snippet;
-    aiSettings: { localEndpoint: string; localModel: string; remotePolicy: "disabled" | "localOnly" | "ask" | "approvedPairs" | "remoteAllowed"; remote: { provider: string; endpoint: string; model: string; consents: Array<{ projectId: string; provider: string; endpoint: string }> } };
+    aiSettings: { localEndpoint: string; localModel: string; localEmbeddingModel: string; remotePolicy: "disabled" | "localOnly" | "ask" | "approvedPairs" | "remoteAllowed"; remote: { provider: string; endpoint: string; model: string; consents: Array<{ projectId: string; provider: string; endpoint: string }> } };
     aiStatus: { available: boolean; modelAvailable: boolean; error: string | null } | null;
+    aiModels: string[];
+    aiModelsBusy: boolean;
+    aiModelsMessage: string;
     aiIndexStatus: { available: boolean; state: string | null } | null;
     aiIndexBusy: boolean;
     aiIndexMessage: string;
-    onAiSettingsChange: (key: "localEndpoint" | "localModel", value: string) => void;
+    onAiSettingsChange: (key: "localEndpoint" | "localModel" | "localEmbeddingModel", value: string) => void;
     onAiCheck: () => void;
+    onAiModelsLoad: () => void;
     onAiIndexRefresh: () => void;
     onAiIndexRebuild: () => void;
     onAiIndexCancel: () => void;
@@ -59,9 +67,24 @@
   } = $props();
 
   let providerModalOpen = $state(false);
+  let modelPickerOpen = $state<"chat" | "embedding" | null>(null);
+  let embeddingSectionOpen = $state(false);
   let recoveryPath = $state("");
   let storageBusy = $state(false);
   let storageMessage = $state("");
+
+  $effect(() => {
+    if (aiSettings.localEmbeddingModel.trim()) embeddingSectionOpen = true;
+  });
+
+  function chooseModel(kind: "chat" | "embedding", value: string) {
+    onAiSettingsChange(kind === "chat" ? "localModel" : "localEmbeddingModel", value);
+    modelPickerOpen = null;
+  }
+
+  function closeModelPickerSoon() {
+    window.setTimeout(() => { modelPickerOpen = null; }, 120);
+  }
 
   async function createPortableBackup() {
     storageBusy = true;
@@ -210,9 +233,16 @@
                 </div>
                 <div class="ai-field-grid">
                   <label>Endpoint<input value={aiSettings.localEndpoint} oninput={(event) => onAiSettingsChange("localEndpoint", (event.currentTarget as HTMLInputElement).value)} /></label>
-                  <label>Loaded model ID<input value={aiSettings.localModel} placeholder="Enter the model ID from your local provider" oninput={(event) => onAiSettingsChange("localModel", (event.currentTarget as HTMLInputElement).value)} /></label>
+                  <label>Chat model ID<div class="ai-model-picker-control"><input value={aiSettings.localModel} placeholder="Enter or choose a model ID" aria-haspopup="listbox" aria-expanded={modelPickerOpen === "chat"} onfocus={() => (modelPickerOpen = "chat")} onclick={() => (modelPickerOpen = "chat")} onblur={closeModelPickerSoon} oninput={(event) => onAiSettingsChange("localModel", (event.currentTarget as HTMLInputElement).value)} />{#if modelPickerOpen === "chat" && aiModels.length > 0}<div class="ai-model-picker-menu" role="listbox" aria-label="Available chat models">{#each aiModels as model}<button type="button" role="option" aria-selected={model === aiSettings.localModel} onmousedown={(event) => event.preventDefault()} onclick={() => chooseModel("chat", model)}>{model}</button>{/each}</div>{/if}</div></label>
                 </div>
-                <div class="ai-settings-actions ai-card-actions"><button type="button" class="primary-button" onclick={onAiCheck}>Check connection</button>{#if aiStatus}<span class:ok={aiStatus.available && aiStatus.modelAvailable} class="ai-status">{aiStatus.available ? aiStatus.modelAvailable ? "Ready" : "Server found; model is missing" : aiStatus.error ?? "Local provider unavailable"}</span>{/if}</div>
+                <div class="ai-settings-actions ai-card-actions"><button type="button" class="primary-button" onclick={onAiModelsLoad} disabled={aiModelsBusy}>{aiModelsBusy ? "Loading models…" : "Load available models"}</button><button type="button" class="quiet-button" onclick={onAiCheck}>Test connection</button>{#if aiStatus}<span class:ok={aiStatus.available && aiStatus.modelAvailable} class="ai-status">{aiStatus.available ? aiStatus.modelAvailable ? "Ready" : "Server found; model is missing" : aiStatus.error ?? "Local provider unavailable"}</span>{/if}{#if aiModelsMessage}<span class="ai-status">{aiModelsMessage}</span>{/if}</div>
+                <details class="ai-provider-advanced" bind:open={embeddingSectionOpen}>
+                  <summary>Use a different embedding model{#if aiSettings.localEmbeddingModel.trim()}<span class="ai-provider-advanced-indicator">Configured</span>{/if}</summary>
+                  <div class="ai-provider-advanced-body">
+                    <label>Embedding model ID<div class="ai-model-picker-control"><input value={aiSettings.localEmbeddingModel} placeholder="Leave blank to use the chat model" aria-haspopup="listbox" aria-expanded={modelPickerOpen === "embedding"} onfocus={() => (modelPickerOpen = "embedding")} onclick={() => (modelPickerOpen = "embedding")} onblur={closeModelPickerSoon} oninput={(event) => onAiSettingsChange("localEmbeddingModel", (event.currentTarget as HTMLInputElement).value)} />{#if modelPickerOpen === "embedding" && aiModels.length > 0}<div class="ai-model-picker-menu" role="listbox" aria-label="Available embedding models">{#each aiModels as model}<button type="button" role="option" aria-selected={model === aiSettings.localEmbeddingModel} onmousedown={(event) => event.preventDefault()} onclick={() => chooseModel("embedding", model)}>{model}</button>{/each}</div>{/if}</div></label>
+                    <p>Semantic indexing uses this model when provided; otherwise it reuses the chat model above.</p>
+                  </div>
+                </details>
               </div>
               <div class:remote-disabled={aiSettings.remotePolicy === "disabled" || aiSettings.remotePolicy === "localOnly"} class="ai-provider-section ai-remote-section" aria-labelledby="remote-ai-heading">
                 <div class="ai-card-heading">
@@ -259,7 +289,7 @@
             <div class="ai-settings-actions ai-card-actions">
               <button type="button" class="quiet-button" onclick={onAiIndexRefresh}>Refresh status</button>
               {#if aiIndexBusy}<button type="button" class="quiet-button" onclick={onAiIndexCancel}>Cancel rebuild</button>{/if}
-              <button type="button" class="primary-button" onclick={onAiIndexRebuild} disabled={aiIndexBusy || !aiStatus?.available || !aiStatus.modelAvailable}>{aiIndexBusy ? "Rebuilding…" : "Build semantic index"}</button>
+              <button type="button" class="primary-button" onclick={onAiIndexRebuild} disabled={aiIndexBusy}>{aiIndexBusy ? "Rebuilding…" : "Build semantic index"}</button>
             </div>
             {#if aiIndexMessage}<p class="ai-feedback">{aiIndexMessage}</p>{/if}
           </section>
@@ -414,6 +444,16 @@
   .ai-settings-form input:disabled, .ai-settings-form select:disabled { border-color: #e1dcd3; background: #f2efe9; color: var(--ink-faint); cursor: not-allowed; opacity: .7; }
   .ai-settings-form input:disabled:hover, .ai-settings-form select:disabled:hover { border-color: #e1dcd3; box-shadow: none; }
   .ai-settings-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .ai-provider-advanced { border-top: 1px solid var(--line); padding-top: 14px; }
+  .ai-provider-advanced summary { display: flex; align-items: center; gap: 8px; color: var(--ink-soft); cursor: pointer; font-size: 11px; font-weight: 700; }
+  .ai-provider-advanced-indicator { padding: 3px 6px; border: 1px solid #b9d4bd; border-radius: 999px; background: #edf6ee; color: #557d63; font-size: 9px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+  .ai-provider-advanced-body { display: grid; gap: 8px; margin-top: 12px; }
+  .ai-provider-advanced-body p { margin: 0; color: var(--ink-faint); font-size: 10px; line-height: 1.5; }
+  .ai-model-picker-control { position: relative; }
+  .ai-model-picker-control input { width: 100%; box-sizing: border-box; }
+  .ai-model-picker-menu { position: absolute; top: calc(100% + 5px); right: 0; left: 0; z-index: 5; display: grid; max-height: 190px; overflow: auto; padding: 4px; border: 1px solid #d8cdbd; border-radius: 8px; background: var(--surface); box-shadow: 0 10px 24px rgba(48,45,38,.16); }
+  .ai-model-picker-menu button { overflow: hidden; padding: 8px 9px; border: 0; border-radius: 5px; background: transparent; color: var(--ink); font: 11px var(--font-body); text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+  .ai-model-picker-menu button:hover, .ai-model-picker-menu button:focus-visible { background: var(--surface-muted); outline: 0; }
   .settings-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
   .settings-path-field { display: grid; gap: 6px; margin: 10px 0; color: #6d625d; font-size: 12px; }
   .settings-path-field input { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid #d9cec7; border-radius: 8px; background: #fffdfb; color: #302a27; }

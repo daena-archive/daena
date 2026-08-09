@@ -103,6 +103,7 @@ export interface AppSettings {
 export interface AiSettings {
   localEndpoint: string;
   localModel: string;
+  localEmbeddingModel: string;
   remotePolicy: "disabled" | "localOnly" | "ask" | "approvedPairs" | "remoteAllowed";
   remote: RemoteAiSettings;
 }
@@ -118,7 +119,7 @@ export interface RemoteCredentialStatus {
 }
 export interface AppSettingsUpdate {
   general?: { recentProjects?: RecentProjectSetting[] };
-  ai?: { localEndpoint?: string; localModel?: string; remotePolicy?: AiSettings["remotePolicy"]; remote?: Partial<RemoteAiSettings> };
+  ai?: { localEndpoint?: string; localModel?: string; localEmbeddingModel?: string; remotePolicy?: AiSettings["remotePolicy"]; remote?: Partial<RemoteAiSettings> };
 }
 export interface AiProviderStatus {
   endpoint: string;
@@ -285,6 +286,7 @@ export const project = {
   settingsGet: () => invoke<AppSettings>("settings_get"),
   settingsUpdate: (update: AppSettingsUpdate) => invoke<AppSettings>("settings_update", { update }),
   aiLocalStatus: (endpoint: string, model: string) => invoke<AiProviderStatus>("ai_local_status", { endpoint, model }),
+  aiLocalModels: (endpoint: string) => invoke<string[]>("ai_local_models", { endpoint }),
   aiRemoteCredentialStatus: (provider: string) => invoke<RemoteCredentialStatus>("ai_remote_credential_status", { provider }),
   aiRemoteImportCredential: (provider: string) => invoke<RemoteCredentialStatus>("ai_remote_import_credential", { provider }),
   aiRemoteSetConsent: (projectId: string, provider: string, endpoint: string, allowed: boolean) =>

@@ -78,6 +78,239 @@ fn external_edit_before_mutation_fails_closed() {
 }
 
 #[test]
+fn portable_backup_flushes_pending_runtime_changes_before_serializing() {
+    let root = std::env::temp_dir().join(format!("daena-portable-backup-{}", Uuid::new_v4()));
+    let backup_dir = std::env::temp_dir().join(format!("daena-backup-output-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    store
+        .create_entity(CreateEntity {
+            name: "Backup owner".into(),
+            entity_type: None,
+        })
+        .unwrap();
+
+    let backup = store.portable_backup_to(&backup_dir).unwrap();
+    assert!(Path::new(&backup).join("project.json").is_file());
+    let entity_file = std::fs::read_dir(Path::new(&backup).join("entities"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path()
+        .join("entity.json");
+    assert!(std::fs::read_to_string(entity_file)
+        .unwrap()
+        .contains("Backup owner"));
+
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(backup_dir).unwrap();
+}
+
+#[test]
+fn portable_backup_restores_from_files_without_runtime_database() {
+    let source_root =
+        std::env::temp_dir().join(format!("daena-portable-source-{}", Uuid::new_v4()));
+    let target_root =
+        std::env::temp_dir().join(format!("daena-portable-target-{}", Uuid::new_v4()));
+    let output =
+        std::env::temp_dir().join(format!("daena-portable-restore-output-{}", Uuid::new_v4()));
+    let source = ProjectStore::open_directory(&source_root).unwrap();
+    source
+        .create_entity(CreateEntity {
+            name: "Portable source".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let backup = source.portable_backup_to(&output).unwrap();
+    drop(source);
+
+    let mut target = ProjectStore::open_directory(&target_root).unwrap();
+    target.restore(backup).unwrap();
+    assert_eq!(target.list_entities().unwrap()[0].name, "Portable source");
+    drop(target);
+    std::fs::remove_dir_all(source_root).unwrap();
+    std::fs::remove_dir_all(target_root).unwrap();
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+fn portable_backup_rejects_invalid_canonical_files() {
+    let root = std::env::temp_dir().join(format!("daena-invalid-backup-{}", Uuid::new_v4()));
+    let output =
+        std::env::temp_dir().join(format!("daena-invalid-backup-output-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    store.flush_exports().unwrap();
+    std::fs::write(root.join("project.json"), b"{ invalid json").unwrap();
+
+    assert!(matches!(
+        store.backup_to(&output),
+        Err(CoreError::NotFound(_))
+            | Err(CoreError::Serialization(_))
+            | Err(CoreError::Validation(_))
+            | Err(CoreError::Conflict(_))
+    ));
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+    let _ = std::fs::remove_dir_all(output);
+}
+
+#[test]
+fn runtime_recovery_backup_contains_consistent_database_and_staged_payload_area() {
+    let root = std::env::temp_dir().join(format!("daena-recovery-backup-{}", Uuid::new_v4()));
+    let output = std::env::temp_dir().join(format!("daena-recovery-output-{}", Uuid::new_v4()));
+    let mut store = ProjectStore::open_directory(&root).unwrap();
+    store.suppress_sync.set(true);
+    store
+        .create_entity(CreateEntity {
+            name: "Recovery owner".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    store.suppress_sync.set(false);
+
+    let artifact = store.recovery_backup_to(&output).unwrap();
+    let database = Connection::open(Path::new(&artifact).join("index.sqlite")).unwrap();
+    let count: i64 = database
+        .query_row(
+            "SELECT COUNT(*) FROM entities WHERE name='Recovery owner'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+    let pending: i64 = database
+        .query_row(
+            "SELECT COUNT(*) FROM sync_batches WHERE state NOT IN ('completed','superseded')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(pending > 0);
+    assert!(Path::new(&artifact).join("index.sqlite").is_file());
+
+    drop(database);
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+fn runtime_recovery_backup_restores_runtime_state_and_restarts_exporter() {
+    let root = std::env::temp_dir().join(format!("daena-recovery-restore-{}", Uuid::new_v4()));
+    let output =
+        std::env::temp_dir().join(format!("daena-recovery-restore-output-{}", Uuid::new_v4()));
+    let mut store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Before recovery".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    store.flush_exports().unwrap();
+    let staged_payload = root.join(".daena/sync/pending-request/input/payload.bin");
+    std::fs::create_dir_all(staged_payload.parent().unwrap()).unwrap();
+    std::fs::write(&staged_payload, b"pending payload").unwrap();
+    let artifact = store.recovery_backup_to(&output).unwrap();
+    std::fs::remove_file(&staged_payload).unwrap();
+    store
+        .update_entity(entity.id.clone(), Some("After recovery".into()), None)
+        .unwrap();
+
+    store.restore_recovery_backup(&artifact).unwrap();
+    assert_eq!(store.list_entities().unwrap()[0].name, "Before recovery");
+    assert_eq!(std::fs::read(&staged_payload).unwrap(), b"pending payload");
+    assert!(store.export_worker.is_some());
+
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+fn rebuild_from_files_refuses_dirty_runtime_without_explicit_divergence_review() {
+    let root = std::env::temp_dir().join(format!("daena-rebuild-guard-{}", Uuid::new_v4()));
+    let mut store = ProjectStore::open_directory(&root).unwrap();
+    store.suppress_sync.set(true);
+    store
+        .create_entity(CreateEntity {
+            name: "Dirty rebuild".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    store.suppress_sync.set(false);
+    assert!(matches!(
+        store.rebuild_from_files(),
+        Err(CoreError::Conflict(message)) if message.contains("explicit divergence review")
+    ));
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn portable_restore_archives_dirty_runtime_before_replacement() {
+    let root = std::env::temp_dir().join(format!("daena-restore-archive-{}", Uuid::new_v4()));
+    let mut store = ProjectStore::open_directory(&root).unwrap();
+    store.suppress_sync.set(true);
+    store
+        .create_entity(CreateEntity {
+            name: "Pending runtime".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    store.suppress_sync.set(false);
+    let payload = store.export_json().unwrap();
+    store.restore_payload(&payload).unwrap();
+    assert!(std::fs::read_dir(root.join(".daena/backups"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|entry| entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("daena-recovery-")));
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn blocked_rebuild_archives_and_discards_obsolete_runtime_queue() {
+    let root = std::env::temp_dir().join(format!("daena-rebuild-discard-{}", Uuid::new_v4()));
+    let mut store = ProjectStore::open_directory(&root).unwrap();
+    store
+        .create_entity(CreateEntity {
+            name: "Portable winner".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    store.flush_exports().unwrap();
+    store
+        .connection
+        .execute(
+            "UPDATE runtime_meta SET reconciliation_state='blocked',sync_state='failed',dirty_count=1 WHERE key='runtime'",
+            [],
+        )
+        .unwrap();
+    let report = store.rebuild_from_files().unwrap();
+    assert!(report
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.contains("discarded")));
+    let (sync_state, dirty_count): (String, i64) = store
+        .connection
+        .query_row(
+            "SELECT sync_state,dirty_count FROM runtime_meta WHERE key='runtime'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(sync_state, "clean");
+    assert_eq!(dirty_count, 0);
+    assert_eq!(store.list_entities().unwrap()[0].name, "Portable winner");
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn unindexed_external_file_before_mutation_fails_closed() {
     let root = std::env::temp_dir().join(format!("daena-unindexed-baseline-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();
@@ -233,6 +466,62 @@ fn export_worker_flushes_a_durable_pending_batch() {
         )
         .unwrap();
     assert_eq!(state, "completed");
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scoped_flush_barrier_does_not_drain_unrelated_revisions() {
+    let root = std::env::temp_dir().join(format!("daena-scoped-flush-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let first_request = Uuid::new_v4().to_string();
+    let second_request = Uuid::new_v4().to_string();
+    store.suppress_sync.set(true);
+    store
+        .create_entity_with_request(
+            CreateEntity {
+                name: "Scoped flush one".into(),
+                entity_type: None,
+            },
+            Some(&first_request),
+        )
+        .unwrap();
+    store
+        .create_entity_with_request(
+            CreateEntity {
+                name: "Scoped flush two".into(),
+                entity_type: None,
+            },
+            Some(&second_request),
+        )
+        .unwrap();
+    store.suppress_sync.set(false);
+
+    store
+        .flush_with_barrier(FlushBarrier {
+            revision_set: Some(vec![first_request.clone()]),
+            operation_reason: "test scoped git preflight".into(),
+        })
+        .unwrap();
+    let first_state: String = store
+        .connection
+        .query_row(
+            "SELECT state FROM sync_batches WHERE request_id=?1",
+            params![first_request],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let second_state: String = store
+        .connection
+        .query_row(
+            "SELECT state FROM sync_batches WHERE request_id=?1",
+            params![second_request],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(first_state, "completed");
+    assert_eq!(second_state, "exporting");
+
     drop(store);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -523,8 +812,15 @@ fn external_document_and_assets_manifest_deletion_removes_runtime_rows() {
     store.flush_exports().unwrap();
     std::fs::remove_file(root.join("entities").join(&entity.id).join("document.md")).unwrap();
     assert!(store.reconcile_external_changes().unwrap().changed);
-    assert!(store.list_documents_unchecked(entity.id.clone()).unwrap().is_empty());
-    assert!(store.search("remove me".into()).unwrap().iter().all(|match_| match_.id != entity.id));
+    assert!(store
+        .list_documents_unchecked(entity.id.clone())
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .search("remove me".into())
+        .unwrap()
+        .iter()
+        .all(|match_| match_.id != entity.id));
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -887,7 +1183,10 @@ fn exporter_owned_files_are_ignored_by_reconciliation_after_flush() {
         .unwrap();
     store.flush_exports().unwrap();
     let report = store.reconcile_external_changes().unwrap();
-    assert!(!report.changed, "export-owned files were reimported: {report:?}");
+    assert!(
+        !report.changed,
+        "export-owned files were reimported: {report:?}"
+    );
     assert!(report.diagnostics.is_empty());
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -1720,7 +2019,7 @@ fn importing_the_same_snapshot_twice_preserves_children() {
         })
         .unwrap();
     let payload = source.export_json().unwrap();
-    let target = ProjectStore::in_memory().unwrap();
+    let mut target = ProjectStore::in_memory().unwrap();
     target.import_json_with_mode(&payload, false).unwrap();
     target.import_json_with_mode(&payload, false).unwrap();
     assert_eq!(target.list_entities().unwrap().len(), 1);
@@ -2135,7 +2434,7 @@ fn restore_replaces_records_missing_from_the_backup() {
     let path = std::env::temp_dir().join(format!("daena-restore-test-{}.json", Uuid::new_v4()));
     std::fs::write(&path, source.export_json().unwrap()).unwrap();
 
-    let target = ProjectStore::in_memory().unwrap();
+    let mut target = ProjectStore::in_memory().unwrap();
     target
         .create_entity(CreateEntity {
             name: "Stale record".into(),

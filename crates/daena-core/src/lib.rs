@@ -12,10 +12,10 @@ pub use migrations::{FieldDefinition, Migration, Operation};
 pub use project::{
     Asset, AssetFileInput, AssetInput, AssetReplaceInput, CreateEntity, CreateEntry,
     CreateEntryDocument, CreateEntryField, Document, Entity, ExternalChangeReport, FieldValue,
-    GitLogEntry, GitPreflight, GitRemote, GitResetResult, GitStatus, GitToolInfo, GitUpstream,
-    MigrationHistoryEntry, ModuleField, ModuleNamespace, ModuleState, PluginBackup, ProjectInfo,
-    ProjectSnapshot, ProjectStore, Relationship, RelationshipInput, SaveDocument, SaveEntry,
-    SearchPassage, SyncDiagnostic, SyncSummary,
+    FlushBarrier, GitLogEntry, GitPreflight, GitRemote, GitResetResult, GitStatus, GitToolInfo,
+    GitUpstream, MigrationHistoryEntry, ModuleField, ModuleNamespace, ModuleState, PluginBackup,
+    ProjectInfo, ProjectSnapshot, ProjectStore, Relationship, RelationshipInput, SaveDocument,
+    SaveEntry, SearchPassage, SyncDiagnostic, SyncSummary,
 };
 pub use storage::{
     canonical_json_bytes, canonical_markdown, canonical_markdown_bytes, normalized_project_path,
@@ -77,7 +77,10 @@ impl CoreService {
 
     fn flush_current_project(&self) -> Result<(), CoreError> {
         if let Some(project) = &self.project {
-            project.flush_exports()?;
+            project.flush_with_barrier(crate::project::FlushBarrier {
+                revision_set: None,
+                operation_reason: "project lifecycle transition".into(),
+            })?;
         }
         Ok(())
     }

@@ -5152,7 +5152,34 @@ async fn project_backup(
         .app_data_dir()
         .map_err(|error| error.to_string())?;
     with_core(state, move |core| {
-        core.project(trusted_shell())?.backup_to(directory)
+        core.project(trusted_shell())?.portable_backup_to(directory)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_recovery_backup(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SharedCore>,
+) -> Result<String, String> {
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    with_core(state, move |core| {
+        core.project_mut(trusted_shell())?.recovery_backup_to(directory)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_restore_recovery_backup(
+    state: tauri::State<'_, SharedCore>,
+    path: String,
+) -> Result<(), String> {
+    with_core(state, move |core| {
+        core.project_mut(trusted_shell())?
+            .restore_recovery_backup(path)
     })
     .await
 }
@@ -5160,7 +5187,7 @@ async fn project_backup(
 #[tauri::command]
 async fn project_restore(state: tauri::State<'_, SharedCore>, path: String) -> Result<(), String> {
     with_core(state, move |core| {
-        core.project(trusted_shell())?.restore(path)
+        core.project_mut(trusted_shell())?.restore(path)
     })
     .await
 }
@@ -5172,7 +5199,7 @@ async fn project_restore_payload(
     request_id: Option<String>,
 ) -> Result<(), String> {
     with_core(state, move |core| {
-        core.project(trusted_shell())?
+        core.project_mut(trusted_shell())?
             .restore_payload_with_request(&payload, request_id.as_deref())
     })
     .await
@@ -5386,6 +5413,8 @@ pub fn run() {
             project_register_asset_file,
             project_list_assets,
             project_backup,
+            project_recovery_backup,
+            project_restore_recovery_backup,
             project_restore,
             project_restore_payload,
             project_rebuild_search,

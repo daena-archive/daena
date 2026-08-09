@@ -1677,11 +1677,27 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     } catch (cause) { error = friendlyError(cause); }
   }
   async function rebuildProjectFromFiles() {
+    const hasDiscardableRuntime = projectInfo?.sync.state !== "clean" || projectInfo?.sync.reconciliation_state === "blocked";
+    const confirmation = hasDiscardableRuntime
+      ? "Rebuild from portable files and discard the archived runtime state?"
+      : "Rebuild the runtime projection from portable files?";
+    if (!window.confirm(confirmation)) return;
     try {
       await project.rebuildFromFiles();
       projectInfo = await project.info();
       await loadEntities();
     } catch (cause) { error = friendlyError(cause); }
+  }
+  async function createPortableBackup() {
+    return project.backup();
+  }
+  async function createRecoveryBackup() {
+    return project.recoveryBackup();
+  }
+  async function restoreRecoveryBackup(path: string) {
+    await project.restoreRecoveryBackup(path);
+    projectInfo = await project.info();
+    await loadEntities();
   }
   $effect(() => {
     const term = globalQuery.trim();
@@ -1892,6 +1908,9 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
         remoteCredential={remoteCredential}
         onAiRemoteConsent={(allowed) => void setRemoteConsent(allowed)}
         onAiRemoteImport={() => void importRemoteCredential()}
+        onPortableBackup={createPortableBackup}
+        onRecoveryBackup={createRecoveryBackup}
+        onRestoreRecoveryBackup={restoreRecoveryBackup}
       >
         {#snippet plugins()}
           <div class="settings-section-heading plugins-settings-heading">

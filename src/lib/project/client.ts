@@ -247,6 +247,8 @@ export const project = {
     invoke<Asset>("project_register_asset_file", { input, expected_revision: options?.expectedRevision ?? null, request_id: requestId(options) }),
   listAssets: (entityId: string) => invoke<Asset[]>("project_list_assets", { entityId }),
   backup: () => invoke<string>("project_backup"),
+  recoveryBackup: () => invoke<string>("project_recovery_backup"),
+  restoreRecoveryBackup: (path: string) => invoke<void>("project_restore_recovery_backup", { path }),
   restore: (path: string) => invoke<void>("project_restore", { path }),
   restorePayload: (payload: string, options?: MutationOptions) => invoke<void>("project_restore_payload", { payload, request_id: requestId(options) }),
   rebuildSearch: () => invoke<void>("project_rebuild_search"),

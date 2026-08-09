@@ -22,6 +22,9 @@
     remoteCredential,
     onAiRemoteConsent,
     onAiRemoteImport,
+    onPortableBackup,
+    onRecoveryBackup,
+    onRestoreRecoveryBackup,
     onAiSettingsChange,
     onAiCheck,
     onAiIndexRefresh,
@@ -50,9 +53,45 @@
     remoteCredential: { configured: boolean } | null;
     onAiRemoteConsent: (allowed: boolean) => void;
     onAiRemoteImport: () => void;
+    onPortableBackup: () => Promise<string>;
+    onRecoveryBackup: () => Promise<string>;
+    onRestoreRecoveryBackup: (path: string) => Promise<void>;
   } = $props();
 
   let providerModalOpen = $state(false);
+  let recoveryPath = $state("");
+  let storageBusy = $state(false);
+  let storageMessage = $state("");
+
+  async function createPortableBackup() {
+    storageBusy = true;
+    try {
+      storageMessage = `Portable backup: ${await onPortableBackup()}`;
+    } finally {
+      storageBusy = false;
+    }
+  }
+
+  async function createRecoveryBackup() {
+    storageBusy = true;
+    try {
+      recoveryPath = await onRecoveryBackup();
+      storageMessage = `Recovery backup: ${recoveryPath}`;
+    } finally {
+      storageBusy = false;
+    }
+  }
+
+  async function restoreRecoveryBackup() {
+    if (!recoveryPath.trim() || !window.confirm("Restore this recovery backup and replace the current runtime state?")) return;
+    storageBusy = true;
+    try {
+      await onRestoreRecoveryBackup(recoveryPath.trim());
+      storageMessage = "Recovery backup restored.";
+    } finally {
+      storageBusy = false;
+    }
+  }
 </script>
 
 <section class="settings-view" aria-label="Settings">
@@ -112,6 +151,19 @@
               </li>
             {/each}
           </ul>
+        {/if}
+        {#if projectOpen}
+          <div class="settings-section-heading">
+            <strong>Project storage</strong>
+            <p>Portable backups contain canonical files. Recovery backups retain the runtime queue and staged payloads.</p>
+          </div>
+          <div class="settings-actions">
+            <button type="button" class="primary-button" disabled={storageBusy} onclick={() => void createPortableBackup()}>Portable backup</button>
+            <button type="button" class="quiet-button" disabled={storageBusy} onclick={() => void createRecoveryBackup()}>Recovery backup</button>
+          </div>
+          <label class="settings-path-field">Recovery backup path<input bind:value={recoveryPath} placeholder="Paste a recovery backup directory" /></label>
+          <button type="button" class="quiet-button" disabled={storageBusy || !recoveryPath.trim()} onclick={() => void restoreRecoveryBackup()}>Restore recovery backup</button>
+          {#if storageMessage}<p class="settings-note" role="status">{storageMessage}</p>{/if}
         {/if}
       {:else if section === "ai"}
         <div class="settings-section-heading">
@@ -362,6 +414,10 @@
   .ai-settings-form input:disabled, .ai-settings-form select:disabled { border-color: #e1dcd3; background: #f2efe9; color: var(--ink-faint); cursor: not-allowed; opacity: .7; }
   .ai-settings-form input:disabled:hover, .ai-settings-form select:disabled:hover { border-color: #e1dcd3; box-shadow: none; }
   .ai-settings-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .settings-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+  .settings-path-field { display: grid; gap: 6px; margin: 10px 0; color: #6d625d; font-size: 12px; }
+  .settings-path-field input { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid #d9cec7; border-radius: 8px; background: #fffdfb; color: #302a27; }
+  .settings-note { margin: 10px 0; color: #6d625d; font-size: 12px; overflow-wrap: anywhere; }
   .ai-card-actions { padding-top: 2px; }
   .primary-button { padding: 10px 15px; border: 1px solid rgba(255,255,255,.08); border-radius: 8px; background: var(--accent-dark); color: #fff; font-size: 12px; font-weight: 700; box-shadow: 0 2px 0 #263d30, 0 7px 16px rgba(42,68,51,.16); cursor: pointer; transition: background .16s ease, box-shadow .16s ease, transform .16s ease; }
   .primary-button:hover { background: #2b4535; box-shadow: 0 2px 0 #263d30, 0 10px 20px rgba(42,68,51,.2); transform: translateY(-1px); }

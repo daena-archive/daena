@@ -347,6 +347,16 @@ pub struct ExternalChangeReport {
     pub diagnostics: Vec<String>,
 }
 
+/// Describes the durable work a caller requires before an operation proceeds.
+/// `revision_set` contains mutation request IDs; `None` means all work queued
+/// at the time the barrier is created.  Future mutations are intentionally not
+/// included in either form.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FlushBarrier {
+    pub revision_set: Option<Vec<String>>,
+    pub operation_reason: String,
+}
+
 fn current_snapshot_version() -> u32 {
     1
 }
@@ -422,7 +432,8 @@ pub struct ProjectStore {
 
 enum ExportWorkerCommand {
     Wake,
-    Flush(mpsc::Sender<Result<(), CoreError>>, String),
+    Flush(mpsc::Sender<Result<(), CoreError>>, FlushBarrier, String),
+    StopWithoutDrain(mpsc::Sender<Result<(), CoreError>>),
     Stop(mpsc::Sender<Result<(), CoreError>>),
 }
 
@@ -440,15 +451,16 @@ impl ExportWorker {
             .name("daena-export-worker".into())
             .spawn(move || {
                 while let Ok(command) = receiver.recv() {
-                    let drain = |cutoff: Option<&str>| {
+                    let drain = |cutoff: Option<&str>, revision_set: Option<&[String]>| {
                         let worker_store = ProjectStore::open_database(
                             &database,
                             Some(root.clone()),
                             None,
                             false,
                             false,
+                            false,
                         )?;
-                        worker_store.drain_export_queue(cutoff)
+                        worker_store.drain_export_queue(cutoff, revision_set)
                     };
                     match command {
                         ExportWorkerCommand::Wake => {
@@ -457,27 +469,39 @@ impl ExportWorker {
                                 let remaining = deadline.saturating_duration_since(Instant::now());
                                 match receiver.recv_timeout(remaining) {
                                     Ok(ExportWorkerCommand::Wake) => continue,
-                                    Ok(ExportWorkerCommand::Flush(reply, cutoff)) => {
-                                        let _ = reply.send(drain(Some(&cutoff)));
+                                    Ok(ExportWorkerCommand::Flush(reply, barrier, cutoff)) => {
+                                        let _ = reply.send(drain(
+                                            Some(&cutoff),
+                                            barrier.revision_set.as_deref(),
+                                        ));
                                         break;
                                     }
                                     Ok(ExportWorkerCommand::Stop(reply)) => {
-                                        let _ = reply.send(drain(None));
+                                        let _ = reply.send(drain(None, None));
+                                        return;
+                                    }
+                                    Ok(ExportWorkerCommand::StopWithoutDrain(reply)) => {
+                                        let _ = reply.send(Ok(()));
                                         return;
                                     }
                                     Err(mpsc::RecvTimeoutError::Timeout) => {
-                                        let _ = drain(None);
+                                        let _ = drain(None, None);
                                         break;
                                     }
                                     Err(mpsc::RecvTimeoutError::Disconnected) => return,
                                 }
                             }
                         }
-                        ExportWorkerCommand::Flush(reply, cutoff) => {
-                            let _ = reply.send(drain(Some(&cutoff)));
+                        ExportWorkerCommand::Flush(reply, barrier, cutoff) => {
+                            let _ =
+                                reply.send(drain(Some(&cutoff), barrier.revision_set.as_deref()));
                         }
                         ExportWorkerCommand::Stop(reply) => {
-                            let _ = reply.send(drain(None));
+                            let _ = reply.send(drain(None, None));
+                            break;
+                        }
+                        ExportWorkerCommand::StopWithoutDrain(reply) => {
+                            let _ = reply.send(Ok(()));
                             break;
                         }
                     }
@@ -497,10 +521,10 @@ impl ExportWorker {
         let _ = self.sender.send(ExportWorkerCommand::Wake);
     }
 
-    fn flush(&self, cutoff: String) -> Result<(), CoreError> {
+    fn flush(&self, barrier: FlushBarrier, cutoff: String) -> Result<(), CoreError> {
         let (sender, receiver) = mpsc::channel();
         self.sender
-            .send(ExportWorkerCommand::Flush(sender, cutoff))
+            .send(ExportWorkerCommand::Flush(sender, barrier, cutoff))
             .map_err(|_| CoreError::Conflict("export worker is not running".into()))?;
         receiver
             .recv()
@@ -514,6 +538,25 @@ impl ExportWorker {
             receiver
                 .recv()
                 .map_err(|_| CoreError::Conflict("export worker stopped before drain".into()))?
+        } else {
+            Ok(())
+        };
+        if let Some(join) = self.join.take() {
+            join.join()
+                .map_err(|_| CoreError::Conflict("export worker panicked".into()))?;
+        }
+        result
+    }
+
+    fn stop_without_drain(mut self) -> Result<(), CoreError> {
+        let (sender, receiver) = mpsc::channel();
+        let send_result = self
+            .sender
+            .send(ExportWorkerCommand::StopWithoutDrain(sender));
+        let result = if send_result.is_ok() {
+            receiver
+                .recv()
+                .map_err(|_| CoreError::Conflict("export worker stopped before pause".into()))?
         } else {
             Ok(())
         };
@@ -630,6 +673,7 @@ impl ProjectStore {
                 Some(session_lock),
                 false,
                 true,
+                true,
             );
         }
         let canonical = repository.scan()?;
@@ -653,7 +697,14 @@ impl ProjectStore {
             }
         }
 
-        let store = Self::open_database(&next_path, Some(root.to_path_buf()), None, false, false)?;
+        let store = Self::open_database(
+            &next_path,
+            Some(root.to_path_buf()),
+            None,
+            false,
+            false,
+            true,
+        )?;
         let payload = serde_json::to_string(&canonical.snapshot)
             .map_err(|error| CoreError::Serialization(error.to_string()))?;
         store.import_json_with_mode_and_sync_with_request_and_search(
@@ -685,6 +736,7 @@ impl ProjectStore {
             Some(session_lock),
             false,
             true,
+            true,
         )
     }
 
@@ -694,6 +746,7 @@ impl ProjectStore {
         session_lock: Option<crate::sync::ProjectSessionLock>,
         acquire_session_lock: bool,
         start_worker: bool,
+        recover_batches: bool,
     ) -> Result<Self, CoreError> {
         let path = path.as_ref();
         let existing_database = path != Path::new(":memory:") && path.is_file();
@@ -722,7 +775,9 @@ impl ProjectStore {
             export_worker: None,
         };
         store.initialize(!existing_database)?;
-        store.recover_interrupted_batches()?;
+        if recover_batches {
+            store.recover_interrupted_batches()?;
+        }
         if start_worker {
             if let (Some(root), true) = (store.root.as_deref(), existing_database) {
                 let worker = ExportWorker::start(root, path)?;
@@ -766,14 +821,22 @@ impl ProjectStore {
         Ok(())
     }
 
-    fn drain_export_queue(&self, cutoff: Option<&str>) -> Result<(), CoreError> {
-        let requests = self
+    fn drain_export_queue(
+        &self,
+        cutoff: Option<&str>,
+        revision_set: Option<&[String]>,
+    ) -> Result<(), CoreError> {
+        let mut requests = self
             .connection
             .prepare(
                 "SELECT request_id FROM sync_batches WHERE (state IN ('exporting','running') OR (state='failed' AND error_kind='transient' AND attempt_count < 3)) AND (?1 IS NULL OR created_at <= ?1) ORDER BY created_at",
             )?
             .query_map(params![cutoff], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
+        if let Some(revision_set) = revision_set {
+            let requested = revision_set.iter().collect::<BTreeSet<_>>();
+            requests.retain(|request_id| requested.contains(request_id));
+        }
         for request_id in requests {
             if !self.claim_export_batch(&request_id)? {
                 continue;
@@ -804,6 +867,23 @@ impl ProjectStore {
 
     /// Drain the same durable queue used by the background exporter.
     pub fn flush_exports(&self) -> Result<(), CoreError> {
+        self.flush_with_barrier(FlushBarrier {
+            revision_set: None,
+            operation_reason: "legacy flush".into(),
+        })
+    }
+
+    /// Establish a typed portable-durability barrier for an operation.
+    ///
+    /// A supplied revision set is scoped to those mutation request IDs.  The
+    /// cutoff is captured before the worker is notified, so edits committed
+    /// after this call starts cannot be accidentally included.
+    pub fn flush_with_barrier(&self, barrier: FlushBarrier) -> Result<(), CoreError> {
+        if barrier.operation_reason.trim().is_empty() {
+            return Err(CoreError::Validation(
+                "flush barrier operation reason cannot be empty".into(),
+            ));
+        }
         let now = chrono_like_now();
         let cutoff: String = self.connection.query_row(
             "SELECT COALESCE(MAX(created_at),?1) FROM sync_batches WHERE state NOT IN ('completed','superseded')",
@@ -811,8 +891,8 @@ impl ProjectStore {
             |row| row.get(0),
         )?;
         let result = match &self.export_worker {
-            Some(worker) => worker.flush(cutoff),
-            None => self.drain_export_queue(Some(&cutoff)),
+            Some(worker) => worker.flush(barrier, cutoff),
+            None => self.drain_export_queue(Some(&cutoff), barrier.revision_set.as_deref()),
         };
         if result.is_ok() {
             self.rebuild_maps_projection()?;
@@ -1082,7 +1162,8 @@ impl ProjectStore {
         let rows = statement.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
-        rows.collect::<Result<BTreeMap<_, _>, _>>().map_err(CoreError::from)
+        rows.collect::<Result<BTreeMap<_, _>, _>>()
+            .map_err(CoreError::from)
     }
 
     /// Reconcile canonical files after an external filesystem change.
@@ -1091,12 +1172,24 @@ impl ProjectStore {
     /// imported into the runtime database, while an invalid snapshot is only
     /// reported and never replaces the last valid projection.
     pub fn reconcile_external_changes(&self) -> Result<ExternalChangeReport, CoreError> {
-        self.reconcile_external_changes_with_overrides(&BTreeSet::new())
+        self.reconcile_external_changes_with_overrides_and_flush(&BTreeSet::new(), true)
+    }
+
+    fn reconcile_external_changes_after_flush(&self) -> Result<ExternalChangeReport, CoreError> {
+        self.reconcile_external_changes_with_overrides_and_flush(&BTreeSet::new(), false)
     }
 
     fn reconcile_external_changes_with_overrides(
         &self,
         conflict_overrides: &BTreeSet<String>,
+    ) -> Result<ExternalChangeReport, CoreError> {
+        self.reconcile_external_changes_with_overrides_and_flush(conflict_overrides, true)
+    }
+
+    fn reconcile_external_changes_with_overrides_and_flush(
+        &self,
+        conflict_overrides: &BTreeSet<String>,
+        flush_before_scan: bool,
     ) -> Result<ExternalChangeReport, CoreError> {
         let Some(root) = self.root.as_deref() else {
             return Ok(ExternalChangeReport {
@@ -1112,7 +1205,10 @@ impl ProjectStore {
                 [],
                 |row| row.get(0),
             )?;
-            if previous_head.as_deref().is_some_and(|previous| previous != head) {
+            if previous_head
+                .as_deref()
+                .is_some_and(|previous| previous != head)
+            {
                 let paths = vec!["git:HEAD".to_string()];
                 let diagnostics = vec![format!(
                     "git.history-changed: HEAD moved from {} to {}; review, finish export, or rebuild from files",
@@ -1146,7 +1242,12 @@ impl ProjectStore {
                     .collect(),
             });
         }
-        self.flush_exports()?;
+        if flush_before_scan {
+            self.flush_with_barrier(FlushBarrier {
+                revision_set: None,
+                operation_reason: "external reconciliation".into(),
+            })?;
+        }
         let previous = self.indexed_source_hashes()?;
         let repository = crate::storage::FilesystemRepository::open(root)?;
         let current_sources = match repository.source_manifest() {
@@ -1288,34 +1389,46 @@ impl ProjectStore {
         {
             let transaction = self.connection.unchecked_transaction()?;
             if !targeted_documents.is_empty() {
-                if let Err(error) = self.import_external_documents(&transaction, root, &targeted_documents) {
+                if let Err(error) =
+                    self.import_external_documents(&transaction, root, &targeted_documents)
+                {
                     drop(transaction);
                     return self.reconciliation_failure(error);
                 }
             }
             if !targeted_entity_records.is_empty() {
-                if let Err(error) =
-                    self.import_external_entity_records(&transaction, root, &targeted_entity_records)
-                {
+                if let Err(error) = self.import_external_entity_records(
+                    &transaction,
+                    root,
+                    &targeted_entity_records,
+                ) {
                     drop(transaction);
                     return self.reconciliation_failure(error);
                 }
             }
             if !targeted_relationships_assets.is_empty() {
-                if let Err(error) = self
-                    .import_external_relationships_and_assets(&transaction, root, &targeted_relationships_assets)
-                {
+                if let Err(error) = self.import_external_relationships_and_assets(
+                    &transaction,
+                    root,
+                    &targeted_relationships_assets,
+                ) {
                     drop(transaction);
                     return self.reconciliation_failure(error);
                 }
             }
             if !targeted_plugins.is_empty() {
-                if let Err(error) = self.import_external_plugins(&transaction, root, &targeted_plugins) {
+                if let Err(error) =
+                    self.import_external_plugins(&transaction, root, &targeted_plugins)
+                {
                     drop(transaction);
                     return self.reconciliation_failure(error);
                 }
             }
-            Self::update_source_index_from_hashes_in_transaction(&transaction, &previous, &current_sources)?;
+            Self::update_source_index_from_hashes_in_transaction(
+                &transaction,
+                &previous,
+                &current_sources,
+            )?;
             Self::refresh_baselines_from_index_in_transaction(&transaction)?;
             transaction.commit()?;
             self.record_git_identity()?;
@@ -1352,9 +1465,26 @@ impl ProjectStore {
 
     /// Explicitly rebuild the runtime projection from the complete portable
     /// tree. This is reserved for the divergence review action.
-    pub fn rebuild_from_files(&self) -> Result<ExternalChangeReport, CoreError> {
+    pub fn rebuild_from_files(&mut self) -> Result<ExternalChangeReport, CoreError> {
         let root = self.project_root()?.to_path_buf();
-        self.flush_exports()?;
+        let (sync_state, reconciliation_state): (String, String) = self.connection.query_row(
+            "SELECT sync_state,reconciliation_state FROM runtime_meta WHERE key='runtime'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if sync_state != "clean" && reconciliation_state != "blocked" {
+            return Err(CoreError::Conflict(
+                "rebuild requires a clean runtime or explicit divergence review".into(),
+            ));
+        }
+        let discard_runtime = reconciliation_state == "blocked";
+        let archive = self.recovery_backup_to(root.join(".daena/backups"))?;
+        if !discard_runtime {
+            self.flush_with_barrier(FlushBarrier {
+                revision_set: None,
+                operation_reason: "clean rebuild".into(),
+            })?;
+        }
         let previous = self.indexed_sources()?;
         let canonical = crate::storage::FilesystemRepository::open(&root)?.scan()?;
         let payload = serde_json::to_string(&canonical.snapshot)
@@ -1362,6 +1492,15 @@ impl ProjectStore {
         self.import_json_with_mode_and_sync_with_request_and_search(
             &payload, true, false, None, false,
         )?;
+        if discard_runtime {
+            self.connection.execute_batch(
+                "DELETE FROM sync_items;
+                 DELETE FROM sync_batches;
+                 DELETE FROM mutation_receipts;
+                 DELETE FROM reconciliation_conflicts;
+                 UPDATE runtime_meta SET sync_state='clean',dirty_count=0,clean_shutdown=0 WHERE key='runtime';",
+            )?;
+        }
         self.update_source_index(&previous, &canonical.sources)?;
         self.rebuild_search()?;
         self.rebuild_maps_projection()?;
@@ -1375,14 +1514,24 @@ impl ProjectStore {
         Ok(ExternalChangeReport {
             changed: true,
             paths,
-            diagnostics: Vec::new(),
+            diagnostics: vec![format!(
+                "runtime archive preserved at {archive}{}",
+                if discard_runtime {
+                    "; prior runtime changes were explicitly discarded"
+                } else {
+                    ""
+                }
+            )],
         })
     }
 
     /// Finish an explicit divergence review by draining pending database
     /// exports. Any write-gate conflict remains visible to the caller.
     pub fn finish_divergence_export(&self) -> Result<(), CoreError> {
-        self.flush_exports()?;
+        self.flush_with_barrier(FlushBarrier {
+            revision_set: None,
+            operation_reason: "finish divergence export".into(),
+        })?;
         self.record_git_identity()?;
         self.update_reconciliation_state("reconciled", &[], &[])
     }
@@ -1486,7 +1635,9 @@ impl ProjectStore {
         std::fs::write(
             conflicts.join(format!(
                 "{}-database-{}-{}.json",
-                chrono_like_now(), safe_name, Uuid::new_v4()
+                chrono_like_now(),
+                safe_name,
+                Uuid::new_v4()
             )),
             snapshot,
         )
@@ -1524,7 +1675,10 @@ impl ProjectStore {
                 source,
             })?;
         }
-        self.flush_exports()?;
+        self.flush_with_barrier(FlushBarrier {
+            revision_set: None,
+            operation_reason: "database conflict resolution".into(),
+        })?;
         self.connection.execute(
             "UPDATE portable_baselines SET baseline_exists=?2,baseline_hash=?3,db_hash=?3,state='clean' WHERE path=?1",
             params![path, conflict.3.is_some() as i64, conflict.3],
@@ -1620,7 +1774,10 @@ impl ProjectStore {
                     )?;
                 }
                 None => {
-                    transaction.execute("DELETE FROM documents WHERE entity_id=?1", params![entity_id])?;
+                    transaction.execute(
+                        "DELETE FROM documents WHERE entity_id=?1",
+                        params![entity_id],
+                    )?;
                 }
             }
         }
@@ -2983,7 +3140,7 @@ impl ProjectStore {
     }
 
     pub fn in_memory() -> Result<Self, CoreError> {
-        Self::open_database(":memory:", None, None, true, false)
+        Self::open_database(":memory:", None, None, true, false, true)
     }
 
     pub fn info(&self) -> Option<ProjectInfo> {
@@ -3110,6 +3267,19 @@ impl ProjectStore {
             }
         }
         Ok(())
+    }
+
+    fn runtime_requires_recovery_archive(&self) -> Result<bool, CoreError> {
+        let (sync_state, reconciliation_state, pending): (String, String, bool) = self
+            .connection
+            .query_row(
+                "SELECT sync_state,reconciliation_state,EXISTS(SELECT 1 FROM sync_batches WHERE state NOT IN ('completed','superseded')) FROM runtime_meta WHERE key='runtime'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        Ok(pending
+            || sync_state != "clean"
+            || matches!(reconciliation_state.as_str(), "failed" | "blocked"))
     }
 
     fn project_root(&self) -> Result<&Path, CoreError> {
@@ -3451,8 +3621,11 @@ impl ProjectStore {
         }
 
         let report = if unmerged_paths.is_empty() {
-            self.flush_exports()?;
-            self.reconcile_external_changes()?
+            self.flush_with_barrier(FlushBarrier {
+                revision_set: None,
+                operation_reason: "git preflight".into(),
+            })?;
+            self.reconcile_external_changes_after_flush()?
         } else {
             ExternalChangeReport {
                 changed: false,
@@ -3605,6 +3778,7 @@ impl ProjectStore {
                 String::from_utf8_lossy(&commit.stderr).trim().into(),
             ));
         }
+        self.record_git_identity()?;
         self.git_status()
     }
 
@@ -3768,6 +3942,13 @@ impl ProjectStore {
         if !self.git_status()?.repository {
             return Err(CoreError::Git("project is not a git repository".into()));
         }
+        let preflight = self.git_preflight()?;
+        if !preflight.ready {
+            return Err(CoreError::Conflict(format!(
+                "cannot reset while canonical diagnostics remain: {}",
+                preflight.diagnostics.join("; ")
+            )));
+        }
         let hash = hash.trim();
         if hash.is_empty() {
             return Err(CoreError::Validation("commit hash cannot be empty".into()));
@@ -3930,6 +4111,13 @@ impl ProjectStore {
     pub fn git_restore_from_upstream(&self) -> Result<GitResetResult, CoreError> {
         if !self.git_status()?.repository {
             return Err(CoreError::Git("project is not a git repository".into()));
+        }
+        let preflight = self.git_preflight()?;
+        if !preflight.ready {
+            return Err(CoreError::Conflict(format!(
+                "cannot restore upstream while canonical diagnostics remain: {}",
+                preflight.diagnostics.join("; ")
+            )));
         }
         let upstream = self
             .git_upstream()?
@@ -5670,6 +5858,15 @@ impl ProjectStore {
     }
 
     pub fn backup_to(&self, dir: impl AsRef<Path>) -> Result<String, CoreError> {
+        if self.root.is_some() {
+            self.flush_with_barrier(FlushBarrier {
+                revision_set: None,
+                operation_reason: "portable backup".into(),
+            })?;
+            let root = self.project_root()?;
+            self.preflight_portable_baselines(root)?;
+            crate::storage::FilesystemRepository::open(root)?.scan()?;
+        }
         let export = self.export_json()?;
         let dir = dir.as_ref();
         std::fs::create_dir_all(dir).map_err(|e| CoreError::NotFound(e.to_string()))?;
@@ -5678,6 +5875,137 @@ impl ProjectStore {
         let path = dir.join(&filename);
         std::fs::write(&path, export).map_err(|e| CoreError::NotFound(e.to_string()))?;
         Ok(path.to_string_lossy().to_string())
+    }
+
+    /// Create a files-only portable checkpoint.  Runtime SQLite state and
+    /// `.daena/` are intentionally excluded so the result can be restored or
+    /// copied using only the canonical project representation.
+    pub fn portable_backup_to(&self, dir: impl AsRef<Path>) -> Result<String, CoreError> {
+        let root = self.project_root()?;
+        self.flush_with_barrier(FlushBarrier {
+            revision_set: None,
+            operation_reason: "portable backup".into(),
+        })?;
+        self.preflight_portable_baselines(root)?;
+        crate::storage::FilesystemRepository::open(root)?.scan()?;
+
+        let dir = dir.as_ref();
+        std::fs::create_dir_all(dir).map_err(|source| CoreError::Io {
+            operation: "create portable backup directory",
+            source,
+        })?;
+        let destination = dir.join(format!(
+            "daena-portable-{}-{}",
+            chrono_like_now(),
+            Uuid::new_v4()
+        ));
+        copy_portable_project(root, &destination)?;
+        Ok(destination.to_string_lossy().into_owned())
+    }
+
+    /// Create a machine-local recovery artifact for the current runtime.
+    /// Unlike a portable backup, this deliberately preserves the SQLite
+    /// runtime state and any staged exporter payloads needed to resume it.
+    pub fn recovery_backup_to(&mut self, dir: impl AsRef<Path>) -> Result<String, CoreError> {
+        let stopped_worker = self.export_worker.take();
+        if let Some(worker) = stopped_worker {
+            worker.stop_without_drain()?;
+        }
+        let result = self.recovery_backup_to_quiesced(dir);
+        if self.export_worker.is_none() {
+            self.restart_export_worker()?;
+        }
+        result
+    }
+
+    fn recovery_backup_to_quiesced(&self, dir: impl AsRef<Path>) -> Result<String, CoreError> {
+        let dir = dir.as_ref();
+        std::fs::create_dir_all(dir).map_err(|source| CoreError::Io {
+            operation: "create recovery backup directory",
+            source,
+        })?;
+        let recovery = dir.join(format!(
+            "daena-recovery-{}-{}",
+            chrono_like_now(),
+            Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&recovery).map_err(|source| CoreError::Io {
+            operation: "create recovery backup artifact",
+            source,
+        })?;
+        let database_path = recovery.join("index.sqlite");
+        {
+            let mut destination = Connection::open(&database_path)?;
+            let backup = rusqlite::backup::Backup::new(&self.connection, &mut destination)?;
+            backup.run_to_completion(5, Duration::from_millis(25), None)?;
+        }
+
+        if let Some(root) = self.root.as_deref() {
+            let staged = root.join(".daena/sync");
+            if staged.is_dir() {
+                copy_directory(&staged, &recovery.join("sync"))?;
+            }
+        }
+        Ok(recovery.to_string_lossy().into_owned())
+    }
+
+    fn restart_export_worker(&mut self) -> Result<(), CoreError> {
+        if self.export_worker.is_none() {
+            if let Some(root) = self.root.as_deref() {
+                let database = project_database_path(root);
+                if database.is_file() {
+                    self.export_worker = Some(ExportWorker::start(root, &database)?);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Restore a runtime recovery artifact and resume any export work it
+    /// contained.  The current runtime is archived before replacement.
+    pub fn restore_recovery_backup(&mut self, path: impl AsRef<Path>) -> Result<(), CoreError> {
+        let artifact = path.as_ref();
+        let source_path = artifact.join("index.sqlite");
+        if !source_path.is_file() {
+            return Err(CoreError::NotFound(
+                "recovery backup is missing index.sqlite".into(),
+            ));
+        }
+        let root = self.project_root()?.to_path_buf();
+        let source = Connection::open(&source_path)?;
+        Self::validate_runtime_metadata(&source, Some(&root))?;
+        let backup_dir = root.join(".daena/backups");
+        if let Some(worker) = self.export_worker.take() {
+            worker.stop_without_drain()?;
+        }
+        if let Err(error) = self.recovery_backup_to_quiesced(&backup_dir) {
+            self.restart_export_worker()?;
+            return Err(error);
+        }
+
+        {
+            let backup = rusqlite::backup::Backup::new(&source, &mut self.connection)?;
+            backup.run_to_completion(5, Duration::from_millis(25), None)?;
+        }
+        Self::validate_runtime_metadata(&self.connection, Some(&root))?;
+        let staged = root.join(".daena/sync");
+        if staged.exists() {
+            std::fs::remove_dir_all(&staged).map_err(|source| CoreError::Io {
+                operation: "replace staged recovery payloads",
+                source,
+            })?;
+        }
+        if artifact.join("sync").is_dir() {
+            copy_directory(&artifact.join("sync"), &staged)?;
+        } else {
+            std::fs::create_dir_all(&staged).map_err(|source| CoreError::Io {
+                operation: "create staged recovery payload directory",
+                source,
+            })?;
+        }
+        self.recover_interrupted_batches()?;
+        self.export_worker = Some(ExportWorker::start(&root, &project_database_path(&root))?);
+        Ok(())
     }
 
     pub fn create_plugin_backup(
@@ -6210,12 +6538,12 @@ impl ProjectStore {
             .map_err(CoreError::from)
     }
 
-    pub fn restore_plugin_backup(&self, backup: &PluginBackup) -> Result<(), CoreError> {
+    pub fn restore_plugin_backup(&mut self, backup: &PluginBackup) -> Result<(), CoreError> {
         self.restore_plugin_backup_with_request(backup, None)
     }
 
     pub fn restore_plugin_backup_with_request(
-        &self,
+        &mut self,
         backup: &PluginBackup,
         request_id: Option<&str>,
     ) -> Result<(), CoreError> {
@@ -6234,20 +6562,28 @@ impl ProjectStore {
         )
     }
 
-    pub fn restore(&self, path: String) -> Result<(), CoreError> {
+    pub fn restore(&mut self, path: String) -> Result<(), CoreError> {
+        let path_ref = Path::new(&path);
+        if path_ref.is_dir() {
+            let canonical = crate::storage::FilesystemRepository::open(path_ref)?.scan()?;
+            let payload = serde_json::to_string(&canonical.snapshot)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?;
+            self.restore_payload(&payload)?;
+            return Ok(());
+        }
         let content =
             std::fs::read_to_string(&path).map_err(|e| CoreError::NotFound(e.to_string()))?;
         self.restore_payload(&content)?;
         Ok(())
     }
 
-    pub fn restore_payload(&self, payload: &str) -> Result<(), CoreError> {
+    pub fn restore_payload(&mut self, payload: &str) -> Result<(), CoreError> {
         self.restore_payload_with_request(payload, None)?;
         Ok(())
     }
 
     pub fn restore_payload_with_request(
-        &self,
+        &mut self,
         payload: &str,
         request_id: Option<&str>,
     ) -> Result<(), CoreError> {
@@ -6256,6 +6592,10 @@ impl ProjectStore {
             .is_some()
         {
             return Ok(());
+        }
+        if self.root.is_some() && self.runtime_requires_recovery_archive()? {
+            let root = self.project_root()?.to_path_buf();
+            self.recovery_backup_to(root.join(".daena/backups"))?;
         }
         self.import_json_with_mode_and_sync_with_request(payload, true, true, request_id)?;
         Ok(())
@@ -6865,6 +7205,56 @@ pub(crate) fn chrono_like_now() -> String {
         .unwrap_or_default()
         .as_nanos()
         .to_string()
+}
+
+fn copy_directory(source: &Path, destination: &Path) -> Result<(), CoreError> {
+    std::fs::create_dir_all(destination).map_err(|source| CoreError::Io {
+        operation: "create recovery backup payload directory",
+        source,
+    })?;
+    for entry in std::fs::read_dir(source).map_err(|source| CoreError::Io {
+        operation: "read recovery backup payload directory",
+        source,
+    })? {
+        let entry = entry.map_err(|source| CoreError::Io {
+            operation: "read recovery backup payload entry",
+            source,
+        })?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_directory(&source_path, &destination_path)?;
+        } else {
+            std::fs::copy(&source_path, &destination_path).map_err(|source| CoreError::Io {
+                operation: "copy recovery backup payload",
+                source,
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_portable_project(source: &Path, destination: &Path) -> Result<(), CoreError> {
+    std::fs::create_dir_all(destination).map_err(|source| CoreError::Io {
+        operation: "create portable backup artifact",
+        source,
+    })?;
+    for entry in ["project.json", "entities", "plugins", "assets"] {
+        let source_path = source.join(entry);
+        if !source_path.exists() {
+            continue;
+        }
+        let destination_path = destination.join(entry);
+        if source_path.is_dir() {
+            copy_directory(&source_path, &destination_path)?;
+        } else {
+            std::fs::copy(&source_path, &destination_path).map_err(|source| CoreError::Io {
+                operation: "copy portable backup file",
+                source,
+            })?;
+        }
+    }
+    Ok(())
 }
 
 /// Parses a recovery copy file name of the form

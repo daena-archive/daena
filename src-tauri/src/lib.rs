@@ -413,18 +413,28 @@ impl BinaryTransferManager {
 struct ProjectWatcher {
     stop: Option<mpsc::Sender<()>>,
     filesystem: Option<RecommendedWatcher>,
+    thread: Option<thread::JoinHandle<()>>,
 }
 
 type SharedProjectWatcher = Arc<Mutex<ProjectWatcher>>;
 
 fn stop_project_watcher(watcher: &SharedProjectWatcher) -> Result<(), String> {
-    let mut watcher = watcher
-        .lock()
-        .map_err(|_| "project watcher lock poisoned".to_string())?;
-    if let Some(stop) = watcher.stop.take() {
+    let (stop, thread) = {
+        let mut watcher = watcher
+            .lock()
+            .map_err(|_| "project watcher lock poisoned".to_string())?;
+        let stop = watcher.stop.take();
+        watcher.filesystem.take();
+        (stop, watcher.thread.take())
+    };
+    if let Some(stop) = stop {
         let _ = stop.send(());
     }
-    watcher.filesystem.take();
+    if let Some(thread) = thread {
+        thread
+            .join()
+            .map_err(|_| "project watcher panicked".to_string())?;
+    }
     Ok(())
 }
 
@@ -467,7 +477,7 @@ fn start_project_watcher(
         .filesystem = Some(filesystem);
     let app = app.clone();
     let state = state.clone();
-    thread::spawn(move || {
+    let thread = thread::spawn(move || {
         let mut first_pass = true;
         let mut last_report = String::new();
         let mut pending_report: Option<ExternalChangeReport> = None;
@@ -516,6 +526,10 @@ fn start_project_watcher(
             let _ = app.emit("project-external-change", report);
         }
     });
+    watcher
+        .lock()
+        .map_err(|_| "project watcher lock poisoned".to_string())?
+        .thread = Some(thread);
     Ok(())
 }
 

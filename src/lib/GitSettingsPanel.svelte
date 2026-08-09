@@ -336,6 +336,7 @@
   }
 
   async function removeRemote(name: string) {
+    if (!window.confirm(`Remove the Git remote "${name}"? This changes repository configuration only.`)) return;
     await withBusy("Removing remote…", async () => {
       remotes = await project.gitRemoteRemove(name);
     });
@@ -391,6 +392,7 @@
 
   async function forcePushRecovery() {
     if (!recoveryUpstream) return;
+    if (!window.confirm(`Force-push local history to ${recoveryUpstream.remote}/${recoveryUpstream.branch} with lease? This may rewrite the remote history.`)) return;
     await withBusy("Force-pushing with lease…", async () => {
       status = await project.gitPush(recoveryUpstream!.remote, recoveryUpstream!.branch, true);
       recoveryUpstream = null;
@@ -399,6 +401,7 @@
   }
 
   async function restoreFromRemote() {
+    if (!window.confirm("Restore the project from its upstream remote? This discards the local hard-reset state and rebuilds the project index.")) return;
     await withBusy("Restoring from remote…", async () => {
       const result = await project.gitRestoreFromUpstream();
       status = result.status;

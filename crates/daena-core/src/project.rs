@@ -1223,6 +1223,35 @@ impl ProjectStore {
                 });
             }
         }
+        if let Some(index) = self.git_index_identity() {
+            let previous_index: Option<String> = self.connection.query_row(
+                "SELECT last_git_index_identity FROM runtime_meta WHERE key='runtime'",
+                [],
+                |row| row.get(0),
+            )?;
+            let staged_changes = self
+                .git_status_entries()?
+                .iter()
+                .any(|(index_status, _, _)| *index_status != b' ' && *index_status != b'?');
+            if !staged_changes
+                && previous_index
+                    .as_deref()
+                    .is_some_and(|previous| previous != index)
+            {
+                let paths = vec!["git:index".to_string()];
+                let diagnostics = vec![format!(
+                    "git.index-changed: index moved from {} to {}; review, finish export, or rebuild from files",
+                    previous_index.as_deref().unwrap_or("unknown"),
+                    index
+                )];
+                self.update_reconciliation_state("blocked", &paths, &diagnostics)?;
+                return Ok(ExternalChangeReport {
+                    changed: false,
+                    paths,
+                    diagnostics,
+                });
+            }
+        }
         let git_unmerged = self.git_unmerged_paths();
         if !git_unmerged.is_empty() {
             self.update_reconciliation_state(
@@ -3436,10 +3465,18 @@ impl ProjectStore {
         self.git_rev_parse("HEAD").ok().flatten()
     }
 
+    fn git_index_identity(&self) -> Option<String> {
+        let output = self.run_git(&["ls-files", "--stage", "-z"]).ok()?;
+        output
+            .status
+            .success()
+            .then(|| digest_bytes(&output.stdout))
+    }
+
     fn record_git_identity(&self) -> Result<(), CoreError> {
         self.connection.execute(
-            "UPDATE runtime_meta SET last_git_identity=?1 WHERE key='runtime'",
-            params![self.git_head_identity()],
+            "UPDATE runtime_meta SET last_git_identity=?1,last_git_index_identity=?2 WHERE key='runtime'",
+            params![self.git_head_identity(), self.git_index_identity()],
         )?;
         Ok(())
     }
@@ -4166,6 +4203,7 @@ impl ProjectStore {
                sync_state TEXT NOT NULL DEFAULT 'clean',
                dirty_count INTEGER NOT NULL DEFAULT 0,
                last_git_identity TEXT,
+               last_git_index_identity TEXT,
                reconciliation_state TEXT NOT NULL DEFAULT 'idle',
                reconciliation_paths TEXT NOT NULL DEFAULT '[]',
                reconciliation_diagnostics TEXT NOT NULL DEFAULT '[]'
@@ -4247,6 +4285,7 @@ impl ProjectStore {
         )?;
         self.ensure_schema_column("sync_items", "expected_old_hash", "TEXT")?;
         self.ensure_schema_column("sync_items", "new_hash", "TEXT")?;
+        self.ensure_schema_column("runtime_meta", "last_git_index_identity", "TEXT")?;
         self.ensure_schema_column(
             "mutation_receipts",
             "state",
@@ -5861,11 +5900,10 @@ impl ProjectStore {
         if self.root.is_some() {
             self.flush_with_barrier(FlushBarrier {
                 revision_set: None,
-                operation_reason: "portable backup".into(),
+                operation_reason: "runtime backup".into(),
             })?;
             let root = self.project_root()?;
             self.preflight_portable_baselines(root)?;
-            crate::storage::FilesystemRepository::open(root)?.scan()?;
         }
         let export = self.export_json()?;
         let dir = dir.as_ref();
@@ -6033,7 +6071,7 @@ impl ProjectStore {
         request_id: Option<&str>,
     ) -> Result<PluginBackup, CoreError> {
         if self.root.is_some() {
-            return self.create_plugin_backup_repository_first(
+            return self.create_plugin_backup_runtime_snapshot(
                 module_id,
                 from_package_version,
                 to_package_version,
@@ -6093,7 +6131,7 @@ impl ProjectStore {
         Ok(backup)
     }
 
-    fn create_plugin_backup_repository_first(
+    fn create_plugin_backup_runtime_snapshot(
         &self,
         module_id: &str,
         from_package_version: Option<&str>,
@@ -6110,8 +6148,8 @@ impl ProjectStore {
             ));
         }
         let root = self.project_root()?.to_path_buf();
-        let canonical = crate::storage::FilesystemRepository::open(&root)?.scan()?;
-        let payload = serde_json::to_vec_pretty(&canonical.snapshot)
+        let payload = self.export_json_inner()?.into_bytes();
+        let snapshot: ProjectSnapshot = serde_json::from_slice(&payload)
             .map_err(|error| CoreError::Serialization(error.to_string()))?;
         let created_at = chrono_like_now();
         let backup_id = Uuid::new_v4().to_string();
@@ -6151,7 +6189,7 @@ impl ProjectStore {
         additional_files.insert(relative_path, payload);
         self.export_portable_snapshot(
             &root,
-            &canonical.snapshot,
+            &snapshot,
             &request_id,
             Some(
                 &serde_json::to_value(&backup)

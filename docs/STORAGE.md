@@ -8,10 +8,11 @@ supersedes the source-of-truth, transaction, startup, and SQLite-role decisions
 in [`PLAIN_TEXT_STORAGE_PLAN.md`](./PLAIN_TEXT_STORAGE_PLAN.md).
 
 The existing portable project format remains version 2 unless this document
-explicitly changes it. The current implementation is still repository-first;
-[`STORAGE_MIGRATION.md`](./STORAGE_MIGRATION.md) defines a hard cut to this
-architecture. Pre-cut `.daena/` state is unsupported and receives no database
-migration, compatibility reader, feature flag, dual-write period, or fallback.
+explicitly changes it. The hard-cut implementation described by
+[`STORAGE_MIGRATION.md`](./STORAGE_MIGRATION.md) uses SQLite as the runtime
+authority and treats `.daena/` as disposable, exact-version runtime state.
+Pre-cut `.daena/` state is unsupported and receives no database migration,
+compatibility reader, feature flag, dual-write period, or fallback.
 
 This document governs:
 
@@ -392,9 +393,8 @@ If a target no longer matches its baseline, export stops and records a typed
 conflict. It never overwrites the external bytes automatically.
 
 The exporter may reuse safe staging, hashing, path-normalization, and atomic
-replacement primitives from the current filesystem transaction code. The old
-repository-first full-snapshot transaction is not retained as a second
-authority.
+replacement primitives from the current filesystem transaction code. It does
+not introduce a second full-project authority.
 
 ### 8.4 Multi-file visibility
 

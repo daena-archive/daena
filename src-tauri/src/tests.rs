@@ -1,5 +1,26 @@
 use super::*;
 
+#[test]
+fn stopping_project_watcher_joins_its_thread() {
+    let (stop, receiver) = mpsc::channel();
+    let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let thread_stopped = stopped.clone();
+    let thread = thread::spawn(move || {
+        receiver.recv().unwrap();
+        thread_stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    let watcher = Arc::new(Mutex::new(ProjectWatcher {
+        stop: Some(stop),
+        filesystem: None,
+        thread: Some(thread),
+    }));
+
+    stop_project_watcher(&watcher).unwrap();
+
+    assert!(stopped.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(watcher.lock().unwrap().thread.is_none());
+}
+
 fn ai_test_host() -> SharedPluginHost {
     Arc::new(Mutex::new(
         bundled_plugin_host(Arc::new(Mutex::new(CoreService::new()))).unwrap(),
@@ -1305,6 +1326,7 @@ fn maps_asset_create_rpc_round_trips_source_asset() {
         assert_eq!(asset.size, 5);
         let info = project.info().unwrap();
         let path = daena_core::normalized_project_path(Path::new(&info.root), &asset.path).unwrap();
+        project.flush_exports().unwrap();
         assert_eq!(std::fs::read(path).unwrap(), b"fmg-!");
         let descriptor = project
             .list_fields(map_id.clone())

@@ -1398,6 +1398,52 @@ fn git_tool_info_reports_system_git() {
 }
 
 #[test]
+fn reconciliation_blocks_index_only_history_changes() {
+    let root = std::env::temp_dir().join(format!("daena-git-index-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let run_git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .unwrap()
+    };
+    assert!(run_git(&["init", "-q"]).status.success());
+    assert!(run_git(&["config", "user.email", "tests@daena.local"])
+        .status
+        .success());
+    assert!(run_git(&["config", "user.name", "Daena tests"])
+        .status
+        .success());
+    assert!(run_git(&["add", "--all"]).status.success());
+    assert!(
+        run_git(&["-c", "commit.gpgsign=false", "commit", "-qm", "base"])
+            .status
+            .success()
+    );
+
+    // Establish the baseline identity, then simulate an index-only reset
+    // while HEAD remains unchanged. Ordinary staged changes are intentionally
+    // left to Git preflight and do not enter this divergence path.
+    store.reconcile_external_changes().unwrap();
+    std::fs::write(root.join("README.md"), "staged only\n").unwrap();
+    assert!(run_git(&["add", "README.md"]).status.success());
+    store.record_git_identity().unwrap();
+    assert!(run_git(&["reset", "--mixed", "HEAD", "-q"])
+        .status
+        .success());
+
+    let report = store.reconcile_external_changes().unwrap();
+    assert!(!report.changed);
+    assert!(report
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.starts_with("git.index-changed:")));
+    assert_eq!(store.info().unwrap().sync.reconciliation_state, "blocked");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn git_commit_rejects_paths_outside_preflight_and_accepts_subset() {
     let root = std::env::temp_dir().join(format!("daena-git-select-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();
@@ -1567,6 +1613,84 @@ fn git_show_tree_filters_to_canonical_paths_and_reset_moves_head() {
 }
 
 #[test]
+fn git_remote_recovery_restores_upstream_and_force_pushes_with_lease() {
+    let root = std::env::temp_dir().join(format!("daena-git-recovery-{}", Uuid::new_v4()));
+    let remote = std::env::temp_dir().join(format!("daena-git-recovery-remote-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let run_git = |directory: &std::path::Path, args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(directory)
+            .output()
+            .unwrap()
+    };
+    assert!(run_git(&root, &["init", "-q"]).status.success());
+    assert!(
+        run_git(&root, &["config", "user.email", "tests@daena.local"])
+            .status
+            .success()
+    );
+    assert!(run_git(&root, &["config", "user.name", "Daena tests"])
+        .status
+        .success());
+    assert!(run_git(&root, &["config", "commit.gpgsign", "false"])
+        .status
+        .success());
+    assert!(run_git(&root, &["add", "--all"]).status.success());
+    assert!(run_git(&root, &["commit", "-qm", "base"]).status.success());
+    let branch = store.git_status().unwrap().branch.unwrap();
+    let base = store.git_rev_parse("HEAD").unwrap().unwrap();
+
+    std::fs::create_dir_all(&remote).unwrap();
+    assert!(run_git(&remote, &["init", "--bare", "-q"]).status.success());
+    store
+        .git_remote_add("origin", &remote.to_string_lossy())
+        .unwrap();
+    assert!(run_git(&root, &["push", "-q", "-u", "origin", &branch])
+        .status
+        .success());
+
+    store
+        .create_entity(CreateEntity {
+            name: "Remote recovery entity".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let preview = store.git_staging_preview().unwrap();
+    store
+        .git_commit("remote recovery entity".into(), Some(preview.staging_paths))
+        .unwrap();
+    let later = store.git_rev_parse("HEAD").unwrap().unwrap();
+    assert!(run_git(&root, &["push", "-q", "origin", &branch])
+        .status
+        .success());
+
+    let reset = store.git_reset_hard(&base).unwrap();
+    assert!(reset.diverged_from_upstream);
+    let restored = store.git_restore_from_upstream().unwrap();
+    assert_eq!(restored.current_head.as_deref(), Some(later.as_str()));
+    assert!(store
+        .list_entities()
+        .unwrap()
+        .iter()
+        .any(|entity| entity.name == "Remote recovery entity"));
+
+    let reset = store.git_reset_hard(&base).unwrap();
+    assert!(reset.diverged_from_upstream);
+    let pushed = store.git_push("origin", Some(&branch), true).unwrap();
+    assert_eq!(pushed.branch.as_deref(), Some(branch.as_str()));
+    let remote_head = String::from_utf8(run_git(&remote, &["rev-parse", "HEAD"]).stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    assert_eq!(remote_head, base);
+
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(remote).unwrap();
+}
+
+#[test]
 fn git_remote_add_list_and_remove_round_trip() {
     let root = std::env::temp_dir().join(format!("daena-git-remote-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();
@@ -1656,8 +1780,8 @@ fn directory_mutations_treat_canonical_files_as_authority_over_a_stale_index() {
         })
         .unwrap();
 
-    // Simulate a stale disposable projection. A repository-first update
-    // must seed its proposal from canonical files, not this SQLite row.
+    // Simulate a stale disposable projection. A canonical refresh must seed
+    // its proposal from canonical files, not this SQLite row.
     store
         .connection
         .execute(
@@ -2476,6 +2600,15 @@ fn applying_migration_creates_backup_and_records_version() {
 fn plugin_backup_restores_schema_and_migration_history() {
     let directory = std::env::temp_dir().join(format!("daena-plugin-backup-{}", Uuid::new_v4()));
     let mut store = ProjectStore::open_directory(&directory).unwrap();
+    // Runtime/plugin recovery must not promote a full portable scan to its
+    // normal backup path. An unrelated malformed external file is therefore
+    // allowed to remain diagnostic-only while the DB snapshot is backed up.
+    std::fs::create_dir_all(directory.join("entities/external-draft")).unwrap();
+    std::fs::write(
+        directory.join("entities/external-draft/entity.json"),
+        b"{ malformed",
+    )
+    .unwrap();
     let backup = store
         .create_plugin_backup("daena.timeline", Some("0.1.0"), Some("0.2.0"), 0)
         .unwrap();
@@ -2499,6 +2632,7 @@ fn plugin_backup_restores_schema_and_migration_history() {
         package_digest: String::new(),
     };
     store.apply_migration(&migration).unwrap();
+    std::fs::remove_dir_all(directory.join("entities/external-draft")).unwrap();
     store.restore_plugin_backup(&backup).unwrap();
     assert_eq!(store.get_module_version("daena.timeline").unwrap(), 0);
     store.apply_migration(&migration).unwrap();

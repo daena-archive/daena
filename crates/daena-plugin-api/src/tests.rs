@@ -134,21 +134,51 @@ fn lifecycle_is_fail_closed() {
 
 #[test]
 fn semver_validates_pre_release_and_build_suffixes() {
-    for valid in ["1.0.0", "0.1.0", "10.20.30", "1.2.3-alpha", "1.2.3-alpha.1", "1.2.3-alpha-1", "1.2.3+build.5", "1.2.3-alpha+20260101"] {
+    for valid in [
+        "1.0.0",
+        "0.1.0",
+        "10.20.30",
+        "1.2.3-alpha",
+        "1.2.3-alpha.1",
+        "1.2.3-alpha-1",
+        "1.2.3+build.5",
+        "1.2.3-alpha+20260101",
+    ] {
         assert!(is_semver(valid), "{valid} should be valid");
     }
-    for invalid in ["1.0", "1.0.0.0", "01.0.0", "1.2.3-alpha beta", "1.2.3+", "1.2.3-", "1.2.3+foo!", "v1.0.0"] {
+    for invalid in [
+        "1.0",
+        "1.0.0.0",
+        "01.0.0",
+        "1.2.3-alpha beta",
+        "1.2.3+",
+        "1.2.3-",
+        "1.2.3+foo!",
+        "v1.0.0",
+    ] {
         assert!(!is_semver(invalid), "{invalid} should be invalid");
     }
 }
 
 #[test]
 fn host_api_range_matches_ts_semantics() {
-    for valid in [">=1.0.0 <2.0.0", "^1.0.0", "~0.1.0", ">=1.2.3 <=2.0.0", "=1.0.0", ">1.0.0", "1.0.0", ">=1.0.0-alpha"] {
+    for valid in [
+        ">=1.0.0 <2.0.0",
+        "^1.0.0",
+        "~0.1.0",
+        ">=1.2.3 <=2.0.0",
+        "=1.0.0",
+        ">1.0.0",
+        "1.0.0",
+        ">=1.0.0-alpha",
+    ] {
         assert!(is_host_api_range(valid), "{valid} should be a valid range");
     }
     for invalid in ["", "   ", "banana", ">=banana", ">=1.0.0 <", ">=1.0.0 <2"] {
-        assert!(!is_host_api_range(invalid), "{invalid} should be an invalid range");
+        assert!(
+            !is_host_api_range(invalid),
+            "{invalid} should be an invalid range"
+        );
     }
 }
 

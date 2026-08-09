@@ -10,19 +10,21 @@ pub use authority::{Authority, AuthorityContext};
 pub use error::CoreError;
 pub use migrations::{FieldDefinition, Migration, Operation};
 pub use project::{
-    Asset, AssetFileInput, AssetInput, AssetReplaceInput, CreateEntity, CreateEntry,
-    CreateEntryDocument, CreateEntryField, Document, Entity, ExternalChangeReport, FieldValue,
-    FlushBarrier, GitLogEntry, GitPreflight, GitRemote, GitResetResult, GitStatus, GitToolInfo,
-    GitUpstream, MigrationHistoryEntry, ModuleField, ModuleNamespace, ModuleState, PluginBackup,
-    ProjectInfo, ProjectSnapshot, ProjectStore, Relationship, RelationshipInput, SaveDocument,
-    SaveEntry, SearchPassage, SyncDiagnostic, SyncSummary,
+    Asset, AssetFileInput, AssetInput, AssetReplaceInput, CheckpointHandle, CreateEntity,
+    CreateEntry, CreateEntryDocument, CreateEntryField, Document, Entity, ExternalChangeReport,
+    FieldValue, Generation, GitLogEntry, GitPreflight, GitRemote, GitResetResult, GitStatus,
+    GitToolInfo, GitUpstream, MigrationHistoryEntry, ModuleField, ModuleNamespace, ModuleState,
+    PluginBackup, ProjectInfo, ProjectSnapshot, ProjectStore, Relationship, RelationshipInput,
+    SaveDocument, SaveEntry, SearchPassage, SyncSummary,
 };
 pub use storage::{
-    canonical_json_bytes, canonical_markdown, canonical_markdown_bytes, normalized_project_path,
-    parse_json, read_canonical_project, read_json, write_canonical_project, write_json, AssetsFile,
-    CanonicalAsset, CanonicalMigration, CanonicalProject, CanonicalRelationship, CanonicalSource,
-    EntityDocumentRef, EntityFile, FieldsFile, FilesystemRepository, PluginStateFile,
-    ProjectManifest, RelationshipsFile, CORE_PLUGIN_ID, PROJECT_FORMAT_VERSION,
+    build_checkpoint_manifest, canonical_json_bytes, canonical_markdown, canonical_markdown_bytes,
+    normalized_project_path, parse_json, read_canonical_project, read_json, validate_checkpoint,
+    write_canonical_project, write_checkpoint_manifest, write_json, AssetsFile, CanonicalAsset,
+    CanonicalMigration, CanonicalProject, CanonicalRelationship, CheckpointFile,
+    CheckpointManifest, EntityDocumentRef, EntityFile, FieldsFile, FilesystemRepository,
+    PluginStateFile, ProjectManifest, RelationshipsFile, CHECKPOINT_MANIFEST_FILE, CORE_PLUGIN_ID,
+    PROJECT_FORMAT_VERSION,
 };
 
 #[derive(Default)]
@@ -42,6 +44,15 @@ impl CoreService {
     ) -> Result<(), CoreError> {
         self.require_trusted_shell(context, "open project")?;
         self.flush_current_project()?;
+        self.open_without_flush(context, path)
+    }
+
+    pub fn open_without_flush(
+        &mut self,
+        context: AuthorityContext,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<(), CoreError> {
+        self.require_trusted_shell(context, "open project")?;
         self.project = Some(ProjectStore::open(path)?);
         Ok(())
     }
@@ -53,6 +64,15 @@ impl CoreService {
     ) -> Result<ProjectInfo, CoreError> {
         self.require_trusted_shell(context, "open project directory")?;
         self.flush_current_project()?;
+        self.open_directory_without_flush(context, path)
+    }
+
+    pub fn open_directory_without_flush(
+        &mut self,
+        context: AuthorityContext,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<ProjectInfo, CoreError> {
+        self.require_trusted_shell(context, "open project directory")?;
         let project = ProjectStore::open_directory(path)?;
         let info = project
             .info()
@@ -64,6 +84,14 @@ impl CoreService {
     pub fn open_memory(&mut self, context: AuthorityContext) -> Result<(), CoreError> {
         self.require_trusted_shell(context, "open in-memory project")?;
         self.flush_current_project()?;
+        self.open_memory_without_flush(context)
+    }
+
+    pub fn open_memory_without_flush(
+        &mut self,
+        context: AuthorityContext,
+    ) -> Result<(), CoreError> {
+        self.require_trusted_shell(context, "open in-memory project")?;
         self.project = Some(ProjectStore::in_memory()?);
         Ok(())
     }
@@ -71,16 +99,18 @@ impl CoreService {
     pub fn close(&mut self, context: AuthorityContext) -> Result<(), CoreError> {
         self.require_trusted_shell(context, "close project")?;
         self.flush_current_project()?;
+        self.close_without_flush(context)
+    }
+
+    pub fn close_without_flush(&mut self, context: AuthorityContext) -> Result<(), CoreError> {
+        self.require_trusted_shell(context, "close project")?;
         self.project = None;
         Ok(())
     }
 
     fn flush_current_project(&self) -> Result<(), CoreError> {
         if let Some(project) = &self.project {
-            project.flush_with_barrier(crate::project::FlushBarrier {
-                revision_set: None,
-                operation_reason: "project lifecycle transition".into(),
-            })?;
+            project.flush_checkpoint("project lifecycle transition")?;
         }
         Ok(())
     }

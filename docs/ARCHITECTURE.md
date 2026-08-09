@@ -11,11 +11,7 @@ It consolidates the former product and architecture documents. Detailed
 contracts remain in the focused plans below:
 
 - [`STORAGE.md`](./STORAGE.md) defines the authoritative runtime database,
-  portable project format, synchronization, recovery, and rebuild contracts.
-- [`STORAGE_MIGRATION.md`](./STORAGE_MIGRATION.md) defines the alpha hard cut
-  to the database-first writer and durable exporter.
-- [`PLAIN_TEXT_STORAGE_PLAN.md`](./PLAIN_TEXT_STORAGE_PLAN.md) records the
-  historical portable format and file-canonical planning work.
+  portable project format, checkpoint, recovery, and rebuild contracts.
 - [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md) defines plugin
   isolation, package trust, broker authorization, lifecycle, and compatibility.
 - [`PLUGIN_SDK.md`](./PLUGIN_SDK.md) is the definitive plugin authoring guide.
@@ -126,9 +122,9 @@ plugins/<plugin-id>.json
 assets/{images,videos,maps,files}/
 .daena/
   index.sqlite                 # authoritative runtime database
-  sync/<request-id>/new/
+  checkpoints/                 # exporter staging
   project.lock  export.lock
-  backups/ conflicts/ local/
+  backups/ local/
 .gitignore
 ```
 
@@ -139,25 +135,26 @@ use strict JSON. Assets retain their native bytes and are referenced by
 project-relative paths, hashes, MIME types, and ownership metadata.
 
 The `.daena/` directory is machine-local and ignored by Git. It contains the
-authoritative runtime database, durable synchronization state, recovery
-material, conflict copies, and derived indexes. When synchronization is clean,
-the portable files reconstruct the same durable project content. When it is
-dirty, `.daena/index.sqlite` may contain newer committed work and is not safe
-to delete. Plugin grants, installed packages, runtime sessions, and capability
-state are machine-local as well. Portable plugin interpretation state belongs
-in `plugins/<plugin-id>.json`.
+authoritative runtime database, checkpoint staging, recovery material, and
+derived indexes. When the checkpoint is clean, portable files reconstruct the
+same durable project content. When it is pending or failed, the runtime may
+contain newer committed work and is not safe to delete. Plugin grants,
+installed packages, runtime sessions, and capability state are machine-local
+as well. Portable plugin interpretation state belongs in
+`plugins/<plugin-id>.json`.
 
 ## Storage and consistency
 
-The target database-first path commits runtime rows, opaque revisions,
-idempotency receipts, and durable portable-export intent in one SQLite
-transaction. A synchronization worker renders only affected deterministic
-records, verifies their last-sync baselines, and advances the portable
-checkpoint. Git, backup, export, close, and rebuild use explicit flush barriers.
+The database-first path commits runtime rows, opaque revisions, and idempotency
+receipts in one SQLite transaction. A checkpoint worker renders a complete
+deterministic portable snapshot from a consistent runtime read and advances the
+portable checkpoint only after installation. Git, backup, export, close, and
+rebuild use explicit flush barriers.
 
 An existing valid database may serve reads without a blocking full-tree scan.
-Offline file reconciliation continues in the background, while writes verify
-the affected portable baselines before committing. If no usable database
+The filesystem watcher only reports filtered portable-path changes; it never
+reconciles or scans while holding the core session lock. External changes are
+imported explicitly. If no usable database
 exists, the core validates the complete portable representation and constructs
 a new runtime database and derived projections.
 
@@ -176,12 +173,10 @@ Search, map projections, relationship indexes, and other views are derived
 from durable runtime rows. They may be rebuilt, discarded, or temporarily
 reported as stale without changing project content.
 
-The database-first writer is the current hard-cut storage boundary. Each
-mutation commits runtime rows, derived updates, its receipt, and exact sync
-intent together; the exporter then updates only the affected portable files
-from durable staging under `.daena/sync/`. There is no dual-authority writer
-or fallback writer. See [`STORAGE_MIGRATION.md`](./STORAGE_MIGRATION.md)
-for the recovery and synchronization contract.
+The database-first writer is the current hard-cut storage boundary. There is
+no dual-authority writer, fallback writer, persistent source catalog, or
+automatic reconciliation path. See [`STORAGE.md`](./STORAGE.md) for the
+recovery, checkpoint, and synchronization contract.
 
 ## Core and trusted shell
 
@@ -189,8 +184,8 @@ for the recovery and synchronization contract.
 
 - project open/create/close, runtime database access, and portable codecs;
 - stable entities, documents, fields, relationships, and assets;
-- deterministic serialization, validation, synchronization baselines, runtime
-  transactions, and durable export queues;
+  - deterministic serialization, validation, runtime transactions, complete
+  checkpoint export, and recovery;
 - search and disposable projections;
 - module/plugin project state, migrations, backups, and recovery;
 - typed `CoreError` results and authority-aware operations; and
@@ -255,9 +250,9 @@ contiguity and namespace ownership, creates a recovery backup when required,
 executes the migration transactionally, and records the migration ID and
 checksum. Errors roll back the transaction and leave the prior version active.
 
-The alpha cut is reset-oriented: pre-format-version-2 projects and pre-cut
+The alpha cut is reset-oriented: pre-format-version-3 projects and pre-cut
 `.daena/` runtime state receive no legacy reader, migration, feature flag, or
-dual-write path. Existing version-2 portable files initialize a new runtime
+dual-write path. Existing version-3 portable files initialize a new runtime
 database after `.daena/` is removed. Plugin data migrations remain required
 when a plugin package changes its own schema or stored data version.
 

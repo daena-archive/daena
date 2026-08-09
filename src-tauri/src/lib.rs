@@ -9,10 +9,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use daena_core::{
-    Asset, AssetFileInput, AssetInput, AssetReplaceInput, AuthorityContext, CoreError, CoreService,
-    CreateEntity, Entity, ExternalChangeReport, FieldValue, GitLogEntry, GitPreflight, GitRemote,
-    GitResetResult, GitStatus, GitToolInfo, Migration, Operation, ProjectInfo, ProjectStore,
-    Relationship, RelationshipInput, SaveDocument, SaveEntry,
+    Asset, AssetFileInput, AssetInput, AssetReplaceInput, AuthorityContext, CheckpointHandle,
+    CoreError, CoreService, CreateEntity, Entity, ExternalChangeReport, FieldValue, GitLogEntry,
+    GitPreflight, GitRemote, GitResetResult, GitStatus, GitToolInfo, Migration, Operation,
+    ProjectInfo, ProjectStore, Relationship, RelationshipInput, SaveDocument, SaveEntry,
 };
 use daena_plugin_api::{
     CommandAction, MigrationOperation, PluginManifest, RpcRequest, RpcResponse, ViewComponent,
@@ -31,10 +31,35 @@ mod settings;
 
 use settings::{AppSettings, AppSettingsUpdate, SettingsStore};
 
-type SharedCore = Arc<Mutex<CoreService>>;
+struct ProjectSession {
+    core: Mutex<CoreService>,
+}
+
+type SharedCore = Arc<Mutex<Arc<ProjectSession>>>;
 type SharedPluginHost = Arc<Mutex<PluginHost>>;
 type SharedBinaryTransfers = Arc<Mutex<BinaryTransferManager>>;
 type SharedSettings = Arc<Mutex<SettingsStore>>;
+
+fn new_shared_core() -> SharedCore {
+    Arc::new(Mutex::new(Arc::new(ProjectSession {
+        core: Mutex::new(CoreService::new()),
+    })))
+}
+
+fn current_session(core: &SharedCore) -> Result<Arc<ProjectSession>, String> {
+    core.lock()
+        .map_err(|_| "project lifecycle lock poisoned".to_string())
+        .map(|session| session.clone())
+}
+
+fn current_info(core: &SharedCore) -> Result<Option<ProjectInfo>, String> {
+    let session = current_session(core)?;
+    let core = session
+        .core
+        .lock()
+        .map_err(|_| "core lock poisoned".to_string())?;
+    Ok(core.info())
+}
 
 const MAX_ASSET_TRANSFER_BYTES: usize = 64 * 1024 * 1024;
 const ASSET_TRANSFER_TTL: Duration = Duration::from_secs(60);
@@ -59,14 +84,25 @@ fn cancel_ai_requests_for(
 
 fn refresh_ai_index(core: &SharedCore, ai_runtime: &ai::SharedAiRuntime) {
     ai::detach_project_index(ai_runtime);
-    let root = core
-        .lock()
-        .ok()
-        .and_then(|core| core.info().map(|info| info.root));
+    let root = core.lock().ok().and_then(|session| {
+        session
+            .core
+            .lock()
+            .ok()
+            .and_then(|core| core.info().map(|info| info.root))
+    });
     match root {
         Some(root) if !root.is_empty() => ai::attach_project_index(ai_runtime, &root),
         _ => ai::detach_project_index(ai_runtime),
     }
+}
+
+fn schedule_ai_index_refresh(core: &SharedCore, ai_runtime: &ai::SharedAiRuntime) {
+    let core = core.clone();
+    let ai_runtime = ai_runtime.clone();
+    std::mem::drop(tauri::async_runtime::spawn_blocking(move || {
+        refresh_ai_index(&core, &ai_runtime);
+    }));
 }
 // Child plugin webviews must not keep a usable Tauri IPC bridge. Newer WebKit
 // builds may already seal __TAURI_INTERNALS__; throwing here aborts Global Code
@@ -413,27 +449,21 @@ impl BinaryTransferManager {
 struct ProjectWatcher {
     stop: Option<mpsc::Sender<()>>,
     filesystem: Option<RecommendedWatcher>,
-    thread: Option<thread::JoinHandle<()>>,
 }
 
 type SharedProjectWatcher = Arc<Mutex<ProjectWatcher>>;
 
 fn stop_project_watcher(watcher: &SharedProjectWatcher) -> Result<(), String> {
-    let (stop, thread) = {
+    let stop = {
         let mut watcher = watcher
             .lock()
             .map_err(|_| "project watcher lock poisoned".to_string())?;
         let stop = watcher.stop.take();
         watcher.filesystem.take();
-        (stop, watcher.thread.take())
+        stop
     };
     if let Some(stop) = stop {
         let _ = stop.send(());
-    }
-    if let Some(thread) = thread {
-        thread
-            .join()
-            .map_err(|_| "project watcher panicked".to_string())?;
     }
     Ok(())
 }
@@ -444,22 +474,33 @@ fn start_project_watcher(
     watcher: &SharedProjectWatcher,
 ) -> Result<(), String> {
     stop_project_watcher(watcher)?;
-    state
+    current_session(state)?
+        .core
         .lock()
         .map_err(|_| "core lock poisoned".to_string())?
         .info()
         .ok_or_else(|| "project is not open".to_string())?;
     let (stop, receiver) = mpsc::channel();
     let (event_sender, event_receiver) = mpsc::channel();
-    let root = state
-        .lock()
-        .map_err(|_| "core lock poisoned".to_string())?
-        .info()
+    let root = current_info(state)?
         .ok_or_else(|| "project is not open".to_string())?
         .root;
+    let startup_snapshot = portable_tree_snapshot(std::path::Path::new(&root))?;
+    let watched_root = root.clone();
+    let callback_root = watched_root.clone();
     let mut filesystem = RecommendedWatcher::new(
-        move |_| {
-            let _ = event_sender.send(());
+        move |event: notify::Result<notify::Event>| {
+            let paths = event
+                .ok()
+                .into_iter()
+                .flat_map(|event| event.paths)
+                .filter_map(|path| {
+                    watched_portable_path(std::path::Path::new(&callback_root), &path)
+                })
+                .collect::<BTreeSet<_>>();
+            if !paths.is_empty() {
+                let _ = event_sender.send(paths.into_iter().collect::<Vec<_>>());
+            }
         },
         notify::Config::default(),
     )
@@ -476,102 +517,128 @@ fn start_project_watcher(
         .map_err(|_| "project watcher lock poisoned".to_string())?
         .filesystem = Some(filesystem);
     let app = app.clone();
-    let state = state.clone();
-    let thread = thread::spawn(move || {
-        let mut first_pass = true;
-        let mut last_report = String::new();
-        let mut pending_report: Option<ExternalChangeReport> = None;
-        loop {
-            if !first_pass {
-                loop {
-                    match receiver.try_recv() {
-                        Ok(()) => return,
-                        Err(mpsc::TryRecvError::Disconnected) => return,
-                        Err(mpsc::TryRecvError::Empty) => {}
-                    }
-                    match event_receiver.recv_timeout(Duration::from_millis(500)) {
-                        Ok(()) => break,
-                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                        Err(mpsc::RecvTimeoutError::Disconnected) => return,
-                    }
-                }
-            }
-            first_pass = false;
-            let report = state.lock().ok().and_then(|core| {
-                core.project(AuthorityContext::trusted_shell())
+    let startup_filter_until = Instant::now() + Duration::from_secs(1);
+    thread::spawn(move || loop {
+        match receiver.try_recv() {
+            Ok(()) | Err(mpsc::TryRecvError::Disconnected) => return,
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+        let mut paths = BTreeSet::new();
+        match event_receiver.recv_timeout(Duration::from_millis(500)) {
+            Ok(batch) => paths.extend(batch),
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+        while let Ok(batch) = event_receiver.try_recv() {
+            paths.extend(batch);
+        }
+        // A lifecycle transition can stop this thread while it is draining a
+        // queued batch. Do not publish that stale batch after the next project
+        // has already become current.
+        match receiver.try_recv() {
+            Ok(()) | Err(mpsc::TryRecvError::Disconnected) => return,
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+        if Instant::now() < startup_filter_until {
+            paths.retain(|path| {
+                portable_path_fingerprint(std::path::Path::new(&watched_root), path)
                     .ok()
-                    .and_then(|project| project.reconcile_external_changes().ok())
+                    .flatten()
+                    != startup_snapshot.get(path).cloned()
             });
-            let Some(report) = report else { continue };
-            if report.changed {
-                pending_report = Some(merge_external_change_reports(pending_report.take(), report));
-                continue;
-            }
-            let report = if !report.diagnostics.is_empty() {
-                pending_report = None;
-                report
-            } else if let Some(pending) = pending_report.take() {
-                pending
-            } else {
-                last_report.clear();
-                continue;
-            };
-            let Ok(serialized) = serde_json::to_string(&report) else {
-                continue;
-            };
-            if serialized == last_report {
-                continue;
-            }
-            last_report = serialized;
-            let _ = app.emit("project-external-change", report);
+        }
+        if !paths.is_empty() {
+            let _ = app.emit("project-portable-files-changed", paths);
         }
     });
-    watcher
-        .lock()
-        .map_err(|_| "project watcher lock poisoned".to_string())?
-        .thread = Some(thread);
     Ok(())
 }
 
-fn semantic_external_path(path: &str) -> String {
-    let mut parts = path.split('/');
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some("entities"), Some(entity_id), Some(_)) => {
-            format!("entities/{entity_id}/")
+fn portable_tree_snapshot(root: &std::path::Path) -> Result<BTreeMap<String, String>, String> {
+    let mut snapshot = BTreeMap::new();
+    for relative in ["project.json", "entities", "plugins", "assets"] {
+        let path = root.join(relative);
+        if path.exists() {
+            collect_portable_snapshot(root, &path, &mut snapshot)?;
         }
-        _ => path.to_string(),
     }
+    Ok(snapshot)
 }
 
-fn merge_external_change_reports(
-    previous: Option<ExternalChangeReport>,
-    next: ExternalChangeReport,
-) -> ExternalChangeReport {
-    let Some(mut previous) = previous else {
-        return ExternalChangeReport {
-            changed: next.changed,
-            paths: next
-                .paths
-                .iter()
-                .map(|path| semantic_external_path(path))
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect(),
-            diagnostics: next.diagnostics,
-        };
+fn collect_portable_snapshot(
+    root: &std::path::Path,
+    path: &std::path::Path,
+    snapshot: &mut BTreeMap<String, String>,
+) -> Result<(), String> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|error| format!("portable snapshot path: {error}"))?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("portable snapshot metadata: {error}"))?;
+    if metadata.is_dir() {
+        snapshot.insert(relative, "directory".into());
+        let entries =
+            fs::read_dir(path).map_err(|error| format!("portable snapshot directory: {error}"))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| format!("portable snapshot entry: {error}"))?;
+            collect_portable_snapshot(root, &entry.path(), snapshot)?;
+        }
+    } else if metadata.is_file() {
+        let bytes = fs::read(path).map_err(|error| format!("portable snapshot file: {error}"))?;
+        snapshot.insert(relative, format!("file:{:x}", Sha256::digest(bytes)));
+    }
+    Ok(())
+}
+
+fn portable_path_fingerprint(
+    root: &std::path::Path,
+    relative: &str,
+) -> Result<Option<String>, String> {
+    let path = root.join(relative);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("portable path metadata: {error}")),
     };
-    previous.changed |= next.changed;
-    previous.paths.extend(
-        next.paths
-            .iter()
-            .map(|path| semantic_external_path(path)),
-    );
-    previous.paths.sort();
-    previous.paths.dedup();
-    previous.diagnostics.extend(next.diagnostics);
-    previous.diagnostics.sort();
-    previous.diagnostics.dedup();
-    previous
+    if metadata.is_dir() {
+        return Ok(Some("directory".into()));
+    }
+    if metadata.is_file() {
+        let bytes = fs::read(path).map_err(|error| format!("portable path file: {error}"))?;
+        return Ok(Some(format!("file:{:x}", Sha256::digest(bytes))));
+    }
+    Ok(Some("other".into()))
+}
+
+fn watched_portable_path(root: &std::path::Path, path: &std::path::Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?;
+    let mut components = relative.components();
+    let first = components.next()?.as_os_str().to_str()?;
+    if matches!(first, ".daena" | ".git")
+        || relative.components().any(|component| {
+            matches!(
+                component.as_os_str().to_str(),
+                Some(".daena") | Some(".git")
+            )
+        })
+    {
+        return None;
+    }
+    let filename = relative.file_name()?.to_str()?;
+    if filename == ".DS_Store"
+        || filename.starts_with(".~")
+        || filename.ends_with('~')
+        || filename.ends_with(".swp")
+        || filename.ends_with(".tmp")
+    {
+        return None;
+    }
+    if !matches!(first, "project.json" | "entities" | "plugins" | "assets") {
+        return None;
+    }
+    Some(relative.to_string_lossy().replace('\\', "/"))
 }
 
 fn percent_encode(value: &str) -> String {
@@ -932,11 +999,7 @@ fn plugin_protocol_response(
         if let Some(response) = binary_asset_response(plugin_id, request, transfers) {
             return response;
         }
-        let project_id = core
-            .lock()
-            .ok()
-            .and_then(|core| core.info())
-            .map(|info| info.root);
+        let project_id = current_info(core).ok().flatten().map(|info| info.root);
         let Some(project_id) = project_id else {
             return tauri::http::Response::builder()
                 .status(404)
@@ -972,11 +1035,7 @@ fn plugin_protocol_response(
                 Err("plugin bootstrap identity mismatch".to_string())
             } else {
                 let project_id = project_id.unwrap_or_default();
-                let current_project = core
-                    .lock()
-                    .ok()
-                    .and_then(|core| core.info())
-                    .map(|info| info.root);
+                let current_project = current_info(core).ok().flatten().map(|info| info.root);
                 if current_project.as_deref() != Some(project_id) {
                     Err("plugin bootstrap project mismatch".into())
                 } else {
@@ -1031,11 +1090,7 @@ fn plugin_protocol_response(
                     .map_err(|error| error.message)?;
                 validate_broker_payload(&request.method, &request.payload)
                     .map_err(|error| error.to_string())?;
-                let current_project = core
-                    .lock()
-                    .map_err(|_| "core lock poisoned".to_string())?
-                    .info()
-                    .map(|info| info.root);
+                let current_project = current_info(core)?.map(|info| info.root);
                 if current_project.as_deref() != Some(session.project_id.as_str()) {
                     return Err("plugin session is not bound to the open project".into());
                 }
@@ -1052,14 +1107,24 @@ fn plugin_protocol_response(
                         | "maps.recovery.export.begin"
                         | "maps.recovery.export.commit"
                 ) {
-                    dispatch_binary_asset_rpc(
+                    let value = dispatch_binary_asset_rpc(
                         core,
                         transfers,
                         &session,
                         &request.method,
                         request.payload,
                         mutation_request_id,
-                    )?
+                    )?;
+                    match request.method.as_str() {
+                        "asset.replace.commit" => {
+                            flush_checkpoint_for_shared_core(core, "maps asset replace")?;
+                        }
+                        "maps.asset.create.commit" => {
+                            flush_checkpoint_for_shared_core(core, "maps asset create")?;
+                        }
+                        _ => {}
+                    }
+                    value
                 } else if matches!(
                     request.method.as_str(),
                     "event.subscribe"
@@ -1095,7 +1160,11 @@ fn plugin_protocol_response(
                         },
                     )?
                 } else {
-                    let mut core = core.lock().map_err(|_| "core lock poisoned".to_string())?;
+                    let session = current_session(core)?;
+                    let mut core = session
+                        .core
+                        .lock()
+                        .map_err(|_| "core lock poisoned".to_string())?;
                     dispatch_module_rpc(
                         &mut core,
                         &request.method,
@@ -1167,7 +1236,11 @@ fn dispatch_binary_asset_rpc(
     payload: serde_json::Value,
     request_id: Option<&str>,
 ) -> Result<serde_json::Value, String> {
-    let project = core.lock().map_err(|_| "core lock poisoned".to_string())?;
+    let core_session = current_session(core)?;
+    let project = core_session
+        .core
+        .lock()
+        .map_err(|_| "core lock poisoned".to_string())?;
     let project = project
         .project(AuthorityContext::plugin())
         .map_err(|e| e.to_string())?;
@@ -1689,10 +1762,7 @@ async fn plugin_mount_webview(
     bounds: PluginWebviewBounds,
 ) -> Result<(), String> {
     let bounds = native_plugin_bounds(&app, bounds)?;
-    let project_id = state
-        .lock()
-        .map_err(|_| "core lock poisoned".to_string())?
-        .info()
+    let project_id = current_info(state.inner())?
         .map(|info| info.root)
         .ok_or_else(|| "project is not open".to_string())?;
     let (policy, url) = {
@@ -1871,10 +1941,7 @@ fn plugin_open_webview(
     plugin_id: String,
     view_id: Option<String>,
 ) -> Result<(), String> {
-    let project_id = state
-        .lock()
-        .map_err(|_| "core lock poisoned".to_string())?
-        .info()
+    let project_id = current_info(state.inner())?
         .map(|info| info.root)
         .ok_or_else(|| "project is not open".to_string())?;
     let host = plugins
@@ -1891,10 +1958,7 @@ async fn plugin_host_view_data(
     view_id: String,
     selected_entity_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let project_id = state
-        .lock()
-        .map_err(|_| "core lock poisoned".to_string())?
-        .info()
+    let project_id = current_info(state.inner())?
         .map(|info| info.root)
         .ok_or_else(|| "project is not open".to_string())?;
     let view = plugins
@@ -1995,10 +2059,7 @@ async fn plugin_host_view_set_field(
     key: String,
     value: serde_json::Value,
 ) -> Result<(), String> {
-    let project_id = state
-        .lock()
-        .map_err(|_| "core lock poisoned".to_string())?
-        .info()
+    let project_id = current_info(state.inner())?
         .map(|info| info.root)
         .ok_or_else(|| "project is not open".to_string())?;
     let view = plugins
@@ -2069,10 +2130,7 @@ fn plugin_host_invoke_command(
     command_id: String,
     payload: Option<serde_json::Value>,
 ) -> Result<String, String> {
-    let project_id = state
-        .lock()
-        .map_err(|_| "core lock poisoned".to_string())?
-        .info()
+    let project_id = current_info(state.inner())?
         .map(|info| info.root)
         .ok_or_else(|| "project is not open".to_string())?;
     let payload = payload.unwrap_or_else(|| serde_json::json!({}));
@@ -2133,20 +2191,118 @@ fn trusted_shell() -> AuthorityContext {
     AuthorityContext::trusted_shell()
 }
 
+fn flush_checkpoint_for_shared_core(core: &SharedCore, reason: &'static str) -> Result<(), String> {
+    let session = current_session(core)?;
+    let handle = {
+        let service = session
+            .core
+            .lock()
+            .map_err(|_| "core lock poisoned".to_string())?;
+        if service.info().is_none() {
+            return Ok(());
+        }
+        service
+            .project(trusted_shell())
+            .map_err(|error| error.to_string())?
+            .checkpoint_handle()
+            .map_err(|error| error.to_string())?
+    };
+    handle
+        .flush_checkpoint(reason)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 async fn with_core<T, F>(state: tauri::State<'_, SharedCore>, operation: F) -> Result<T, String>
 where
     T: Send + 'static,
     F: FnOnce(&mut CoreService) -> Result<T, CoreError> + Send + 'static,
 {
-    let core = state.inner().clone();
+    let lifecycle = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let mut core = core
+        let session = lifecycle
+            .lock()
+            .map_err(|_| CoreError::Conflict("project lifecycle lock poisoned".into()))?
+            .clone();
+        let mut core = session
+            .core
             .lock()
             .map_err(|_| CoreError::Conflict("core lock poisoned".into()))?;
         operation(&mut core)
     })
     .await
     .map_err(|error| format!("core worker failed: {error}"))?
+    .map_err(|error| error.to_string())
+}
+
+async fn flush_project_checkpoint(
+    state: tauri::State<'_, SharedCore>,
+    reason: &'static str,
+) -> Result<(), String> {
+    flush_project_checkpoint_for_shared_core(state.inner().clone(), reason).await
+}
+
+async fn flush_project_checkpoint_for_shared_core(
+    core: SharedCore,
+    reason: &'static str,
+) -> Result<(), String> {
+    let handle = tauri::async_runtime::spawn_blocking(
+        move || -> Result<Option<CheckpointHandle>, String> {
+            let session = current_session(&core)?;
+            let service = session
+                .core
+                .lock()
+                .map_err(|_| "core lock poisoned".to_string())?;
+            if service.info().is_none() {
+                return Ok(None);
+            }
+            Ok(Some(
+                service
+                    .project(trusted_shell())
+                    .map_err(|error| error.to_string())?
+                    .checkpoint_handle()
+                    .map_err(|error| error.to_string())?,
+            ))
+        },
+    )
+    .await
+    .map_err(|error| format!("checkpoint handle worker failed: {error}"))??;
+    let Some(handle): Option<CheckpointHandle> = handle else {
+        return Ok(());
+    };
+    tauri::async_runtime::spawn_blocking(move || handle.flush_checkpoint(reason))
+        .await
+        .map_err(|error| format!("checkpoint worker failed: {error}"))?
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+async fn with_read_project<T, F>(
+    state: tauri::State<'_, SharedCore>,
+    operation: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&ProjectStore) -> Result<T, CoreError> + Send + 'static,
+{
+    let lifecycle = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = lifecycle
+            .lock()
+            .map_err(|_| CoreError::Conflict("project lifecycle lock poisoned".into()))?
+            .clone();
+        let root = {
+            let core = session
+                .core
+                .lock()
+                .map_err(|_| CoreError::Conflict("core lock poisoned".into()))?;
+            core.info().ok_or(CoreError::ProjectNotOpen)?.root
+        };
+        let project = ProjectStore::open_read_only(root)?;
+        operation(&project)
+    })
+    .await
+    .map_err(|error| format!("read worker failed: {error}"))?
     .map_err(|error| error.to_string())
 }
 
@@ -2177,10 +2333,7 @@ fn plugin_bootstrap(
     project_id: String,
 ) -> Result<PluginBootstrap, String> {
     let origin = plugin_webview_identity(&window, Some(&plugin_id))?;
-    let current_project = core
-        .lock()
-        .map_err(|_| "core lock poisoned".to_string())?
-        .info()
+    let current_project = current_info(core.inner())?
         .map(|info| info.root)
         .ok_or_else(|| "project is not open".to_string())?;
     if current_project != project_id {
@@ -2273,11 +2426,7 @@ async fn plugin_rpc(
                 );
         }
     }
-    let current_project = core
-        .lock()
-        .map_err(|_| "core lock poisoned".to_string())?
-        .info()
-        .map(|info| info.root);
+    let current_project = current_info(&core)?.map(|info| info.root);
     let event_project_id = session.project_id.clone();
     let result = if current_project.as_deref() != Some(session.project_id.as_str()) {
         Err("plugin session is not bound to the open project".to_string())
@@ -2449,7 +2598,11 @@ fn dispatch_host_rpc(
                     .core
                     .as_ref()
                     .ok_or_else(|| "AI retrieval requires an open project".to_string())?;
-                let core = core.lock().map_err(|_| "core lock poisoned".to_string())?;
+                let session = current_session(core)?;
+                let core = session
+                    .core
+                    .lock()
+                    .map_err(|_| "core lock poisoned".to_string())?;
                 let project = core
                     .project(trusted_shell())
                     .map_err(|error| error.to_string())?;
@@ -2677,6 +2830,77 @@ fn sync_project_usage(project: &ProjectStore, host: &mut PluginHost) -> Result<(
     Ok(())
 }
 
+async fn sync_project_usage_nonblocking(
+    core: SharedCore,
+    plugins: SharedPluginHost,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let project_id = current_info(&core)?
+            .ok_or_else(|| "project is not open".to_string())?
+            .root;
+        let defaults = {
+            let host = plugins
+                .lock()
+                .map_err(|_| "plugin host lock poisoned".to_string())?;
+            host.catalog
+                .list()
+                .map(|entry| {
+                    (
+                        entry.manifest.id.clone(),
+                        entry.manifest.enabled_by_default.unwrap_or(true),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let project_root = Path::new(&project_id);
+        let project =
+            ProjectStore::open_read_only(project_root).map_err(|error| error.to_string())?;
+        let states = project
+            .module_states()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|module| module.module_id)
+            .collect::<BTreeSet<_>>();
+        let missing_disabled = defaults
+            .iter()
+            .filter(|(module_id, enabled)| !enabled && !states.contains(module_id))
+            .map(|(module_id, _)| module_id.clone())
+            .collect::<Vec<_>>();
+
+        if !missing_disabled.is_empty() {
+            let session = current_session(&core)?;
+            let mut service = session
+                .core
+                .lock()
+                .map_err(|_| "core lock poisoned".to_string())?;
+            let current_root = service
+                .info()
+                .ok_or_else(|| "project is not open".to_string())?
+                .root;
+            if current_root != project_id {
+                return Err("project changed while synchronizing module state".into());
+            }
+            let project = service
+                .project_mut(trusted_shell())
+                .map_err(|error| error.to_string())?;
+            for module_id in missing_disabled {
+                project
+                    .set_module_enabled(module_id, false)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+
+        let project =
+            ProjectStore::open_read_only(project_root).map_err(|error| error.to_string())?;
+        let mut host = plugins
+            .lock()
+            .map_err(|_| "plugin host lock poisoned".to_string())?;
+        sync_project_usage(&project, &mut host).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("module synchronization worker failed: {error}"))?
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {name}! You've been greeted from Rust!")
@@ -2794,10 +3018,8 @@ async fn module_list_manifests(
     plugins: tauri::State<'_, SharedPluginHost>,
 ) -> Result<Vec<serde_json::Value>, String> {
     let plugins = plugins.inner().clone();
-    with_core(state, move |core| {
-        let context = trusted_shell();
-        let project = core.project(context).ok();
-        let project_id = project.and_then(|project| project.info().map(|info| info.root));
+    with_read_project(state, move |project| {
+        let project_id = project.info().map(|info| info.root);
         let host = plugins
             .lock()
             .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
@@ -2815,11 +3037,7 @@ async fn module_list_manifests(
                 .ok_or_else(|| CoreError::Validation("plugin catalog entry disappeared".into()))?;
             let mut manifest = serde_json::to_value(&entry.manifest)
                 .map_err(|error| CoreError::Validation(error.to_string()))?;
-            let enabled = if let Some(project) = project {
-                project.is_module_enabled(&id)?
-            } else {
-                false
-            };
+            let enabled = project.is_module_enabled(&id)?;
             manifest
                 .as_object_mut()
                 .expect("manifest is an object")
@@ -3958,11 +4176,7 @@ async fn trusted_module_rpc(
     payload: serde_json::Value,
     request_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let project_id = state
-        .inner()
-        .lock()
-        .map_err(|_| "core lock poisoned".to_string())?
-        .info()
+    let project_id = current_info(state.inner())?
         .map(|info| info.root)
         .ok_or_else(|| "project is not open".to_string())?;
     let event_method = method.clone();
@@ -4051,10 +4265,12 @@ async fn project_open(
     watcher: tauri::State<'_, SharedProjectWatcher>,
     path: String,
 ) -> Result<(), String> {
+    flush_project_checkpoint(state.clone(), "project lifecycle transition").await?;
     let plugins = plugins.inner().clone();
     let ai_runtime = ai_runtime.inner().clone();
     let core = state.inner().clone();
     let request_runtime = ai_runtime.clone();
+    let sync_plugins = plugins.clone();
     let result = with_core(state, move |core| {
         if let Some(previous_project) = core.info().map(|info| info.root) {
             cancel_ai_requests_for(&plugins, &request_runtime, &previous_project, None)
@@ -4064,16 +4280,15 @@ async fn project_open(
                 .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
                 .deactivate_project(&previous_project);
         }
-        core.open(trusted_shell(), path)?;
-        let project = core.project(trusted_shell())?;
-        let mut host = plugins
-            .lock()
-            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
-        sync_project_usage(project, &mut host)
+        core.open_without_flush(trusted_shell(), path)?;
+        Ok(())
     })
     .await;
     if result.is_ok() {
-        refresh_ai_index(&core, &ai_runtime);
+        sync_project_usage_nonblocking(core.clone(), sync_plugins).await?;
+        flush_project_checkpoint_for_shared_core(core.clone(), "project startup synchronization")
+            .await?;
+        schedule_ai_index_refresh(&core, &ai_runtime);
         start_project_watcher(&app, &core, watcher.inner())?;
     }
     result
@@ -4088,10 +4303,12 @@ async fn project_open_directory(
     watcher: tauri::State<'_, SharedProjectWatcher>,
     path: String,
 ) -> Result<ProjectInfo, String> {
+    flush_project_checkpoint(state.clone(), "project lifecycle transition").await?;
     let plugins = plugins.inner().clone();
     let ai_runtime = ai_runtime.inner().clone();
     let core = state.inner().clone();
     let request_runtime = ai_runtime.clone();
+    let sync_plugins = plugins.clone();
     let result = with_core(state, move |core| {
         if let Some(previous_project) = core.info().map(|info| info.root) {
             cancel_ai_requests_for(&plugins, &request_runtime, &previous_project, None)
@@ -4101,16 +4318,15 @@ async fn project_open_directory(
                 .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
                 .deactivate_project(&previous_project);
         }
-        let info = core.open_directory(trusted_shell(), path)?;
-        let mut host = plugins
-            .lock()
-            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
-        sync_project_usage(core.project(trusted_shell())?, &mut host)?;
+        let info = core.open_directory_without_flush(trusted_shell(), path)?;
         Ok(info)
     })
     .await;
     if result.is_ok() {
-        refresh_ai_index(&core, &ai_runtime);
+        sync_project_usage_nonblocking(core.clone(), sync_plugins).await?;
+        flush_project_checkpoint_for_shared_core(core.clone(), "project startup synchronization")
+            .await?;
+        schedule_ai_index_refresh(&core, &ai_runtime);
         start_project_watcher(&app, &core, watcher.inner())?;
     }
     result
@@ -4125,10 +4341,12 @@ async fn project_new(
     watcher: tauri::State<'_, SharedProjectWatcher>,
     path: String,
 ) -> Result<ProjectInfo, String> {
+    flush_project_checkpoint(state.clone(), "project lifecycle transition").await?;
     let plugins = plugins.inner().clone();
     let ai_runtime = ai_runtime.inner().clone();
     let core = state.inner().clone();
     let request_runtime = ai_runtime.clone();
+    let sync_plugins = plugins.clone();
     let result = with_core(state, move |core| {
         if let Some(previous_project) = core.info().map(|info| info.root) {
             cancel_ai_requests_for(&plugins, &request_runtime, &previous_project, None)
@@ -4138,16 +4356,15 @@ async fn project_new(
                 .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
                 .deactivate_project(&previous_project);
         }
-        let info = core.open_directory(trusted_shell(), path)?;
-        let mut host = plugins
-            .lock()
-            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
-        sync_project_usage(core.project(trusted_shell())?, &mut host)?;
+        let info = core.open_directory_without_flush(trusted_shell(), path)?;
         Ok(info)
     })
     .await;
     if result.is_ok() {
-        refresh_ai_index(&core, &ai_runtime);
+        sync_project_usage_nonblocking(core.clone(), sync_plugins).await?;
+        flush_project_checkpoint_for_shared_core(core.clone(), "project startup synchronization")
+            .await?;
+        schedule_ai_index_refresh(&core, &ai_runtime);
         start_project_watcher(&app, &core, watcher.inner())?;
     }
     result
@@ -4162,11 +4379,12 @@ async fn project_close(
     watcher: tauri::State<'_, SharedProjectWatcher>,
 ) -> Result<(), String> {
     stop_project_watcher(watcher.inner())?;
+    flush_project_checkpoint(state.clone(), "project lifecycle transition").await?;
     let plugins = plugins.inner().clone();
     let ai_runtime = ai_runtime.inner().clone();
     with_core(state, move |core| {
         let project_id = core.info().map(|info| info.root);
-        core.close(trusted_shell())?;
+        core.close_without_flush(trusted_shell())?;
         ai::detach_project_index(&ai_runtime);
         if let Some(project_id) = project_id {
             let mut host = plugins
@@ -4194,72 +4412,15 @@ async fn project_close(
 
 #[tauri::command]
 async fn project_info(state: tauri::State<'_, SharedCore>) -> Result<Option<ProjectInfo>, String> {
-    with_core(state, |core| Ok(core.info())).await
+    with_read_project(state, |project| Ok(project.info())).await
 }
 
 #[tauri::command]
-async fn project_reconcile_external_changes(
+async fn project_import_checkpoint(
     state: tauri::State<'_, SharedCore>,
 ) -> Result<ExternalChangeReport, String> {
     with_core(state, |core| {
-        core.project(trusted_shell())?.reconcile_external_changes()
-    })
-    .await
-}
-
-#[tauri::command]
-async fn project_finish_divergence_export(
-    state: tauri::State<'_, SharedCore>,
-) -> Result<(), String> {
-    with_core(state, |core| {
-        core.project_mut(trusted_shell())?.finish_divergence_export()
-    })
-    .await
-}
-
-#[tauri::command]
-async fn project_rebuild_from_files(
-    state: tauri::State<'_, SharedCore>,
-) -> Result<ExternalChangeReport, String> {
-    with_core(state, |core| {
-        core.project_mut(trusted_shell())?.rebuild_from_files()
-    })
-    .await
-}
-
-#[tauri::command]
-async fn project_resolve_conflict_use_disk(
-    state: tauri::State<'_, SharedCore>,
-    path: String,
-) -> Result<ExternalChangeReport, String> {
-    with_core(state, move |core| {
-        core.project(trusted_shell())?
-            .resolve_reconciliation_conflict_use_disk(&path)
-    })
-    .await
-}
-
-#[tauri::command]
-async fn project_resolve_conflict_use_database(
-    state: tauri::State<'_, SharedCore>,
-    path: String,
-) -> Result<(), String> {
-    with_core(state, move |core| {
-        core.project(trusted_shell())?
-            .resolve_reconciliation_conflict_use_database(&path)
-    })
-    .await
-}
-
-#[tauri::command]
-async fn project_resolve_conflict_manual_document(
-    state: tauri::State<'_, SharedCore>,
-    path: String,
-    body: String,
-) -> Result<(), String> {
-    with_core(state, move |core| {
-        core.project(trusted_shell())?
-            .resolve_reconciliation_conflict_manual_document(&path, &body)
+        core.project_mut(trusted_shell())?.import_checkpoint()
     })
     .await
 }
@@ -4270,9 +4431,8 @@ async fn project_save_recovery_copy(
     entity_id: String,
     body: String,
 ) -> Result<String, String> {
-    with_core(state, move |core| {
-        core.project(trusted_shell())?
-            .save_recovery_copy(&entity_id, &body)
+    with_read_project(state, move |project| {
+        project.save_recovery_copy(&entity_id, &body)
     })
     .await
 }
@@ -4284,24 +4444,23 @@ fn git_tool_info() -> GitToolInfo {
 
 #[tauri::command]
 async fn project_git_status(state: tauri::State<'_, SharedCore>) -> Result<GitStatus, String> {
-    with_core(state, |core| core.project(trusted_shell())?.git_status()).await
+    with_read_project(state, |project| project.git_status()).await
 }
 
 #[tauri::command]
 async fn project_git_preflight(
     state: tauri::State<'_, SharedCore>,
 ) -> Result<GitPreflight, String> {
-    with_core(state, |core| core.project(trusted_shell())?.git_preflight()).await
+    flush_project_checkpoint(state.clone(), "git preflight").await?;
+    with_read_project(state, |project| project.git_preflight_after_checkpoint()).await
 }
 
 #[tauri::command]
 async fn project_git_staging_preview(
     state: tauri::State<'_, SharedCore>,
 ) -> Result<GitPreflight, String> {
-    with_core(state, |core| {
-        core.project(trusted_shell())?.git_staging_preview()
-    })
-    .await
+    flush_project_checkpoint(state.clone(), "git staging preview").await?;
+    with_read_project(state, |project| project.git_preflight_after_checkpoint()).await
 }
 
 #[tauri::command]
@@ -4311,7 +4470,7 @@ async fn project_git_init(state: tauri::State<'_, SharedCore>) -> Result<GitStat
 
 #[tauri::command]
 async fn project_git_log(state: tauri::State<'_, SharedCore>) -> Result<Vec<GitLogEntry>, String> {
-    with_core(state, |core| core.project(trusted_shell())?.git_log()).await
+    with_read_project(state, |project| project.git_log()).await
 }
 
 #[tauri::command]
@@ -4320,8 +4479,9 @@ async fn project_git_commit(
     message: String,
     paths: Option<Vec<String>>,
 ) -> Result<GitStatus, String> {
-    with_core(state, move |core| {
-        core.project(trusted_shell())?.git_commit(message, paths)
+    flush_project_checkpoint(state.clone(), "git commit").await?;
+    with_read_project(state, move |project| {
+        project.git_commit_after_checkpoint(message, paths)
     })
     .await
 }
@@ -4331,10 +4491,7 @@ async fn project_git_show_tree(
     state: tauri::State<'_, SharedCore>,
     hash: String,
 ) -> Result<Vec<String>, String> {
-    with_core(state, move |core| {
-        core.project(trusted_shell())?.git_show_tree(&hash)
-    })
-    .await
+    with_read_project(state, move |project| project.git_show_tree(&hash)).await
 }
 
 #[tauri::command]
@@ -4343,10 +4500,7 @@ async fn project_git_show_file(
     hash: String,
     path: String,
 ) -> Result<String, String> {
-    with_core(state, move |core| {
-        core.project(trusted_shell())?.git_show_file(&hash, &path)
-    })
-    .await
+    with_read_project(state, move |project| project.git_show_file(&hash, &path)).await
 }
 
 #[tauri::command]
@@ -4355,7 +4509,7 @@ async fn project_git_reset_hard(
     hash: String,
 ) -> Result<GitResetResult, String> {
     with_core(state, move |core| {
-        core.project(trusted_shell())?.git_reset_hard(&hash)
+        core.project_mut(trusted_shell())?.git_reset_hard(&hash)
     })
     .await
 }
@@ -4364,10 +4518,7 @@ async fn project_git_reset_hard(
 async fn project_git_remote_list(
     state: tauri::State<'_, SharedCore>,
 ) -> Result<Vec<GitRemote>, String> {
-    with_core(state, |core| {
-        core.project(trusted_shell())?.git_remote_list()
-    })
-    .await
+    with_read_project(state, |project| project.git_remote_list()).await
 }
 
 #[tauri::command]
@@ -4425,7 +4576,8 @@ async fn project_git_restore_from_upstream(
     state: tauri::State<'_, SharedCore>,
 ) -> Result<GitResetResult, String> {
     with_core(state, |core| {
-        core.project(trusted_shell())?.git_restore_from_upstream()
+        core.project_mut(trusted_shell())?
+            .git_restore_from_upstream()
     })
     .await
 }
@@ -4446,10 +4598,14 @@ async fn project_open_memory(
     watcher: tauri::State<'_, SharedProjectWatcher>,
 ) -> Result<(), String> {
     stop_project_watcher(watcher.inner())?;
+    flush_project_checkpoint(state.clone(), "project lifecycle transition").await?;
     let core = state.inner().clone();
-    let result = with_core(state, |core| core.open_memory(trusted_shell())).await;
+    let result = with_core(state, |core| {
+        core.open_memory_without_flush(trusted_shell())
+    })
+    .await;
     if result.is_ok() {
-        refresh_ai_index(&core, ai_runtime.inner());
+        schedule_ai_index_refresh(&core, ai_runtime.inner());
     }
     result
 }
@@ -4469,6 +4625,8 @@ async fn project_open_default(
     let plugins = plugins.inner().clone();
     let core = state.inner().clone();
     let ai_runtime = ai_runtime.inner().clone();
+    let sync_plugins = plugins.clone();
+    flush_project_checkpoint(state.clone(), "project lifecycle transition").await?;
     let result = with_core(state, move |core| {
         std::fs::create_dir_all(&directory).map_err(|error| CoreError::Io {
             operation: "create app data directory",
@@ -4481,15 +4639,15 @@ async fn project_open_default(
                 .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
                 .deactivate_project(&previous_project);
         }
-        core.open_directory(trusted_shell(), project_directory)?;
-        let mut host = plugins
-            .lock()
-            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
-        sync_project_usage(core.project(trusted_shell())?, &mut host)
+        core.open_directory_without_flush(trusted_shell(), project_directory)?;
+        Ok(())
     })
     .await;
     if result.is_ok() {
-        refresh_ai_index(&core, &ai_runtime);
+        sync_project_usage_nonblocking(core.clone(), sync_plugins).await?;
+        flush_project_checkpoint_for_shared_core(core.clone(), "project startup synchronization")
+            .await?;
+        schedule_ai_index_refresh(&core, &ai_runtime);
         start_project_watcher(&app, &core, watcher.inner())?;
     }
     result
@@ -4521,7 +4679,7 @@ async fn project_create_map(
 
 #[tauri::command]
 async fn project_list_entities(state: tauri::State<'_, SharedCore>) -> Result<Vec<Entity>, String> {
-    with_core(state, |core| core.project(trusted_shell())?.list_entities()).await
+    with_read_project(state, |project| project.list_entities()).await
 }
 
 #[tauri::command]
@@ -4529,10 +4687,7 @@ async fn project_search(
     state: tauri::State<'_, SharedCore>,
     query: String,
 ) -> Result<Vec<Entity>, String> {
-    with_core(state, move |core| {
-        core.project(trusted_shell())?.search(query)
-    })
-    .await
+    with_read_project(state, move |project| project.search(query)).await
 }
 
 #[tauri::command]
@@ -4612,10 +4767,7 @@ async fn project_list_documents(
     state: tauri::State<'_, SharedCore>,
     entity_id: String,
 ) -> Result<Vec<daena_core::Document>, String> {
-    with_core(state, move |core| {
-        core.project(trusted_shell())?.list_documents(entity_id)
-    })
-    .await
+    with_read_project(state, move |project| project.list_documents(entity_id)).await
 }
 
 #[tauri::command]
@@ -4636,10 +4788,7 @@ async fn project_list_fields(
     state: tauri::State<'_, SharedCore>,
     entity_id: String,
 ) -> Result<Vec<FieldValue>, String> {
-    with_core(state, move |core| {
-        core.project(trusted_shell())?.list_fields(entity_id)
-    })
-    .await
+    with_read_project(state, move |project| project.list_fields(entity_id)).await
 }
 
 #[tauri::command]
@@ -4665,10 +4814,7 @@ async fn project_list_relationships(
     state: tauri::State<'_, SharedCore>,
     entity_id: String,
 ) -> Result<Vec<Relationship>, String> {
-    with_core(state, move |core| {
-        core.project(trusted_shell())?.list_relationships(entity_id)
-    })
-    .await
+    with_read_project(state, move |project| project.list_relationships(entity_id)).await
 }
 
 #[tauri::command]
@@ -4676,10 +4822,7 @@ async fn project_list_map_locations(
     state: tauri::State<'_, SharedCore>,
     entity_id: String,
 ) -> Result<Vec<daena_core::maps::LocationReference>, String> {
-    with_core(state, move |core| {
-        core.project(trusted_shell())?.map_locations(entity_id)
-    })
-    .await
+    with_read_project(state, move |project| project.map_locations(entity_id)).await
 }
 
 #[tauri::command]
@@ -4983,7 +5126,9 @@ fn maps_navigation_service_handler(core: SharedCore) -> daena_plugin_host::Servi
             .map_err(|error| {
                 HostError(format!("invalid daena.maps/navigation@1 payload: {error}"))
             })?;
-        let mut core = core
+        let session = current_session(&core).map_err(HostError)?;
+        let mut core = session
+            .core
             .lock()
             .map_err(|_| HostError("core lock poisoned".into()))?;
         let outcome = resolve_maps_navigation(&mut core, &request).map_err(HostError)?;
@@ -5150,10 +5295,7 @@ async fn project_list_assets(
     state: tauri::State<'_, SharedCore>,
     entity_id: String,
 ) -> Result<Vec<Asset>, String> {
-    with_core(state, move |core| {
-        core.project(trusted_shell())?.list_assets(entity_id)
-    })
-    .await
+    with_read_project(state, move |project| project.list_assets(entity_id)).await
 }
 
 #[tauri::command]
@@ -5165,8 +5307,9 @@ async fn project_backup(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    with_core(state, move |core| {
-        core.project(trusted_shell())?.portable_backup_to(directory)
+    flush_project_checkpoint(state.clone(), "portable backup").await?;
+    with_read_project(state, move |project| {
+        project.portable_backup_after_checkpoint(directory)
     })
     .await
 }
@@ -5181,7 +5324,8 @@ async fn project_recovery_backup(
         .app_data_dir()
         .map_err(|error| error.to_string())?;
     with_core(state, move |core| {
-        core.project_mut(trusted_shell())?.recovery_backup_to(directory)
+        core.project_mut(trusted_shell())?
+            .recovery_backup_to(directory)
     })
     .await
 }
@@ -5274,7 +5418,7 @@ async fn migration_apply(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let core = Arc::new(Mutex::new(CoreService::new()));
+    let core = new_shared_core();
     let plugins = Arc::new(Mutex::new(
         bundled_plugin_host(core.clone())
             .expect("canonical bundled plugin manifests must validate"),
@@ -5375,12 +5519,7 @@ pub fn run() {
             project_new,
             project_close,
             project_info,
-            project_reconcile_external_changes,
-            project_finish_divergence_export,
-            project_rebuild_from_files,
-            project_resolve_conflict_use_disk,
-            project_resolve_conflict_use_database,
-            project_resolve_conflict_manual_document,
+            project_import_checkpoint,
             project_save_recovery_copy,
             project_git_status,
             project_git_preflight,

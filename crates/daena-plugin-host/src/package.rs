@@ -5,6 +5,7 @@
 //! atomically moved into the host-owned version store.
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use daena_plugin_api::{parse_manifest, PluginManifest};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,7 +13,6 @@ use std::fs;
 use std::io::{Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use daena_plugin_api::{parse_manifest, PluginManifest};
 use zip::ZipArchive;
 
 const SIGNATURE_FILE: &str = "signature.json";
@@ -499,10 +499,7 @@ fn verify_installed(
     })
 }
 
-fn read_package_tree(
-    root: &Path,
-    limits: ArchiveLimits,
-) -> Result<PackageTree, PackageError> {
+fn read_package_tree(root: &Path, limits: ArchiveLimits) -> Result<PackageTree, PackageError> {
     let mut files = Vec::new();
     let mut names = BTreeSet::new();
     let mut folded = BTreeSet::new();

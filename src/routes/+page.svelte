@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   const logoUrl = "/branding/logo.png";
-import { project, type Asset, type Entity, type Relationship, type MapLocation, type ProjectModuleManifest, type ProjectInfo, type GitStatus, type GitPreflight, type GitLogEntry, type PluginAdminEntry, type PluginUpgradePlan, type ExternalChangeReport, type AiSettings, type AiProviderStatus, type AiStreamEvent, type AiIndexStatus } from "$lib/project/client";
+  import { project, type Asset, type Entity, type Relationship, type MapLocation, type ProjectModuleManifest, type ProjectInfo, type GitStatus, type GitPreflight, type GitLogEntry, type PluginAdminEntry, type PluginUpgradePlan, type AiSettings, type AiProviderStatus, type AiStreamEvent, type AiIndexStatus } from "$lib/project/client";
   import type { EntityTemplate, FieldDefinition, ModuleContext, ModuleId, UUID, ModuleManifest, DaenaModule } from "../../packages/module-api/src/index";
   import { buildModuleContext } from "$lib/modules/context";
   import HostView from "$lib/plugins/HostView.svelte";
@@ -521,11 +521,8 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   function syncStatusLabel(info: ProjectInfo | null) {
     const sync = info?.sync;
     if (!sync) return "Storage status unavailable";
-    if (sync.state === "failed") return `Export failed · ${sync.diagnostics.length} item${sync.diagnostics.length === 1 ? "" : "s"}`;
-    if (sync.reconciliation_state === "blocked") return "External changes require project review";
-    if (sync.reconciliation_state === "failed") return "External changes need attention";
+    if (sync.state === "failed") return `Export failed · ${sync.export_error ?? "checkpoint unavailable"}`;
     if (sync.state === "exporting") return `Saving to project files · ${sync.dirty_count} pending`;
-    if (sync.reconciliation_state === "reconciled") return "External changes reconciled";
     return "Project files up to date";
   }
 
@@ -1146,48 +1143,11 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     savedAt = "";
   }
 
-  async function handleExternalChange(report: ExternalChangeReport) {
-    if (report.diagnostics.length > 0) {
-      projectDiagnostics = report.diagnostics;
-      documentConflict = { paths: report.paths, diagnostics: report.diagnostics };
-      return;
-    }
-    if (!report.changed) return;
-    projectDiagnostics = [];
-    await loadEntities();
-    const selectedId = selected?.id;
-    const overlapsSelected = Boolean(selectedId && report.paths.some((path) => path === "project.json" || path.startsWith(`entities/${selectedId}/`)));
-    if (!overlapsSelected) return;
-    if (hasUnsavedChanges) {
-      documentConflict = { paths: report.paths, diagnostics: [] };
-      conflictDiskBody = normalizeDocument((await project.listDocuments(selectedId!))[0]?.body ?? "", "markdown");
-      return;
-    }
-    try { await reloadSelectedFromDisk(); }
-    catch (cause) { error = friendlyError(cause); }
-  }
-
-  async function resolveReconciliationConflict(path: string, useDisk: boolean) {
-    try {
-      if (useDisk) await project.resolveConflictUseDisk(path);
-      else await project.resolveConflictUseDatabase(path);
-      projectInfo = await project.info();
-      await loadEntities();
-      if (selected && path.startsWith(`entities/${selected.id}/`)) await reloadSelectedFromDisk();
-    } catch (cause) {
-      projectDiagnostics = [friendlyError(cause)];
-    }
-  }
-
-  async function resolveDocumentConflictManually(path: string) {
-    if (!selected || !path.endsWith(`/document.md`) || !path.startsWith(`entities/${selected.id}/`)) return;
-    try {
-      await project.resolveConflictManualDocument(path, documentBody);
-      projectInfo = await project.info();
-      await reloadSelectedFromDisk();
-    } catch (cause) {
-      projectDiagnostics = [friendlyError(cause)];
-    }
+  function handlePortableFilesChanged(paths: string[]) {
+    if (paths.length === 0) return;
+    projectDiagnostics = [
+      `Portable files changed externally (${paths.length}); review and import the checkpoint explicitly if needed.`,
+    ];
   }
 
   async function reloadConflict() {
@@ -1664,28 +1624,12 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
       if (request === searchRequest) error = friendlyError(cause);
     }
   }
-  async function reviewExternalChanges() {
+  async function importPortableCheckpoint() {
     try {
-      await project.reconcileExternalChanges();
-      projectInfo = await project.info();
-    } catch (cause) { error = friendlyError(cause); }
-  }
-  async function finishDivergenceExport() {
-    try {
-      await project.finishDivergenceExport();
-      projectInfo = await project.info();
-    } catch (cause) { error = friendlyError(cause); }
-  }
-  async function rebuildProjectFromFiles() {
-    const hasDiscardableRuntime = projectInfo?.sync.state !== "clean" || projectInfo?.sync.reconciliation_state === "blocked";
-    const confirmation = hasDiscardableRuntime
-      ? "Rebuild from portable files and discard the archived runtime state?"
-      : "Rebuild the runtime projection from portable files?";
-    if (!window.confirm(confirmation)) return;
-    try {
-      await project.rebuildFromFiles();
+      await project.importCheckpoint();
       projectInfo = await project.info();
       await loadEntities();
+      projectDiagnostics = [];
     } catch (cause) { error = friendlyError(cause); }
   }
   async function createPortableBackup() {
@@ -1716,7 +1660,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     void loadRecentProjects();
     void closeNativePluginWebviews();
     let unlisten: (() => void) | undefined;
-    void listen<ExternalChangeReport>("project-external-change", (event) => void handleExternalChange(event.payload)).then((cleanup) => { unlisten = cleanup; }).catch(() => {});
+    void listen<string[]>("project-portable-files-changed", (event) => handlePortableFilesChanged(event.payload)).then((cleanup) => { unlisten = cleanup; }).catch(() => {});
     let unlistenMaps: (() => void) | undefined;
     void listen<{ mapEntityId: string; linkId?: string }>("maps-navigation", async (event) => {
       try {
@@ -1788,7 +1732,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
           </div>
         {/if}
       </div>
-      <div class:sync-failed={projectInfo?.sync.state === "failed" || projectInfo?.sync.reconciliation_state === "failed" || projectInfo?.sync.reconciliation_state === "blocked"} class:sync-pending={projectInfo?.sync.state === "exporting"} class="sync-summary" aria-live="polite" title={projectInfo?.sync.diagnostics[0]?.last_error ?? projectInfo?.sync.reconciliation_diagnostics[0] ?? undefined}>
+      <div class:sync-failed={projectInfo?.sync.state === "failed"} class:sync-pending={projectInfo?.sync.state === "exporting"} class="sync-summary" aria-live="polite" title={projectInfo?.sync.export_error ?? undefined}>
         <span class="sync-dot"></span><span>{syncStatusLabel(projectInfo)}</span>
       </div>
       {#if enabledWorkspaceSections().length > 0}<button aria-expanded={showCreateForm} class="rail-create-button" onclick={toggleCreateForm}><span class="rail-icon">＋</span><span>New entry</span></button>{/if}
@@ -2120,9 +2064,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     {:else if enabledWorkspaceSections().length === 0}
       <section class="empty-workspace-state"><div class="disabled-icon">◌</div><span class="overline">WORKSPACE READY</span><h1>Choose a workspace to begin.</h1><p>No workspace modules are enabled in this project. Enable one from Settings → Plugins to start working.</p><button class="primary-button" onclick={() => void openSettings("plugins")}>Open Plugins</button></section>
     {:else}
-      {#if projectDiagnostics.length}<div class="project-diagnostics" role="alert"><strong>Canonical source diagnostics</strong>{#each projectDiagnostics as diagnostic}<span>{diagnostic}</span>{/each}<small>Editing is read-only until the source files are valid again.</small></div>{/if}
-      {#if projectInfo?.sync.reconciliation_state === "blocked"}<div class="project-diagnostics project-conflicts" role="alert"><strong>External changes require review</strong>{#each projectInfo.sync.reconciliation_diagnostics as diagnostic}<span>{diagnostic}</span>{/each}<div class="conflict-actions"><button class="quiet-button" onclick={() => void reviewExternalChanges()}>Review changes</button><button class="quiet-button" onclick={() => void finishDivergenceExport()}>Finish database export</button><button class="quiet-button" onclick={() => void rebuildProjectFromFiles()}>Rebuild from files</button></div></div>{/if}
-      {#if projectInfo?.sync.conflicts.length}<div class="project-diagnostics project-conflicts" role="alert"><strong>External conflicts need a decision</strong>{#each projectInfo.sync.conflicts as conflict}<span>{conflict.path}</span><details class="conflict-compare"><summary>Compare stored versions</summary><small>Baseline: {conflict.baseline_hash ?? "missing"}</small><small>Database: {conflict.database_hash ?? "missing"}</small><small>Disk: {conflict.disk_hash ?? "missing"}</small></details><div class="conflict-actions"><button class="quiet-button" onclick={() => void resolveReconciliationConflict(conflict.path, true)}>Use disk version</button><button class="quiet-button" onclick={() => void resolveReconciliationConflict(conflict.path, false)}>Use database version</button>{#if selected && conflict.path === `entities/${selected.id}/document.md`}<button class="quiet-button" onclick={() => void resolveDocumentConflictManually(conflict.path)}>Use current draft</button>{/if}</div>{/each}</div>{/if}
+      {#if projectDiagnostics.length}<div class="project-diagnostics" role="alert"><span>{projectDiagnostics[0]}</span><button class="quiet-button" onclick={() => void importPortableCheckpoint()}>Import checkpoint</button></div>{/if}
       <div class="workspace-heading"><div><span class="overline">{section === "lore" ? "WORLD BIBLE" : section === "timeline" ? "CHRONOLOGY" : "DRAFTING DESK"}</span><h1>{sectionLabel()}</h1><p>{section === "lore" ? "A living reference for every person, place, and power." : section === "timeline" ? "Events, eras, and the threads that connect them." : writingView === "manuscripts" ? "Draft stories, essays, and other long-form work." : "Build the pages, notes, and references behind the story."}</p></div><div class="heading-actions">{#if section !== "writing"}<button class="quiet-button" onclick={openProjection}>Open {section === "lore" ? "graph" : "timeline"} ↗</button>{/if}</div></div>
       <section class="workspace-grid">
         <aside class="collection-panel panel-surface">
@@ -2203,7 +2145,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
   .welcome, .disabled-state { max-width: 1080px; min-height: calc(100vh - 58px); margin: auto; padding: 10vh 7vw; display: flex; align-items: center; gap: 8vw; } .welcome-copy { flex: 1; } .overline, .panel-kicker { display: block; color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: .18em; } .welcome h1 { margin: 20px 0 18px; font: 500 clamp(48px, 6vw, 78px)/.98 var(--font-display); letter-spacing: -.04em; } .welcome h1 em { color: var(--accent); font-style: italic; } .welcome p { max-width: 380px; margin: 0; color: var(--ink-soft); font-size: 16px; line-height: 1.7; } .welcome-art { position: relative; width: 360px; height: 390px; } .orb { position: absolute; border-radius: 50%; } .orb-one { top: 16px; right: 15px; width: 275px; height: 275px; background: radial-gradient(circle at 33% 30%, #eed5a5, #c2794d 64%, #7b4d3f); box-shadow: 30px 35px 60px rgba(115,74,56,.22); } .orb-two { left: 10px; bottom: 36px; width: 140px; height: 140px; background: #365342; box-shadow: 14px 16px 30px rgba(45,71,54,.2); } .art-card { position: absolute; right: -10px; bottom: 0; width: 235px; padding: 22px; border: 1px solid rgba(255,255,255,.65); border-radius: 12px; background: rgba(255,254,250,.86); box-shadow: var(--shadow-lg); } .art-card span, .art-card small { display: block; color: var(--accent); font-size: 9px; font-weight: 800; letter-spacing: .16em; } .art-card strong { display: block; margin: 17px 0 27px; font: 500 20px/1.18 var(--font-display); } .art-card small { color: var(--ink-faint); font-weight: 500; letter-spacing: 0; }
   .primary-button, .quiet-button, .add-button { border: 0; border-radius: 8px; cursor: pointer; } .primary-button { padding: 10px 15px; border: 1px solid rgba(255,255,255,.08); background: var(--accent-dark); color: #fff; font-weight: 700; font-size: 12px; box-shadow: 0 2px 0 #263d30, 0 7px 16px rgba(42,68,51,.16); transition: background .16s ease, box-shadow .16s ease, transform .16s ease; } .primary-button:hover { background: #2b4535; box-shadow: 0 2px 0 #263d30, 0 10px 20px rgba(42,68,51,.2); transform: translateY(-1px); } .primary-button:active { box-shadow: 0 1px 0 #263d30, 0 3px 8px rgba(42,68,51,.14); transform: translateY(1px); } .primary-button:focus-visible { outline: 3px solid rgba(180,119,63,.32); outline-offset: 2px; } .primary-button:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; transform: none; } .quiet-button { padding: 10px 12px; border: 1px solid #ded8cd; background: var(--surface); color: var(--ink-soft); font-size: 12px; box-shadow: 0 1px 2px rgba(48,45,38,.05); transition: background .16s ease, border-color .16s ease, box-shadow .16s ease, color .16s ease, transform .16s ease; } .quiet-button:hover { border-color: #cbbda9; background: var(--surface-muted); color: var(--ink); box-shadow: 0 3px 8px rgba(48,45,38,.08); transform: translateY(-1px); } .quiet-button:active { box-shadow: 0 1px 2px rgba(48,45,38,.05); transform: translateY(1px); } .quiet-button:focus-visible { outline: 3px solid rgba(180,119,63,.24); outline-offset: 2px; } .quiet-button:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; transform: none; } .maps-welcome { align-items: stretch; } .maps-welcome-actions { display: flex; gap: 8px; margin-top: 26px; } .maps-welcome-list { flex: 0 0 380px; display: flex; width: 380px; min-height: 380px; max-height: calc(100vh - 220px); flex-direction: column; } .maps-welcome-list .panel-heading { flex: 0 0 auto; } .maps-welcome-list .collection-list { max-height: none; flex: 1 1 auto; overflow-y: auto; }
   .workspace-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; padding: 42px 40px 25px; } .workspace-heading h1 { margin: 8px 0 4px; font: 500 38px/1 var(--font-display); } .workspace-heading p { margin: 0; color: var(--ink-soft); font-size: 13px; } .heading-actions { display: flex; gap: 7px; } .projection-bar { min-height: 42px; margin: 0 40px 15px; padding: 0 14px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,254,250,.72); } .projection-bar:empty { display: none; } .workspace-grid { display: grid; grid-template-columns: 245px minmax(360px, 1fr) 270px; gap: 14px; padding: 0 40px 40px; align-items: start; } .panel-surface, .editor-panel { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-sm); } .collection-panel, .inspector-panel { min-height: 650px; } .collection-panel { display: flex; flex-direction: column; } .panel-heading, .inspector-heading { display: flex; align-items: center; justify-content: space-between; padding: 18px 17px 12px; } .panel-heading strong { display: block; margin-top: 5px; font: 500 28px var(--font-display); }
-  .project-diagnostics { display: grid; gap: 5px; margin: 0 25px 14px; padding: 12px 14px; border: 1px solid #e2b48c; border-radius: 9px; background: #fff5e9; color: #765a39; font-size: 11px; } .project-diagnostics strong { font-size: 12px; } .project-diagnostics small { margin-top: 3px; color: #9a7957; } .editor-panel { min-height: 650px; padding: 24px 25px 18px; } .editor-header { display: flex; align-items: flex-start; justify-content: space-between; min-height: 72px; } .editor-header h2 { margin: 8px 0 0; font: 500 28px/1.1 var(--font-display); } .editor-status { color: var(--ink-faint); font-size: 11px; } .saving-dot, .saved-dot { display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: #d6a35f; } .saved-dot { width: auto; height: auto; margin: 0 4px 0 0; color: #6fa276; background: transparent; } .document-conflict { margin: -4px 0 16px; padding: 13px 14px; border: 1px solid #e2b48c; border-radius: 9px; background: #fff5e9; color: #765a39; } .document-conflict strong { font-size: 12px; } .document-conflict p { margin: 5px 0 10px; font-size: 11px; line-height: 1.5; } .conflict-compare { margin: 8px 0 10px; padding: 8px 10px; border: 1px solid #ead7c2; border-radius: 7px; background: #fffaf3; } .conflict-compare summary { cursor: pointer; font-size: 11px; font-weight: 700; } .conflict-compare pre { max-height: 180px; margin: 8px 0 0; overflow: auto; white-space: pre-wrap; font: 11px/1.5 ui-monospace, monospace; }   .conflict-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .project-diagnostics { display: grid; gap: 5px; margin: 0 25px 14px; padding: 12px 14px; border: 1px solid #e2b48c; border-radius: 9px; background: #fff5e9; color: #765a39; font-size: 11px; } .editor-panel { min-height: 650px; padding: 24px 25px 18px; } .editor-header { display: flex; align-items: flex-start; justify-content: space-between; min-height: 72px; } .editor-header h2 { margin: 8px 0 0; font: 500 28px/1.1 var(--font-display); } .editor-status { color: var(--ink-faint); font-size: 11px; } .saving-dot, .saved-dot { display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: #d6a35f; } .saved-dot { width: auto; height: auto; margin: 0 4px 0 0; color: #6fa276; background: transparent; } .document-conflict { margin: -4px 0 16px; padding: 13px 14px; border: 1px solid #e2b48c; border-radius: 9px; background: #fff5e9; color: #765a39; } .document-conflict strong { font-size: 12px; } .document-conflict p { margin: 5px 0 10px; font-size: 11px; line-height: 1.5; } .conflict-compare { margin: 8px 0 10px; padding: 8px 10px; border: 1px solid #ead7c2; border-radius: 7px; background: #fffaf3; } .conflict-compare summary { cursor: pointer; font-size: 11px; font-weight: 700; } .conflict-compare pre { max-height: 180px; margin: 8px 0 0; overflow: auto; white-space: pre-wrap; font: 11px/1.5 ui-monospace, monospace; }   .conflict-actions { display: flex; flex-wrap: wrap; gap: 6px; }
   .map-editor-shell { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; }
   .map-editor-toolbar { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 18px; border-bottom: 1px solid var(--line); background: var(--surface); }
   .map-save-chip { display: inline-flex; align-items: center; gap: 7px; color: var(--ink-soft); font-size: 11px; } .map-save-dot { width: 7px; height: 7px; border-radius: 50%; background: #72a97a; }

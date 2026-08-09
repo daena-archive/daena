@@ -8,23 +8,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-#[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(test)]
-use std::sync::Mutex;
-
-#[cfg(test)]
-static TEST_FAIL_EXPORT_AFTER: AtomicUsize = AtomicUsize::new(0);
-#[cfg(test)]
-static TEST_FAIL_EXPORT_REQUEST: Mutex<Option<String>> = Mutex::new(None);
-
-#[cfg(test)]
-pub(crate) fn set_test_export_failure_after(request_id: Option<&str>, limit: usize) {
-    *TEST_FAIL_EXPORT_REQUEST.lock().unwrap() = request_id.map(str::to_owned);
-    TEST_FAIL_EXPORT_AFTER.store(limit, Ordering::SeqCst);
-}
-
-const SYNC_ROOT: &str = ".daena/sync";
+const CHECKPOINT_ROOT: &str = ".daena/checkpoints";
 const LOCK_PATH: &str = ".daena/project.lock";
 const EXPORT_LOCK_PATH: &str = ".daena/export.lock";
 
@@ -103,8 +87,6 @@ struct Replacement {
 pub(crate) struct SyncExporter {
     root: PathBuf,
     directory: PathBuf,
-    #[cfg(test)]
-    request_id: String,
     replacements: BTreeMap<String, Replacement>,
     lock: Option<SyncLock>,
 }
@@ -113,7 +95,7 @@ impl SyncExporter {
     pub(crate) fn begin(root: &Path, request_id: &str) -> Result<Self, CoreError> {
         Uuid::parse_str(request_id)
             .map_err(|_| CoreError::Validation("transaction request ID must be a UUID".into()))?;
-        let sync_root = root.join(SYNC_ROOT);
+        let sync_root = root.join(CHECKPOINT_ROOT);
         fs::create_dir_all(&sync_root).map_err(|source| CoreError::Io {
             operation: "create sync root",
             source,
@@ -169,8 +151,6 @@ impl SyncExporter {
         Ok(Self {
             root: root.to_path_buf(),
             directory,
-            #[cfg(test)]
-            request_id: request_id.into(),
             replacements: BTreeMap::new(),
             lock: Some(SyncLock {
                 path: lock_path,
@@ -334,15 +314,6 @@ impl SyncExporter {
                 )));
             }
             applied.push(replacement.target.clone());
-            #[cfg(test)]
-            if TEST_FAIL_EXPORT_REQUEST.lock().unwrap().as_deref() == Some(self.request_id.as_str())
-                && TEST_FAIL_EXPORT_AFTER.load(Ordering::SeqCst) > 0
-                && TEST_FAIL_EXPORT_AFTER.fetch_sub(1, Ordering::SeqCst) == 1
-            {
-                return Err(CoreError::Conflict(
-                    "injected exporter failure after applied item".into(),
-                ));
-            }
         }
         fs::remove_dir_all(&self.directory).map_err(|source| CoreError::Io {
             operation: "clean sync staging directory",

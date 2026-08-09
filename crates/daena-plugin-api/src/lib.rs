@@ -46,32 +46,138 @@ pub struct CapabilityEntry {
 }
 
 pub const CAPABILITY_REGISTRY: &[CapabilityEntry] = &[
-    CapabilityEntry { id: "ai.text.generate", resource: "ai.inference", operations: &["text"], confirmation: None },
-    CapabilityEntry { id: "ai.text.generate-structured", resource: "ai.inference", operations: &["structured-text"], confirmation: None },
-    CapabilityEntry { id: "entity.read", resource: "project.entities", operations: &["read"], confirmation: None },
-    CapabilityEntry { id: "entity.write", resource: "project.entities", operations: &["create", "update"], confirmation: None },
-    CapabilityEntry { id: "entity.delete", resource: "project.entities", operations: &["delete"], confirmation: Some("interactive") },
-    CapabilityEntry { id: "document.read", resource: "project.documents", operations: &["read"], confirmation: None },
-    CapabilityEntry { id: "document.write", resource: "project.documents", operations: &["create", "update"], confirmation: None },
-    CapabilityEntry { id: "field.read:self", resource: "plugin.namespace", operations: &["read"], confirmation: None },
-    CapabilityEntry { id: "field.read:shared", resource: "shared.field", operations: &["read"], confirmation: None },
-    CapabilityEntry { id: "field.write:self", resource: "plugin.namespace", operations: &["create", "update"], confirmation: None },
-    CapabilityEntry { id: "relationship.read", resource: "project.relationships", operations: &["read"], confirmation: None },
-    CapabilityEntry { id: "relationship.write", resource: "project.relationships", operations: &["create"], confirmation: None },
-    CapabilityEntry { id: "asset.read:self", resource: "plugin.assets", operations: &["read-metadata"], confirmation: None },
-    CapabilityEntry { id: "asset.write:self", resource: "plugin.assets", operations: &["replace"], confirmation: None },
-    CapabilityEntry { id: "asset.register", resource: "plugin.assets", operations: &["register"], confirmation: None },
-    CapabilityEntry { id: "search.query", resource: "project.search", operations: &["query"], confirmation: None },
-    CapabilityEntry { id: "event.publish:<type>", resource: "declared.event", operations: &["publish"], confirmation: None },
-    CapabilityEntry { id: "event.subscribe:<type>", resource: "declared.event", operations: &["subscribe"], confirmation: None },
-    CapabilityEntry { id: "service.provide:<name>", resource: "declared.service", operations: &["provide"], confirmation: None },
-    CapabilityEntry { id: "service.call:<name>", resource: "declared.service", operations: &["call"], confirmation: None },
+    CapabilityEntry {
+        id: "ai.text.generate",
+        resource: "ai.inference",
+        operations: &["text"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "ai.text.generate-structured",
+        resource: "ai.inference",
+        operations: &["structured-text"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "entity.read",
+        resource: "project.entities",
+        operations: &["read"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "entity.write",
+        resource: "project.entities",
+        operations: &["create", "update"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "entity.delete",
+        resource: "project.entities",
+        operations: &["delete"],
+        confirmation: Some("interactive"),
+    },
+    CapabilityEntry {
+        id: "document.read",
+        resource: "project.documents",
+        operations: &["read"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "document.write",
+        resource: "project.documents",
+        operations: &["create", "update"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "field.read:self",
+        resource: "plugin.namespace",
+        operations: &["read"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "field.read:shared",
+        resource: "shared.field",
+        operations: &["read"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "field.write:self",
+        resource: "plugin.namespace",
+        operations: &["create", "update"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "relationship.read",
+        resource: "project.relationships",
+        operations: &["read"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "relationship.write",
+        resource: "project.relationships",
+        operations: &["create"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "asset.read:self",
+        resource: "plugin.assets",
+        operations: &["read-metadata"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "asset.write:self",
+        resource: "plugin.assets",
+        operations: &["replace"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "asset.register",
+        resource: "plugin.assets",
+        operations: &["register"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "search.query",
+        resource: "project.search",
+        operations: &["query"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "event.publish:<type>",
+        resource: "declared.event",
+        operations: &["publish"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "event.subscribe:<type>",
+        resource: "declared.event",
+        operations: &["subscribe"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "service.provide:<name>",
+        resource: "declared.service",
+        operations: &["provide"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "service.call:<name>",
+        resource: "declared.service",
+        operations: &["call"],
+        confirmation: None,
+    },
 ];
 
 /// Host capabilities that are never granted unless a plugin explicitly opts in
 /// through a review flow; the SDK refuses to mint them from a manifest.
-pub const DENIED_BY_DEFAULT_CAPABILITIES: &[&str] =
-    &["filesystem", "shell", "process", "dialog", "tauri", "network"];
+pub const DENIED_BY_DEFAULT_CAPABILITIES: &[&str] = &[
+    "filesystem",
+    "shell",
+    "process",
+    "dialog",
+    "tauri",
+    "network",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContractError(pub String);
@@ -993,7 +1099,10 @@ pub fn is_semver(value: &str) -> bool {
             && part.chars().all(|c| c.is_ascii_digit())
     }
     fn pre_build_part(part: &str) -> bool {
-        !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
     }
     let (core, pre, build) = match value.split_once('+') {
         Some((before, build)) => match before.split_once('-') {

@@ -11,8 +11,8 @@ It supplements, and does not override, these authorities:
 
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) defines the product and shared
   entity/document model.
-- [`PLAIN_TEXT_STORAGE_PLAN.md`](./PLAIN_TEXT_STORAGE_PLAN.md) defines canonical
-  project files, disposable indexes, and the Phase 5 Git preflight boundary.
+- [`STORAGE.md`](./STORAGE.md) defines canonical project files, runtime
+  indexes, and the Git checkpoint boundary.
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) defines shell-owned helpers vs plugin
   isolation.
 - [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md) forbids raw Git/Tauri
@@ -69,7 +69,7 @@ The governing rule is:
 
 ### 1.3 Relationship to prior Phase 5 Git boundary
 
-[`PLAIN_TEXT_STORAGE_PLAN.md`](./PLAIN_TEXT_STORAGE_PLAN.md) § Git Integration
+[`STORAGE.md`](./STORAGE.md) § Git, backups, plugins, and derived data
 already requires:
 
 1. flush pending autosaves;

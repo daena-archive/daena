@@ -1,13 +1,12 @@
 use crate::error::CoreError;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{mpsc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -247,31 +246,7 @@ pub struct ProjectInfo {
 pub struct SyncSummary {
     pub state: String,
     pub dirty_count: i64,
-    pub diagnostics: Vec<SyncDiagnostic>,
-    pub reconciliation_state: String,
-    pub reconciliation_paths: Vec<String>,
-    pub reconciliation_diagnostics: Vec<String>,
-    pub conflicts: Vec<ReconciliationConflict>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ReconciliationConflict {
-    pub path: String,
-    pub baseline_hash: Option<String>,
-    pub database_hash: Option<String>,
-    pub disk_hash: Option<String>,
-    pub state: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SyncDiagnostic {
-    pub batch_id: String,
-    pub request_id: String,
-    pub state: String,
-    pub attempt_count: i64,
-    pub error_kind: Option<String>,
-    pub last_error: Option<String>,
-    pub target_path: Option<String>,
+    pub export_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -347,15 +322,7 @@ pub struct ExternalChangeReport {
     pub diagnostics: Vec<String>,
 }
 
-/// Describes the durable work a caller requires before an operation proceeds.
-/// `revision_set` contains mutation request IDs; `None` means all work queued
-/// at the time the barrier is created.  Future mutations are intentionally not
-/// included in either form.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct FlushBarrier {
-    pub revision_set: Option<Vec<String>>,
-    pub operation_reason: String,
-}
+pub type Generation = i64;
 
 fn current_snapshot_version() -> u32 {
     1
@@ -387,9 +354,8 @@ fn project_database_path(root: &Path) -> PathBuf {
 }
 
 const RUNTIME_STORAGE_ROLE: &str = "daena.runtime";
-const RUNTIME_SCHEMA_VERSION: i64 = 1;
-const EXPORTER_CONTRACT_VERSION: &str = "1";
-const RECONCILER_CONTRACT_VERSION: &str = "1";
+const RUNTIME_SCHEMA_VERSION: i64 = 3;
+const EXPORTER_CONTRACT_VERSION: &str = "2";
 
 fn reset_required_error() -> CoreError {
     CoreError::ResetRequired(
@@ -397,42 +363,26 @@ fn reset_required_error() -> CoreError {
     )
 }
 
-fn export_error_kind(error: &CoreError) -> &'static str {
-    match error {
-        CoreError::Io { .. } | CoreError::Database(_) => "transient",
-        CoreError::Conflict(message)
-            if message.contains("injected exporter failure")
-                || message.contains("project sync lock is already held") =>
-        {
-            "transient"
-        }
-        CoreError::Conflict(_) => "conflict",
-        CoreError::Serialization(_)
-        | CoreError::Validation(_)
-        | CoreError::ResetRequired(_)
-        | CoreError::CorruptStorage(_)
-        | CoreError::RecoveryFailed(_)
-        | CoreError::NotFound(_)
-        | CoreError::Git(_)
-        | CoreError::Unauthorized { .. }
-        | CoreError::ProjectNotOpen => "permanent",
-    }
-}
-
 pub struct ProjectStore {
     connection: Connection,
     root: Option<PathBuf>,
-    pending_asset_imports: Mutex<BTreeMap<String, Vec<u8>>>,
-    pending_asset_sources: Mutex<BTreeMap<String, PathBuf>>,
+    pending_asset_imports: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
     suppress_sync: Cell<bool>,
-    shutdown_ready: Cell<bool>,
     _session_lock: Option<crate::sync::ProjectSessionLock>,
     export_worker: Option<ExportWorker>,
 }
 
+pub struct CheckpointHandle {
+    root: PathBuf,
+    database: PathBuf,
+    pending_asset_imports: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    export_sender: Option<mpsc::Sender<ExportWorkerCommand>>,
+}
+
 enum ExportWorkerCommand {
     Wake,
-    Flush(mpsc::Sender<Result<(), CoreError>>, FlushBarrier, String),
+    Synchronize(mpsc::Sender<Result<(), CoreError>>),
+    Flush(mpsc::Sender<Result<(), CoreError>>),
     StopWithoutDrain(mpsc::Sender<Result<(), CoreError>>),
     Stop(mpsc::Sender<Result<(), CoreError>>),
 }
@@ -451,16 +401,15 @@ impl ExportWorker {
             .name("daena-export-worker".into())
             .spawn(move || {
                 while let Ok(command) = receiver.recv() {
-                    let drain = |cutoff: Option<&str>, revision_set: Option<&[String]>| {
+                    let export = || {
                         let worker_store = ProjectStore::open_database(
                             &database,
                             Some(root.clone()),
                             None,
                             false,
                             false,
-                            false,
                         )?;
-                        worker_store.drain_export_queue(cutoff, revision_set)
+                        worker_store.export_latest_generation()
                     };
                     match command {
                         ExportWorkerCommand::Wake => {
@@ -469,15 +418,16 @@ impl ExportWorker {
                                 let remaining = deadline.saturating_duration_since(Instant::now());
                                 match receiver.recv_timeout(remaining) {
                                     Ok(ExportWorkerCommand::Wake) => continue,
-                                    Ok(ExportWorkerCommand::Flush(reply, barrier, cutoff)) => {
-                                        let _ = reply.send(drain(
-                                            Some(&cutoff),
-                                            barrier.revision_set.as_deref(),
-                                        ));
+                                    Ok(ExportWorkerCommand::Synchronize(reply)) => {
+                                        let _ = reply.send(Ok(()));
+                                        break;
+                                    }
+                                    Ok(ExportWorkerCommand::Flush(reply)) => {
+                                        let _ = reply.send(export());
                                         break;
                                     }
                                     Ok(ExportWorkerCommand::Stop(reply)) => {
-                                        let _ = reply.send(drain(None, None));
+                                        let _ = reply.send(export());
                                         return;
                                     }
                                     Ok(ExportWorkerCommand::StopWithoutDrain(reply)) => {
@@ -485,19 +435,21 @@ impl ExportWorker {
                                         return;
                                     }
                                     Err(mpsc::RecvTimeoutError::Timeout) => {
-                                        let _ = drain(None, None);
+                                        let _ = export();
                                         break;
                                     }
                                     Err(mpsc::RecvTimeoutError::Disconnected) => return,
                                 }
                             }
                         }
-                        ExportWorkerCommand::Flush(reply, barrier, cutoff) => {
-                            let _ =
-                                reply.send(drain(Some(&cutoff), barrier.revision_set.as_deref()));
+                        ExportWorkerCommand::Synchronize(reply) => {
+                            let _ = reply.send(Ok(()));
+                        }
+                        ExportWorkerCommand::Flush(reply) => {
+                            let _ = reply.send(export());
                         }
                         ExportWorkerCommand::Stop(reply) => {
-                            let _ = reply.send(drain(None, None));
+                            let _ = reply.send(export());
                             break;
                         }
                         ExportWorkerCommand::StopWithoutDrain(reply) => {
@@ -521,14 +473,24 @@ impl ExportWorker {
         let _ = self.sender.send(ExportWorkerCommand::Wake);
     }
 
-    fn flush(&self, barrier: FlushBarrier, cutoff: String) -> Result<(), CoreError> {
+    fn flush(&self) -> Result<(), CoreError> {
         let (sender, receiver) = mpsc::channel();
         self.sender
-            .send(ExportWorkerCommand::Flush(sender, barrier, cutoff))
+            .send(ExportWorkerCommand::Flush(sender))
             .map_err(|_| CoreError::Conflict("export worker is not running".into()))?;
         receiver
             .recv()
             .map_err(|_| CoreError::Conflict("export worker stopped before flush".into()))?
+    }
+
+    fn synchronize(&self) -> Result<(), CoreError> {
+        let (sender, receiver) = mpsc::channel();
+        self.sender
+            .send(ExportWorkerCommand::Synchronize(sender))
+            .map_err(|_| CoreError::Conflict("export worker is not running".into()))?;
+        receiver
+            .recv()
+            .map_err(|_| CoreError::Conflict("export worker stopped before synchronize".into()))?
     }
 
     fn stop(mut self) -> Result<(), CoreError> {
@@ -568,22 +530,87 @@ impl ExportWorker {
     }
 }
 
+impl CheckpointHandle {
+    pub fn flush_checkpoint(&self, reason: impl Into<String>) -> Result<Generation, CoreError> {
+        if let Some(sender) = &self.export_sender {
+            synchronize_export_worker(sender)?;
+        }
+        let store = ProjectStore::open_checkpoint_writer(
+            &self.database,
+            self.root.clone(),
+            self.pending_asset_imports.clone(),
+        )?;
+        store.flush_checkpoint(reason)
+    }
+}
+
+fn synchronize_export_worker(sender: &mpsc::Sender<ExportWorkerCommand>) -> Result<(), CoreError> {
+    let (reply_sender, reply_receiver) = mpsc::channel();
+    sender
+        .send(ExportWorkerCommand::Synchronize(reply_sender))
+        .map_err(|_| CoreError::Conflict("export worker is not running".into()))?;
+    reply_receiver
+        .recv()
+        .map_err(|_| CoreError::Conflict("export worker stopped before synchronize".into()))?
+}
+
 impl Drop for ProjectStore {
     fn drop(&mut self) {
         if let Some(worker) = self.export_worker.take() {
             let _ = worker.stop();
         }
-        if !self.shutdown_ready.get() {
-            return;
-        }
-        let _ = self.connection.execute(
-            "UPDATE runtime_meta SET clean_shutdown=1 WHERE key='runtime' AND sync_state='clean' AND dirty_count=0",
-            [],
-        );
     }
 }
 
 impl ProjectStore {
+    /// Open an independent read-only connection for project reads.
+    /// reads. It never starts an exporter, acquires the project writer lock,
+    /// or initializes/mutates schema state.
+    pub fn open_read_only(root: impl AsRef<Path>) -> Result<Self, CoreError> {
+        let root = root.as_ref().to_path_buf();
+        let path = project_database_path(&root);
+        let connection = Connection::open_with_flags(
+            &path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        )?;
+        connection.busy_timeout(Duration::from_secs(2))?;
+        connection.pragma_update(None, "foreign_keys", true)?;
+        Self::validate_runtime_metadata(&connection, Some(&root))?;
+        Ok(Self {
+            connection,
+            root: Some(root),
+            pending_asset_imports: Arc::new(Mutex::new(BTreeMap::new())),
+            suppress_sync: Cell::new(true),
+            _session_lock: None,
+            export_worker: None,
+        })
+    }
+
+    pub fn checkpoint_handle(&self) -> Result<CheckpointHandle, CoreError> {
+        let root = self.root.clone().ok_or_else(|| {
+            CoreError::Validation("checkpoint requires a directory-backed project".into())
+        })?;
+        Ok(CheckpointHandle {
+            database: project_database_path(&root),
+            root,
+            pending_asset_imports: self.pending_asset_imports.clone(),
+            export_sender: self
+                .export_worker
+                .as_ref()
+                .map(|worker| worker.sender.clone()),
+        })
+    }
+
+    fn open_checkpoint_writer(
+        database: impl AsRef<Path>,
+        root: PathBuf,
+        pending_asset_imports: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    ) -> Result<Self, CoreError> {
+        let mut store = Self::open_database(database, Some(root), None, false, false)?;
+        store.pending_asset_imports = pending_asset_imports;
+        Ok(store)
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self, CoreError> {
         let path = path.as_ref();
         if path.is_dir() {
@@ -610,7 +637,7 @@ impl ProjectStore {
             "entities",
             "plugins",
             ".daena",
-            ".daena/sync",
+            ".daena/checkpoints",
             ".daena/backups",
             ".daena/conflicts",
             ".daena/local",
@@ -673,7 +700,6 @@ impl ProjectStore {
                 Some(session_lock),
                 false,
                 true,
-                true,
             );
         }
         let canonical = repository.scan()?;
@@ -697,22 +723,19 @@ impl ProjectStore {
             }
         }
 
-        let store = Self::open_database(
-            &next_path,
-            Some(root.to_path_buf()),
-            None,
-            false,
-            false,
-            true,
-        )?;
+        let store = Self::open_database(&next_path, Some(root.to_path_buf()), None, false, false)?;
         let payload = serde_json::to_string(&canonical.snapshot)
             .map_err(|error| CoreError::Serialization(error.to_string()))?;
         store.import_json_with_mode_and_sync_with_request_and_search(
             &payload, true, false, None, false,
         )?;
-        store.replace_source_index(&canonical.sources)?;
         store.rebuild_search()?;
-        store.verify_index(canonical.sources.len())?;
+        store.verify_index()?;
+        store.connection.execute(
+            "UPDATE runtime_meta SET content_generation=0, exported_generation=0, checkpoint_digest=NULL, export_error=NULL WHERE key='runtime'",
+            [],
+        )?;
+        store.install_checkpoint_manifest(root, 0)?;
         store.connection.execute_batch(
             "PRAGMA wal_checkpoint(TRUNCATE);
              PRAGMA journal_mode=DELETE;",
@@ -736,7 +759,6 @@ impl ProjectStore {
             Some(session_lock),
             false,
             true,
-            true,
         )
     }
 
@@ -746,7 +768,6 @@ impl ProjectStore {
         session_lock: Option<crate::sync::ProjectSessionLock>,
         acquire_session_lock: bool,
         start_worker: bool,
-        recover_batches: bool,
     ) -> Result<Self, CoreError> {
         let path = path.as_ref();
         let existing_database = path != Path::new(":memory:") && path.is_file();
@@ -767,132 +788,154 @@ impl ProjectStore {
         let mut store = Self {
             connection,
             root,
-            pending_asset_imports: Mutex::new(BTreeMap::new()),
-            pending_asset_sources: Mutex::new(BTreeMap::new()),
+            pending_asset_imports: Arc::new(Mutex::new(BTreeMap::new())),
             suppress_sync: Cell::new(false),
-            shutdown_ready: Cell::new(false),
             _session_lock: session_lock,
             export_worker: None,
         };
         store.initialize(!existing_database)?;
-        if recover_batches {
-            store.recover_interrupted_batches()?;
-        }
         if start_worker {
-            if let (Some(root), true) = (store.root.as_deref(), existing_database) {
+            if let Some(root) = store.root.as_deref() {
                 let worker = ExportWorker::start(root, path)?;
+                let needs_export: bool = store.connection.query_row(
+                    "SELECT content_generation > exported_generation OR export_error IS NOT NULL FROM runtime_meta WHERE key='runtime'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if needs_export {
+                    worker.wake();
+                }
                 store.export_worker = Some(worker);
             }
         }
-        store.shutdown_ready.set(true);
         Ok(store)
     }
 
-    fn recover_interrupted_batches(&self) -> Result<(), CoreError> {
-        let requests = self
-            .connection
-            .prepare(
-                "SELECT request_id FROM sync_batches WHERE state IN ('exporting','running') ORDER BY created_at",
-            )?
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        let failed = self.connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sync_batches WHERE state='failed')",
-            [],
-            |row| row.get::<_, bool>(0),
-        )?;
-        if failed {
-            self.connection.execute(
-                "UPDATE runtime_meta SET sync_state='failed', dirty_count=MAX(dirty_count, 1), clean_shutdown=0 WHERE key='runtime'",
+    /// Export one complete checkpoint for the latest committed SQLite state.
+    ///
+    /// The exporter deliberately renders the whole portable tree. SQLite
+    /// generations coalesce bursts of mutations; no durable per-record work
+    /// queue is needed to recover or retry an export.
+    fn export_latest_generation(&self) -> Result<(), CoreError> {
+        let Some(root) = self.root.as_deref() else {
+            return Ok(());
+        };
+        self.connection.execute_batch("BEGIN")?;
+        let export_result = (|| {
+            let target_generation: Generation = self.connection.query_row(
+                "SELECT content_generation FROM runtime_meta WHERE key='runtime'",
                 [],
+                |row| row.get(0),
             )?;
-        }
-        for request_id in requests {
-            if self
-                .sync_canonical_with_request_id_inner(&request_id, None)
-                .is_err()
-            {
-                self.connection.execute(
-                    "UPDATE runtime_meta SET sync_state='failed', dirty_count=MAX(dirty_count, 1), clean_shutdown=0 WHERE key='runtime'",
-                    [],
-                )?;
+            let snapshot = serde_json::from_str(&self.export_json_inner()?)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?;
+            Ok::<_, CoreError>((target_generation, snapshot))
+        })();
+        match export_result {
+            Ok((target_generation, snapshot)) => {
+                self.connection.execute_batch("COMMIT")?;
+                let pending_assets = self
+                    .pending_asset_imports
+                    .lock()
+                    .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
+                    .clone();
+                self.export_complete_snapshot(root, &snapshot, &pending_assets, target_generation)?;
+            }
+            Err(error) => {
+                let _ = self.connection.execute_batch("ROLLBACK");
+                return Err(error);
             }
         }
+        self.rebuild_maps_projection()?;
         Ok(())
-    }
-
-    fn drain_export_queue(
-        &self,
-        cutoff: Option<&str>,
-        revision_set: Option<&[String]>,
-    ) -> Result<(), CoreError> {
-        let mut requests = self
-            .connection
-            .prepare(
-                "SELECT request_id FROM sync_batches WHERE (state IN ('exporting','running') OR (state='failed' AND error_kind='transient' AND attempt_count < 3)) AND (?1 IS NULL OR created_at <= ?1) ORDER BY created_at",
-            )?
-            .query_map(params![cutoff], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        if let Some(revision_set) = revision_set {
-            let requested = revision_set.iter().collect::<BTreeSet<_>>();
-            requests.retain(|request_id| requested.contains(request_id));
-        }
-        for request_id in requests {
-            if !self.claim_export_batch(&request_id)? {
-                continue;
-            }
-            self.sync_canonical_with_request_id_inner(&request_id, None)?;
-            self.rebuild_maps_projection()?;
-        }
-        Ok(())
-    }
-
-    fn claim_export_batch(&self, request_id: &str) -> Result<bool, CoreError> {
-        let updated = self.connection.execute(
-            "UPDATE sync_batches SET state='running' WHERE request_id=?1 AND (state='exporting' OR (state='failed' AND error_kind='transient' AND attempt_count < 3))",
-            params![request_id],
-        )?;
-        Ok(updated == 1)
     }
 
     /// Wake the project-scoped exporter after durable work has been queued.
     ///
-    /// The queue is durable in SQLite, so losing this notification only delays
-    /// export until the next flush or reopen; it cannot lose the mutation.
+    /// The committed generation is durable in SQLite, so losing this
+    /// notification only delays export until the next flush or reopen; it
+    /// cannot lose the mutation.
     pub fn wake_export_worker(&self) {
         if let Some(worker) = &self.export_worker {
             worker.wake();
         }
     }
 
-    /// Drain the same durable queue used by the background exporter.
-    pub fn flush_exports(&self) -> Result<(), CoreError> {
-        self.flush_with_barrier(FlushBarrier {
-            revision_set: None,
-            operation_reason: "legacy flush".into(),
-        })
-    }
-
-    /// Establish a typed portable-durability barrier for an operation.
-    ///
-    /// A supplied revision set is scoped to those mutation request IDs.  The
-    /// cutoff is captured before the worker is notified, so edits committed
-    /// after this call starts cannot be accidentally included.
-    pub fn flush_with_barrier(&self, barrier: FlushBarrier) -> Result<(), CoreError> {
-        if barrier.operation_reason.trim().is_empty() {
-            return Err(CoreError::Validation(
-                "flush barrier operation reason cannot be empty".into(),
-            ));
-        }
-        let now = chrono_like_now();
-        let cutoff: String = self.connection.query_row(
-            "SELECT COALESCE(MAX(created_at),?1) FROM sync_batches WHERE state NOT IN ('completed','superseded')",
-            params![now],
+    /// Flush the latest runtime generation to a complete portable checkpoint.
+    /// The returned generation is the generation whose checkpoint was
+    /// confirmed installed.
+    pub fn flush_checkpoint(&self, reason: impl Into<String>) -> Result<Generation, CoreError> {
+        let reason = reason.into();
+        let target: Generation = self.connection.query_row(
+            "SELECT content_generation FROM runtime_meta WHERE key='runtime'",
+            [],
             |row| row.get(0),
         )?;
-        let result = match &self.export_worker {
-            Some(worker) => worker.flush(barrier, cutoff),
-            None => self.drain_export_queue(Some(&cutoff), barrier.revision_set.as_deref()),
+        let result = (|| {
+            self.flush_export(reason)?;
+            if let Some(root) = self.root.as_deref() {
+                let exported: Generation = self.connection.query_row(
+                    "SELECT exported_generation FROM runtime_meta WHERE key='runtime'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if exported < target {
+                    self.install_checkpoint_manifest(root, target)?;
+                }
+                let exported: Generation = self.connection.query_row(
+                    "SELECT exported_generation FROM runtime_meta WHERE key='runtime'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if exported < target {
+                    return Err(CoreError::Conflict(format!(
+                        "checkpoint barrier completed below requested generation {target}"
+                    )));
+                }
+            }
+            Ok(target)
+        })();
+        match result {
+            Ok(generation) => {
+                self.connection.execute(
+                    "UPDATE runtime_meta SET export_error=NULL WHERE key='runtime'",
+                    [],
+                )?;
+                Ok(generation)
+            }
+            Err(error) => {
+                let message = error.to_string();
+                self.connection.execute(
+                    "UPDATE runtime_meta SET export_error=?1 WHERE key='runtime'",
+                    params![message],
+                )?;
+                Err(error)
+            }
+        }
+    }
+
+    fn flush_export(&self, reason: String) -> Result<(), CoreError> {
+        if reason.trim().is_empty() {
+            return Err(CoreError::Validation(
+                "checkpoint barrier operation reason cannot be empty".into(),
+            ));
+        }
+        let has_pending_assets = !self
+            .pending_asset_imports
+            .lock()
+            .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
+            .is_empty();
+        if has_pending_assets {
+            if let Some(worker) = &self.export_worker {
+                worker.synchronize()?;
+            }
+        }
+        let result = if has_pending_assets {
+            self.export_latest_generation()
+        } else if let Some(worker) = &self.export_worker {
+            worker.flush()
+        } else {
+            self.export_latest_generation()
         };
         if result.is_ok() {
             self.rebuild_maps_projection()?;
@@ -939,7 +982,7 @@ impl ProjectStore {
         }
         let metadata = connection
             .query_row(
-                "SELECT storage_role, schema_version, project_id, portable_format_version, exporter_version, reconciler_version FROM runtime_meta WHERE key='runtime'",
+                "SELECT storage_role, schema_version, project_id, portable_format_version, exporter_version, content_generation, exported_generation FROM runtime_meta WHERE key='runtime'",
                 [],
                 |row| {
                     Ok((
@@ -948,7 +991,8 @@ impl ProjectStore {
                         row.get::<_, String>(2)?,
                         row.get::<_, i64>(3)?,
                         row.get::<_, String>(4)?,
-                        row.get::<_, String>(5)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6)?,
                     ))
                 },
             )
@@ -971,7 +1015,9 @@ impl ProjectStore {
             || metadata.1 != RUNTIME_SCHEMA_VERSION
             || metadata.3 != crate::storage::PROJECT_FORMAT_VERSION as i64
             || metadata.4 != EXPORTER_CONTRACT_VERSION
-            || metadata.5 != RECONCILER_CONTRACT_VERSION
+            || metadata.5 < 0
+            || metadata.6 < 0
+            || metadata.6 > metadata.5
             || !project_matches
         {
             return Err(reset_required_error());
@@ -979,118 +1025,7 @@ impl ProjectStore {
         Ok(())
     }
 
-    fn replace_source_index(
-        &self,
-        sources: &[crate::storage::CanonicalSource],
-    ) -> Result<(), CoreError> {
-        let transaction = self.connection.unchecked_transaction()?;
-        transaction.execute("DELETE FROM source_files", [])?;
-        for source in sources {
-            transaction.execute(
-                "INSERT INTO source_files(path,content_hash,format_version,logical_revision) VALUES (?1,?2,?3,?2)",
-                params![source.path, source.content_hash, source.format_version],
-            )?;
-        }
-        transaction.commit()?;
-        self.refresh_baselines_from_index()?;
-        Ok(())
-    }
-
-    fn update_source_index(
-        &self,
-        previous: &[crate::storage::CanonicalSource],
-        current: &[crate::storage::CanonicalSource],
-    ) -> Result<(), CoreError> {
-        let previous = previous
-            .iter()
-            .map(|source| (source.path.as_str(), source))
-            .collect::<BTreeMap<_, _>>();
-        let current = current
-            .iter()
-            .map(|source| (source.path.as_str(), source))
-            .collect::<BTreeMap<_, _>>();
-        let paths = previous
-            .keys()
-            .copied()
-            .chain(current.keys().copied())
-            .collect::<BTreeSet<_>>();
-        let transaction = self.connection.unchecked_transaction()?;
-        for path in paths {
-            match (previous.get(path), current.get(path)) {
-                (Some(before), Some(after)) if *before == *after => {}
-                (Some(_), Some(after)) => {
-                    transaction.execute(
-                        "INSERT INTO source_files(path,content_hash,format_version,logical_revision) VALUES (?1,?2,?3,?2) ON CONFLICT(path) DO UPDATE SET content_hash=excluded.content_hash,format_version=excluded.format_version,logical_revision=excluded.logical_revision",
-                        params![after.path, after.content_hash, after.format_version],
-                    )?;
-                }
-                (None, Some(after)) => {
-                    transaction.execute(
-                        "INSERT INTO source_files(path,content_hash,format_version,logical_revision) VALUES (?1,?2,?3,?2)",
-                        params![after.path, after.content_hash, after.format_version],
-                    )?;
-                }
-                (Some(_), None) => {
-                    transaction.execute("DELETE FROM source_files WHERE path=?1", params![path])?;
-                }
-                (None, None) => unreachable!("source path came from neither source set"),
-            }
-        }
-        transaction.commit()?;
-        self.refresh_baselines_from_index()?;
-        Ok(())
-    }
-
-    fn update_source_index_from_hashes(
-        &self,
-        previous: &BTreeMap<String, String>,
-        current: &[crate::storage::CanonicalSource],
-    ) -> Result<(), CoreError> {
-        let transaction = self.connection.unchecked_transaction()?;
-        Self::update_source_index_from_hashes_in_transaction(&transaction, previous, current)?;
-        transaction.commit()?;
-        Ok(())
-    }
-
-    fn update_source_index_from_hashes_in_transaction(
-        transaction: &rusqlite::Transaction<'_>,
-        previous: &BTreeMap<String, String>,
-        current: &[crate::storage::CanonicalSource],
-    ) -> Result<(), CoreError> {
-        let current = current
-            .iter()
-            .map(|source| (source.path.as_str(), source))
-            .collect::<BTreeMap<_, _>>();
-        let paths = previous
-            .keys()
-            .map(|path| path.as_str())
-            .chain(current.keys().copied())
-            .collect::<BTreeSet<_>>();
-        for path in paths {
-            match (previous.get(path), current.get(path)) {
-                (Some(before), Some(after)) if before == &after.content_hash => {}
-                (Some(_), Some(after)) => {
-                    transaction.execute(
-                        "INSERT INTO source_files(path,content_hash,format_version,logical_revision) VALUES (?1,?2,?3,?2) ON CONFLICT(path) DO UPDATE SET content_hash=excluded.content_hash,format_version=excluded.format_version,logical_revision=excluded.logical_revision",
-                        params![after.path, after.content_hash, after.format_version],
-                    )?;
-                }
-                (None, Some(after)) => {
-                    transaction.execute(
-                        "INSERT INTO source_files(path,content_hash,format_version,logical_revision) VALUES (?1,?2,?3,?2)",
-                        params![after.path, after.content_hash, after.format_version],
-                    )?;
-                }
-                (Some(_), None) => {
-                    transaction.execute("DELETE FROM source_files WHERE path=?1", params![path])?;
-                }
-                (None, None) => unreachable!("source path came from neither source set"),
-            }
-        }
-        Ok(())
-    }
-
-    fn verify_index(&self, source_count: usize) -> Result<(), CoreError> {
+    fn verify_index(&self) -> Result<(), CoreError> {
         let foreign_key_error: Option<String> = self
             .connection
             .query_row("PRAGMA foreign_key_check", [], |row| row.get(0))
@@ -1108,916 +1043,103 @@ impl ProjectStore {
                 "index integrity check failed: {integrity}"
             )));
         }
-        let actual: usize =
-            self.connection
-                .query_row("SELECT COUNT(*) FROM source_files", [], |row| row.get(0))?;
-        if actual != source_count {
-            return Err(CoreError::Validation(format!(
-                "index source count mismatch: expected {source_count}, found {actual}"
-            )));
-        }
         Ok(())
     }
 
-    fn indexed_source_hashes(&self) -> Result<BTreeMap<String, String>, CoreError> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT path,content_hash FROM source_files ORDER BY path")?;
-        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        rows.collect::<Result<BTreeMap<_, _>, _>>()
-            .map_err(CoreError::from)
-    }
-
-    fn portable_baseline_hashes(&self) -> Result<BTreeMap<String, Option<String>>, CoreError> {
-        let mut statement = self.connection.prepare(
-            "SELECT path,baseline_exists,baseline_hash FROM portable_baselines ORDER BY path",
-        )?;
-        let rows = statement.query_map([], |row| {
-            let exists: bool = row.get(1)?;
-            let hash: Option<String> = row.get(2)?;
-            Ok((row.get(0)?, exists.then_some(hash).flatten()))
-        })?;
-        rows.collect::<Result<BTreeMap<_, _>, _>>()
-            .map_err(CoreError::from)
-    }
-
-    fn indexed_sources(&self) -> Result<Vec<crate::storage::CanonicalSource>, CoreError> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT path,content_hash,format_version FROM source_files ORDER BY path")?;
-        let rows = statement.query_map([], |row| {
-            Ok(crate::storage::CanonicalSource {
-                path: row.get(0)?,
-                content_hash: row.get(1)?,
-                format_version: row.get(2)?,
-            })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
-    }
-
-    fn active_export_target_hashes(&self) -> Result<BTreeMap<String, String>, CoreError> {
-        let mut statement = self.connection.prepare(
-            "SELECT i.target_path,i.new_hash FROM sync_items i JOIN sync_batches b ON b.id=i.batch_id WHERE b.state IN ('exporting','running') AND i.new_hash IS NOT NULL",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        rows.collect::<Result<BTreeMap<_, _>, _>>()
-            .map_err(CoreError::from)
-    }
-
-    /// Reconcile canonical files after an external filesystem change.
-    ///
-    /// The scanner is deliberately authoritative here: a valid snapshot is
-    /// imported into the runtime database, while an invalid snapshot is only
-    /// reported and never replaces the last valid projection.
-    pub fn reconcile_external_changes(&self) -> Result<ExternalChangeReport, CoreError> {
-        self.reconcile_external_changes_with_overrides_and_flush(&BTreeSet::new(), true)
-    }
-
-    fn reconcile_external_changes_after_flush(&self) -> Result<ExternalChangeReport, CoreError> {
-        self.reconcile_external_changes_with_overrides_and_flush(&BTreeSet::new(), false)
-    }
-
-    fn reconcile_external_changes_with_overrides(
-        &self,
-        conflict_overrides: &BTreeSet<String>,
-    ) -> Result<ExternalChangeReport, CoreError> {
-        self.reconcile_external_changes_with_overrides_and_flush(conflict_overrides, true)
-    }
-
-    fn reconcile_external_changes_with_overrides_and_flush(
-        &self,
-        conflict_overrides: &BTreeSet<String>,
-        flush_before_scan: bool,
-    ) -> Result<ExternalChangeReport, CoreError> {
-        let Some(root) = self.root.as_deref() else {
-            return Ok(ExternalChangeReport {
-                changed: false,
-                paths: Vec::new(),
-                diagnostics: Vec::new(),
-            });
-        };
-        let active_export_targets = self.active_export_target_hashes()?;
-        if let Some(head) = self.git_head_identity() {
-            let previous_head: Option<String> = self.connection.query_row(
-                "SELECT last_git_identity FROM runtime_meta WHERE key='runtime'",
-                [],
-                |row| row.get(0),
-            )?;
-            if previous_head
-                .as_deref()
-                .is_some_and(|previous| previous != head)
-            {
-                let paths = vec!["git:HEAD".to_string()];
-                let diagnostics = vec![format!(
-                    "git.history-changed: HEAD moved from {} to {}; review, finish export, or rebuild from files",
-                    previous_head.as_deref().unwrap_or("unknown"),
-                    head
-                )];
-                self.update_reconciliation_state("blocked", &paths, &diagnostics)?;
-                return Ok(ExternalChangeReport {
-                    changed: false,
-                    paths,
-                    diagnostics,
-                });
-            }
+    fn checkpoint_sources(root: &Path) -> Result<Vec<crate::storage::CanonicalSource>, CoreError> {
+        let path = root.join(crate::storage::CHECKPOINT_MANIFEST_FILE);
+        if !path.is_file() {
+            return Ok(Vec::new());
         }
-        if let Some(index) = self.git_index_identity() {
-            let previous_index: Option<String> = self.connection.query_row(
-                "SELECT last_git_index_identity FROM runtime_meta WHERE key='runtime'",
-                [],
-                |row| row.get(0),
-            )?;
-            let staged_changes = self
-                .git_status_entries()?
-                .iter()
-                .any(|(index_status, _, _)| *index_status != b' ' && *index_status != b'?');
-            if !staged_changes
-                && previous_index
-                    .as_deref()
-                    .is_some_and(|previous| previous != index)
-            {
-                let paths = vec!["git:index".to_string()];
-                let diagnostics = vec![format!(
-                    "git.index-changed: index moved from {} to {}; review, finish export, or rebuild from files",
-                    previous_index.as_deref().unwrap_or("unknown"),
-                    index
-                )];
-                self.update_reconciliation_state("blocked", &paths, &diagnostics)?;
-                return Ok(ExternalChangeReport {
-                    changed: false,
-                    paths,
-                    diagnostics,
-                });
-            }
-        }
-        let git_unmerged = self.git_unmerged_paths();
-        if !git_unmerged.is_empty() {
-            self.update_reconciliation_state(
-                "blocked",
-                &git_unmerged,
-                &git_unmerged
-                    .iter()
-                    .map(|path| format!("git.unmerged: {path}"))
-                    .collect::<Vec<_>>(),
-            )?;
-            return Ok(ExternalChangeReport {
-                changed: false,
-                paths: git_unmerged.clone(),
-                diagnostics: git_unmerged
-                    .iter()
-                    .map(|path| format!("git.unmerged: {path}"))
-                    .collect(),
-            });
-        }
-        if flush_before_scan {
-            self.flush_with_barrier(FlushBarrier {
-                revision_set: None,
-                operation_reason: "external reconciliation".into(),
-            })?;
-        }
-        let previous = self.indexed_source_hashes()?;
-        let repository = crate::storage::FilesystemRepository::open(root)?;
-        let current_sources = match repository.source_manifest() {
-            Ok(sources) => sources,
-            Err(error) => {
-                if let Some(report) = self.reconcile_deleted_entities(root, &previous)? {
-                    return Ok(report);
-                }
-                self.update_reconciliation_state("failed", &[], &[error.to_string()])?;
-                self.connection.execute(
-                    "UPDATE runtime_meta SET sync_state='failed', dirty_count=MAX(dirty_count, 1), clean_shutdown=0 WHERE key='runtime'",
-                    [],
-                )?;
-                return Ok(ExternalChangeReport {
-                    changed: false,
-                    paths: Vec::new(),
-                    diagnostics: vec![error.to_string()],
-                });
-            }
-        };
-        let current = current_sources
-            .iter()
-            .map(|source| (source.path.clone(), source.content_hash.clone()))
-            .collect::<BTreeMap<_, _>>();
-        let baseline = self.portable_baseline_hashes()?;
-        let paths = previous
-            .keys()
-            .chain(current.keys())
-            .collect::<BTreeSet<_>>()
+        let checkpoint: crate::storage::CheckpointManifest = crate::storage::read_json(&path)?;
+        checkpoint.validate(&path)?;
+        Ok(checkpoint
+            .files
             .into_iter()
-            .filter(|path| previous.get(*path) != current.get(*path))
-            .filter(|path| {
-                active_export_targets
-                    .get(*path)
-                    .is_none_or(|expected| current.get(*path) != Some(expected))
+            .map(|file| crate::storage::CanonicalSource {
+                path: file.path,
+                content_hash: file.sha256,
+                format_version: crate::storage::PROJECT_FORMAT_VERSION,
             })
-            .cloned()
-            .collect::<Vec<_>>();
-        let conflicts = paths
-            .iter()
-            .filter(|path| !conflict_overrides.contains(*path))
-            .filter(|path| {
-                let baseline_hash = baseline.get(*path).cloned().flatten();
-                previous.get(*path).cloned() != baseline_hash
-                    && current.get(*path).cloned() != baseline_hash
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        if !conflicts.is_empty() {
-            let diagnostics = conflicts
-                .iter()
-                .map(|path| format!("conflict: database and disk both changed {path}"))
-                .collect::<Vec<_>>();
-            for path in &conflicts {
-                self.connection.execute(
-                    "INSERT INTO reconciliation_conflicts(path,baseline_hash,database_hash,disk_hash,state,created_at) VALUES (?1,?2,?3,?4,'unresolved',?5) ON CONFLICT(path) DO UPDATE SET baseline_hash=excluded.baseline_hash,database_hash=excluded.database_hash,disk_hash=excluded.disk_hash,state='unresolved',created_at=excluded.created_at",
-                    params![
-                        path,
-                        baseline.get(path).cloned().flatten(),
-                        previous.get(path),
-                        current.get(path),
-                        chrono_like_now()
-                    ],
-                )?;
-            }
-            self.update_reconciliation_state("failed", &conflicts, &diagnostics)?;
-            return Ok(ExternalChangeReport {
-                changed: false,
-                paths: conflicts,
-                diagnostics,
-            });
-        }
-        if paths.is_empty() {
-            self.record_git_identity()?;
-            self.update_reconciliation_state("idle", &[], &[])?;
-            return Ok(ExternalChangeReport {
-                changed: false,
-                paths,
-                diagnostics: Vec::new(),
-            });
-        }
-        let affected_entities = paths
-            .iter()
-            .filter_map(|path| {
-                let mut parts = path.split('/');
-                (parts.next() == Some("entities")).then(|| parts.next().unwrap_or_default())
-            })
-            .filter(|entity_id| !entity_id.is_empty())
-            .collect::<BTreeSet<_>>();
-        if paths.len() > 64 || affected_entities.len() > 32 {
-            let diagnostics = vec![format!(
-                "project divergence: {} changed paths across {} entities require review",
-                paths.len(),
-                affected_entities.len()
-            )];
-            self.update_reconciliation_state("blocked", &paths, &diagnostics)?;
-            return Ok(ExternalChangeReport {
-                changed: false,
-                paths,
-                diagnostics,
-            });
-        }
-        if let Some(report) = self.reconcile_deleted_entities(root, &previous)? {
-            return Ok(report);
-        }
-
-        let targeted_documents = paths
-            .iter()
-            .filter(|path| path.ends_with("/document.md"))
-            .cloned()
-            .collect::<Vec<_>>();
-        let targeted_entity_records = paths
-            .iter()
-            .filter(|path| {
-                (path.ends_with("/entity.json") && current.contains_key(*path))
-                    || (path.contains("/fields/") && path.starts_with("entities/"))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        let targeted_relationships_assets = paths
-            .iter()
-            .filter(|path| {
-                path.ends_with("/relationships.json")
-                    || path.ends_with("/assets.json")
-                    || path.starts_with("assets/")
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        let targeted_plugins = paths
-            .iter()
-            .filter(|path| path.starts_with("plugins/") && path.ends_with(".json"))
-            .cloned()
-            .collect::<Vec<_>>();
-        if targeted_documents.len()
-            + targeted_entity_records.len()
-            + targeted_relationships_assets.len()
-            + targeted_plugins.len()
-            == paths.len()
-        {
-            let transaction = self.connection.unchecked_transaction()?;
-            if !targeted_documents.is_empty() {
-                if let Err(error) =
-                    self.import_external_documents(&transaction, root, &targeted_documents)
-                {
-                    drop(transaction);
-                    return self.reconciliation_failure(error);
-                }
-            }
-            if !targeted_entity_records.is_empty() {
-                if let Err(error) = self.import_external_entity_records(
-                    &transaction,
-                    root,
-                    &targeted_entity_records,
-                ) {
-                    drop(transaction);
-                    return self.reconciliation_failure(error);
-                }
-            }
-            if !targeted_relationships_assets.is_empty() {
-                if let Err(error) = self.import_external_relationships_and_assets(
-                    &transaction,
-                    root,
-                    &targeted_relationships_assets,
-                ) {
-                    drop(transaction);
-                    return self.reconciliation_failure(error);
-                }
-            }
-            if !targeted_plugins.is_empty() {
-                if let Err(error) =
-                    self.import_external_plugins(&transaction, root, &targeted_plugins)
-                {
-                    drop(transaction);
-                    return self.reconciliation_failure(error);
-                }
-            }
-            Self::update_source_index_from_hashes_in_transaction(
-                &transaction,
-                &previous,
-                &current_sources,
-            )?;
-            Self::refresh_baselines_from_index_in_transaction(&transaction)?;
-            transaction.commit()?;
-            self.record_git_identity()?;
-            self.rebuild_maps_projection()?;
-            self.update_reconciliation_state("reconciled", &paths, &[])?;
-            return Ok(ExternalChangeReport {
-                changed: true,
-                paths,
-                diagnostics: Vec::new(),
-            });
-        }
-
-        let canonical = match repository.scan() {
-            Ok(canonical) => canonical,
-            Err(error) => return self.reconciliation_failure(error),
-        };
-        let payload = serde_json::to_string(&canonical.snapshot)
-            .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        self.import_json_with_mode_and_sync_with_request_and_search(
-            &payload, true, false, None, false,
-        )?;
-        self.update_source_index_from_hashes(&previous, &canonical.sources)?;
-        self.refresh_baselines_from_index()?;
-        self.rebuild_search()?;
-        self.verify_index(canonical.sources.len())?;
-        self.record_git_identity()?;
-        self.update_reconciliation_state("reconciled", &paths, &[])?;
-        Ok(ExternalChangeReport {
-            changed: true,
-            paths,
-            diagnostics: Vec::new(),
-        })
+            .collect())
     }
 
-    /// Explicitly rebuild the runtime projection from the complete portable
-    /// tree. This is reserved for the divergence review action.
-    pub fn rebuild_from_files(&mut self) -> Result<ExternalChangeReport, CoreError> {
+    pub fn import_checkpoint(&mut self) -> Result<ExternalChangeReport, CoreError> {
         let root = self.project_root()?.to_path_buf();
-        let (sync_state, reconciliation_state): (String, String) = self.connection.query_row(
-            "SELECT sync_state,reconciliation_state FROM runtime_meta WHERE key='runtime'",
+        let checkpoint_path = root.join(crate::storage::CHECKPOINT_MANIFEST_FILE);
+        let checkpoint: crate::storage::CheckpointManifest =
+            crate::storage::read_json(&checkpoint_path)?;
+        crate::storage::validate_checkpoint(&root, &checkpoint)?;
+        let (content_generation, exported_generation): (Generation, Generation) = self
+            .connection
+            .query_row(
+            "SELECT content_generation,exported_generation FROM runtime_meta WHERE key='runtime'",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        if sync_state != "clean" && reconciliation_state != "blocked" {
+        if content_generation != exported_generation {
             return Err(CoreError::Conflict(
-                "rebuild requires a clean runtime or explicit divergence review".into(),
+                "runtime has unexported changes; flush the checkpoint before importing portable files"
+                    .into(),
             ));
         }
-        let discard_runtime = reconciliation_state == "blocked";
         let archive = self.recovery_backup_to(root.join(".daena/backups"))?;
-        if !discard_runtime {
-            self.flush_with_barrier(FlushBarrier {
-                revision_set: None,
-                operation_reason: "clean rebuild".into(),
-            })?;
-        }
-        let previous = self.indexed_sources()?;
         let canonical = crate::storage::FilesystemRepository::open(&root)?.scan()?;
         let payload = serde_json::to_string(&canonical.snapshot)
             .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        self.import_json_with_mode_and_sync_with_request_and_search(
+        let next_path = root.join(".daena/index.sqlite.next");
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let path = PathBuf::from(format!("{}{}", next_path.display(), suffix));
+            if path.exists() {
+                std::fs::remove_file(path).map_err(|error| CoreError::Io {
+                    operation: "remove stale checkpoint candidate",
+                    source: error,
+                })?;
+            }
+        }
+        let candidate = Self::open_database(&next_path, Some(root.clone()), None, false, false)?;
+        candidate.import_json_with_mode_and_sync_with_request_and_search(
             &payload, true, false, None, false,
         )?;
-        if discard_runtime {
-            self.connection.execute_batch(
-                "DELETE FROM sync_items;
-                 DELETE FROM sync_batches;
-                 DELETE FROM mutation_receipts;
-                 DELETE FROM reconciliation_conflicts;
-                 UPDATE runtime_meta SET sync_state='clean',dirty_count=0,clean_shutdown=0 WHERE key='runtime';",
-            )?;
+        let digest =
+            crate::storage::canonical_json_bytes(&checkpoint).map(|bytes| digest_bytes(&bytes))?;
+        candidate.rebuild_search()?;
+        candidate.rebuild_maps_projection()?;
+        candidate.connection.execute(
+            "UPDATE runtime_meta SET database_epoch=?1,content_generation=?2,exported_generation=?2,checkpoint_digest=?3,export_error=NULL WHERE key='runtime'",
+            params![Uuid::new_v4().to_string(), checkpoint.content_generation, digest],
+        )?;
+        candidate
+            .connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")?;
+        drop(candidate);
+        if let Some(worker) = self.export_worker.take() {
+            worker.stop_without_drain()?;
         }
-        self.update_source_index(&previous, &canonical.sources)?;
-        self.rebuild_search()?;
-        self.rebuild_maps_projection()?;
-        self.record_git_identity()?;
-        let paths = canonical
-            .sources
-            .iter()
-            .map(|source| source.path.clone())
-            .collect::<Vec<_>>();
-        self.update_reconciliation_state("reconciled", &paths, &[])?;
+        let old_connection = std::mem::replace(&mut self.connection, Connection::open_in_memory()?);
+        drop(old_connection);
+        let index_path = project_database_path(&root);
+        std::fs::rename(&next_path, &index_path).map_err(|error| CoreError::Io {
+            operation: "install checkpoint candidate database",
+            source: error,
+        })?;
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let path = PathBuf::from(format!("{}{}", index_path.display(), suffix));
+            let _ = std::fs::remove_file(path);
+        }
+        self.connection = Connection::open(&index_path)?;
+        self.connection.busy_timeout(Duration::from_secs(2))?;
+        self.connection.pragma_update(None, "foreign_keys", true)?;
+        self.restart_export_worker()?;
         Ok(ExternalChangeReport {
             changed: true,
-            paths,
-            diagnostics: vec![format!(
-                "runtime archive preserved at {archive}{}",
-                if discard_runtime {
-                    "; prior runtime changes were explicitly discarded"
-                } else {
-                    ""
-                }
-            )],
+            paths: checkpoint
+                .files
+                .iter()
+                .map(|file| file.path.clone())
+                .collect(),
+            diagnostics: vec![format!("runtime archive preserved at {archive}")],
         })
-    }
-
-    /// Finish an explicit divergence review by draining pending database
-    /// exports. Any write-gate conflict remains visible to the caller.
-    pub fn finish_divergence_export(&self) -> Result<(), CoreError> {
-        self.flush_with_barrier(FlushBarrier {
-            revision_set: None,
-            operation_reason: "finish divergence export".into(),
-        })?;
-        self.record_git_identity()?;
-        self.update_reconciliation_state("reconciled", &[], &[])
-    }
-
-    fn reconcile_deleted_entities(
-        &self,
-        root: &Path,
-        previous: &BTreeMap<String, String>,
-    ) -> Result<Option<ExternalChangeReport>, CoreError> {
-        let entity_ids = previous
-            .keys()
-            .filter_map(|path| path.strip_prefix("entities/")?.strip_suffix("/entity.json"))
-            .filter(|entity_id| {
-                let entity_root = root.join("entities").join(entity_id);
-                !entity_root.join("entity.json").exists()
-            })
-            .map(str::to_string)
-            .collect::<BTreeSet<_>>();
-        if entity_ids.is_empty() {
-            return Ok(None);
-        }
-        let transaction = self.connection.unchecked_transaction()?;
-        let mut paths = Vec::new();
-        for entity_id in &entity_ids {
-            transaction.execute(
-                "DELETE FROM relationships WHERE source_id=?1 OR target_id=?1",
-                params![entity_id],
-            )?;
-            transaction.execute("DELETE FROM assets WHERE entity_id=?1", params![entity_id])?;
-            transaction.execute(
-                "DELETE FROM entity_fields WHERE entity_id=?1",
-                params![entity_id],
-            )?;
-            transaction.execute(
-                "DELETE FROM documents WHERE entity_id=?1",
-                params![entity_id],
-            )?;
-            transaction.execute("DELETE FROM entities WHERE id=?1", params![entity_id])?;
-            paths.extend(
-                previous
-                    .keys()
-                    .filter(|path| path.starts_with(&format!("entities/{entity_id}/")))
-                    .cloned(),
-            );
-            transaction.execute(
-                "DELETE FROM source_files WHERE path LIKE ?1",
-                params![format!("entities/{entity_id}/%")],
-            )?;
-        }
-        Self::refresh_baselines_from_index_in_transaction(&transaction)?;
-        transaction.commit()?;
-        self.rebuild_maps_projection()?;
-        self.rebuild_search()?;
-        paths.sort();
-        paths.dedup();
-        self.update_reconciliation_state("reconciled", &paths, &[])?;
-        Ok(Some(ExternalChangeReport {
-            changed: true,
-            paths,
-            diagnostics: Vec::new(),
-        }))
-    }
-
-    pub fn resolve_reconciliation_conflict_use_disk(
-        &self,
-        path: &str,
-    ) -> Result<ExternalChangeReport, CoreError> {
-        let conflict = self.conflict_identity(path)?;
-        let actual = self
-            .root
-            .as_deref()
-            .ok_or(CoreError::ProjectNotOpen)
-            .and_then(|root| crate::sync::hash_path(root, path))?;
-        if actual != conflict.3 {
-            return Err(CoreError::Conflict(format!(
-                "conflict token is stale for {path}"
-            )));
-        }
-        self.archive_database_conflict_version(path)?;
-        let report =
-            self.reconcile_external_changes_with_overrides(&BTreeSet::from([path.to_string()]))?;
-        if !report.changed || !report.paths.iter().any(|candidate| candidate == path) {
-            return Err(CoreError::Conflict(format!(
-                "disk version could not be reconciled for {path}"
-            )));
-        }
-        Ok(report)
-    }
-
-    fn archive_database_conflict_version(&self, path: &str) -> Result<(), CoreError> {
-        let Some(root) = self.root.as_deref() else {
-            return Err(CoreError::ProjectNotOpen);
-        };
-        let conflicts = root.join(".daena/conflicts");
-        std::fs::create_dir_all(&conflicts).map_err(|source| CoreError::Io {
-            operation: "create conflict recovery directory",
-            source,
-        })?;
-        let safe_name = path.replace('/', "--");
-        let snapshot = self.export_json_inner()?;
-        std::fs::write(
-            conflicts.join(format!(
-                "{}-database-{}-{}.json",
-                chrono_like_now(),
-                safe_name,
-                Uuid::new_v4()
-            )),
-            snapshot,
-        )
-        .map_err(|source| CoreError::Io {
-            operation: "write database conflict recovery copy",
-            source,
-        })?;
-        Ok(())
-    }
-
-    pub fn resolve_reconciliation_conflict_use_database(
-        &self,
-        path: &str,
-    ) -> Result<(), CoreError> {
-        let conflict = self.conflict_identity(path)?;
-        let root = self.root.as_deref().ok_or(CoreError::ProjectNotOpen)?;
-        if crate::sync::hash_path(root, path)? != conflict.3 {
-            return Err(CoreError::Conflict(format!(
-                "conflict token is stale for {path}"
-            )));
-        }
-        if let Some(bytes) = std::fs::read(root.join(path)).ok() {
-            let conflicts = root.join(".daena/conflicts");
-            std::fs::create_dir_all(&conflicts).map_err(|source| CoreError::Io {
-                operation: "create conflict recovery directory",
-                source,
-            })?;
-            let safe_name = path.replace('/', "--");
-            std::fs::write(
-                conflicts.join(format!("{}-{}", chrono_like_now(), safe_name)),
-                bytes,
-            )
-            .map_err(|source| CoreError::Io {
-                operation: "write conflict recovery copy",
-                source,
-            })?;
-        }
-        self.flush_with_barrier(FlushBarrier {
-            revision_set: None,
-            operation_reason: "database conflict resolution".into(),
-        })?;
-        self.connection.execute(
-            "UPDATE portable_baselines SET baseline_exists=?2,baseline_hash=?3,db_hash=?3,state='clean' WHERE path=?1",
-            params![path, conflict.3.is_some() as i64, conflict.3],
-        )?;
-        self.sync_canonical_with_request_id_inner(&Uuid::new_v4().to_string(), None)?;
-        self.connection.execute(
-            "DELETE FROM reconciliation_conflicts WHERE path=?1",
-            params![path],
-        )?;
-        self.update_reconciliation_state("reconciled", &[path.to_string()], &[])?;
-        Ok(())
-    }
-
-    pub fn resolve_reconciliation_conflict_manual_document(
-        &self,
-        path: &str,
-        body: &str,
-    ) -> Result<(), CoreError> {
-        let conflict = self.conflict_identity(path)?;
-        let root = self.root.as_deref().ok_or(CoreError::ProjectNotOpen)?;
-        if crate::sync::hash_path(root, path)? != conflict.3 {
-            return Err(CoreError::Conflict(format!(
-                "conflict token is stale for {path}"
-            )));
-        }
-        let entity_id = path
-            .strip_prefix("entities/")
-            .and_then(|path| path.strip_suffix("/document.md"))
-            .ok_or_else(|| {
-                CoreError::Validation("manual resolution supports document conflicts only".into())
-            })?;
-        let body = crate::storage::canonical_markdown(body);
-        let updated = self.connection.execute(
-            "UPDATE documents SET body=?1,updated_at=?2 WHERE entity_id=?3",
-            params![body, chrono_like_now(), entity_id],
-        )?;
-        if updated == 0 {
-            return Err(CoreError::NotFound(format!(
-                "document not found for manual conflict resolution: {entity_id}"
-            )));
-        }
-        self.resolve_reconciliation_conflict_use_database(path)
-    }
-
-    fn conflict_identity(
-        &self,
-        path: &str,
-    ) -> Result<(String, Option<String>, Option<String>, Option<String>), CoreError> {
-        self.connection
-            .query_row(
-                "SELECT path,baseline_hash,database_hash,disk_hash FROM reconciliation_conflicts WHERE path=?1 AND state='unresolved'",
-                params![path],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .optional()?
-            .ok_or_else(|| CoreError::NotFound(format!("unresolved reconciliation conflict not found: {path}")))
-    }
-
-    fn reconciliation_failure(&self, error: CoreError) -> Result<ExternalChangeReport, CoreError> {
-        let diagnostic = error.to_string();
-        self.update_reconciliation_state("failed", &[], std::slice::from_ref(&diagnostic))?;
-        self.connection.execute(
-            "UPDATE runtime_meta SET sync_state='failed',dirty_count=MAX(dirty_count,1),clean_shutdown=0 WHERE key='runtime'",
-            [],
-        )?;
-        Ok(ExternalChangeReport {
-            changed: false,
-            paths: Vec::new(),
-            diagnostics: vec![diagnostic],
-        })
-    }
-
-    fn import_external_documents(
-        &self,
-        transaction: &rusqlite::Transaction<'_>,
-        root: &Path,
-        paths: &[String],
-    ) -> Result<(), CoreError> {
-        for path in paths {
-            let Some(entity_id) = path
-                .strip_prefix("entities/")
-                .and_then(|path| path.strip_suffix("/document.md"))
-            else {
-                return Err(CoreError::Validation(format!(
-                    "unsupported targeted document path: {path}"
-                )));
-            };
-            match crate::storage::read_canonical_document(root, entity_id)? {
-                Some((document_id, body, updated_at)) => {
-                    transaction.execute(
-                        "INSERT INTO documents(id,entity_id,format,body,updated_at) VALUES (?1,?2,'markdown',?3,?4) ON CONFLICT(id) DO UPDATE SET entity_id=excluded.entity_id,format=excluded.format,body=excluded.body,updated_at=excluded.updated_at",
-                        params![document_id, entity_id, body, updated_at],
-                    )?;
-                }
-                None => {
-                    transaction.execute(
-                        "DELETE FROM documents WHERE entity_id=?1",
-                        params![entity_id],
-                    )?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn import_external_entity_records(
-        &self,
-        transaction: &rusqlite::Transaction<'_>,
-        root: &Path,
-        paths: &[String],
-    ) -> Result<(), CoreError> {
-        for path in paths {
-            let parts = path.split('/').collect::<Vec<_>>();
-            match parts.as_slice() {
-                ["entities", entity_id, "entity.json"] => {
-                    let entity = crate::storage::read_canonical_entity(root, entity_id)?;
-                    transaction.execute(
-                        "INSERT INTO entities(id,name,entity_type,deleted,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET name=excluded.name,entity_type=excluded.entity_type,deleted=excluded.deleted,created_at=excluded.created_at,updated_at=excluded.updated_at",
-                        params![entity.id, entity.name, entity.entity_type, entity.deleted as i64, entity.created_at, entity.updated_at],
-                    )?;
-                }
-                ["entities", entity_id, "fields", file_name] => {
-                    let fields = crate::storage::read_canonical_fields(root, entity_id, file_name)?;
-                    let namespace = fields
-                        .as_ref()
-                        .map(|(namespace, _)| namespace.clone())
-                        .or_else(|| {
-                            file_name
-                                .strip_suffix(".json")
-                                .and_then(|stem| stem.split("--").nth(1))
-                                .map(str::to_string)
-                        })
-                        .ok_or_else(|| {
-                            CoreError::Validation(format!("field path has no namespace: {path}"))
-                        })?;
-                    transaction.execute(
-                        "DELETE FROM entity_fields WHERE entity_id=?1 AND namespace=?2",
-                        params![entity_id, namespace],
-                    )?;
-                    if let Some((_, values)) = fields {
-                        for (key, value) in values {
-                            transaction.execute(
-                                "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
-                                params![entity_id, namespace, key, encode_field_value(&value)?],
-                            )?;
-                        }
-                    }
-                }
-                _ => {
-                    return Err(CoreError::Validation(format!(
-                        "unsupported targeted entity path: {path}"
-                    )))
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn import_external_relationships_and_assets(
-        &self,
-        transaction: &rusqlite::Transaction<'_>,
-        root: &Path,
-        paths: &[String],
-    ) -> Result<(), CoreError> {
-        for path in paths {
-            let parts = path.split('/').collect::<Vec<_>>();
-            match parts.as_slice() {
-                ["entities", entity_id, "relationships.json"] => {
-                    let relationships =
-                        crate::storage::read_canonical_relationships(root, entity_id)?;
-                    transaction.execute(
-                        "DELETE FROM relationships WHERE source_id=?1",
-                        params![entity_id],
-                    )?;
-                    for relationship in relationships {
-                        if !root
-                            .join("entities")
-                            .join(&relationship.target_id)
-                            .join("entity.json")
-                            .is_file()
-                        {
-                            return Err(CoreError::Validation(format!(
-                                "relationship target does not exist: {}",
-                                relationship.target_id
-                            )));
-                        }
-                        transaction.execute(
-                            "INSERT INTO relationships(id,source_id,target_id,relationship_type,metadata) VALUES (?1,?2,?3,?4,?5)",
-                            params![
-                                relationship.id,
-                                entity_id,
-                                relationship.target_id,
-                                relationship.relationship_type,
-                                crate::storage::canonical_json_string(&relationship.metadata)?
-                            ],
-                        )?;
-                    }
-                }
-                ["entities", entity_id, "assets.json"] => {
-                    let assets = crate::storage::read_canonical_assets(root, entity_id)?;
-                    transaction
-                        .execute("DELETE FROM assets WHERE entity_id=?1", params![entity_id])?;
-                    for asset in assets {
-                        transaction.execute(
-                            "INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-                            params![
-                                asset.id,
-                                entity_id,
-                                asset.namespace,
-                                asset.filename,
-                                asset.content_hash,
-                                asset.size,
-                                asset.mime_type,
-                                asset.path,
-                                asset.created_at
-                            ],
-                        )?;
-                    }
-                }
-                _ if path.starts_with("assets/") => {
-                    let hash = crate::sync::hash_path(root, path)?.ok_or_else(|| {
-                        CoreError::Validation(format!("asset payload is missing: {path}"))
-                    })?;
-                    let size = std::fs::metadata(root.join(path))?.len() as i64;
-                    transaction.execute(
-                        "UPDATE assets SET content_hash=?1,size=?2 WHERE path=?3",
-                        params![hash, size, path],
-                    )?;
-                }
-                _ => {
-                    return Err(CoreError::Validation(format!(
-                        "unsupported targeted relationship or asset path: {path}"
-                    )))
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn import_external_plugins(
-        &self,
-        transaction: &rusqlite::Transaction<'_>,
-        root: &Path,
-        paths: &[String],
-    ) -> Result<(), CoreError> {
-        for path in paths {
-            let plugin_id = path
-                .strip_prefix("plugins/")
-                .and_then(|path| path.strip_suffix(".json"))
-                .ok_or_else(|| CoreError::Validation(format!("invalid plugin path: {path}")))?;
-            let state = crate::storage::read_canonical_plugin(root, plugin_id)?;
-            transaction.execute(
-                "DELETE FROM module_namespaces WHERE module_id=?1",
-                params![plugin_id],
-            )?;
-            transaction.execute(
-                "DELETE FROM migration_history WHERE module_id=?1",
-                params![plugin_id],
-            )?;
-            if let Some(state) = state {
-                transaction.execute(
-                    "INSERT INTO module_versions(module_id,version) VALUES (?1,?2) ON CONFLICT(module_id) DO UPDATE SET version=excluded.version",
-                    params![plugin_id, state.data_version],
-                )?;
-                transaction.execute(
-                    "INSERT INTO module_state(module_id,enabled) VALUES (?1,?2) ON CONFLICT(module_id) DO UPDATE SET enabled=excluded.enabled",
-                    params![plugin_id, state.enabled as i64],
-                )?;
-                transaction.execute(
-                    "DELETE FROM module_package_versions WHERE module_id=?1",
-                    params![plugin_id],
-                )?;
-                if let Some(package_version) = state.selected_package_version {
-                    transaction.execute(
-                        "INSERT INTO module_package_versions(module_id,package_version) VALUES (?1,?2)",
-                        params![plugin_id, package_version],
-                    )?;
-                }
-                for namespace in state.namespaces {
-                    transaction.execute(
-                        "INSERT INTO module_namespaces(module_id,namespace) VALUES (?1,?2)",
-                        params![plugin_id, namespace],
-                    )?;
-                }
-                for migration in state.migrations {
-                    transaction.execute(
-                        "INSERT INTO migration_history(module_id,migration_id,from_version,to_version,checksum,package_digest,applied_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                        params![plugin_id, migration.id, migration.from_version, migration.to_version, migration.checksum, migration.package_digest, migration.applied_at],
-                    )?;
-                }
-            } else {
-                transaction.execute(
-                    "DELETE FROM module_state WHERE module_id=?1",
-                    params![plugin_id],
-                )?;
-                transaction.execute(
-                    "DELETE FROM module_versions WHERE module_id=?1",
-                    params![plugin_id],
-                )?;
-                transaction.execute(
-                    "DELETE FROM module_package_versions WHERE module_id=?1",
-                    params![plugin_id],
-                )?;
-                transaction.execute(
-                    "DELETE FROM module_fields WHERE module_id=?1",
-                    params![plugin_id],
-                )?;
-            }
-        }
-        Ok(())
     }
 
     pub fn save_recovery_copy(&self, entity_id: &str, body: &str) -> Result<String, CoreError> {
@@ -2351,280 +1473,25 @@ impl ProjectStore {
         revision_digest(&(epoch, value))
     }
 
-    #[allow(dead_code)]
-    fn canonical_source_hashes(&self, pattern: &str) -> Result<Vec<(String, String)>, CoreError> {
-        self.connection
-            .prepare(
-                "SELECT path,content_hash FROM source_files WHERE path=?1 OR path LIKE ?1 ORDER BY path",
-            )?
-            .query_map(params![pattern], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(CoreError::from)
-    }
-
-    fn sync_canonical(&self) -> Result<(), CoreError> {
-        let request_id = Uuid::new_v4().to_string();
-        self.sync_canonical_with_request_id(&request_id, None)
-    }
-
-    fn sync_canonical_without_queue_drain(&self) -> Result<(), CoreError> {
-        let request_id = Uuid::new_v4().to_string();
-        let export = self.sync_canonical_with_request_id_inner(&request_id, None);
-        if export.is_err() {
-            self.wake_export_worker();
-        }
-        export
-    }
-
-    fn sync_canonical_with_request_id(
-        &self,
-        request_id: &str,
-        result: Option<&serde_json::Value>,
-    ) -> Result<(), CoreError> {
+    fn notify_export_worker(&self) -> Result<(), CoreError> {
         if self.suppress_sync.get() {
             return Ok(());
         }
-        if self.root.is_some() && self.export_worker.is_some() {
-            self.wake_export_worker();
-            return Ok(());
-        }
-        // Structural mutations still use the synchronous reference exporter
-        // only for memory-backed stores and rebuild helpers that have no
-        // project-scoped worker. Directory-backed mutations always queue.
-        let export = self.sync_canonical_with_request_id_inner(request_id, result);
-        if export.is_err() {
-            self.wake_export_worker();
-        }
-        export
-    }
-
-    fn queue_canonical_with_request_id(
-        &self,
-        request_id: &str,
-        result: Option<&serde_json::Value>,
-    ) -> Result<(), CoreError> {
-        if self.root.is_some() && !self.suppress_sync.get() {
-            if self.export_worker.is_some() {
-                self.wake_export_worker();
+        if self.root.is_some() {
+            let pending_assets = self
+                .pending_asset_imports
+                .lock()
+                .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?;
+            if !pending_assets.is_empty() {
                 return Ok(());
             }
-        }
-        self.sync_canonical_with_request_id(request_id, result)
-    }
-
-    fn sync_canonical_with_request_id_inner(
-        &self,
-        request_id: &str,
-        result: Option<&serde_json::Value>,
-    ) -> Result<(), CoreError> {
-        if self.suppress_sync.get() {
-            return Ok(());
-        }
-        let Some(root) = self.root.as_deref() else {
-            return Ok(());
-        };
-        let manifest_path = root.join("project.json");
-        let manifest: crate::storage::ProjectManifest = crate::storage::read_json(&manifest_path)?;
-        manifest.validate(&manifest_path)?;
-        let existing_batch: Option<String> = self
-            .connection
-            .query_row(
-            "SELECT id FROM sync_batches WHERE request_id=?1 AND state IN ('exporting','running','failed')",
-                params![request_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let snapshot = if let Some(batch_id) = existing_batch.as_deref() {
-            self.snapshot_for_batch(batch_id)?
-        } else {
-            serde_json::from_str(&self.export_json_inner()?)
-                .map_err(|error| CoreError::Serialization(error.to_string()))?
-        };
-        let batch_id = match existing_batch {
-            Some(batch_id) => batch_id,
-            None => {
-                let canonical = crate::storage::FilesystemRepository::open(root)?.scan()?;
-                let previous_hashes = self.indexed_source_hashes()?;
-                let current_hashes = canonical
-                    .sources
-                    .iter()
-                    .map(|source| (source.path.clone(), source.content_hash.clone()))
-                    .collect::<BTreeMap<_, _>>();
-                let mut changed = canonical
-                    .sources
-                    .iter()
-                    .filter(|source| {
-                        previous_hashes.get(&source.path) != Some(&source.content_hash)
-                    })
-                    .map(|source| {
-                        (
-                            source.path.clone(),
-                            "replace",
-                            previous_hashes.get(&source.path).cloned(),
-                            Some(source.content_hash.clone()),
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                changed.extend(
-                    previous_hashes
-                        .iter()
-                        .filter(|(path, _)| !current_hashes.contains_key(*path))
-                        .map(|(path, hash)| (path.clone(), "remove", Some(hash.clone()), None)),
-                );
-                self.preflight_portable_baselines(root)?;
-                self.begin_export_batch(request_id, &changed, result)?
-            }
-        };
-        let pending_assets = self
-            .pending_asset_imports
-            .lock()
-            .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
-            .clone();
-        let pending_asset_sources = self
-            .pending_asset_sources
-            .lock()
-            .map_err(|_| CoreError::Conflict("asset source state is poisoned".into()))?
-            .clone();
-        let mut pending_asset_sources = pending_asset_sources;
-        self.restore_staged_asset_sources(root, request_id, &mut pending_asset_sources)?;
-        let export = self.export_portable_snapshot(
-            root,
-            &snapshot,
-            request_id,
-            result,
-            &pending_assets,
-            &pending_asset_sources,
-            &BTreeMap::new(),
-        );
-        match export {
-            Ok(()) => {
-                self.complete_export_batch(&batch_id, None, None)?;
-                self.record_mutation_receipt(request_id, result)?;
-                Ok(())
-            }
-            Err(error) => {
-                self.complete_export_batch(
-                    &batch_id,
-                    Some(&error.to_string()),
-                    Some(export_error_kind(&error)),
-                )?;
-                Err(error)
-            }
-        }
-    }
-
-    fn preflight_portable_baselines(&self, root: &Path) -> Result<(), CoreError> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT path,baseline_exists,baseline_hash FROM portable_baselines")?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, bool>(1)?,
-                row.get::<_, Option<String>>(2)?,
-            ))
-        })?;
-        for row in rows {
-            let (path, existed, expected) = row?;
-            let actual = crate::sync::hash_path(root, &path)?;
-            if actual != if existed { expected } else { None } {
-                return Err(CoreError::Conflict(format!(
-                    "portable baseline changed for {path}"
-                )));
+            if self.export_worker.is_some() {
+                self.wake_export_worker();
+            } else {
+                self.export_latest_generation()?;
             }
         }
         Ok(())
-    }
-
-    fn snapshot_for_batch(&self, batch_id: &str) -> Result<ProjectSnapshot, CoreError> {
-        let paths = self
-            .connection
-            .prepare("SELECT target_path FROM sync_items WHERE batch_id=?1")?
-            .query_map(params![batch_id], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut entity_ids = BTreeSet::new();
-        let mut plugin_ids = BTreeSet::new();
-        for path in &paths {
-            let parts = path.split('/').collect::<Vec<_>>();
-            match parts.as_slice() {
-                ["entities", entity_id, ..] => {
-                    entity_ids.insert((*entity_id).to_owned());
-                }
-                ["plugins", plugin, ..] => {
-                    plugin_ids.insert(plugin.trim_end_matches(".json").to_owned());
-                }
-                ["assets", ..] => {
-                    if let Some(entity_id) = self
-                        .connection
-                        .query_row(
-                            "SELECT entity_id FROM assets WHERE path=?1",
-                            params![path],
-                            |row| row.get::<_, String>(0),
-                        )
-                        .optional()?
-                    {
-                        entity_ids.insert(entity_id);
-                    }
-                }
-                _ => {}
-            }
-        }
-        let mut entities = Vec::new();
-        let mut documents = Vec::new();
-        let mut fields = Vec::new();
-        let mut relationships = Vec::new();
-        let mut assets = Vec::new();
-        for entity_id in entity_ids {
-            let entity = self.connection.query_row(
-                "SELECT id,name,entity_type,deleted,created_at,updated_at FROM entities WHERE id=?1",
-                params![entity_id],
-                |row| Ok(Entity { id: row.get(0)?, name: row.get(1)?, entity_type: row.get(2)?, deleted: row.get::<_, i64>(3)? != 0, created_at: row.get(4)?, updated_at: row.get(5)?, revision: String::new() }),
-            ).optional()?;
-            let Some(entity) = entity else { continue };
-            documents.extend(self.list_documents_unchecked(entity.id.clone())?);
-            fields.extend(self.list_fields_unchecked(entity.id.clone())?);
-            assets.extend(self.list_assets_unchecked(entity.id.clone())?);
-            relationships.extend(self.list_relationships_unchecked(entity.id.clone())?);
-            entities.push(entity);
-        }
-        relationships.sort_by(|left, right| left.id.cmp(&right.id));
-        relationships.dedup_by(|left, right| left.id == right.id);
-        let mut modules = Vec::new();
-        let module_namespaces = self
-            .connection
-            .prepare(
-                "SELECT module_id,namespace FROM module_namespaces ORDER BY module_id,namespace",
-            )?
-            .query_map([], |row| {
-                Ok(ModuleNamespace {
-                    module_id: row.get(0)?,
-                    namespace: row.get(1)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut module_fields = Vec::new();
-        let mut migration_history = Vec::new();
-        for plugin_id in plugin_ids {
-            if let Some(module) = self.connection.query_row(
-                "SELECT m.module_id,COALESCE(s.enabled,1),m.version,p.package_version FROM module_versions m LEFT JOIN module_state s ON s.module_id=m.module_id LEFT JOIN module_package_versions p ON p.module_id=m.module_id WHERE m.module_id=?1",
-                params![plugin_id],
-                |row| Ok(ModuleState { module_id: row.get(0)?, enabled: row.get::<_, i64>(1)? != 0, version: row.get(2)?, package_version: row.get(3)? }),
-            ).optional()? { modules.push(module); }
-            module_fields.extend(self.connection.prepare("SELECT module_id,namespace,key,field_type,required FROM module_fields WHERE module_id=?1 ORDER BY namespace,key")?.query_map(params![plugin_id], |row| Ok(ModuleField { module_id: row.get(0)?, namespace: row.get(1)?, key: row.get(2)?, field_type: row.get(3)?, required: row.get::<_, i64>(4)? != 0 }))?.collect::<Result<Vec<_>, _>>()?);
-            migration_history.extend(self.connection.prepare("SELECT module_id,migration_id,from_version,to_version,checksum,package_digest,applied_at FROM migration_history WHERE module_id=?1 ORDER BY migration_id")?.query_map(params![plugin_id], |row| Ok(MigrationHistoryEntry { module_id: row.get(0)?, migration_id: row.get(1)?, from_version: row.get(2)?, to_version: row.get(3)?, checksum: row.get(4)?, package_digest: row.get(5)?, applied_at: row.get(6)? }))?.collect::<Result<Vec<_>, _>>()?);
-        }
-        Ok(ProjectSnapshot {
-            format_version: current_snapshot_version(),
-            entities,
-            documents,
-            fields,
-            relationships,
-            assets,
-            modules,
-            module_namespaces,
-            module_fields,
-            migration_history,
-        })
     }
 
     fn begin_mutation<'a>(
@@ -2632,7 +1499,7 @@ impl ProjectStore {
         request_id: &str,
         result: Option<&serde_json::Value>,
         affected_prefixes: &[String],
-    ) -> Result<(rusqlite::Transaction<'a>, String), CoreError> {
+    ) -> Result<rusqlite::Transaction<'a>, CoreError> {
         let fingerprint = result
             .map(|value| digest_bytes(value.to_string().as_bytes()))
             .unwrap_or_else(|| digest_bytes(b"null"));
@@ -2645,56 +1512,9 @@ impl ProjectStore {
         result: Option<&serde_json::Value>,
         affected_prefixes: &[String],
         fingerprint: &str,
-    ) -> Result<(rusqlite::Transaction<'a>, String), CoreError> {
+    ) -> Result<rusqlite::Transaction<'a>, CoreError> {
         let transaction = self.connection.unchecked_transaction()?;
-        let mut paths = BTreeSet::new();
-        if let Some(root) = self.root.as_deref() {
-            for prefix in affected_prefixes {
-                if prefix.starts_with("entities/") {
-                    Self::preflight_canonical_prefix(&transaction, root, prefix)?;
-                }
-            }
-        }
-        for prefix in affected_prefixes {
-            let pattern = format!("{prefix}%");
-            let mut statement = transaction.prepare(
-                "SELECT path FROM source_files WHERE path=?1 OR path LIKE ?2 ORDER BY path",
-            )?;
-            let rows =
-                statement.query_map(params![prefix, pattern], |row| row.get::<_, String>(0))?;
-            for row in rows {
-                paths.insert(row?);
-            }
-            if prefix.starts_with("entities/") {
-                let entity_id = prefix.trim_start_matches("entities/").trim_end_matches('/');
-                if !entity_id.is_empty() {
-                    paths.insert(format!("entities/{entity_id}/entity.json"));
-                }
-            }
-            if !prefix.ends_with('/') {
-                paths.insert(prefix.clone());
-            }
-        }
-        for path in &paths {
-            let expected: Option<String> = transaction
-                .query_row(
-                    "SELECT baseline_hash FROM portable_baselines WHERE path=?1 AND baseline_exists=1",
-                    params![path],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let actual = self
-                .root
-                .as_deref()
-                .map(|root| crate::sync::hash_path(root, path))
-                .transpose()?
-                .flatten();
-            if actual != expected {
-                return Err(CoreError::Conflict(format!(
-                    "portable baseline changed for {path}"
-                )));
-            }
-        }
+        let _ = affected_prefixes;
         let result_json = result
             .map(serde_json::Value::to_string)
             .unwrap_or_else(|| "null".into());
@@ -2712,259 +1532,31 @@ impl ProjectStore {
                 ));
             }
         }
-        let batch_id: String = transaction
-            .query_row(
-                "SELECT id FROM sync_batches WHERE request_id=?1",
-                params![request_id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .unwrap_or_else(|| Uuid::new_v4().to_string());
-        let now = chrono_like_now();
         transaction.execute(
-            "INSERT INTO sync_batches(id,request_id,state,created_at,result_json) VALUES (?1,?2,'exporting',?3,?4) ON CONFLICT(request_id) DO UPDATE SET state='exporting',completed_at=NULL,last_error=NULL,result_json=excluded.result_json",
-            params![batch_id, request_id, now, result_json],
-        )?;
-        transaction.execute(
-            "DELETE FROM sync_items WHERE batch_id=?1",
-            params![batch_id],
-        )?;
-        for path in paths {
-            let expected: Option<String> = transaction
-                .query_row(
-                    "SELECT baseline_hash FROM portable_baselines WHERE path=?1 AND baseline_exists=1",
-                    params![path],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            transaction.execute(
-                "INSERT INTO sync_items(batch_id,target_path,operation,state,expected_old_hash) VALUES (?1,?2,'replace','pending',?3)",
-                params![batch_id, path, expected],
-            )?;
-        }
-        transaction.execute(
-            "UPDATE sync_batches SET state='superseded',completed_at=?2,last_error=NULL,error_kind=NULL WHERE id<>?1 AND state IN ('exporting','failed') AND EXISTS (SELECT 1 FROM sync_items old JOIN sync_items new ON new.target_path=old.target_path WHERE old.batch_id=sync_batches.id AND new.batch_id=?1) AND NOT EXISTS (SELECT 1 FROM sync_items old_missing WHERE old_missing.batch_id=sync_batches.id AND NOT EXISTS (SELECT 1 FROM sync_items new_missing WHERE new_missing.batch_id=?1 AND new_missing.target_path=old_missing.target_path))",
-            params![batch_id, chrono_like_now()],
-        )?;
-        transaction.execute(
-            "UPDATE mutation_receipts SET state='completed' WHERE request_id IN (SELECT request_id FROM sync_batches WHERE state='superseded')",
-            [],
-        )?;
-        transaction.execute(
-            "UPDATE runtime_meta SET sync_state='exporting',dirty_count=(SELECT COUNT(*) FROM sync_batches WHERE state NOT IN ('completed','superseded')),clean_shutdown=0 WHERE key='runtime'",
-            [],
-        )?;
-        transaction.execute(
-            "INSERT INTO mutation_receipts(request_id,result,fingerprint,committed_at,state) VALUES (?1,?2,?3,?4,'pending') ON CONFLICT(request_id) DO UPDATE SET result=excluded.result,fingerprint=excluded.fingerprint,committed_at=excluded.committed_at,state='pending'",
+            "INSERT INTO mutation_receipts(request_id,result,fingerprint,committed_at,state) VALUES (?1,?2,?3,?4,'completed') ON CONFLICT(request_id) DO UPDATE SET result=excluded.result,fingerprint=excluded.fingerprint,committed_at=excluded.committed_at,state='completed'",
             params![request_id, result_json, fingerprint, chrono_like_now()],
         )?;
-        Ok((transaction, batch_id))
+        Ok(transaction)
     }
 
-    fn preflight_canonical_prefix(
-        transaction: &rusqlite::Transaction<'_>,
-        root: &Path,
-        prefix: &str,
-    ) -> Result<(), CoreError> {
-        fn visit(
-            transaction: &rusqlite::Transaction<'_>,
-            root: &Path,
-            current: &Path,
-        ) -> Result<(), CoreError> {
-            for entry in std::fs::read_dir(current)? {
-                let path = entry?.path();
-                if path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(crate::storage::is_ignored_metadata_entry)
-                {
-                    continue;
-                }
-                if path.is_dir() {
-                    visit(transaction, root, &path)?;
-                    continue;
-                }
-                let relative = path
-                    .strip_prefix(root)
-                    .map_err(|error| CoreError::Conflict(error.to_string()))?
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                let expected: Option<String> = transaction
-                    .query_row(
-                        "SELECT baseline_hash FROM portable_baselines WHERE path=?1 AND baseline_exists=1",
-                        params![relative],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                let actual = crate::sync::hash_path(root, &relative)?;
-                if actual != expected {
-                    return Err(CoreError::Conflict(format!(
-                        "portable baseline changed for {relative}"
-                    )));
-                }
-            }
-            Ok(())
-        }
-
-        let path = root.join(prefix);
-        if path.is_dir() {
-            visit(transaction, root, &path)?;
-        }
-        Ok(())
-    }
-
-    fn begin_export_batch(
-        &self,
-        request_id: &str,
-        items: &[(String, &str, Option<String>, Option<String>)],
-        result: Option<&serde_json::Value>,
-    ) -> Result<String, CoreError> {
-        let result_json = result.map(serde_json::Value::to_string);
-        let batch_id: String = self
-            .connection
-            .query_row(
-                "SELECT id FROM sync_batches WHERE request_id=?1",
-                params![request_id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .unwrap_or_else(|| Uuid::new_v4().to_string());
-        let now = chrono_like_now();
-        let transaction = self.connection.unchecked_transaction()?;
-        transaction.execute(
-            "INSERT INTO sync_batches(id,request_id,state,created_at,result_json) VALUES (?1,?2,'exporting',?3,?4) ON CONFLICT(request_id) DO UPDATE SET state='exporting',completed_at=NULL,last_error=NULL,result_json=excluded.result_json",
-            params![batch_id, request_id, now, result_json],
-        )?;
-        transaction.execute(
-            "DELETE FROM sync_items WHERE batch_id=?1",
-            params![batch_id],
-        )?;
-        for (path, operation, expected_old_hash, new_hash) in items {
-            transaction.execute(
-                "INSERT INTO sync_items(batch_id,target_path,operation,state,expected_old_hash,new_hash) VALUES (?1,?2,?3,'pending',?4,?5)",
-                params![batch_id, path, operation, expected_old_hash, new_hash],
-            )?;
-        }
-        transaction.execute(
-            "UPDATE runtime_meta SET sync_state='exporting', dirty_count=dirty_count+1, clean_shutdown=0 WHERE key='runtime'",
-            [],
-        )?;
-        transaction.commit()?;
-        Ok(batch_id)
-    }
-
-    fn complete_export_batch(
-        &self,
-        batch_id: &str,
-        error: Option<&str>,
-        error_kind: Option<&str>,
-    ) -> Result<(), CoreError> {
-        let unapplied: i64 = self.connection.query_row(
-            "SELECT COUNT(*) FROM sync_items WHERE batch_id=?1 AND state <> 'applied'",
-            params![batch_id],
-            |row| row.get(0),
-        )?;
-        let effective_error =
-            error.or_else(|| (unapplied > 0).then_some("export batch has unapplied items"));
-        let state = if effective_error.is_some() {
-            "failed"
-        } else {
-            "completed"
-        };
-        let error_kind = effective_error.map(|_| error_kind.unwrap_or("transient"));
-        let transaction = self.connection.unchecked_transaction()?;
-        transaction.execute(
-            "UPDATE sync_batches SET state=?2, completed_at=?3, last_error=?4, error_kind=?5, attempt_count=attempt_count+CASE WHEN ?4 IS NULL THEN 0 ELSE 1 END WHERE id=?1",
-            params![batch_id, state, chrono_like_now(), effective_error, error_kind],
-        )?;
-        transaction.execute(
-            "UPDATE sync_items SET state=?2, last_error=?3 WHERE batch_id=?1 AND state <> 'applied'",
-            params![batch_id, state, effective_error],
-        )?;
-        transaction.execute(
-            "UPDATE mutation_receipts SET state=?1 WHERE request_id=(SELECT request_id FROM sync_batches WHERE id=?2) AND ?1='completed'",
-            params![state, batch_id],
-        )?;
-        let (sync_state, dirty_count): (String, i64) = transaction.query_row(
-            "SELECT CASE WHEN EXISTS(SELECT 1 FROM sync_batches WHERE state='failed') THEN 'failed' WHEN EXISTS(SELECT 1 FROM sync_batches WHERE state IN ('exporting','running')) THEN 'exporting' ELSE 'clean' END, COUNT(*) FROM sync_batches WHERE state NOT IN ('completed','superseded')",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        transaction.execute(
-            "UPDATE runtime_meta SET sync_state=?1, dirty_count=?2, clean_shutdown=CASE WHEN ?1='clean' THEN clean_shutdown ELSE 0 END WHERE key='runtime'",
-            params![sync_state, dirty_count],
-        )?;
-        transaction.commit()?;
-        Ok(())
-    }
-
-    fn record_mutation_receipt(
-        &self,
-        request_id: &str,
-        result: Option<&serde_json::Value>,
-    ) -> Result<(), CoreError> {
-        let serialized = serde_json::to_string(result.unwrap_or(&serde_json::Value::Null))
-            .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        self.connection.execute(
-            "INSERT OR IGNORE INTO mutation_receipts(request_id,result,committed_at,state) VALUES (?1,?2,?3,'completed')",
-            params![request_id, serialized, chrono_like_now()],
-        )?;
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn export_portable_snapshot(
+    fn export_complete_snapshot(
         &self,
         root: &Path,
         snapshot: &ProjectSnapshot,
-        request_id: &str,
-        result: Option<&serde_json::Value>,
         pending_assets: &BTreeMap<String, Vec<u8>>,
-        pending_asset_sources: &BTreeMap<String, PathBuf>,
-        additional_files: &BTreeMap<String, Vec<u8>>,
+        target_generation: Generation,
     ) -> Result<(), CoreError> {
         let manifest_path = root.join("project.json");
         let manifest: crate::storage::ProjectManifest = crate::storage::read_json(&manifest_path)?;
         manifest.validate(&manifest_path)?;
-        let previous_sources = self.indexed_sources()?;
-        let mut transaction = crate::sync::SyncExporter::begin(root, request_id)?;
+        let previous_sources = Self::checkpoint_sources(root)?;
+        let request_id = Uuid::new_v4().to_string();
+        let mut transaction = crate::sync::SyncExporter::begin(root, &request_id)?;
         let staging_root = transaction.staging_root();
         std::fs::create_dir_all(&staging_root).map_err(|error| CoreError::Io {
-            operation: "create canonical transaction staging root",
+            operation: "create checkpoint staging root",
             source: error,
         })?;
-        for (target, bytes) in additional_files {
-            transaction.stage_bytes(target, bytes)?;
-        }
-        for (relative_path, bytes) in pending_assets {
-            let expected = self
-                .connection
-                .query_row(
-                    "SELECT baseline_hash FROM portable_baselines WHERE path=?1 AND baseline_exists=1",
-                    params![relative_path],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            transaction.stage_bytes_with_expected(relative_path, bytes, expected)?;
-            self.record_sync_item_target_hash(
-                request_id,
-                relative_path,
-                &format!("sha256:{:x}", Sha256::digest(bytes)),
-            )?;
-        }
-        for (relative_path, source_path) in pending_asset_sources {
-            let expected = self
-                .connection
-                .query_row(
-                    "SELECT baseline_hash FROM portable_baselines WHERE path=?1 AND baseline_exists=1",
-                    params![relative_path],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let (new_hash, _) = streamed_file_digest(source_path)?;
-            transaction.stage_file_with_expected(relative_path, source_path, expected)?;
-            self.record_sync_item_target_hash(request_id, relative_path, &new_hash)?;
-        }
         for entity in &snapshot.entities {
             crate::storage::write_canonical_entity(&staging_root, &manifest, snapshot, &entity.id)?;
         }
@@ -2976,155 +1568,70 @@ impl ProjectStore {
                 &module.module_id,
             )?;
         }
-        let affected_roots = snapshot
-            .entities
-            .iter()
-            .map(|entity| format!("entities/{}/", entity.id))
-            .chain(
-                snapshot
-                    .modules
-                    .iter()
-                    .map(|module| format!("plugins/{}.json", module.module_id)),
-            )
-            .chain(pending_assets.keys().cloned())
-            .chain(pending_asset_sources.keys().cloned())
-            .collect::<Vec<_>>();
-        let mut targeted_sources = staged_canonical_sources(&staging_root, snapshot)?;
+        let mut current_sources = staged_canonical_sources(&staging_root, snapshot)?;
         for (path, bytes) in pending_assets {
-            targeted_sources.push(crate::storage::CanonicalSource {
+            transaction.stage_bytes(path, bytes)?;
+            current_sources.push(crate::storage::CanonicalSource {
                 path: path.clone(),
                 content_hash: format!("sha256:{:x}", Sha256::digest(bytes)),
                 format_version: crate::storage::PROJECT_FORMAT_VERSION,
             });
         }
-        for (path, source) in pending_asset_sources {
-            let (content_hash, _) = streamed_file_digest(source)?;
-            targeted_sources.push(crate::storage::CanonicalSource {
-                path: path.clone(),
+        for asset in &snapshot.assets {
+            if current_sources
+                .iter()
+                .any(|source| source.path == asset.path)
+            {
+                continue;
+            }
+            let source = crate::storage::normalized_project_path(root, &asset.path)?;
+            let content_hash = crate::sync::hash_path(root, &asset.path)?.ok_or_else(|| {
+                CoreError::NotFound(format!("asset bytes are missing at {}", asset.path))
+            })?;
+            transaction.stage_file_with_expected(
+                &asset.path,
+                &source,
+                Some(content_hash.clone()),
+            )?;
+            current_sources.push(crate::storage::CanonicalSource {
+                path: asset.path.clone(),
                 content_hash,
                 format_version: crate::storage::PROJECT_FORMAT_VERSION,
             });
         }
-        let staged_sources = previous_sources
+        if let Some(content_hash) = crate::sync::hash_path(root, "project.json")? {
+            current_sources.push(crate::storage::CanonicalSource {
+                path: "project.json".into(),
+                content_hash,
+                format_version: crate::storage::PROJECT_FORMAT_VERSION,
+            });
+        }
+        current_sources.sort_by(|left, right| left.path.cmp(&right.path));
+        current_sources.dedup_by(|left, right| left.path == right.path);
+        let current_paths = current_sources
             .iter()
-            .filter(|source| {
-                !affected_roots
-                    .iter()
-                    .any(|root| source.path.starts_with(root))
-            })
-            .cloned()
-            .chain(targeted_sources)
-            .fold(BTreeMap::new(), |mut sources, source| {
-                sources.insert(source.path.clone(), source);
-                sources
-            })
-            .into_values()
-            .collect::<Vec<_>>();
-        let canonical_hashes = previous_sources
-            .iter()
-            .map(|source| (source.path.as_str(), source.content_hash.as_str()))
-            .collect::<BTreeMap<_, _>>();
-        let staged_paths = staged_sources
-            .iter()
-            .map(|source| source.path.clone())
+            .map(|source| source.path.as_str())
             .collect::<BTreeSet<_>>();
-        for source in &staged_sources {
-            if canonical_hashes
-                .get(source.path.as_str())
-                .is_some_and(|hash| *hash == source.content_hash)
-            {
-                let item_exists: bool = self.connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sync_items WHERE batch_id=(SELECT id FROM sync_batches WHERE request_id=?1) AND target_path=?2)",
-                    params![request_id, source.path],
-                    |row| row.get(0),
-                )?;
-                if item_exists
-                    && crate::sync::hash_path(root, &source.path)?.as_deref()
-                        == Some(source.content_hash.as_str())
-                {
-                    self.mark_sync_item_applied(request_id, &source.path)?;
-                }
+        for source in &current_sources {
+            if source.path == "project.json" || pending_assets.contains_key(&source.path) {
                 continue;
             }
-            let path = crate::storage::normalized_project_path(&staging_root, &source.path)?;
-            let expected = self
-                .connection
-                .query_row(
-                    "SELECT baseline_hash FROM portable_baselines WHERE path=?1 AND baseline_exists=1",
-                    params![source.path],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let item_state: Option<(String, Option<String>)> = self
-                .connection
-                .query_row(
-                    "SELECT state,new_hash FROM sync_items WHERE batch_id=(SELECT id FROM sync_batches WHERE request_id=?1) AND target_path=?2",
-                    params![request_id, source.path],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?;
-            if let Some((state, target_hash)) = item_state {
-                if state == "applied"
-                    || target_hash.as_deref() == Some(source.content_hash.as_str())
-                        && crate::sync::hash_path(root, &source.path)?.as_deref()
-                            == Some(source.content_hash.as_str())
-                {
-                    self.mark_sync_item_applied(request_id, &source.path)?;
-                    continue;
-                }
-            }
-            if let Some(asset_source) = pending_asset_sources.get(&source.path) {
-                transaction.stage_file_with_expected(&source.path, asset_source, expected)?;
-            } else {
-                let bytes = std::fs::read(&path).map_err(|error| CoreError::Io {
-                    operation: "read staged canonical data",
-                    source: error,
-                })?;
-                transaction.stage_bytes_with_expected(&source.path, &bytes, expected)?;
-            }
-            self.record_sync_item_target_hash(request_id, &source.path, &source.content_hash)?;
+            let staged = crate::storage::normalized_project_path(&staging_root, &source.path)?;
+            let bytes = std::fs::read(&staged).map_err(|error| {
+                CoreError::Validation(format!(
+                    "checkpoint staging file {} is unavailable: {error}",
+                    staged.display()
+                ))
+            })?;
+            transaction.stage_bytes(&source.path, &bytes)?;
         }
         for source in &previous_sources {
-            let item_exists: bool = self.connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM sync_items WHERE batch_id=(SELECT id FROM sync_batches WHERE request_id=?1) AND target_path=?2)",
-                params![request_id, source.path],
-                |row| row.get(0),
-            )?;
-            if (affected_roots
-                .iter()
-                .any(|root| source.path.starts_with(root))
-                || item_exists)
-                && !staged_paths.contains(&source.path)
-            {
-                let item_state: Option<(String, Option<String>)> = self
-                    .connection
-                    .query_row(
-                        "SELECT state,new_hash FROM sync_items WHERE batch_id=(SELECT id FROM sync_batches WHERE request_id=?1) AND target_path=?2",
-                        params![request_id, source.path],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .optional()?;
-                if let Some((state, target_hash)) = item_state {
-                    if state == "applied"
-                        || target_hash.is_none()
-                            && crate::sync::hash_path(root, &source.path)?.is_none()
-                    {
-                        self.mark_sync_item_applied(request_id, &source.path)?;
-                        continue;
-                    }
-                }
+            if source.path != "project.json" && !current_paths.contains(source.path.as_str()) {
                 transaction.stage_remove(&source.path)?;
             }
         }
-        let applied = transaction.commit(result)?;
-        let applied_transaction = self.connection.unchecked_transaction()?;
-        for path in applied {
-            applied_transaction.execute(
-                "UPDATE sync_items SET state='applied',last_error=NULL WHERE batch_id=(SELECT id FROM sync_batches WHERE request_id=?1) AND target_path=?2",
-                params![request_id, path],
-            )?;
-        }
-        applied_transaction.commit()?;
+        transaction.commit(None::<&serde_json::Value>)?;
+        self.install_checkpoint_manifest(root, target_generation)?;
         if !pending_assets.is_empty() {
             let mut pending = self
                 .pending_asset_imports
@@ -3134,42 +1641,30 @@ impl ProjectStore {
                 pending.remove(path);
             }
         }
-        if !pending_asset_sources.is_empty() {
-            let mut pending = self
-                .pending_asset_sources
-                .lock()
-                .map_err(|_| CoreError::Conflict("asset source state is poisoned".into()))?;
-            for path in pending_asset_sources.keys() {
-                pending.remove(path);
-            }
-        }
-        self.update_source_index(&previous_sources, &staged_sources)?;
         Ok(())
     }
 
-    fn record_sync_item_target_hash(
+    #[allow(clippy::too_many_arguments)]
+    fn install_checkpoint_manifest(
         &self,
-        request_id: &str,
-        path: &str,
-        new_hash: &str,
+        root: &Path,
+        generation: Generation,
     ) -> Result<(), CoreError> {
-        self.connection.execute(
-            "UPDATE sync_items SET new_hash=?1 WHERE batch_id=(SELECT id FROM sync_batches WHERE request_id=?2) AND target_path=?3",
-            params![new_hash, request_id, path],
+        let checkpoint = crate::storage::build_checkpoint_manifest(root, generation)?;
+        let digest =
+            crate::storage::canonical_json_bytes(&checkpoint).map(|bytes| digest_bytes(&bytes))?;
+        crate::storage::write_checkpoint_manifest(root, &checkpoint)?;
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
+            "UPDATE runtime_meta SET exported_generation=CASE WHEN content_generation>=?1 THEN ?1 ELSE exported_generation END, checkpoint_digest=?2, export_error=NULL WHERE key='runtime'",
+            params![generation, digest],
         )?;
-        Ok(())
-    }
-
-    fn mark_sync_item_applied(&self, request_id: &str, path: &str) -> Result<(), CoreError> {
-        self.connection.execute(
-            "UPDATE sync_items SET state='applied',last_error=NULL WHERE batch_id=(SELECT id FROM sync_batches WHERE request_id=?1) AND target_path=?2",
-            params![request_id, path],
-        )?;
+        transaction.commit()?;
         Ok(())
     }
 
     pub fn in_memory() -> Result<Self, CoreError> {
-        Self::open_database(":memory:", None, None, true, false, true)
+        Self::open_database(":memory:", None, None, true, false)
     }
 
     pub fn info(&self) -> Option<ProjectInfo> {
@@ -3177,11 +1672,7 @@ impl ProjectStore {
         let sync = self.sync_summary().unwrap_or_else(|_| SyncSummary {
             state: "diagnostic".into(),
             dirty_count: 0,
-            diagnostics: Vec::new(),
-            reconciliation_state: "diagnostic".into(),
-            reconciliation_paths: Vec::new(),
-            reconciliation_diagnostics: Vec::new(),
-            conflicts: Vec::new(),
+            export_error: Some("runtime metadata is unavailable".into()),
         });
         Some(ProjectInfo {
             name: crate::storage::read_json::<crate::storage::ProjectManifest>(
@@ -3195,120 +1686,45 @@ impl ProjectStore {
                     .to_string()
             }),
             root: root.to_string_lossy().to_string(),
-            index_status: self
-                .connection
-                .query_row(
-                    "SELECT sync_state,reconciliation_state FROM runtime_meta WHERE key='runtime'",
-                    [],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                )
-                .map(|(state, reconciliation_state)| {
-                    if state == "clean"
-                        && !matches!(reconciliation_state.as_str(), "failed" | "blocked")
-                    {
-                        "ready"
-                    } else {
-                        "diagnostic"
-                    }
-                })
-                .unwrap_or("diagnostic")
-                .into(),
+            index_status: if sync.state == "clean" {
+                "ready"
+            } else {
+                "diagnostic"
+            }
+            .into(),
             assets: root.join("assets").to_string_lossy().to_string(),
             sync,
         })
     }
 
     pub fn sync_summary(&self) -> Result<SyncSummary, CoreError> {
-        let (state, dirty_count, reconciliation_state, reconciliation_paths, reconciliation_diagnostics): (String, i64, String, String, String) = self.connection.query_row(
-            "SELECT sync_state,dirty_count,reconciliation_state,reconciliation_paths,reconciliation_diagnostics FROM runtime_meta WHERE key='runtime'",
+        let (content, exported, export_error): (i64, i64, Option<String>) = self.connection.query_row(
+            "SELECT content_generation,exported_generation,export_error FROM runtime_meta WHERE key='runtime'",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
-        let diagnostics = self
-            .connection
-            .prepare(
-                "SELECT b.id,b.request_id,b.state,b.attempt_count,b.error_kind,COALESCE(i.last_error,b.last_error),i.target_path FROM sync_batches b LEFT JOIN sync_items i ON i.batch_id=b.id WHERE b.state NOT IN ('completed','superseded') ORDER BY b.created_at,i.target_path",
-            )?
-            .query_map([], |row| {
-                Ok(SyncDiagnostic {
-                    batch_id: row.get(0)?,
-                    request_id: row.get(1)?,
-                    state: row.get(2)?,
-                    attempt_count: row.get(3)?,
-                    error_kind: row.get(4)?,
-                    last_error: row.get(5)?,
-                    target_path: row.get(6)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        let conflicts = self
-            .connection
-            .prepare("SELECT path,baseline_hash,database_hash,disk_hash,state FROM reconciliation_conflicts WHERE state='unresolved' ORDER BY path")?
-            .query_map([], |row| {
-                Ok(ReconciliationConflict {
-                    path: row.get(0)?,
-                    baseline_hash: row.get(1)?,
-                    database_hash: row.get(2)?,
-                    disk_hash: row.get(3)?,
-                    state: row.get(4)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+        let state = if export_error.is_some() {
+            "failed"
+        } else if exported < content {
+            "pending"
+        } else {
+            "clean"
+        };
         Ok(SyncSummary {
-            state,
-            dirty_count,
-            diagnostics,
-            reconciliation_state,
-            reconciliation_paths: serde_json::from_str(&reconciliation_paths)
-                .map_err(|error| CoreError::Serialization(error.to_string()))?,
-            reconciliation_diagnostics: serde_json::from_str(&reconciliation_diagnostics)
-                .map_err(|error| CoreError::Serialization(error.to_string()))?,
-            conflicts,
+            state: state.into(),
+            dirty_count: content.saturating_sub(exported),
+            export_error,
         })
     }
 
-    fn update_reconciliation_state(
-        &self,
-        state: &str,
-        paths: &[String],
-        diagnostics: &[String],
-    ) -> Result<(), CoreError> {
-        let serialized_paths = serde_json::to_string(paths)
-            .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        let diagnostics = serde_json::to_string(diagnostics)
-            .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        self.connection.execute(
-            "UPDATE runtime_meta SET reconciliation_state=?1,reconciliation_paths=?2,reconciliation_diagnostics=?3 WHERE key='runtime'",
-            params![state, serialized_paths, diagnostics],
-        )?;
-        if matches!(state, "failed" | "blocked") {
-            self.connection.execute(
-                "UPDATE runtime_meta SET sync_state='failed',dirty_count=MAX(dirty_count,1),clean_shutdown=0 WHERE key='runtime'",
-                [],
-            )?;
-        }
-        if state == "reconciled" {
-            for path in paths {
-                self.connection.execute(
-                    "DELETE FROM reconciliation_conflicts WHERE path=?1",
-                    params![path],
-                )?;
-            }
-        }
-        Ok(())
-    }
-
     fn runtime_requires_recovery_archive(&self) -> Result<bool, CoreError> {
-        let (sync_state, reconciliation_state, pending): (String, String, bool) = self
-            .connection
-            .query_row(
-                "SELECT sync_state,reconciliation_state,EXISTS(SELECT 1 FROM sync_batches WHERE state NOT IN ('completed','superseded')) FROM runtime_meta WHERE key='runtime'",
+        let (exported, content, export_error): (i64, i64, Option<String>) =
+            self.connection.query_row(
+                "SELECT exported_generation,content_generation,export_error FROM runtime_meta WHERE key='runtime'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
-        Ok(pending
-            || sync_state != "clean"
-            || matches!(reconciliation_state.as_str(), "failed" | "blocked"))
+        Ok(export_error.is_some() || exported < content)
     }
 
     fn project_root(&self) -> Result<&Path, CoreError> {
@@ -3381,30 +1797,7 @@ impl ProjectStore {
                 }
                 result
             }
-            None => {
-                let pending: Option<(Option<String>, String, Option<String>)> = self.connection.query_row(
-                    "SELECT result_json,state,error_kind FROM sync_batches WHERE request_id=?1 AND state IN ('failed','exporting','running')",
-                    params![request_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                ).optional()?;
-                let Some((result, state, error_kind)) = pending else {
-                    return Ok(None);
-                };
-                let Some(result) = result else {
-                    return Ok(None);
-                };
-                if self.export_worker.is_some()
-                    && (state != "failed" || error_kind.as_deref() == Some("transient"))
-                {
-                    self.wake_export_worker();
-                } else {
-                    self.sync_canonical_with_request_id_inner(
-                        request_id,
-                        serde_json::from_str(&result).ok().as_ref(),
-                    )?;
-                }
-                result.to_string()
-            }
+            None => return Ok(None),
         };
         let result = serde_json::from_str(&result)
             .map_err(|error| CoreError::Serialization(error.to_string()))?;
@@ -3435,50 +1828,6 @@ impl ProjectStore {
             .current_dir(root)
             .output()
             .map_err(|error| CoreError::NotFound(format!("git is unavailable: {error}")))
-    }
-
-    fn git_unmerged_paths(&self) -> Vec<String> {
-        let Ok(status) = self.git_status() else {
-            return Vec::new();
-        };
-        if !status.repository {
-            return Vec::new();
-        }
-        status
-            .changes
-            .into_iter()
-            .filter_map(|change| {
-                let bytes = change.as_bytes();
-                if bytes.len() < 4 {
-                    return None;
-                }
-                let unmerged = matches!(
-                    &bytes[..2],
-                    b"DD" | b"AU" | b"UD" | b"UA" | b"DU" | b"AA" | b"UU"
-                );
-                unmerged.then(|| change[3..].trim().to_string())
-            })
-            .collect()
-    }
-
-    fn git_head_identity(&self) -> Option<String> {
-        self.git_rev_parse("HEAD").ok().flatten()
-    }
-
-    fn git_index_identity(&self) -> Option<String> {
-        let output = self.run_git(&["ls-files", "--stage", "-z"]).ok()?;
-        output
-            .status
-            .success()
-            .then(|| digest_bytes(&output.stdout))
-    }
-
-    fn record_git_identity(&self) -> Result<(), CoreError> {
-        self.connection.execute(
-            "UPDATE runtime_meta SET last_git_identity=?1,last_git_index_identity=?2 WHERE key='runtime'",
-            params![self.git_head_identity(), self.git_index_identity()],
-        )?;
-        Ok(())
     }
 
     fn git_status_entries(&self) -> Result<Vec<(u8, u8, String)>, CoreError> {
@@ -3618,6 +1967,11 @@ impl ProjectStore {
     }
 
     pub fn git_preflight(&self) -> Result<GitPreflight, CoreError> {
+        self.flush_checkpoint("git preflight")?;
+        self.git_preflight_after_checkpoint()
+    }
+
+    pub fn git_preflight_after_checkpoint(&self) -> Result<GitPreflight, CoreError> {
         let status = self.git_status()?;
         if !status.repository {
             return Ok(GitPreflight {
@@ -3658,11 +2012,11 @@ impl ProjectStore {
         }
 
         let report = if unmerged_paths.is_empty() {
-            self.flush_with_barrier(FlushBarrier {
-                revision_set: None,
-                operation_reason: "git preflight".into(),
-            })?;
-            self.reconcile_external_changes_after_flush()?
+            ExternalChangeReport {
+                changed: false,
+                paths: Vec::new(),
+                diagnostics: Vec::new(),
+            }
         } else {
             ExternalChangeReport {
                 changed: false,
@@ -3671,16 +2025,9 @@ impl ProjectStore {
             }
         };
         diagnostics.extend(report.diagnostics);
-        let sync_state: String = self
-            .connection
-            .query_row(
-                "SELECT sync_state FROM runtime_meta WHERE key='runtime'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or_else(|_| "diagnostic".into());
-        if sync_state != "clean" {
-            diagnostics.push(format!("index.state: {sync_state}"));
+        let sync = self.sync_summary()?;
+        if sync.state != "clean" {
+            diagnostics.push(format!("index.state: {}", sync.state));
         }
 
         // The flush may have created or replaced portable paths. Re-read Git
@@ -3741,10 +2088,19 @@ impl ProjectStore {
         message: String,
         paths: Option<Vec<String>>,
     ) -> Result<GitStatus, CoreError> {
+        self.flush_checkpoint("git commit")?;
+        self.git_commit_after_checkpoint(message, paths)
+    }
+
+    pub fn git_commit_after_checkpoint(
+        &self,
+        message: String,
+        paths: Option<Vec<String>>,
+    ) -> Result<GitStatus, CoreError> {
         if message.trim().is_empty() {
             return Err(CoreError::NotFound("commit message cannot be empty".into()));
         }
-        let preflight = self.git_preflight()?;
+        let preflight = self.git_preflight_after_checkpoint()?;
         if !preflight.ready {
             return Err(CoreError::Conflict(format!(
                 "cannot commit while canonical diagnostics remain: {}",
@@ -3815,7 +2171,6 @@ impl ProjectStore {
                 String::from_utf8_lossy(&commit.stderr).trim().into(),
             ));
         }
-        self.record_git_identity()?;
         self.git_status()
     }
 
@@ -3975,7 +2330,7 @@ impl ProjectStore {
             .map_err(|_| CoreError::Validation("snapshot file is not valid UTF-8 text".into()))
     }
 
-    pub fn git_reset_hard(&self, hash: &str) -> Result<GitResetResult, CoreError> {
+    pub fn git_reset_hard(&mut self, hash: &str) -> Result<GitResetResult, CoreError> {
         if !self.git_status()?.repository {
             return Err(CoreError::Git("project is not a git repository".into()));
         }
@@ -4005,8 +2360,14 @@ impl ProjectStore {
                 String::from_utf8_lossy(&reset.stderr).trim().into(),
             ));
         }
-        self.record_git_identity()?;
-        let rebuild = self.reconcile_external_changes()?;
+        let root = self.project_root()?.to_path_buf();
+        let generation: Generation = self.connection.query_row(
+            "SELECT content_generation FROM runtime_meta WHERE key='runtime'",
+            [],
+            |row| row.get(0),
+        )?;
+        self.install_checkpoint_manifest(&root, generation)?;
+        let rebuild = self.import_checkpoint()?;
         let current_head = self.git_rev_parse("HEAD")?;
         let upstream = self.git_upstream()?.or(upstream_before);
         let diverged_from_upstream = match (&upstream, &current_head) {
@@ -4145,7 +2506,7 @@ impl ProjectStore {
         self.git_status()
     }
 
-    pub fn git_restore_from_upstream(&self) -> Result<GitResetResult, CoreError> {
+    pub fn git_restore_from_upstream(&mut self) -> Result<GitResetResult, CoreError> {
         if !self.git_status()?.repository {
             return Err(CoreError::Git("project is not a git repository".into()));
         }
@@ -4173,8 +2534,14 @@ impl ProjectStore {
                 String::from_utf8_lossy(&reset.stderr).trim().into(),
             ));
         }
-        self.record_git_identity()?;
-        let rebuild = self.reconcile_external_changes()?;
+        let root = self.project_root()?.to_path_buf();
+        let generation: Generation = self.connection.query_row(
+            "SELECT content_generation FROM runtime_meta WHERE key='runtime'",
+            [],
+            |row| row.get(0),
+        )?;
+        self.install_checkpoint_manifest(&root, generation)?;
+        let rebuild = self.import_checkpoint()?;
         let current_head = self.git_rev_parse("HEAD")?;
         let upstream = self.git_upstream()?;
         Ok(GitResetResult {
@@ -4198,36 +2565,10 @@ impl ProjectStore {
                portable_format_version INTEGER NOT NULL,
                database_epoch TEXT NOT NULL,
                exporter_version TEXT NOT NULL,
-               reconciler_version TEXT NOT NULL,
-               clean_shutdown INTEGER NOT NULL DEFAULT 0,
-               sync_state TEXT NOT NULL DEFAULT 'clean',
-               dirty_count INTEGER NOT NULL DEFAULT 0,
-               last_git_identity TEXT,
-               last_git_index_identity TEXT,
-               reconciliation_state TEXT NOT NULL DEFAULT 'idle',
-               reconciliation_paths TEXT NOT NULL DEFAULT '[]',
-               reconciliation_diagnostics TEXT NOT NULL DEFAULT '[]'
-             );
-             CREATE TABLE IF NOT EXISTS sync_batches (
-               id TEXT PRIMARY KEY,
-               request_id TEXT NOT NULL UNIQUE,
-               state TEXT NOT NULL,
-               created_at TEXT NOT NULL,
-               completed_at TEXT,
-               last_error TEXT,
-               error_kind TEXT,
-               attempt_count INTEGER NOT NULL DEFAULT 0,
-               result_json TEXT
-             );
-             CREATE TABLE IF NOT EXISTS sync_items (
-               batch_id TEXT NOT NULL REFERENCES sync_batches(id) ON DELETE CASCADE,
-               target_path TEXT NOT NULL,
-               operation TEXT NOT NULL,
-               state TEXT NOT NULL,
-               last_error TEXT,
-               expected_old_hash TEXT,
-               new_hash TEXT,
-               PRIMARY KEY(batch_id, target_path)
+               content_generation INTEGER NOT NULL DEFAULT 0,
+               exported_generation INTEGER NOT NULL DEFAULT 0,
+               checkpoint_digest TEXT,
+               export_error TEXT
              );
              CREATE TABLE IF NOT EXISTS mutation_receipts (
                request_id TEXT PRIMARY KEY,
@@ -4254,38 +2595,20 @@ impl ProjectStore {
              CREATE INDEX IF NOT EXISTS entities_name_idx ON entities(name);
              CREATE INDEX IF NOT EXISTS relationships_source_idx ON relationships(source_id);
              CREATE INDEX IF NOT EXISTS relationships_target_idx ON relationships(target_id);
-             CREATE TABLE IF NOT EXISTS source_files (
-               path TEXT PRIMARY KEY,
-               content_hash TEXT NOT NULL,
-               format_version INTEGER NOT NULL,
-               logical_revision TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS portable_baselines (
-               path TEXT PRIMARY KEY,
-               baseline_exists INTEGER NOT NULL,
-               baseline_hash TEXT,
-               db_hash TEXT,
-               state TEXT NOT NULL DEFAULT 'clean'
-             );
-             CREATE TABLE IF NOT EXISTS reconciliation_conflicts (
-               path TEXT PRIMARY KEY,
-               baseline_hash TEXT,
-               database_hash TEXT,
-               disk_hash TEXT,
-               state TEXT NOT NULL DEFAULT 'unresolved',
-               created_at TEXT NOT NULL
-             );"
+             DROP TABLE IF EXISTS source_files;"
         )?;
-        self.ensure_schema_column("sync_batches", "result_json", "TEXT")?;
-        self.ensure_schema_column("sync_batches", "error_kind", "TEXT")?;
         self.ensure_schema_column(
-            "sync_batches",
-            "attempt_count",
+            "runtime_meta",
+            "content_generation",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
-        self.ensure_schema_column("sync_items", "expected_old_hash", "TEXT")?;
-        self.ensure_schema_column("sync_items", "new_hash", "TEXT")?;
-        self.ensure_schema_column("runtime_meta", "last_git_index_identity", "TEXT")?;
+        self.ensure_schema_column(
+            "runtime_meta",
+            "exported_generation",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        self.ensure_schema_column("runtime_meta", "checkpoint_digest", "TEXT")?;
+        self.ensure_schema_column("runtime_meta", "export_error", "TEXT")?;
         self.ensure_schema_column(
             "mutation_receipts",
             "state",
@@ -4296,17 +2619,6 @@ impl ProjectStore {
             "fingerprint",
             "TEXT NOT NULL DEFAULT ''",
         )?;
-        let baseline_count: i64 =
-            self.connection
-                .query_row("SELECT COUNT(*) FROM portable_baselines", [], |row| {
-                    row.get(0)
-                })?;
-        let source_count: i64 =
-            self.connection
-                .query_row("SELECT COUNT(*) FROM source_files", [], |row| row.get(0))?;
-        if baseline_count == 0 && source_count > 0 {
-            self.refresh_baselines_from_index()?;
-        }
         self.connection.execute_batch("CREATE TABLE IF NOT EXISTS module_versions(module_id TEXT PRIMARY KEY, version INTEGER NOT NULL DEFAULT 0);
               CREATE TABLE IF NOT EXISTS module_state(module_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1);
               CREATE TABLE IF NOT EXISTS module_package_versions(module_id TEXT PRIMARY KEY, package_version TEXT NOT NULL);
@@ -4319,6 +2631,27 @@ impl ProjectStore {
              CREATE INDEX IF NOT EXISTS map_location_entity_idx ON map_location_projection(entity_id);
              CREATE INDEX IF NOT EXISTS map_location_map_idx ON map_location_projection(map_entity_id);")?;
         self.connection.execute_batch("CREATE TABLE IF NOT EXISTS migration_history(module_id TEXT NOT NULL, migration_id TEXT NOT NULL, from_version INTEGER NOT NULL, to_version INTEGER NOT NULL, checksum TEXT NOT NULL, package_digest TEXT NOT NULL DEFAULT '', applied_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(module_id, migration_id)); CREATE TABLE IF NOT EXISTS plugin_backups(id TEXT PRIMARY KEY, module_id TEXT NOT NULL, from_package_version TEXT, to_package_version TEXT, data_version INTEGER NOT NULL, path TEXT NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL);")?;
+        for table in [
+            "project_meta",
+            "entities",
+            "documents",
+            "relationships",
+            "entity_fields",
+            "assets",
+            "module_versions",
+            "module_state",
+            "module_package_versions",
+            "module_namespaces",
+            "module_fields",
+            "migration_history",
+            "plugin_backups",
+        ] {
+            for event in ["INSERT", "UPDATE", "DELETE"] {
+                self.connection.execute_batch(&format!(
+                    "CREATE TRIGGER IF NOT EXISTS runtime_content_generation_{event}_{table} AFTER {event} ON {table} BEGIN UPDATE runtime_meta SET content_generation=content_generation+1 WHERE key='runtime'; END;"
+                ))?;
+            }
+        }
         if self
             .connection
             .query_row("SELECT 1 FROM runtime_meta WHERE key='runtime'", [], |_| {
@@ -4338,7 +2671,7 @@ impl ProjectStore {
                 .transpose()?
                 .unwrap_or_default();
             self.connection.execute(
-                "INSERT INTO runtime_meta(key,storage_role,schema_version,project_id,portable_format_version,database_epoch,exporter_version,reconciler_version) VALUES ('runtime',?1,?2,?3,?4,?5,?6,?7)",
+                "INSERT INTO runtime_meta(key,storage_role,schema_version,project_id,portable_format_version,database_epoch,exporter_version,content_generation,exported_generation) VALUES ('runtime',?1,?2,?3,?4,?5,?6,0,0)",
                 params![
                     RUNTIME_STORAGE_ROLE,
                     RUNTIME_SCHEMA_VERSION,
@@ -4346,15 +2679,9 @@ impl ProjectStore {
                     crate::storage::PROJECT_FORMAT_VERSION as i64,
                     Uuid::new_v4().to_string(),
                     EXPORTER_CONTRACT_VERSION,
-                    RECONCILER_CONTRACT_VERSION,
                 ],
             )?;
         }
-        let clean_shutdown: bool = self.connection.query_row(
-            "SELECT clean_shutdown FROM runtime_meta WHERE key='runtime'",
-            [],
-            |row| row.get(0),
-        )?;
         let search_table_exists: bool = self.connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='world_search')",
             [],
@@ -4366,27 +2693,9 @@ impl ProjectStore {
                 [],
                 |row| row.get(0),
             )?;
-        if rebuild_derived || !clean_shutdown || search_missing {
+        if rebuild_derived || search_missing {
             self.rebuild_search()?;
         }
-        Ok(())
-    }
-
-    fn refresh_baselines_from_index(&self) -> Result<(), CoreError> {
-        let transaction = self.connection.unchecked_transaction()?;
-        Self::refresh_baselines_from_index_in_transaction(&transaction)?;
-        transaction.commit()?;
-        Ok(())
-    }
-
-    fn refresh_baselines_from_index_in_transaction(
-        transaction: &rusqlite::Transaction<'_>,
-    ) -> Result<(), CoreError> {
-        transaction.execute("DELETE FROM portable_baselines", [])?;
-        transaction.execute(
-            "INSERT INTO portable_baselines(path,baseline_exists,baseline_hash,db_hash,state) SELECT path,1,content_hash,content_hash,'clean' FROM source_files",
-            [],
-        )?;
         Ok(())
     }
 
@@ -4426,7 +2735,7 @@ impl ProjectStore {
             revision: String::new(),
         })
         .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        let (transaction, _batch_id) = self.begin_mutation_with_fingerprint(
+        let transaction = self.begin_mutation_with_fingerprint(
             &request_id,
             Some(&result),
             &[format!("entities/{id}/")],
@@ -4437,7 +2746,7 @@ impl ProjectStore {
             params![id, input.name.trim(), entity_type, now],
         )?;
         transaction.commit()?;
-        self.sync_canonical_with_request_id(&request_id, Some(&result))?;
+        self.notify_export_worker()?;
         let revision = self.revision_for_entity(&id)?;
         Ok(Entity {
             id,
@@ -4536,7 +2845,7 @@ impl ProjectStore {
             updated_at: now.clone(),
             revision: String::new(),
         })?;
-        let (transaction, _batch_id) =
+        let transaction =
             self.begin_mutation(&request_id, Some(&result), &[format!("entities/{id}/")])?;
         transaction.execute(
             "INSERT INTO entities(id,name,entity_type,created_at,updated_at) VALUES (?1,?2,?3,?4,?4)",
@@ -4564,7 +2873,7 @@ impl ProjectStore {
             )?;
         }
         transaction.commit()?;
-        self.sync_canonical_with_request_id(&request_id, Some(&result))?;
+        self.notify_export_worker()?;
         let revision = self.revision_for_entity(&id)?;
         Ok(Entity {
             id,
@@ -4662,7 +2971,7 @@ impl ProjectStore {
             updated_at: now.clone(),
             revision: String::new(),
         })?;
-        let (transaction, _batch_id) =
+        let transaction =
             self.begin_mutation(&request_id, Some(&result), &[format!("entities/{id}/")])?;
         if transaction.execute("UPDATE entities SET name=COALESCE(?2,name), entity_type=COALESCE(?3,entity_type), updated_at=?4 WHERE id=?1 AND deleted=0", params![id, name, entity_type, now])? == 0 { return Err(CoreError::NotFound("entity not found".into())); }
         transaction.commit()?;
@@ -4681,7 +2990,7 @@ impl ProjectStore {
                 })
             },
         )?;
-        self.sync_canonical_with_request_id(&request_id, Some(&result))?;
+        self.notify_export_worker()?;
         entity.revision = self.revision_for_entity(&entity.id)?;
         Ok(entity)
     }
@@ -4732,7 +3041,7 @@ impl ProjectStore {
             "entity",
         )?;
         let request_id = self.request_id(request_id)?;
-        let (transaction, _batch_id) = self.begin_mutation(
+        let transaction = self.begin_mutation(
             &request_id,
             Some(&serde_json::Value::Null),
             &[format!("entities/{id}/")],
@@ -4746,7 +3055,7 @@ impl ProjectStore {
         }
         transaction.commit()?;
         self.refresh_maps_projection_for_entities(std::slice::from_ref(&id))?;
-        self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
+        self.notify_export_worker()?;
         Ok(())
     }
 
@@ -4888,7 +3197,7 @@ impl ProjectStore {
             )
             .optional()?;
         let request_id = self.request_id(request_id)?;
-        let (transaction, _batch_id) = self.begin_mutation(
+        let transaction = self.begin_mutation(
             &request_id,
             Some(&serde_json::Value::Null),
             &[format!("entities/{}/", document.entity_id)],
@@ -4908,7 +3217,7 @@ impl ProjectStore {
             transaction.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value", params![field.entity_id, field.namespace, field.key, value])?;
         }
         transaction.commit()?;
-        self.queue_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
+        self.notify_export_worker()?;
         Ok(())
     }
 
@@ -5002,7 +3311,7 @@ impl ProjectStore {
         }
         let value = encode_field_value(&field.value)?;
         let request_id = self.request_id(request_id)?;
-        let (transaction, _batch_id) = self.begin_mutation(
+        let transaction = self.begin_mutation(
             &request_id,
             Some(&serde_json::Value::Null),
             &[format!("entities/{}/", field.entity_id)],
@@ -5010,7 +3319,7 @@ impl ProjectStore {
         transaction.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value", params![field.entity_id, field.namespace, field.key, value])?;
         transaction.commit()?;
         self.refresh_maps_projection_for_entities(std::slice::from_ref(&field.entity_id))?;
-        self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
+        self.notify_export_worker()?;
         Ok(())
     }
     pub fn list_fields(&self, entity_id: String) -> Result<Vec<FieldValue>, CoreError> {
@@ -5096,7 +3405,7 @@ impl ProjectStore {
             revision: String::new(),
         })
         .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        let (transaction, _batch_id) = self.begin_mutation(
+        let transaction = self.begin_mutation(
             &request_id,
             Some(&result),
             &[
@@ -5106,7 +3415,7 @@ impl ProjectStore {
         )?;
         transaction.execute("INSERT INTO relationships(id,source_id,target_id,relationship_type,metadata) VALUES (?1,?2,?3,?4,?5)", params![id, input.source_id, input.target_id, input.relationship_type, metadata])?;
         transaction.commit()?;
-        self.sync_canonical_with_request_id(&request_id, Some(&result))?;
+        self.notify_export_worker()?;
         let revision = self.revision_for_relationship(&id)?;
         Ok(Relationship {
             id,
@@ -5145,7 +3454,7 @@ impl ProjectStore {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         let request_id = self.request_id(request_id)?;
-        let (transaction, _batch_id) = self.begin_mutation(
+        let transaction = self.begin_mutation(
             &request_id,
             Some(&serde_json::Value::Null),
             &[
@@ -5157,7 +3466,7 @@ impl ProjectStore {
             return Err(CoreError::NotFound("relationship not found".into()));
         }
         transaction.commit()?;
-        self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
+        self.notify_export_worker()?;
         Ok(())
     }
 
@@ -5427,7 +3736,6 @@ impl ProjectStore {
                 Some(&serde_json::Value::Null),
                 &["entities/".into(), "plugins/".into()],
             )?
-            .0
         } else {
             self.connection.unchecked_transaction()?
         };
@@ -5492,8 +3800,7 @@ impl ProjectStore {
             self.rebuild_search()?;
         }
         if sync_canonical {
-            let request_id = mutation_request_id.expect("request ID exists when sync is enabled");
-            self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
+            self.notify_export_worker()?;
         }
         Ok(snapshot.entities.len())
     }
@@ -5552,7 +3859,7 @@ impl ProjectStore {
             revision: String::new(),
         })
         .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        let (transaction, _batch_id) = self.begin_mutation(
+        let transaction = self.begin_mutation(
             &request_id,
             Some(&result),
             &[format!("entities/{}/", input.entity_id), input.path.clone()],
@@ -5563,7 +3870,7 @@ impl ProjectStore {
         )?;
         transaction.commit()?;
         self.refresh_maps_projection_for_entities(std::slice::from_ref(&input.entity_id))?;
-        self.sync_canonical_with_request_id(&request_id, Some(&result))?;
+        self.notify_export_worker()?;
         let revision = self.revision_for_asset(&id)?;
         Ok(Asset {
             id,
@@ -5627,25 +3934,14 @@ impl ProjectStore {
         let (content_hash, size) = streamed_file_digest(source)?;
         let relative_path = format!("assets/{category}/{}-{}", Uuid::new_v4(), filename);
         let request_id = self.request_id(request_id)?;
-        let staged_source = if let Some(root) = self.root.as_deref() {
-            let input_dir = root.join(".daena/sync").join(&request_id).join("input");
-            std::fs::create_dir_all(&input_dir).map_err(|source| CoreError::Io {
-                operation: "create streamed asset input directory",
-                source,
-            })?;
-            let staged = input_dir.join(format!("asset-{}", Uuid::new_v4()));
-            std::fs::copy(source, &staged).map_err(|source| CoreError::Io {
-                operation: "stage asset source for export",
-                source,
-            })?;
-            Some(staged)
-        } else {
-            self.pending_asset_sources
-                .lock()
-                .map_err(|_| CoreError::Conflict("asset source state is poisoned".into()))?
-                .insert(relative_path.clone(), source.to_path_buf());
-            None
-        };
+        let bytes = std::fs::read(source).map_err(|error| CoreError::Io {
+            operation: "read asset source for checkpoint",
+            source: error,
+        })?;
+        self.pending_asset_imports
+            .lock()
+            .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
+            .insert(relative_path.clone(), bytes);
         let result = self.register_asset_with_options(
             AssetInput {
                 entity_id: input.entity_id,
@@ -5660,10 +3956,7 @@ impl ProjectStore {
             Some(&request_id),
         );
         if result.is_err() {
-            if let Some(staged) = staged_source.as_deref() {
-                self.cleanup_pending_asset_input(&relative_path, Some(staged));
-            }
-            if let Ok(mut pending) = self.pending_asset_sources.lock() {
+            if let Ok(mut pending) = self.pending_asset_imports.lock() {
                 pending.remove(&relative_path);
             }
         }
@@ -5738,57 +4031,17 @@ impl ProjectStore {
             ));
         }
         let request_id = self.request_id(request_id)?;
-        let mut staged_input = None;
-        if let Some(root) = self.root.as_deref() {
-            let staging = root.join(".daena/sync").join(&request_id).join("input");
-            std::fs::create_dir_all(&staging).map_err(|source| CoreError::Io {
-                operation: "create streamed asset input directory",
-                source,
-            })?;
-            let source_path = staging.join(format!("asset-{}", Uuid::new_v4()));
-            staged_input = Some(source_path.clone());
-            let write_result = (|| -> Result<(), CoreError> {
-                let mut file =
-                    std::fs::File::create(&source_path).map_err(|source| CoreError::Io {
-                        operation: "create streamed asset input",
-                        source,
-                    })?;
-                file.write_all(&bytes).map_err(|source| CoreError::Io {
-                    operation: "write streamed asset input",
-                    source,
-                })?;
-                file.sync_all().map_err(|source| CoreError::Io {
-                    operation: "sync streamed asset input",
-                    source,
-                })?;
-                Ok(())
-            })();
-            if let Err(error) = write_result {
-                self.cleanup_pending_asset_input(&asset.path, staged_input.as_deref());
-                return Err(error);
-            }
-            let mut pending = match self.pending_asset_sources.lock() {
-                Ok(pending) => pending,
-                Err(_) => {
-                    self.cleanup_pending_asset_input(&asset.path, staged_input.as_deref());
-                    return Err(CoreError::Conflict("asset source state is poisoned".into()));
-                }
-            };
-            pending.insert(asset.path.clone(), source_path);
-        } else {
-            self.pending_asset_imports
-                .lock()
-                .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
-                .insert(asset.path.clone(), bytes);
-        }
-        let (transaction, _batch_id) = match self.begin_mutation(
+        self.pending_asset_imports
+            .lock()
+            .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
+            .insert(asset.path.clone(), bytes);
+        let transaction = match self.begin_mutation(
             &request_id,
             Some(&serde_json::Value::Null),
             &[format!("entities/{}/", asset.entity_id), asset.path.clone()],
         ) {
             Ok(value) => value,
             Err(error) => {
-                self.cleanup_pending_asset_input(&asset.path, staged_input.as_deref());
                 return Err(error);
             }
         };
@@ -5805,68 +4058,17 @@ impl ProjectStore {
             transaction.commit()?;
             Ok(())
         })();
-        if let Err(error) = mutation {
-            self.cleanup_pending_asset_input(&asset.path, staged_input.as_deref());
-            return Err(error);
-        }
+        mutation?;
         self.refresh_maps_projection_for_entities(std::slice::from_ref(&asset.entity_id))?;
         // Keep the durable input under the request staging directory so
         // reopen can resume an asset export after a crash or exporter
         // failure. Transaction/preflight failures clean it up above.
-        self.sync_canonical_with_request_id(&request_id, None)?;
+        self.notify_export_worker()?;
         asset.content_hash = input.content_hash;
         asset.size = input.size;
         asset.mime_type = input.mime_type;
         asset.revision = self.revision_for_asset(&asset.id)?;
         Ok(asset)
-    }
-
-    fn cleanup_pending_asset_input(&self, asset_path: &str, staged_input: Option<&Path>) {
-        if let Some(path) = staged_input {
-            let _ = std::fs::remove_file(path);
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::remove_dir(parent);
-            }
-        }
-        if let Ok(mut pending) = self.pending_asset_sources.lock() {
-            pending.remove(asset_path);
-        }
-    }
-
-    fn restore_staged_asset_sources(
-        &self,
-        root: &Path,
-        request_id: &str,
-        pending: &mut BTreeMap<String, PathBuf>,
-    ) -> Result<(), CoreError> {
-        let input = root.join(".daena/sync").join(request_id).join("input");
-        if !input.is_dir() {
-            return Ok(());
-        }
-        let mut files = std::fs::read_dir(&input)
-            .map_err(|source| CoreError::Io {
-                operation: "read staged asset inputs",
-                source,
-            })?
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| path.is_file())
-            .collect::<Vec<_>>();
-        if files.len() != 1 {
-            return Ok(());
-        }
-        let target: Option<String> = self
-            .connection
-            .query_row(
-                "SELECT target_path FROM sync_items WHERE batch_id=(SELECT id FROM sync_batches WHERE request_id=?1) AND target_path LIKE 'assets/%' AND state <> 'applied' LIMIT 1",
-                params![request_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if let Some(target) = target {
-            pending.entry(target).or_insert_with(|| files.remove(0));
-        }
-        Ok(())
     }
 
     fn list_assets_unchecked(&self, entity_id: String) -> Result<Vec<Asset>, CoreError> {
@@ -5898,12 +4100,7 @@ impl ProjectStore {
 
     pub fn backup_to(&self, dir: impl AsRef<Path>) -> Result<String, CoreError> {
         if self.root.is_some() {
-            self.flush_with_barrier(FlushBarrier {
-                revision_set: None,
-                operation_reason: "runtime backup".into(),
-            })?;
-            let root = self.project_root()?;
-            self.preflight_portable_baselines(root)?;
+            self.flush_checkpoint("runtime backup")?;
         }
         let export = self.export_json()?;
         let dir = dir.as_ref();
@@ -5919,12 +4116,15 @@ impl ProjectStore {
     /// `.daena/` are intentionally excluded so the result can be restored or
     /// copied using only the canonical project representation.
     pub fn portable_backup_to(&self, dir: impl AsRef<Path>) -> Result<String, CoreError> {
+        self.flush_checkpoint("portable backup")?;
+        self.portable_backup_after_checkpoint(dir)
+    }
+
+    pub fn portable_backup_after_checkpoint(
+        &self,
+        dir: impl AsRef<Path>,
+    ) -> Result<String, CoreError> {
         let root = self.project_root()?;
-        self.flush_with_barrier(FlushBarrier {
-            revision_set: None,
-            operation_reason: "portable backup".into(),
-        })?;
-        self.preflight_portable_baselines(root)?;
         crate::storage::FilesystemRepository::open(root)?.scan()?;
 
         let dir = dir.as_ref();
@@ -5978,12 +4178,6 @@ impl ProjectStore {
             backup.run_to_completion(5, Duration::from_millis(25), None)?;
         }
 
-        if let Some(root) = self.root.as_deref() {
-            let staged = root.join(".daena/sync");
-            if staged.is_dir() {
-                copy_directory(&staged, &recovery.join("sync"))?;
-            }
-        }
         Ok(recovery.to_string_lossy().into_owned())
     }
 
@@ -5999,8 +4193,8 @@ impl ProjectStore {
         Ok(())
     }
 
-    /// Restore a runtime recovery artifact and resume any export work it
-    /// contained.  The current runtime is archived before replacement.
+    /// Restore a runtime recovery artifact. The current runtime is archived
+    /// before replacement; the next generation barrier recreates any files.
     pub fn restore_recovery_backup(&mut self, path: impl AsRef<Path>) -> Result<(), CoreError> {
         let artifact = path.as_ref();
         let source_path = artifact.join("index.sqlite");
@@ -6026,22 +4220,6 @@ impl ProjectStore {
             backup.run_to_completion(5, Duration::from_millis(25), None)?;
         }
         Self::validate_runtime_metadata(&self.connection, Some(&root))?;
-        let staged = root.join(".daena/sync");
-        if staged.exists() {
-            std::fs::remove_dir_all(&staged).map_err(|source| CoreError::Io {
-                operation: "replace staged recovery payloads",
-                source,
-            })?;
-        }
-        if artifact.join("sync").is_dir() {
-            copy_directory(&artifact.join("sync"), &staged)?;
-        } else {
-            std::fs::create_dir_all(&staged).map_err(|source| CoreError::Io {
-                operation: "create staged recovery payload directory",
-                source,
-            })?;
-        }
-        self.recover_interrupted_batches()?;
         self.export_worker = Some(ExportWorker::start(&root, &project_database_path(&root))?);
         Ok(())
     }
@@ -6149,8 +4327,6 @@ impl ProjectStore {
         }
         let root = self.project_root()?.to_path_buf();
         let payload = self.export_json_inner()?.into_bytes();
-        let snapshot: ProjectSnapshot = serde_json::from_slice(&payload)
-            .map_err(|error| CoreError::Serialization(error.to_string()))?;
         let created_at = chrono_like_now();
         let backup_id = Uuid::new_v4().to_string();
         let safe_module = module_id
@@ -6178,27 +4354,17 @@ impl ProjectStore {
         let request_id = self.request_id(request_id)?;
         let result = serde_json::to_value(&backup)
             .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        let (transaction, _batch_id) = self.begin_mutation(
+        let transaction = self.begin_mutation(
             &request_id,
             Some(&result),
             std::slice::from_ref(&relative_path),
         )?;
         self.insert_plugin_backup_index_on(&transaction, &backup)?;
         transaction.commit()?;
-        let mut additional_files = BTreeMap::new();
-        additional_files.insert(relative_path, payload);
-        self.export_portable_snapshot(
-            &root,
-            &snapshot,
-            &request_id,
-            Some(
-                &serde_json::to_value(&backup)
-                    .map_err(|error| CoreError::Serialization(error.to_string()))?,
-            ),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &additional_files,
-        )?;
+        let mut exporter = crate::sync::SyncExporter::begin(&root, &request_id)?;
+        exporter.stage_bytes(&relative_path, &payload)?;
+        exporter.commit(Some(&result))?;
+        self.export_latest_generation()?;
         Ok(backup)
     }
 
@@ -6667,7 +4833,7 @@ impl ProjectStore {
         let backup = self.backup()?;
         let request_id = self.request_id(request_id)?;
         let result = serde_json::to_value(&backup)?;
-        let (transaction, _batch_id) = self.begin_mutation(
+        let transaction = self.begin_mutation(
             &request_id,
             Some(&result),
             &["entities/".into(), "plugins/".into(), "assets/".into()],
@@ -6705,7 +4871,7 @@ impl ProjectStore {
             params![plugin_id],
         )?;
         transaction.commit()?;
-        self.sync_canonical_with_request_id(&request_id, Some(&result))?;
+        self.notify_export_worker()?;
         Ok(backup)
     }
 
@@ -6721,9 +4887,9 @@ impl ProjectStore {
              DROP TRIGGER IF EXISTS entity_fields_search_delete;
              DROP TABLE IF EXISTS world_search;
              CREATE VIRTUAL TABLE world_search USING fts5(entity_id UNINDEXED, source_path UNINDEXED, source_hash UNINDEXED, content);
-             INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT e.id, COALESCE(sf.path, 'entities/' || e.id || '/entity.json'), COALESCE(sf.content_hash, ''), e.name || ' ' || COALESCE(e.entity_type, '') FROM entities e LEFT JOIN source_files sf ON sf.path = 'entities/' || e.id || '/entity.json' WHERE e.deleted=0;
-             INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT d.entity_id, COALESCE(sf.path, 'entities/' || d.entity_id || '/document.md'), COALESCE(sf.content_hash, ''), d.body FROM documents d JOIN entities e ON e.id = d.entity_id LEFT JOIN source_files sf ON sf.path = 'entities/' || d.entity_id || '/document.md' WHERE e.deleted=0;
-             INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT f.entity_id, COALESCE(sf.path, ''), COALESCE(sf.content_hash, ''), f.namespace || ' ' || f.key || ' ' || f.value FROM entity_fields f JOIN entities e ON e.id = f.entity_id LEFT JOIN source_files sf ON sf.path LIKE 'entities/' || f.entity_id || '/fields/%.json' WHERE e.deleted=0;
+             INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT e.id, 'entities/' || e.id || '/entity.json', '', e.name || ' ' || COALESCE(e.entity_type, '') FROM entities e WHERE e.deleted=0;
+             INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT d.entity_id, 'entities/' || d.entity_id || '/document.md', '', d.body FROM documents d JOIN entities e ON e.id = d.entity_id WHERE e.deleted=0;
+             INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT f.entity_id, 'entities/' || f.entity_id || '/fields', '', f.namespace || ' ' || f.key || ' ' || f.value FROM entity_fields f JOIN entities e ON e.id = f.entity_id WHERE e.deleted=0;
              CREATE TRIGGER entities_search_insert AFTER INSERT ON entities BEGIN INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT new.id, 'entities/' || new.id || '/entity.json', '', new.name || ' ' || COALESCE(new.entity_type, '') WHERE new.deleted=0; END;
              CREATE TRIGGER entities_search_update AFTER UPDATE OF name, entity_type, deleted ON entities BEGIN DELETE FROM world_search WHERE entity_id = old.id; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT new.id, 'entities/' || new.id || '/entity.json', '', new.name || ' ' || COALESCE(new.entity_type, '') WHERE new.deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT documents.entity_id, 'entities/' || documents.entity_id || '/document.md', '', documents.body FROM documents WHERE documents.entity_id = new.id AND new.deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT entity_fields.entity_id, 'entities/' || entity_fields.entity_id || '/fields', '', entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields WHERE entity_fields.entity_id = new.id AND new.deleted=0; END;
              CREATE TRIGGER documents_search_insert AFTER INSERT ON documents BEGIN INSERT INTO world_search(entity_id, source_path, source_hash, content) VALUES (new.entity_id, 'entities/' || new.entity_id || '/document.md', '', new.body); END;
@@ -6745,7 +4911,7 @@ impl ProjectStore {
         let result = self.seed_example_unchecked();
         self.suppress_sync.set(false);
         result.and_then(|count| {
-            self.sync_canonical_without_queue_drain()?;
+            self.notify_export_worker()?;
             Ok(count)
         })
     }
@@ -7040,7 +5206,7 @@ impl ProjectStore {
             )?;
         }
         self.rebuild_search()?;
-        self.sync_canonical()?;
+        self.notify_export_worker()?;
         Ok(26)
     }
 
@@ -7099,7 +5265,7 @@ impl ProjectStore {
             return Ok(());
         }
         let request_id = self.request_id(request_id)?;
-        let (transaction, _batch_id) = self.begin_mutation(
+        let transaction = self.begin_mutation(
             &request_id,
             Some(&serde_json::Value::Null),
             &[format!("plugins/{module_id}.json")],
@@ -7113,7 +5279,7 @@ impl ProjectStore {
             params![module_id, enabled as i64],
         )?;
         transaction.commit()?;
-        self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
+        self.notify_export_worker()?;
         Ok(())
     }
 
@@ -7151,7 +5317,7 @@ impl ProjectStore {
             return Ok(());
         }
         let request_id = self.request_id(request_id)?;
-        let (transaction, _batch_id) = self.begin_mutation(
+        let transaction = self.begin_mutation(
             &request_id,
             Some(&serde_json::Value::Null),
             &[format!("plugins/{module_id}.json")],
@@ -7175,7 +5341,7 @@ impl ProjectStore {
             }
         }
         transaction.commit()?;
-        self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
+        self.notify_export_worker()?;
         Ok(())
     }
 
@@ -7226,13 +5392,12 @@ impl ProjectStore {
             .iter()
             .map(|migration| format!("plugins/{}.json", migration.module_id))
             .collect::<Vec<_>>();
-        let (transaction, _batch_id) =
-            self.begin_mutation(&request_id, Some(&result), &affected)?;
+        let transaction = self.begin_mutation(&request_id, Some(&result), &affected)?;
         for migration in migrations {
             crate::migrations::apply_in_transaction(&transaction, migration)?;
         }
         transaction.commit()?;
-        self.sync_canonical_with_request_id(&request_id, Some(&result))?;
+        self.notify_export_worker()?;
         Ok(backup)
     }
 }

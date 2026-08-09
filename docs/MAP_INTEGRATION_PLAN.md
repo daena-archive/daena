@@ -6,7 +6,7 @@ This document turns the product direction in
 [`MAP_OVERVIEW.md`](./MAP_OVERVIEW.md) into a phased implementation plan. It is
 subordinate to the project-wide contracts in [`ARCHITECTURE.md`](./ARCHITECTURE.md),
 [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md), and
-[`PLAIN_TEXT_STORAGE_PLAN.md`](./PLAIN_TEXT_STORAGE_PLAN.md).
+[`STORAGE.md`](./STORAGE.md).
 
 The plan integrates Azgaar's Fantasy Map Generator (FMG) as Daena's first map
 provider and adds [Watabou's Procgen Arcana](https://watabou.github.io/) as a
@@ -28,8 +28,8 @@ without duplicating that entity.
 Daena already provides most of the required host foundations:
 
 - stable entities, documents, namespaced fields, relationships, and assets;
-- canonical Markdown/JSON/native files with a disposable SQLite index;
-- revision-aware mutations and journaled recovery;
+- SQLite-authoritative runtime state with deterministic portable checkpoints;
+- revision-aware mutations and explicit checkpoint/recovery barriers;
 - broker-authorized plugin RPC, events, and services;
 - sandboxed native child webviews for plugin UI; and
 - first-party modules using the public plugin contract.

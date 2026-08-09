@@ -10,8 +10,12 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
-pub const PROJECT_FORMAT_VERSION: u32 = 2;
+/// Portable checkpoint contract for the database-authoritative runtime.
+/// This is an intentional alpha hard cut; older projects must be reset and
+/// re-imported rather than silently interpreted by this runtime.
+pub const PROJECT_FORMAT_VERSION: u32 = 3;
 pub const CORE_PLUGIN_ID: &str = "daena.core";
+pub const CHECKPOINT_MANIFEST_FILE: &str = "checkpoint.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -57,6 +61,165 @@ impl ProjectManifest {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointManifest {
+    pub format_version: u32,
+    pub project_id: String,
+    pub content_generation: i64,
+    pub files: Vec<CheckpointFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointFile {
+    pub path: String,
+    pub size: u64,
+    pub sha256: String,
+}
+
+impl CheckpointManifest {
+    pub fn validate(&self, path: &Path) -> Result<(), CoreError> {
+        if self.format_version != PROJECT_FORMAT_VERSION {
+            return Err(codec_error(
+                path,
+                "checkpoint.format-version",
+                format!(
+                    "expected formatVersion {}, found {}",
+                    PROJECT_FORMAT_VERSION, self.format_version
+                ),
+            ));
+        }
+        validate_uuid(path, "checkpoint.project-id", &self.project_id)?;
+        if self.content_generation < 0 {
+            return Err(codec_error(
+                path,
+                "checkpoint.generation",
+                "content generation cannot be negative",
+            ));
+        }
+        let mut previous = None;
+        for file in &self.files {
+            let safe_path = !file.path.is_empty()
+                && !file.path.contains('\\')
+                && !file.path.contains('\0')
+                && !file.path.starts_with('/')
+                && !file.path.split('/').any(|component| {
+                    component.is_empty()
+                        || component == "."
+                        || component == ".."
+                        || component.contains(':')
+                });
+            if file.path == CHECKPOINT_MANIFEST_FILE || !safe_path {
+                return Err(codec_error(
+                    path,
+                    "checkpoint.path",
+                    format!("invalid checkpoint path {}", file.path),
+                ));
+            }
+            if previous.is_some_and(|previous: &str| previous >= file.path.as_str()) {
+                return Err(codec_error(
+                    path,
+                    "checkpoint.order",
+                    "checkpoint files must be unique and sorted",
+                ));
+            }
+            if !file.sha256.starts_with("sha256:") {
+                return Err(codec_error(
+                    path,
+                    "checkpoint.digest",
+                    format!("invalid digest for {}", file.path),
+                ));
+            }
+            previous = Some(file.path.as_str());
+        }
+        Ok(())
+    }
+}
+
+pub fn build_checkpoint_manifest(
+    root: &Path,
+    content_generation: i64,
+) -> Result<CheckpointManifest, CoreError> {
+    let manifest_path = root.join("project.json");
+    let project: ProjectManifest = read_json(&manifest_path)?;
+    project.validate(&manifest_path)?;
+    if content_generation < 0 {
+        return Err(codec_error(
+            root,
+            "checkpoint.generation",
+            "content generation cannot be negative",
+        ));
+    }
+    let files = collect_canonical_sources(root)?
+        .into_iter()
+        .map(|source| {
+            let path = normalized_project_path(root, &source.path)?;
+            let size = fs::metadata(&path)
+                .map_err(|error| codec_error(&path, "checkpoint.metadata", error))?
+                .len();
+            Ok(CheckpointFile {
+                path: source.path,
+                size,
+                sha256: source.content_hash,
+            })
+        })
+        .collect::<Result<Vec<_>, CoreError>>()?;
+    let checkpoint = CheckpointManifest {
+        format_version: PROJECT_FORMAT_VERSION,
+        project_id: project.id,
+        content_generation,
+        files,
+    };
+    checkpoint.validate(&root.join(CHECKPOINT_MANIFEST_FILE))?;
+    Ok(checkpoint)
+}
+
+pub fn validate_checkpoint(root: &Path, checkpoint: &CheckpointManifest) -> Result<(), CoreError> {
+    let checkpoint_path = root.join(CHECKPOINT_MANIFEST_FILE);
+    checkpoint.validate(&checkpoint_path)?;
+    let expected_project: ProjectManifest = read_json(&root.join("project.json"))?;
+    expected_project.validate(&root.join("project.json"))?;
+    if checkpoint.project_id != expected_project.id {
+        return Err(codec_error(
+            &checkpoint_path,
+            "checkpoint.project-id",
+            "checkpoint project ID does not match project.json",
+        ));
+    }
+    let actual = collect_canonical_sources(root)?;
+    if actual.len() != checkpoint.files.len() {
+        return Err(codec_error(
+            &checkpoint_path,
+            "checkpoint.files",
+            "checkpoint file inventory does not match the portable tree",
+        ));
+    }
+    for (actual, expected) in actual.iter().zip(&checkpoint.files) {
+        if actual.path != expected.path {
+            return Err(codec_error(
+                &checkpoint_path,
+                "checkpoint.files",
+                format!("unexpected checkpoint path {}", actual.path),
+            ));
+        }
+        let path = normalized_project_path(root, &expected.path)?;
+        let size = fs::metadata(&path)
+            .map_err(|error| codec_error(&path, "checkpoint.metadata", error))?
+            .len();
+        if size != expected.size || actual.content_hash != expected.sha256 {
+            return Err(codec_error(
+                &path,
+                "checkpoint.digest",
+                "checkpoint file size or digest does not match",
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -156,16 +319,12 @@ pub struct CanonicalMigration {
 pub struct CanonicalProject {
     pub manifest: ProjectManifest,
     pub snapshot: ProjectSnapshot,
-    pub sources: Vec<CanonicalSource>,
 }
 
-/// A canonical file that was part of a successful project scan.
-///
-/// The runtime database stores these source checkpoints verbatim. Keeping the
-/// source path and hash beside derived data explains each export checkpoint
-/// without making the database a second canonical content store.
+/// A transient path/hash pair used while building or validating a checkpoint.
+/// It is never persisted in the runtime database.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CanonicalSource {
+pub(crate) struct CanonicalSource {
     pub path: String,
     pub content_hash: String,
     pub format_version: u32,
@@ -201,13 +360,6 @@ impl FilesystemRepository {
 
     pub fn scan(&self) -> Result<CanonicalProject, CoreError> {
         read_canonical_project(&self.root)
-    }
-
-    /// Inventory canonical paths and hashes without decoding the project
-    /// snapshot. Reconciliation uses this cheap boundary to classify changes;
-    /// validators are invoked only for the affected records.
-    pub fn source_manifest(&self) -> Result<Vec<CanonicalSource>, CoreError> {
-        collect_canonical_sources(&self.root)
     }
 
     pub fn root(&self) -> &Path {
@@ -1214,7 +1366,6 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
     migration_history.sort_by(|left, right| {
         (&left.module_id, &left.migration_id).cmp(&(&right.module_id, &right.migration_id))
     });
-    let sources = collect_canonical_sources(root)?;
     Ok(CanonicalProject {
         manifest,
         snapshot: ProjectSnapshot {
@@ -1229,7 +1380,6 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
             module_fields: Vec::new(),
             migration_history,
         },
-        sources,
     })
 }
 
@@ -1694,172 +1844,23 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, CoreError> {
     parse_json(path, &bytes)
 }
 
-/// Read one entity document without traversing the rest of the project.
-/// Reconciliation uses this after the watcher has identified a document path;
-/// the full-project scanner remains reserved for startup/rebuild validation.
-pub(crate) fn read_canonical_document(
-    root: &Path,
-    entity_id: &str,
-) -> Result<Option<(String, String, String)>, CoreError> {
-    let entity_path = normalized_project_path(root, &format!("entities/{entity_id}/entity.json"))?;
-    let entity: EntityFile = read_json(&entity_path)?;
-    entity.validate(&entity_path)?;
-    let Some(document) = entity.document else {
-        return Ok(None);
-    };
-    let document_path =
-        normalized_project_path(root, &format!("entities/{entity_id}/document.md"))?;
-    if !document_path.exists() {
-        return Ok(None);
-    }
-    let bytes = std::fs::read(&document_path)
-        .map_err(|error| codec_error(&document_path, "markdown.read", error))?;
-    let body = canonical_markdown_bytes(&document_path, &bytes)?;
-    let body = String::from_utf8(body)
-        .map_err(|error| codec_error(&document_path, "markdown.utf8", error))?;
-    Ok(Some((document.id, body, entity.updated_at)))
-}
-
-pub(crate) fn read_canonical_entity(root: &Path, entity_id: &str) -> Result<EntityFile, CoreError> {
-    let path = normalized_project_path(root, &format!("entities/{entity_id}/entity.json"))?;
-    let entity: EntityFile = read_json(&path)?;
-    entity.validate(&path)?;
-    if entity.id != entity_id {
-        return Err(codec_error(
-            &path,
-            "entity.id",
-            "entity ID must match its directory",
-        ));
-    }
-    Ok(entity)
-}
-
-pub(crate) fn read_canonical_fields(
-    root: &Path,
-    entity_id: &str,
-    file_name: &str,
-) -> Result<Option<(String, FieldsFile)>, CoreError> {
-    let path = normalized_project_path(root, &format!("entities/{entity_id}/fields/{file_name}"))?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    if !file_name.ends_with(".json") {
-        return Err(codec_error(
-            &path,
-            "fields.file",
-            "field files must use .json",
-        ));
-    }
-    let stem = file_name.trim_end_matches(".json");
-    let mut parts = stem.split("--");
-    let _plugin_id = parts.next().unwrap_or_default();
-    let namespace = parts.next().unwrap_or_default();
-    if parts.next().is_some() || namespace.is_empty() {
-        return Err(codec_error(
-            &path,
-            "fields.filename",
-            "field filename must contain one plugin--namespace separator",
-        ));
-    }
-    validate_component(_plugin_id, &path, "fields.plugin-id")?;
-    validate_component(namespace, &path, "fields.namespace")?;
-    let values: FieldsFile = read_json(&path)?;
-    for key in values.keys() {
-        validate_component(key, &path, "field.key")?;
-    }
-    Ok(Some((namespace.to_string(), values)))
-}
-
-pub(crate) fn read_canonical_relationships(
-    root: &Path,
-    entity_id: &str,
-) -> Result<Vec<CanonicalRelationship>, CoreError> {
-    let path = normalized_project_path(root, &format!("entities/{entity_id}/relationships.json"))?;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let file: RelationshipsFile = read_json(&path)?;
-    let mut ids = BTreeSet::new();
-    for relationship in &file.relationships {
-        validate_uuid(&path, "relationship.id", &relationship.id)?;
-        validate_uuid(&path, "relationship.target-id", &relationship.target_id)?;
-        if !ids.insert(relationship.id.clone())
-            || relationship.relationship_type.trim().is_empty()
-            || !relationship.metadata.is_object()
-        {
-            return Err(codec_error(
-                &path,
-                "relationship.value",
-                "relationship IDs, type, and object metadata must be valid",
-            ));
-        }
-    }
-    Ok(file.relationships)
-}
-
-pub(crate) fn read_canonical_assets(
-    root: &Path,
-    entity_id: &str,
-) -> Result<Vec<CanonicalAsset>, CoreError> {
-    let path = normalized_project_path(root, &format!("entities/{entity_id}/assets.json"))?;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let file: AssetsFile = read_json(&path)?;
-    for asset in &file.assets {
-        validate_uuid(&path, "asset.id", &asset.id)?;
-        validate_component(&asset.namespace, &path, "asset.namespace")?;
-        validate_component(&asset.filename, &path, "asset.filename")?;
-        if asset.size < 0 {
-            return Err(codec_error(
-                &path,
-                "asset.size",
-                "asset size cannot be negative",
-            ));
-        }
-        let asset_path = normalized_project_path(root, &asset.path)?;
-        if !asset.path.starts_with("assets/") || !asset_path.is_file() {
-            return Err(codec_error(
-                &path,
-                "asset.path",
-                "asset must be below assets/",
-            ));
-        }
-        if digest_file(&asset_path)? != asset.content_hash
-            || std::fs::metadata(&asset_path)
-                .map_err(|error| codec_error(&asset_path, "asset.size", error))?
-                .len()
-                != asset.size as u64
-        {
-            return Err(codec_error(&path, "asset.integrity", asset.path.clone()));
-        }
-    }
-    Ok(file.assets)
-}
-
-pub(crate) fn read_canonical_plugin(
-    root: &Path,
-    plugin_id: &str,
-) -> Result<Option<PluginStateFile>, CoreError> {
-    let path = normalized_project_path(root, &format!("plugins/{plugin_id}.json"))?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    let state: PluginStateFile = read_json(&path)?;
-    state.validate(&path)?;
-    if state.plugin_id != plugin_id {
-        return Err(codec_error(
-            &path,
-            "plugin.id",
-            "plugin ID must match its filename",
-        ));
-    }
-    Ok(Some(state))
-}
-
 pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), CoreError> {
     let bytes = canonical_json_bytes(value)?;
     std::fs::write(path, bytes).map_err(|error| codec_error(path, "json.write", error.to_string()))
+}
+
+pub fn write_checkpoint_manifest(
+    root: &Path,
+    checkpoint: &CheckpointManifest,
+) -> Result<(), CoreError> {
+    let path = root.join(CHECKPOINT_MANIFEST_FILE);
+    checkpoint.validate(&path)?;
+    let bytes = canonical_json_bytes(checkpoint)?;
+    let temporary = root.join(".checkpoint.json.tmp");
+    std::fs::write(&temporary, bytes)
+        .map_err(|error| codec_error(&temporary, "checkpoint.write", error.to_string()))?;
+    std::fs::rename(&temporary, &path)
+        .map_err(|error| codec_error(&path, "checkpoint.install", error.to_string()))
 }
 
 pub fn canonical_markdown(body: &str) -> String {

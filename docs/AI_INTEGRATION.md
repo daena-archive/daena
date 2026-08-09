@@ -13,8 +13,8 @@ It supplements, and does not override, these authorities:
   entity/document model.
 - [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md) defines plugin identity,
   isolation, capabilities, broker authorization, and public-contract rules.
-- [`STORAGE.md`](./STORAGE.md) defines the database-first runtime, canonical
-  project files, revisions, external-edit reconciliation, and derived views.
+- [`STORAGE.md`](./STORAGE.md) defines the database-first runtime, portable
+  checkpoints, revisions, explicit import, and derived views.
 
 If this document conflicts with those boundaries, the stricter authority and
 storage rule wins. AI must not become an alternative data model, plugin bridge,
@@ -739,7 +739,7 @@ with deterministic rebuild and recall tests.
 
 ### 8.5 Incremental indexing and model changes
 
-On canonical change reconciliation:
+On a published runtime/checkpoint source change:
 
 ```text
 source revision/hash changed
@@ -1265,7 +1265,7 @@ Agents implementing this plan must follow this protocol.
 
 1. Read this document completely and identify the one approved phase/slice.
 2. Read `AGENTS.md`, `ARCHITECTURE.md`, `PLUGIN_PLATFORM_PLAN.md`, and
-   `PLAIN_TEXT_STORAGE_PLAN.md`; read the relevant ADRs and SDK guide.
+   `STORAGE.md`; read the relevant ADRs and SDK guide.
 3. Run `rtk git status --short` and preserve unrelated staged, unstaged, and
    untracked work.
 4. Use codebase-memory graph tools first for symbols/call paths. Verify important

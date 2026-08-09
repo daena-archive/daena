@@ -9,10 +9,10 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use daena_plugin_api::{PluginKind, PluginManifest, RpcRequest};
 use wasmtime::{
     Config, Engine, Instance, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc,
 };
-use daena_plugin_api::{PluginKind, PluginManifest, RpcRequest};
 
 pub const HOST_ORIGIN: &str = "https://daena.local";
 pub const MAX_RPC_BYTES: usize = 256 * 1024;

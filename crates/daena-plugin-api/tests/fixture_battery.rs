@@ -49,7 +49,8 @@ fn fixture_battery_matches_expected_outcomes() {
     }
 
     assert_eq!(
-        checked, cases.len(),
+        checked,
+        cases.len(),
         "battery must exercise every indexed fixture"
     );
 }
@@ -71,7 +72,8 @@ fn bundled_manifests_are_positive_controls() {
                 .join(path),
         )
         .unwrap_or_else(|_| panic!("missing bundled manifest {path}"));
-        let manifest = parse_manifest(&json).unwrap_or_else(|e| panic!("{path} failed to parse: {e}"));
+        let manifest =
+            parse_manifest(&json).unwrap_or_else(|e| panic!("{path} failed to parse: {e}"));
         validate_manifest(&manifest).unwrap_or_else(|e| panic!("{path} failed to validate: {e}"));
     }
 }

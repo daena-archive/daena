@@ -1,30 +1,69 @@
 use super::*;
 
 #[test]
-fn stopping_project_watcher_joins_its_thread() {
-    let (stop, receiver) = mpsc::channel();
-    let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let thread_stopped = stopped.clone();
-    let thread = thread::spawn(move || {
-        receiver.recv().unwrap();
-        thread_stopped.store(true, std::sync::atomic::Ordering::SeqCst);
-    });
+fn stopping_project_watcher_releases_resources_without_joining() {
+    let (stop, _receiver) = mpsc::channel();
     let watcher = Arc::new(Mutex::new(ProjectWatcher {
         stop: Some(stop),
         filesystem: None,
-        thread: Some(thread),
     }));
 
     stop_project_watcher(&watcher).unwrap();
 
-    assert!(stopped.load(std::sync::atomic::Ordering::SeqCst));
-    assert!(watcher.lock().unwrap().thread.is_none());
+    let watcher = watcher.lock().unwrap();
+    assert!(watcher.stop.is_none());
+    assert!(watcher.filesystem.is_none());
+}
+
+#[test]
+fn watcher_filters_runtime_and_editor_paths_without_reconciliation() {
+    let root = std::path::Path::new("/tmp/daena-watcher-test");
+    assert_eq!(
+        watched_portable_path(root, &root.join("entities/one/entity.json")),
+        Some("entities/one/entity.json".into())
+    );
+    for path in [
+        ".daena/index.sqlite",
+        ".git/index",
+        "entities/.DS_Store",
+        "entities/one/.entity.json.swp",
+        "notes.txt",
+    ] {
+        assert_eq!(
+            watched_portable_path(root, &root.join(path)),
+            None,
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn watcher_startup_snapshot_distinguishes_initial_state_from_external_changes() {
+    let root =
+        std::env::temp_dir().join(format!("daena-watcher-snapshot-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(root.join("entities")).unwrap();
+    std::fs::write(root.join("project.json"), b"initial").unwrap();
+
+    let snapshot = portable_tree_snapshot(&root).unwrap();
+    assert_eq!(
+        portable_path_fingerprint(&root, "project.json").unwrap(),
+        snapshot.get("project.json").cloned()
+    );
+
+    std::fs::write(root.join("project.json"), b"external").unwrap();
+    assert_ne!(
+        portable_path_fingerprint(&root, "project.json").unwrap(),
+        snapshot.get("project.json").cloned()
+    );
+    assert_eq!(
+        portable_path_fingerprint(&root, "entities/new/entity.json").unwrap(),
+        None
+    );
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 fn ai_test_host() -> SharedPluginHost {
-    Arc::new(Mutex::new(
-        bundled_plugin_host(Arc::new(Mutex::new(CoreService::new()))).unwrap(),
-    ))
+    Arc::new(Mutex::new(bundled_plugin_host(new_shared_core()).unwrap()))
 }
 
 #[test]
@@ -328,9 +367,18 @@ fn retrieval_context_is_provenance_bearing_and_denies_missing_data_grants() {
 
 #[test]
 fn broker_retrieval_attaches_citations_until_inspected() {
-    let core = Arc::new(Mutex::new(CoreService::new()));
-    core.lock().unwrap().open_memory(trusted_shell()).unwrap();
+    let core = new_shared_core();
+    current_session(&core)
+        .unwrap()
+        .core
+        .lock()
+        .unwrap()
+        .open_memory(trusted_shell())
+        .unwrap();
     let entity = core
+        .lock()
+        .unwrap()
+        .core
         .lock()
         .unwrap()
         .project(trusted_shell())
@@ -341,6 +389,9 @@ fn broker_retrieval_attaches_citations_until_inspected() {
         })
         .unwrap();
     core.lock()
+        .unwrap()
+        .core
+        .lock()
         .unwrap()
         .project(trusted_shell())
         .unwrap()
@@ -385,7 +436,7 @@ fn broker_retrieval_attaches_citations_until_inspected() {
         "completed"
     );
     let mut result_context = ai_test_context(runtime.clone());
-    let core_for_result = Arc::new(Mutex::new(CoreService::new()));
+    let core_for_result = new_shared_core();
     result_context.core = Some(core_for_result);
     let result = dispatch_host_rpc(
         &plugins,
@@ -412,9 +463,18 @@ fn broker_retrieval_attaches_citations_until_inspected() {
 
 #[test]
 fn broker_structured_retrieval_passes_context_to_provider() {
-    let core = Arc::new(Mutex::new(CoreService::new()));
-    core.lock().unwrap().open_memory(trusted_shell()).unwrap();
+    let core = new_shared_core();
+    current_session(&core)
+        .unwrap()
+        .core
+        .lock()
+        .unwrap()
+        .open_memory(trusted_shell())
+        .unwrap();
     let entity = core
+        .lock()
+        .unwrap()
+        .core
         .lock()
         .unwrap()
         .project(trusted_shell())
@@ -425,6 +485,9 @@ fn broker_structured_retrieval_passes_context_to_provider() {
         })
         .unwrap();
     core.lock()
+        .unwrap()
+        .core
+        .lock()
         .unwrap()
         .project(trusted_shell())
         .unwrap()
@@ -625,7 +688,7 @@ fn sanitize_mutation_request_id_keeps_only_uuids() {
 
 #[test]
 fn bundled_manifests_supply_generic_migrations() {
-    let host = bundled_plugin_host(Arc::new(Mutex::new(CoreService::new()))).unwrap();
+    let host = bundled_plugin_host(new_shared_core()).unwrap();
     let lore = host.catalog.get("daena.lore").unwrap();
     let timeline = host.catalog.get("daena.timeline").unwrap();
     let writing = host.catalog.get("daena.writing").unwrap();
@@ -645,7 +708,7 @@ fn bundled_manifests_supply_generic_migrations() {
 
 #[test]
 fn bundled_workspace_manifests_do_not_declare_duplicate_sidebar_views() {
-    let host = bundled_plugin_host(Arc::new(Mutex::new(CoreService::new()))).unwrap();
+    let host = bundled_plugin_host(new_shared_core()).unwrap();
     for plugin_id in ["daena.lore", "daena.timeline", "daena.writing"] {
         assert!(
             host.catalog
@@ -663,7 +726,7 @@ fn bundled_workspace_manifests_do_not_declare_duplicate_sidebar_views() {
 fn fresh_directory_sync_disables_maps_by_default() {
     let root = std::env::temp_dir().join(format!("daena-maps-startup-{}", uuid::Uuid::new_v4()));
     let project = ProjectStore::open_directory(&root).unwrap();
-    let mut host = bundled_plugin_host(Arc::new(Mutex::new(CoreService::new()))).unwrap();
+    let mut host = bundled_plugin_host(new_shared_core()).unwrap();
 
     sync_project_usage(&project, &mut host).unwrap();
 
@@ -1235,13 +1298,17 @@ fn show_results_navigation_emits_event_payload() {
 #[test]
 fn maps_asset_create_rpc_round_trips_source_asset() {
     let root = std::env::temp_dir().join(format!("daena-map-create-rpc-{}", uuid::Uuid::new_v4()));
-    let core: SharedCore = Arc::new(Mutex::new(CoreService::new()));
-    core.lock()
+    let core: SharedCore = new_shared_core();
+    current_session(&core)
+        .unwrap()
+        .core
+        .lock()
         .unwrap()
         .open_directory(trusted_shell(), &root)
         .unwrap();
     let map_id = {
-        let core = core.lock().unwrap();
+        let core = current_session(&core).unwrap();
+        let core = core.core.lock().unwrap();
         let project = core.project(trusted_shell()).unwrap();
         project.create_map("Test Map".into()).unwrap().id
     };
@@ -1260,7 +1327,8 @@ fn maps_asset_create_rpc_round_trips_source_asset() {
         revoked: false,
     };
     let place_id = {
-        let core = core.lock().unwrap();
+        let core = current_session(&core).unwrap();
+        let core = core.core.lock().unwrap();
         let project = core.project(trusted_shell()).unwrap();
         project
             .create_entity(CreateEntity {
@@ -1315,18 +1383,19 @@ fn maps_asset_create_rpc_round_trips_source_asset() {
             None,
         )
         .unwrap();
+    flush_checkpoint_for_shared_core(&core, "maps asset create").unwrap();
     let saved_asset: Asset = serde_json::from_value(saved).unwrap();
     assert_eq!(saved_asset.namespace, daena_core::maps::MAP_NAMESPACE);
     assert_eq!(saved_asset.size, 5);
 
     {
-        let core = core.lock().unwrap();
+        let core = current_session(&core).unwrap();
+        let core = core.core.lock().unwrap();
         let project = core.project(trusted_shell()).unwrap();
         let asset = project.asset(saved_asset.id.clone()).unwrap();
         assert_eq!(asset.size, 5);
         let info = project.info().unwrap();
         let path = daena_core::normalized_project_path(Path::new(&info.root), &asset.path).unwrap();
-        project.flush_exports().unwrap();
         assert_eq!(std::fs::read(path).unwrap(), b"fmg-!");
         let descriptor = project
             .list_fields(map_id.clone())

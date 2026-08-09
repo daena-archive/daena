@@ -245,9 +245,7 @@ fn capability_grants_survive_in_project_local_file() {
 
     let mut first = host();
     first.state_path = Some(state_path.clone());
-    first
-        .bind_project_grants(&project_root, "project")
-        .unwrap();
+    first.bind_project_grants(&project_root, "project").unwrap();
     first
         .grant_capabilities("project", "com.example.one", expected.clone())
         .unwrap();
@@ -1706,26 +1704,10 @@ fn capability_mappings_are_stable_for_static_methods() {
         ("search.query", &empty, &["search.query"]),
         ("asset.replace.commit", &empty, &["asset.write:self"]),
         ("asset.transfer.cancel", &empty, &[]),
-        (
-            "maps.asset.create.begin",
-            &empty,
-            &["asset.write:self"],
-        ),
-        (
-            "maps.asset.create.commit",
-            &empty,
-            &["asset.write:self"],
-        ),
-        (
-            "maps.recovery.export.begin",
-            &empty,
-            &["asset.write:self"],
-        ),
-        (
-            "maps.recovery.export.commit",
-            &empty,
-            &["asset.write:self"],
-        ),
+        ("maps.asset.create.begin", &empty, &["asset.write:self"]),
+        ("maps.asset.create.commit", &empty, &["asset.write:self"]),
+        ("maps.recovery.export.begin", &empty, &["asset.write:self"]),
+        ("maps.recovery.export.commit", &empty, &["asset.write:self"]),
         ("maps.recovery.restore", &empty, &["asset.write:self"]),
         ("maps.recovery.list", &empty, &["asset.read:self"]),
         ("maps.locations.list", &empty, &["asset.read:self"]),

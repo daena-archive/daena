@@ -9,7 +9,12 @@ fn main() {
     let script = workspace_root.join("scripts/ensure-fmg-archive.mjs");
 
     println!("cargo:rerun-if-changed={}", script.display());
-    println!("cargo:rerun-if-changed={}", workspace_root.join("docs/maps/fmg-v1.119-vendor.json").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        workspace_root
+            .join("docs/maps/fmg-v1.119-vendor.json")
+            .display()
+    );
     println!("cargo:rerun-if-changed={}", archive.display());
     println!("cargo:rerun-if-env-changed=DAENA_FMG_SOURCE");
 

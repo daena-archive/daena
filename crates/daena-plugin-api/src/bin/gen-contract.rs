@@ -12,16 +12,17 @@
 //! path, so the emitted `$ref`s already point at `#/$defs/<Name>`.
 
 use daena_plugin_api::rpc::{
-    AssetListPayload, AssetReadBeginPayload, AssetRegisterPayload, AssetReplaceBeginPayload,
-    AssetReplaceCommitPayload, AssetTransferCancelPayload, DocumentListPayload,
-    DocumentSavePayload, EntityCreateDocument, EntityCreateField, EntityCreatePayload,
-    EntityCreateRelationship, EntityDeletePayload, EntityGetPayload, EntityListPayload,
-    EntityRecord, EntityUpdatePayload, EventPublishPayload, EventTypePayload, FieldListPayload,
-    FieldReadPayload, FieldSetPayload, MapsAssetCreateBeginPayload, MapsAssetCreateCommitPayload,
-    MapsLocationsListPayload, MapsReconcileLinksPayload, MapsRecoveryExportBeginPayload,
-    MapsRecoveryExportCommitPayload, MapsRecoveryListPayload, MapsRecoveryRestorePayload,
-    PluginBootstrap, RelationshipCreatePayload, RelationshipDeletePayload, RelationshipListPayload,
-    SearchQueryPayload, ServiceCallPayload, AiRequestIdPayload, AiRequestStartPayload,
+    AiRequestIdPayload, AiRequestStartPayload, AssetListPayload, AssetReadBeginPayload,
+    AssetRegisterPayload, AssetReplaceBeginPayload, AssetReplaceCommitPayload,
+    AssetTransferCancelPayload, DocumentListPayload, DocumentSavePayload, EntityCreateDocument,
+    EntityCreateField, EntityCreatePayload, EntityCreateRelationship, EntityDeletePayload,
+    EntityGetPayload, EntityListPayload, EntityRecord, EntityUpdatePayload, EventPublishPayload,
+    EventTypePayload, FieldListPayload, FieldReadPayload, FieldSetPayload,
+    MapsAssetCreateBeginPayload, MapsAssetCreateCommitPayload, MapsLocationsListPayload,
+    MapsReconcileLinksPayload, MapsRecoveryExportBeginPayload, MapsRecoveryExportCommitPayload,
+    MapsRecoveryListPayload, MapsRecoveryRestorePayload, PluginBootstrap,
+    RelationshipCreatePayload, RelationshipDeletePayload, RelationshipListPayload,
+    SearchQueryPayload, ServiceCallPayload,
 };
 use daena_plugin_api::{
     PluginManifest, RpcError, CAPABILITY_REGISTRY, DENIED_BY_DEFAULT_CAPABILITIES,
@@ -35,7 +36,8 @@ const META: &str = "https://json-schema.org/draft/2020-12/schema";
 const MANIFEST_ID: &str = "https://github.com/daena-archive/daena/schemas/plugin-manifest-v1.json";
 const RPC_ID: &str = "https://github.com/daena-archive/daena/schemas/plugin-rpc-v1.json";
 const ERROR_ID: &str = "https://github.com/daena-archive/daena/schemas/plugin-error-v1.json";
-const CAPABILITY_ID: &str = "https://github.com/daena-archive/daena/schemas/capability-registry-v1.json";
+const CAPABILITY_ID: &str =
+    "https://github.com/daena-archive/daena/schemas/capability-registry-v1.json";
 
 fn settings() -> SchemaSettings {
     SchemaSettings::draft07().with(|s| {
@@ -104,7 +106,10 @@ fn add_curated_defs(root: &mut Value) {
             "maxLength": 64
         }
     });
-    let defs = root.get_mut("$defs").and_then(|d| d.as_object_mut()).expect("$defs");
+    let defs = root
+        .get_mut("$defs")
+        .and_then(|d| d.as_object_mut())
+        .expect("$defs");
     for (name, schema) in curated.as_object().expect("curated object") {
         defs.insert(name.clone(), schema.clone());
     }
@@ -166,7 +171,12 @@ fn manifest_schema() -> Value {
     rule_on_prop(&mut root, "Dependency", "version", "minLength", 1);
 
     // SchemaContribution.
-    set_prop(&mut root, "SchemaContribution", "namespace", ref_to("namespace"));
+    set_prop(
+        &mut root,
+        "SchemaContribution",
+        "namespace",
+        ref_to("namespace"),
+    );
     set_prop(
         &mut root,
         "SchemaContribution",
@@ -188,9 +198,13 @@ fn manifest_schema() -> Value {
         key.insert("pattern".to_owned(), json!(r"^[a-z][a-zA-Z0-9_]*$"));
         let label = defs["properties"]["label"].as_object_mut().expect("label");
         label.insert("minLength".to_owned(), json!(1));
-        let options = defs["properties"]["options"].as_object_mut().expect("options");
+        let options = defs["properties"]["options"]
+            .as_object_mut()
+            .expect("options");
         options.insert("uniqueItems".to_owned(), json!(true));
-        let shared = defs["properties"]["shared"].as_object_mut().expect("shared");
+        let shared = defs["properties"]["shared"]
+            .as_object_mut()
+            .expect("shared");
         shared.insert("default".to_owned(), json!(false));
     }
     set_prop(
@@ -216,10 +230,20 @@ fn manifest_schema() -> Value {
     for prop in ["id", "name", "entityType"] {
         rule_on_prop(&mut root, "EntityTemplate", prop, "minLength", 1);
     }
-    set_prop(&mut root, "EntityTemplate", "fields", json!({"type": "object"}));
+    set_prop(
+        &mut root,
+        "EntityTemplate",
+        "fields",
+        json!({"type": "object"}),
+    );
 
     // Migration.
-    set_prop(&mut root, "Migration", "recovery", json!({"enum": ["backup", "preserve-data"]}));
+    set_prop(
+        &mut root,
+        "Migration",
+        "recovery",
+        json!({"enum": ["backup", "preserve-data"]}),
+    );
     rule_on_prop(&mut root, "Migration", "from", "minimum", 0);
     rule_on_prop(&mut root, "Migration", "to", "minimum", 1);
 
@@ -237,7 +261,10 @@ fn manifest_schema() -> Value {
             if let Some(ns) = props.get_mut("namespace") {
                 *ns = ref_to("namespace");
                 if is_field_form {
-                    let fields = props.get_mut("fields").and_then(|p| p.as_object_mut()).expect("fields");
+                    let fields = props
+                        .get_mut("fields")
+                        .and_then(|p| p.as_object_mut())
+                        .expect("fields");
                     fields.insert("minItems".to_owned(), json!(1));
                     fields.insert("uniqueItems".to_owned(), json!(true));
                 }
@@ -258,15 +285,24 @@ fn manifest_schema() -> Value {
     }
     {
         let defs = defs_entry(&mut root, "Command");
-        let exposure = defs["properties"]["exposure"].as_object_mut().expect("exposure");
+        let exposure = defs["properties"]["exposure"]
+            .as_object_mut()
+            .expect("exposure");
         exposure.insert("uniqueItems".to_owned(), json!(true));
     }
 
     // CommandSchema.
-    set_prop(&mut root, "CommandSchema", "type", json!({"const": "object"}));
+    set_prop(
+        &mut root,
+        "CommandSchema",
+        "type",
+        json!({"const": "object"}),
+    );
     {
         let defs = defs_entry(&mut root, "CommandSchema");
-        let required = defs["properties"]["required"].as_object_mut().expect("required");
+        let required = defs["properties"]["required"]
+            .as_object_mut()
+            .expect("required");
         required.insert("uniqueItems".to_owned(), json!(true));
         let items = required["items"].as_object_mut().expect("required items");
         items.insert("minLength".to_owned(), json!(1));
@@ -378,9 +414,18 @@ fn rpc_schema() -> Value {
             .get_mut("properties")
             .and_then(|p| p.as_object_mut())
             .expect("error props");
-        let code = props.get_mut("code").and_then(|p| p.as_object_mut()).expect("code");
-        code.insert("pattern".to_owned(), json!(r"^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9-]*)+$"));
-        let message = props.get_mut("message").and_then(|p| p.as_object_mut()).expect("message");
+        let code = props
+            .get_mut("code")
+            .and_then(|p| p.as_object_mut())
+            .expect("code");
+        code.insert(
+            "pattern".to_owned(),
+            json!(r"^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9-]*)+$"),
+        );
+        let message = props
+            .get_mut("message")
+            .and_then(|p| p.as_object_mut())
+            .expect("message");
         message.insert("minLength".to_owned(), json!(1));
         message.insert("maxLength".to_owned(), json!(512));
     }
@@ -400,7 +445,10 @@ fn rpc_schema() -> Value {
             .find(|candidate| candidate.name == *method)
             .expect("catalog entry");
         if catalog_entry.requires_revision {
-            let def = defs_value.get(def_name).and_then(|d| d.as_object()).expect("payload def");
+            let def = defs_value
+                .get(def_name)
+                .and_then(|d| d.as_object())
+                .expect("payload def");
             if let Some(required) = def.get("required").and_then(|r| r.as_array()) {
                 entry.insert("requiredPayload".to_owned(), Value::Array(required.clone()));
             }
@@ -488,15 +536,30 @@ fn error_schema() -> Value {
         .as_object()
         .expect("error object")
         .clone();
-    let props = error.get_mut("properties").and_then(|p| p.as_object_mut()).expect("props");
-    let code = props.get_mut("code").and_then(|p| p.as_object_mut()).expect("code");
-    code.insert("pattern".to_owned(), json!(r"^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9-]*)+$"));
-    let message = props.get_mut("message").and_then(|p| p.as_object_mut()).expect("message");
+    let props = error
+        .get_mut("properties")
+        .and_then(|p| p.as_object_mut())
+        .expect("props");
+    let code = props
+        .get_mut("code")
+        .and_then(|p| p.as_object_mut())
+        .expect("code");
+    code.insert(
+        "pattern".to_owned(),
+        json!(r"^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9-]*)+$"),
+    );
+    let message = props
+        .get_mut("message")
+        .and_then(|p| p.as_object_mut())
+        .expect("message");
     message.insert("minLength".to_owned(), json!(1));
     message.insert("maxLength".to_owned(), json!(512));
     error.insert("$schema".to_owned(), json!(META));
     error.insert("$id".to_owned(), json!(ERROR_ID));
-    error.insert("title".to_owned(), json!("Daena Archive Plugin RPC Error v1"));
+    error.insert(
+        "title".to_owned(),
+        json!("Daena Archive Plugin RPC Error v1"),
+    );
     Value::Object(error)
 }
 
@@ -556,12 +619,18 @@ fn main() {
     let methods = rpc["x-methods"].as_object().expect("x-methods").len();
     assert!(methods >= 20, "expected >= 20 RPC methods, found {methods}");
     let request = rpc["$defs"]["request"].as_object().expect("request def");
-    assert!(request["properties"]["method"]["enum"].is_array(), "method enum missing");
+    assert!(
+        request["properties"]["method"]["enum"].is_array(),
+        "method enum missing"
+    );
     assert!(request["allOf"].is_array(), "request allOf missing");
     let defs = rpc["$defs"].as_object().expect("defs");
     for (method, contract) in rpc["x-methods"].as_object().expect("x-methods") {
         let payload = contract["payload"].as_str().expect("payload name");
-        assert!(defs.contains_key(payload), "{method}: missing payload definition");
+        assert!(
+            defs.contains_key(payload),
+            "{method}: missing payload definition"
+        );
         assert!(
             request["properties"]["method"]["enum"]
                 .as_array()
@@ -611,13 +680,18 @@ mod tests {
                 .iter()
                 .find(|candidate| candidate.name == *method)
                 .expect("catalog entry");
-            assert_eq!(entry.payload_schema, *def_name, "{method}: payload schema mismatch");
+            assert_eq!(
+                entry.payload_schema, *def_name,
+                "{method}: payload schema mismatch"
+            );
             let has_revision = defs
                 .get(def_name)
                 .and_then(|definition| definition.get("required"))
                 .and_then(|required| required.as_array())
                 .is_some_and(|required| {
-                    required.iter().any(|item| item.as_str() == Some("expectedRevision"))
+                    required
+                        .iter()
+                        .any(|item| item.as_str() == Some("expectedRevision"))
                 });
             assert_eq!(
                 entry.requires_revision, has_revision,

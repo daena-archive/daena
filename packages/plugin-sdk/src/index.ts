@@ -525,7 +525,9 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
               valid = typeof preset === "string" || isRecord(preset);
               break;
             case "enum":
-              valid = typeof preset === "string" && (field.options?.includes(preset) ?? false);
+              valid = field.multiple
+                ? Array.isArray(preset) && preset.every((value) => typeof value === "string" && (field.options?.includes(value) ?? false))
+                : typeof preset === "string" && (field.options?.includes(preset) ?? false);
               break;
           }
           if (!valid) errors.push(`template ${template.id} has invalid preset for field: ${key}`);

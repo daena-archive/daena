@@ -18,6 +18,7 @@ export interface FieldDefinition {
     entityTypes?: string[];
     key: string;
     label: string;
+    multiple?: boolean;
     options?: string[] | null;
     relationshipType?: string;
     required?: boolean | null;

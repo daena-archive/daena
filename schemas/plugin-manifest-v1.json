@@ -284,6 +284,11 @@
           "minLength": 1,
           "type": "string"
         },
+        "multiple": {
+          "default": false,
+          "description": "An enum field with multiple enabled values is stored as a string array.",
+          "type": "boolean"
+        },
         "options": {
           "items": {
             "type": "string"

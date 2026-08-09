@@ -1,5 +1,5 @@
 import type { Core, ElementDefinition, NodeSingular } from "cytoscape";
-import { createProposalPreview, type AiCitation, type EntitySummary, type ModuleContext, type DaenaModule, type Relationship } from "../../../module-api/src/index";
+import { type EntitySummary, type ModuleContext, type DaenaModule, type Relationship } from "../../../module-api/src/index";
 import type { ModuleManifest } from "../../../module-api/src/index";
 import manifestJson from "../manifest.json";
 
@@ -169,84 +169,6 @@ function graphElements(
   ];
 }
 
-async function generateBiography(details: HTMLElement, entity: EntitySummary, context: ModuleContext): Promise<void> {
-  const record = await context.entities.get(entity.id);
-  if (!record) return;
-  const fieldRecords = await context.fields.listRecords(entity.id);
-  const summaryField = fieldRecords.find((field) => field.key === "summary");
-  const handle = await context.ai.startStructured({
-    taskId: "lore.biography",
-    userInstruction: "Draft a concise, canon-compatible biography for this lore entry. Do not invent facts beyond the supplied context.",
-    immediateContext: {
-      entity: { id: entity.id, name: entity.name, type: entity.type },
-      fields: record.fields,
-      document: record.documents[0]?.body ?? "",
-    },
-    retrievalPolicy: {
-      mode: "related",
-      seedIds: [entity.id],
-      allowedSourceKinds: ["document", "field"],
-      relationshipDepth: 2,
-      passageCount: 8,
-      includeSharedFields: false,
-    },
-    outputContract: {
-      type: "object",
-      properties: { summary: { type: "string", maxLength: 4000 } },
-      required: ["summary"],
-      additionalProperties: false,
-    },
-  });
-  const deadline = Date.now() + 30_000;
-  let events: unknown[] = [];
-  while (Date.now() < deadline) {
-    events = await handle.poll();
-    const terminal = events.some((event) => {
-      const phase = (event as { phase?: unknown }).phase;
-      return phase === "completed" || phase === "failed" || phase === "cancelled" || phase === "deadline_exceeded";
-    });
-    if (terminal) break;
-    await new Promise((resolve) => window.setTimeout(resolve, 100));
-  }
-  if (!events.some((event) => (event as { phase?: unknown }).phase === "completed")) {
-    await handle.cancel().catch(() => {});
-    throw new Error("Lore biography generation did not complete.");
-  }
-  const result = await handle.result() as { summary?: unknown };
-  if (typeof result.summary !== "string" || !result.summary.trim()) throw new Error("The AI biography proposal was invalid.");
-  const citations = await Promise.all((await handle.citations() as AiCitation[]).map(async (citation) => {
-    if (!citation.entityId) return citation;
-    const current = await context.entities.get(citation.entityId as EntitySummary["id"]);
-    if (!current) return { ...citation, stale: true };
-    if (citation.sourceKind === "document") {
-      return { ...citation, stale: current.documents.every((document) => document.revision !== citation.revision) };
-    }
-    if (citation.sourceKind === "field") {
-      const fields = await context.fields.listRecords(citation.entityId as EntitySummary["id"]);
-      return { ...citation, stale: fields.every((field) => field.revision !== citation.revision) };
-    }
-    return citation;
-  }));
-  details.replaceChildren();
-  const preview = createProposalPreview({
-    title: "Biography proposal",
-    proposal: result.summary,
-    citations,
-    acceptLabel: "Accept summary",
-    onDiscard: () => renderSelection(details, entity, new Map([[entity.id, entity]]), [], context),
-    onAccept: async (value) => {
-    const current = await context.entities.get(entity.id);
-    const currentFields = await context.fields.listRecords(entity.id);
-    const currentSummary = currentFields.find((field) => field.key === "summary");
-    if (!current || current.revision !== record.revision || currentSummary?.revision !== summaryField?.revision) {
-      throw new Error("This lore entry changed while the proposal was open. Discard it and try again.");
-    }
-    await context.fields.set(entity.id, "summary", value.trim(), { expectedRevision: summaryField?.revision ?? current.revision });
-    },
-  });
-  details.append(preview);
-}
-
 function isGraphNode(value: NodeSingular | EntitySummary): value is NodeSingular {
   return typeof (value as NodeSingular).id === "function";
 }
@@ -269,18 +191,12 @@ function renderSelection(details: HTMLElement, nodeOrEntity: NodeSingular | Enti
   type.textContent = `${displayType(entity.type)} · ${connected.length} connection${connected.length === 1 ? "" : "s"}`;
   const actionRow = document.createElement("div");
   actionRow.className = "lore-graph-toolbar-actions";
-  const biographyButton = document.createElement("button");
-  biographyButton.type = "button";
-  biographyButton.textContent = "Draft biography";
-  biographyButton.onclick = () => void generateBiography(details, entity, context).catch((cause) => {
-    type.textContent = cause instanceof Error ? cause.message : String(cause);
-  });
   const mapButton = document.createElement("button");
   mapButton.type = "button";
   mapButton.className = "lore-graph-map-button";
   mapButton.textContent = "Show on map";
   mapButton.onclick = () => void showOnMap(context, entity.id);
-  actionRow.append(biographyButton, mapButton);
+  actionRow.append(mapButton);
   details.append(name, type, actionRow);
   if (connected.length === 0) return;
   const list = document.createElement("ul");

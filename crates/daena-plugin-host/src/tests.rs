@@ -42,6 +42,7 @@ fn manifest(id: &str, namespace: &str) -> PluginManifest {
                 relationship_type: None,
                 target_entity_types: None,
                 shared: false,
+                multiple: false,
             }],
         }],
         templates: vec![],

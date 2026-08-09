@@ -24,6 +24,7 @@
   type WorkspaceSection = "lore" | "timeline" | "writing" | "maps";
   type SettingsSection = "general" | "ai" | "plugins" | "git";
   type WritingView = "manuscripts" | "reference";
+  type AiFieldSuggestion = { value: string | string[]; rationale: string; confidence: string };
   type RecentProject = { name: string; root: string };
   type CreateOption = { key: string; module: InstalledModule; template: EntityTemplate };
   type CreateGroup = { module: InstalledModule; options: CreateOption[] };
@@ -47,7 +48,7 @@
   let entities = $state<Entity[]>([]);
   let selected = $state<Entity | null>(null);
   let documentBody = $state("");
-  let fields = $state<Record<string, string>>({});
+  let fields = $state<Record<string, unknown>>({});
   let relationships = $state<Relationship[]>([]);
   let assets = $state<Asset[]>([]);
   let mapLocations = $state<MapLocation[]>([]);
@@ -118,6 +119,12 @@
   let aiLastSequence = $state(-1);
   let aiUnlisten: (() => void) | null = null;
   let editorRef = $state<{ insertAiTextAtRequest: (value: string) => boolean } | null>(null);
+  let aiFieldFillBusy = $state(false);
+  let aiFieldFillOpen = $state(false);
+  let aiFieldFillRequestId = $state<string | null>(null);
+  let aiFieldFillStream = $state("");
+  let aiFieldSuggestions = $state<Record<string, AiFieldSuggestion>>({});
+  let aiFieldUnlisten: (() => void) | null = null;
   let adminPlugins = $state<PluginAdminEntry[] | null>(null);
   let hostView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] } | null>(null);
   let sandboxView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] | null } | null>(null);
@@ -188,6 +195,18 @@
       .filter((schema) => !entityType || schema.entityTypes.includes(entityType))
       .flatMap((schema) => schema.fields.filter((field) => fieldAppliesToEntity(field, entityType))) ?? [];
   };
+  function isEmptyFieldValue(value: unknown) {
+    return value === undefined || value === null || value === "" || (typeof value === "string" && !value.trim()) || (Array.isArray(value) && value.length === 0);
+  }
+  function fieldDisplayValue(value: unknown) {
+    return Array.isArray(value) ? value.join(", ") : String(value ?? "");
+  }
+  function suggestionDisplayValue(key: string, suggestion: AiFieldSuggestion) {
+    const definition = definitions().find((candidate) => candidate.key === key);
+    if (definition?.type !== "relationship" || !Array.isArray(suggestion.value)) return fieldDisplayValue(suggestion.value);
+    const names = new Map(entities.map((entity) => [entity.id, entity.name]));
+    return suggestion.value.map((id) => names.get(id) ?? id).join(", ");
+  }
   function createOptions(): CreateOption[] {
     return modules
       .filter((module) => module.enabled)
@@ -224,7 +243,7 @@
   }
   function defaultCreateFieldValue(field: FieldDefinition, template: EntityTemplate) {
     if (Object.prototype.hasOwnProperty.call(template.fields, field.key)) return template.fields[field.key];
-    return field.type === "boolean" ? false : field.type === "relationship" ? [] : "";
+    return field.type === "boolean" ? false : field.type === "relationship" || (field.type === "enum" && field.multiple) ? [] : "";
   }
   function resetCreateFields(option: CreateOption | null) {
     createFieldValues = Object.fromEntries(createFieldsFor(option).map(({ field }) => [field.key, defaultCreateFieldValue(field, option!.template)]));
@@ -241,6 +260,10 @@
   }
   function setCreateField(key: string, value: unknown) {
     createFieldValues = { ...createFieldValues, [key]: value };
+  }
+  function updateCreateEnumField(key: string, event: Event, multiple: boolean) {
+    const target = event.currentTarget as HTMLSelectElement;
+    setCreateField(key, multiple ? Array.from(target.selectedOptions, (option) => option.value) : target.value);
   }
   function isCreateValuePopulated(value: unknown) {
     if (Array.isArray(value)) return value.length > 0;
@@ -817,6 +840,154 @@
     aiInstruction = instructions[action];
     aiRewriteOpen = true;
   }
+  function emptyInspectorDefinitions() {
+    return definitions().filter((definition) => definition.type === "relationship"
+      ? selectedRelationshipIds(definition).length === 0
+      : isEmptyFieldValue(fields[definition.key]));
+  }
+  function clearAiFieldListener() {
+    aiFieldUnlisten?.();
+    aiFieldUnlisten = null;
+  }
+  function closeAiFieldFill() {
+    if (aiFieldFillRequestId) void project.aiCancelText(aiFieldFillRequestId).catch(() => {});
+    clearAiFieldListener();
+    aiFieldFillOpen = false;
+    aiFieldFillBusy = false;
+    aiFieldFillRequestId = null;
+    aiFieldFillStream = "";
+    aiFieldSuggestions = {};
+  }
+  function handleAiFieldFillEvent(payload: AiStreamEvent) {
+    if (payload.phase === "delta" && payload.delta) aiFieldFillStream += payload.delta;
+    if (payload.phase === "failed") {
+      clearAiFieldListener();
+      aiFieldFillBusy = false;
+      aiFieldFillRequestId = null;
+      error = payload.error ?? "AI field suggestions failed";
+    } else if (payload.phase === "cancelled" || payload.phase === "deadline_exceeded") {
+      clearAiFieldListener();
+      aiFieldFillBusy = false;
+      aiFieldFillRequestId = null;
+    } else if (payload.phase === "completed") {
+      clearAiFieldListener();
+      aiFieldFillBusy = false;
+      aiFieldFillRequestId = null;
+      try {
+        const parsed = JSON.parse(payload.output ?? aiFieldFillStream) as { suggestions?: Record<string, { value?: unknown; values?: unknown; rationale?: unknown; confidence?: unknown }> };
+        const allowed = new Set(emptyInspectorDefinitions().map((definition) => definition.key));
+        const suggestions: Record<string, AiFieldSuggestion> = {};
+        for (const [key, value] of Object.entries(parsed.suggestions ?? {})) {
+          const definition = definitions().find((candidate) => candidate.key === key);
+          const usesValues = definition?.multiple || definition?.type === "relationship";
+          const rawValue = usesValues ? value?.values : value?.value;
+          if (!allowed.has(key) || rawValue === undefined || rawValue === null) continue;
+          if (usesValues && (!Array.isArray(rawValue) || rawValue.length === 0 || rawValue.length > 5 || rawValue.some((item) => typeof item !== "string"))) continue;
+          if (definition?.type === "relationship") {
+            const allowedIds = new Set(entities.filter((entity) => !entity.deleted && (!definition.targetEntityTypes?.length || definition.targetEntityTypes.includes(entity.entity_type ?? ""))).map((entity) => entity.id));
+            if (!(rawValue as string[]).every((id) => allowedIds.has(id))) continue;
+          }
+          suggestions[key] = {
+            value: usesValues ? (rawValue as string[]) : String(rawValue),
+            rationale: String(value.rationale ?? "Suggested from related project context."),
+            confidence: String(value.confidence ?? "unknown"),
+          };
+        }
+        aiFieldSuggestions = suggestions;
+        if (Object.keys(suggestions).length === 0) {
+          aiFieldFillOpen = false;
+          error = "AI found no supported suggestions for the empty fields.";
+        }
+      } catch {
+        aiFieldFillOpen = false;
+        error = "AI returned invalid field suggestions.";
+      }
+    }
+  }
+  async function fillAiFields() {
+    if (!selected || aiFieldFillBusy) return;
+    const empty = emptyInspectorDefinitions();
+    if (empty.length === 0) return;
+    const endpoint = aiSettings.localEndpoint.trim();
+    const model = aiSettings.localModel.trim();
+    if (!endpoint || !model) {
+      error = "Configure a local endpoint and chat model in AI providers before filling fields.";
+      return;
+    }
+    aiFieldFillOpen = true;
+    aiFieldFillBusy = true;
+    aiFieldFillStream = "";
+    aiFieldSuggestions = {};
+    const fieldKeys = empty.map((definition) => definition.key);
+    const context = JSON.stringify({
+      entity: { name: selected.name, type: selected.entity_type },
+      document: documentBody,
+      populatedFields: Object.fromEntries(Object.entries(fields).filter(([, value]) => !isEmptyFieldValue(value))),
+      emptyFields: empty.map((definition) => ({
+        key: definition.key,
+        label: definition.label,
+        type: definition.type,
+        multiple: definition.multiple ?? definition.type === "relationship",
+        options: definition.options ?? [],
+        allowedEntities: definition.type === "relationship"
+          ? entities.filter((entity) => !entity.deleted && (!definition.targetEntityTypes?.length || definition.targetEntityTypes.includes(entity.entity_type ?? ""))).map((entity) => ({ id: entity.id, name: entity.name, type: entity.entity_type }))
+          : [],
+      })),
+    });
+    const suggestionProperties = Object.fromEntries(empty.map((definition) => [definition.key, {
+      type: "object",
+      properties: {
+        ...(definition.multiple || definition.type === "relationship"
+          ? { values: { type: "array", items: { type: "string", maxLength: 400 }, maxItems: 5, uniqueItems: true } }
+          : { value: { type: "string", maxLength: 4000 } }),
+        rationale: { type: "string", maxLength: 1000 },
+        confidence: { type: "string", maxLength: 32 },
+      },
+      required: [definition.multiple || definition.type === "relationship" ? "values" : "value"],
+      additionalProperties: false,
+    }]));
+    const outputContract = {
+      type: "object",
+      properties: {
+        suggestions: {
+          type: "object",
+          properties: suggestionProperties,
+          additionalProperties: false,
+        },
+      },
+      required: ["suggestions"],
+      additionalProperties: false,
+    };
+    const retrievalQuery = `${selected.name} ${selected.entity_type ?? ""} ${empty.map((definition) => definition.label).join(" ")}`.slice(0, 4000);
+    try {
+      const requestId = await project.aiGenerateStructured(endpoint, model, `Fill only these empty fields: ${fieldKeys.join(", ")}. For multi-select and relationship fields, return up to five distinct values in the values array. For relationship fields, use only allowed entity IDs from the context. Use only configured options when options are provided. Return evidence-backed suggestions. Do not invent facts.`, context, outputContract, selected.id, retrievalQuery);
+      aiFieldFillRequestId = requestId;
+      aiFieldUnlisten = await listen<AiStreamEvent>(`ai-stream:${requestId}`, (event) => handleAiFieldFillEvent(event.payload));
+      const buffered = await project.aiPollText(requestId);
+      for (const event of buffered) handleAiFieldFillEvent(event);
+    } catch (cause) {
+      clearAiFieldListener();
+      aiFieldFillBusy = false;
+      aiFieldFillRequestId = null;
+      error = friendlyError(cause);
+    }
+  }
+  async function acceptAiFieldSuggestion(key: string) {
+    const suggestion = aiFieldSuggestions[key];
+    const definition = definitions().find((candidate) => candidate.key === key);
+    if (!suggestion || (definition?.type === "relationship" ? selectedRelationshipIds(definition).length > 0 : !isEmptyFieldValue(fields[key]))) return;
+    if (definition?.type === "relationship") await updateRelationshipField(definition, suggestion.value as string[]);
+    else fields = { ...fields, [key]: suggestion.value };
+    const remaining = { ...aiFieldSuggestions };
+    delete remaining[key];
+    aiFieldSuggestions = remaining;
+    markEntryDirty();
+  }
+  function discardAiFieldSuggestion(key: string) {
+    const remaining = { ...aiFieldSuggestions };
+    delete remaining[key];
+    aiFieldSuggestions = remaining;
+  }
   function clearAiStreamListener() {
     aiUnlisten?.();
     aiUnlisten = null;
@@ -885,9 +1056,13 @@
       const sourceText = aiMode === "generate"
         ? aiGenerationContext.trim() || documentBody.trim() || "[CURSOR]"
         : aiSourceSelection;
+      const retrievalQuery = [selected?.name, aiInstruction, aiSourceSelectionPlain]
+        .filter(Boolean)
+        .join(" ")
+        .slice(0, 4000);
       const requestId = aiUseRemote
-        ? await project.aiGenerateRemoteText(projectInfo!.root, aiSettings.remote.provider, aiSettings.remote.endpoint, aiSettings.remote.model, aiInstruction, sourceText)
-        : await project.aiGenerateText(aiSettings.localEndpoint, aiSettings.localModel, aiInstruction, sourceText);
+        ? await project.aiGenerateRemoteText(projectInfo!.root, aiSettings.remote.provider, aiSettings.remote.endpoint, aiSettings.remote.model, aiInstruction, sourceText, selected?.id, retrievalQuery)
+        : await project.aiGenerateText(aiSettings.localEndpoint, aiSettings.localModel, aiInstruction, sourceText, selected?.id, retrievalQuery);
       aiRequestId = requestId;
       aiUnlisten = await listen<AiStreamEvent>(`ai-stream:${requestId}`, (event) => {
         handleAiEvent(event.payload);
@@ -1080,6 +1255,7 @@
   }
 
   async function loadSelectedState(entity: Entity) {
+    closeAiFieldFill();
     const context = contextFor();
     const record = await context.entities.get(entity.id as UUID);
     const document = record?.documents[0];
@@ -1095,9 +1271,9 @@
         if (normalized === "1" || normalized === "1-1" || normalized === "1-1-1") return [key, ""];
         return [key, date ? serializeCalendarDate(date) : String(value ?? "")];
       }
-      return [key, String(value ?? "")];
+      return [key, Array.isArray(value) ? value.map(String) : String(value ?? "")];
     }));
-    relationships = (await context.relationships.list(entity.id as UUID)).map((relationship) => ({ id: relationship.id, source_id: relationship.sourceId, target_id: relationship.targetId, relationship_type: relationship.type, metadata: JSON.stringify(relationship.metadata), revision: "" }));
+    relationships = (await context.relationships.list(entity.id as UUID)).map((relationship) => ({ id: relationship.id, source_id: relationship.sourceId, target_id: relationship.targetId, relationship_type: relationship.type, metadata: JSON.stringify(relationship.metadata), revision: relationship.revision }));
     assets = (await context.assets.list(entity.id as UUID)).map((asset) => ({ id: asset.id, entity_id: asset.entityId, namespace: asset.namespace, filename: asset.filename, content_hash: asset.contentHash, size: asset.size, mime_type: asset.mimeType, path: asset.path, created_at: asset.createdAt, revision: "" }));
     mapLocations = await project.listMapLocations(entity.id);
     savedAt = "";
@@ -1347,7 +1523,11 @@
 
   function updateField(key: string, event: Event) {
     if (projectDiagnostics.length > 0) return;
-    fields = { ...fields, [key]: (event.currentTarget as HTMLInputElement).value };
+    const target = event.currentTarget as HTMLInputElement | HTMLSelectElement;
+    const value = target instanceof HTMLSelectElement && target.multiple
+      ? Array.from(target.selectedOptions, (option) => option.value)
+      : target.value;
+    fields = { ...fields, [key]: value };
     markEntryDirty();
   }
   async function saveDocument(): Promise<boolean> {
@@ -1383,7 +1563,14 @@
     if (projectDiagnostics.length > 0) return;
     if (!(await flushAutoSave())) return;
     if (!selected || !confirm(`Archive ${selected.name}?`)) return;
-    try { await contextFor().entities.delete(selected.id as UUID); clearSelection(); await loadEntities(); } catch (cause) { error = friendlyError(cause); }
+    try {
+      await loadEntities();
+      const current = entities.find((entity) => entity.id === selected?.id);
+      if (!current?.revision) throw new Error("The entity revision is unavailable. Reload the project and try again.");
+      await contextFor().entities.delete(current.id as UUID, { expectedRevision: current.revision });
+      clearSelection();
+      await loadEntities();
+    } catch (cause) { error = friendlyError(cause); }
   }
   function selectedRelationshipIds(definition: FieldDefinition) {
     if (!selected || !definition.relationshipType) return [];
@@ -1400,7 +1587,7 @@
     const toAdd = [...desired].filter((targetId) => !current.some((relationship) => relationship.target_id === targetId));
     try {
       const context = contextFor();
-      await Promise.all(toRemove.map((relationship) => context.relationships.delete(relationship.id as UUID, relationship.relationship_type)));
+      await Promise.all(toRemove.map((relationship) => context.relationships.delete(relationship.id as UUID, relationship.relationship_type, { expectedRevision: relationship.revision })));
       const created = await Promise.all(toAdd.map((targetId) => project.createRelationship(
         selected!.id,
         targetId,
@@ -1802,6 +1989,7 @@
       window.clearInterval(syncTimer);
       if (aiModelsMessageTimer !== null) window.clearTimeout(aiModelsMessageTimer);
       unlisten?.();
+      clearAiFieldListener();
       unlistenMaps?.();
       unlistenMapsState?.();
       unlistenMapsSelection?.();
@@ -1882,7 +2070,7 @@
   <section class:sandbox-active={Boolean(sandboxView)} class="app-main">
     <header class="topbar"><div class="breadcrumbs" aria-label="Breadcrumb"><span>Private studio</span><i>/</i><strong>{sectionLabel()}</strong>{#if section === "writing"}<i>/</i><span>{writingView === "manuscripts" ? "Manuscripts" : "Reference pages"}</span>{/if}{#if selected}<i>/</i><span>{selected.name}</span>{/if}</div><div class="top-actions">{#if ready}<label class="global-search"><span aria-hidden="true">⌕</span><input aria-label="Search your world" bind:value={globalQuery} placeholder="Search whole world" /></label><span class="sync-badge" title="Your work is stored locally"><span></span> Local</span>{/if}</div></header>
     {#if ready && globalQuery.trim()}<div class="search-modal" role="dialog" aria-label="World search results"><div class="search-modal-heading"><strong>Search results</strong><button class="quiet-button" aria-label="Close search" onclick={() => globalQuery = ""}>×</button></div>{#if searchMatches === null}<p class="search-state">Searching the whole world…</p>{:else if searchMatches.length === 0}<p class="search-state">No matches found.</p>{:else}<div class="search-results">{#each searchMatches as result}<button class="search-result" onclick={() => selectSearchResult(result)}><span class={`entity-glyph ${entityGlyphClass(result)}`}>{entityGlyph(result)}</span><span><strong>{result.name}</strong><small>{result.entity_type ?? "Uncategorized"}</small></span></button>{/each}</div>{/if}</div>{/if}
-    {#if showCreateForm}{@const createOption = selectedCreateOption()}<div class="modal-backdrop"><form class="dialog create-dialog" onsubmit={createEntity}><div class="create-dialog-heading"><div><span class="panel-kicker">CREATE SOMETHING NEW</span><strong>Choose a starting point</strong><p>Templates set the shape of your new entry. You can fill in the details before it is saved.</p></div><button type="button" class="new-form-close" aria-label="Close create dialog" onclick={closeCreateForm}>×</button></div><div class="create-dialog-body"><aside class="create-template-panel"><div class="create-panel-label">TEMPLATES</div><div class="create-template-list">{#each createGroups() as group}<div class="create-template-group"><span>{group.module.name}</span>{#each group.options as option}<button type="button" class:selected={option.key === selectedCreateKey} class="create-template-card" onclick={() => selectCreateOption(option.key)}><span class="create-template-icon">{option.template.icon ?? option.template.name.slice(0, 1)}</span><span class="create-template-copy"><strong>{option.template.name}</strong><small>{option.template.description ?? option.template.entityType}</small></span><span class="create-template-check">{option.key === selectedCreateKey ? "✓" : ""}</span></button>{/each}</div>{/each}</div></aside><section class="create-form-panel">{#if createOption}<div class="create-form-title"><span class="panel-kicker">{createOption.module.name.toUpperCase()}</span><h2>{createOption.template.name}</h2><p>{createOption.template.description ?? `Create a new ${createOption.template.entityType}.`}</p></div><label class="create-input-field" for="new-entity"><span>Name <b>*</b></span><input id="new-entity" bind:value={name} placeholder={`e.g. ${createOption.template.name}`} autocomplete="off" /></label>{#each createFieldsFor(createOption) as item}<div class="create-input-field"><label for={`create-${item.field.key}`}><span>{item.field.label} {#if item.required}<b>*</b>{/if}</span></label>{#if item.field.type === "relationship"}<RelationshipPicker field={item.field} entities={entities} selectedIds={createRelationshipValues(item.field.key)} onChange={(ids) => setCreateRelationshipValues(item.field.key, ids)} />{:else if item.field.type === "text"}<textarea id={`create-${item.field.key}`} rows="3" value={String(createFieldValues[item.field.key] ?? "")} placeholder={`Add ${item.field.label.toLowerCase()}`} oninput={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLTextAreaElement).value)}></textarea>{:else if item.field.type === "number"}<input id={`create-${item.field.key}`} type="number" value={String(createFieldValues[item.field.key] ?? "")} placeholder={`Add ${item.field.label.toLowerCase()}`} oninput={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).value)} />{:else if item.field.type === "boolean"}<label class="create-checkbox" for={`create-${item.field.key}`}><input id={`create-${item.field.key}`} type="checkbox" checked={createFieldValues[item.field.key] === true} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).checked)} /><span>Yes</span></label>{:else if item.field.type === "enum"}<select id={`create-${item.field.key}`} value={String(createFieldValues[item.field.key] ?? "")} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}><option value="">Choose {item.field.label.toLowerCase()}</option>{#each item.field.options ?? [] as option}<option value={option}>{option}</option>{/each}</select>{:else if item.field.type === "entity-ref"}<select id={`create-${item.field.key}`} value={String(createFieldValues[item.field.key] ?? "")} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}><option value="">Choose an entity</option>{#each entities.filter((entity) => !entity.deleted) as entity}<option value={entity.id}>{entity.name} · {entity.entity_type ?? "Uncategorized"}</option>{/each}</select>{:else if item.field.type === "date"}{#if createDateForField(item.field.key) || createDateEditorOpen[item.field.key]}{@const date = createDateDraftForField(item.field.key) ?? { calendar: "gregorian", era: "CE", precision: "day" }}<div class="date-editor"><div class="date-fields"><label for={`create-${item.field.key}-year`}>Year<input id={`create-${item.field.key}-year`} aria-label={`${item.field.label} year`} type="number" min="1" value={date.year ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "year", (event.currentTarget as HTMLInputElement).value, 1)} /></label><label for={`create-${item.field.key}-month`}>Month<input id={`create-${item.field.key}-month`} aria-label={`${item.field.label} month`} type="number" min="1" max="12" value={date.month ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "month", (event.currentTarget as HTMLInputElement).value, 1, 12)} /></label><label for={`create-${item.field.key}-day`}>Day<input id={`create-${item.field.key}-day`} aria-label={`${item.field.label} day`} type="number" min="1" max="31" value={date.day ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "day", (event.currentTarget as HTMLInputElement).value, 1, 31)} /></label></div><small class="date-preview">{typeof date.year === "number" ? formatCalendarDate(date) : "Add a date"}</small><button class="date-clear" type="button" onclick={() => clearCreateDateField(item.field.key)}>Clear date</button></div>{:else}<button class="date-empty" type="button" onclick={() => openCreateDateEditor(item.field.key)}>Add a date</button>{/if}{/if}</div>{/each}{#if createOption.template.document}<label class="create-input-field" for="create-document"><span>Opening note</span><textarea id="create-document" rows="5" bind:value={createDocumentBody} placeholder="Add a first note or leave the template text as-is"></textarea></label>{/if}{:else}<div class="create-form-empty">Select a template to begin.</div>{/if}</section></div><div class="create-dialog-actions"><button type="button" class="quiet-button" onclick={closeCreateForm}>Cancel</button><button class="primary-button" type="submit" disabled={!name.trim() || !createOption}>Create {createOption?.template.name ?? "entry"}</button></div></form></div>{/if}
+    {#if showCreateForm}{@const createOption = selectedCreateOption()}<div class="modal-backdrop"><form class="dialog create-dialog" onsubmit={createEntity}><div class="create-dialog-heading"><div><span class="panel-kicker">CREATE SOMETHING NEW</span><strong>Choose a starting point</strong><p>Templates set the shape of your new entry. You can fill in the details before it is saved.</p></div><button type="button" class="new-form-close" aria-label="Close create dialog" onclick={closeCreateForm}>×</button></div><div class="create-dialog-body"><aside class="create-template-panel"><div class="create-panel-label">TEMPLATES</div><div class="create-template-list">{#each createGroups() as group}<div class="create-template-group"><span>{group.module.name}</span>{#each group.options as option}<button type="button" class:selected={option.key === selectedCreateKey} class="create-template-card" onclick={() => selectCreateOption(option.key)}><span class="create-template-icon">{option.template.icon ?? option.template.name.slice(0, 1)}</span><span class="create-template-copy"><strong>{option.template.name}</strong><small>{option.template.description ?? option.template.entityType}</small></span><span class="create-template-check">{option.key === selectedCreateKey ? "✓" : ""}</span></button>{/each}</div>{/each}</div></aside><section class="create-form-panel">{#if createOption}<div class="create-form-title"><span class="panel-kicker">{createOption.module.name.toUpperCase()}</span><h2>{createOption.template.name}</h2><p>{createOption.template.description ?? `Create a new ${createOption.template.entityType}.`}</p></div><label class="create-input-field" for="new-entity"><span>Name <b>*</b></span><input id="new-entity" bind:value={name} placeholder={`e.g. ${createOption.template.name}`} autocomplete="off" /></label>{#each createFieldsFor(createOption) as item}<div class="create-input-field"><label for={`create-${item.field.key}`}><span>{item.field.label} {#if item.required}<b>*</b>{/if}</span></label>{#if item.field.type === "relationship"}<RelationshipPicker field={item.field} entities={entities} selectedIds={createRelationshipValues(item.field.key)} onChange={(ids) => setCreateRelationshipValues(item.field.key, ids)} />{:else if item.field.type === "text"}<textarea id={`create-${item.field.key}`} rows="3" value={String(createFieldValues[item.field.key] ?? "")} placeholder={`Add ${item.field.label.toLowerCase()}`} oninput={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLTextAreaElement).value)}></textarea>{:else if item.field.type === "number"}<input id={`create-${item.field.key}`} type="number" value={String(createFieldValues[item.field.key] ?? "")} placeholder={`Add ${item.field.label.toLowerCase()}`} oninput={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).value)} />{:else if item.field.type === "boolean"}<label class="create-checkbox" for={`create-${item.field.key}`}><input id={`create-${item.field.key}`} type="checkbox" checked={createFieldValues[item.field.key] === true} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).checked)} /><span>Yes</span></label>{:else if item.field.type === "enum"}<select id={`create-${item.field.key}`} multiple={item.field.multiple ?? false} value={item.field.multiple ? (Array.isArray(createFieldValues[item.field.key]) ? createFieldValues[item.field.key] : []) : String(createFieldValues[item.field.key] ?? "")} onchange={(event) => updateCreateEnumField(item.field.key, event, item.field.multiple ?? false)}><option value="">Choose {item.field.label.toLowerCase()}</option>{#each item.field.options ?? [] as option}<option value={option}>{option}</option>{/each}</select>{:else if item.field.type === "entity-ref"}<select id={`create-${item.field.key}`} value={String(createFieldValues[item.field.key] ?? "")} onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}><option value="">Choose an entity</option>{#each entities.filter((entity) => !entity.deleted) as entity}<option value={entity.id}>{entity.name} · {entity.entity_type ?? "Uncategorized"}</option>{/each}</select>{:else if item.field.type === "date"}{#if createDateForField(item.field.key) || createDateEditorOpen[item.field.key]}{@const date = createDateDraftForField(item.field.key) ?? { calendar: "gregorian", era: "CE", precision: "day" }}<div class="date-editor"><div class="date-fields"><label for={`create-${item.field.key}-year`}>Year<input id={`create-${item.field.key}-year`} aria-label={`${item.field.label} year`} type="number" min="1" value={date.year ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "year", (event.currentTarget as HTMLInputElement).value, 1)} /></label><label for={`create-${item.field.key}-month`}>Month<input id={`create-${item.field.key}-month`} aria-label={`${item.field.label} month`} type="number" min="1" max="12" value={date.month ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "month", (event.currentTarget as HTMLInputElement).value, 1, 12)} /></label><label for={`create-${item.field.key}-day`}>Day<input id={`create-${item.field.key}-day`} aria-label={`${item.field.label} day`} type="number" min="1" max="31" value={date.day ?? ""} onchange={(event) => updateCreateDatePart(item.field.key, "day", (event.currentTarget as HTMLInputElement).value, 1, 31)} /></label></div><small class="date-preview">{typeof date.year === "number" ? formatCalendarDate(date) : "Add a date"}</small><button class="date-clear" type="button" onclick={() => clearCreateDateField(item.field.key)}>Clear date</button></div>{:else}<button class="date-empty" type="button" onclick={() => openCreateDateEditor(item.field.key)}>Add a date</button>{/if}{/if}</div>{/each}{#if createOption.template.document}<label class="create-input-field" for="create-document"><span>Opening note</span><textarea id="create-document" rows="5" bind:value={createDocumentBody} placeholder="Add a first note or leave the template text as-is"></textarea></label>{/if}{:else}<div class="create-form-empty">Select a template to begin.</div>{/if}</section></div><div class="create-dialog-actions"><button type="button" class="quiet-button" onclick={closeCreateForm}>Cancel</button><button class="primary-button" type="submit" disabled={!name.trim() || !createOption}>Create {createOption?.template.name ?? "entry"}</button></div></form></div>{/if}
     {#if showDiscardPrompt}<div class="discard-backdrop"><div class="discard-dialog" role="alertdialog" aria-modal="true" aria-labelledby="discard-create-title"><span class="panel-kicker">UNSAVED VALUES</span><h2 id="discard-create-title">Discard this creation?</h2><p>Your entered values will be cleared. You can keep editing or start over with the new template.</p><div class="discard-actions"><button type="button" class="quiet-button" onclick={keepCreateEditing}>Keep editing</button><button type="button" class="primary-button" onclick={discardCreateValues}>Discard values</button></div></div></div>{/if}
     {#if upgradePreview}
       {@const preview = upgradePreview}
@@ -2246,7 +2434,7 @@
           {/if}
         </article>
 
-        {#if selected}<aside class="inspector-panel panel-surface"><div class="inspector-heading"><div><span class="panel-kicker">INSPECTOR</span><strong>Details</strong></div><span class="inspector-type">{selected.entity_type}</span></div><section class="inspector-section"><h3>Properties</h3>{#each definitions().filter((candidate) => candidate.type !== "relationship") as definition}<div class="property-field"><span>{definition.label}{#if definition.required}<b>*</b>{/if}</span>{#if definition.type === "date"}{#if dateForField(definition.key) || dateEditorOpen[definition.key]}{@const date = dateDraftForField(definition.key) ?? { calendar: "gregorian", era: "CE", precision: "day" }}<div class="date-editor"><div class="date-fields"><label for={`${definition.key}-year`}>Year<input id={`${definition.key}-year`} aria-label={`${definition.label} year`} type="number" min="1" value={date.year ?? ""} onchange={(event) => updateDatePart(definition.key, "year", (event.currentTarget as HTMLInputElement).value, 1)} /></label><label for={`${definition.key}-month`}>Month<input id={`${definition.key}-month`} aria-label={`${definition.label} month`} type="number" min="1" max="12" value={date.month ?? ""} onchange={(event) => updateDatePart(definition.key, "month", (event.currentTarget as HTMLInputElement).value, 1, 12)} /></label><label for={`${definition.key}-day`}>Day<input id={`${definition.key}-day`} aria-label={`${definition.label} day`} type="number" min="1" max="31" value={date.day ?? ""} onchange={(event) => updateDatePart(definition.key, "day", (event.currentTarget as HTMLInputElement).value, 1, 31)} /></label></div><small class="date-preview">{typeof date.year === "number" ? formatCalendarDate(date) : "Add a date"}</small><button class="date-clear" type="button" onclick={() => clearDateField(definition.key)}>Clear date</button></div>{:else}<button class="date-empty" type="button" onclick={() => openDateEditor(definition.key)}>Add a date</button>{/if}{:else}<input type="text" value={fields[definition.key] ?? ""} placeholder="Add {definition.label.toLowerCase()}" oninput={(event) => updateField(definition.key, event)} />{/if}</div>{/each}</section>{#each definitions().filter((candidate) => candidate.type === "relationship") as definition}<section class="inspector-section"><div class="section-title"><h3>{definition.label}</h3><span>{selectedRelationshipIds(definition).length}</span></div><RelationshipPicker field={definition} entities={entities} selectedIds={selectedRelationshipIds(definition)} onChange={(ids) => void updateRelationshipField(definition, ids)} /></section>{/each}<section class="inspector-section"><div class="section-title"><h3>Attachments</h3><span>{assets.length}</span></div><button class="drop-zone" type="button" onclick={attachAsset}><span>＋</span><strong>Attach a file</strong><small>Copied into this project</small></button>{#each assets as asset}<div class="asset-row"><span class="asset-icon">□</span><span><strong>{asset.filename}</strong><small>{Math.max(1, Math.round(asset.size / 1024))} KB</small></span></div>{/each}</section><section class="inspector-section map-contribution" aria-label="Maps contribution"><div class="section-title"><h3>Maps</h3><span>{mapLocations.length}</span></div><p>Shared locations remain on the entity even when Maps is disabled.</p><button class="quiet-button" type="button" onclick={() => void linkEntityToMap()}>＋ Link location</button>{#if mapLocations.length === 0}<small>No map links yet.</small>{:else}{#each mapLocations as location (location.id)}<div class="map-location-row"><div><strong>{location.label || location.role}</strong><small>{location.role} · {location.mapEntityId.slice(0, 8)}{#if location.resolution === "unresolved"} · <span class="map-unresolved-badge">Unresolved</span>{/if}</small></div><div>{#if location.resolution === "unresolved"}<span class="map-unresolved-note" title="The map feature this link pointed to was removed or renumbered.">Feature missing</span>{:else}<button class="quiet-button" type="button" onclick={() => void openMapLocation(location)}>Show on map</button>{/if}<button class="quiet-button" type="button" onclick={() => void editMapLocation(location)}>Edit</button><button class="quiet-button" type="button" onclick={() => void rebindMapLocation(location)}>Rebind</button><button class="quiet-button" type="button" onclick={() => void unlinkMapLocation(location)}>Unlink</button></div></div>{/each}{/if}</section></aside>{:else}<aside class="inspector-panel panel-surface inspector-empty"><span>INSPECTOR</span><p>Select an entry to see its properties, relationships, and attachments.</p></aside>{/if}
+        {#if selected}<aside class="inspector-panel panel-surface"><div class="inspector-heading"><div><span class="panel-kicker">INSPECTOR</span><strong>Details</strong></div><div class="inspector-heading-actions"><span class="inspector-type">{selected.entity_type}</span>{#if emptyInspectorDefinitions().length}<button class="inspector-ai-action" type="button" onclick={() => void fillAiFields()} disabled={aiFieldFillBusy}><span aria-hidden="true">✦</span>{aiFieldFillBusy ? "Finding…" : "Fill with AI"}</button>{/if}</div></div>{#if aiFieldFillOpen}<section class="inspector-ai-fill"><div class="inspector-ai-fill-heading"><strong>{aiFieldFillBusy ? "Finding field suggestions…" : "Review field suggestions"}</strong><button class="quiet-button" type="button" onclick={closeAiFieldFill}>Close</button></div>{#if aiFieldFillBusy}<p>Using this entry and related project context.</p>{:else if Object.keys(aiFieldSuggestions).length === 0}<p>No suggestions are available.</p>{:else}{#each Object.entries(aiFieldSuggestions) as [key, suggestion]}{@const definition = definitions().find((candidate) => candidate.key === key)}<div class="inspector-ai-suggestion"><div><strong>{definition?.label ?? key}</strong><span>{suggestionDisplayValue(key, suggestion)}</span><small>{suggestion.rationale} · {suggestion.confidence} confidence</small></div><div><button class="quiet-button" type="button" onclick={() => acceptAiFieldSuggestion(key)}>Accept</button><button class="quiet-button" type="button" onclick={() => discardAiFieldSuggestion(key)}>Discard</button></div></div>{/each}{/if}</section>{/if}<section class="inspector-section"><h3>Properties</h3>{#each definitions().filter((candidate) => candidate.type !== "relationship") as definition}<div class="property-field"><span>{definition.label}{#if definition.required}<b>*</b>{/if}</span>{#if definition.type === "date"}{#if dateForField(definition.key) || dateEditorOpen[definition.key]}{@const date = dateDraftForField(definition.key) ?? { calendar: "gregorian", era: "CE", precision: "day" }}<div class="date-editor"><div class="date-fields"><label for={`${definition.key}-year`}>Year<input id={`${definition.key}-year`} aria-label={`${definition.label} year`} type="number" min="1" value={date.year ?? ""} onchange={(event) => updateDatePart(definition.key, "year", (event.currentTarget as HTMLInputElement).value, 1)} /></label><label for={`${definition.key}-month`}>Month<input id={`${definition.key}-month`} aria-label={`${definition.label} month`} type="number" min="1" max="12" value={date.month ?? ""} onchange={(event) => updateDatePart(definition.key, "month", (event.currentTarget as HTMLInputElement).value, 1, 12)} /></label><label for={`${definition.key}-day`}>Day<input id={`${definition.key}-day`} aria-label={`${definition.label} day`} type="number" min="1" max="31" value={date.day ?? ""} onchange={(event) => updateDatePart(definition.key, "day", (event.currentTarget as HTMLInputElement).value, 1, 31)} /></label></div><small class="date-preview">{typeof date.year === "number" ? formatCalendarDate(date) : "Add a date"}</small><button class="date-clear" type="button" onclick={() => clearDateField(definition.key)}>Clear date</button></div>{:else}<button class="date-empty" type="button" onclick={() => openDateEditor(definition.key)}>Add a date</button>{/if}{:else if definition.type === "enum" && definition.options?.length}<select aria-label={definition.label} multiple={definition.multiple ?? false} value={definition.multiple ? (Array.isArray(fields[definition.key]) ? fields[definition.key] : []) : String(fields[definition.key] ?? "")} onchange={(event) => updateField(definition.key, event)}>{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}</select>{:else}<input type="text" value={fieldDisplayValue(fields[definition.key])} placeholder="Add {definition.label.toLowerCase()}" oninput={(event) => updateField(definition.key, event)} />{/if}</div>{/each}</section>{#each definitions().filter((candidate) => candidate.type === "relationship") as definition}<section class="inspector-section"><div class="section-title"><h3>{definition.label}</h3><span>{selectedRelationshipIds(definition).length}</span></div><RelationshipPicker field={definition} entities={entities} selectedIds={selectedRelationshipIds(definition)} onChange={(ids) => void updateRelationshipField(definition, ids)} /></section>{/each}<section class="inspector-section"><div class="section-title"><h3>Attachments</h3><span>{assets.length}</span></div><button class="drop-zone" type="button" onclick={attachAsset}><span>＋</span><strong>Attach a file</strong><small>Copied into this project</small></button>{#each assets as asset}<div class="asset-row"><span class="asset-icon">□</span><span><strong>{asset.filename}</strong><small>{Math.max(1, Math.round(asset.size / 1024))} KB</small></span></div>{/each}</section><section class="inspector-section map-contribution" aria-label="Maps contribution"><div class="section-title"><h3>Maps</h3><span>{mapLocations.length}</span></div><p>Shared locations remain on the entity even when Maps is disabled.</p><button class="quiet-button" type="button" onclick={() => void linkEntityToMap()}>＋ Link location</button>{#if mapLocations.length === 0}<small>No map links yet.</small>{:else}{#each mapLocations as location (location.id)}<div class="map-location-row"><div><strong>{location.label || location.role}</strong><small>{location.role} · {location.mapEntityId.slice(0, 8)}{#if location.resolution === "unresolved"} · <span class="map-unresolved-badge">Unresolved</span>{/if}</small></div><div>{#if location.resolution === "unresolved"}<span class="map-unresolved-note" title="The map feature this link pointed to was removed or renumbered.">Feature missing</span>{:else}<button class="quiet-button" type="button" onclick={() => void openMapLocation(location)}>Show on map</button>{/if}<button class="quiet-button" type="button" onclick={() => void editMapLocation(location)}>Edit</button><button class="quiet-button" type="button" onclick={() => void rebindMapLocation(location)}>Rebind</button><button class="quiet-button" type="button" onclick={() => void unlinkMapLocation(location)}>Unlink</button></div></div>{/each}{/if}</section></aside>{:else}<aside class="inspector-panel panel-surface inspector-empty"><span>INSPECTOR</span><p>Select an entry to see its properties, relationships, and attachments.</p></aside>{/if}
       </section>
     {/if}
     {#if error}<div class="toast" role="alert" aria-live="assertive">{error}<button aria-label="Dismiss" onclick={() => error = ""}>×</button></div>{/if}
@@ -2285,6 +2473,7 @@
   .ai-diff-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   @media (max-width: 620px) { .ai-diff-grid { grid-template-columns: 1fr; } }
   @media (max-width: 760px) { .map-conflict-banner { align-items: flex-start; flex-direction: column; } } .editor-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 14px; color: var(--ink-faint); font-size: 11px; } .editor-footer div { display: flex; gap: 4px; } .editor-empty { display: grid; place-items: center; min-height: 500px; padding: 30px; text-align: center; } .empty-mark, .disabled-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 16px; background: #f2e4d2; color: var(--accent); font-size: 23px; } .editor-empty h3 { margin: 18px 0 6px; font: 500 23px var(--font-display); } .editor-empty p { max-width: 280px; margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
+  .inspector-heading-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; } .inspector-ai-action { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; border: 1px solid #d9b98f; border-radius: 5px; background: #fff8ed; color: var(--accent); font-size: 9px; font-weight: 700; cursor: pointer; } .inspector-ai-action:disabled { opacity: .65; cursor: wait; } .inspector-ai-action span { font-size: 10px; } .inspector-ai-fill { padding: 12px 16px; border-bottom: 1px solid var(--line); background: #fff8ed; } .inspector-ai-fill-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; } .inspector-ai-fill-heading strong { color: var(--ink); font-size: 11px; } .inspector-ai-fill p { margin: 8px 0 0; color: var(--ink-soft); font-size: 10px; line-height: 1.45; } .inspector-ai-suggestion { display: grid; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #ead7c2; } .inspector-ai-suggestion strong, .inspector-ai-suggestion span, .inspector-ai-suggestion small { display: block; } .inspector-ai-suggestion strong { color: var(--ink-soft); font-size: 10px; } .inspector-ai-suggestion span { margin-top: 4px; color: var(--ink); font-size: 11px; line-height: 1.45; } .inspector-ai-suggestion small { margin-top: 4px; color: var(--ink-faint); font-size: 9px; line-height: 1.4; } .inspector-ai-suggestion > div:last-child { display: flex; gap: 6px; }
   .date-editor { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fcf8f1; } .date-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; } .date-fields label { display: grid; gap: 4px; color: var(--ink-faint); font-size: 9px; font-weight: 700; text-transform: uppercase; } .date-fields input { min-width: 0; width: 100%; padding: 8px 6px; border: 1px solid var(--line); border-radius: 7px; background: var(--canvas); color: var(--ink); font-size: 11px; } .date-fields input:focus { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180,119,63,.1); outline: 0; } .date-preview { color: var(--accent); font-size: 10px; font-weight: 700; } .date-clear, .date-empty { width: fit-content; padding: 0; border: 0; background: transparent; color: var(--ink-faint); font-size: 10px; cursor: pointer; } .date-empty { padding: 8px 10px; border: 1px dashed #d3c0a9; border-radius: 7px; color: var(--accent); } .inspector-heading { border-bottom: 1px solid var(--line); } .inspector-heading strong { display: block; margin-top: 7px; font: 500 20px var(--font-display); } .inspector-type { padding: 4px 7px; border-radius: 5px; background: #f2e4d2; color: var(--accent); font-size: 9px; font-weight: 800; text-transform: uppercase; } .inspector-section { padding: 18px 16px; border-bottom: 1px solid var(--line); } .inspector-section h3, .section-title h3 { margin: 0; color: var(--ink-soft); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; } .property-field { display: block; margin-top: 14px; } .property-field span { display: block; margin-bottom: 5px; color: var(--ink-soft); font-size: 10px; } .property-field b { margin-left: 3px; color: var(--accent); } .property-field input { width: 100%; padding: 8px 9px; border: 1px solid var(--line); border-radius: 7px; outline: 0; background: var(--canvas); color: var(--ink); font-size: 11px; } .property-field input:focus { border-color: #c99965; box-shadow: 0 0 0 3px rgba(180,119,63,.1); } .section-title { display: flex; align-items: center; justify-content: space-between; } .section-title span { color: var(--ink-faint); font-size: 11px; } .asset-row strong, .asset-row small { display: block; } .asset-row strong { font-size: 10px; } .asset-row small { margin-top: 3px; color: var(--ink-faint); font-size: 9px; } .drop-zone { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 12px; padding: 16px 8px; border: 1px dashed #d3c0a9; border-radius: 8px; background: #fcf8f1; color: var(--accent); text-align: center; cursor: pointer; } .drop-zone span { font-size: 22px; } .drop-zone strong { color: var(--ink-soft); font-size: 10px; } .drop-zone small { color: var(--ink-faint); font-size: 9px; } .asset-row { display: flex; align-items: center; gap: 8px; margin-top: 9px; } .asset-icon { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 6px; background: #ede9e0; color: var(--accent); }
   .map-contribution p { margin: 9px 0 10px; color: var(--ink-soft); font-size: 10px; line-height: 1.5; }
   .map-contribution > .quiet-button { margin: 0 0 8px; padding: 6px 8px; border: 1px solid #d9cdbd; border-radius: 7px; background: #fcf8f1; font-size: 10px; }

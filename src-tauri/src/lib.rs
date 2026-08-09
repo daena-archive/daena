@@ -5514,6 +5514,7 @@ pub fn run() {
             ai::ai_index_cancel,
             ai::ai_index_search,
             ai::ai_generate_text,
+            ai::ai_generate_structured,
             ai::ai_cancel_text,
             ai::ai_poll_text,
             git_tool_info,

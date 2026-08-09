@@ -691,7 +691,7 @@ pub fn build_retrieval_context(
     }
     let mut passages = Vec::new();
     let mut retrieved_document_ids = HashSet::new();
-    if matches!(mode, RetrievalMode::Project) {
+    if matches!(mode, RetrievalMode::Project | RetrievalMode::Related) {
         if let Some(query) = payload
             .query
             .as_deref()
@@ -703,6 +703,8 @@ pub fn build_retrieval_context(
             {
                 if !source_allowed(&policy, &passage.source_kind)
                     || passage.source_kind != "document"
+                    || (matches!(mode, RetrievalMode::Related)
+                        && !entity_ids.contains(&passage.entity_id))
                 {
                     continue;
                 }
@@ -815,6 +817,47 @@ pub fn build_retrieval_context(
         daena_ai::render_context_blocks(&built),
         built.blocks.into_iter().map(|block| block.source).collect(),
     ))
+}
+
+async fn direct_retrieval_context(
+    core: State<'_, crate::SharedCore>,
+    entity_id: Option<String>,
+    query: Option<String>,
+) -> Result<(String, Vec<SourceRef>), String> {
+    let entity_id = entity_id.filter(|id| !id.trim().is_empty());
+    let has_query = query
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    if entity_id.is_none() && !has_query {
+        return Ok((String::new(), Vec::new()));
+    }
+    let related = entity_id.is_some();
+    let caller = AiCaller::trusted_shell("trusted-shell", "pending");
+    let policy = AiRetrievalPolicyPayload {
+        mode: if related {
+            AiRetrievalMode::Related
+        } else {
+            AiRetrievalMode::Project
+        },
+        query,
+        seed_ids: entity_id.into_iter().collect(),
+        allowed_source_kinds: Vec::new(),
+        relationship_depth: if related { 1 } else { 0 },
+        passage_count: 8,
+        include_shared_fields: true,
+    };
+    crate::with_read_project(core, move |project| {
+        build_retrieval_context(project, &caller, &policy).map_err(CoreError::Conflict)
+    })
+    .await
+}
+
+fn append_retrieved_context(selection: String, retrieved_context: String) -> String {
+    if retrieved_context.is_empty() {
+        selection
+    } else {
+        format!("{selection}\n\n[RETRIEVED_CONTEXT]\n{retrieved_context}\n[/RETRIEVED_CONTEXT]")
+    }
 }
 
 struct LocalEndpoint {
@@ -1018,8 +1061,9 @@ pub fn ai_remote_set_consent(
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn ai_generate_remote_text(
+pub async fn ai_generate_remote_text(
     app: AppHandle,
+    core: State<'_, crate::SharedCore>,
     runtime: State<'_, SharedAiRuntime>,
     settings: State<'_, Arc<Mutex<SettingsStore>>>,
     project_id: String,
@@ -1028,6 +1072,9 @@ pub fn ai_generate_remote_text(
     model: String,
     instruction: String,
     selection: String,
+    entity_id: Option<String>,
+    retrieval_query: Option<String>,
+    include_retrieval: bool,
 ) -> Result<String, String> {
     validate_remote_endpoint(&endpoint)?;
     let configured = settings
@@ -1039,6 +1086,11 @@ pub fn ai_generate_remote_text(
     }
     let api_key =
         read_remote_api_key(&provider)?.ok_or_else(|| AiError::AuthenticationFailed.to_string())?;
+    let (retrieved_context, citations) = if include_retrieval {
+        direct_retrieval_context(core, entity_id, retrieval_query).await?
+    } else {
+        (String::new(), Vec::new())
+    };
     start_ai_request_mode(
         Some(app),
         runtime.inner().clone(),
@@ -1046,10 +1098,10 @@ pub fn ai_generate_remote_text(
         endpoint,
         model,
         instruction,
-        selection,
+        append_retrieved_context(selection, retrieved_context),
         None,
         DEFAULT_LIMITS.default_deadline,
-        Vec::new(),
+        citations,
         true,
         Some(api_key),
     )
@@ -1503,14 +1555,23 @@ pub async fn ai_local_models(endpoint: String) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-pub fn ai_generate_text(
+pub async fn ai_generate_text(
     app: AppHandle,
+    core: State<'_, crate::SharedCore>,
     runtime: State<'_, SharedAiRuntime>,
     endpoint: String,
     model: String,
     instruction: String,
     selection: String,
+    entity_id: Option<String>,
+    retrieval_query: Option<String>,
+    include_retrieval: bool,
 ) -> Result<String, String> {
+    let (retrieved_context, citations) = if include_retrieval {
+        direct_retrieval_context(core, entity_id, retrieval_query).await?
+    } else {
+        (String::new(), Vec::new())
+    };
     start_ai_request(
         Some(app),
         runtime.inner().clone(),
@@ -1518,10 +1579,45 @@ pub fn ai_generate_text(
         endpoint,
         model,
         instruction,
-        selection,
+        append_retrieved_context(selection, retrieved_context),
         None,
         DEFAULT_LIMITS.default_deadline,
-        Vec::new(),
+        citations,
+    )
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn ai_generate_structured(
+    app: AppHandle,
+    core: State<'_, crate::SharedCore>,
+    runtime: State<'_, SharedAiRuntime>,
+    endpoint: String,
+    model: String,
+    instruction: String,
+    context: String,
+    output_contract: serde_json::Value,
+    entity_id: Option<String>,
+    retrieval_query: Option<String>,
+    include_retrieval: bool,
+) -> Result<String, String> {
+    let (retrieved_context, citations) = if include_retrieval {
+        direct_retrieval_context(core, entity_id, retrieval_query).await?
+    } else {
+        (String::new(), Vec::new())
+    };
+    validate_structured_schema(&output_contract)?;
+    start_ai_request(
+        Some(app),
+        runtime.inner().clone(),
+        daena_ai::AiCaller::trusted_shell("trusted-shell", "pending"),
+        endpoint,
+        model,
+        instruction,
+        append_retrieved_context(context, retrieved_context),
+        Some(output_contract),
+        DEFAULT_LIMITS.default_deadline,
+        citations,
     )
 }
 

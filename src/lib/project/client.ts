@@ -291,15 +291,17 @@ export const project = {
   aiRemoteImportCredential: (provider: string) => invoke<RemoteCredentialStatus>("ai_remote_import_credential", { provider }),
   aiRemoteSetConsent: (projectId: string, provider: string, endpoint: string, allowed: boolean) =>
     invoke<void>("ai_remote_set_consent", { projectId, provider, endpoint, allowed }),
-  aiGenerateRemoteText: (projectId: string, provider: string, endpoint: string, model: string, instruction: string, selection: string) =>
-    invoke<string>("ai_generate_remote_text", { projectId, provider, endpoint, model, instruction, selection }),
+  aiGenerateRemoteText: (projectId: string, provider: string, endpoint: string, model: string, instruction: string, selection: string, entityId?: string, retrievalQuery?: string) =>
+    invoke<string>("ai_generate_remote_text", { projectId, provider, endpoint, model, instruction, selection, entityId, retrievalQuery, includeRetrieval: true }),
   aiIndexStatus: () => invoke<AiIndexStatus>("ai_index_status"),
   aiIndexRebuild: (endpoint: string, model: string) => invoke<AiIndexRebuildResult>("ai_index_rebuild", { endpoint, model }),
   aiIndexCancel: () => invoke<void>("ai_index_cancel"),
   aiIndexSearch: (endpoint: string, model: string, query: string, limit = 8) =>
     invoke<AiHybridMatch[]>("ai_index_search", { endpoint, model, query, limit }),
-  aiGenerateText: (endpoint: string, model: string, instruction: string, selection: string) =>
-    invoke<string>("ai_generate_text", { endpoint, model, instruction, selection }),
+  aiGenerateText: (endpoint: string, model: string, instruction: string, selection: string, entityId?: string, retrievalQuery?: string) =>
+    invoke<string>("ai_generate_text", { endpoint, model, instruction, selection, entityId, retrievalQuery, includeRetrieval: true }),
+  aiGenerateStructured: (endpoint: string, model: string, instruction: string, context: string, outputContract: Record<string, unknown>, entityId?: string, retrievalQuery?: string) =>
+    invoke<string>("ai_generate_structured", { endpoint, model, instruction, context, outputContract, entityId, retrievalQuery, includeRetrieval: true }),
   aiCancelText: (requestId: string) => invoke<void>("ai_cancel_text", { requestId }),
   aiPollText: (requestId: string) => invoke<AiStreamEvent[]>("ai_poll_text", { requestId }),
 };

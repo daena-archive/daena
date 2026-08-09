@@ -387,6 +387,78 @@ fn retrieval_context_is_provenance_bearing_and_denies_missing_data_grants() {
 }
 
 #[test]
+fn related_retrieval_limits_lexical_matches_to_the_entity_neighborhood() {
+    let project = ProjectStore::in_memory().unwrap();
+    let seed = project
+        .create_entity(CreateEntity {
+            name: "John".into(),
+            entity_type: Some("person".into()),
+        })
+        .unwrap();
+    let related = project
+        .create_entity(CreateEntity {
+            name: "Mars".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    let unrelated = project
+        .create_entity(CreateEntity {
+            name: "Venus".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    project
+        .create_relationship(RelationshipInput {
+            source_id: seed.id.clone(),
+            target_id: related.id.clone(),
+            relationship_type: "lives_on".into(),
+            metadata: None,
+        })
+        .unwrap();
+    project
+        .save_document(SaveDocument {
+            entity_id: related.id.clone(),
+            body: "Many Mars residents are farmers.".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    project
+        .save_document(SaveDocument {
+            entity_id: unrelated.id,
+            body: "Many Venus residents are farmers.".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+
+    let caller = daena_ai::AiCaller::authorized_plugin(
+        "daena.lore",
+        "project",
+        vec![
+            "document.read".into(),
+            "search.query".into(),
+            "relationship.read".into(),
+        ],
+        vec!["project:project".into()],
+        1,
+        "related-query",
+    );
+    let policy = daena_plugin_api::AiRetrievalPolicyPayload {
+        mode: daena_plugin_api::AiRetrievalMode::Related,
+        query: Some("farmers".into()),
+        seed_ids: vec![seed.id],
+        allowed_source_kinds: vec!["document".into()],
+        relationship_depth: 1,
+        passage_count: 8,
+        include_shared_fields: false,
+    };
+    let (context, citations) = ai::build_retrieval_context(&project, &caller, &policy).unwrap();
+    assert!(context.contains("Many Mars residents are farmers."));
+    assert!(!context.contains("Many Venus residents are farmers."));
+    assert_eq!(citations.len(), 1);
+    assert_eq!(citations[0].entity_id.as_deref(), Some(related.id.as_str()));
+}
+
+#[test]
 fn broker_retrieval_attaches_citations_until_inspected() {
     let core = new_shared_core();
     current_session(&core)

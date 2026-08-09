@@ -242,6 +242,9 @@ pub struct FieldDefinition {
     /// but remains writable only by the namespace owner.
     #[serde(default)]
     pub shared: bool,
+    /// An enum field with multiple enabled values is stored as a string array.
+    #[serde(default)]
+    pub multiple: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

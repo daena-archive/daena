@@ -42,6 +42,12 @@ fn directory_session_lock_rejects_second_writer_and_reclaims_dead_owner() {
         Err(CoreError::Conflict(message)) if message.contains("already open")
     ));
     drop(first);
+    std::fs::write(root.join(".daena/project.lock"), b"").unwrap();
+    assert!(matches!(
+        ProjectStore::open_directory(&root),
+        Err(CoreError::Conflict(message)) if message.contains("already open")
+    ));
+    std::fs::remove_file(root.join(".daena/project.lock")).unwrap();
     std::fs::write(
         root.join(".daena/project.lock"),
         format!("{}\ndead-owner\n", i32::MAX),
@@ -91,7 +97,7 @@ fn fresh_runtime_starts_with_checkpoint_generation_metadata() {
             },
         )
         .unwrap();
-    assert_eq!(metadata.0, 3);
+    assert_eq!(metadata.0, 4);
     assert_eq!(metadata.1, 3);
     assert_eq!(metadata.2, 0);
     assert_eq!(metadata.3, 0);
@@ -198,6 +204,76 @@ fn checkpoint_handle_flushes_without_borrowing_the_live_store() {
     assert_eq!(checkpoint.content_generation, generation);
 
     drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn concurrent_checkpoint_handles_share_the_export_worker() {
+    let root = std::env::temp_dir().join(format!("daena-checkpoint-race-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    store
+        .create_entity(CreateEntity {
+            name: "Concurrent barrier".into(),
+            entity_type: None,
+        })
+        .unwrap();
+
+    let first = store.checkpoint_handle().unwrap();
+    let second = store.checkpoint_handle().unwrap();
+    let first = std::thread::spawn(move || first.flush_checkpoint("first concurrent barrier"));
+    let second = std::thread::spawn(move || second.flush_checkpoint("second concurrent barrier"));
+    assert!(first.join().unwrap().is_ok());
+    assert!(second.join().unwrap().is_ok());
+    assert_eq!(store.sync_summary().unwrap().state, "clean");
+
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn runtime_asset_bytes_survive_an_interrupted_export() {
+    let root = std::env::temp_dir().join(format!("daena-runtime-asset-{}", Uuid::new_v4()));
+    let source = std::env::temp_dir().join(format!("daena-asset-source-{}", Uuid::new_v4()));
+    std::fs::write(&source, b"durable runtime asset").unwrap();
+
+    let mut store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Asset owner".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    store
+        .export_worker
+        .take()
+        .unwrap()
+        .stop_without_drain()
+        .unwrap();
+    store.suppress_sync.set(true);
+    let asset = store
+        .register_asset_file(AssetFileInput {
+            entity_id: entity.id,
+            namespace: "lore".into(),
+            source_path: source.to_string_lossy().into_owned(),
+            filename: "durable.bin".into(),
+            mime_type: "application/octet-stream".into(),
+        })
+        .unwrap();
+    assert!(!root.join(&asset.path).exists());
+    drop(store);
+    std::fs::remove_file(&source).unwrap();
+
+    let reopened = ProjectStore::open_directory(&root).unwrap();
+    reopened
+        .flush_checkpoint("recover interrupted asset export")
+        .unwrap();
+    assert_eq!(
+        std::fs::read(root.join(&asset.path)).unwrap(),
+        b"durable runtime asset"
+    );
+    assert_eq!(reopened.sync_summary().unwrap().state, "clean");
+
+    drop(reopened);
     std::fs::remove_dir_all(root).unwrap();
 }
 

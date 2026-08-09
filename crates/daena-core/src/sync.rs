@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
 const CHECKPOINT_ROOT: &str = ".daena/checkpoints";
@@ -414,14 +415,18 @@ fn sync_directory(path: &Path) -> Result<(), CoreError> {
 
 fn lock_is_stale(path: &Path) -> bool {
     let Ok(contents) = fs::read_to_string(path) else {
-        return true;
+        return false;
     };
     let Some(pid) = contents
         .lines()
         .next()
         .and_then(|value| value.parse::<i32>().ok())
     else {
-        return true;
+        return fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .is_some_and(|age| age >= Duration::from_secs(30));
     };
     if pid == std::process::id() as i32 {
         return false;

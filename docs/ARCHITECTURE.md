@@ -122,6 +122,7 @@ plugins/<plugin-id>.json
 assets/{images,videos,maps,files}/
 .daena/
   index.sqlite                 # authoritative runtime database
+  assets/                      # content-addressed authoritative asset bytes
   checkpoints/                 # exporter staging
   project.lock  export.lock
   backups/ local/

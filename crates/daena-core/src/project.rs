@@ -4,9 +4,11 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::OpenOptions;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -353,8 +355,131 @@ fn project_database_path(root: &Path) -> PathBuf {
     root.join(".daena/index.sqlite")
 }
 
+fn runtime_asset_path(root: &Path, content_hash: &str) -> Result<PathBuf, CoreError> {
+    let digest = content_hash
+        .strip_prefix("sha256:")
+        .ok_or_else(|| CoreError::Validation("asset content hash must use sha256".into()))?;
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(CoreError::Validation(
+            "asset content hash must contain a 64-character SHA-256 digest".into(),
+        ));
+    }
+    Ok(root.join(".daena/assets").join(digest.to_ascii_lowercase()))
+}
+
+fn store_runtime_asset<R: Read>(
+    root: &Path,
+    mut input: R,
+    expected_hash: Option<&str>,
+) -> Result<(String, i64), CoreError> {
+    let directory = root.join(".daena/assets");
+    std::fs::create_dir_all(&directory).map_err(|source| CoreError::Io {
+        operation: "create runtime asset directory",
+        source,
+    })?;
+    let temporary = directory.join(format!(".tmp-{}", Uuid::new_v4()));
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|source| CoreError::Io {
+            operation: "create runtime asset staging file",
+            source,
+        })?;
+    let result = (|| {
+        let mut digest = Sha256::new();
+        let mut buffer = [0_u8; 128 * 1024];
+        let mut size = 0_i64;
+        loop {
+            let count = input.read(&mut buffer).map_err(|source| CoreError::Io {
+                operation: "read runtime asset input",
+                source,
+            })?;
+            if count == 0 {
+                break;
+            }
+            output
+                .write_all(&buffer[..count])
+                .map_err(|source| CoreError::Io {
+                    operation: "write runtime asset staging file",
+                    source,
+                })?;
+            digest.update(&buffer[..count]);
+            size = size
+                .checked_add(count as i64)
+                .ok_or_else(|| CoreError::Validation("asset is too large".into()))?;
+        }
+        output.sync_all().map_err(|source| CoreError::Io {
+            operation: "sync runtime asset staging file",
+            source,
+        })?;
+        let content_hash = format!("sha256:{:x}", digest.finalize());
+        if expected_hash.is_some_and(|expected| expected != content_hash) {
+            return Err(CoreError::Validation(
+                "asset bytes do not match the declared content hash".into(),
+            ));
+        }
+        let destination = runtime_asset_path(root, &content_hash)?;
+        if destination.is_file() {
+            let (existing_hash, existing_size) = streamed_file_digest(&destination)?;
+            if existing_hash != content_hash || existing_size != size {
+                return Err(CoreError::Conflict(
+                    "runtime asset store contains corrupted bytes".into(),
+                ));
+            }
+            std::fs::remove_file(&temporary).map_err(|source| CoreError::Io {
+                operation: "remove duplicate runtime asset staging file",
+                source,
+            })?;
+        } else {
+            std::fs::rename(&temporary, &destination).map_err(|source| CoreError::Io {
+                operation: "install runtime asset",
+                source,
+            })?;
+        }
+        Ok((content_hash, size))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn store_runtime_asset_file(
+    root: &Path,
+    source: &Path,
+    expected_hash: Option<&str>,
+) -> Result<(String, i64), CoreError> {
+    let input = std::fs::File::open(source).map_err(|source| CoreError::Io {
+        operation: "open runtime asset input",
+        source,
+    })?;
+    store_runtime_asset(root, input, expected_hash)
+}
+
+fn ensure_runtime_asset(
+    root: &Path,
+    portable_path: &str,
+    content_hash: &str,
+    size: i64,
+) -> Result<(), CoreError> {
+    let runtime_path = runtime_asset_path(root, content_hash)?;
+    let (actual_hash, actual_size) = if runtime_path.is_file() {
+        streamed_file_digest(&runtime_path)?
+    } else {
+        let source = crate::storage::normalized_project_path(root, portable_path)?;
+        store_runtime_asset_file(root, &source, Some(content_hash))?
+    };
+    if actual_hash != content_hash || actual_size != size {
+        return Err(CoreError::Validation(format!(
+            "asset bytes do not match metadata for {portable_path}"
+        )));
+    }
+    Ok(())
+}
+
 const RUNTIME_STORAGE_ROLE: &str = "daena.runtime";
-const RUNTIME_SCHEMA_VERSION: i64 = 3;
+const RUNTIME_SCHEMA_VERSION: i64 = 4;
 const EXPORTER_CONTRACT_VERSION: &str = "2";
 
 fn reset_required_error() -> CoreError {
@@ -366,7 +491,6 @@ fn reset_required_error() -> CoreError {
 pub struct ProjectStore {
     connection: Connection,
     root: Option<PathBuf>,
-    pending_asset_imports: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
     suppress_sync: Cell<bool>,
     _session_lock: Option<crate::sync::ProjectSessionLock>,
     export_worker: Option<ExportWorker>,
@@ -375,14 +499,12 @@ pub struct ProjectStore {
 pub struct CheckpointHandle {
     root: PathBuf,
     database: PathBuf,
-    pending_asset_imports: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
     export_sender: Option<mpsc::Sender<ExportWorkerCommand>>,
 }
 
 enum ExportWorkerCommand {
     Wake,
-    Synchronize(mpsc::Sender<Result<(), CoreError>>),
-    Flush(mpsc::Sender<Result<(), CoreError>>),
+    Flush(String, mpsc::Sender<Result<Generation, CoreError>>),
     StopWithoutDrain(mpsc::Sender<Result<(), CoreError>>),
     Stop(mpsc::Sender<Result<(), CoreError>>),
 }
@@ -401,7 +523,7 @@ impl ExportWorker {
             .name("daena-export-worker".into())
             .spawn(move || {
                 while let Ok(command) = receiver.recv() {
-                    let export = || {
+                    let export = |reason: &str, force: bool| {
                         let worker_store = ProjectStore::open_database(
                             &database,
                             Some(root.clone()),
@@ -409,7 +531,11 @@ impl ExportWorker {
                             false,
                             false,
                         )?;
-                        worker_store.export_latest_generation()
+                        if force {
+                            worker_store.flush_checkpoint(reason)
+                        } else {
+                            worker_store.flush_checkpoint_if_dirty(reason)
+                        }
                     };
                     match command {
                         ExportWorkerCommand::Wake => {
@@ -418,16 +544,14 @@ impl ExportWorker {
                                 let remaining = deadline.saturating_duration_since(Instant::now());
                                 match receiver.recv_timeout(remaining) {
                                     Ok(ExportWorkerCommand::Wake) => continue,
-                                    Ok(ExportWorkerCommand::Synchronize(reply)) => {
-                                        let _ = reply.send(Ok(()));
-                                        break;
-                                    }
-                                    Ok(ExportWorkerCommand::Flush(reply)) => {
-                                        let _ = reply.send(export());
+                                    Ok(ExportWorkerCommand::Flush(reason, reply)) => {
+                                        let _ = reply.send(export(&reason, true));
                                         break;
                                     }
                                     Ok(ExportWorkerCommand::Stop(reply)) => {
-                                        let _ = reply.send(export());
+                                        let _ = reply.send(
+                                            export("project close checkpoint", false).map(|_| ()),
+                                        );
                                         return;
                                     }
                                     Ok(ExportWorkerCommand::StopWithoutDrain(reply)) => {
@@ -435,21 +559,19 @@ impl ExportWorker {
                                         return;
                                     }
                                     Err(mpsc::RecvTimeoutError::Timeout) => {
-                                        let _ = export();
+                                        let _ = export("background checkpoint export", false);
                                         break;
                                     }
                                     Err(mpsc::RecvTimeoutError::Disconnected) => return,
                                 }
                             }
                         }
-                        ExportWorkerCommand::Synchronize(reply) => {
-                            let _ = reply.send(Ok(()));
-                        }
-                        ExportWorkerCommand::Flush(reply) => {
-                            let _ = reply.send(export());
+                        ExportWorkerCommand::Flush(reason, reply) => {
+                            let _ = reply.send(export(&reason, true));
                         }
                         ExportWorkerCommand::Stop(reply) => {
-                            let _ = reply.send(export());
+                            let _ =
+                                reply.send(export("project close checkpoint", false).map(|_| ()));
                             break;
                         }
                         ExportWorkerCommand::StopWithoutDrain(reply) => {
@@ -473,24 +595,14 @@ impl ExportWorker {
         let _ = self.sender.send(ExportWorkerCommand::Wake);
     }
 
-    fn flush(&self) -> Result<(), CoreError> {
+    fn flush(&self, reason: String) -> Result<Generation, CoreError> {
         let (sender, receiver) = mpsc::channel();
         self.sender
-            .send(ExportWorkerCommand::Flush(sender))
+            .send(ExportWorkerCommand::Flush(reason, sender))
             .map_err(|_| CoreError::Conflict("export worker is not running".into()))?;
         receiver
             .recv()
             .map_err(|_| CoreError::Conflict("export worker stopped before flush".into()))?
-    }
-
-    fn synchronize(&self) -> Result<(), CoreError> {
-        let (sender, receiver) = mpsc::channel();
-        self.sender
-            .send(ExportWorkerCommand::Synchronize(sender))
-            .map_err(|_| CoreError::Conflict("export worker is not running".into()))?;
-        receiver
-            .recv()
-            .map_err(|_| CoreError::Conflict("export worker stopped before synchronize".into()))?
     }
 
     fn stop(mut self) -> Result<(), CoreError> {
@@ -532,26 +644,26 @@ impl ExportWorker {
 
 impl CheckpointHandle {
     pub fn flush_checkpoint(&self, reason: impl Into<String>) -> Result<Generation, CoreError> {
+        let reason = reason.into();
         if let Some(sender) = &self.export_sender {
-            synchronize_export_worker(sender)?;
+            return flush_export_worker(sender, reason);
         }
-        let store = ProjectStore::open_checkpoint_writer(
-            &self.database,
-            self.root.clone(),
-            self.pending_asset_imports.clone(),
-        )?;
+        let store = ProjectStore::open_checkpoint_writer(&self.database, self.root.clone())?;
         store.flush_checkpoint(reason)
     }
 }
 
-fn synchronize_export_worker(sender: &mpsc::Sender<ExportWorkerCommand>) -> Result<(), CoreError> {
+fn flush_export_worker(
+    sender: &mpsc::Sender<ExportWorkerCommand>,
+    reason: String,
+) -> Result<Generation, CoreError> {
     let (reply_sender, reply_receiver) = mpsc::channel();
     sender
-        .send(ExportWorkerCommand::Synchronize(reply_sender))
+        .send(ExportWorkerCommand::Flush(reason, reply_sender))
         .map_err(|_| CoreError::Conflict("export worker is not running".into()))?;
     reply_receiver
         .recv()
-        .map_err(|_| CoreError::Conflict("export worker stopped before synchronize".into()))?
+        .map_err(|_| CoreError::Conflict("export worker stopped before checkpoint flush".into()))?
 }
 
 impl Drop for ProjectStore {
@@ -579,7 +691,6 @@ impl ProjectStore {
         Ok(Self {
             connection,
             root: Some(root),
-            pending_asset_imports: Arc::new(Mutex::new(BTreeMap::new())),
             suppress_sync: Cell::new(true),
             _session_lock: None,
             export_worker: None,
@@ -593,7 +704,6 @@ impl ProjectStore {
         Ok(CheckpointHandle {
             database: project_database_path(&root),
             root,
-            pending_asset_imports: self.pending_asset_imports.clone(),
             export_sender: self
                 .export_worker
                 .as_ref()
@@ -604,11 +714,8 @@ impl ProjectStore {
     fn open_checkpoint_writer(
         database: impl AsRef<Path>,
         root: PathBuf,
-        pending_asset_imports: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
     ) -> Result<Self, CoreError> {
-        let mut store = Self::open_database(database, Some(root), None, false, false)?;
-        store.pending_asset_imports = pending_asset_imports;
-        Ok(store)
+        Self::open_database(database, Some(root), None, false, false)
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, CoreError> {
@@ -638,6 +745,7 @@ impl ProjectStore {
             "plugins",
             ".daena",
             ".daena/checkpoints",
+            ".daena/assets",
             ".daena/backups",
             ".daena/conflicts",
             ".daena/local",
@@ -774,6 +882,7 @@ impl ProjectStore {
         let connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(2))?;
         connection.pragma_update(None, "foreign_keys", true)?;
+        connection.pragma_update(None, "synchronous", "NORMAL")?;
         if existing_database {
             Self::validate_runtime_metadata(&connection, root.as_deref())?;
         }
@@ -788,12 +897,15 @@ impl ProjectStore {
         let mut store = Self {
             connection,
             root,
-            pending_asset_imports: Arc::new(Mutex::new(BTreeMap::new())),
             suppress_sync: Cell::new(false),
             _session_lock: session_lock,
             export_worker: None,
         };
-        store.initialize(!existing_database)?;
+        if !existing_database {
+            store.initialize(true)?;
+        } else if start_worker {
+            store.ensure_search_projection()?;
+        }
         if start_worker {
             if let Some(root) = store.root.as_deref() {
                 let worker = ExportWorker::start(root, path)?;
@@ -827,26 +939,19 @@ impl ProjectStore {
                 [],
                 |row| row.get(0),
             )?;
-            let snapshot = serde_json::from_str(&self.export_json_inner()?)
-                .map_err(|error| CoreError::Serialization(error.to_string()))?;
+            let snapshot = self.export_snapshot()?;
             Ok::<_, CoreError>((target_generation, snapshot))
         })();
         match export_result {
             Ok((target_generation, snapshot)) => {
                 self.connection.execute_batch("COMMIT")?;
-                let pending_assets = self
-                    .pending_asset_imports
-                    .lock()
-                    .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
-                    .clone();
-                self.export_complete_snapshot(root, &snapshot, &pending_assets, target_generation)?;
+                self.export_complete_snapshot(root, &snapshot, target_generation)?;
             }
             Err(error) => {
                 let _ = self.connection.execute_batch("ROLLBACK");
                 return Err(error);
             }
         }
-        self.rebuild_maps_projection()?;
         Ok(())
     }
 
@@ -914,56 +1019,34 @@ impl ProjectStore {
         }
     }
 
+    fn flush_checkpoint_if_dirty(
+        &self,
+        reason: impl Into<String>,
+    ) -> Result<Generation, CoreError> {
+        let (content, exported, failed): (Generation, Generation, bool) = self
+            .connection
+            .query_row(
+                "SELECT content_generation,exported_generation,export_error IS NOT NULL FROM runtime_meta WHERE key='runtime'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        if exported >= content && !failed {
+            return Ok(content);
+        }
+        self.flush_checkpoint(reason)
+    }
+
     fn flush_export(&self, reason: String) -> Result<(), CoreError> {
         if reason.trim().is_empty() {
             return Err(CoreError::Validation(
                 "checkpoint barrier operation reason cannot be empty".into(),
             ));
         }
-        let has_pending_assets = !self
-            .pending_asset_imports
-            .lock()
-            .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
-            .is_empty();
-        if has_pending_assets {
-            if let Some(worker) = &self.export_worker {
-                worker.synchronize()?;
-            }
-        }
-        let result = if has_pending_assets {
-            self.export_latest_generation()
-        } else if let Some(worker) = &self.export_worker {
-            worker.flush()
+        if let Some(worker) = &self.export_worker {
+            worker.flush(reason).map(|_| ())
         } else {
             self.export_latest_generation()
-        };
-        if result.is_ok() {
-            self.rebuild_maps_projection()?;
         }
-        result
-    }
-
-    fn ensure_schema_column(
-        &self,
-        table: &str,
-        column: &str,
-        definition: &str,
-    ) -> Result<(), CoreError> {
-        let exists: Option<String> = self
-            .connection
-            .query_row(
-                &format!("SELECT name FROM pragma_table_info('{table}') WHERE name=?1"),
-                params![column],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if exists.is_none() {
-            self.connection.execute(
-                &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
-                [],
-            )?;
-        }
-        Ok(())
     }
 
     fn validate_runtime_metadata(
@@ -1478,13 +1561,6 @@ impl ProjectStore {
             return Ok(());
         }
         if self.root.is_some() {
-            let pending_assets = self
-                .pending_asset_imports
-                .lock()
-                .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?;
-            if !pending_assets.is_empty() {
-                return Ok(());
-            }
             if self.export_worker.is_some() {
                 self.wake_export_worker();
             } else {
@@ -1543,7 +1619,6 @@ impl ProjectStore {
         &self,
         root: &Path,
         snapshot: &ProjectSnapshot,
-        pending_assets: &BTreeMap<String, Vec<u8>>,
         target_generation: Generation,
     ) -> Result<(), CoreError> {
         let manifest_path = root.join("project.json");
@@ -1570,35 +1645,29 @@ impl ProjectStore {
         }
         let mut current_sources = staged_canonical_sources(&staging_root, snapshot)?;
         let mut transaction_staged_paths = BTreeSet::new();
-        for (path, bytes) in pending_assets {
-            transaction.stage_bytes(path, bytes)?;
-            transaction_staged_paths.insert(path.clone());
-            current_sources.push(crate::storage::CanonicalSource {
-                path: path.clone(),
-                content_hash: format!("sha256:{:x}", Sha256::digest(bytes)),
-                format_version: crate::storage::PROJECT_FORMAT_VERSION,
-            });
-        }
+        let mut current_path_set = current_sources
+            .iter()
+            .map(|source| source.path.clone())
+            .collect::<BTreeSet<_>>();
         for asset in &snapshot.assets {
-            if current_sources
-                .iter()
-                .any(|source| source.path == asset.path)
-            {
+            if current_path_set.contains(&asset.path) {
                 continue;
             }
-            let source = crate::storage::normalized_project_path(root, &asset.path)?;
-            let content_hash = crate::sync::hash_path(root, &asset.path)?.ok_or_else(|| {
-                CoreError::NotFound(format!("asset bytes are missing at {}", asset.path))
-            })?;
-            transaction.stage_file_with_expected(
-                &asset.path,
-                &source,
-                Some(content_hash.clone()),
-            )?;
+            let source = runtime_asset_path(root, &asset.content_hash)?;
+            let (runtime_hash, runtime_size) = streamed_file_digest(&source)?;
+            if runtime_hash != asset.content_hash || runtime_size != asset.size {
+                return Err(CoreError::Conflict(format!(
+                    "runtime asset bytes do not match metadata for {}",
+                    asset.path
+                )));
+            }
+            let portable_hash = crate::sync::hash_path(root, &asset.path)?;
+            transaction.stage_file_with_expected(&asset.path, &source, portable_hash)?;
             transaction_staged_paths.insert(asset.path.clone());
+            current_path_set.insert(asset.path.clone());
             current_sources.push(crate::storage::CanonicalSource {
                 path: asset.path.clone(),
-                content_hash,
+                content_hash: runtime_hash,
                 format_version: crate::storage::PROJECT_FORMAT_VERSION,
             });
         }
@@ -1635,15 +1704,6 @@ impl ProjectStore {
         }
         transaction.commit(None::<&serde_json::Value>)?;
         self.install_checkpoint_manifest(root, target_generation)?;
-        if !pending_assets.is_empty() {
-            let mut pending = self
-                .pending_asset_imports
-                .lock()
-                .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?;
-            for path in pending_assets.keys() {
-                pending.remove(path);
-            }
-        }
         Ok(())
     }
 
@@ -2597,30 +2657,7 @@ impl ProjectStore {
              );
              CREATE INDEX IF NOT EXISTS entities_name_idx ON entities(name);
              CREATE INDEX IF NOT EXISTS relationships_source_idx ON relationships(source_id);
-             CREATE INDEX IF NOT EXISTS relationships_target_idx ON relationships(target_id);
-             DROP TABLE IF EXISTS source_files;"
-        )?;
-        self.ensure_schema_column(
-            "runtime_meta",
-            "content_generation",
-            "INTEGER NOT NULL DEFAULT 0",
-        )?;
-        self.ensure_schema_column(
-            "runtime_meta",
-            "exported_generation",
-            "INTEGER NOT NULL DEFAULT 0",
-        )?;
-        self.ensure_schema_column("runtime_meta", "checkpoint_digest", "TEXT")?;
-        self.ensure_schema_column("runtime_meta", "export_error", "TEXT")?;
-        self.ensure_schema_column(
-            "mutation_receipts",
-            "state",
-            "TEXT NOT NULL DEFAULT 'pending'",
-        )?;
-        self.ensure_schema_column(
-            "mutation_receipts",
-            "fingerprint",
-            "TEXT NOT NULL DEFAULT ''",
+             CREATE INDEX IF NOT EXISTS relationships_target_idx ON relationships(target_id);"
         )?;
         self.connection.execute_batch("CREATE TABLE IF NOT EXISTS module_versions(module_id TEXT PRIMARY KEY, version INTEGER NOT NULL DEFAULT 0);
               CREATE TABLE IF NOT EXISTS module_state(module_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1);
@@ -2685,6 +2722,15 @@ impl ProjectStore {
                 ],
             )?;
         }
+        if rebuild_derived {
+            self.rebuild_search()?;
+        } else {
+            self.ensure_search_projection()?;
+        }
+        Ok(())
+    }
+
+    fn ensure_search_projection(&self) -> Result<(), CoreError> {
         let search_table_exists: bool = self.connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='world_search')",
             [],
@@ -2696,7 +2742,7 @@ impl ProjectStore {
                 [],
                 |row| row.get(0),
             )?;
-        if rebuild_derived || search_missing {
+        if search_missing {
             self.rebuild_search()?;
         }
         Ok(())
@@ -2891,10 +2937,6 @@ impl ProjectStore {
 
     pub fn list_entities(&self) -> Result<Vec<Entity>, CoreError> {
         self.list_entities_where("WHERE deleted=0")
-    }
-
-    fn list_all_entities(&self) -> Result<Vec<Entity>, CoreError> {
-        self.list_entities_where("")
     }
 
     fn list_entities_where(&self, predicate: &str) -> Result<Vec<Entity>, CoreError> {
@@ -3603,19 +3645,86 @@ impl ProjectStore {
     }
 
     fn export_json_inner(&self) -> Result<String, CoreError> {
-        let entities = self.list_all_entities()?;
-        let mut documents = Vec::new();
-        let mut fields = Vec::new();
-        let mut assets = Vec::new();
-        let mut relationships = Vec::new();
-        for entity in &entities {
-            documents.extend(self.list_documents_unchecked(entity.id.clone())?);
-            fields.extend(self.list_fields_unchecked(entity.id.clone())?);
-            assets.extend(self.list_assets_unchecked(entity.id.clone())?);
-            relationships.extend(self.list_relationships_unchecked(entity.id.clone())?);
-        }
-        relationships.sort_by(|a, b| a.id.cmp(&b.id));
-        relationships.dedup_by(|a, b| a.id == b.id);
+        serde_json::to_string_pretty(&self.export_snapshot()?)
+            .map_err(|error| CoreError::Serialization(error.to_string()))
+    }
+
+    fn export_snapshot(&self) -> Result<ProjectSnapshot, CoreError> {
+        let entities = self
+            .connection
+            .prepare("SELECT id,name,entity_type,deleted,created_at,updated_at FROM entities ORDER BY name,id")?
+            .query_map([], |row| {
+                Ok(Entity {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    entity_type: row.get(2)?,
+                    deleted: row.get::<_, i64>(3)? != 0,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                    revision: String::new(),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let documents = self
+            .connection
+            .prepare("SELECT id,entity_id,format,body,updated_at FROM documents ORDER BY entity_id,updated_at DESC,id")?
+            .query_map([], |row| {
+                Ok(Document {
+                    id: row.get(0)?,
+                    entity_id: row.get(1)?,
+                    format: row.get(2)?,
+                    body: row.get(3)?,
+                    updated_at: row.get(4)?,
+                    revision: String::new(),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let fields = self
+            .connection
+            .prepare("SELECT entity_id,namespace,key,value FROM entity_fields ORDER BY entity_id,namespace,key")?
+            .query_map([], |row| {
+                let value: String = row.get(3)?;
+                Ok(FieldValue {
+                    entity_id: row.get(0)?,
+                    namespace: row.get(1)?,
+                    key: row.get(2)?,
+                    value: decode_field_value(value),
+                    revision: String::new(),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let relationships = self
+            .connection
+            .prepare("SELECT id,source_id,target_id,relationship_type,metadata FROM relationships ORDER BY id")?
+            .query_map([], |row| {
+                Ok(Relationship {
+                    id: row.get(0)?,
+                    source_id: row.get(1)?,
+                    target_id: row.get(2)?,
+                    relationship_type: row.get(3)?,
+                    metadata: row.get(4)?,
+                    revision: String::new(),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let assets = self
+            .connection
+            .prepare("SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets ORDER BY entity_id,created_at,id")?
+            .query_map([], |row| {
+                Ok(Asset {
+                    id: row.get(0)?,
+                    entity_id: row.get(1)?,
+                    namespace: row.get(2)?,
+                    filename: row.get(3)?,
+                    content_hash: row.get(4)?,
+                    size: row.get(5)?,
+                    mime_type: row.get(6)?,
+                    path: row.get(7)?,
+                    created_at: row.get(8)?,
+                    revision: String::new(),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
         let mut module_statement = self.connection.prepare("SELECT m.module_id, COALESCE(s.enabled, 1), m.version, p.package_version FROM module_versions m LEFT JOIN module_state s ON s.module_id = m.module_id LEFT JOIN module_package_versions p ON p.module_id = m.module_id ORDER BY m.module_id")?;
         let modules = module_statement
             .query_map([], |row| {
@@ -3667,7 +3776,7 @@ impl ProjectStore {
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        serde_json::to_string_pretty(&ProjectSnapshot {
+        Ok(ProjectSnapshot {
             format_version: current_snapshot_version(),
             entities,
             documents,
@@ -3679,7 +3788,6 @@ impl ProjectStore {
             module_fields,
             migration_history,
         })
-        .map_err(|error| CoreError::NotFound(error.to_string()))
     }
 
     #[allow(dead_code)]
@@ -3727,6 +3835,11 @@ impl ProjectStore {
                 "unsupported project snapshot version {}",
                 snapshot.format_version
             )));
+        }
+        if let Some(root) = self.root.as_deref() {
+            for asset in &snapshot.assets {
+                ensure_runtime_asset(root, &asset.path, &asset.content_hash, asset.size)?;
+            }
         }
         let mutation_request_id = if sync_canonical {
             Some(self.request_id(request_id)?)
@@ -3846,6 +3959,14 @@ impl ProjectStore {
             self.revision_for_entity(&input.entity_id)?,
             "asset entity",
         )?;
+        if input.size < 0 {
+            return Err(CoreError::Validation(
+                "asset size cannot be negative".into(),
+            ));
+        }
+        if let Some(root) = self.root.as_deref() {
+            ensure_runtime_asset(root, &input.path, &input.content_hash, input.size)?;
+        }
         let id = Uuid::new_v4().to_string();
         let now = chrono_like_now();
         let request_id = self.request_id(request_id)?;
@@ -3934,18 +4055,14 @@ impl ProjectStore {
         } else {
             "files"
         };
-        let (content_hash, size) = streamed_file_digest(source)?;
+        let (content_hash, size) = if let Some(root) = self.root.as_deref() {
+            store_runtime_asset_file(root, source, None)?
+        } else {
+            streamed_file_digest(source)?
+        };
         let relative_path = format!("assets/{category}/{}-{}", Uuid::new_v4(), filename);
         let request_id = self.request_id(request_id)?;
-        let bytes = std::fs::read(source).map_err(|error| CoreError::Io {
-            operation: "read asset source for checkpoint",
-            source: error,
-        })?;
-        self.pending_asset_imports
-            .lock()
-            .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
-            .insert(relative_path.clone(), bytes);
-        let result = self.register_asset_with_options(
+        self.register_asset_with_options(
             AssetInput {
                 entity_id: input.entity_id,
                 namespace: input.namespace,
@@ -3957,13 +4074,7 @@ impl ProjectStore {
             },
             expected_revision,
             Some(&request_id),
-        );
-        if result.is_err() {
-            if let Ok(mut pending) = self.pending_asset_imports.lock() {
-                pending.remove(&relative_path);
-            }
-        }
-        result
+        )
     }
 
     pub fn list_assets(&self, entity_id: String) -> Result<Vec<Asset>, CoreError> {
@@ -4034,10 +4145,14 @@ impl ProjectStore {
             ));
         }
         let request_id = self.request_id(request_id)?;
-        self.pending_asset_imports
-            .lock()
-            .map_err(|_| CoreError::Conflict("asset import state is poisoned".into()))?
-            .insert(asset.path.clone(), bytes);
+        if let Some(root) = self.root.as_deref() {
+            let (stored_hash, stored_size) = store_runtime_asset(root, bytes.as_slice(), None)?;
+            if stored_hash != input.content_hash || stored_size != input.size {
+                return Err(CoreError::Validation(
+                    "asset replacement bytes do not match metadata".into(),
+                ));
+            }
+        }
         let transaction = match self.begin_mutation(
             &request_id,
             Some(&serde_json::Value::Null),
@@ -4063,9 +4178,6 @@ impl ProjectStore {
         })();
         mutation?;
         self.refresh_maps_projection_for_entities(std::slice::from_ref(&asset.entity_id))?;
-        // Keep the durable input under the request staging directory so
-        // reopen can resume an asset export after a crash or exporter
-        // failure. Transaction/preflight failures clean it up above.
         self.notify_export_worker()?;
         asset.content_hash = input.content_hash;
         asset.size = input.size;
@@ -4392,16 +4504,16 @@ impl ProjectStore {
         let (Some(feature_kind), Some(feature_id)) = (feature_kind, feature_id) else {
             return "resolved";
         };
-        let source_path: Option<String> = self.connection.query_row(
-            "SELECT a.path FROM entity_fields f JOIN assets a ON a.id=json_extract(f.value, '$.sourceAssetId') WHERE f.entity_id=?1 AND f.namespace=?2 AND f.key='map'",
-            rusqlite::params![map_entity_id, crate::maps::MAP_NAMESPACE], |row| row.get(0)).optional().ok().flatten();
-        let Some(source_path) = source_path else {
+        let source: Option<(String, String)> = self.connection.query_row(
+            "SELECT a.path,a.content_hash FROM entity_fields f JOIN assets a ON a.id=json_extract(f.value, '$.sourceAssetId') WHERE f.entity_id=?1 AND f.namespace=?2 AND f.key='map'",
+            rusqlite::params![map_entity_id, crate::maps::MAP_NAMESPACE], |row| Ok((row.get(0)?, row.get(1)?))).optional().ok().flatten();
+        let Some((source_path, content_hash)) = source else {
             return "unresolved";
         };
         let source_path = self
             .root
             .as_ref()
-            .map(|root| root.join(&source_path))
+            .and_then(|root| runtime_asset_path(root, &content_hash).ok())
             .unwrap_or_else(|| PathBuf::from(source_path));
         let Ok(bytes) = std::fs::read(source_path) else {
             return "unresolved";
@@ -4423,79 +4535,85 @@ impl ProjectStore {
     }
 
     fn rebuild_maps_projection(&self) -> Result<(), CoreError> {
-        self.connection
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction
             .execute_batch("DELETE FROM map_projection; DELETE FROM map_location_projection;")?;
-        let mut maps = self.connection.prepare("SELECT e.id, json_extract(f.value, '$.provider.id'), json_extract(f.value, '$.sourceAssetId'), a.path, a.content_hash FROM entities e JOIN entity_fields f ON f.entity_id=e.id AND f.namespace=?1 AND f.key='map' LEFT JOIN assets a ON a.id=json_extract(f.value, '$.sourceAssetId') WHERE e.entity_type='daena.maps:map' AND e.deleted=0")?;
-        let rows = maps.query_map([crate::maps::MAP_NAMESPACE], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-            ))
-        })?;
-        for row in rows {
-            let (id, provider, asset, path, hash) = row?;
-            self.connection.execute("INSERT INTO map_projection(map_entity_id,provider,source_asset_id,source_path,source_hash) VALUES (?1,?2,?3,?4,?5)", rusqlite::params![id, provider, asset, path, hash])?;
+        {
+            let mut maps = transaction.prepare("SELECT e.id, json_extract(f.value, '$.provider.id'), json_extract(f.value, '$.sourceAssetId'), a.path, a.content_hash FROM entities e JOIN entity_fields f ON f.entity_id=e.id AND f.namespace=?1 AND f.key='map' LEFT JOIN assets a ON a.id=json_extract(f.value, '$.sourceAssetId') WHERE e.entity_type='daena.maps:map' AND e.deleted=0")?;
+            let rows = maps.query_map([crate::maps::MAP_NAMESPACE], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })?;
+            for row in rows {
+                let (id, provider, asset, path, hash) = row?;
+                transaction.execute("INSERT INTO map_projection(map_entity_id,provider,source_asset_id,source_path,source_hash) VALUES (?1,?2,?3,?4,?5)", rusqlite::params![id, provider, asset, path, hash])?;
+            }
         }
-        let mut locations = self.connection.prepare("SELECT f.entity_id, json_each.value FROM entity_fields f, json_each(json_extract(f.value, '$.locations')) WHERE f.namespace=?1 AND f.key='locations'")?;
-        let rows = locations.query_map([crate::maps::MAP_NAMESPACE], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        for row in rows {
-            let (entity_id, raw) = row?;
-            let location: serde_json::Value =
-                serde_json::from_str(&raw).map_err(|e| CoreError::Serialization(e.to_string()))?;
-            let anchor = location.get("anchor").cloned().unwrap_or_default();
-            let kind = anchor
-                .get("kind")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown");
-            let bounds = match kind {
-                "point" => {
-                    bounds_for_points(anchor.get("point").and_then(serde_json::Value::as_array))
-                }
-                "provider-feature" => bounds_for_points(
-                    anchor
-                        .get("fallbackPoint")
-                        .and_then(serde_json::Value::as_array),
-                ),
-                "path" => {
-                    bounds_for_points(anchor.get("points").and_then(serde_json::Value::as_array))
-                }
-                "area" => anchor
-                    .get("rings")
-                    .and_then(serde_json::Value::as_array)
-                    .map(|rings| {
-                        bounds_for_points(Some(
-                            &rings
-                                .iter()
-                                .filter_map(serde_json::Value::as_array)
-                                .flatten()
-                                .cloned()
-                                .collect::<Vec<_>>(),
-                        ))
-                    })
-                    .unwrap_or((None, None, None, None)),
-                _ => (None, None, None, None),
-            };
-            let resolution = if kind == "provider-feature" {
-                self.provider_feature_resolution(
-                    location
-                        .get("mapEntityId")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default(),
-                    anchor
-                        .get("featureKind")
-                        .and_then(serde_json::Value::as_str),
-                    anchor.get("featureId").and_then(serde_json::Value::as_str),
-                )
-            } else {
-                "resolved"
-            };
-            self.connection.execute("INSERT INTO map_location_projection(location_id,entity_id,map_entity_id,label,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)", rusqlite::params![location.get("id").and_then(serde_json::Value::as_str).unwrap_or_default(), entity_id, location.get("mapEntityId").and_then(serde_json::Value::as_str).unwrap_or_default(), location.get("label").and_then(serde_json::Value::as_str), location.get("role").and_then(serde_json::Value::as_str).unwrap_or_default(), kind, anchor.get("provider").and_then(serde_json::Value::as_str), anchor.get("featureKind").and_then(serde_json::Value::as_str), anchor.get("featureId").and_then(serde_json::Value::as_str), bounds.0, bounds.1, bounds.2, bounds.3, location.pointer("/validity/from").filter(|v| !v.is_null()).map(ToString::to_string), location.pointer("/validity/to").filter(|v| !v.is_null()).map(ToString::to_string), resolution])?;
+        {
+            let mut locations = transaction.prepare("SELECT f.entity_id, json_each.value FROM entity_fields f, json_each(json_extract(f.value, '$.locations')) WHERE f.namespace=?1 AND f.key='locations'")?;
+            let rows = locations.query_map([crate::maps::MAP_NAMESPACE], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (entity_id, raw) = row?;
+                let location: serde_json::Value = serde_json::from_str(&raw)
+                    .map_err(|e| CoreError::Serialization(e.to_string()))?;
+                let anchor = location.get("anchor").cloned().unwrap_or_default();
+                let kind = anchor
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown");
+                let bounds = match kind {
+                    "point" => {
+                        bounds_for_points(anchor.get("point").and_then(serde_json::Value::as_array))
+                    }
+                    "provider-feature" => bounds_for_points(
+                        anchor
+                            .get("fallbackPoint")
+                            .and_then(serde_json::Value::as_array),
+                    ),
+                    "path" => bounds_for_points(
+                        anchor.get("points").and_then(serde_json::Value::as_array),
+                    ),
+                    "area" => anchor
+                        .get("rings")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|rings| {
+                            bounds_for_points(Some(
+                                &rings
+                                    .iter()
+                                    .filter_map(serde_json::Value::as_array)
+                                    .flatten()
+                                    .cloned()
+                                    .collect::<Vec<_>>(),
+                            ))
+                        })
+                        .unwrap_or((None, None, None, None)),
+                    _ => (None, None, None, None),
+                };
+                let resolution = if kind == "provider-feature" {
+                    self.provider_feature_resolution(
+                        location
+                            .get("mapEntityId")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default(),
+                        anchor
+                            .get("featureKind")
+                            .and_then(serde_json::Value::as_str),
+                        anchor.get("featureId").and_then(serde_json::Value::as_str),
+                    )
+                } else {
+                    "resolved"
+                };
+                transaction.execute("INSERT INTO map_location_projection(location_id,entity_id,map_entity_id,label,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)", rusqlite::params![location.get("id").and_then(serde_json::Value::as_str).unwrap_or_default(), entity_id, location.get("mapEntityId").and_then(serde_json::Value::as_str).unwrap_or_default(), location.get("label").and_then(serde_json::Value::as_str), location.get("role").and_then(serde_json::Value::as_str).unwrap_or_default(), kind, anchor.get("provider").and_then(serde_json::Value::as_str), anchor.get("featureKind").and_then(serde_json::Value::as_str), anchor.get("featureId").and_then(serde_json::Value::as_str), bounds.0, bounds.1, bounds.2, bounds.3, location.pointer("/validity/from").filter(|v| !v.is_null()).map(ToString::to_string), location.pointer("/validity/to").filter(|v| !v.is_null()).map(ToString::to_string), resolution])?;
+            }
         }
+        transaction.commit()?;
         Ok(())
     }
 

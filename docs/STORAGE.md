@@ -58,6 +58,11 @@ not portable content and are excluded from the checkpoint manifest.
 `.daena/index.sqlite` contains the current runtime state: entities, documents,
 fields, relationships, assets, module/plugin state, migration history,
 idempotency receipts, opaque revisions, and derived search/map projections.
+Native asset bytes are stored content-addressed under `.daena/assets/`; this
+runtime copy is installed durably before the SQLite metadata transaction
+commits, so a crash cannot leave a committed asset dependent on a temporary
+import source. Checkpoint export reads this runtime copy rather than treating
+the previous portable checkpoint as live authority.
 The runtime database may be deleted only when the portable checkpoint is clean
 and validated. Derived projections are disposable and rebuildable; deleting a
 projection must not delete authored content.
@@ -96,7 +101,8 @@ An export attempt:
 
 1. opens a consistent SQLite read transaction and captures generation `G`;
 2. renders a complete deterministic portable snapshot from that transaction;
-3. stages runtime asset bytes and verifies their declared hashes;
+3. stages content-addressed runtime asset bytes and verifies their declared
+   hashes and sizes;
 4. validates the staged file inventory and builds the checkpoint manifest;
 5. installs portable files with safe replacement and removes stale
    manifest-owned paths;

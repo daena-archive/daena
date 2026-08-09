@@ -814,6 +814,40 @@ fn asset_file_import_is_committed_with_canonical_metadata() {
 }
 
 #[test]
+fn checkpoint_export_stages_existing_assets_from_the_transaction_tree() {
+    let root = std::env::temp_dir().join(format!("daena-asset-export-{}", Uuid::new_v4()));
+    let source = root.with_extension("source.bin");
+    std::fs::write(&source, b"asset bytes").unwrap();
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Asset export owner".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let asset = store
+        .register_asset_file(AssetFileInput {
+            entity_id: entity.id,
+            namespace: "maps".into(),
+            source_path: source.to_string_lossy().into_owned(),
+            filename: "map.map".into(),
+            mime_type: "application/octet-stream".into(),
+        })
+        .unwrap();
+
+    store.flush_checkpoint("asset export regression").unwrap();
+    assert_eq!(
+        std::fs::read(root.join(&asset.path)).unwrap(),
+        b"asset bytes"
+    );
+    assert!(store.sync_summary().unwrap().export_error.is_none());
+
+    drop(store);
+    std::fs::remove_file(source).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn disabled_module_survives_directory_reopen() {
     let root = std::env::temp_dir().join(format!("daena-disabled-module-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();

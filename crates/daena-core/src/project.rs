@@ -1569,8 +1569,10 @@ impl ProjectStore {
             )?;
         }
         let mut current_sources = staged_canonical_sources(&staging_root, snapshot)?;
+        let mut transaction_staged_paths = BTreeSet::new();
         for (path, bytes) in pending_assets {
             transaction.stage_bytes(path, bytes)?;
+            transaction_staged_paths.insert(path.clone());
             current_sources.push(crate::storage::CanonicalSource {
                 path: path.clone(),
                 content_hash: format!("sha256:{:x}", Sha256::digest(bytes)),
@@ -1593,6 +1595,7 @@ impl ProjectStore {
                 &source,
                 Some(content_hash.clone()),
             )?;
+            transaction_staged_paths.insert(asset.path.clone());
             current_sources.push(crate::storage::CanonicalSource {
                 path: asset.path.clone(),
                 content_hash,
@@ -1613,7 +1616,7 @@ impl ProjectStore {
             .map(|source| source.path.as_str())
             .collect::<BTreeSet<_>>();
         for source in &current_sources {
-            if source.path == "project.json" || pending_assets.contains_key(&source.path) {
+            if source.path == "project.json" || transaction_staged_paths.contains(&source.path) {
                 continue;
             }
             let staged = crate::storage::normalized_project_path(&staging_root, &source.path)?;

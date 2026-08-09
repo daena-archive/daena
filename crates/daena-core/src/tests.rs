@@ -1,6 +1,7 @@
 use super::*;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use uuid::Uuid;
 
 #[test]
 fn service_lifecycle_preserves_project_state_boundaries() {
@@ -27,6 +28,39 @@ fn service_replaces_open_projects_atomically() {
     let first = service.project(context).unwrap().info();
     service.open_memory(context).unwrap();
     assert_eq!(service.project(context).unwrap().info(), first);
+}
+
+#[test]
+fn service_close_flushes_queued_directory_exports() {
+    let root = std::env::temp_dir().join(format!("daena-service-close-{}", Uuid::new_v4()));
+    let mut service = CoreService::new();
+    let context = AuthorityContext::trusted_shell();
+    service.open_directory(context, &root).unwrap();
+    let entity = service
+        .project(context)
+        .unwrap()
+        .create_entity(CreateEntity {
+            name: "Close flush owner".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    service
+        .project(context)
+        .unwrap()
+        .save_document(SaveDocument {
+            entity_id: entity.id.clone(),
+            body: "Flushed on close\n".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    service.close(context).unwrap();
+
+    let document = root.join("entities").join(entity.id).join("document.md");
+    assert_eq!(
+        std::fs::read_to_string(document).unwrap(),
+        "Flushed on close\n"
+    );
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

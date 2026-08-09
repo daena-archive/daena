@@ -15,7 +15,7 @@ pub use project::{
     GitLogEntry, GitPreflight, GitRemote, GitResetResult, GitStatus, GitToolInfo, GitUpstream,
     MigrationHistoryEntry, ModuleField, ModuleNamespace, ModuleState, PluginBackup, ProjectInfo,
     ProjectSnapshot, ProjectStore, Relationship, RelationshipInput, SaveDocument, SaveEntry,
-    SearchPassage,
+    SearchPassage, SyncDiagnostic, SyncSummary,
 };
 pub use storage::{
     canonical_json_bytes, canonical_markdown, canonical_markdown_bytes, normalized_project_path,
@@ -41,6 +41,7 @@ impl CoreService {
         path: impl AsRef<std::path::Path>,
     ) -> Result<(), CoreError> {
         self.require_trusted_shell(context, "open project")?;
+        self.flush_current_project()?;
         self.project = Some(ProjectStore::open(path)?);
         Ok(())
     }
@@ -51,6 +52,7 @@ impl CoreService {
         path: impl AsRef<std::path::Path>,
     ) -> Result<ProjectInfo, CoreError> {
         self.require_trusted_shell(context, "open project directory")?;
+        self.flush_current_project()?;
         let project = ProjectStore::open_directory(path)?;
         let info = project
             .info()
@@ -61,13 +63,22 @@ impl CoreService {
 
     pub fn open_memory(&mut self, context: AuthorityContext) -> Result<(), CoreError> {
         self.require_trusted_shell(context, "open in-memory project")?;
+        self.flush_current_project()?;
         self.project = Some(ProjectStore::in_memory()?);
         Ok(())
     }
 
     pub fn close(&mut self, context: AuthorityContext) -> Result<(), CoreError> {
         self.require_trusted_shell(context, "close project")?;
+        self.flush_current_project()?;
         self.project = None;
+        Ok(())
+    }
+
+    fn flush_current_project(&self) -> Result<(), CoreError> {
+        if let Some(project) = &self.project {
+            project.flush_exports()?;
+        }
         Ok(())
     }
 

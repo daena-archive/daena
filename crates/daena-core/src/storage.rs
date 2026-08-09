@@ -1739,7 +1739,7 @@ fn codec_error(path: &Path, code: &str, detail: impl std::fmt::Display) -> CoreE
     CoreError::Validation(format!("{} [{code}] {detail}", path.display()))
 }
 
-fn is_ignored_metadata_entry(name: &str) -> bool {
+pub(crate) fn is_ignored_metadata_entry(name: &str) -> bool {
     name.eq_ignore_ascii_case(".ds_store")
         || name.eq_ignore_ascii_case("thumbs.db")
         || name.eq_ignore_ascii_case("desktop.ini")

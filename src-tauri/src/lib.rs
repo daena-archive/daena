@@ -444,12 +444,14 @@ fn start_project_watcher(
     let app = app.clone();
     let state = state.clone();
     thread::spawn(move || {
+        let mut first_pass = true;
         let mut last_report = String::new();
         let mut pending_report: Option<ExternalChangeReport> = None;
         loop {
-            if receiver.recv_timeout(Duration::from_millis(500)).is_ok() {
+            if !first_pass && receiver.recv_timeout(Duration::from_millis(500)).is_ok() {
                 break;
             }
+            first_pass = false;
             let report = state.lock().ok().and_then(|core| {
                 core.project(AuthorityContext::trusted_shell())
                     .ok()

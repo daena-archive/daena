@@ -518,6 +518,17 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     return typeof detail === "object" && detail !== null ? (detail as { path?: string }) : {};
   }
 
+  function syncStatusLabel(info: ProjectInfo | null) {
+    const sync = info?.sync;
+    if (!sync) return "Storage status unavailable";
+    if (sync.state === "failed") return `Export failed · ${sync.diagnostics.length} item${sync.diagnostics.length === 1 ? "" : "s"}`;
+    if (sync.reconciliation_state === "blocked") return "External changes blocked by Git conflict";
+    if (sync.reconciliation_state === "failed") return "External changes need attention";
+    if (sync.state === "exporting") return `Saving to project files · ${sync.dirty_count} pending`;
+    if (sync.reconciliation_state === "reconciled") return "External changes reconciled";
+    return "Project files up to date";
+  }
+
   function visibleEntities() {
     const term = query.trim().toLowerCase();
     if (section === "maps") return [];
@@ -1682,7 +1693,11 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     void listen<{ mapEntityId: string; anchor: unknown }>("maps-selection", (event) => {
       if (event.payload.mapEntityId === currentMapId()) mapSelection = event.payload.anchor;
     }).then((cleanup) => { unlistenMapsSelection = cleanup; }).catch(() => {});
-    return () => { unlisten?.(); unlistenMaps?.(); unlistenMapsState?.(); unlistenMapsSelection?.(); };
+    const syncTimer = window.setInterval(() => {
+      if (!ready) return;
+      void project.info().then((info) => { if (info) projectInfo = info; }).catch(() => {});
+    }, 1000);
+    return () => { window.clearInterval(syncTimer); unlisten?.(); unlistenMaps?.(); unlistenMapsState?.(); unlistenMapsSelection?.(); };
   });
 </script>
 
@@ -1714,6 +1729,9 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
             <button class="rail-button" role="menuitem" onclick={closeProject}><span class="rail-icon">×</span><span>Close project</span></button>
           </div>
         {/if}
+      </div>
+      <div class:sync-failed={projectInfo?.sync.state === "failed" || projectInfo?.sync.reconciliation_state === "failed" || projectInfo?.sync.reconciliation_state === "blocked"} class:sync-pending={projectInfo?.sync.state === "exporting"} class="sync-summary" aria-live="polite" title={projectInfo?.sync.diagnostics[0]?.last_error ?? projectInfo?.sync.reconciliation_diagnostics[0] ?? undefined}>
+        <span class="sync-dot"></span><span>{syncStatusLabel(projectInfo)}</span>
       </div>
       {#if enabledWorkspaceSections().length > 0}<button aria-expanded={showCreateForm} class="rail-create-button" onclick={toggleCreateForm}><span class="rail-icon">＋</span><span>New entry</span></button>{/if}
       {#if enabledWorkspaceSections().length > 0}
@@ -2515,4 +2533,9 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     .plugin-card-head { flex-direction: column; }
     .plugin-badges { justify-content: flex-start; }
   }
+  .sync-summary { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-soft); font-size: 10px; }
+  .sync-dot { width: 7px; height: 7px; border-radius: 50%; background: #72a97a; }
+  .sync-pending .sync-dot { background: #d6a35f; box-shadow: 0 0 0 3px rgba(214,163,95,.15); }
+  .sync-failed { color: #a14f42; }
+  .sync-failed .sync-dot { background: #c05a4b; box-shadow: 0 0 0 3px rgba(192,90,75,.14); }
 </style>

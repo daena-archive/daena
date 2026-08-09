@@ -16,7 +16,16 @@ export interface Relationship { id: string; source_id: string; target_id: string
 export interface MapLocation { id: string; mapEntityId: string; role: string; label: string; anchor: unknown; validity: { from: unknown | null; to: unknown | null }; anchorKind?: string; resolution?: string; }
 export interface MapRecoveryCopy { fileName: string; path: string; createdAt: string; }
 export interface Asset { id: string; entity_id: string; namespace: string; filename: string; content_hash: string; size: number; mime_type: string; path: string; created_at: string; revision: string; }
-export interface ProjectInfo { name: string; root: string; index_status: string; assets: string; }
+export interface SyncDiagnostic { batch_id: string; request_id: string; state: string; attempt_count: number; error_kind: string | null; last_error: string | null; target_path: string | null; }
+export interface SyncSummary {
+  state: string;
+  dirty_count: number;
+  diagnostics: SyncDiagnostic[];
+  reconciliation_state: string;
+  reconciliation_paths: string[];
+  reconciliation_diagnostics: string[];
+}
+export interface ProjectInfo { name: string; root: string; index_status: string; assets: string; sync: SyncSummary; }
 export interface ExternalChangeReport { changed: boolean; paths: string[]; diagnostics: string[]; }
 export interface GitStatus {
   repository: boolean;

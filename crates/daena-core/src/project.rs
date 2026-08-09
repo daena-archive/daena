@@ -7,7 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{mpsc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,6 +240,28 @@ pub struct ProjectInfo {
     pub root: String,
     pub index_status: String,
     pub assets: String,
+    pub sync: SyncSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncSummary {
+    pub state: String,
+    pub dirty_count: i64,
+    pub diagnostics: Vec<SyncDiagnostic>,
+    pub reconciliation_state: String,
+    pub reconciliation_paths: Vec<String>,
+    pub reconciliation_diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncDiagnostic {
+    pub batch_id: String,
+    pub request_id: String,
+    pub state: String,
+    pub attempt_count: i64,
+    pub error_kind: Option<String>,
+    pub last_error: Option<String>,
+    pub target_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -353,6 +377,28 @@ fn reset_required_error() -> CoreError {
     )
 }
 
+fn export_error_kind(error: &CoreError) -> &'static str {
+    match error {
+        CoreError::Io { .. } | CoreError::Database(_) => "transient",
+        CoreError::Conflict(message)
+            if message.contains("injected exporter failure")
+                || message.contains("project sync lock is already held") =>
+        {
+            "transient"
+        }
+        CoreError::Conflict(_) => "conflict",
+        CoreError::Serialization(_)
+        | CoreError::Validation(_)
+        | CoreError::ResetRequired(_)
+        | CoreError::CorruptStorage(_)
+        | CoreError::RecoveryFailed(_)
+        | CoreError::NotFound(_)
+        | CoreError::Git(_)
+        | CoreError::Unauthorized { .. }
+        | CoreError::ProjectNotOpen => "permanent",
+    }
+}
+
 pub struct ProjectStore {
     connection: Connection,
     root: Option<PathBuf>,
@@ -361,10 +407,119 @@ pub struct ProjectStore {
     suppress_sync: Cell<bool>,
     shutdown_ready: Cell<bool>,
     _session_lock: Option<crate::sync::ProjectSessionLock>,
+    export_worker: Option<ExportWorker>,
+}
+
+enum ExportWorkerCommand {
+    Wake,
+    Flush(mpsc::Sender<Result<(), CoreError>>, String),
+    Stop(mpsc::Sender<Result<(), CoreError>>),
+}
+
+struct ExportWorker {
+    sender: mpsc::Sender<ExportWorkerCommand>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl ExportWorker {
+    fn start(root: &Path, database: &Path) -> Result<Self, CoreError> {
+        let root = root.to_path_buf();
+        let database = database.to_path_buf();
+        let (sender, receiver) = mpsc::channel();
+        let join = thread::Builder::new()
+            .name("daena-export-worker".into())
+            .spawn(move || {
+                while let Ok(command) = receiver.recv() {
+                    let drain = |cutoff: Option<&str>| {
+                        let worker_store = ProjectStore::open_database(
+                            &database,
+                            Some(root.clone()),
+                            None,
+                            false,
+                            false,
+                        )?;
+                        worker_store.drain_export_queue(cutoff)
+                    };
+                    match command {
+                        ExportWorkerCommand::Wake => {
+                            let deadline = Instant::now() + Duration::from_millis(40);
+                            loop {
+                                let remaining = deadline.saturating_duration_since(Instant::now());
+                                match receiver.recv_timeout(remaining) {
+                                    Ok(ExportWorkerCommand::Wake) => continue,
+                                    Ok(ExportWorkerCommand::Flush(reply, cutoff)) => {
+                                        let _ = reply.send(drain(Some(&cutoff)));
+                                        break;
+                                    }
+                                    Ok(ExportWorkerCommand::Stop(reply)) => {
+                                        let _ = reply.send(drain(None));
+                                        return;
+                                    }
+                                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                                        let _ = drain(None);
+                                        break;
+                                    }
+                                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                                }
+                            }
+                        }
+                        ExportWorkerCommand::Flush(reply, cutoff) => {
+                            let _ = reply.send(drain(Some(&cutoff)));
+                        }
+                        ExportWorkerCommand::Stop(reply) => {
+                            let _ = reply.send(drain(None));
+                            break;
+                        }
+                    }
+                }
+            })
+            .map_err(|source| CoreError::Io {
+                operation: "start export worker",
+                source,
+            })?;
+        Ok(Self {
+            sender,
+            join: Some(join),
+        })
+    }
+
+    fn wake(&self) {
+        let _ = self.sender.send(ExportWorkerCommand::Wake);
+    }
+
+    fn flush(&self, cutoff: String) -> Result<(), CoreError> {
+        let (sender, receiver) = mpsc::channel();
+        self.sender
+            .send(ExportWorkerCommand::Flush(sender, cutoff))
+            .map_err(|_| CoreError::Conflict("export worker is not running".into()))?;
+        receiver
+            .recv()
+            .map_err(|_| CoreError::Conflict("export worker stopped before flush".into()))?
+    }
+
+    fn stop(mut self) -> Result<(), CoreError> {
+        let (sender, receiver) = mpsc::channel();
+        let send_result = self.sender.send(ExportWorkerCommand::Stop(sender));
+        let result = if send_result.is_ok() {
+            receiver
+                .recv()
+                .map_err(|_| CoreError::Conflict("export worker stopped before drain".into()))?
+        } else {
+            Ok(())
+        };
+        if let Some(join) = self.join.take() {
+            join.join()
+                .map_err(|_| CoreError::Conflict("export worker panicked".into()))?;
+        }
+        result
+    }
 }
 
 impl Drop for ProjectStore {
     fn drop(&mut self) {
+        if let Some(worker) = self.export_worker.take() {
+            let _ = worker.stop();
+        }
         if !self.shutdown_ready.get() {
             return;
         }
@@ -464,6 +619,7 @@ impl ProjectStore {
                 Some(root.to_path_buf()),
                 Some(session_lock),
                 false,
+                true,
             );
         }
         let canonical = repository.scan()?;
@@ -487,7 +643,7 @@ impl ProjectStore {
             }
         }
 
-        let store = Self::open_database(&next_path, Some(root.to_path_buf()), None, false)?;
+        let store = Self::open_database(&next_path, Some(root.to_path_buf()), None, false, false)?;
         let payload = serde_json::to_string(&canonical.snapshot)
             .map_err(|error| CoreError::Serialization(error.to_string()))?;
         store.import_json_with_mode_and_sync_with_request_and_search(
@@ -518,6 +674,7 @@ impl ProjectStore {
             Some(root.to_path_buf()),
             Some(session_lock),
             false,
+            true,
         )
     }
 
@@ -526,10 +683,12 @@ impl ProjectStore {
         root: Option<PathBuf>,
         session_lock: Option<crate::sync::ProjectSessionLock>,
         acquire_session_lock: bool,
+        start_worker: bool,
     ) -> Result<Self, CoreError> {
         let path = path.as_ref();
         let existing_database = path != Path::new(":memory:") && path.is_file();
         let connection = Connection::open(path)?;
+        connection.busy_timeout(Duration::from_secs(2))?;
         connection.pragma_update(None, "foreign_keys", true)?;
         if existing_database {
             Self::validate_runtime_metadata(&connection, root.as_deref())?;
@@ -542,7 +701,7 @@ impl ProjectStore {
                 .transpose()?,
             None => None,
         };
-        let store = Self {
+        let mut store = Self {
             connection,
             root,
             pending_asset_imports: Mutex::new(BTreeMap::new()),
@@ -550,9 +709,16 @@ impl ProjectStore {
             suppress_sync: Cell::new(false),
             shutdown_ready: Cell::new(false),
             _session_lock: session_lock,
+            export_worker: None,
         };
-        store.initialize()?;
+        store.initialize(!existing_database)?;
         store.recover_interrupted_batches()?;
+        if start_worker {
+            if let (Some(root), true) = (store.root.as_deref(), existing_database) {
+                let worker = ExportWorker::start(root, path)?;
+                store.export_worker = Some(worker);
+            }
+        }
         store.shutdown_ready.set(true);
         Ok(store)
     }
@@ -561,7 +727,7 @@ impl ProjectStore {
         let requests = self
             .connection
             .prepare(
-                "SELECT request_id FROM sync_batches WHERE state='exporting' ORDER BY created_at",
+                "SELECT request_id FROM sync_batches WHERE state IN ('exporting','running') ORDER BY created_at",
             )?
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -588,6 +754,60 @@ impl ProjectStore {
             }
         }
         Ok(())
+    }
+
+    fn drain_export_queue(&self, cutoff: Option<&str>) -> Result<(), CoreError> {
+        let requests = self
+            .connection
+            .prepare(
+                "SELECT request_id FROM sync_batches WHERE (state IN ('exporting','running') OR (state='failed' AND error_kind='transient' AND attempt_count < 3)) AND (?1 IS NULL OR created_at <= ?1) ORDER BY created_at",
+            )?
+            .query_map(params![cutoff], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        for request_id in requests {
+            if !self.claim_export_batch(&request_id)? {
+                continue;
+            }
+            self.sync_canonical_with_request_id_inner(&request_id, None)?;
+            self.rebuild_maps_projection()?;
+        }
+        Ok(())
+    }
+
+    fn claim_export_batch(&self, request_id: &str) -> Result<bool, CoreError> {
+        let updated = self.connection.execute(
+            "UPDATE sync_batches SET state='running' WHERE request_id=?1 AND (state='exporting' OR (state='failed' AND error_kind='transient' AND attempt_count < 3))",
+            params![request_id],
+        )?;
+        Ok(updated == 1)
+    }
+
+    /// Wake the project-scoped exporter after durable work has been queued.
+    ///
+    /// The queue is durable in SQLite, so losing this notification only delays
+    /// export until the next flush or reopen; it cannot lose the mutation.
+    pub fn wake_export_worker(&self) {
+        if let Some(worker) = &self.export_worker {
+            worker.wake();
+        }
+    }
+
+    /// Drain the same durable queue used by the background exporter.
+    pub fn flush_exports(&self) -> Result<(), CoreError> {
+        let now = chrono_like_now();
+        let cutoff: String = self.connection.query_row(
+            "SELECT COALESCE(MAX(created_at),?1) FROM sync_batches WHERE state NOT IN ('completed','superseded')",
+            params![now],
+            |row| row.get(0),
+        )?;
+        let result = match &self.export_worker {
+            Some(worker) => worker.flush(cutoff),
+            None => self.drain_export_queue(Some(&cutoff)),
+        };
+        if result.is_ok() {
+            self.rebuild_maps_projection()?;
+        }
+        result
     }
 
     fn ensure_schema_column(
@@ -838,6 +1058,14 @@ impl ProjectStore {
         };
         let git_unmerged = self.git_unmerged_paths();
         if !git_unmerged.is_empty() {
+            self.update_reconciliation_state(
+                "blocked",
+                &git_unmerged,
+                &git_unmerged
+                    .iter()
+                    .map(|path| format!("git.unmerged: {path}"))
+                    .collect::<Vec<_>>(),
+            )?;
             return Ok(ExternalChangeReport {
                 changed: false,
                 paths: git_unmerged.clone(),
@@ -847,11 +1075,13 @@ impl ProjectStore {
                     .collect(),
             });
         }
+        self.flush_exports()?;
         let previous = self.indexed_source_hashes()?;
         let repository = crate::storage::FilesystemRepository::open(root)?;
         let canonical = match repository.scan() {
             Ok(canonical) => canonical,
             Err(error) => {
+                self.update_reconciliation_state("failed", &[], &[error.to_string()])?;
                 self.connection.execute(
                     "UPDATE runtime_meta SET sync_state='failed', dirty_count=MAX(dirty_count, 1), clean_shutdown=0 WHERE key='runtime'",
                     [],
@@ -877,6 +1107,7 @@ impl ProjectStore {
             .cloned()
             .collect::<Vec<_>>();
         if paths.is_empty() {
+            self.update_reconciliation_state("idle", &[], &[])?;
             return Ok(ExternalChangeReport {
                 changed: false,
                 paths,
@@ -892,6 +1123,7 @@ impl ProjectStore {
         self.update_source_index_from_hashes(&previous, &canonical.sources)?;
         self.rebuild_search()?;
         self.verify_index(canonical.sources.len())?;
+        self.update_reconciliation_state("reconciled", &paths, &[])?;
         Ok(ExternalChangeReport {
             changed: true,
             paths,
@@ -1153,15 +1385,7 @@ impl ProjectStore {
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        let source_hashes = self.canonical_source_hashes(&format!("entities/{entity_id}/%"))?;
-        let revision = self.revision_digest(&(
-            entity,
-            documents,
-            fields,
-            relationships,
-            assets,
-            source_hashes,
-        ))?;
+        let revision = self.revision_digest(&(entity, documents, fields, relationships, assets))?;
         Ok(revision)
     }
 
@@ -1179,20 +1403,15 @@ impl ProjectStore {
                 ))
             },
         )?;
-        let source_hashes =
-            self.canonical_source_hashes(&format!("entities/{}/document.md", value.1))?;
-        self.revision_digest(&(value, source_hashes))
+        self.revision_digest(&value)
     }
 
     fn revision_for_field(&self, field: &FieldValue) -> Result<String, CoreError> {
-        let source_hashes =
-            self.canonical_source_hashes(&format!("entities/{}/fields/%", field.entity_id))?;
         self.revision_digest(&(
             &field.entity_id,
             &field.namespace,
             &field.key,
             encode_field_value(&field.value)?,
-            source_hashes,
         ))
     }
 
@@ -1210,9 +1429,7 @@ impl ProjectStore {
                 ))
             },
         )?;
-        let source_hashes =
-            self.canonical_source_hashes(&format!("entities/{}/relationships.json", value.1))?;
-        self.revision_digest(&(value, source_hashes))
+        self.revision_digest(&value)
     }
 
     fn revision_for_asset(&self, id: &str) -> Result<String, CoreError> {
@@ -1233,18 +1450,7 @@ impl ProjectStore {
                 ))
             },
         )?;
-        let source_hashes = self.canonical_source_hashes(&value.7)?;
-        self.revision_digest(&(value, source_hashes))
-    }
-
-    fn canonical_source_hashes(&self, pattern: &str) -> Result<Vec<(String, String)>, CoreError> {
-        self.connection
-            .prepare(
-                "SELECT path,content_hash FROM source_files WHERE path=?1 OR path LIKE ?1 ORDER BY path",
-            )?
-            .query_map(params![pattern], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(CoreError::from)
+        self.revision_digest(&value)
     }
 
     fn revision_digest<T: Serialize>(&self, value: &T) -> Result<String, CoreError> {
@@ -1256,9 +1462,29 @@ impl ProjectStore {
         revision_digest(&(epoch, value))
     }
 
+    #[allow(dead_code)]
+    fn canonical_source_hashes(&self, pattern: &str) -> Result<Vec<(String, String)>, CoreError> {
+        self.connection
+            .prepare(
+                "SELECT path,content_hash FROM source_files WHERE path=?1 OR path LIKE ?1 ORDER BY path",
+            )?
+            .query_map(params![pattern], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(CoreError::from)
+    }
+
     fn sync_canonical(&self) -> Result<(), CoreError> {
         let request_id = Uuid::new_v4().to_string();
         self.sync_canonical_with_request_id(&request_id, None)
+    }
+
+    fn sync_canonical_without_queue_drain(&self) -> Result<(), CoreError> {
+        let request_id = Uuid::new_v4().to_string();
+        let export = self.sync_canonical_with_request_id_inner(&request_id, None);
+        if export.is_err() {
+            self.wake_export_worker();
+        }
+        export
     }
 
     fn sync_canonical_with_request_id(
@@ -1266,7 +1492,35 @@ impl ProjectStore {
         request_id: &str,
         result: Option<&serde_json::Value>,
     ) -> Result<(), CoreError> {
-        self.sync_canonical_with_request_id_inner(request_id, result)
+        if self.suppress_sync.get() {
+            return Ok(());
+        }
+        if self.root.is_some() && self.export_worker.is_some() {
+            self.wake_export_worker();
+            return Ok(());
+        }
+        // Structural mutations still use the synchronous reference exporter
+        // only for memory-backed stores and rebuild helpers that have no
+        // project-scoped worker. Directory-backed mutations always queue.
+        let export = self.sync_canonical_with_request_id_inner(request_id, result);
+        if export.is_err() {
+            self.wake_export_worker();
+        }
+        export
+    }
+
+    fn queue_canonical_with_request_id(
+        &self,
+        request_id: &str,
+        result: Option<&serde_json::Value>,
+    ) -> Result<(), CoreError> {
+        if self.root.is_some() && !self.suppress_sync.get() {
+            if self.export_worker.is_some() {
+                self.wake_export_worker();
+                return Ok(());
+            }
+        }
+        self.sync_canonical_with_request_id(request_id, result)
     }
 
     fn sync_canonical_with_request_id_inner(
@@ -1286,7 +1540,7 @@ impl ProjectStore {
         let existing_batch: Option<String> = self
             .connection
             .query_row(
-                "SELECT id FROM sync_batches WHERE request_id=?1 AND state IN ('exporting','failed')",
+            "SELECT id FROM sync_batches WHERE request_id=?1 AND state IN ('exporting','running','failed')",
                 params![request_id],
                 |row| row.get(0),
             )
@@ -1355,12 +1609,16 @@ impl ProjectStore {
         );
         match export {
             Ok(()) => {
-                self.complete_export_batch(&batch_id, None)?;
+                self.complete_export_batch(&batch_id, None, None)?;
                 self.record_mutation_receipt(request_id, result)?;
                 Ok(())
             }
             Err(error) => {
-                self.complete_export_batch(&batch_id, Some(&error.to_string()))?;
+                self.complete_export_batch(
+                    &batch_id,
+                    Some(&error.to_string()),
+                    Some(export_error_kind(&error)),
+                )?;
                 Err(error)
             }
         }
@@ -1501,6 +1759,13 @@ impl ProjectStore {
     ) -> Result<(rusqlite::Transaction<'a>, String), CoreError> {
         let transaction = self.connection.unchecked_transaction()?;
         let mut paths = BTreeSet::new();
+        if let Some(root) = self.root.as_deref() {
+            for prefix in affected_prefixes {
+                if prefix.starts_with("entities/") {
+                    Self::preflight_canonical_prefix(&transaction, root, prefix)?;
+                }
+            }
+        }
         for prefix in affected_prefixes {
             let pattern = format!("{prefix}%");
             let mut statement = transaction.prepare(
@@ -1589,7 +1854,15 @@ impl ProjectStore {
             )?;
         }
         transaction.execute(
-            "UPDATE runtime_meta SET sync_state='exporting',dirty_count=dirty_count+1,clean_shutdown=0 WHERE key='runtime'",
+            "UPDATE sync_batches SET state='superseded',completed_at=?2,last_error=NULL,error_kind=NULL WHERE id<>?1 AND state IN ('exporting','failed') AND EXISTS (SELECT 1 FROM sync_items old JOIN sync_items new ON new.target_path=old.target_path WHERE old.batch_id=sync_batches.id AND new.batch_id=?1) AND NOT EXISTS (SELECT 1 FROM sync_items old_missing WHERE old_missing.batch_id=sync_batches.id AND NOT EXISTS (SELECT 1 FROM sync_items new_missing WHERE new_missing.batch_id=?1 AND new_missing.target_path=old_missing.target_path))",
+            params![batch_id, chrono_like_now()],
+        )?;
+        transaction.execute(
+            "UPDATE mutation_receipts SET state='completed' WHERE request_id IN (SELECT request_id FROM sync_batches WHERE state='superseded')",
+            [],
+        )?;
+        transaction.execute(
+            "UPDATE runtime_meta SET sync_state='exporting',dirty_count=(SELECT COUNT(*) FROM sync_batches WHERE state NOT IN ('completed','superseded')),clean_shutdown=0 WHERE key='runtime'",
             [],
         )?;
         transaction.execute(
@@ -1597,6 +1870,58 @@ impl ProjectStore {
             params![request_id, result_json, fingerprint, chrono_like_now()],
         )?;
         Ok((transaction, batch_id))
+    }
+
+    fn preflight_canonical_prefix(
+        transaction: &rusqlite::Transaction<'_>,
+        root: &Path,
+        prefix: &str,
+    ) -> Result<(), CoreError> {
+        fn visit(
+            transaction: &rusqlite::Transaction<'_>,
+            root: &Path,
+            current: &Path,
+        ) -> Result<(), CoreError> {
+            for entry in std::fs::read_dir(current)? {
+                let path = entry?.path();
+                if path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(crate::storage::is_ignored_metadata_entry)
+                {
+                    continue;
+                }
+                if path.is_dir() {
+                    visit(transaction, root, &path)?;
+                    continue;
+                }
+                let relative = path
+                    .strip_prefix(root)
+                    .map_err(|error| CoreError::Conflict(error.to_string()))?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let expected: Option<String> = transaction
+                    .query_row(
+                        "SELECT baseline_hash FROM portable_baselines WHERE path=?1 AND baseline_exists=1",
+                        params![relative],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let actual = crate::sync::hash_path(root, &relative)?;
+                if actual != expected {
+                    return Err(CoreError::Conflict(format!(
+                        "portable baseline changed for {relative}"
+                    )));
+                }
+            }
+            Ok(())
+        }
+
+        let path = root.join(prefix);
+        if path.is_dir() {
+            visit(transaction, root, &path)?;
+        }
+        Ok(())
     }
 
     fn begin_export_batch(
@@ -1639,7 +1964,12 @@ impl ProjectStore {
         Ok(batch_id)
     }
 
-    fn complete_export_batch(&self, batch_id: &str, error: Option<&str>) -> Result<(), CoreError> {
+    fn complete_export_batch(
+        &self,
+        batch_id: &str,
+        error: Option<&str>,
+        error_kind: Option<&str>,
+    ) -> Result<(), CoreError> {
         let unapplied: i64 = self.connection.query_row(
             "SELECT COUNT(*) FROM sync_items WHERE batch_id=?1 AND state <> 'applied'",
             params![batch_id],
@@ -1652,10 +1982,11 @@ impl ProjectStore {
         } else {
             "completed"
         };
+        let error_kind = effective_error.map(|_| error_kind.unwrap_or("transient"));
         let transaction = self.connection.unchecked_transaction()?;
         transaction.execute(
-            "UPDATE sync_batches SET state=?2, completed_at=?3, last_error=?4 WHERE id=?1",
-            params![batch_id, state, chrono_like_now(), effective_error],
+            "UPDATE sync_batches SET state=?2, completed_at=?3, last_error=?4, error_kind=?5, attempt_count=attempt_count+CASE WHEN ?4 IS NULL THEN 0 ELSE 1 END WHERE id=?1",
+            params![batch_id, state, chrono_like_now(), effective_error, error_kind],
         )?;
         transaction.execute(
             "UPDATE sync_items SET state=?2, last_error=?3 WHERE batch_id=?1 AND state <> 'applied'",
@@ -1666,7 +1997,7 @@ impl ProjectStore {
             params![state, batch_id],
         )?;
         let (sync_state, dirty_count): (String, i64) = transaction.query_row(
-            "SELECT CASE WHEN EXISTS(SELECT 1 FROM sync_batches WHERE state='failed') THEN 'failed' WHEN EXISTS(SELECT 1 FROM sync_batches WHERE state='exporting') THEN 'exporting' ELSE 'clean' END, COUNT(*) FROM sync_batches WHERE state <> 'completed'",
+            "SELECT CASE WHEN EXISTS(SELECT 1 FROM sync_batches WHERE state='failed') THEN 'failed' WHEN EXISTS(SELECT 1 FROM sync_batches WHERE state IN ('exporting','running')) THEN 'exporting' ELSE 'clean' END, COUNT(*) FROM sync_batches WHERE state NOT IN ('completed','superseded')",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
@@ -1949,11 +2280,19 @@ impl ProjectStore {
     }
 
     pub fn in_memory() -> Result<Self, CoreError> {
-        Self::open_database(":memory:", None, None, true)
+        Self::open_database(":memory:", None, None, true, false)
     }
 
     pub fn info(&self) -> Option<ProjectInfo> {
         let root = self.root.as_ref()?;
+        let sync = self.sync_summary().unwrap_or_else(|_| SyncSummary {
+            state: "diagnostic".into(),
+            dirty_count: 0,
+            diagnostics: Vec::new(),
+            reconciliation_state: "diagnostic".into(),
+            reconciliation_paths: Vec::new(),
+            reconciliation_diagnostics: Vec::new(),
+        });
         Some(ProjectInfo {
             name: crate::storage::read_json::<crate::storage::ProjectManifest>(
                 &root.join("project.json"),
@@ -1983,7 +2322,60 @@ impl ProjectStore {
                 .unwrap_or("diagnostic")
                 .into(),
             assets: root.join("assets").to_string_lossy().to_string(),
+            sync,
         })
+    }
+
+    pub fn sync_summary(&self) -> Result<SyncSummary, CoreError> {
+        let (state, dirty_count, reconciliation_state, reconciliation_paths, reconciliation_diagnostics): (String, i64, String, String, String) = self.connection.query_row(
+            "SELECT sync_state,dirty_count,reconciliation_state,reconciliation_paths,reconciliation_diagnostics FROM runtime_meta WHERE key='runtime'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )?;
+        let diagnostics = self
+            .connection
+            .prepare(
+                "SELECT b.id,b.request_id,b.state,b.attempt_count,b.error_kind,COALESCE(i.last_error,b.last_error),i.target_path FROM sync_batches b LEFT JOIN sync_items i ON i.batch_id=b.id WHERE b.state NOT IN ('completed','superseded') ORDER BY b.created_at,i.target_path",
+            )?
+            .query_map([], |row| {
+                Ok(SyncDiagnostic {
+                    batch_id: row.get(0)?,
+                    request_id: row.get(1)?,
+                    state: row.get(2)?,
+                    attempt_count: row.get(3)?,
+                    error_kind: row.get(4)?,
+                    last_error: row.get(5)?,
+                    target_path: row.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(SyncSummary {
+            state,
+            dirty_count,
+            diagnostics,
+            reconciliation_state,
+            reconciliation_paths: serde_json::from_str(&reconciliation_paths)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+            reconciliation_diagnostics: serde_json::from_str(&reconciliation_diagnostics)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        })
+    }
+
+    fn update_reconciliation_state(
+        &self,
+        state: &str,
+        paths: &[String],
+        diagnostics: &[String],
+    ) -> Result<(), CoreError> {
+        let paths = serde_json::to_string(paths)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let diagnostics = serde_json::to_string(diagnostics)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        self.connection.execute(
+            "UPDATE runtime_meta SET reconciliation_state=?1,reconciliation_paths=?2,reconciliation_diagnostics=?3 WHERE key='runtime'",
+            params![state, paths, diagnostics],
+        )?;
+        Ok(())
     }
 
     fn project_root(&self) -> Result<&Path, CoreError> {
@@ -2057,18 +2449,27 @@ impl ProjectStore {
                 result
             }
             None => {
-                let pending: Option<Option<String>> = self.connection.query_row(
-                    "SELECT result_json FROM sync_batches WHERE request_id=?1 AND state IN ('failed','exporting')",
+                let pending: Option<(Option<String>, String, Option<String>)> = self.connection.query_row(
+                    "SELECT result_json,state,error_kind FROM sync_batches WHERE request_id=?1 AND state IN ('failed','exporting','running')",
                     params![request_id],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 ).optional()?;
-                let Some(result) = pending.flatten() else {
+                let Some((result, state, error_kind)) = pending else {
                     return Ok(None);
                 };
-                self.sync_canonical_with_request_id_inner(
-                    request_id,
-                    serde_json::from_str(&result).ok().as_ref(),
-                )?;
+                let Some(result) = result else {
+                    return Ok(None);
+                };
+                if self.export_worker.is_some()
+                    && (state != "failed" || error_kind.as_deref() == Some("transient"))
+                {
+                    self.wake_export_worker();
+                } else {
+                    self.sync_canonical_with_request_id_inner(
+                        request_id,
+                        serde_json::from_str(&result).ok().as_ref(),
+                    )?;
+                }
                 result.to_string()
             }
         };
@@ -2278,7 +2679,6 @@ impl ProjectStore {
         }
 
         let entries = self.git_status_entries()?;
-        let staged_paths = self.git_staged_paths()?;
         let mut diagnostics = Vec::new();
         let unmerged_paths = entries
             .iter()
@@ -2304,7 +2704,16 @@ impl ProjectStore {
             );
         }
 
-        let report = self.reconcile_external_changes()?;
+        let report = if unmerged_paths.is_empty() {
+            self.flush_exports()?;
+            self.reconcile_external_changes()?
+        } else {
+            ExternalChangeReport {
+                changed: false,
+                paths: unmerged_paths.clone(),
+                diagnostics: Vec::new(),
+            }
+        };
         diagnostics.extend(report.diagnostics);
         let sync_state: String = self
             .connection
@@ -2317,6 +2726,12 @@ impl ProjectStore {
         if sync_state != "clean" {
             diagnostics.push(format!("index.state: {sync_state}"));
         }
+
+        // The flush may have created or replaced portable paths. Re-read Git
+        // state before constructing the staging preview so queued exports are
+        // visible to the caller.
+        let entries = self.git_status_entries()?;
+        let staged_paths = self.git_staged_paths()?;
 
         let noncanonical_staged = staged_paths
             .iter()
@@ -2799,7 +3214,7 @@ impl ProjectStore {
         })
     }
 
-    fn initialize(&self) -> Result<(), CoreError> {
+    fn initialize(&self, rebuild_derived: bool) -> Result<(), CoreError> {
         self.connection.execute_batch(
             "PRAGMA journal_mode = WAL;
              CREATE TABLE IF NOT EXISTS runtime_meta (
@@ -2814,7 +3229,10 @@ impl ProjectStore {
                clean_shutdown INTEGER NOT NULL DEFAULT 0,
                sync_state TEXT NOT NULL DEFAULT 'clean',
                dirty_count INTEGER NOT NULL DEFAULT 0,
-               last_git_identity TEXT
+               last_git_identity TEXT,
+               reconciliation_state TEXT NOT NULL DEFAULT 'idle',
+               reconciliation_paths TEXT NOT NULL DEFAULT '[]',
+               reconciliation_diagnostics TEXT NOT NULL DEFAULT '[]'
              );
              CREATE TABLE IF NOT EXISTS sync_batches (
                id TEXT PRIMARY KEY,
@@ -2823,6 +3241,8 @@ impl ProjectStore {
                created_at TEXT NOT NULL,
                completed_at TEXT,
                last_error TEXT,
+               error_kind TEXT,
+               attempt_count INTEGER NOT NULL DEFAULT 0,
                result_json TEXT
              );
              CREATE TABLE IF NOT EXISTS sync_items (
@@ -2875,6 +3295,12 @@ impl ProjectStore {
              );"
         )?;
         self.ensure_schema_column("sync_batches", "result_json", "TEXT")?;
+        self.ensure_schema_column("sync_batches", "error_kind", "TEXT")?;
+        self.ensure_schema_column(
+            "sync_batches",
+            "attempt_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         self.ensure_schema_column("sync_items", "expected_old_hash", "TEXT")?;
         self.ensure_schema_column("sync_items", "new_hash", "TEXT")?;
         self.ensure_schema_column(
@@ -2941,7 +3367,25 @@ impl ProjectStore {
                 ],
             )?;
         }
-        self.rebuild_search()?;
+        let clean_shutdown: bool = self.connection.query_row(
+            "SELECT clean_shutdown FROM runtime_meta WHERE key='runtime'",
+            [],
+            |row| row.get(0),
+        )?;
+        let search_table_exists: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='world_search')",
+            [],
+            |row| row.get(0),
+        )?;
+        let search_missing = !search_table_exists
+            || self.connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM entities WHERE deleted=0) AND NOT EXISTS(SELECT 1 FROM world_search)",
+                [],
+                |row| row.get(0),
+            )?;
+        if rebuild_derived || !clean_shutdown || search_missing {
+            self.rebuild_search()?;
+        }
         Ok(())
     }
 
@@ -3474,7 +3918,7 @@ impl ProjectStore {
             transaction.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value", params![field.entity_id, field.namespace, field.key, value])?;
         }
         transaction.commit()?;
-        self.sync_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
+        self.queue_canonical_with_request_id(&request_id, Some(&serde_json::Value::Null))?;
         Ok(())
     }
 
@@ -4192,10 +4636,26 @@ impl ProjectStore {
         };
         let (content_hash, size) = streamed_file_digest(source)?;
         let relative_path = format!("assets/{category}/{}-{}", Uuid::new_v4(), filename);
-        self.pending_asset_sources
-            .lock()
-            .map_err(|_| CoreError::Conflict("asset source state is poisoned".into()))?
-            .insert(relative_path.clone(), source.to_path_buf());
+        let request_id = self.request_id(request_id)?;
+        let staged_source = if let Some(root) = self.root.as_deref() {
+            let input_dir = root.join(".daena/sync").join(&request_id).join("input");
+            std::fs::create_dir_all(&input_dir).map_err(|source| CoreError::Io {
+                operation: "create streamed asset input directory",
+                source,
+            })?;
+            let staged = input_dir.join(format!("asset-{}", Uuid::new_v4()));
+            std::fs::copy(source, &staged).map_err(|source| CoreError::Io {
+                operation: "stage asset source for export",
+                source,
+            })?;
+            Some(staged)
+        } else {
+            self.pending_asset_sources
+                .lock()
+                .map_err(|_| CoreError::Conflict("asset source state is poisoned".into()))?
+                .insert(relative_path.clone(), source.to_path_buf());
+            None
+        };
         let result = self.register_asset_with_options(
             AssetInput {
                 entity_id: input.entity_id,
@@ -4207,9 +4667,12 @@ impl ProjectStore {
                 path: relative_path.clone(),
             },
             expected_revision,
-            request_id,
+            Some(&request_id),
         );
         if result.is_err() {
+            if let Some(staged) = staged_source.as_deref() {
+                self.cleanup_pending_asset_input(&relative_path, Some(staged));
+            }
             if let Ok(mut pending) = self.pending_asset_sources.lock() {
                 pending.remove(&relative_path);
             }
@@ -5139,7 +5602,7 @@ impl ProjectStore {
         let result = self.seed_example_unchecked();
         self.suppress_sync.set(false);
         result.and_then(|count| {
-            self.sync_canonical()?;
+            self.sync_canonical_without_queue_drain()?;
             Ok(count)
         })
     }
@@ -5635,7 +6098,7 @@ pub(crate) fn chrono_like_now() -> String {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs()
+        .as_nanos()
         .to_string()
 }
 

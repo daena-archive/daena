@@ -203,6 +203,13 @@ impl FilesystemRepository {
         read_canonical_project(&self.root)
     }
 
+    /// Inventory canonical paths and hashes without decoding the project
+    /// snapshot. Reconciliation uses this cheap boundary to classify changes;
+    /// validators are invoked only for the affected records.
+    pub fn source_manifest(&self) -> Result<Vec<CanonicalSource>, CoreError> {
+        collect_canonical_sources(&self.root)
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -1646,7 +1653,7 @@ fn read_existing_plugin_state(path: &Path) -> Result<Option<PluginStateFile>, Co
     Ok(Some(state))
 }
 
-fn canonical_json_string(value: &serde_json::Value) -> Result<String, CoreError> {
+pub(crate) fn canonical_json_string(value: &serde_json::Value) -> Result<String, CoreError> {
     let mut bytes = canonical_json_bytes(value)?;
     if bytes.last() == Some(&b'\n') {
         bytes.pop();
@@ -1685,6 +1692,169 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, CoreError> {
     let bytes =
         std::fs::read(path).map_err(|error| codec_error(path, "json.read", error.to_string()))?;
     parse_json(path, &bytes)
+}
+
+/// Read one entity document without traversing the rest of the project.
+/// Reconciliation uses this after the watcher has identified a document path;
+/// the full-project scanner remains reserved for startup/rebuild validation.
+pub(crate) fn read_canonical_document(
+    root: &Path,
+    entity_id: &str,
+) -> Result<Option<(String, String, String)>, CoreError> {
+    let entity_path = normalized_project_path(root, &format!("entities/{entity_id}/entity.json"))?;
+    let entity: EntityFile = read_json(&entity_path)?;
+    entity.validate(&entity_path)?;
+    let Some(document) = entity.document else {
+        return Ok(None);
+    };
+    let document_path =
+        normalized_project_path(root, &format!("entities/{entity_id}/document.md"))?;
+    if !document_path.exists() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(&document_path)
+        .map_err(|error| codec_error(&document_path, "markdown.read", error))?;
+    let body = canonical_markdown_bytes(&document_path, &bytes)?;
+    let body = String::from_utf8(body)
+        .map_err(|error| codec_error(&document_path, "markdown.utf8", error))?;
+    Ok(Some((document.id, body, entity.updated_at)))
+}
+
+pub(crate) fn read_canonical_entity(root: &Path, entity_id: &str) -> Result<EntityFile, CoreError> {
+    let path = normalized_project_path(root, &format!("entities/{entity_id}/entity.json"))?;
+    let entity: EntityFile = read_json(&path)?;
+    entity.validate(&path)?;
+    if entity.id != entity_id {
+        return Err(codec_error(
+            &path,
+            "entity.id",
+            "entity ID must match its directory",
+        ));
+    }
+    Ok(entity)
+}
+
+pub(crate) fn read_canonical_fields(
+    root: &Path,
+    entity_id: &str,
+    file_name: &str,
+) -> Result<Option<(String, FieldsFile)>, CoreError> {
+    let path = normalized_project_path(root, &format!("entities/{entity_id}/fields/{file_name}"))?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    if !file_name.ends_with(".json") {
+        return Err(codec_error(
+            &path,
+            "fields.file",
+            "field files must use .json",
+        ));
+    }
+    let stem = file_name.trim_end_matches(".json");
+    let mut parts = stem.split("--");
+    let _plugin_id = parts.next().unwrap_or_default();
+    let namespace = parts.next().unwrap_or_default();
+    if parts.next().is_some() || namespace.is_empty() {
+        return Err(codec_error(
+            &path,
+            "fields.filename",
+            "field filename must contain one plugin--namespace separator",
+        ));
+    }
+    validate_component(_plugin_id, &path, "fields.plugin-id")?;
+    validate_component(namespace, &path, "fields.namespace")?;
+    let values: FieldsFile = read_json(&path)?;
+    for key in values.keys() {
+        validate_component(key, &path, "field.key")?;
+    }
+    Ok(Some((namespace.to_string(), values)))
+}
+
+pub(crate) fn read_canonical_relationships(
+    root: &Path,
+    entity_id: &str,
+) -> Result<Vec<CanonicalRelationship>, CoreError> {
+    let path = normalized_project_path(root, &format!("entities/{entity_id}/relationships.json"))?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let file: RelationshipsFile = read_json(&path)?;
+    let mut ids = BTreeSet::new();
+    for relationship in &file.relationships {
+        validate_uuid(&path, "relationship.id", &relationship.id)?;
+        validate_uuid(&path, "relationship.target-id", &relationship.target_id)?;
+        if !ids.insert(relationship.id.clone())
+            || relationship.relationship_type.trim().is_empty()
+            || !relationship.metadata.is_object()
+        {
+            return Err(codec_error(
+                &path,
+                "relationship.value",
+                "relationship IDs, type, and object metadata must be valid",
+            ));
+        }
+    }
+    Ok(file.relationships)
+}
+
+pub(crate) fn read_canonical_assets(
+    root: &Path,
+    entity_id: &str,
+) -> Result<Vec<CanonicalAsset>, CoreError> {
+    let path = normalized_project_path(root, &format!("entities/{entity_id}/assets.json"))?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let file: AssetsFile = read_json(&path)?;
+    for asset in &file.assets {
+        validate_uuid(&path, "asset.id", &asset.id)?;
+        validate_component(&asset.namespace, &path, "asset.namespace")?;
+        validate_component(&asset.filename, &path, "asset.filename")?;
+        if asset.size < 0 {
+            return Err(codec_error(
+                &path,
+                "asset.size",
+                "asset size cannot be negative",
+            ));
+        }
+        let asset_path = normalized_project_path(root, &asset.path)?;
+        if !asset.path.starts_with("assets/") || !asset_path.is_file() {
+            return Err(codec_error(
+                &path,
+                "asset.path",
+                "asset must be below assets/",
+            ));
+        }
+        if digest_file(&asset_path)? != asset.content_hash
+            || std::fs::metadata(&asset_path)
+                .map_err(|error| codec_error(&asset_path, "asset.size", error))?
+                .len()
+                != asset.size as u64
+        {
+            return Err(codec_error(&path, "asset.integrity", asset.path.clone()));
+        }
+    }
+    Ok(file.assets)
+}
+
+pub(crate) fn read_canonical_plugin(
+    root: &Path,
+    plugin_id: &str,
+) -> Result<Option<PluginStateFile>, CoreError> {
+    let path = normalized_project_path(root, &format!("plugins/{plugin_id}.json"))?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let state: PluginStateFile = read_json(&path)?;
+    state.validate(&path)?;
+    if state.plugin_id != plugin_id {
+        return Err(codec_error(
+            &path,
+            "plugin.id",
+            "plugin ID must match its filename",
+        ));
+    }
+    Ok(Some(state))
 }
 
 pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), CoreError> {

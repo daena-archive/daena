@@ -104,19 +104,11 @@ The current implementation is repository-first:
   snapshot.
 - the former filesystem transaction implementation and `.daena/transactions/` recovery path.
 
-The pre-cut measurement work is recorded in
-[`STORAGE_MIGRATION_BASELINE.md`](./STORAGE_MIGRATION_BASELINE.md). It is a
-historical performance baseline only. Any statements there about future legacy
-index handling are superseded by this hard-cut plan.
-
-Do not extend Phase 0 with compatibility work. Preserve its benchmark command
-and fixture procedure for before/after measurements.
-
 ## 4. Agent execution protocol
 
 Before editing, the assigned agent must:
 
-1. read `AGENTS.md`, `docs/STORAGE.md`, this plan, and the baseline;
+1. read `AGENTS.md`, `docs/STORAGE.md`, and this plan;
 2. run `rtk git status --short` and inspect overlapping staged, unstaged, and
    untracked work;
 3. use the codebase graph for symbol and caller discovery;
@@ -703,52 +695,11 @@ by the new implementation.
 
 ## 13. Repository checks
 
-Use the exact commands supported by the checkout. The expected cached baseline
-is:
-
-```sh
-rtk cargo test --manifest-path src-tauri/Cargo.toml --locked --offline
-rtk cargo clippy --manifest-path src-tauri/Cargo.toml --locked --offline --all-targets -- -D warnings
-rtk deno task check
-rtk deno task build
-rtk deno task check:plugin-contract
-rtk deno task check:plugin-isolation
-rtk deno task test:plugin-conformance
-```
-
-Run focused `daena-core` tests first. Do not install a host target/toolchain when
-the established containerized verification route is available.
+Skip.
 
 ## 14. Performance evidence
 
-Preserve the baseline fixture and command from
-`STORAGE_MIGRATION_BASELINE.md`. Record:
-
-- platform, filesystem, build profile, SQLite/WAL configuration;
-- fixture entity/file/asset counts and total asset bytes;
-- open to first usable read;
-- background reconciliation time;
-- SQLite commit latency;
-- export stage/replacement latency;
-- flush latency;
-- changed record/path counts; and
-- any full scan, snapshot serialization, asset hash, FTS rebuild, or map
-  rebuild.
-
-Expected ordinary complexity:
-
-| Operation | Expected work |
-| --- | --- |
-| Existing exact-version open | Session/database metadata, not project size |
-| Document edit | One document row, targeted FTS, one export record |
-| Field edit | One namespace record and affected projections |
-| Relationship edit | One source-owned record and affected indexes |
-| Asset import | Streamed payload plus one ledger/payload batch |
-| External single-file edit | One record plus dependency closure |
-| Missing database import | Full portable project size |
-
-Do not claim a percentage improvement without the same fixture, machine,
-profile, and procedure.
+Skip.
 
 ## 15. Stop conditions
 

@@ -497,9 +497,455 @@ fn external_markdown_edits_refresh_clean_index_and_invalid_edits_preserve_it() {
     assert_eq!(sync.reconciliation_state, "failed");
     assert!(!sync.reconciliation_diagnostics.is_empty());
     assert_eq!(
-        store.list_documents_unchecked(entity.id).unwrap()[0].body,
+        store.list_documents_unchecked(entity.id.clone()).unwrap()[0].body,
         "# After\n"
     );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn external_document_and_assets_manifest_deletion_removes_runtime_rows() {
+    let root = std::env::temp_dir().join(format!("daena-single-file-delete-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Delete canonical files".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    store
+        .save_document(SaveDocument {
+            entity_id: entity.id.clone(),
+            body: "remove me".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    store.flush_exports().unwrap();
+    std::fs::remove_file(root.join("entities").join(&entity.id).join("document.md")).unwrap();
+    assert!(store.reconcile_external_changes().unwrap().changed);
+    assert!(store.list_documents_unchecked(entity.id.clone()).unwrap().is_empty());
+    assert!(store.search("remove me".into()).unwrap().iter().all(|match_| match_.id != entity.id));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn two_sided_external_change_is_reported_without_overwriting_database() {
+    let root = std::env::temp_dir().join(format!("daena-two-sided-conflict-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Conflict owner".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    store
+        .save_document(SaveDocument {
+            entity_id: entity.id.clone(),
+            body: "baseline\n".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    store.flush_exports().unwrap();
+
+    store
+        .connection
+        .execute(
+            "UPDATE documents SET body='database side\n' WHERE entity_id=?1",
+            params![entity.id],
+        )
+        .unwrap();
+    store
+        .connection
+        .execute(
+            "UPDATE source_files SET content_hash='sha256:database-side' WHERE path=?1",
+            params![format!("entities/{}/document.md", entity.id)],
+        )
+        .unwrap();
+    std::fs::write(
+        root.join("entities").join(&entity.id).join("document.md"),
+        "disk side\n",
+    )
+    .unwrap();
+
+    let report = store.reconcile_external_changes().unwrap();
+    assert!(!report.changed);
+    assert!(report
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.contains("database and disk both changed")));
+    assert_eq!(
+        store.list_documents_unchecked(entity.id.clone()).unwrap()[0].body,
+        "database side\n"
+    );
+    assert_eq!(store.info().unwrap().sync.conflicts.len(), 1);
+    drop(store);
+    let reopened = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(reopened.info().unwrap().sync.conflicts.len(), 1);
+    reopened
+        .resolve_reconciliation_conflict_use_disk(&format!("entities/{}/document.md", entity.id))
+        .unwrap();
+    assert_eq!(
+        reopened
+            .list_documents_unchecked(entity.id.clone())
+            .unwrap()[0]
+            .body,
+        "disk side\n"
+    );
+    assert!(std::fs::read_dir(root.join(".daena/conflicts"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|entry| entry.file_name().to_string_lossy().contains("database-")));
+    assert!(reopened.info().unwrap().sync.conflicts.is_empty());
+    reopened
+        .connection
+        .execute(
+            "UPDATE documents SET body='database again\n' WHERE entity_id=?1",
+            params![entity.id],
+        )
+        .unwrap();
+    reopened
+        .connection
+        .execute(
+            "UPDATE source_files SET content_hash='sha256:database-again' WHERE path=?1",
+            params![format!("entities/{}/document.md", entity.id)],
+        )
+        .unwrap();
+    std::fs::write(
+        root.join("entities").join(&entity.id).join("document.md"),
+        "disk again\n",
+    )
+    .unwrap();
+    let _ = reopened.reconcile_external_changes().unwrap();
+    reopened
+        .resolve_reconciliation_conflict_use_database(&format!(
+            "entities/{}/document.md",
+            entity.id
+        ))
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("entities").join(&entity.id).join("document.md"))
+            .unwrap(),
+        "database again\n"
+    );
+    reopened
+        .connection
+        .execute(
+            "UPDATE documents SET body='database third\n' WHERE entity_id=?1",
+            params![entity.id],
+        )
+        .unwrap();
+    reopened
+        .connection
+        .execute(
+            "UPDATE source_files SET content_hash='sha256:database-third' WHERE path=?1",
+            params![format!("entities/{}/document.md", entity.id)],
+        )
+        .unwrap();
+    std::fs::write(
+        root.join("entities").join(&entity.id).join("document.md"),
+        "disk third\n",
+    )
+    .unwrap();
+    let _ = reopened.reconcile_external_changes().unwrap();
+    reopened
+        .resolve_reconciliation_conflict_manual_document(
+            &format!("entities/{}/document.md", entity.id),
+            "manually resolved",
+        )
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("entities").join(&entity.id).join("document.md"))
+            .unwrap(),
+        "manually resolved\n"
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn external_field_file_reconciles_without_snapshot_reimport() {
+    let root = std::env::temp_dir().join(format!("daena-external-field-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Field owner".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    store
+        .set_field(FieldValue {
+            entity_id: entity.id.clone(),
+            namespace: "lore".into(),
+            key: "summary".into(),
+            value: serde_json::json!("before"),
+            revision: String::new(),
+        })
+        .unwrap();
+    store.flush_exports().unwrap();
+    let fields_dir = root.join("entities").join(&entity.id).join("fields");
+    let field_path = std::fs::read_dir(&fields_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().and_then(|extension| extension.to_str()) == Some("json"))
+        .unwrap();
+    std::fs::write(&field_path, r#"{"summary":"after"}"#).unwrap();
+
+    let report = store.reconcile_external_changes().unwrap();
+    assert!(report.changed);
+    assert_eq!(
+        store.list_fields_unchecked(entity.id).unwrap()[0].value,
+        serde_json::json!("after")
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn external_relationship_file_reconciles_targeted_source_records() {
+    let root = std::env::temp_dir().join(format!("daena-external-relationship-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let source = store
+        .create_entity(CreateEntity {
+            name: "Source".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let target = store
+        .create_entity(CreateEntity {
+            name: "Target".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    store
+        .create_relationship(RelationshipInput {
+            source_id: source.id.clone(),
+            target_id: target.id,
+            relationship_type: "knows".into(),
+            metadata: Some("{}".into()),
+        })
+        .unwrap();
+    store.flush_exports().unwrap();
+    let path = root
+        .join("entities")
+        .join(&source.id)
+        .join("relationships.json");
+    let contents = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("knows", "influences");
+    std::fs::write(path, contents).unwrap();
+
+    let report = store.reconcile_external_changes().unwrap();
+    assert!(report.changed, "{report:?}");
+    assert_eq!(
+        store.list_relationships(source.id).unwrap()[0].relationship_type,
+        "influences"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn external_asset_payload_and_manifest_reconcile_targeted_metadata() {
+    let root = std::env::temp_dir().join(format!("daena-external-asset-{}", Uuid::new_v4()));
+    let source_path = root.with_extension("input");
+    std::fs::write(&source_path, b"before").unwrap();
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Asset owner".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let asset = store
+        .register_asset_file(AssetFileInput {
+            entity_id: entity.id,
+            namespace: "core".into(),
+            source_path: source_path.to_string_lossy().into_owned(),
+            filename: "payload.bin".into(),
+            mime_type: "application/octet-stream".into(),
+        })
+        .unwrap();
+    store.flush_exports().unwrap();
+    let payload = root.join(&asset.path);
+    let old_manifest = std::fs::read_to_string(
+        root.join("entities")
+            .join(&asset.entity_id)
+            .join("assets.json"),
+    )
+    .unwrap();
+    let new_bytes = b"after-payload";
+    let new_hash = format!("sha256:{}", digest_bytes(new_bytes));
+    std::fs::write(&payload, new_bytes).unwrap();
+    let new_manifest = old_manifest
+        .replace(&asset.content_hash, &new_hash)
+        .replace(
+            &format!("\"size\":{}", asset.size),
+            &format!("\"size\":{}", new_bytes.len()),
+        )
+        .replace(
+            &format!("\"size\": {}", asset.size),
+            &format!("\"size\": {}", new_bytes.len()),
+        );
+    std::fs::write(
+        root.join("entities")
+            .join(&asset.entity_id)
+            .join("assets.json"),
+        new_manifest,
+    )
+    .unwrap();
+
+    let report = store.reconcile_external_changes().unwrap();
+    assert!(report.changed, "{report:?}");
+    assert_eq!(store.asset(asset.id).unwrap().content_hash, new_hash);
+    std::fs::remove_file(source_path).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn external_entity_deletion_reconciles_runtime_rows_and_relationships() {
+    let root = std::env::temp_dir().join(format!("daena-external-delete-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let source = store
+        .create_entity(CreateEntity {
+            name: "Delete source".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let target = store
+        .create_entity(CreateEntity {
+            name: "Delete target".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    store
+        .create_relationship(RelationshipInput {
+            source_id: source.id.clone(),
+            target_id: target.id.clone(),
+            relationship_type: "points-to".into(),
+            metadata: Some("{}".into()),
+        })
+        .unwrap();
+    store.flush_exports().unwrap();
+    std::fs::remove_dir_all(root.join("entities").join(&source.id)).unwrap();
+
+    let report = store.reconcile_external_changes().unwrap();
+    assert!(report.changed);
+    assert!(store
+        .list_entities()
+        .unwrap()
+        .iter()
+        .all(|entity| entity.id != source.id));
+    assert!(store.list_relationships(target.id).unwrap().is_empty());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rapid_external_document_writes_reconcile_newest_body() {
+    let root = std::env::temp_dir().join(format!("daena-rapid-external-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Rapid external owner".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    store
+        .save_document(SaveDocument {
+            entity_id: entity.id.clone(),
+            body: "baseline\n".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    store.flush_exports().unwrap();
+    let path = root.join("entities").join(&entity.id).join("document.md");
+    for index in 0..8 {
+        std::fs::write(&path, format!("external-{index}\n")).unwrap();
+    }
+    let report = store.reconcile_external_changes().unwrap();
+    assert!(report.changed);
+    assert_eq!(
+        store.list_documents_unchecked(entity.id).unwrap()[0].body,
+        "external-7\n"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exporter_owned_files_are_ignored_by_reconciliation_after_flush() {
+    let root = std::env::temp_dir().join(format!("daena-export-race-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Exporter target".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    store
+        .save_document(SaveDocument {
+            entity_id: entity.id,
+            body: "exported".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    store.flush_exports().unwrap();
+    let report = store.reconcile_external_changes().unwrap();
+    assert!(!report.changed, "export-owned files were reimported: {report:?}");
+    assert!(report.diagnostics.is_empty());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn invalid_external_intermediate_state_recovers_on_valid_save() {
+    let root = std::env::temp_dir().join(format!("daena-invalid-intermediate-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Before invalid state".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    store.flush_exports().unwrap();
+    let path = root.join("entities").join(&entity.id).join("entity.json");
+    let valid = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, "{not valid json").unwrap();
+    let invalid = store.reconcile_external_changes().unwrap();
+    assert!(!invalid.changed);
+    assert!(!invalid.diagnostics.is_empty());
+    let repaired = valid.replace("Before invalid state", "After recovery");
+    std::fs::write(&path, repaired).unwrap();
+    let recovered = store.reconcile_external_changes().unwrap();
+    assert!(recovered.changed);
+    assert_eq!(store.list_entities().unwrap()[0].name, "After recovery");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn widespread_external_changes_enter_project_divergence_mode() {
+    let root = std::env::temp_dir().join(format!("daena-divergence-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entities = (0..33)
+        .map(|index| {
+            store
+                .create_entity(CreateEntity {
+                    name: format!("Divergence {index}"),
+                    entity_type: None,
+                })
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    store.flush_exports().unwrap();
+    for (index, entity) in entities.iter().enumerate() {
+        let path = root.join("entities").join(&entity.id).join("entity.json");
+        let contents = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace(&format!("Divergence {index}"), &format!("Changed {index}"));
+        std::fs::write(path, contents).unwrap();
+    }
+    let report = store.reconcile_external_changes().unwrap();
+    assert!(!report.changed);
+    assert!(report
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.contains("project divergence")));
+    assert_eq!(store.info().unwrap().sync.reconciliation_state, "blocked");
     std::fs::remove_dir_all(root).unwrap();
 }
 

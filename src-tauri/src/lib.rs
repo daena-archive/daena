@@ -21,6 +21,7 @@ use daena_plugin_host::{
     plugin_window_label, webview_policy, ArchiveLimits, DependencyResolver, PluginHost, Session,
     VerificationPolicy, BUNDLED_TIMELINE_SERVICE_WASM,
 };
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
@@ -411,6 +412,7 @@ impl BinaryTransferManager {
 #[derive(Default)]
 struct ProjectWatcher {
     stop: Option<mpsc::Sender<()>>,
+    filesystem: Option<RecommendedWatcher>,
 }
 
 type SharedProjectWatcher = Arc<Mutex<ProjectWatcher>>;
@@ -422,6 +424,7 @@ fn stop_project_watcher(watcher: &SharedProjectWatcher) -> Result<(), String> {
     if let Some(stop) = watcher.stop.take() {
         let _ = stop.send(());
     }
+    watcher.filesystem.take();
     Ok(())
 }
 
@@ -437,10 +440,31 @@ fn start_project_watcher(
         .info()
         .ok_or_else(|| "project is not open".to_string())?;
     let (stop, receiver) = mpsc::channel();
+    let (event_sender, event_receiver) = mpsc::channel();
+    let root = state
+        .lock()
+        .map_err(|_| "core lock poisoned".to_string())?
+        .info()
+        .ok_or_else(|| "project is not open".to_string())?
+        .root;
+    let mut filesystem = RecommendedWatcher::new(
+        move |_| {
+            let _ = event_sender.send(());
+        },
+        notify::Config::default(),
+    )
+    .map_err(|error| format!("start filesystem watcher: {error}"))?;
+    filesystem
+        .watch(std::path::Path::new(&root), RecursiveMode::Recursive)
+        .map_err(|error| format!("watch project root: {error}"))?;
     watcher
         .lock()
         .map_err(|_| "project watcher lock poisoned".to_string())?
         .stop = Some(stop);
+    watcher
+        .lock()
+        .map_err(|_| "project watcher lock poisoned".to_string())?
+        .filesystem = Some(filesystem);
     let app = app.clone();
     let state = state.clone();
     thread::spawn(move || {
@@ -448,8 +472,19 @@ fn start_project_watcher(
         let mut last_report = String::new();
         let mut pending_report: Option<ExternalChangeReport> = None;
         loop {
-            if !first_pass && receiver.recv_timeout(Duration::from_millis(500)).is_ok() {
-                break;
+            if !first_pass {
+                loop {
+                    match receiver.try_recv() {
+                        Ok(()) => return,
+                        Err(mpsc::TryRecvError::Disconnected) => return,
+                        Err(mpsc::TryRecvError::Empty) => {}
+                    }
+                    match event_receiver.recv_timeout(Duration::from_millis(500)) {
+                        Ok(()) => break,
+                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                    }
+                }
             }
             first_pass = false;
             let report = state.lock().ok().and_then(|core| {
@@ -459,7 +494,7 @@ fn start_project_watcher(
             });
             let Some(report) = report else { continue };
             if report.changed {
-                pending_report = Some(report);
+                pending_report = Some(merge_external_change_reports(pending_report.take(), report));
                 continue;
             }
             let report = if !report.diagnostics.is_empty() {
@@ -482,6 +517,47 @@ fn start_project_watcher(
         }
     });
     Ok(())
+}
+
+fn semantic_external_path(path: &str) -> String {
+    let mut parts = path.split('/');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some("entities"), Some(entity_id), Some(_)) => {
+            format!("entities/{entity_id}/")
+        }
+        _ => path.to_string(),
+    }
+}
+
+fn merge_external_change_reports(
+    previous: Option<ExternalChangeReport>,
+    next: ExternalChangeReport,
+) -> ExternalChangeReport {
+    let Some(mut previous) = previous else {
+        return ExternalChangeReport {
+            changed: next.changed,
+            paths: next
+                .paths
+                .iter()
+                .map(|path| semantic_external_path(path))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            diagnostics: next.diagnostics,
+        };
+    };
+    previous.changed |= next.changed;
+    previous.paths.extend(
+        next.paths
+            .iter()
+            .map(|path| semantic_external_path(path)),
+    );
+    previous.paths.sort();
+    previous.paths.dedup();
+    previous.diagnostics.extend(next.diagnostics);
+    previous.diagnostics.sort();
+    previous.diagnostics.dedup();
+    previous
 }
 
 fn percent_encode(value: &str) -> String {
@@ -4118,6 +4194,63 @@ async fn project_reconcile_external_changes(
 }
 
 #[tauri::command]
+async fn project_finish_divergence_export(
+    state: tauri::State<'_, SharedCore>,
+) -> Result<(), String> {
+    with_core(state, |core| {
+        core.project_mut(trusted_shell())?.finish_divergence_export()
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_rebuild_from_files(
+    state: tauri::State<'_, SharedCore>,
+) -> Result<ExternalChangeReport, String> {
+    with_core(state, |core| {
+        core.project_mut(trusted_shell())?.rebuild_from_files()
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_resolve_conflict_use_disk(
+    state: tauri::State<'_, SharedCore>,
+    path: String,
+) -> Result<ExternalChangeReport, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .resolve_reconciliation_conflict_use_disk(&path)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_resolve_conflict_use_database(
+    state: tauri::State<'_, SharedCore>,
+    path: String,
+) -> Result<(), String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .resolve_reconciliation_conflict_use_database(&path)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_resolve_conflict_manual_document(
+    state: tauri::State<'_, SharedCore>,
+    path: String,
+    body: String,
+) -> Result<(), String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .resolve_reconciliation_conflict_manual_document(&path, &body)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn project_save_recovery_copy(
     state: tauri::State<'_, SharedCore>,
     entity_id: String,
@@ -5202,6 +5335,11 @@ pub fn run() {
             project_close,
             project_info,
             project_reconcile_external_changes,
+            project_finish_divergence_export,
+            project_rebuild_from_files,
+            project_resolve_conflict_use_disk,
+            project_resolve_conflict_use_database,
+            project_resolve_conflict_manual_document,
             project_save_recovery_copy,
             project_git_status,
             project_git_preflight,

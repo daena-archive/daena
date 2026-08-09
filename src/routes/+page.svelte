@@ -522,7 +522,7 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     const sync = info?.sync;
     if (!sync) return "Storage status unavailable";
     if (sync.state === "failed") return `Export failed · ${sync.diagnostics.length} item${sync.diagnostics.length === 1 ? "" : "s"}`;
-    if (sync.reconciliation_state === "blocked") return "External changes blocked by Git conflict";
+    if (sync.reconciliation_state === "blocked") return "External changes require project review";
     if (sync.reconciliation_state === "failed") return "External changes need attention";
     if (sync.state === "exporting") return `Saving to project files · ${sync.dirty_count} pending`;
     if (sync.reconciliation_state === "reconciled") return "External changes reconciled";
@@ -1167,6 +1167,29 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
     catch (cause) { error = friendlyError(cause); }
   }
 
+  async function resolveReconciliationConflict(path: string, useDisk: boolean) {
+    try {
+      if (useDisk) await project.resolveConflictUseDisk(path);
+      else await project.resolveConflictUseDatabase(path);
+      projectInfo = await project.info();
+      await loadEntities();
+      if (selected && path.startsWith(`entities/${selected.id}/`)) await reloadSelectedFromDisk();
+    } catch (cause) {
+      projectDiagnostics = [friendlyError(cause)];
+    }
+  }
+
+  async function resolveDocumentConflictManually(path: string) {
+    if (!selected || !path.endsWith(`/document.md`) || !path.startsWith(`entities/${selected.id}/`)) return;
+    try {
+      await project.resolveConflictManualDocument(path, documentBody);
+      projectInfo = await project.info();
+      await reloadSelectedFromDisk();
+    } catch (cause) {
+      projectDiagnostics = [friendlyError(cause)];
+    }
+  }
+
   async function reloadConflict() {
     try { await reloadSelectedFromDisk(); }
     catch (cause) { error = friendlyError(cause); }
@@ -1641,6 +1664,25 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
       if (request === searchRequest) error = friendlyError(cause);
     }
   }
+  async function reviewExternalChanges() {
+    try {
+      await project.reconcileExternalChanges();
+      projectInfo = await project.info();
+    } catch (cause) { error = friendlyError(cause); }
+  }
+  async function finishDivergenceExport() {
+    try {
+      await project.finishDivergenceExport();
+      projectInfo = await project.info();
+    } catch (cause) { error = friendlyError(cause); }
+  }
+  async function rebuildProjectFromFiles() {
+    try {
+      await project.rebuildFromFiles();
+      projectInfo = await project.info();
+      await loadEntities();
+    } catch (cause) { error = friendlyError(cause); }
+  }
   $effect(() => {
     const term = globalQuery.trim();
     if (!ready || !term) {
@@ -2060,6 +2102,8 @@ import { project, type Asset, type Entity, type Relationship, type MapLocation, 
       <section class="empty-workspace-state"><div class="disabled-icon">◌</div><span class="overline">WORKSPACE READY</span><h1>Choose a workspace to begin.</h1><p>No workspace modules are enabled in this project. Enable one from Settings → Plugins to start working.</p><button class="primary-button" onclick={() => void openSettings("plugins")}>Open Plugins</button></section>
     {:else}
       {#if projectDiagnostics.length}<div class="project-diagnostics" role="alert"><strong>Canonical source diagnostics</strong>{#each projectDiagnostics as diagnostic}<span>{diagnostic}</span>{/each}<small>Editing is read-only until the source files are valid again.</small></div>{/if}
+      {#if projectInfo?.sync.reconciliation_state === "blocked"}<div class="project-diagnostics project-conflicts" role="alert"><strong>External changes require review</strong>{#each projectInfo.sync.reconciliation_diagnostics as diagnostic}<span>{diagnostic}</span>{/each}<div class="conflict-actions"><button class="quiet-button" onclick={() => void reviewExternalChanges()}>Review changes</button><button class="quiet-button" onclick={() => void finishDivergenceExport()}>Finish database export</button><button class="quiet-button" onclick={() => void rebuildProjectFromFiles()}>Rebuild from files</button></div></div>{/if}
+      {#if projectInfo?.sync.conflicts.length}<div class="project-diagnostics project-conflicts" role="alert"><strong>External conflicts need a decision</strong>{#each projectInfo.sync.conflicts as conflict}<span>{conflict.path}</span><details class="conflict-compare"><summary>Compare stored versions</summary><small>Baseline: {conflict.baseline_hash ?? "missing"}</small><small>Database: {conflict.database_hash ?? "missing"}</small><small>Disk: {conflict.disk_hash ?? "missing"}</small></details><div class="conflict-actions"><button class="quiet-button" onclick={() => void resolveReconciliationConflict(conflict.path, true)}>Use disk version</button><button class="quiet-button" onclick={() => void resolveReconciliationConflict(conflict.path, false)}>Use database version</button>{#if selected && conflict.path === `entities/${selected.id}/document.md`}<button class="quiet-button" onclick={() => void resolveDocumentConflictManually(conflict.path)}>Use current draft</button>{/if}</div>{/each}</div>{/if}
       <div class="workspace-heading"><div><span class="overline">{section === "lore" ? "WORLD BIBLE" : section === "timeline" ? "CHRONOLOGY" : "DRAFTING DESK"}</span><h1>{sectionLabel()}</h1><p>{section === "lore" ? "A living reference for every person, place, and power." : section === "timeline" ? "Events, eras, and the threads that connect them." : writingView === "manuscripts" ? "Draft stories, essays, and other long-form work." : "Build the pages, notes, and references behind the story."}</p></div><div class="heading-actions">{#if section !== "writing"}<button class="quiet-button" onclick={openProjection}>Open {section === "lore" ? "graph" : "timeline"} ↗</button>{/if}</div></div>
       <section class="workspace-grid">
         <aside class="collection-panel panel-surface">

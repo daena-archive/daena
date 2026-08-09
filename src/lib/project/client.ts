@@ -17,6 +17,7 @@ export interface MapLocation { id: string; mapEntityId: string; role: string; la
 export interface MapRecoveryCopy { fileName: string; path: string; createdAt: string; }
 export interface Asset { id: string; entity_id: string; namespace: string; filename: string; content_hash: string; size: number; mime_type: string; path: string; created_at: string; revision: string; }
 export interface SyncDiagnostic { batch_id: string; request_id: string; state: string; attempt_count: number; error_kind: string | null; last_error: string | null; target_path: string | null; }
+export interface ReconciliationConflict { path: string; baseline_hash: string | null; database_hash: string | null; disk_hash: string | null; state: string; }
 export interface SyncSummary {
   state: string;
   dirty_count: number;
@@ -24,6 +25,7 @@ export interface SyncSummary {
   reconciliation_state: string;
   reconciliation_paths: string[];
   reconciliation_diagnostics: string[];
+  conflicts: ReconciliationConflict[];
 }
 export interface ProjectInfo { name: string; root: string; index_status: string; assets: string; sync: SyncSummary; }
 export interface ExternalChangeReport { changed: boolean; paths: string[]; diagnostics: string[]; }
@@ -184,6 +186,11 @@ export const project = {
   close: () => invoke<void>("project_close"),
   info: () => invoke<ProjectInfo | null>("project_info"),
   reconcileExternalChanges: () => invoke<ExternalChangeReport>("project_reconcile_external_changes"),
+  finishDivergenceExport: () => invoke<void>("project_finish_divergence_export"),
+  rebuildFromFiles: () => invoke<ExternalChangeReport>("project_rebuild_from_files"),
+  resolveConflictUseDisk: (path: string) => invoke<ExternalChangeReport>("project_resolve_conflict_use_disk", { path }),
+  resolveConflictUseDatabase: (path: string) => invoke<void>("project_resolve_conflict_use_database", { path }),
+  resolveConflictManualDocument: (path: string, body: string) => invoke<void>("project_resolve_conflict_manual_document", { path, body }),
   saveRecoveryCopy: (entityId: string, body: string) => invoke<string>("project_save_recovery_copy", { entityId, body }),
   gitStatus: () => invoke<GitStatus>("project_git_status"),
   gitPreflight: () => invoke<GitPreflight>("project_git_preflight"),

@@ -9,10 +9,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use daena_core::{
-    Asset, AssetFileInput, AssetInput, AssetReplaceInput, AuthorityContext, CheckpointHandle,
-    CoreError, CoreService, CreateEntity, Entity, ExternalChangeReport, FieldValue, GitLogEntry,
-    GitPreflight, GitRemote, GitResetResult, GitStatus, GitToolInfo, Migration, Operation,
-    ProjectInfo, ProjectStore, Relationship, RelationshipInput, SaveDocument, SaveEntry,
+    read_json, validate_checkpoint, Asset, AssetFileInput, AssetInput, AssetReplaceInput,
+    AuthorityContext, CheckpointHandle, CheckpointManifest, CoreError, CoreService, CreateEntity,
+    Entity, ExternalChangeReport, FieldValue, GitLogEntry, GitPreflight, GitRemote, GitResetResult,
+    GitStatus, GitToolInfo, Migration, Operation, ProjectInfo, ProjectStore, Relationship,
+    RelationshipInput, SaveDocument, SaveEntry,
 };
 use daena_plugin_api::{
     CommandAction, MigrationOperation, PluginManifest, RpcRequest, RpcResponse, ViewComponent,
@@ -517,6 +518,7 @@ fn start_project_watcher(
         .map_err(|_| "project watcher lock poisoned".to_string())?
         .filesystem = Some(filesystem);
     let app = app.clone();
+    let watched_core = state.clone();
     let startup_filter_until = Instant::now() + Duration::from_secs(1);
     thread::spawn(move || loop {
         match receiver.try_recv() {
@@ -546,6 +548,21 @@ fn start_project_watcher(
                     .flatten()
                     != startup_snapshot.get(path).cloned()
             });
+        }
+        // Mutations are committed to SQLite before the asynchronous exporter
+        // rewrites the portable tree. Do not classify that in-flight export
+        // as an external edit.
+        let app_export_pending = current_info(&watched_core)
+            .ok()
+            .flatten()
+            .map(|info| info.sync.state == "pending")
+            .unwrap_or(false);
+        if !paths.is_empty() && app_export_pending {
+            continue;
+        }
+        if !paths.is_empty() && portable_checkpoint_is_current(std::path::Path::new(&watched_root))
+        {
+            continue;
         }
         if !paths.is_empty() {
             let _ = app.emit("project-portable-files-changed", paths);
@@ -610,6 +627,14 @@ fn portable_path_fingerprint(
         return Ok(Some(format!("file:{:x}", Sha256::digest(bytes))));
     }
     Ok(Some("other".into()))
+}
+
+fn portable_checkpoint_is_current(root: &std::path::Path) -> bool {
+    let checkpoint_path = root.join(daena_core::CHECKPOINT_MANIFEST_FILE);
+    let Ok(checkpoint) = read_json::<CheckpointManifest>(&checkpoint_path) else {
+        return false;
+    };
+    validate_checkpoint(root, &checkpoint).is_ok()
 }
 
 fn watched_portable_path(root: &std::path::Path, path: &std::path::Path) -> Option<String> {

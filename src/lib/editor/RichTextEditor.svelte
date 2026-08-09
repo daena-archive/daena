@@ -23,6 +23,7 @@
   export let placeholder = "Start writing…";
   export let onChange: (value: string) => void = () => {};
   export let onSelectionChange: (markdown: string, plainText: string) => void = () => {};
+  export let onAiRequest: (action: "rewrite" | "generate" | "concise" | "expand" | "grammar" | "tone" | "custom", markdown: string, plainText: string, context: string) => void = () => {};
   export let editable = true;
   export let fullscreen = false;
   export let onFullscreenChange: (value: boolean) => void = () => {};
@@ -32,6 +33,10 @@
   let editorState: Editor | null = null;
   let currentMarkdown = "";
   let editorText = "";
+  let selectionText = "";
+  let selectionMarkdown = "";
+  let aiMenuOpen = false;
+  let aiRequestRange: { from: number; to: number } | null = null;
   let isFullscreen = false;
   $: wordCountValue = editorText.trim() ? editorText.trim().split(/\s+/).length : 0;
   $: characterCountValue = editorText.length;
@@ -64,10 +69,13 @@
     if (!editor) return;
     const { from, to } = editor.state.selection;
     if (from === to) {
+      selectionText = "";
+      selectionMarkdown = "";
       onSelectionChange("", "");
       return;
     }
     const plainText = editor.state.doc.textBetween(from, to, "\n");
+    selectionText = plainText;
     try {
       const start = editor.view.domAtPos(from);
       const end = editor.view.domAtPos(to);
@@ -76,8 +84,10 @@
       range.setEnd(end.node, end.offset);
       const wrapper = document.createElement("div");
       wrapper.appendChild(range.cloneContents());
-      onSelectionChange(htmlToMarkdown(wrapper.innerHTML), plainText);
+      selectionMarkdown = htmlToMarkdown(wrapper.innerHTML);
+      onSelectionChange(selectionMarkdown, plainText);
     } catch {
+      selectionMarkdown = plainText;
       onSelectionChange(plainText, plainText);
     }
   }
@@ -105,6 +115,24 @@
 
   function focusEditorSurface(event: MouseEvent) {
     if (event.target === event.currentTarget) editor?.commands.focus();
+  }
+
+  function requestAi(action: "rewrite" | "generate" | "concise" | "expand" | "grammar" | "tone" | "custom") {
+    if (!editor || (action !== "generate" && !selectionText.trim())) return;
+    const { from, to } = editor.state.selection;
+    aiRequestRange = { from, to };
+    aiMenuOpen = false;
+    const beforeCursor = editor.state.doc.textBetween(0, from, "\n").slice(-8000);
+    const afterCursor = editor.state.doc.textBetween(to, editor.state.doc.content.size, "\n").slice(0, 8000);
+    const cursorContext = `${beforeCursor}\n[CURSOR]\n${afterCursor}`.trim();
+    onAiRequest(action, selectionMarkdown, selectionText, action === "generate" ? cursorContext : selectionMarkdown);
+  }
+
+  export function insertAiTextAtRequest(value: string): boolean {
+    if (!editor || !aiRequestRange) return false;
+    const inserted = editor.chain().focus().insertContentAt(aiRequestRange, value).run();
+    aiRequestRange = null;
+    return inserted;
   }
 
   function blockStyle(): string {
@@ -263,6 +291,21 @@
         <button type="button" title="Clear formatting" aria-label="Clear formatting" onclick={() => run((currentEditor) => currentEditor.chain().focus().clearNodes().unsetAllMarks().run())}>Tx</button>
       {/if}
     </div>
+    <span class="toolbar-divider"></span>
+    <div class="ai-toolbar-menu-control">
+      <button class="ai-toolbar-button" type="button" title="Ask AI" aria-label="Ask AI" aria-haspopup="menu" aria-expanded={aiMenuOpen} disabled={!editable} onmousedown={(event) => event.preventDefault()} onclick={() => (aiMenuOpen = !aiMenuOpen)}>✦</button>
+      {#if aiMenuOpen}
+        <div class="ai-toolbar-menu" role="menu" aria-label="Ask AI">
+          <button type="button" role="menuitem" disabled={!selectionText.trim()} onmousedown={(event) => event.preventDefault()} onclick={() => requestAi("rewrite")}>Rewrite selection</button>
+          <button type="button" role="menuitem" onmousedown={(event) => event.preventDefault()} onclick={() => requestAi("generate")}>Generate text</button>
+          <button type="button" role="menuitem" disabled={!selectionText.trim()} onmousedown={(event) => event.preventDefault()} onclick={() => requestAi("concise")}>Make concise</button>
+          <button type="button" role="menuitem" disabled={!selectionText.trim()} onmousedown={(event) => event.preventDefault()} onclick={() => requestAi("expand")}>Expand</button>
+          <button type="button" role="menuitem" disabled={!selectionText.trim()} onmousedown={(event) => event.preventDefault()} onclick={() => requestAi("grammar")}>Fix grammar</button>
+          <button type="button" role="menuitem" disabled={!selectionText.trim()} onmousedown={(event) => event.preventDefault()} onclick={() => requestAi("tone")}>Change tone</button>
+          <button type="button" role="menuitem" onmousedown={(event) => event.preventDefault()} onclick={() => requestAi("custom")}>Custom instruction</button>
+        </div>
+      {/if}
+    </div>
     <button class="fullscreen-toggle" type="button" title={isFullscreen ? "Exit full screen editor (Esc)" : "Open full screen editor"} aria-label={isFullscreen ? "Exit full screen editor" : "Open full screen editor"} aria-pressed={isFullscreen} onclick={toggleFullscreen}>{isFullscreen ? "×" : "⛶"}</button>
   </div>
 
@@ -293,6 +336,14 @@
   .editor-toolbar button:disabled { color: var(--ink-faint, #aaa79d); cursor: not-allowed; opacity: .65; }
   .editor-toolbar button:disabled:hover { border-color: transparent; background: transparent; }
   .editor-toolbar button code { font-size: 11px; }
+  .ai-toolbar-menu-control { position: relative; }
+  .editor-toolbar button.ai-toolbar-button { color: var(--accent-dark, #365342); font-size: 17px; }
+  .editor-toolbar button.ai-toolbar-button:not(:disabled) { border-color: #d3c0a9; background: #f8efe3; }
+  .editor-toolbar button.ai-toolbar-button:not(:disabled):hover { background: #f2e4d2; }
+  .ai-toolbar-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; display: grid; min-width: 174px; padding: 5px; border: 1px solid #d8cdbd; border-radius: 8px; background: var(--surface, #fffefa); box-shadow: 0 10px 24px rgba(48,45,38,.16); }
+  .ai-toolbar-menu button { justify-content: flex-start; width: 100%; min-width: 0; height: 30px; padding: 0 9px; border: 0; border-radius: 5px; color: var(--ink-soft, #77766d); font-size: 11px; text-align: left; }
+  .ai-toolbar-menu button:hover, .ai-toolbar-menu button:focus-visible { border-color: transparent; background: var(--surface-muted, #f4f2ec); color: var(--ink, #302a27); outline: 0; }
+  .ai-toolbar-menu button:disabled { color: var(--ink-faint, #aaa79d); cursor: not-allowed; opacity: .55; }
   .toolbar-group[aria-label="History"] { gap: 4px; }
   .editor-toolbar button.history-button { width: 36px; min-width: 36px; padding: 0; font-family: "Apple Symbols", "Segoe UI Symbol", sans-serif; font-size: 21px; font-weight: 400; line-height: 1; }
   .fullscreen-toggle { margin-left: auto; font-size: 16px !important; }

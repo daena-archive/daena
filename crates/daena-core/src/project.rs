@@ -1485,7 +1485,7 @@ impl ProjectStore {
 
     fn revision_for_document(&self, id: &str) -> Result<String, CoreError> {
         let value = self.connection.query_row(
-            "SELECT id,entity_id,format,body,updated_at FROM documents WHERE id=?1",
+            "SELECT id,entity_id,format,body FROM documents WHERE id=?1",
             params![id],
             |row| {
                 Ok((
@@ -1493,7 +1493,6 @@ impl ProjectStore {
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
                 ))
             },
         )?;

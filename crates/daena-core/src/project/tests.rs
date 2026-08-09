@@ -1195,6 +1195,33 @@ fn updates_canonical_document_and_preserves_namespaced_fields() {
 }
 
 #[test]
+fn saving_identical_document_content_preserves_revision() {
+    let store = ProjectStore::in_memory().unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Stable revision".into(),
+            entity_type: Some("manuscript".into()),
+        })
+        .unwrap();
+    let document = SaveDocument {
+        entity_id: entity.id.clone(),
+        body: "The same content.".into(),
+        format: Some("markdown".into()),
+    };
+
+    store.save_document(document.clone()).unwrap();
+    let first_revision = store.list_documents(entity.id.clone()).unwrap()[0]
+        .revision
+        .clone();
+    store.save_document(document).unwrap();
+    let second_revision = store.list_documents(entity.id).unwrap()[0]
+        .revision
+        .clone();
+
+    assert_eq!(first_revision, second_revision);
+}
+
+#[test]
 fn opening_and_updating_rebuilds_search_for_documents_and_fields() {
     let path = std::env::temp_dir().join(format!("daena-search-test-{}", Uuid::new_v4()));
     {

@@ -62,6 +62,27 @@ fn watcher_startup_snapshot_distinguishes_initial_state_from_external_changes() 
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn watcher_accepts_the_app_owned_checkpoint_but_flags_external_edits() {
+    let root =
+        std::env::temp_dir().join(format!("daena-watcher-checkpoint-{}", uuid::Uuid::new_v4()));
+    let project = ProjectStore::open_directory(&root).unwrap();
+    project
+        .create_entity(CreateEntity {
+            name: "Checkpoint owner".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    project.flush_checkpoint("watcher test").unwrap();
+    assert!(portable_checkpoint_is_current(&root));
+
+    std::fs::write(root.join("project.json"), b"external edit").unwrap();
+    assert!(!portable_checkpoint_is_current(&root));
+
+    drop(project);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn ai_test_host() -> SharedPluginHost {
     Arc::new(Mutex::new(bundled_plugin_host(new_shared_core()).unwrap()))
 }

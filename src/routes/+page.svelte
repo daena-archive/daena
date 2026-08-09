@@ -105,16 +105,19 @@
   let aiUsage = $state<{ inputTokens: number; outputTokens: number; totalTokens: number } | null>(null);
   let aiRewriteOpen = $state(false);
   let aiBusy = $state(false);
+  let aiMode = $state<"rewrite" | "generate">("rewrite");
   let aiRequestId = $state<string | null>(null);
   let aiInstruction = $state("Rewrite this to be more vivid while preserving the meaning.");
   let aiStreamText = $state("");
   let aiPreviewOutput = $state("");
   let aiSourceSelection = $state("");
   let aiSourceSelectionPlain = $state("");
+  let aiGenerationContext = $state("");
   let aiSourceBody = $state("");
   let aiSourceRevision = $state("");
   let aiLastSequence = $state(-1);
   let aiUnlisten: (() => void) | null = null;
+  let editorRef = $state<{ insertAiTextAtRequest: (value: string) => boolean } | null>(null);
   let adminPlugins = $state<PluginAdminEntry[] | null>(null);
   let hostView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] } | null>(null);
   let sandboxView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] | null } | null>(null);
@@ -790,6 +793,30 @@
       aiSourceSelectionPlain = plainText;
     }
   }
+  function openAiAction(action: "rewrite" | "generate" | "concise" | "expand" | "grammar" | "tone" | "custom", markdown: string, plainText: string, context: string) {
+    if (action !== "generate" && !markdown.trim()) return;
+    if (action !== "generate") {
+      aiSourceSelection = markdown;
+      aiSourceSelectionPlain = plainText;
+      aiGenerationContext = "";
+    } else {
+      aiSourceSelection = "";
+      aiSourceSelectionPlain = "";
+      aiGenerationContext = context;
+    }
+    aiMode = action === "generate" ? "generate" : "rewrite";
+    const instructions = {
+      rewrite: "Rewrite this to be more vivid while preserving the meaning.",
+      concise: "Make this more concise while preserving the meaning.",
+      expand: "Expand this with useful detail while preserving the meaning.",
+      grammar: "Fix grammar, spelling, and awkward phrasing while preserving the meaning.",
+      tone: "Change the tone of this passage while preserving its meaning. Ask for the desired tone if needed.",
+      custom: "",
+      generate: "Write text that fits naturally at the cursor position.",
+    } as const;
+    aiInstruction = instructions[action];
+    aiRewriteOpen = true;
+  }
   function clearAiStreamListener() {
     aiUnlisten?.();
     aiUnlisten = null;
@@ -805,7 +832,9 @@
     aiUsage = null;
     aiSourceSelection = "";
     aiSourceSelectionPlain = "";
+    aiGenerationContext = "";
     aiLastSequence = -1;
+    aiMode = "rewrite";
   }
   function validateAiProposal(value: string): string | null {
     if (!value.trim()) return "LM Studio returned an empty proposal.";
@@ -840,7 +869,7 @@
     }
   }
   async function startAiRewrite() {
-    if (!selected || !aiSourceSelection.trim() || !aiInstruction.trim() || aiBusy) return;
+    if (!selected || (aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim() || aiBusy) return;
     if (!(await flushAutoSave())) return;
     aiSourceBody = documentBody;
     aiSourceRevision = loadedDocumentRevision;
@@ -853,9 +882,12 @@
       if (aiUseRemote && (!projectInfo?.root || !remoteConsent || !remoteCredential?.configured)) {
         throw new Error("Remote AI requires an approved provider, endpoint, and OS credential for this project.");
       }
+      const sourceText = aiMode === "generate"
+        ? aiGenerationContext.trim() || documentBody.trim() || "[CURSOR]"
+        : aiSourceSelection;
       const requestId = aiUseRemote
-        ? await project.aiGenerateRemoteText(projectInfo!.root, aiSettings.remote.provider, aiSettings.remote.endpoint, aiSettings.remote.model, aiInstruction, aiSourceSelection)
-        : await project.aiGenerateText(aiSettings.localEndpoint, aiSettings.localModel, aiInstruction, aiSourceSelection);
+        ? await project.aiGenerateRemoteText(projectInfo!.root, aiSettings.remote.provider, aiSettings.remote.endpoint, aiSettings.remote.model, aiInstruction, sourceText)
+        : await project.aiGenerateText(aiSettings.localEndpoint, aiSettings.localModel, aiInstruction, sourceText);
       aiRequestId = requestId;
       aiUnlisten = await listen<AiStreamEvent>(`ai-stream:${requestId}`, (event) => {
         handleAiEvent(event.payload);
@@ -878,6 +910,15 @@
     const validationError = validateAiProposal(aiPreviewOutput);
     if (validationError) {
       error = validationError;
+      return;
+    }
+    if (aiMode === "generate") {
+      if (!editorRef?.insertAiTextAtRequest(aiPreviewOutput)) {
+        error = "The editor position is no longer available. Discard it and try again.";
+        return;
+      }
+      markEntryDirty();
+      if (await saveDocument()) closeAiRewrite();
       return;
     }
     const start = documentBody.indexOf(aiSourceSelection);
@@ -2178,8 +2219,8 @@
               </div>
             {/if}
             {#if aiRewriteOpen}
-              <section class="ai-rewrite-panel" aria-label="AI rewrite proposal">
-                <div class="ai-rewrite-heading"><div><span class="panel-kicker">{aiUseRemote ? "REMOTE AI · APPROVED PROVIDER" : "LOCAL AI · LM STUDIO"}</span><strong>{aiBusy ? "Rewriting selection…" : aiPreviewOutput ? "Review rewrite" : "Rewrite selection"}</strong></div><button class="quiet-button" type="button" onclick={closeAiRewrite}>Discard</button></div>
+              <section class="ai-rewrite-panel" aria-label="AI proposal">
+                <div class="ai-rewrite-heading"><div><span class="panel-kicker">{aiUseRemote ? "REMOTE AI · APPROVED PROVIDER" : "LOCAL AI · LM STUDIO"}</span><strong>{aiBusy ? aiMode === "generate" ? "Generating text…" : "Rewriting selection…" : aiPreviewOutput ? aiMode === "generate" ? "Review generated text" : "Review rewrite" : aiMode === "generate" ? "Generate text" : "Rewrite selection"}</strong></div><button class="quiet-button" type="button" onclick={closeAiRewrite}>Discard</button></div>
                 {#if !aiPreviewOutput && aiSettings.remote.provider && aiSettings.remote.endpoint}<label class="ai-remote-choice"><input type="checkbox" bind:checked={aiUseRemote} disabled={aiBusy} /> Use the approved remote provider for this request</label>{/if}
                 {#if !aiPreviewOutput}<label class="ai-instruction">Instruction<textarea rows="2" bind:value={aiInstruction} disabled={aiBusy} placeholder="Tell LM Studio how to rewrite the selection"></textarea></label>{/if}
                 <AiProposalPreview
@@ -2192,13 +2233,13 @@
                   onAccept={() => void acceptAiRewrite()}
                 />
                 {#if aiUsage}<p class="muted-note">Provider usage: {aiUsage.inputTokens} input + {aiUsage.outputTokens} output tokens.</p>{/if}
-                {#if !aiBusy && !aiPreviewOutput}<div class="ai-rewrite-actions"><button class="primary-button" type="button" disabled={!aiSourceSelection.trim() || !aiInstruction.trim()} onclick={() => void startAiRewrite()}>Generate rewrite</button></div>{/if}
+                {#if !aiBusy && !aiPreviewOutput}<div class="ai-rewrite-actions"><button class="primary-button" type="button" disabled={(aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim()} onclick={() => void startAiRewrite()}>{aiMode === "generate" ? "Generate text" : "Generate rewrite"}</button></div>{/if}
               </section>
             {/if}
-            <RichTextEditor value={documentBody} editable={projectDiagnostics.length === 0 && !aiBusy} fullscreen={editorFullscreen} onChange={updateDocumentBody} onSelectionChange={setAiSelection} onFullscreenChange={setEditorFullscreen} placeholder={section === "writing" ? writingView === "manuscripts" ? "Write your manuscript…" : "Write this reference page…" : "Write the canonical story of this entry…"} />
+            <RichTextEditor bind:this={editorRef} value={documentBody} editable={projectDiagnostics.length === 0 && !aiBusy} fullscreen={editorFullscreen} onChange={updateDocumentBody} onSelectionChange={setAiSelection} onAiRequest={openAiAction} onFullscreenChange={setEditorFullscreen} placeholder={section === "writing" ? writingView === "manuscripts" ? "Write your manuscript…" : "Write this reference page…" : "Write the canonical story of this entry…"} />
             <div class="editor-footer">
               <span>{wordCount()} words</span>
-              <div>{#if aiSourceSelection.trim() && !aiRewriteOpen}<button class="quiet-button" type="button" onclick={() => aiRewriteOpen = true}>Rewrite selection</button>{/if}<button class="quiet-button" onclick={archiveSelected}>Archive</button></div>
+              <div><button class="quiet-button" onclick={archiveSelected}>Archive</button></div>
             </div>
           {:else}
             <div class="editor-empty"><div class="empty-mark">✦</div><h3>{section === "writing" ? writingView === "manuscripts" ? "Your draft is waiting." : "Your reference desk is waiting." : "Your canvas is waiting."}</h3><p>Select an entry from the library, or create something new to begin writing.</p></div>

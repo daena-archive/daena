@@ -1569,8 +1569,8 @@ pub fn start_ai_request_mode(
     remote: bool,
     api_key: Option<String>,
 ) -> Result<String, String> {
-    if instruction.trim().is_empty() || selection.trim().is_empty() {
-        return Err("An AI instruction and context are required".to_string());
+    if instruction.trim().is_empty() {
+        return Err("An AI instruction is required".to_string());
     }
     let provider = runtime
         .lock()

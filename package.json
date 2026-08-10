@@ -55,7 +55,9 @@
     "@tiptap/extension-text": "^3.29.2",
     "@tiptap/extension-text-align": "^3.29.2",
     "@tiptap/extension-underline": "^3.29.2",
-    "@tiptap/extensions": "^3.29.2"
+    "@tiptap/extensions": "^3.29.2",
+    "uuid": "^14.0.1",
+    "vis-timeline": "^8.5.3"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.6",

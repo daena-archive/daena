@@ -8,6 +8,11 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [sveltekit()],
 
+  // Keep Deno's node_modules layout from stale uuid paths during dep prebundling.
+  optimizeDeps: {
+    include: ["vis-timeline/standalone", "uuid"],
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

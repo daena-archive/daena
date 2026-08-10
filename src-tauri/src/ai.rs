@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
-use crate::settings::{AiDataBoundary, AppSettings, SettingsStore};
+use crate::settings::{AppSettings, SettingsStore};
 
 pub type SharedAiRuntime = Arc<Mutex<AiRuntime>>;
 const MAX_BUFFERED_REQUESTS: usize = 32;
@@ -1011,6 +1011,14 @@ fn parse_loopback_endpoint(endpoint: &str) -> Result<LocalEndpoint, String> {
     })
 }
 
+fn endpoint_is_remote(endpoint: &str) -> Result<bool, String> {
+    if parse_loopback_endpoint(endpoint).is_ok() {
+        Ok(false)
+    } else {
+        validate_remote_endpoint(endpoint).map(|_| true)
+    }
+}
+
 /// Validate a remote origin before any credential-bearing request is created.
 /// Redirects are disabled on the client as well, so the approved HTTPS origin
 /// remains the origin that receives the request.
@@ -1171,7 +1179,7 @@ fn resolve_ai_provider_with_credential(
     if endpoint.is_empty() {
         return Err("Configure an AI provider endpoint first".into());
     }
-    let remote = provider.data_boundary == AiDataBoundary::Remote;
+    let remote = endpoint_is_remote(&endpoint)?;
     if remote {
         if model.is_empty() {
             return Err("Configure an AI provider model first".into());
@@ -1229,7 +1237,7 @@ pub fn ai_provider_credential_status(
         .ai
         .provider;
     Ok(RemoteCredentialStatus {
-        configured: provider.data_boundary == AiDataBoundary::Remote
+        configured: endpoint_is_remote(&provider.endpoint)?
             && read_remote_api_key(&provider.id)?.is_some(),
         provider: provider.id,
     })
@@ -1249,7 +1257,7 @@ pub fn ai_provider_import_credential(
         .load()?
         .ai
         .provider;
-    if provider.data_boundary != AiDataBoundary::Remote {
+    if !endpoint_is_remote(&provider.endpoint)? {
         return Err("The active provider does not require a remote credential".into());
     }
     if read_remote_api_key(&provider.id)?.is_some() {
@@ -1280,7 +1288,7 @@ pub fn ai_remote_set_consent(
         .lock()
         .map_err(|_| "settings lock poisoned".to_string())?;
     let active_provider = store.load()?.ai.provider;
-    if active_provider.data_boundary != AiDataBoundary::Remote {
+    if !endpoint_is_remote(&active_provider.endpoint)? {
         return Err("The active provider is local; remote consent is not applicable".into());
     }
     validate_remote_endpoint(&active_provider.endpoint)?;
@@ -2574,7 +2582,6 @@ mod tests {
         let mut settings = crate::settings::AppSettings::default();
         settings.ai.provider.id = "provider".into();
         settings.ai.provider.endpoint = "https://api.example.com/v1".into();
-        settings.ai.provider.data_boundary = AiDataBoundary::Remote;
         assert!(!remote_consent_matches(
             &settings,
             "/project",
@@ -2600,7 +2607,6 @@ mod tests {
         settings.ai.provider.id = "provider".into();
         settings.ai.provider.model = "model".into();
         settings.ai.provider.endpoint = "https://api.example.com/v1".into();
-        settings.ai.provider.data_boundary = AiDataBoundary::Remote;
         let error = resolve_ai_provider(&settings, Some("/project"), true).unwrap_err();
         assert_eq!(error, AiError::RemoteContextDenied.to_string());
         settings.ai.consents.push(crate::settings::RemoteConsent {

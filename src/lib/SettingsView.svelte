@@ -5,6 +5,45 @@ import { setSchemaEditorDiscardPrompt } from "$lib/schemaEditorGuard";
 
 type SettingsSection = "general" | "ai" | "plugins" | "schema" | "git";
 type RecentProject = { name: string; root: string };
+type AiProviderPreset = {
+  id: string;
+  name: string;
+  endpoint: string;
+  description: string;
+};
+
+const aiProviderPresets: AiProviderPreset[] = [
+  {
+    id: "lm-studio",
+    name: "LM Studio",
+    endpoint: "http://127.0.0.1:1234/v1",
+    description: "Local models on this computer",
+  },
+  {
+    id: "ollama",
+    name: "Ollama",
+    endpoint: "http://127.0.0.1:11434/v1",
+    description: "Local models on this computer",
+  },
+  {
+    id: "openai",
+    name: "OpenAI",
+    endpoint: "https://api.openai.com/v1",
+    description: "GPT models through OpenAI",
+  },
+  {
+    id: "openrouter",
+    name: "OpenRouter",
+    endpoint: "https://openrouter.ai/api/v1",
+    description: "Many hosted models behind one API",
+  },
+  {
+    id: "groq",
+    name: "Groq",
+    endpoint: "https://api.groq.com/openai/v1",
+    description: "Fast hosted inference",
+  },
+];
 
 let {
   section = $bindable("general" as SettingsSection),
@@ -56,7 +95,6 @@ let {
       model: string;
       embeddingModel: string;
       capabilities: string[];
-      dataBoundary: "local" | "remote";
     };
     consents: Array<{ projectId: string; provider: string; endpoint: string }>;
   };
@@ -80,7 +118,7 @@ let {
   aiIndexBusy: boolean;
   aiIndexMessage: string;
   onAiSettingsChange: (
-    key: "id" | "name" | "adapter" | "endpoint" | "model" | "embeddingModel" | "capabilities" | "dataBoundary",
+    key: "id" | "name" | "adapter" | "endpoint" | "model" | "embeddingModel" | "capabilities",
     value: string,
   ) => void;
   onAiCheck: () => void;
@@ -137,6 +175,47 @@ function resolveSchemaDiscard(allowed: boolean) {
 function chooseModel(kind: "chat" | "embedding", value: string) {
   onAiSettingsChange(kind === "chat" ? "model" : "embeddingModel", value);
   modelPickerOpen = null;
+}
+
+function modelValue(kind: "chat" | "embedding") {
+  return kind === "chat" ? aiSettings.provider.model : aiSettings.provider.embeddingModel;
+}
+
+function matchingModels(kind: "chat" | "embedding") {
+  const value = modelValue(kind).trim().toLowerCase();
+  return value ? aiModels.filter((model) => model.toLowerCase().includes(value)) : aiModels;
+}
+
+function chooseProvider(preset: AiProviderPreset) {
+  const changes: Array<["id" | "name" | "endpoint", string]> = [
+    ["id", preset.id],
+    ["name", preset.name],
+    ["endpoint", preset.endpoint],
+  ];
+  for (const [key, value] of changes) onAiSettingsChange(key, value);
+  onAiSettingsChange("model", "");
+  onAiSettingsChange("embeddingModel", "");
+  onAiSettingsChange("capabilities", "");
+}
+
+function chooseCustomProvider() {
+  chooseProvider({
+    id: "openai-compatible",
+    name: "OpenAI-compatible provider",
+    endpoint: "",
+    description: "Any compatible endpoint",
+  });
+}
+
+function isRemoteEndpoint(endpoint: string) {
+  return endpoint.trim().toLowerCase().startsWith("https://");
+}
+
+function toggleCapability(capability: string, enabled: boolean) {
+  const capabilities = new Set(aiSettings.provider.capabilities);
+  if (enabled) capabilities.add(capability);
+  else capabilities.delete(capability);
+  onAiSettingsChange("capabilities", [...capabilities].join(", "));
 }
 
 function closeModelPickerSoon() {
@@ -294,7 +373,7 @@ async function handleClose() {
                     "No model selected"}
                 </p>
               </div>
-              <span class="ai-card-badge">{aiSettings.provider.dataBoundary === "remote" ? "Remote" : "Local"}</span>
+              <span class="ai-card-badge">{isRemoteEndpoint(aiSettings.provider.endpoint) ? "Remote" : "Local"}</span>
             </div>
             <button type="button" class="primary-button" onclick={() => (providerModalOpen = true)}
               >Configure provider</button>
@@ -315,88 +394,159 @@ async function handleClose() {
                     onclick={() => (providerModalOpen = false)}>Close</button>
                 </div>
                 <section class="ai-settings-card ai-providers-card">
-                  <div class="ai-field-grid">
-                    <label
-                      >Provider name<input
-                        value={aiSettings.provider.name}
-                        oninput={(event) =>
-                          onAiSettingsChange("name", (event.currentTarget as HTMLInputElement).value)} /></label>
-                    <label
-                      >Provider ID<input
-                        value={aiSettings.provider.id}
-                        oninput={(event) =>
-                          onAiSettingsChange("id", (event.currentTarget as HTMLInputElement).value)} /></label>
-                    <label class="ai-field-wide"
-                      >Endpoint<input
-                        value={aiSettings.provider.endpoint}
-                        oninput={(event) =>
-                          onAiSettingsChange("endpoint", (event.currentTarget as HTMLInputElement).value)} /></label>
-                    <label
-                      >Model ID<input
-                        value={aiSettings.provider.model}
-                        oninput={(event) =>
-                          onAiSettingsChange("model", (event.currentTarget as HTMLInputElement).value)} /></label>
-                    <label
-                      >Embedding model<input
-                        value={aiSettings.provider.embeddingModel}
-                        oninput={(event) =>
-                          onAiSettingsChange(
-                            "embeddingModel",
-                            (event.currentTarget as HTMLInputElement).value,
-                          )} /></label>
-                    <label class="ai-field-wide"
-                      >Model capabilities<input
-                        value={aiSettings.provider.capabilities.join(", ")}
-                        placeholder="text.generate, text.generate.structured, text.embed"
-                        oninput={(event) =>
-                          onAiSettingsChange(
-                            "capabilities",
-                            (event.currentTarget as HTMLInputElement).value,
-                          )} /></label>
-                    <label
-                      >Data boundary<select
-                        value={aiSettings.provider.dataBoundary}
-                        onchange={(event) =>
-                          onAiSettingsChange(
-                            "dataBoundary",
-                            (event.currentTarget as HTMLSelectElement).value as "local" | "remote",
-                          )}>
-                        <option value="local">Local</option><option value="remote">Remote</option></select
-                      ></label>
-                  </div>
-                  <div class="ai-settings-actions ai-card-actions">
-                    <button type="button" class="primary-button" onclick={onAiModelsLoad} disabled={aiModelsBusy}
-                      >{aiModelsBusy ? "Loading models…" : "Load available models"}</button>
-                    <button type="button" class="quiet-button" onclick={onAiCheck}>Test connection</button>
-                    {#if aiStatus}<span class:ok={aiStatus.available && aiStatus.modelAvailable} class="ai-status"
-                        >{aiStatus.available && !aiStatus.credentialAvailable
-                          ? "Provider reachable; credential missing"
-                          : aiStatus.available
-                            ? aiStatus.modelAvailable
-                              ? `Ready · Embeddings ${aiStatus.embeddingAvailable ? "available" : "not configured"}`
-                              : "Server found; model is missing"
-                            : (aiStatus.error ?? "Provider unavailable")}</span
-                      >{/if}
-                    {#if aiModelsMessage}<span class="ai-status">{aiModelsMessage}</span>{/if}
-                  </div>
-                  {#if aiSettings.provider.dataBoundary === "remote"}
-                    <div class="ai-settings-actions ai-card-actions">
-                      <span class="ai-status"
-                        >{remoteCredential?.configured
-                          ? "Credential stored in OS keychain"
-                          : "No OS credential configured"}</span>
-                      {#if !remoteCredential?.configured}<button
-                          type="button"
-                          class="quiet-button"
-                          onclick={onAiRemoteImport}>Import environment key</button
-                        >{/if}
-                      {#if projectOpen}
-                        <button type="button" class="primary-button" onclick={() => onAiRemoteConsent(true)}
-                          >Allow for this project</button>
-                        <button type="button" class="quiet-button" onclick={() => onAiRemoteConsent(false)}
-                          >Revoke</button>
-                      {/if}
+                  <div class="ai-provider-choice">
+                    <div>
+                      <span class="ai-card-kicker">START HERE</span>
+                      <strong>Choose a provider</strong>
+                      <p>These presets fill in the known address. You can change the model below.</p>
                     </div>
+                    <div class="ai-provider-presets">
+                      {#each aiProviderPresets as preset}
+                        <button
+                          type="button"
+                          class:active={aiSettings.provider.id === preset.id &&
+                            aiSettings.provider.endpoint === preset.endpoint}
+                          class="ai-provider-preset"
+                          onclick={() => chooseProvider(preset)}>
+                          <strong>{preset.name}</strong>
+                          <span>{preset.description}</span>
+                        </button>
+                      {/each}
+                      <button
+                        type="button"
+                        class:active={aiSettings.provider.id === "openai-compatible"}
+                        class="ai-provider-preset"
+                        onclick={chooseCustomProvider}>
+                        <strong>OpenAI-compatible</strong>
+                        <span>Enter another compatible address</span>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="ai-field-grid">
+                    <label class="ai-field-wide"
+                      >API address<input
+                        value={aiSettings.provider.endpoint}
+                        placeholder="https://example.com/v1"
+                        oninput={(event) =>
+                          onAiSettingsChange("endpoint", (event.currentTarget as HTMLInputElement).value)} />
+                      {#if aiSettings.provider.id === "openai-compatible" && !isRemoteEndpoint(aiSettings.provider.endpoint)}
+                        <span class="ai-field-hint"
+                          >Use an HTTPS address for a remote provider; credential controls will appear below.</span>
+                      {/if}</label>
+                    <label
+                      >Chat model
+                      <div class="ai-model-field">
+                        <input
+                          value={aiSettings.provider.model}
+                          placeholder="Choose a model or load available models"
+                          onfocus={() => (modelPickerOpen = "chat")}
+                          onblur={closeModelPickerSoon}
+                          oninput={(event) =>
+                            onAiSettingsChange("model", (event.currentTarget as HTMLInputElement).value)} />
+                        {#if modelPickerOpen === "chat" && matchingModels("chat").length > 0}
+                          <div class="ai-model-suggestions" role="listbox">
+                            {#each matchingModels("chat") as model}
+                              <button
+                                type="button"
+                                role="option"
+                                aria-selected={model === aiSettings.provider.model}
+                                onmousedown={(event) => event.preventDefault()}
+                                onclick={() => chooseModel("chat", model)}>{model}</button>
+                            {/each}
+                          </div>
+                        {/if}
+                      </div></label>
+                    <label
+                      ><span class="ai-field-label">Embedding model <span class="ai-label-note">optional</span></span>
+                      <div class="ai-model-field">
+                        <input
+                          value={aiSettings.provider.embeddingModel}
+                          placeholder="Leave blank to use the chat model"
+                          onfocus={() => (modelPickerOpen = "embedding")}
+                          onblur={closeModelPickerSoon}
+                          oninput={(event) =>
+                            onAiSettingsChange("embeddingModel", (event.currentTarget as HTMLInputElement).value)} />
+                        {#if modelPickerOpen === "embedding" && matchingModels("embedding").length > 0}
+                          <div class="ai-model-suggestions" role="listbox">
+                            {#each matchingModels("embedding") as model}
+                              <button
+                                type="button"
+                                role="option"
+                                aria-selected={model === aiSettings.provider.embeddingModel}
+                                onmousedown={(event) => event.preventDefault()}
+                                onclick={() => chooseModel("embedding", model)}>{model}</button>
+                            {/each}
+                          </div>
+                        {/if}
+                      </div></label>
+                  </div>
+                  <section class="ai-capabilities-help" aria-labelledby="ai-capabilities-heading">
+                    <strong id="ai-capabilities-heading">Model capabilities</strong>
+                    <p>
+                      Enable only what the selected model supports. Leave Embedding model blank to reuse the chat model.
+                    </p>
+                    <div class="ai-capability-options">
+                      <label
+                        ><input
+                          type="checkbox"
+                          checked={aiSettings.provider.capabilities.includes("text.embed")}
+                          onchange={(event) =>
+                            toggleCapability("text.embed", (event.currentTarget as HTMLInputElement).checked)} />
+                        <strong>Embeddings</strong> <span>semantic indexing</span></label>
+                      <label
+                        ><input
+                          type="checkbox"
+                          checked={aiSettings.provider.capabilities.includes("text.generate.structured")}
+                          onchange={(event) =>
+                            toggleCapability(
+                              "text.generate.structured",
+                              (event.currentTarget as HTMLInputElement).checked,
+                            )} />
+                        <strong>Structured output</strong> <span>typed field suggestions</span></label>
+                    </div>
+                  </section>
+                  <div class="ai-action-group">
+                    <span class="ai-action-label">Connection</span>
+                    <div class="ai-settings-actions ai-card-actions">
+                      <button type="button" class="primary-button" onclick={onAiModelsLoad} disabled={aiModelsBusy}
+                        >{aiModelsBusy ? "Loading models…" : "Load available models"}</button>
+                      <button type="button" class="quiet-button" onclick={onAiCheck}>Test connection</button>
+                      {#if aiStatus}<span class:ok={aiStatus.available && aiStatus.modelAvailable} class="ai-status"
+                          >{aiStatus.available && !aiStatus.credentialAvailable
+                            ? "Provider reachable; credential missing"
+                            : aiStatus.available
+                              ? aiStatus.modelAvailable
+                                ? `Ready · Embeddings ${aiStatus.embeddingAvailable ? "available" : "not configured"}`
+                                : aiSettings.provider.model.trim()
+                                  ? "Server found; selected model was not found"
+                                  : "Server found; choose a model"
+                              : (aiStatus.error ?? "Provider unavailable")}</span
+                        >{/if}
+                      {#if aiModelsMessage}<span class="ai-status">{aiModelsMessage}</span>{/if}
+                    </div>
+                  </div>
+                  {#if isRemoteEndpoint(aiSettings.provider.endpoint)}
+                    <div class="ai-action-group">
+                      <span class="ai-action-label">Credentials</span>
+                      <div class="ai-settings-actions ai-card-actions">
+                        {#if remoteCredential?.configured}
+                          <span class="ai-status ai-status-badge ok">Credential stored in OS keychain</span>
+                        {:else}<button type="button" class="quiet-button" onclick={onAiRemoteImport}
+                            >Import environment key</button
+                          ><span class="ai-status ai-status-badge">No OS credential configured</span>{/if}
+                      </div>
+                    </div>
+                    {#if projectOpen}
+                      <div class="ai-action-group">
+                        <span class="ai-action-label">Project access</span>
+                        <div class="ai-settings-actions ai-card-actions">
+                          <button type="button" class="primary-button" onclick={() => onAiRemoteConsent(true)}
+                            >Allow for this project</button>
+                          <button type="button" class="quiet-button" onclick={() => onAiRemoteConsent(false)}
+                            >Revoke</button>
+                        </div>
+                      </div>
+                    {/if}
                   {/if}
                 </section>
               </div>
@@ -583,7 +733,7 @@ async function handleClose() {
 .ai-settings-form {
   display: grid;
   gap: 14px;
-  max-width: 760px;
+  width: 100%;
 }
 .ai-settings-card {
   display: grid;
@@ -644,6 +794,118 @@ async function handleClose() {
 .ai-providers-card {
   gap: 20px;
 }
+.ai-provider-choice {
+  display: grid;
+  gap: 12px;
+}
+.ai-provider-choice strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--ink);
+  font-size: 15px;
+}
+.ai-provider-choice p {
+  margin: 6px 0 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+.ai-provider-presets {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.ai-provider-preset {
+  display: grid;
+  gap: 4px;
+  min-height: 62px;
+  padding: 10px 11px;
+  border: 1px solid #d8cdbd;
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.ai-provider-preset:hover,
+.ai-provider-preset.active {
+  border-color: #bc8d5d;
+  background: #fbf2e5;
+}
+.ai-provider-preset strong {
+  margin: 0;
+  font-size: 12px;
+}
+.ai-provider-preset span {
+  color: var(--ink-soft);
+  font-size: 10px;
+  line-height: 1.35;
+}
+.ai-label-note {
+  display: inline-block;
+  padding: 2px 5px;
+  border: 1px solid #d8c6ad;
+  border-radius: 999px;
+  background: #fbf2e5;
+  color: var(--accent-dark);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+}
+.ai-field-hint {
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+.ai-field-label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+}
+.ai-capabilities-help {
+  padding-top: 2px;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+.ai-capabilities-help > strong {
+  color: var(--accent-dark);
+  font-weight: 700;
+}
+.ai-capabilities-help p {
+  margin: 5px 0 10px;
+  color: var(--ink-soft);
+  line-height: 1.35;
+}
+.ai-capability-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.ai-settings-form .ai-capability-options label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #e2d8c9;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ai-capability-options input {
+  min-width: auto;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  accent-color: var(--accent);
+}
+.ai-capability-options span {
+  color: var(--ink-soft);
+  font-weight: 400;
+}
 .ai-card-heading {
   display: flex;
   align-items: flex-start;
@@ -697,8 +959,7 @@ async function handleClose() {
   font-size: 11px;
   font-weight: 700;
 }
-.ai-settings-form input,
-.ai-settings-form select {
+.ai-settings-form input {
   min-width: 0;
   padding: 10px 11px;
   border: 1px solid #d8cdbd;
@@ -712,29 +973,94 @@ async function handleClose() {
     border-color 0.15s ease,
     box-shadow 0.15s ease;
 }
-.ai-settings-form input:focus,
-.ai-settings-form select:focus {
+.ai-settings-form input:focus {
   border-color: #bc8d5d;
   box-shadow: 0 0 0 3px rgb(188 141 93 / 12%);
 }
-.ai-settings-form input:disabled,
-.ai-settings-form select:disabled {
+.ai-settings-form input:disabled {
   border-color: #e1dcd3;
   background: #f2efe9;
   color: var(--ink-faint);
   cursor: not-allowed;
   opacity: 0.7;
 }
-.ai-settings-form input:disabled:hover,
-.ai-settings-form select:disabled:hover {
+.ai-settings-form input:disabled:hover {
   border-color: #e1dcd3;
   box-shadow: none;
+}
+.ai-model-field {
+  position: relative;
+}
+.ai-model-field input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.ai-model-suggestions {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 4px);
+  right: 0;
+  left: 0;
+  display: grid;
+  max-height: 190px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid #d8cdbd;
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 10px 24px rgb(48 44 38 / 14%);
+}
+.ai-model-suggestions button {
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink);
+  font: 11px var(--font-body);
+  text-align: left;
+  cursor: pointer;
+}
+.ai-model-suggestions button:hover {
+  background: #efe6d6;
 }
 .ai-settings-actions {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+.ai-action-group {
+  display: grid;
+  gap: 6px;
+}
+.ai-action-label {
+  color: var(--ink-soft);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.ai-providers-card .primary-button,
+.ai-providers-card .quiet-button {
+  padding: 8px 11px;
+  font-size: 11px;
+}
+.ai-status-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid #e2d8c9;
+  border-radius: 999px;
+  background: #f7f3ec;
+  color: #9d5b42;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.ai-status-badge.ok {
+  border-color: #c8d8cb;
+  background: #eef5ef;
+  color: #557d63;
 }
 .settings-actions {
   display: flex;
@@ -899,6 +1225,12 @@ async function handleClose() {
   }
   .ai-field-wide {
     grid-column: auto;
+  }
+  .ai-provider-presets {
+    grid-template-columns: 1fr 1fr;
+  }
+  .ai-capability-options {
+    grid-template-columns: 1fr;
   }
   .ai-card-heading {
     flex-direction: column;

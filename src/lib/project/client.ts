@@ -214,7 +214,6 @@ export interface AiProviderSettings {
   model: string;
   embeddingModel: string;
   capabilities: string[];
-  dataBoundary: "local" | "remote";
 }
 export interface RemoteCredentialStatus {
   provider: string;

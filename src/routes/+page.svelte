@@ -160,7 +160,6 @@ let aiSettings = $state<AiSettings>({
     model: "",
     embeddingModel: "",
     capabilities: [],
-    dataBoundary: "local",
   },
   consents: [],
 });
@@ -169,9 +168,12 @@ let aiModels = $state<string[]>([]);
 let aiModelsBusy = $state(false);
 let aiModelsMessage = $state("");
 let aiModelsMessageTimer: number | null = null;
+let aiStatusTimer: number | null = null;
 let aiIndexStatus = $state<AiIndexStatus | null>(null);
 let aiIndexBusy = $state(false);
 let aiIndexMessage = $state("");
+let aiIndexMessageTimer: number | null = null;
+let aiIndexStatusMessageTimer: number | null = null;
 let remoteCredential = $state<{ provider: string; configured: boolean } | null>(null);
 let aiUsage = $state<{ inputTokens: number; outputTokens: number; totalTokens: number } | null>(null);
 let aiRewriteOpen = $state(false);
@@ -989,10 +991,11 @@ function friendlyError(cause: unknown) {
     : message;
 }
 function updateAiSetting(
-  key: "id" | "name" | "adapter" | "endpoint" | "model" | "embeddingModel" | "capabilities" | "dataBoundary",
+  key: "id" | "name" | "adapter" | "endpoint" | "model" | "embeddingModel" | "capabilities",
   value: string,
 ) {
   aiStatus = null;
+  if (key === "id" || key === "endpoint") aiModels = [];
   if (key === "capabilities") {
     const capabilities = value
       .split(",")
@@ -1004,10 +1007,22 @@ function updateAiSetting(
   }
   aiSettings = { ...aiSettings, provider: { ...aiSettings.provider, [key]: value } };
   void project.settingsUpdate({ ai: { provider: { [key]: value } } });
-  if (key === "id" || key === "dataBoundary") void refreshRemoteCredential();
+  if (key === "id" || key === "endpoint") void refreshRemoteCredential();
+}
+function showAiIndexMessage(message: string) {
+  if (aiIndexMessageTimer !== null) window.clearTimeout(aiIndexMessageTimer);
+  aiIndexMessage = message;
+  if (!message) {
+    aiIndexMessageTimer = null;
+    return;
+  }
+  aiIndexMessageTimer = window.setTimeout(() => {
+    aiIndexMessage = "";
+    aiIndexMessageTimer = null;
+  }, toastDurationMs);
 }
 async function refreshRemoteCredential() {
-  if (aiSettings.provider.dataBoundary !== "remote" || !aiSettings.provider.id.trim()) {
+  if (!aiSettings.provider.endpoint.trim().toLowerCase().startsWith("https://") || !aiSettings.provider.id.trim()) {
     remoteCredential = null;
     return;
   }
@@ -1022,13 +1037,13 @@ async function importRemoteCredential() {
   try {
     remoteCredential = await project.aiProviderImportCredential();
   } catch (cause) {
-    aiIndexMessage = friendlyError(cause);
+    showAiIndexMessage(friendlyError(cause));
   }
 }
 async function setRemoteConsent(allowed: boolean) {
   if (
     !projectInfo?.root ||
-    aiSettings.provider.dataBoundary !== "remote" ||
+    !aiSettings.provider.endpoint.trim().toLowerCase().startsWith("https://") ||
     !aiSettings.provider.id ||
     !aiSettings.provider.endpoint
   )
@@ -1052,10 +1067,11 @@ async function setRemoteConsent(allowed: boolean) {
         : consents,
     };
   } catch (cause) {
-    aiIndexMessage = friendlyError(cause);
+    showAiIndexMessage(friendlyError(cause));
   }
 }
 async function checkAiProvider() {
+  if (aiStatusTimer !== null) window.clearTimeout(aiStatusTimer);
   try {
     aiStatus = await project.aiProviderStatus();
   } catch (cause) {
@@ -1069,6 +1085,10 @@ async function checkAiProvider() {
       error: friendlyError(cause),
     };
   }
+  aiStatusTimer = window.setTimeout(() => {
+    aiStatus = null;
+    aiStatusTimer = null;
+  }, toastDurationMs);
 }
 async function loadAiModels() {
   const endpoint = aiSettings.provider.endpoint.trim();
@@ -1099,20 +1119,31 @@ async function loadAiModels() {
   }
 }
 async function refreshAiIndexStatus() {
+  if (aiIndexStatusMessageTimer !== null) window.clearTimeout(aiIndexStatusMessageTimer);
   try {
-    aiIndexStatus = await project.aiIndexStatus();
+    const status = await project.aiIndexStatus();
+    aiIndexStatus = status;
+    if (status.message) {
+      const message = status.message;
+      aiIndexStatusMessageTimer = window.setTimeout(() => {
+        if (aiIndexStatus?.message === message) aiIndexStatus = { ...aiIndexStatus, message: null };
+        aiIndexStatusMessageTimer = null;
+      }, toastDurationMs);
+    } else {
+      aiIndexStatusMessageTimer = null;
+    }
   } catch (cause) {
     aiIndexStatus = { available: false, state: null, provider: null, embeddingAvailable: false, message: null };
-    aiIndexMessage = friendlyError(cause);
+    showAiIndexMessage(friendlyError(cause));
   }
 }
 async function rebuildAiIndex() {
   if (!aiSettings.provider.endpoint.trim() || !aiSettings.provider.model.trim()) {
-    aiIndexMessage = "Configure the active provider endpoint and model before building the semantic index.";
+    showAiIndexMessage("Configure the active provider endpoint and model before building the semantic index.");
     return;
   }
   aiIndexBusy = true;
-  aiIndexMessage = "";
+  showAiIndexMessage("");
   try {
     const result = await project.aiIndexRebuild();
     aiIndexStatus = {
@@ -1122,9 +1153,11 @@ async function rebuildAiIndex() {
       embeddingAvailable: true,
       message: null,
     };
-    aiIndexMessage = `Indexed ${result.chunkCount} chunks (${result.embeddedCount} embedded, ${result.reusedCount} reused).`;
+    showAiIndexMessage(
+      `Indexed ${result.chunkCount} chunks (${result.embeddedCount} embedded, ${result.reusedCount} reused).`,
+    );
   } catch (cause) {
-    aiIndexMessage = friendlyError(cause);
+    showAiIndexMessage(friendlyError(cause));
   } finally {
     aiIndexBusy = false;
   }
@@ -1132,9 +1165,9 @@ async function rebuildAiIndex() {
 async function cancelAiIndex() {
   try {
     await project.aiIndexCancel();
-    aiIndexMessage = "Cancellation requested.";
+    showAiIndexMessage("Cancellation requested.");
   } catch (cause) {
-    aiIndexMessage = friendlyError(cause);
+    showAiIndexMessage(friendlyError(cause));
   }
 }
 function setAiSelection(markdown: string, plainText: string) {
@@ -2224,7 +2257,7 @@ async function openSettings(section: SettingsSection = "general") {
     }
   }
   if (section === "ai" && ready) {
-    aiIndexMessage = "";
+    showAiIndexMessage("");
     await refreshAiIndexStatus();
   }
 }

@@ -33,16 +33,6 @@ pub struct AiSettings {
     pub consents: Vec<RemoteConsent>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub enum AiDataBoundary {
-    #[serde(rename = "local")]
-    #[default]
-    Local,
-    #[serde(rename = "remote")]
-    Remote,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AiProviderSettings {
@@ -60,8 +50,6 @@ pub struct AiProviderSettings {
     pub embedding_model: String,
     #[serde(default)]
     pub capabilities: Vec<String>,
-    #[serde(default)]
-    pub data_boundary: AiDataBoundary,
 }
 
 fn default_provider_id() -> String {
@@ -86,7 +74,6 @@ impl Default for AiProviderSettings {
             model: default_ai_model(),
             embedding_model: String::new(),
             capabilities: Vec::new(),
-            data_boundary: AiDataBoundary::default(),
         }
     }
 }
@@ -148,7 +135,6 @@ pub struct AiProviderSettingsUpdate {
     pub model: Option<String>,
     pub embedding_model: Option<String>,
     pub capabilities: Option<Vec<String>>,
-    pub data_boundary: Option<AiDataBoundary>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -235,9 +221,6 @@ impl SettingsStore {
                 }
                 if let Some(capabilities) = provider.capabilities {
                     settings.ai.provider.capabilities = capabilities;
-                }
-                if let Some(data_boundary) = provider.data_boundary {
-                    settings.ai.provider.data_boundary = data_boundary;
                 }
             }
         }
@@ -358,7 +341,6 @@ mod tests {
                         name: Some("Remote Writer".into()),
                         endpoint: Some("https://api.example.com/v1".into()),
                         capabilities: Some(vec!["text.generate".into(), "text.embed".into()]),
-                        data_boundary: Some(AiDataBoundary::Remote),
                         ..AiProviderSettingsUpdate::default()
                     }),
                 }),
@@ -368,7 +350,6 @@ mod tests {
         assert_eq!(loaded.ai.provider.name, "Remote Writer");
         assert_eq!(loaded.ai.provider.endpoint, "https://api.example.com/v1");
         assert_eq!(loaded.ai.provider.capabilities.len(), 2);
-        assert_eq!(loaded.ai.provider.data_boundary, AiDataBoundary::Remote);
         assert_eq!(loaded.ai.provider.model, default_ai_model());
         let _ = fs::remove_dir_all(directory);
     }

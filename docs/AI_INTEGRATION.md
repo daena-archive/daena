@@ -924,7 +924,8 @@ plus `AiSettings.consents`. A profile includes:
 
 The settings format is versioned and clean-state only. The active profile stores
 `id`, `name`, `adapter`, `endpoint`, `model`, optional `embeddingModel`,
-configured model capabilities, and `dataBoundary`. A malformed settings file or
+configured model capabilities. The host derives the local/remote boundary from
+the validated endpoint; it is not user-editable. A malformed settings file or
 an older settings version fails closed with an actionable error; no legacy
 local/remote settings are converted.
 

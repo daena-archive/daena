@@ -64,8 +64,11 @@ function createGraphStyles(): HTMLStyleElement {
     .lore-graph-toolbar-actions { display: flex; gap: 7px; }
     .lore-graph-toolbar button { border: 1px solid #d9cdbd; border-radius: 7px; padding: 6px 9px; background: #fffefa; color: #62594e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
     .lore-graph-toolbar button:hover, .lore-graph-toolbar button:focus-visible { border-color: #b4773f; color: #55351f; outline: none; }
-    .lore-graph-legend { display: flex; flex-wrap: wrap; gap: 7px 12px; color: #8f897e; font: 10px Inter, ui-sans-serif, system-ui, sans-serif; }
-    .lore-graph-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+    .lore-graph-legend { display: flex; flex-wrap: wrap; gap: 7px; color: #8f897e; font: 10px Inter, ui-sans-serif, system-ui, sans-serif; }
+    .lore-graph-legend-item { display: inline-flex; align-items: center; gap: 5px; margin: 0; padding: 4px 8px; border: 1px solid #e4d9c8; border-radius: 999px; background: #fffefa; color: #62594e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
+    .lore-graph-legend-item:hover, .lore-graph-legend-item:focus-visible { border-color: #b4773f; color: #55351f; outline: none; }
+    .lore-graph-legend-item.is-hidden { opacity: 0.45; border-style: dashed; color: #8f897e; }
+    .lore-graph-legend-item.is-hidden .lore-graph-legend-swatch { background: transparent !important; }
     .lore-graph-legend-swatch { width: 8px; height: 8px; border: 1px solid currentColor; border-radius: 50%; }
     .lore-graph-canvas { position: relative; height: min(58vh, 560px); min-height: 380px; background: radial-gradient(circle at 50% 42%, #fffdf7 0, #fbf8f0 52%, #f4eee3 100%); }
     .lore-graph-details { display: grid; gap: 7px; min-height: 55px; padding: 12px 15px; border-top: 1px solid #e9e1d4; background: #fffefa; color: #62594e; font: 11px/1.45 Inter, ui-sans-serif, system-ui, sans-serif; }
@@ -231,11 +234,24 @@ function renderSelection(
 
 function applyNeighborhoodHighlight(graph: Core, node: NodeSingular | null, showLabels = false) {
   graph.elements().removeClass("faded related hover-related");
-  if (!node) return;
-  const neighborhood = node.closedNeighborhood();
-  graph.elements().difference(neighborhood).addClass("faded");
-  node.connectedEdges().addClass("related");
-  if (showLabels) node.connectedEdges().addClass("hover-related");
+  if (!node || node.hasClass("type-hidden")) return;
+  const neighborhood = node.closedNeighborhood().not(".type-hidden");
+  graph.elements().not(".type-hidden").difference(neighborhood).addClass("faded");
+  node.connectedEdges().not(".type-hidden").addClass("related");
+  if (showLabels) node.connectedEdges().not(".type-hidden").addClass("hover-related");
+}
+
+function applyTypeVisibility(graph: Core, hiddenTypes: Set<string>) {
+  graph.nodes().forEach((node) => {
+    const hidden = hiddenTypes.has(String(node.data("typeLabel") ?? "entity"));
+    node.toggleClass("type-hidden", hidden);
+    if (hidden) node.removeClass("hovered selected");
+  });
+  graph.edges().forEach((edge) => {
+    const hidden = edge.source().hasClass("type-hidden") || edge.target().hasClass("type-hidden");
+    edge.toggleClass("type-hidden", hidden);
+    if (hidden) edge.removeClass("related selected hover-related");
+  });
 }
 
 async function showOnMap(context: ModuleContext, entityId: string) {
@@ -312,9 +328,14 @@ export const lore: DaenaModule = {
           legend.className = "lore-graph-legend";
           const typeNames = [...new Set(entities.map((entity) => displayType(entity.type)))].sort();
           const colorsByType = colorsForTypes(typeNames);
+          const hiddenTypes = new Set<string>();
+          const legendButtons = new Map<string, HTMLButtonElement>();
           for (const type of typeNames) {
-            const legendItem = document.createElement("span");
+            const legendItem = document.createElement("button");
+            legendItem.type = "button";
             legendItem.className = "lore-graph-legend-item";
+            legendItem.setAttribute("aria-pressed", "true");
+            legendItem.title = `Hide ${type}`;
             const swatch = document.createElement("span");
             swatch.className = "lore-graph-legend-swatch";
             const colors = colorsByType.get(type)!;
@@ -323,6 +344,7 @@ export const lore: DaenaModule = {
             const label = document.createElement("span");
             label.textContent = type;
             legendItem.append(swatch, label);
+            legendButtons.set(type, legendItem);
             legend.append(legendItem);
           }
           const actions = document.createElement("div");
@@ -343,7 +365,7 @@ export const lore: DaenaModule = {
           const details = document.createElement("div");
           details.className = "lore-graph-details";
           const hint = document.createElement("small");
-          hint.textContent = "Hover or select an entity to inspect its connections.";
+          hint.textContent = "Hover or select an entity to inspect its connections. Click a type to show or hide it.";
           details.append(hint);
           shell.append(details);
           element.append(shell);
@@ -435,17 +457,54 @@ export const lore: DaenaModule = {
               { selector: ".faded", style: { opacity: 0.16 } },
               { selector: ".hovered", style: { "border-width": 3, "border-color": "#8b5c2e" } },
               { selector: "node.selected", style: { "border-width": 4, "border-color": "#8b5c2e" } },
+              { selector: ".type-hidden", style: { display: "none" } },
             ],
           });
+          const visibleElements = () => graph!.elements().not(".type-hidden");
           const arrangeGraph = () => {
             if (!graph) return;
             graph.layout(layout).run();
             separateOverlappingNodes(graph);
-            graph.fit(undefined, 72);
+            const visible = visibleElements();
+            if (visible.length > 0) graph.fit(visible, 72);
           };
           arrangeGraph();
 
-          fitButton.onclick = () => graph?.fit(undefined, 72);
+          const syncTypeVisibility = () => {
+            if (!graph) return;
+            applyTypeVisibility(graph, hiddenTypes);
+            const selected = graph.nodes("node.selected").not(".type-hidden");
+            if (selected.length === 0) {
+              graph.elements().removeClass("selected");
+              applyNeighborhoodHighlight(graph, null);
+              details.replaceChildren(hint);
+            } else {
+              applyNeighborhoodHighlight(graph, selected[0]);
+            }
+          };
+
+          for (const [type, legendItem] of legendButtons) {
+            legendItem.onclick = () => {
+              if (hiddenTypes.has(type)) {
+                hiddenTypes.delete(type);
+                legendItem.classList.remove("is-hidden");
+                legendItem.setAttribute("aria-pressed", "true");
+                legendItem.title = `Hide ${type}`;
+              } else {
+                hiddenTypes.add(type);
+                legendItem.classList.add("is-hidden");
+                legendItem.setAttribute("aria-pressed", "false");
+                legendItem.title = `Show ${type}`;
+              }
+              syncTypeVisibility();
+            };
+          }
+
+          fitButton.onclick = () => {
+            if (!graph) return;
+            const visible = visibleElements();
+            if (visible.length > 0) graph.fit(visible, 72);
+          };
           layoutButton.onclick = () => {
             if (!graph) return;
             graph.nodes().forEach((node) => {
@@ -456,19 +515,21 @@ export const lore: DaenaModule = {
           };
           graph.on("mouseover", "node", (event) => {
             const node = event.target;
+            if (node.hasClass("type-hidden")) return;
             node.addClass("hovered");
             applyNeighborhoodHighlight(graph!, node, true);
           });
           graph.on("mouseout", "node", (event) => {
             event.target.removeClass("hovered");
-            const selected = graph!.nodes("node.selected");
+            const selected = graph!.nodes("node.selected").not(".type-hidden");
             applyNeighborhoodHighlight(graph!, selected.length > 0 ? selected[0] : null);
           });
           graph.on("tap", "node", (event) => {
             const node = event.target;
+            if (node.hasClass("type-hidden")) return;
             graph!.elements().removeClass("selected");
             node.addClass("selected");
-            node.connectedEdges().addClass("selected");
+            node.connectedEdges().not(".type-hidden").addClass("selected");
             renderSelection(details, node, entityMap, relationships, context);
             applyNeighborhoodHighlight(graph!, node);
           });

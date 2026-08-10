@@ -24,7 +24,7 @@
       { "key": "relatedMap", "label": "Related map", "type": "relationship", "relationshipType": "daena.maps:related-map", "targetEntityTypes": ["daena.maps:map"] }
     ]
   }],
-  "templates": [{ "id": "map", "name": "Map", "entityType": "daena.maps:map", "fields": { "map": null } }],
+  "templates": [],
   "views": [{ "id": "map-workspace", "title": "Maps", "components": [] }],
   "commands": [{ "id": "capture-anchor", "title": "Capture map anchor", "action": { "type": "refresh-view" }, "exposure": ["view"] }, { "id": "reconcile-links", "title": "Reconcile linked locations", "action": { "type": "refresh-view" }, "exposure": ["view"] }],
   "services": { "provides": [{ "name": "daena.maps/navigation", "major": 1 }], "consumes": [] },

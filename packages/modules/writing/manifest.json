@@ -22,8 +22,8 @@
     ]
   }],
   "templates": [
-    { "id": "manuscript", "name": "Manuscript", "entityType": "manuscript", "description": "A long-form story, essay, or other work in progress.", "icon": "M", "fields": { "status": "idea", "genre": "", "synopsis": "" }, "document": "Begin your manuscript here." },
-    { "id": "reference-page", "name": "Reference page", "entityType": "reference-page", "description": "A freeform wiki page for ideas, research, and world notes.", "icon": "R", "fields": { "category": "other", "aliases": "" }, "document": "Add the facts, links, and notes for this page." }
+    { "id": "manuscript", "name": "Manuscript", "entityType": "manuscript", "description": "A long-form story, essay, or other work in progress.", "icon": "M", "fields": { "status": "idea", "genre": "", "synopsis": "" }, "document": "" },
+    { "id": "reference-page", "name": "Reference page", "entityType": "reference-page", "description": "A freeform wiki page for ideas, research, and world notes.", "icon": "R", "fields": { "category": "other", "aliases": "" }, "document": "" }
   ],
   "views": [],
   "commands": [{ "id": "show-on-map", "title": "Show reference on map", "action": { "type": "refresh-view" }, "exposure": ["view"] }],

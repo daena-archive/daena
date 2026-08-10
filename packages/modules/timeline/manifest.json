@@ -14,7 +14,7 @@
     "namespace": "timeline",
     "entityTypes": ["event"],
     "fields": [
-      { "key": "startsAt", "label": "Starts", "type": "date", "required": true },
+      { "key": "startsAt", "label": "Starts", "type": "date", "required": false },
       { "key": "endsAt", "label": "Ends", "type": "date" }
     ]
   }],

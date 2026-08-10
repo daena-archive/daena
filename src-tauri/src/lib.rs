@@ -16,7 +16,9 @@ use daena_core::{
     RelationshipInput, SaveDocument, SaveEntry,
 };
 use daena_plugin_api::{
-    CommandAction, MigrationOperation, PluginManifest, RpcRequest, RpcResponse, ViewComponent,
+    merge_module_manifest, parse_module_overlay, supports_schema_overlay, CommandAction,
+    MigrationOperation, ModuleSchemaEditorState, ModuleSchemaOverlay, PluginManifest, RpcRequest,
+    RpcResponse, ViewComponent, SCHEMA_OVERLAY_VERSION,
 };
 use daena_plugin_host::{
     plugin_window_label, webview_policy, ArchiveLimits, DependencyResolver, PluginHost, Session,
@@ -3060,7 +3062,17 @@ async fn module_list_manifests(
                 .and_then(|project_id| host.runtime_entry(project_id, &id))
                 .or_else(|| host.catalog.get(&id).cloned())
                 .ok_or_else(|| CoreError::Validation("plugin catalog entry disappeared".into()))?;
-            let mut manifest = serde_json::to_value(&entry.manifest)
+            let mut manifest_struct = entry.manifest.clone();
+            if supports_schema_overlay(&entry.manifest) {
+                let overlay_value = project
+                    .module_schema_overlay(&id)?
+                    .unwrap_or_else(|| serde_json::json!({}));
+                let overlay = parse_module_overlay(&overlay_value)
+                    .map_err(CoreError::Validation)?;
+                manifest_struct = merge_module_manifest(&entry.manifest, &overlay)
+                    .map_err(CoreError::Validation)?;
+            }
+            let mut manifest = serde_json::to_value(&manifest_struct)
                 .map_err(|error| CoreError::Validation(error.to_string()))?;
             let enabled = project.is_module_enabled(&id)?;
             manifest
@@ -3070,6 +3082,140 @@ async fn module_list_manifests(
             manifests.push(manifest);
         }
         Ok(manifests)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn module_schema_overlay_get(
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    module_id: String,
+) -> Result<ModuleSchemaOverlay, String> {
+    let plugins = plugins.inner().clone();
+    with_read_project(state, move |project| {
+        let project_id = project
+            .info()
+            .map(|info| info.root)
+            .ok_or(CoreError::ProjectNotOpen)?;
+        let package = {
+            let host = plugins
+                .lock()
+                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+            host.runtime_entry(&project_id, &module_id)
+                .or_else(|| host.catalog.get(&module_id).cloned())
+                .map(|entry| entry.manifest.clone())
+                .ok_or_else(|| {
+                    CoreError::Validation(format!("plugin is unavailable: {module_id}"))
+                })?
+        };
+        if !supports_schema_overlay(&package) {
+            return Err(CoreError::Validation(format!(
+                "schema overlays are not supported for {module_id}"
+            )));
+        }
+        let value = project
+            .module_schema_overlay(&module_id)?
+            .unwrap_or_else(|| serde_json::json!({}));
+        parse_module_overlay(&value).map_err(CoreError::Validation)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn module_schema_editor_load(
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    module_id: String,
+) -> Result<ModuleSchemaEditorState, String> {
+    let plugins = plugins.inner().clone();
+    with_read_project(state, move |project| {
+        let project_id = project
+            .info()
+            .map(|info| info.root)
+            .ok_or(CoreError::ProjectNotOpen)?;
+        let package = {
+            let host = plugins
+                .lock()
+                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+            host.runtime_entry(&project_id, &module_id)
+                .or_else(|| host.catalog.get(&module_id).cloned())
+                .map(|entry| entry.manifest.clone())
+                .ok_or_else(|| {
+                    CoreError::Validation(format!("plugin is unavailable: {module_id}"))
+                })?
+        };
+        if !supports_schema_overlay(&package) {
+            return Err(CoreError::Validation(format!(
+                "schema overlays are not supported for {module_id}"
+            )));
+        }
+        if !project.is_module_enabled(&module_id)? {
+            return Err(CoreError::Validation(format!(
+                "plugin is disabled: {module_id}"
+            )));
+        }
+        let value = project
+            .module_schema_overlay(&module_id)?
+            .unwrap_or_else(|| serde_json::json!({}));
+        let overlay = parse_module_overlay(&value).map_err(CoreError::Validation)?;
+        Ok(ModuleSchemaEditorState {
+            id: package.id.clone(),
+            name: package.name.clone(),
+            schemas: package.schemas.clone(),
+            templates: package.templates.clone(),
+            overlay,
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn module_schema_overlay_set(
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    module_id: String,
+    overlay: ModuleSchemaOverlay,
+) -> Result<ModuleSchemaOverlay, String> {
+    let plugins = plugins.inner().clone();
+    with_core(state, move |core| {
+        let context = trusted_shell();
+        let project = core.project_mut(context)?;
+        let project_id = project
+            .info()
+            .map(|info| info.root)
+            .ok_or(CoreError::ProjectNotOpen)?;
+        let package = {
+            let host = plugins
+                .lock()
+                .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+            host.runtime_entry(&project_id, &module_id)
+                .or_else(|| host.catalog.get(&module_id).cloned())
+                .map(|entry| entry.manifest.clone())
+                .ok_or_else(|| {
+                    CoreError::Validation(format!("plugin is unavailable: {module_id}"))
+                })?
+        };
+        if !supports_schema_overlay(&package) {
+            return Err(CoreError::Validation(format!(
+                "schema overlays are not supported for {module_id}"
+            )));
+        }
+        let mut normalized = overlay;
+        if normalized.version == 0 {
+            normalized.version = SCHEMA_OVERLAY_VERSION;
+        }
+        daena_plugin_api::validate_module_overlay(&package, &normalized)
+            .map_err(CoreError::Validation)?;
+        let value = if normalized.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_value(&normalized).map_err(|error| {
+                CoreError::Validation(error.to_string())
+            })?)
+        };
+        project.set_module_schema_overlay(module_id, value)?;
+        Ok(normalized)
     })
     .await
 }
@@ -5599,6 +5745,9 @@ pub fn run() {
             plugin_close_webview,
             plugin_close_all_webviews,
             module_list_manifests,
+            module_schema_overlay_get,
+            module_schema_editor_load,
+            module_schema_overlay_set,
             module_enable,
             module_disable,
             plugin_install_package,

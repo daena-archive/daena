@@ -119,6 +119,13 @@
       "resource": "project.search"
     },
     {
+      "id": "schema.overlay",
+      "operations": [
+        "overlay"
+      ],
+      "resource": "project.schema"
+    },
+    {
       "id": "event.publish:<type>",
       "operations": [
         "publish"

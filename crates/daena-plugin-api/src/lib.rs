@@ -5,8 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 pub mod catalog;
+pub mod schema_overlay;
 pub mod rpc;
 pub use catalog::*;
+pub use schema_overlay::*;
 pub use rpc::*;
 
 pub const MANIFEST_VERSION: u32 = 1;
@@ -29,6 +31,7 @@ pub const KNOWN_CAPABILITIES: &[&str] = &[
     "asset.write:self",
     "asset.register",
     "search.query",
+    "schema.overlay",
     "event.publish:<type>",
     "event.subscribe:<type>",
     "service.provide:<name>",
@@ -140,6 +143,12 @@ pub const CAPABILITY_REGISTRY: &[CapabilityEntry] = &[
         id: "search.query",
         resource: "project.search",
         operations: &["query"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "schema.overlay",
+        resource: "project.schema",
+        operations: &["overlay"],
         confirmation: None,
     },
     CapabilityEntry {

@@ -940,6 +940,90 @@ fn disabled_module_survives_directory_reopen() {
 }
 
 #[test]
+fn lore_schema_overlay_survives_directory_reopen_and_checkpoint() {
+    let root = std::env::temp_dir().join(format!("daena-lore-overlay-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let overlay = serde_json::json!({
+        "version": 1,
+        "disabledTemplates": ["concept"],
+        "customEntityTypes": ["species"],
+        "customFields": [{
+            "key": "lifespan",
+            "label": "Lifespan",
+            "type": "text",
+            "entityTypes": ["species"]
+        }],
+        "customTemplates": [{
+            "id": "species",
+            "name": "Species",
+            "entityType": "species",
+            "fields": { "summary": "", "lifespan": "" }
+        }]
+    });
+    store
+        .set_module_schema_overlay("daena.lore".into(), Some(overlay.clone()))
+        .unwrap();
+    assert_eq!(
+        store.module_schema_overlay("daena.lore").unwrap(),
+        Some(overlay.clone())
+    );
+    store.flush_checkpoint("lore-overlay-test").unwrap();
+    // Give the export worker a moment to write portable plugin state.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    drop(store);
+
+    let plugin_path = root.join("plugins/daena.lore.json");
+    let plugin_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&plugin_path).unwrap()).unwrap();
+    assert_eq!(plugin_json["schemaOverlay"], overlay);
+
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(
+        rebuilt.module_schema_overlay("daena.lore").unwrap(),
+        Some(overlay)
+    );
+    drop(rebuilt);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn timeline_schema_overlay_survives_directory_reopen_and_checkpoint() {
+    let root = std::env::temp_dir().join(format!("daena-timeline-overlay-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let overlay = serde_json::json!({
+        "version": 1,
+        "disabledFields": ["endsAt"],
+        "customFields": [{
+            "key": "importance",
+            "label": "Importance",
+            "type": "number",
+            "entityTypes": ["event"]
+        }]
+    });
+    store
+        .set_module_schema_overlay("daena.timeline".into(), Some(overlay.clone()))
+        .unwrap();
+    store.flush_checkpoint("timeline-overlay-test").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    drop(store);
+
+    let plugin_path = root.join("plugins/daena.timeline.json");
+    let plugin_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&plugin_path).unwrap()).unwrap();
+    assert_eq!(plugin_json["schemaOverlay"], overlay);
+
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(
+        rebuilt.module_schema_overlay("daena.timeline").unwrap(),
+        Some(overlay)
+    );
+    drop(rebuilt);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn file_backed_project_paths_are_rejected() {
     let path = std::env::temp_dir().join(format!("daena-legacy-{}.sqlite", Uuid::new_v4()));
     std::fs::write(&path, b"legacy database placeholder").unwrap();

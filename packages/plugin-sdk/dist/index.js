@@ -216,6 +216,7 @@ const knownCapabilities = new Set([
     "entity.read", "entity.write", "entity.delete", "document.read", "document.write",
     "field.read:self", "field.read:shared", "field.write:self", "relationship.read",
     "relationship.write", "asset.read:self", "asset.write:self", "asset.register", "search.query",
+    "schema.overlay",
     "event.publish:<type>", "event.subscribe:<type>", "service.provide:<name>", "service.call:<name>",
 ]);
 export function isPluginIdentifier(value) {

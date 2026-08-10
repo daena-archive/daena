@@ -297,6 +297,9 @@ pub struct PluginStateFile {
     pub selected_package_version: Option<String>,
     pub migrations: Vec<CanonicalMigration>,
     pub preserved_state: serde_json::Value,
+    /// Project-owned schema overlay JSON (currently used by Lore).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_overlay: Option<serde_json::Value>,
 }
 
 fn default_plugin_enabled() -> bool {
@@ -782,8 +785,16 @@ pub fn write_canonical_project(
             })
             .collect::<Vec<_>>();
         let preserved_state = existing_state
-            .map(|state| state.preserved_state)
+            .as_ref()
+            .map(|state| state.preserved_state.clone())
             .unwrap_or_else(|| serde_json::json!({}));
+        let schema_overlay = module
+            .and_then(|module| module.schema_overlay.clone())
+            .or_else(|| {
+                existing_state
+                    .as_ref()
+                    .and_then(|state| state.schema_overlay.clone())
+            });
         let state = PluginStateFile {
             plugin_id,
             namespaces,
@@ -794,6 +805,7 @@ pub fn write_canonical_project(
             selected_package_version: module.and_then(|module| module.package_version.clone()),
             migrations,
             preserved_state,
+            schema_overlay,
         };
         write_json(&path, &state)?;
     }
@@ -987,6 +999,17 @@ pub(crate) fn write_canonical_plugin(
             applied_at: migration.applied_at.clone(),
         })
         .collect::<Vec<_>>();
+    let preserved_state = existing_state
+        .as_ref()
+        .map(|state| state.preserved_state.clone())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let schema_overlay = module
+        .and_then(|module| module.schema_overlay.clone())
+        .or_else(|| {
+            existing_state
+                .as_ref()
+                .and_then(|state| state.schema_overlay.clone())
+        });
     write_json(
         &path,
         &PluginStateFile {
@@ -998,9 +1021,8 @@ pub(crate) fn write_canonical_plugin(
             schema_checksum,
             selected_package_version: module.and_then(|module| module.package_version.clone()),
             migrations,
-            preserved_state: existing_state
-                .map(|state| state.preserved_state)
-                .unwrap_or_else(|| serde_json::json!({})),
+            preserved_state,
+            schema_overlay,
         },
     )?;
     Ok(())
@@ -1323,6 +1345,7 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
                 enabled: state.enabled,
                 version: state.data_version,
                 package_version: state.selected_package_version,
+                schema_overlay: state.schema_overlay,
             });
             for migration in state.migrations {
                 migration_history.push(MigrationHistoryEntry {

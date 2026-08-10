@@ -1,7 +1,9 @@
 <script lang="ts">
 import type { Snippet } from "svelte";
+import { onMount } from "svelte";
+import { setSchemaEditorDiscardPrompt } from "$lib/schemaEditorGuard";
 
-type SettingsSection = "general" | "ai" | "plugins" | "git";
+type SettingsSection = "general" | "ai" | "plugins" | "schema" | "git";
 type RecentProject = { name: string; root: string };
 
 let {
@@ -10,7 +12,9 @@ let {
   projectOpen,
   onRemoveRecent,
   onClose,
+  onBeforeNavigate,
   plugins,
+  schema,
   git,
   aiSettings,
   aiStatus,
@@ -40,7 +44,10 @@ let {
   projectOpen: boolean;
   onRemoveRecent: (root: string) => void;
   onClose: () => void;
+  /** Return false to cancel leaving the current settings section or closing Settings. */
+  onBeforeNavigate?: (next: SettingsSection | null) => boolean | Promise<boolean>;
   plugins: Snippet;
+  schema: Snippet;
   git: Snippet;
   aiSettings: {
     localEndpoint: string;
@@ -83,10 +90,37 @@ let embeddingSectionOpen = $state(false);
 let recoveryPath = $state("");
 let storageBusy = $state(false);
 let storageMessage = $state("");
+let schemaDiscardOpen = $state(false);
+let schemaDiscardResolver: ((allowed: boolean) => void) | null = null;
 
 $effect(() => {
   if (aiSettings.localEmbeddingModel.trim()) embeddingSectionOpen = true;
 });
+
+onMount(() => {
+  // In-app confirm: window.confirm is a silent no-op on macOS Tauri/WKWebView.
+  setSchemaEditorDiscardPrompt(
+    () =>
+      new Promise<boolean>((resolve) => {
+        schemaDiscardResolver = resolve;
+        schemaDiscardOpen = true;
+      }),
+  );
+  return () => {
+    setSchemaEditorDiscardPrompt(null);
+    if (schemaDiscardResolver) {
+      schemaDiscardResolver(false);
+      schemaDiscardResolver = null;
+    }
+    schemaDiscardOpen = false;
+  };
+});
+
+function resolveSchemaDiscard(allowed: boolean) {
+  schemaDiscardOpen = false;
+  schemaDiscardResolver?.(allowed);
+  schemaDiscardResolver = null;
+}
 
 function chooseModel(kind: "chat" | "embedding", value: string) {
   onAiSettingsChange(kind === "chat" ? "localModel" : "localEmbeddingModel", value);
@@ -129,6 +163,17 @@ async function restoreRecoveryBackup() {
     storageBusy = false;
   }
 }
+
+async function goToSection(next: SettingsSection) {
+  if (next === section) return;
+  if (onBeforeNavigate && !(await onBeforeNavigate(next))) return;
+  section = next;
+}
+
+async function handleClose() {
+  if (onBeforeNavigate && !(await onBeforeNavigate(null))) return;
+  onClose();
+}
 </script>
 
 <section class="settings-view" aria-label="Settings">
@@ -138,7 +183,7 @@ async function restoreRecoveryBackup() {
       <h1>Settings</h1>
       <p>App preferences and the plugins that power this project.</p>
     </div>
-    <button type="button" class="quiet-button" onclick={onClose}>Back</button>
+    <button type="button" class="quiet-button" onclick={() => void handleClose()}>Back</button>
   </header>
 
   <div class="settings-layout">
@@ -147,19 +192,27 @@ async function restoreRecoveryBackup() {
         type="button"
         class:active={section === "general"}
         class="settings-nav-button"
-        onclick={() => (section = "general")}>General</button>
-      <button type="button" class:active={section === "ai"} class="settings-nav-button" onclick={() => (section = "ai")}
-        >AI</button>
+        onclick={() => void goToSection("general")}>General</button>
+      <button
+        type="button"
+        class:active={section === "ai"}
+        class="settings-nav-button"
+        onclick={() => void goToSection("ai")}>AI</button>
       <button
         type="button"
         class:active={section === "plugins"}
         class="settings-nav-button"
-        onclick={() => (section = "plugins")}>Plugins</button>
+        onclick={() => void goToSection("plugins")}>Plugins</button>
+      <button
+        type="button"
+        class:active={section === "schema"}
+        class="settings-nav-button"
+        onclick={() => void goToSection("schema")}>Schema</button>
       <button
         type="button"
         class:active={section === "git"}
         class="settings-nav-button"
-        onclick={() => (section = "git")}>Git</button>
+        onclick={() => void goToSection("git")}>Git</button>
     </nav>
 
     <div class="settings-panel">
@@ -509,11 +562,26 @@ async function restoreRecoveryBackup() {
         {:else}
           {@render plugins()}
         {/if}
+      {:else if section === "schema"}
+        {@render schema()}
       {:else}
         {@render git()}
       {/if}
     </div>
   </div>
+
+  {#if schemaDiscardOpen}
+    <div class="schema-discard-backdrop" role="presentation">
+      <div class="schema-discard-dialog" role="alertdialog" aria-modal="true" aria-labelledby="schema-discard-title">
+        <strong id="schema-discard-title">Discard unsaved schema changes?</strong>
+        <p>Your edits to types, fields, and templates will be lost.</p>
+        <div class="schema-discard-actions">
+          <button type="button" class="quiet-button" onclick={() => resolveSchemaDiscard(false)}>Keep editing</button>
+          <button type="button" class="danger-button" onclick={() => resolveSchemaDiscard(true)}>Discard</button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </section>
 
 <style>
@@ -523,6 +591,52 @@ async function restoreRecoveryBackup() {
   min-height: calc(100vh - 58px);
   padding: 28px 32px 40px;
   background: var(--canvas);
+}
+.schema-discard-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  background: rgba(48, 44, 38, 0.35);
+}
+.schema-discard-dialog {
+  width: min(420px, calc(100vw - 32px));
+  display: grid;
+  gap: 10px;
+  padding: 18px 20px;
+  border: 1px solid #d9cdbd;
+  border-radius: 14px;
+  background: #fffefa;
+  box-shadow: 0 18px 40px rgba(48, 44, 38, 0.18);
+}
+.schema-discard-dialog strong {
+  font: 600 16px var(--font-display, Georgia, serif);
+}
+.schema-discard-dialog p {
+  margin: 0;
+  color: #8f897e;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.schema-discard-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+.danger-button {
+  border: 1px solid #c9897d;
+  border-radius: 8px;
+  padding: 6px 12px;
+  background: #f7ebe7;
+  color: #9a4d3f;
+  font:
+    600 11px Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
+  cursor: pointer;
 }
 .settings-header {
   display: flex;

@@ -170,6 +170,12 @@ and schemas, but Rust remains the authority for validation, lifecycle,
 authorization, migrations, and persistence. Plugin code receives no database,
 filesystem, shell, process, or ambient Tauri handle.
 
+Overlay-capable modules (those that declare the `schema.overlay` capability)
+may also store a project-owned `schemaOverlay` on `plugins/{module_id}.json`. The
+overlay disables packaged builtins and adds custom entity types, fields, and
+templates for that project only. Package manifest defaults remain immutable;
+see [`adr/0012-plugin-schema-overlays.md`](./adr/0012-plugin-schema-overlays.md).
+
 Search indexes, map projections, relationship indexes, and similar structures
 are derived from runtime rows and may be rebuilt without changing the
 portable project.

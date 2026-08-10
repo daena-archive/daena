@@ -172,6 +172,9 @@ pub struct ModuleState {
     pub version: i64,
     #[serde(default)]
     pub package_version: Option<String>,
+    /// Opaque project schema overlay for this module (Lore uses this).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_overlay: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2669,7 +2672,7 @@ impl ProjectStore {
              CREATE TABLE IF NOT EXISTS map_location_projection (location_id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, map_entity_id TEXT NOT NULL, label TEXT, role TEXT NOT NULL, anchor_kind TEXT NOT NULL, provider TEXT, feature_kind TEXT, feature_id TEXT, min_x REAL, min_y REAL, max_x REAL, max_y REAL, valid_from TEXT, valid_to TEXT, resolution TEXT NOT NULL);
              CREATE INDEX IF NOT EXISTS map_location_entity_idx ON map_location_projection(entity_id);
              CREATE INDEX IF NOT EXISTS map_location_map_idx ON map_location_projection(map_entity_id);")?;
-        self.connection.execute_batch("CREATE TABLE IF NOT EXISTS migration_history(module_id TEXT NOT NULL, migration_id TEXT NOT NULL, from_version INTEGER NOT NULL, to_version INTEGER NOT NULL, checksum TEXT NOT NULL, package_digest TEXT NOT NULL DEFAULT '', applied_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(module_id, migration_id)); CREATE TABLE IF NOT EXISTS plugin_backups(id TEXT PRIMARY KEY, module_id TEXT NOT NULL, from_package_version TEXT, to_package_version TEXT, data_version INTEGER NOT NULL, path TEXT NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL);")?;
+        self.connection.execute_batch("CREATE TABLE IF NOT EXISTS migration_history(module_id TEXT NOT NULL, migration_id TEXT NOT NULL, from_version INTEGER NOT NULL, to_version INTEGER NOT NULL, checksum TEXT NOT NULL, package_digest TEXT NOT NULL DEFAULT '', applied_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(module_id, migration_id)); CREATE TABLE IF NOT EXISTS plugin_backups(id TEXT PRIMARY KEY, module_id TEXT NOT NULL, from_package_version TEXT, to_package_version TEXT, data_version INTEGER NOT NULL, path TEXT NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS module_schema_overlays(module_id TEXT PRIMARY KEY, overlay_json TEXT NOT NULL);")?;
         for table in [
             "project_meta",
             "entities",
@@ -2682,6 +2685,7 @@ impl ProjectStore {
             "module_package_versions",
             "module_namespaces",
             "module_fields",
+            "module_schema_overlays",
             "migration_history",
             "plugin_backups",
         ] {
@@ -3724,14 +3728,21 @@ impl ProjectStore {
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        let mut module_statement = self.connection.prepare("SELECT m.module_id, COALESCE(s.enabled, 1), m.version, p.package_version FROM module_versions m LEFT JOIN module_state s ON s.module_id = m.module_id LEFT JOIN module_package_versions p ON p.module_id = m.module_id ORDER BY m.module_id")?;
+        let mut module_statement = self.connection.prepare("SELECT m.module_id, COALESCE(s.enabled, 1), m.version, p.package_version, o.overlay_json FROM module_versions m LEFT JOIN module_state s ON s.module_id = m.module_id LEFT JOIN module_package_versions p ON p.module_id = m.module_id LEFT JOIN module_schema_overlays o ON o.module_id = m.module_id ORDER BY m.module_id")?;
         let modules = module_statement
             .query_map([], |row| {
+                let overlay_json: Option<String> = row.get(4)?;
+                let schema_overlay = overlay_json.and_then(|json| {
+                    serde_json::from_str(&json)
+                        .ok()
+                        .filter(|value: &serde_json::Value| !value.is_null())
+                });
                 Ok(ModuleState {
                     module_id: row.get(0)?,
                     enabled: row.get::<_, i64>(1)? != 0,
                     version: row.get(2)?,
                     package_version: row.get(3)?,
+                    schema_overlay,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -3866,6 +3877,7 @@ impl ProjectStore {
                  DELETE FROM module_package_versions;
                  DELETE FROM module_fields;
                  DELETE FROM module_namespaces;
+                 DELETE FROM module_schema_overlays;
                  DELETE FROM migration_history;",
             )?;
         }
@@ -3890,6 +3902,16 @@ impl ProjectStore {
             transaction.execute("INSERT INTO module_state(module_id,enabled) VALUES (?1,?2) ON CONFLICT(module_id) DO UPDATE SET enabled=excluded.enabled", params![module.module_id, module.enabled as i64])?;
             if let Some(package_version) = &module.package_version {
                 transaction.execute("INSERT INTO module_package_versions(module_id,package_version) VALUES (?1,?2) ON CONFLICT(module_id) DO UPDATE SET package_version=excluded.package_version", params![module.module_id, package_version])?;
+            }
+            if let Some(overlay) = &module.schema_overlay {
+                if !overlay.is_null() {
+                    let overlay_json = serde_json::to_string(overlay)
+                        .map_err(|error| CoreError::Validation(error.to_string()))?;
+                    transaction.execute(
+                        "INSERT INTO module_schema_overlays(module_id, overlay_json) VALUES (?1, ?2) ON CONFLICT(module_id) DO UPDATE SET overlay_json=excluded.overlay_json",
+                        params![module.module_id, overlay_json],
+                    )?;
+                }
             }
         }
         for namespace in &snapshot.module_namespaces {
@@ -5348,13 +5370,20 @@ impl ProjectStore {
     }
 
     pub fn module_states(&self) -> Result<Vec<ModuleState>, CoreError> {
-        let mut statement = self.connection.prepare("SELECT m.module_id, COALESCE(s.enabled, 1), m.version, p.package_version FROM module_versions m LEFT JOIN module_state s ON s.module_id = m.module_id LEFT JOIN module_package_versions p ON p.module_id = m.module_id ORDER BY m.module_id")?;
+        let mut statement = self.connection.prepare("SELECT m.module_id, COALESCE(s.enabled, 1), m.version, p.package_version, o.overlay_json FROM module_versions m LEFT JOIN module_state s ON s.module_id = m.module_id LEFT JOIN module_package_versions p ON p.module_id = m.module_id LEFT JOIN module_schema_overlays o ON o.module_id = m.module_id ORDER BY m.module_id")?;
         let rows = statement.query_map([], |row| {
+            let overlay_json: Option<String> = row.get(4)?;
+            let schema_overlay = overlay_json.and_then(|json| {
+                serde_json::from_str(&json)
+                    .ok()
+                    .filter(|value: &serde_json::Value| !value.is_null())
+            });
             Ok(ModuleState {
                 module_id: row.get(0)?,
                 enabled: row.get::<_, i64>(1)? != 0,
                 version: row.get(2)?,
                 package_version: row.get(3)?,
+                schema_overlay,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -5414,6 +5443,72 @@ impl ProjectStore {
             .optional()?
             .unwrap_or(1)
             != 0)
+    }
+
+    pub fn module_schema_overlay(&self, module_id: &str) -> Result<Option<serde_json::Value>, CoreError> {
+        let overlay_json: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT overlay_json FROM module_schema_overlays WHERE module_id=?1",
+                params![module_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(overlay_json.and_then(|json| serde_json::from_str(&json).ok()))
+    }
+
+    pub fn set_module_schema_overlay(
+        &self,
+        module_id: String,
+        overlay: Option<serde_json::Value>,
+    ) -> Result<(), CoreError> {
+        self.set_module_schema_overlay_with_request(module_id, overlay, None)
+    }
+
+    pub fn set_module_schema_overlay_with_request(
+        &self,
+        module_id: String,
+        overlay: Option<serde_json::Value>,
+        request_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        if self
+            .committed_mutation::<serde_json::Value>(request_id)?
+            .is_some()
+        {
+            return Ok(());
+        }
+        if module_id.trim().is_empty() {
+            return Err(CoreError::Validation("module id is required".into()));
+        }
+        let request_id = self.request_id(request_id)?;
+        let transaction = self.begin_mutation(
+            &request_id,
+            Some(&serde_json::Value::Null),
+            &[format!("plugins/{module_id}.json")],
+        )?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO module_versions(module_id,version) VALUES (?1,0)",
+            params![module_id],
+        )?;
+        match overlay {
+            Some(value) if !value.is_null() => {
+                let overlay_json = serde_json::to_string(&value)
+                    .map_err(|error| CoreError::Validation(error.to_string()))?;
+                transaction.execute(
+                    "INSERT INTO module_schema_overlays(module_id, overlay_json) VALUES (?1, ?2) ON CONFLICT(module_id) DO UPDATE SET overlay_json=excluded.overlay_json",
+                    params![module_id, overlay_json],
+                )?;
+            }
+            _ => {
+                transaction.execute(
+                    "DELETE FROM module_schema_overlays WHERE module_id=?1",
+                    params![module_id],
+                )?;
+            }
+        }
+        transaction.commit()?;
+        self.notify_export_worker()?;
+        Ok(())
     }
 
     pub fn set_module_package_version(

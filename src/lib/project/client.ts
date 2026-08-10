@@ -1,5 +1,30 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ModuleManifest } from "../../../packages/module-api/src/index";
+import type { EntityTemplate, FieldDefinition } from "../../../packages/plugin-sdk/src/generated";
+
+export type { EntityTemplate, FieldDefinition };
+
+export interface ModuleSchemaOverlay {
+  version: number;
+  disabledEntityTypes?: string[];
+  disabledFields?: string[];
+  disabledTemplates?: string[];
+  customEntityTypes?: string[];
+  customFields?: FieldDefinition[];
+  customTemplates?: EntityTemplate[];
+}
+
+export interface ModuleSchemaEditorState {
+  id: string;
+  name: string;
+  schemas: Array<{
+    namespace: string;
+    entityTypes: string[];
+    fields: FieldDefinition[];
+  }>;
+  templates: EntityTemplate[];
+  overlay: ModuleSchemaOverlay;
+}
 
 export interface Entity {
   id: string;
@@ -417,6 +442,11 @@ export const project = {
   rebuildSearch: () => invoke<void>("project_rebuild_search"),
   seedExample: () => invoke<number>("project_seed_example"),
   listModuleManifests: () => invoke<ProjectModuleManifest[]>("module_list_manifests"),
+  getModuleSchemaOverlay: (moduleId: string) => invoke<ModuleSchemaOverlay>("module_schema_overlay_get", { moduleId }),
+  loadModuleSchemaEditor: (moduleId: string) =>
+    invoke<ModuleSchemaEditorState>("module_schema_editor_load", { moduleId }),
+  setModuleSchemaOverlay: (moduleId: string, overlay: ModuleSchemaOverlay) =>
+    invoke<ModuleSchemaOverlay>("module_schema_overlay_set", { moduleId, overlay }),
   enableModule: (id: string, grantedCapabilities?: string[]) =>
     invoke<void>("module_enable", { id, grantedCapabilities }),
   disableModule: (id: string) => invoke<void>("module_disable", { id }),

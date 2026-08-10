@@ -19,6 +19,7 @@ import {
   type AiProviderStatus,
   type AiStreamEvent,
   type AiIndexStatus,
+  type ModuleSchemaOverlay,
 } from "$lib/project/client";
 import type {
   EntityTemplate,
@@ -34,6 +35,8 @@ import HostView from "$lib/plugins/HostView.svelte";
 import SandboxView from "$lib/plugins/SandboxView.svelte";
 import ProjectionView from "$lib/ProjectionView.svelte";
 import SettingsView from "$lib/SettingsView.svelte";
+import SchemaSettingsPanel from "$lib/SchemaSettingsPanel.svelte";
+import { allowLeaveSchemaEditor, isSchemaEditorDirty } from "$lib/schemaEditorGuard";
 import GitSettingsPanel from "$lib/GitSettingsPanel.svelte";
 import RelationshipPicker from "$lib/RelationshipPicker.svelte";
 import loreManifestJson from "../../packages/modules/lore/manifest.json";
@@ -53,7 +56,7 @@ import {
 
 type InstalledModule = ProjectModuleManifest;
 type WorkspaceSection = "lore" | "timeline" | "writing" | "maps";
-type SettingsSection = "general" | "ai" | "plugins" | "git";
+type SettingsSection = "general" | "ai" | "plugins" | "schema" | "git";
 type WritingView = "manuscripts" | "reference";
 type AiFieldSuggestion = { value: string | string[]; rationale: string; confidence: string };
 type RecentProject = { name: string; root: string };
@@ -118,6 +121,36 @@ let mapPickNotice = $state("");
 let projectDiagnostics = $state<string[]>([]);
 let showSettings = $state(false);
 let settingsSection = $state<SettingsSection>("general");
+let moduleSchemaOverlay = $state<ModuleSchemaOverlay>({ version: 1 });
+let moduleSchemaPackage = $state<{
+  schemas: Array<{ namespace: string; entityTypes: string[]; fields: FieldDefinition[] }>;
+  templates: EntityTemplate[];
+} | null>(null);
+let moduleSchemaBusy = $state(false);
+let moduleSchemaMessage = $state("");
+let moduleSchemaRevision = $state(0);
+let schemaPluginId = $state<string | null>(null);
+let schemaPluginName = $state("");
+let schemaEditorDirty = $state(false);
+let schemaOverlayLoadToken = 0;
+
+const SCHEMA_OVERLAY_CAPABILITY = "schema.overlay";
+
+function schemaOverlayCandidates() {
+  return modules
+    .filter(
+      (module) =>
+        module.enabled &&
+        (module.capabilities ?? []).includes(SCHEMA_OVERLAY_CAPABILITY) &&
+        (module.schemas ?? []).some((schema) => (schema.entityTypes?.length ?? 0) > 0),
+    )
+    .map((module) => ({ id: module.id, name: module.name }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function moduleSupportsSchemaOverlay(moduleId: string) {
+  return schemaOverlayCandidates().some((candidate) => candidate.id === moduleId);
+}
 let aiSettings = $state<AiSettings>({
   localEndpoint: "http://127.0.0.1:1234/v1",
   localModel: "",
@@ -223,14 +256,17 @@ const activeModuleId = () =>
       : section === "writing"
         ? "daena.writing"
         : "daena.maps";
-const activeManifest = () =>
-  (section === "lore"
+const activeManifest = () => {
+  const fromProject = modules.find((module) => module.id === activeModuleId());
+  if (fromProject) return fromProject as unknown as ModuleManifest;
+  return (section === "lore"
     ? loreManifestJson
     : section === "timeline"
       ? timelineManifestJson
       : section === "writing"
         ? writingManifestJson
         : null) as unknown as ModuleManifest | null;
+};
 const workspaceSectionOrder: WorkspaceSection[] = ["lore", "timeline", "writing", "maps"];
 function workspaceModuleId(target: WorkspaceSection) {
   return target === "lore"
@@ -435,13 +471,22 @@ function clearCreateDateField(key: string) {
 
 function contextFor(currentSection = section): ModuleContext {
   if (!projectInfo?.root) throw new Error("No project is open");
-  const manifest =
+  const moduleId =
+    currentSection === "lore"
+      ? "daena.lore"
+      : currentSection === "timeline"
+        ? "daena.timeline"
+        : currentSection === "writing"
+          ? "daena.writing"
+          : "daena.maps";
+  const fromProject = modules.find((module) => module.id === moduleId);
+  const fallback =
     currentSection === "lore"
       ? loreManifestJson
       : currentSection === "timeline"
         ? timelineManifestJson
         : writingManifestJson;
-  return buildModuleContext(manifest as unknown as ModuleManifest, projectInfo.root);
+  return buildModuleContext((fromProject ?? fallback) as unknown as ModuleManifest, projectInfo.root);
 }
 
 function sectionEnabled() {
@@ -485,10 +530,10 @@ function pluginNavigationActive(item: PluginNavigationItem) {
 }
 
 async function openHostView(plugin: PluginAdminEntry, view: PluginAdminEntry["views"][number]) {
+  if (!(await dismissSettings())) return;
   await closeNativePluginWebviews();
   hostView = { plugin, view };
   sandboxView = null;
-  showSettings = false;
 }
 
 function pluginViews() {
@@ -512,7 +557,7 @@ function pluginViews() {
 
 async function openPluginView(item: PluginNavigationItem) {
   if (item.plugin.id === "daena.maps") {
-    showSettings = false;
+    if (!(await dismissSettings())) return;
     const mapId = currentMapId();
     if (sandboxView?.plugin.id === "daena.maps") {
       const mapsWelcome = sandboxView.view === null;
@@ -529,10 +574,10 @@ async function openPluginView(item: PluginNavigationItem) {
     await openHostView(item.plugin, item.view);
     return;
   }
+  if (!(await dismissSettings())) return;
   await closeNativePluginWebviews();
   hostView = null;
   sandboxView = { plugin: item.plugin, view: item.view };
-  showSettings = false;
 }
 
 async function createMap() {
@@ -546,7 +591,7 @@ async function createMap() {
     assets = [];
     mapLocations = [];
     mapFocusLinkId = null;
-    showSettings = false;
+    if (!(await dismissSettings())) return;
     await leavePluginView();
     // Draft editor: no map entity until the in-FMG Save overlay commits one.
     mapsEditorKey = `draft-${Date.now()}`;
@@ -761,7 +806,7 @@ async function selectSearchResult(entity: Entity) {
 async function switchSection(next: WorkspaceSection) {
   if (!(await flushAutoSave())) return;
   if (section === next && (next !== "maps" || sandboxView?.plugin.id === "daena.maps") && !showSettings) return;
-  showSettings = false;
+  if (!(await dismissSettings())) return;
   await leavePluginView();
   section = next;
   clearSelection();
@@ -793,6 +838,7 @@ async function switchWritingView(next: WritingView) {
 function sectionLabel() {
   if (showSettings) {
     if (settingsSection === "plugins") return "Settings · Plugins";
+    if (settingsSection === "schema") return "Settings · Schema";
     if (settingsSection === "git") return "Settings · Git";
     return "Settings";
   }
@@ -2156,6 +2202,10 @@ function setAdminPluginEnabled(id: string, enabled: boolean) {
   );
 }
 async function openSettings(section: SettingsSection = "general") {
+  const wasEditingSchema = showSettings && settingsSection === "schema" && !!schemaPluginId;
+  if (showSettings) {
+    if (!(await beforeSettingsNavigate(section))) return;
+  }
   showSettings = true;
   settingsSection = section;
   await leavePluginView();
@@ -2166,6 +2216,18 @@ async function openSettings(section: SettingsSection = "general") {
     adminPlugins = null;
     await refreshAdmin();
   }
+  if (section === "schema" && ready) {
+    if (schemaPluginId && !moduleSupportsSchemaOverlay(schemaPluginId)) {
+      schemaPluginId = null;
+      schemaPluginName = "";
+      moduleSchemaPackage = null;
+    }
+    // Refresh remounts the editor via overlayRevision; skip while dirty so we don't
+    // wipe edits / clear the leave guard while the UI still shows "Unsaved changes".
+    if (schemaPluginId && (!wasEditingSchema || !isSchemaEditorDirty())) {
+      await refreshModuleSchemaEditor(schemaPluginId);
+    }
+  }
   if (section === "ai" && ready) {
     aiIndexMessage = "";
     await refreshAiIndexStatus();
@@ -2173,6 +2235,93 @@ async function openSettings(section: SettingsSection = "general") {
 }
 function closeSettings() {
   showSettings = false;
+}
+function setSchemaEditorDirty(dirty: boolean) {
+  schemaEditorDirty = dirty;
+}
+async function beforeSettingsNavigate(next: SettingsSection | null): Promise<boolean> {
+  // Re-clicking Schema while already there is a no-op.
+  if (settingsSection === "schema" && next === "schema") return true;
+  // Leaving Schema (other section or close) — ask the live editor guard.
+  // Never use window.confirm here: on macOS Tauri/WKWebView it is a silent no-op.
+  if (settingsSection === "schema") {
+    if (!(await allowLeaveSchemaEditor())) return false;
+    schemaEditorDirty = false;
+  }
+  return true;
+}
+/** Close settings from outside SettingsView (rail, plugin open, etc.). */
+async function dismissSettings(): Promise<boolean> {
+  if (!(await beforeSettingsNavigate(null))) return false;
+  showSettings = false;
+  return true;
+}
+async function refreshModuleSchemaEditor(moduleId: string) {
+  if (!ready) return;
+  const token = ++schemaOverlayLoadToken;
+  try {
+    const editor = await project.loadModuleSchemaEditor(moduleId);
+    if (token !== schemaOverlayLoadToken || schemaPluginId !== moduleId) return;
+    schemaPluginName = editor.name;
+    moduleSchemaPackage = { schemas: editor.schemas, templates: editor.templates };
+    moduleSchemaOverlay = editor.overlay;
+    moduleSchemaRevision += 1;
+    moduleSchemaMessage = "";
+  } catch (cause) {
+    if (token !== schemaOverlayLoadToken || schemaPluginId !== moduleId) return;
+    moduleSchemaMessage = friendlyError(cause);
+  }
+}
+function selectSchemaPlugin(moduleId: string | null) {
+  if (moduleId && !moduleSupportsSchemaOverlay(moduleId)) {
+    schemaPluginId = null;
+    schemaPluginName = "";
+    moduleSchemaPackage = null;
+    moduleSchemaMessage = "";
+    return;
+  }
+  schemaPluginId = moduleId;
+  moduleSchemaMessage = "";
+  if (!moduleId) {
+    schemaPluginName = "";
+    moduleSchemaPackage = null;
+    return;
+  }
+  schemaPluginName = schemaOverlayCandidates().find((candidate) => candidate.id === moduleId)?.name ?? moduleId;
+  moduleSchemaPackage = { schemas: [], templates: [] };
+  moduleSchemaOverlay = { version: 1 };
+  moduleSchemaRevision += 1;
+  void refreshModuleSchemaEditor(moduleId);
+}
+$effect(() => {
+  if (!schemaPluginId) return;
+  if (!moduleSupportsSchemaOverlay(schemaPluginId)) {
+    schemaPluginId = null;
+    schemaPluginName = "";
+    moduleSchemaPackage = null;
+  }
+});
+async function saveModuleSchemaOverlay(overlay: ModuleSchemaOverlay) {
+  if (!schemaPluginId) {
+    moduleSchemaMessage = "Could not save: no plugin selected.";
+    return;
+  }
+  const moduleId = schemaPluginId;
+  moduleSchemaBusy = true;
+  moduleSchemaMessage = "";
+  try {
+    const saved = await project.setModuleSchemaOverlay(moduleId, overlay);
+    if (schemaPluginId !== moduleId) return;
+    moduleSchemaOverlay = saved;
+    moduleSchemaRevision += 1;
+    schemaEditorDirty = false;
+    modules = await project.listModuleManifests();
+    moduleSchemaMessage = "Saved.";
+  } catch (cause) {
+    moduleSchemaMessage = `Could not save: ${friendlyError(cause)}`;
+  } finally {
+    moduleSchemaBusy = false;
+  }
 }
 $effect(() => {
   if (!showSettings || settingsSection !== "plugins" || !ready) return;
@@ -3142,6 +3291,7 @@ onMount(() => {
         projectOpen={ready}
         onRemoveRecent={removeRecentProject}
         onClose={closeSettings}
+        onBeforeNavigate={beforeSettingsNavigate}
         {aiSettings}
         {aiStatus}
         {aiModels}
@@ -3374,6 +3524,21 @@ onMount(() => {
               {/each}
             {/if}
           </div>
+        {/snippet}
+        {#snippet schema()}
+          <SchemaSettingsPanel
+            projectOpen={ready}
+            candidates={schemaOverlayCandidates()}
+            selectedPluginId={schemaPluginId}
+            selectedPluginName={schemaPluginName}
+            packageManifest={moduleSchemaPackage}
+            overlay={moduleSchemaOverlay}
+            overlayRevision={moduleSchemaRevision}
+            busy={moduleSchemaBusy}
+            message={moduleSchemaMessage}
+            onSelectPlugin={selectSchemaPlugin}
+            onSave={saveModuleSchemaOverlay}
+            onDirtyChange={setSchemaEditorDirty} />
         {/snippet}
         {#snippet git()}
           <GitSettingsPanel projectOpen={ready} onError={(message) => (error = message)} beforeWrite={flushAutoSave} />

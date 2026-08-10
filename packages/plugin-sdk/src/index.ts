@@ -382,6 +382,7 @@ const knownCapabilities = new Set([
   "asset.write:self",
   "asset.register",
   "search.query",
+  "schema.overlay",
   "event.publish:<type>",
   "event.subscribe:<type>",
   "service.provide:<name>",

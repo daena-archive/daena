@@ -245,12 +245,14 @@ window.DAENA_HOST = true;
   let overlayRoot = null;
   function ensureOverlayRoot() {
     if (overlayRoot && overlayRoot.isConnected) return overlayRoot;
-    const host = document.querySelector("#map") || document.body;
-    if (host !== document.body && host.style.position === "") host.style.position = "relative";
+    // Host on body, not #map. Forcing #map to position:relative pulled the SVG
+    // into document flow and pushed FMG's #collapsible options chrome below the
+    // viewport. Markers use normalized 0–1 graph coords, so a viewport layer matches
+    // fitMapToScreen without changing FMG layout CSS.
     overlayRoot = document.createElement("div");
     overlayRoot.id = "daena-semantic-overlay";
-    overlayRoot.style.cssText = "position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:2000;";
-    host.appendChild(overlayRoot);
+    overlayRoot.style.cssText = "position:fixed;inset:0;pointer-events:none;overflow:hidden;z-index:2000;";
+    document.body.appendChild(overlayRoot);
     return overlayRoot;
   }
   function overlayPoint(location) {

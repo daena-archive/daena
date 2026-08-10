@@ -10,8 +10,8 @@
   },
   "archive": {
     "path": "src-tauri/plugin-assets/maps/fmg-v1.119.zip",
-    "sha256": "40698d08c011b05851ae06e945edf747f356f99a123e79de3c8bdf31bfde6622",
-    "uncompressedBytes": 24477088
+    "sha256": "c19a6a96e885fa93559cac05c9f322d3a930de7becbb84a19f19632ac8529e2d",
+    "uncompressedBytes": 24477236
   },
   "build": {
     "node": "26.6.0",
@@ -37,6 +37,7 @@
     "remove stale daena-inline.css link (styles restored by bootstrap)",
     "same-origin /__asset transfer URLs for https-scheme plugin webviews",
     "await FMG uploadMap parse via pack-cells poll before hiding loading",
-    "await uploadMap parse until pack.cells.routes exists before prepareMapData"
+    "await uploadMap parse until pack.cells.routes exists before prepareMapData",
+    "maps bridge: host semantic overlay on body so #map stays position:absolute and FMG options stay top-left"
   ]
 }

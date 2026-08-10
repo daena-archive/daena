@@ -551,14 +551,6 @@
     return typeof detail === "object" && detail !== null ? (detail as { path?: string }) : {};
   }
 
-  function syncStatusLabel(info: ProjectInfo | null) {
-    const sync = info?.sync;
-    if (!sync) return "Storage status unavailable";
-    if (sync.state === "failed") return `Export failed · ${sync.export_error ?? "checkpoint unavailable"}`;
-    if (sync.state === "exporting") return `Saving to project files · ${sync.dirty_count} pending`;
-    return "Project files up to date";
-  }
-
   function visibleEntities() {
     const term = query.trim().toLowerCase();
     if (section === "maps") return [];
@@ -1873,6 +1865,15 @@
   }
   function shortDigest(digest: string) { return digest ? digest.slice(0, 12) : ""; }
   function installedAtLabel(timestamp: number) { return timestamp ? new Date(timestamp * 1000).toLocaleString() : ""; }
+  function runtimeTimestampLabel(timestamp: string) {
+    try {
+      const ms = Number(BigInt(timestamp) / 1_000_000n);
+      const date = new Date(ms);
+      return Number.isFinite(ms) && ms > 0 && !Number.isNaN(date.getTime()) ? date.toLocaleString() : "Unknown";
+    } catch {
+      return "Unknown";
+    }
+  }
   function clearSelection() {
     cancelAutoSave();
     editorFullscreen = false;
@@ -1981,12 +1982,7 @@
     void listen<{ mapEntityId: string; anchor: unknown }>("maps-selection", (event) => {
       if (event.payload.mapEntityId === currentMapId()) mapSelection = event.payload.anchor;
     }).then((cleanup) => { unlistenMapsSelection = cleanup; }).catch(() => {});
-    const syncTimer = window.setInterval(() => {
-      if (!ready) return;
-      void project.info().then((info) => { if (info) projectInfo = info; }).catch(() => {});
-    }, 1000);
     return () => {
-      window.clearInterval(syncTimer);
       if (aiModelsMessageTimer !== null) window.clearTimeout(aiModelsMessageTimer);
       unlisten?.();
       clearAiFieldListener();
@@ -2034,9 +2030,6 @@
             <button class="rail-button" role="menuitem" onclick={closeProject}><span class="rail-icon">×</span><span>Close project</span></button>
           </div>
         {/if}
-      </div>
-      <div class:sync-failed={projectInfo?.sync.state === "failed"} class:sync-pending={projectInfo?.sync.state === "exporting"} class="sync-summary" aria-live="polite" title={projectInfo?.sync.export_error ?? undefined}>
-        <span class="sync-dot"></span><span>{syncStatusLabel(projectInfo)}</span>
       </div>
       {#if enabledWorkspaceSections().length > 0}<button aria-expanded={showCreateForm} class="rail-create-button" onclick={toggleCreateForm}><span class="rail-icon">＋</span><span>New entry</span></button>{/if}
       {#if enabledWorkspaceSections().length > 0}
@@ -2358,7 +2351,7 @@
                       selected = map;
                       await loadSelectedState(map);
                       if (mapsView) await openPluginView(mapsView);
-                    }}><span class="item-copy"><strong>{map.name}</strong><small>Updated {new Date(map.updated_at).toLocaleString()}</small></span><span class="item-arrow" aria-hidden="true">›</span></button>
+                    }}><span class="item-copy"><strong>{map.name}</strong><small>Updated {runtimeTimestampLabel(map.updated_at)}</small></span><span class="item-arrow" aria-hidden="true">›</span></button>
                   {/each}
                 </div>
               {/if}
@@ -2543,7 +2536,7 @@
   .collection-tabs button:hover, .collection-tabs button.active { background: var(--surface); color: var(--accent-dark); box-shadow: var(--shadow-sm); }
   .collection-item .item-copy { display: grid; min-width: 0; align-content: center; gap: 4px; overflow: hidden; }
   .collection-item .item-copy strong { overflow: hidden; color: var(--ink); font-size: 13px; font-weight: 700; line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
-  .collection-item .item-copy small { width: max-content; max-width: 150px; margin: 0; padding: 3px 6px; border-radius: 4px; background: #f4f0e8; color: var(--ink-faint); font-size: 10px; line-height: 1; letter-spacing: .04em; text-transform: uppercase; }
+  .collection-item .item-copy small { width: max-content; max-width: 220px; margin: 0; padding: 3px 6px; border-radius: 4px; background: #f4f0e8; color: var(--ink-faint); font-size: 10px; line-height: 1; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
   .collection-item .item-arrow { flex: 0 0 10px; width: 10px; margin-left: auto; color: #c3b6a4; font-size: 18px; line-height: 1; text-align: right; }
   .collection-item:hover .item-arrow, .collection-item.selected .item-arrow { color: var(--accent); }
   .new-form-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 13px; }
@@ -2846,9 +2839,4 @@
     .plugin-card-head { flex-direction: column; }
     .plugin-badges { justify-content: flex-start; }
   }
-  .sync-summary { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-soft); font-size: 10px; }
-  .sync-dot { width: 7px; height: 7px; border-radius: 50%; background: #72a97a; }
-  .sync-pending .sync-dot { background: #d6a35f; box-shadow: 0 0 0 3px rgba(214,163,95,.15); }
-  .sync-failed { color: #a14f42; }
-  .sync-failed .sync-dot { background: #c05a4b; box-shadow: 0 0 0 3px rgba(192,90,75,.14); }
 </style>

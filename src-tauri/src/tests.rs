@@ -1173,6 +1173,9 @@ fn bundled_maps_shell_is_deterministic_and_provider_fail_closed() {
     assert!(bridge_body.contains("waitForUploadedPack"));
     assert!(bridge_body.contains(r#"asset.list", { entityId: map.id, namespace: "maps" }"#));
     assert!(bridge_body.contains("Daena Maps provider startup failed"));
+    assert!(bridge_body.contains("document.body.appendChild(overlayRoot)"));
+    assert!(bridge_body.contains("position:fixed;inset:0"));
+    assert!(!bridge_body.contains("host.style.position"));
 
     let bootstrap = tauri::http::Request::builder()
         .uri("plugin://daena.maps/dist/ui/fmg/daena-inline-bootstrap.js")

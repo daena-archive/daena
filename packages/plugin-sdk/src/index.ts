@@ -479,7 +479,8 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
   const value = manifest as unknown as Record<string, unknown>;
   for (const key of Object.keys(value)) if (!knownManifestKeys.has(key)) errors.push(`unknown manifest key: ${key}`);
   for (const key of knownManifestKeys)
-    if (key !== "enabledByDefault" && !(key in value)) errors.push(`missing manifest key: ${key}`);
+    if (key !== "enabledByDefault" && key !== "stability" && !(key in value))
+      errors.push(`missing manifest key: ${key}`);
   if (value.manifestVersion !== 1) errors.push("manifestVersion must be 1");
   if (typeof value.id !== "string" || !isPluginIdentifier(value.id)) errors.push("id is invalid");
   if (typeof value.publisher !== "string" || !isPluginIdentifier(value.publisher)) errors.push("publisher is invalid");

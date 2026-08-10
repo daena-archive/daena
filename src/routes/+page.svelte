@@ -152,11 +152,17 @@ function moduleSupportsSchemaOverlay(moduleId: string) {
   return schemaOverlayCandidates().some((candidate) => candidate.id === moduleId);
 }
 let aiSettings = $state<AiSettings>({
-  localEndpoint: "http://127.0.0.1:1234/v1",
-  localModel: "",
-  localEmbeddingModel: "",
-  remotePolicy: "localOnly",
-  remote: { provider: "", endpoint: "", model: "", consents: [] },
+  provider: {
+    id: "lm-studio",
+    name: "LM Studio",
+    adapter: "openai-compatible",
+    endpoint: "http://127.0.0.1:1234/v1",
+    model: "",
+    embeddingModel: "",
+    capabilities: [],
+    dataBoundary: "local",
+  },
+  consents: [],
 });
 let aiStatus = $state<AiProviderStatus | null>(null);
 let aiModels = $state<string[]>([]);
@@ -167,7 +173,6 @@ let aiIndexStatus = $state<AiIndexStatus | null>(null);
 let aiIndexBusy = $state(false);
 let aiIndexMessage = $state("");
 let remoteCredential = $state<{ provider: string; configured: boolean } | null>(null);
-let aiUseRemote = $state(false);
 let aiUsage = $state<{ inputTokens: number; outputTokens: number; totalTokens: number } | null>(null);
 let aiRewriteOpen = $state(false);
 let aiBusy = $state(false);
@@ -983,61 +988,68 @@ function friendlyError(cause: unknown) {
     ? "The desktop bridge is unavailable. Open this workspace in the Tauri app to use local project storage."
     : message;
 }
-function updateAiSetting(key: "localEndpoint" | "localModel" | "localEmbeddingModel", value: string) {
-  aiSettings = { ...aiSettings, [key]: value };
+function updateAiSetting(
+  key: "id" | "name" | "adapter" | "endpoint" | "model" | "embeddingModel" | "capabilities" | "dataBoundary",
+  value: string,
+) {
   aiStatus = null;
-  void project.settingsUpdate({ ai: { [key]: value } });
-}
-function updateAiRemoteSetting(key: "provider" | "endpoint" | "model", value: string) {
-  aiSettings = { ...aiSettings, remote: { ...aiSettings.remote, [key]: value } };
-  remoteCredential = null;
-  void project.settingsUpdate({ ai: { remote: { [key]: value } } });
-}
-function updateAiRemotePolicy(value: AiSettings["remotePolicy"]) {
-  aiSettings = { ...aiSettings, remotePolicy: value };
-  void project.settingsUpdate({ ai: { remotePolicy: value } });
+  if (key === "capabilities") {
+    const capabilities = value
+      .split(",")
+      .map((capability) => capability.trim())
+      .filter(Boolean);
+    aiSettings = { ...aiSettings, provider: { ...aiSettings.provider, capabilities } };
+    void project.settingsUpdate({ ai: { provider: { capabilities } } });
+    return;
+  }
+  aiSettings = { ...aiSettings, provider: { ...aiSettings.provider, [key]: value } };
+  void project.settingsUpdate({ ai: { provider: { [key]: value } } });
+  if (key === "id" || key === "dataBoundary") void refreshRemoteCredential();
 }
 async function refreshRemoteCredential() {
-  if (!aiSettings.remote.provider.trim()) {
+  if (aiSettings.provider.dataBoundary !== "remote" || !aiSettings.provider.id.trim()) {
     remoteCredential = null;
     return;
   }
   try {
-    remoteCredential = await project.aiRemoteCredentialStatus(aiSettings.remote.provider);
+    remoteCredential = await project.aiProviderCredentialStatus();
   } catch (_) {
-    remoteCredential = { provider: aiSettings.remote.provider, configured: false };
+    remoteCredential = { provider: aiSettings.provider.id, configured: false };
   }
 }
 async function importRemoteCredential() {
-  if (!aiSettings.remote.provider.trim()) return;
+  if (!aiSettings.provider.id.trim()) return;
   try {
-    remoteCredential = await project.aiRemoteImportCredential(aiSettings.remote.provider);
+    remoteCredential = await project.aiProviderImportCredential();
   } catch (cause) {
     aiIndexMessage = friendlyError(cause);
   }
 }
 async function setRemoteConsent(allowed: boolean) {
-  if (!projectInfo?.root || !aiSettings.remote.provider || !aiSettings.remote.endpoint) return;
+  if (
+    !projectInfo?.root ||
+    aiSettings.provider.dataBoundary !== "remote" ||
+    !aiSettings.provider.id ||
+    !aiSettings.provider.endpoint
+  )
+    return;
   try {
-    await project.aiRemoteSetConsent(projectInfo.root, aiSettings.remote.provider, aiSettings.remote.endpoint, allowed);
-    const consents = aiSettings.remote.consents.filter(
-      (consent) => !(consent.projectId === projectInfo?.root && consent.provider === aiSettings.remote.provider),
+    await project.aiRemoteSetConsent(projectInfo.root, allowed);
+    const consents = aiSettings.consents.filter(
+      (consent) => !(consent.projectId === projectInfo?.root && consent.provider === aiSettings.provider.id),
     );
     aiSettings = {
       ...aiSettings,
-      remote: {
-        ...aiSettings.remote,
-        consents: allowed
-          ? [
-              ...consents,
-              {
-                projectId: projectInfo.root,
-                provider: aiSettings.remote.provider,
-                endpoint: aiSettings.remote.endpoint,
-              },
-            ]
-          : consents,
-      },
+      consents: allowed
+        ? [
+            ...consents,
+            {
+              projectId: projectInfo.root,
+              provider: aiSettings.provider.id,
+              endpoint: aiSettings.provider.endpoint,
+            },
+          ]
+        : consents,
     };
   } catch (cause) {
     aiIndexMessage = friendlyError(cause);
@@ -1045,29 +1057,31 @@ async function setRemoteConsent(allowed: boolean) {
 }
 async function checkAiProvider() {
   try {
-    aiStatus = await project.aiLocalStatus(aiSettings.localEndpoint, aiSettings.localModel);
+    aiStatus = await project.aiProviderStatus();
   } catch (cause) {
     aiStatus = {
-      endpoint: aiSettings.localEndpoint,
-      model: aiSettings.localModel,
+      endpoint: aiSettings.provider.endpoint,
+      model: aiSettings.provider.model,
       available: false,
       modelAvailable: false,
+      embeddingAvailable: false,
+      credentialAvailable: false,
       error: friendlyError(cause),
     };
   }
 }
 async function loadAiModels() {
-  const endpoint = aiSettings.localEndpoint.trim();
+  const endpoint = aiSettings.provider.endpoint.trim();
   if (!endpoint) {
-    aiModelsMessage = "Enter a local endpoint before loading models.";
+    aiModelsMessage = "Enter an active provider endpoint before loading models.";
     return;
   }
   aiModelsBusy = true;
   aiModelsMessage = "";
   try {
-    aiModels = await project.aiLocalModels(endpoint);
+    aiModels = await project.aiProviderModels();
     if (aiModels.length === 0) {
-      aiModelsMessage = "No models were returned by the local provider.";
+      aiModelsMessage = "No models were returned by the active provider.";
     } else {
       aiModelsMessage = `${aiModels.length} model${aiModels.length === 1 ? "" : "s"} available.`;
       if (aiModelsMessageTimer !== null) window.clearTimeout(aiModelsMessageTimer);
@@ -1075,7 +1089,7 @@ async function loadAiModels() {
         aiModelsMessage = "";
         aiModelsMessageTimer = null;
       }, toastDurationMs);
-      if (!aiSettings.localModel.trim() && aiModels.length === 1) updateAiSetting("localModel", aiModels[0]);
+      if (!aiSettings.provider.model.trim() && aiModels.length === 1) updateAiSetting("model", aiModels[0]);
     }
   } catch (cause) {
     aiModels = [];
@@ -1088,23 +1102,26 @@ async function refreshAiIndexStatus() {
   try {
     aiIndexStatus = await project.aiIndexStatus();
   } catch (cause) {
-    aiIndexStatus = { available: false, state: null };
+    aiIndexStatus = { available: false, state: null, provider: null, embeddingAvailable: false, message: null };
     aiIndexMessage = friendlyError(cause);
   }
 }
 async function rebuildAiIndex() {
-  const endpoint = aiSettings.localEndpoint.trim();
-  const chatModel = aiSettings.localModel.trim();
-  if (!endpoint || !chatModel) {
-    aiIndexMessage = "Configure a local endpoint and chat model in AI providers before building the semantic index.";
+  if (!aiSettings.provider.endpoint.trim() || !aiSettings.provider.model.trim()) {
+    aiIndexMessage = "Configure the active provider endpoint and model before building the semantic index.";
     return;
   }
   aiIndexBusy = true;
   aiIndexMessage = "";
   try {
-    const embeddingModel = aiSettings.localEmbeddingModel.trim() || chatModel;
-    const result = await project.aiIndexRebuild(endpoint, embeddingModel);
-    aiIndexStatus = { available: true, state: result.state };
+    const result = await project.aiIndexRebuild();
+    aiIndexStatus = {
+      available: true,
+      state: result.state,
+      provider: aiSettings.provider.id,
+      embeddingAvailable: true,
+      message: null,
+    };
     aiIndexMessage = `Indexed ${result.chunkCount} chunks (${result.embeddedCount} embedded, ${result.reusedCount} reused).`;
   } catch (cause) {
     aiIndexMessage = friendlyError(cause);
@@ -1243,10 +1260,10 @@ async function fillAiFields() {
   if (!selected || aiFieldFillBusy) return;
   const empty = emptyInspectorDefinitions();
   if (empty.length === 0) return;
-  const endpoint = aiSettings.localEndpoint.trim();
-  const model = aiSettings.localModel.trim();
+  const endpoint = aiSettings.provider.endpoint.trim();
+  const model = aiSettings.provider.model.trim();
   if (!endpoint || !model) {
-    error = "Configure a local endpoint and chat model in AI providers before filling fields.";
+    error = "Configure the active provider endpoint and model before filling fields.";
     return;
   }
   aiFieldFillOpen = true;
@@ -1313,8 +1330,7 @@ async function fillAiFields() {
     );
   try {
     const requestId = await project.aiGenerateStructured(
-      endpoint,
-      model,
+      projectInfo!.root,
       `Fill only these empty fields: ${fieldKeys.join(", ")}. For multi-select and relationship fields, return up to five distinct values in the values array. For relationship fields, use only allowed entity IDs from the context. Use only configured options when options are provided. Return evidence-backed suggestions. Do not invent facts.`,
       context,
       outputContract,
@@ -1422,40 +1438,19 @@ async function startAiRewrite() {
   aiLastSequence = -1;
   aiBusy = true;
   try {
-    const remoteConsent = aiSettings.remote.consents.some(
-      (consent) =>
-        consent.projectId === projectInfo?.root &&
-        consent.provider === aiSettings.remote.provider &&
-        consent.endpoint === aiSettings.remote.endpoint,
-    );
-    if (aiUseRemote && (!projectInfo?.root || !remoteConsent || !remoteCredential?.configured)) {
-      throw new Error("Remote AI requires an approved provider, endpoint, and OS credential for this project.");
-    }
     const sourceText =
       aiMode === "generate" ? aiGenerationContext.trim() || documentBody.trim() || "[CURSOR]" : aiSourceSelection;
     const retrievalQuery = [selected?.name, aiInstruction, aiSourceSelectionPlain]
       .filter(Boolean)
       .join(" ")
       .slice(0, 4000);
-    const requestId = aiUseRemote
-      ? await project.aiGenerateRemoteText(
-          projectInfo!.root,
-          aiSettings.remote.provider,
-          aiSettings.remote.endpoint,
-          aiSettings.remote.model,
-          aiInstruction,
-          sourceText,
-          selected?.id,
-          retrievalQuery,
-        )
-      : await project.aiGenerateText(
-          aiSettings.localEndpoint,
-          aiSettings.localModel,
-          aiInstruction,
-          sourceText,
-          selected?.id,
-          retrievalQuery,
-        );
+    const requestId = await project.aiGenerateText(
+      projectInfo!.root,
+      aiInstruction,
+      sourceText,
+      selected?.id,
+      retrievalQuery,
+    );
     aiRequestId = requestId;
     aiUnlisten = await listen<AiStreamEvent>(`ai-stream:${requestId}`, (event) => {
       handleAiEvent(event.payload);
@@ -3306,8 +3301,6 @@ onMount(() => {
         onAiIndexRefresh={() => void refreshAiIndexStatus()}
         onAiIndexRebuild={() => void rebuildAiIndex()}
         onAiIndexCancel={() => void cancelAiIndex()}
-        onAiRemoteSettingsChange={updateAiRemoteSetting}
-        onAiRemotePolicyChange={updateAiRemotePolicy}
         {remoteCredential}
         onAiRemoteConsent={(allowed) => void setRemoteConsent(allowed)}
         onAiRemoteImport={() => void importRemoteCredential()}
@@ -3811,9 +3804,7 @@ onMount(() => {
               <section class="ai-rewrite-panel" aria-label="AI proposal">
                 <div class="ai-rewrite-heading">
                   <div>
-                    <span class="panel-kicker"
-                      >{aiUseRemote ? "REMOTE AI · APPROVED PROVIDER" : "LOCAL AI · LM STUDIO"}</span
-                    ><strong
+                    <span class="panel-kicker">{aiSettings.provider.name || "AI provider"}</span><strong
                       >{aiBusy
                         ? aiMode === "generate"
                           ? "Generating text…"
@@ -3828,17 +3819,13 @@ onMount(() => {
                   </div>
                   <button class="quiet-button" type="button" onclick={closeAiRewrite}>Discard</button>
                 </div>
-                {#if !aiPreviewOutput && aiSettings.remote.provider && aiSettings.remote.endpoint}<label
-                    class="ai-remote-choice"
-                    ><input type="checkbox" bind:checked={aiUseRemote} disabled={aiBusy} /> Use the approved remote provider
-                    for this request</label
-                  >{/if}
                 {#if !aiPreviewOutput}<label class="ai-instruction"
                     >Instruction<textarea
                       rows="2"
                       bind:value={aiInstruction}
                       disabled={aiBusy}
-                      placeholder="Tell LM Studio how to rewrite the selection"></textarea
+                      placeholder={`Tell ${aiSettings.provider.name || "the AI provider"} how to rewrite the selection`}
+                    ></textarea
                     ></label
                   >{/if}
                 <AiProposalPreview

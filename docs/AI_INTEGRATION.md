@@ -20,7 +20,7 @@ If this document conflicts with those boundaries, the stricter authority and
 storage rule wins. AI must not become an alternative data model, plugin bridge,
 filesystem API, network capability, or mutation authority.
 
-Status as of 2026-08-08: **architecture approved; Phase 0 is complete, Phase
+Historical delivery status: **architecture approved; Phase 0 is complete, Phase
 1 implementation is present, Phase 2 broker implementation is present, Phase 3
 implementation is complete, and Phase 4 provider-neutral vector primitives are
 implemented in the worktree**. Phase 4 disposable-index persistence, structured
@@ -41,6 +41,21 @@ HTTPS/SSRF validation, redirect blocking, and no-silent-fallback routing;
 live remote/keychain/rendered privacy evidence remains pending. Agents must
 verify the worktree and
 current source before relying on this status.
+
+### Current provider architecture
+
+The current product uses one machine-local active provider profile. All shell
+and plugin AI operations resolve `AiSettings.provider` in Rust. Local versus
+remote is internal security and transport metadata, not a frontend routing
+choice. Remote project-context operations require exact project/provider/endpoint
+consent before context is sent. Credentials remain in the OS keychain under
+`com.daena.ai.remote.{provider}` and are never serialized into settings,
+projects, plugins, prompts, or logs.
+
+Daena is alpha software and the settings contract is a clean-state hard cut.
+Legacy settings are rejected rather than migrated. The implementation status
+above describes historical delivery phases; the provider, consent, capability,
+indexing, and verification rules in this document are authoritative.
 
 The Phase 3 implementation adds host-derived `AiCaller` propagation, a bounded
 typed retrieval policy with lexical queries, authorization against
@@ -329,6 +344,14 @@ and deadline expiry cancel in-flight work and discard late events.
 Internal providers advertise model-level capabilities rather than product
 names:
 
+Daena's active provider setting is a machine-local profile. The profile stores
+the stable provider identity, adapter, endpoint, selected generation model,
+optional embedding model, local/remote data boundary, and the discovered or
+conservatively configured capability set for that selected model. All shell
+and plugin AI operations resolve this profile inside the host; frontend and
+plugin requests never select an endpoint or credential. A profile change or a
+capability change invalidates dependent readiness and embedding state.
+
 ```text
 text.generate
 text.generate.structured
@@ -409,10 +432,10 @@ become the public error contract.
 
 ### 5.4 Routing and retries
 
-Users choose defaults for text, embeddings, and images. Daena must not silently
-fail over from local to remote, or from one remote provider to another, because
-that changes the privacy boundary and may incur cost. A retry may repeat the same
-request only when:
+The active profile supplies the text and embedding model configuration. Daena
+must not silently fail over from local to remote, or from one remote provider to
+another, because that changes the privacy boundary and may incur cost. A retry
+may repeat the same request only when:
 
 - the provider marks the failure retryable;
 - no complete result has been presented as final;
@@ -563,7 +586,7 @@ AiRequest
 - retrieval_policy
 - output_contract
 - generation_limits
-- provider_profile override, if allowed by host UI
+- active provider profile resolved by the host; requests do not override routing
 - stream: true/false
 - deadline
 ```
@@ -725,6 +748,7 @@ The AI index contains:
 - embeddings;
 - lexical auxiliary data if needed for passage retrieval;
 - provider/model identity and embedding dimension;
+- normalized model capability identity;
 - chunker, serializer, and index schema versions;
 - indexing status and per-source errors.
 
@@ -754,10 +778,13 @@ Readers see either the previous complete generation marked stale or the new
 complete generation, never a partially replaced source. Indexing is cancellable,
 bounded, and lower priority than direct user generation.
 
-Embeddings are compatible only when provider/model ID, dimension,
-normalization, serializer, and chunking version match. Any incompatible change
-marks the semantic index unavailable and schedules a rebuild. Lexical and direct
-retrieval remain usable while embeddings rebuild.
+Embeddings are compatible only when provider/model ID, capability identity,
+dimension, normalization, serializer, and chunking version match. Rebuilds
+probe the current embedding dimension before reusing cached vectors, so a
+provider that changes dimensions without changing its model ID still invalidates
+the semantic index. Any incompatible change marks the semantic index unavailable
+and schedules a rebuild. Lexical and direct retrieval remain usable while
+embeddings rebuild.
 
 ### 8.6 Index lifecycle and failure states
 
@@ -882,22 +909,28 @@ part of Phases 1 and 2.
 
 ### 10.1 Configuration ownership
 
-Provider profiles are application/machine state, not project files or plugin
-state. A profile includes:
+The active provider profile is application/machine state, not project files or
+plugin state. The current clean-state settings shape is `AiSettings.provider`
+plus `AiSettings.consents`. A profile includes:
 
 - provider adapter kind;
 - endpoint after strict URL validation;
 - credential reference, never raw credential in ordinary settings;
 - enabled/discovered models;
-- default capability routes;
+- model-level capabilities for the selected default model;
 - local/remote classification;
 - timeouts, concurrency, and host output limits;
 - optional user-visible cost metadata.
 
-Credentials must use an OS-backed secret store. Until that integration exists,
-remote credentialed providers are not release-ready; plaintext project JSON,
-localStorage, frontend stores, logs, or environment interpolation are not an
-acceptable substitute.
+The settings format is versioned and clean-state only. The active profile stores
+`id`, `name`, `adapter`, `endpoint`, `model`, optional `embeddingModel`,
+configured model capabilities, and `dataBoundary`. A malformed settings file or
+an older settings version fails closed with an actionable error; no legacy
+local/remote settings are converted.
+
+Credentials use the OS-backed secret store. Plaintext project JSON, localStorage,
+frontend stores, logs, or environment interpolation are not acceptable
+credential storage.
 
 ### 10.2 Local and remote classification
 
@@ -913,23 +946,25 @@ endpoints vary.
 
 ### 10.3 Remote disclosure policy
 
-Host policy options:
-
-```text
-AI disabled
-Local providers only
-Remote allowed, ask before sending project context
-Remote allowed for approved provider/project pairs
-```
+The active provider profile determines the transport boundary; there is no
+separate local/remote routing choice in the UI. Every remote project-context
+operation requires exact host-owned consent for the current project, provider,
+and endpoint. Consent is checked after profile resolution and before context is
+sent. The obsolete `RemoteAllowed`, `Ask`, and `ApprovedPairs` settings are not
+represented by the current settings contract.
 
 The confirmation surface is host-owned and states provider, model, remote
 origin, context categories, approximate size, and whether images are included.
 Plugins cannot draw, suppress, or phrase this dialog. A grant to use AI does not
 grant remote disclosure.
 
-Switching from local to remote, changing remote origin, or expanding context
-categories requires renewed confirmation. Daena never silently falls back to a
-remote provider.
+Changing the active provider, switching its data boundary, changing the remote
+origin, or expanding context categories requires renewed confirmation. Daena
+never silently falls back to another provider.
+
+The obsolete `RemoteAllowed`, `Ask`, and `ApprovedPairs` policy modes have no
+representation in the current settings contract. They converge on the current
+exact-consent behavior during this alpha hard cut.
 
 ### 10.4 Logging and telemetry
 
@@ -1128,7 +1163,9 @@ Deliver:
   tests; rendered fake-provider UI evidence is part of the remaining Tauri
   validation.
 
-No plugin AI API, remote provider, structured fields, or RAG yet.
+This phase is complete in the current implementation. Structured generation,
+remote providers, and RAG are delivered in the later phases below; the phase
+description remains as the historical delivery boundary.
 
 **Exit gate:** in the rendered Tauri app, a user can configure a local provider,
 rewrite a selection, cancel mid-stream, inspect a diff, and accept through the
@@ -1210,18 +1247,18 @@ the Phase 4 ADR with zero unauthorized retrievals.
 
 ### Phase 5 — remote providers and production privacy controls
 
-Deliver:
+Current implementation:
 
 - OS-backed secret storage;
-- one remote provider or rigorously scoped OpenAI-compatible adapter;
+- provider-neutral OpenAI-compatible local and HTTPS adapters;
 - HTTPS/origin/redirect validation;
-- host-owned disclosure confirmation and remembered provider/project policy;
+- host-owned exact provider/project/endpoint consent;
 - cost/usage display when available;
 - no-silent-fallback enforcement;
 - credential/log redaction tests and remote-provider documentation.
 
-Remote support is intentionally after local workflows and RAG access controls
-are proven.
+Remote support was sequenced after local workflows and RAG access controls were
+proven; it is now part of the current provider-neutral implementation.
 
 **Exit gate:** credentials never reach frontend/plugin memory, project files,
 prompts, logs, or exports; remote calls cannot occur without matching policy;

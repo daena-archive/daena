@@ -2654,30 +2654,34 @@ fn dispatch_host_rpc(
                 })
                 .transpose()?
                 .unwrap_or_default();
+            let provider =
+                ai::resolve_ai_provider(&settings, Some(&context.caller.project_id), true)?;
             let started = match operation {
-                "generate_text" => ai::start_ai_request(
+                "generate_text" => ai::start_ai_request_mode(
                     context.app.clone(),
                     context.ai_runtime.clone(),
                     context.caller.clone(),
-                    settings.ai.local_endpoint,
-                    settings.ai.local_model,
+                    provider.endpoint.clone(),
+                    provider.model.clone(),
                     instruction.to_string(),
                     selection,
                     None,
                     std::time::Duration::from_millis(deadline_ms),
                     citations.clone(),
+                    provider.remote,
+                    provider.api_key.clone(),
                 )?,
                 "generate_structured" => {
                     let contract = payload.get("outputContract").cloned().ok_or_else(|| {
                         "structured AI requests require outputContract".to_string()
                     })?;
                     ai::validate_structured_schema(&contract)?;
-                    ai::start_ai_request(
+                    ai::start_ai_request_mode(
                         context.app.clone(),
                         context.ai_runtime.clone(),
                         context.caller.clone(),
-                        settings.ai.local_endpoint,
-                        settings.ai.local_model,
+                        provider.endpoint,
+                        provider.model,
                         instruction.to_string(),
                         if retrieved_context.is_empty() {
                             immediate_context.to_string()
@@ -2687,6 +2691,8 @@ fn dispatch_host_rpc(
                         Some(contract),
                         std::time::Duration::from_millis(deadline_ms),
                         citations,
+                        provider.remote,
+                        provider.api_key,
                     )?
                 }
                 _ => return Err("unsupported AI operation".into()),
@@ -3067,8 +3073,8 @@ async fn module_list_manifests(
                 let overlay_value = project
                     .module_schema_overlay(&id)?
                     .unwrap_or_else(|| serde_json::json!({}));
-                let overlay = parse_module_overlay(&overlay_value)
-                    .map_err(CoreError::Validation)?;
+                let overlay =
+                    parse_module_overlay(&overlay_value).map_err(CoreError::Validation)?;
                 manifest_struct = merge_module_manifest(&entry.manifest, &overlay)
                     .map_err(CoreError::Validation)?;
             }
@@ -3210,9 +3216,10 @@ async fn module_schema_overlay_set(
         let value = if normalized.is_empty() {
             None
         } else {
-            Some(serde_json::to_value(&normalized).map_err(|error| {
-                CoreError::Validation(error.to_string())
-            })?)
+            Some(
+                serde_json::to_value(&normalized)
+                    .map_err(|error| CoreError::Validation(error.to_string()))?,
+            )
         };
         project.set_module_schema_overlay(module_id, value)?;
         Ok(normalized)
@@ -5729,7 +5736,7 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 if let Err(error) = close_project_for_app(
-                    &window.app_handle(),
+                    window.app_handle(),
                     &close_core,
                     &close_plugins,
                     &close_ai_runtime,
@@ -5761,12 +5768,11 @@ pub fn run() {
             greet,
             settings_get,
             settings_update,
-            ai::ai_local_status,
-            ai::ai_local_models,
-            ai::ai_remote_credential_status,
-            ai::ai_remote_import_credential,
+            ai::ai_provider_status,
+            ai::ai_provider_models,
+            ai::ai_provider_credential_status,
+            ai::ai_provider_import_credential,
             ai::ai_remote_set_consent,
-            ai::ai_generate_remote_text,
             ai::ai_index_status,
             ai::ai_index_rebuild,
             ai::ai_index_cancel,

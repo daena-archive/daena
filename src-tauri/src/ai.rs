@@ -18,11 +18,12 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
-use crate::settings::{AiRemotePolicy, SettingsStore};
+use crate::settings::{AiDataBoundary, AppSettings, SettingsStore};
 
 pub type SharedAiRuntime = Arc<Mutex<AiRuntime>>;
 const MAX_BUFFERED_REQUESTS: usize = 32;
 const MAX_BUFFERED_EVENTS: usize = 64;
+const AI_CHUNKER_VERSION: &str = "chunker.v1";
 
 #[derive(Default)]
 pub struct AiRuntime {
@@ -156,6 +157,9 @@ pub fn detach_project_index(runtime: &SharedAiRuntime) {
 pub struct AiIndexStatus {
     pub available: bool,
     pub state: Option<IndexState>,
+    pub provider: Option<String>,
+    pub embedding_available: bool,
+    pub message: Option<String>,
 }
 
 pub fn index_status(runtime: &SharedAiRuntime) -> AiIndexStatus {
@@ -163,28 +167,43 @@ pub fn index_status(runtime: &SharedAiRuntime) -> AiIndexStatus {
         return AiIndexStatus {
             available: false,
             state: None,
+            provider: None,
+            embedding_available: false,
+            message: Some("AI index runtime is unavailable".into()),
         };
     };
     if runtime.index.is_none() && runtime.index_cancel.is_some() {
         return AiIndexStatus {
             available: false,
             state: Some(IndexState::Indexing),
+            provider: None,
+            embedding_available: false,
+            message: Some("AI index rebuild is in progress".into()),
         };
     }
     let Some(index) = runtime.index.as_ref() else {
         return AiIndexStatus {
             available: false,
             state: runtime.index_state,
+            provider: None,
+            embedding_available: false,
+            message: Some("No AI index is attached to the open project".into()),
         };
     };
     match index.state() {
         Ok(state) => AiIndexStatus {
             available: true,
             state: Some(state),
+            provider: None,
+            embedding_available: true,
+            message: None,
         },
         Err(_) => AiIndexStatus {
             available: false,
             state: Some(IndexState::Failed),
+            provider: None,
+            embedding_available: false,
+            message: Some("AI index status could not be read".into()),
         },
     }
 }
@@ -201,8 +220,30 @@ pub fn ai_index_cancel(runtime: State<'_, SharedAiRuntime>) -> Result<(), String
 }
 
 #[tauri::command]
-pub fn ai_index_status(runtime: State<'_, SharedAiRuntime>) -> AiIndexStatus {
-    index_status(runtime.inner())
+pub fn ai_index_status(
+    runtime: State<'_, SharedAiRuntime>,
+    settings: State<'_, Arc<Mutex<SettingsStore>>>,
+) -> AiIndexStatus {
+    let mut status = index_status(runtime.inner());
+    let configured = settings.lock().ok().and_then(|store| store.load().ok());
+    let Some(configured) = configured else {
+        status.message = Some("AI provider settings are unavailable".into());
+        return status;
+    };
+    match resolve_ai_provider_with_credential(&configured, None, false, false) {
+        Ok(provider) => {
+            status.provider = Some(provider.provider_id.clone());
+            status.embedding_available = provider.embedding_available;
+            if !provider.embedding_available {
+                status.message = Some(format!(
+                    "Semantic indexing is unavailable for active provider '{}': embedding capability is not configured",
+                    provider.provider_id
+                ));
+            }
+        }
+        Err(error) => status.message = Some(error),
+    }
+    status
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -225,9 +266,9 @@ pub struct AiHybridMatch {
 
 #[tauri::command]
 pub async fn ai_index_search(
+    core: State<'_, crate::SharedCore>,
     runtime: State<'_, SharedAiRuntime>,
-    endpoint: String,
-    model: String,
+    settings: State<'_, Arc<Mutex<SettingsStore>>>,
     query: String,
     limit: usize,
 ) -> Result<Vec<AiHybridMatch>, String> {
@@ -235,7 +276,25 @@ pub async fn ai_index_search(
         return Ok(Vec::new());
     }
     let limit = limit.clamp(1, 32);
+    let configured = settings
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_string())?
+        .load()?;
+    let project_id = crate::current_info(core.inner())?
+        .map(|info| info.root)
+        .ok_or_else(|| "No project is open".to_string())?;
+    let provider = resolve_ai_provider(&configured, Some(&project_id), true)?;
+    if !provider.embedding_available {
+        return Err(format!(
+            "Semantic indexing is unavailable for active provider '{}': embedding capability is not configured",
+            provider.provider_id
+        ));
+    }
     let runtime = runtime.inner().clone();
+    let embedding_model = provider.embedding_model_or_model();
+    let endpoint = provider.endpoint;
+    let remote = provider.remote;
+    let api_key = provider.api_key;
     tauri::async_runtime::spawn_blocking(move || {
         let runtime = runtime
             .lock()
@@ -244,7 +303,12 @@ pub async fn ai_index_search(
             .index
             .as_ref()
             .ok_or_else(|| "No directory-backed project AI index is attached".to_string())?;
-        let provider = LmStudioEmbeddingProvider { endpoint, model };
+        let provider = LmStudioEmbeddingProvider {
+            endpoint,
+            model: embedding_model,
+            remote,
+            api_key,
+        };
         let query_vector = provider
             .embed(std::slice::from_ref(&query))
             .map_err(|error| error.to_string())?
@@ -361,12 +425,28 @@ fn project_chunks(project: &ProjectStore) -> Result<Vec<TextChunk>, String> {
 pub async fn ai_index_rebuild(
     core: State<'_, crate::SharedCore>,
     runtime: State<'_, SharedAiRuntime>,
-    endpoint: String,
-    model: String,
+    settings: State<'_, Arc<Mutex<SettingsStore>>>,
 ) -> Result<AiIndexRebuildResult, String> {
-    if model.trim().is_empty() {
-        return Err("An embedding model ID is required".into());
+    let configured = settings
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_string())?
+        .load()?;
+    let project_id = crate::current_info(core.inner())?
+        .map(|info| info.root)
+        .ok_or_else(|| "No project is open".to_string())?;
+    let provider = resolve_ai_provider(&configured, Some(&project_id), true)?;
+    if !provider.embedding_available {
+        return Err(format!(
+            "Semantic indexing is unavailable for active provider '{}': embedding capability is not configured",
+            provider.provider_id
+        ));
     }
+    let endpoint = provider.endpoint.clone();
+    let model = provider.embedding_model_or_model();
+    let provider_id = provider.provider_id.clone();
+    let remote = provider.remote;
+    let api_key = provider.api_key.clone();
+    let capability_identity = provider.capability_identity.clone();
     let chunks = crate::with_read_project(core, |project| {
         project_chunks(project).map_err(CoreError::Conflict)
     })
@@ -386,24 +466,29 @@ pub async fn ai_index_rebuild(
             (index, cancel)
         };
         let outcome = (|| {
-            let previous = index
-                .embedding_metadata()
-                .map_err(|error| error.to_string())?;
             let provider = LmStudioEmbeddingProvider {
                 endpoint,
                 model: model.clone(),
+                remote,
+                api_key,
             };
+            let probe_dimension = provider
+                .embed(&["Daena embedding dimension probe".into()])
+                .map_err(|error| error.to_string())?
+                .pop()
+                .map(|vector| vector.len())
+                .ok_or_else(|| "embedding provider returned no probe vector".to_string())?;
             let mut metadata = EmbeddingMetadata {
-                provider_id: "lm-studio".into(),
+                provider_id: provider_id.clone(),
                 model_id: model,
-                dimension: previous
-                    .filter(|metadata| {
-                        metadata.provider_id == "lm-studio" && metadata.model_id == provider.model
-                    })
-                    .map(|metadata| metadata.dimension)
-                    .unwrap_or(0),
+                dimension: probe_dimension,
                 normalized: true,
-                serializer_version: daena_ai::index::EMBEDDING_SERIALIZER_VERSION.into(),
+                capability_identity,
+                serializer_version: format!(
+                    "{}:{}",
+                    daena_ai::index::EMBEDDING_SERIALIZER_VERSION,
+                    AI_CHUNKER_VERSION
+                ),
             };
             let mut sources = BTreeMap::<String, Vec<TextChunk>>::new();
             for chunk in chunks {
@@ -476,6 +561,8 @@ pub struct AiProviderStatus {
     pub model: String,
     pub available: bool,
     pub model_available: bool,
+    pub embedding_available: bool,
+    pub credential_available: bool,
     pub error: Option<String>,
 }
 
@@ -504,20 +591,34 @@ struct OpenAiEmbedding {
 struct LmStudioEmbeddingProvider {
     endpoint: String,
     model: String,
+    remote: bool,
+    api_key: Option<String>,
 }
 
 impl EmbeddingProvider for LmStudioEmbeddingProvider {
     fn embed(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>, IndexError> {
         let body = serde_json::json!({"model": self.model, "input": inputs}).to_string();
-        let stream = connect_request(
-            &self.endpoint,
-            "POST",
-            "embeddings",
-            Some(&body),
-            DEFAULT_LIMITS.default_deadline,
-        )
-        .map_err(IndexError::Serialization)?;
-        let (status, bytes) = read_response(stream).map_err(IndexError::Serialization)?;
+        let (status, bytes) = if self.remote {
+            remote_http_request(
+                &self.endpoint,
+                self.api_key.as_deref().unwrap_or_default(),
+                "POST",
+                "embeddings",
+                Some(&body),
+                DEFAULT_LIMITS.default_deadline,
+            )
+            .map_err(IndexError::Serialization)?
+        } else {
+            let stream = connect_request(
+                &self.endpoint,
+                "POST",
+                "embeddings",
+                Some(&body),
+                DEFAULT_LIMITS.default_deadline,
+            )
+            .map_err(IndexError::Serialization)?;
+            read_response(stream).map_err(IndexError::Serialization)?
+        };
         if status / 100 != 2 {
             return Err(IndexError::Serialization(
                 normalized_http_error(status).to_string(),
@@ -1017,11 +1118,120 @@ pub struct RemoteCredentialStatus {
     pub configured: bool,
 }
 
+#[derive(Debug)]
+pub struct ResolvedAiProvider {
+    pub provider_id: String,
+    pub endpoint: String,
+    pub model: String,
+    pub embedding_model: String,
+    pub remote: bool,
+    pub api_key: Option<String>,
+    pub embedding_available: bool,
+    pub capability_identity: String,
+}
+
+impl ResolvedAiProvider {
+    fn embedding_model_or_model(&self) -> String {
+        if self.embedding_model.is_empty() {
+            self.model.clone()
+        } else {
+            self.embedding_model.clone()
+        }
+    }
+}
+
+fn capability_identity(capabilities: &[String]) -> String {
+    let mut capabilities = capabilities
+        .iter()
+        .map(|capability| capability.trim())
+        .filter(|capability| !capability.is_empty())
+        .collect::<Vec<_>>();
+    capabilities.sort_unstable();
+    capabilities.dedup();
+    capabilities.join(",")
+}
+
+pub fn resolve_ai_provider(
+    settings: &AppSettings,
+    project_id: Option<&str>,
+    include_project_context: bool,
+) -> Result<ResolvedAiProvider, String> {
+    resolve_ai_provider_with_credential(settings, project_id, include_project_context, true)
+}
+
+fn resolve_ai_provider_with_credential(
+    settings: &AppSettings,
+    project_id: Option<&str>,
+    include_project_context: bool,
+    require_credential: bool,
+) -> Result<ResolvedAiProvider, String> {
+    let provider = &settings.ai.provider;
+    let endpoint = provider.endpoint.trim().to_string();
+    let model = provider.model.trim().to_string();
+    if endpoint.is_empty() {
+        return Err("Configure an AI provider endpoint first".into());
+    }
+    let remote = provider.data_boundary == AiDataBoundary::Remote;
+    if remote {
+        if model.is_empty() {
+            return Err("Configure an AI provider model first".into());
+        }
+        validate_remote_endpoint(&endpoint)?;
+        if include_project_context {
+            let project_id = project_id.ok_or_else(|| AiError::RemoteContextDenied.to_string())?;
+            if !remote_consent_matches(settings, project_id, &provider.id, &endpoint) {
+                return Err(AiError::RemoteContextDenied.to_string());
+            }
+        }
+        let api_key = read_remote_api_key(&provider.id)?;
+        if require_credential && api_key.is_none() {
+            return Err(AiError::AuthenticationFailed.to_string());
+        }
+        Ok(ResolvedAiProvider {
+            provider_id: provider.id.clone(),
+            endpoint,
+            model,
+            embedding_model: provider.embedding_model.trim().to_string(),
+            remote,
+            api_key,
+            embedding_available: provider
+                .capabilities
+                .iter()
+                .any(|capability| capability == "text.embed"),
+            capability_identity: capability_identity(&provider.capabilities),
+        })
+    } else {
+        parse_loopback_endpoint(&endpoint)?;
+        Ok(ResolvedAiProvider {
+            provider_id: provider.id.clone(),
+            endpoint,
+            model,
+            embedding_model: provider.embedding_model.trim().to_string(),
+            remote,
+            api_key: None,
+            embedding_available: provider
+                .capabilities
+                .iter()
+                .any(|capability| capability == "text.embed"),
+            capability_identity: capability_identity(&provider.capabilities),
+        })
+    }
+}
+
 #[tauri::command]
-pub fn ai_remote_credential_status(provider: String) -> Result<RemoteCredentialStatus, String> {
+pub fn ai_provider_credential_status(
+    settings: State<'_, Arc<Mutex<SettingsStore>>>,
+) -> Result<RemoteCredentialStatus, String> {
+    let provider = settings
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_string())?
+        .load()?
+        .ai
+        .provider;
     Ok(RemoteCredentialStatus {
-        configured: read_remote_api_key(&provider)?.is_some(),
-        provider,
+        configured: provider.data_boundary == AiDataBoundary::Remote
+            && read_remote_api_key(&provider.id)?.is_some(),
+        provider: provider.id,
     })
 }
 
@@ -1030,15 +1240,32 @@ pub fn ai_remote_credential_status(provider: String) -> Result<RemoteCredentialS
 /// or plugin bridge. Launch the app with DAENA_REMOTE_API_KEY set once, then
 /// remove it from the environment.
 #[tauri::command]
-pub fn ai_remote_import_credential(provider: String) -> Result<RemoteCredentialStatus, String> {
+pub fn ai_provider_import_credential(
+    settings: State<'_, Arc<Mutex<SettingsStore>>>,
+) -> Result<RemoteCredentialStatus, String> {
+    let provider = settings
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_string())?
+        .load()?
+        .ai
+        .provider;
+    if provider.data_boundary != AiDataBoundary::Remote {
+        return Err("The active provider does not require a remote credential".into());
+    }
+    if read_remote_api_key(&provider.id)?.is_some() {
+        return Ok(RemoteCredentialStatus {
+            provider: provider.id,
+            configured: true,
+        });
+    }
     let key = std::env::var("DAENA_REMOTE_API_KEY")
         .map_err(|_| "DAENA_REMOTE_API_KEY is not set for this import".to_string())?;
     if key.trim().is_empty() {
         return Err("DAENA_REMOTE_API_KEY is empty".into());
     }
-    import_remote_api_key(&provider, key.trim())?;
+    import_remote_api_key(&provider.id, key.trim())?;
     Ok(RemoteCredentialStatus {
-        provider,
+        provider: provider.id,
         configured: true,
     })
 }
@@ -1047,64 +1274,24 @@ pub fn ai_remote_import_credential(provider: String) -> Result<RemoteCredentialS
 pub fn ai_remote_set_consent(
     settings: State<'_, Arc<Mutex<SettingsStore>>>,
     project_id: String,
-    provider: String,
-    endpoint: String,
     allowed: bool,
 ) -> Result<(), String> {
-    validate_remote_endpoint(&endpoint)?;
-    settings
+    let store = settings
         .lock()
-        .map_err(|_| "settings lock poisoned".to_string())?
-        .set_remote_consent(&project_id, &provider, &endpoint, allowed)
-        .map(|_| ())
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub async fn ai_generate_remote_text(
-    app: AppHandle,
-    core: State<'_, crate::SharedCore>,
-    runtime: State<'_, SharedAiRuntime>,
-    settings: State<'_, Arc<Mutex<SettingsStore>>>,
-    project_id: String,
-    provider: String,
-    endpoint: String,
-    model: String,
-    instruction: String,
-    selection: String,
-    entity_id: Option<String>,
-    retrieval_query: Option<String>,
-    include_retrieval: bool,
-) -> Result<String, String> {
-    validate_remote_endpoint(&endpoint)?;
-    let configured = settings
-        .lock()
-        .map_err(|_| "settings lock poisoned".to_string())?
-        .load()?;
-    if !remote_policy_allows(&configured, &project_id, &provider, &endpoint) {
-        return Err(AiError::RemoteContextDenied.to_string());
+        .map_err(|_| "settings lock poisoned".to_string())?;
+    let active_provider = store.load()?.ai.provider;
+    if active_provider.data_boundary != AiDataBoundary::Remote {
+        return Err("The active provider is local; remote consent is not applicable".into());
     }
-    let api_key =
-        read_remote_api_key(&provider)?.ok_or_else(|| AiError::AuthenticationFailed.to_string())?;
-    let (retrieved_context, citations) = if include_retrieval {
-        direct_retrieval_context(core, entity_id, retrieval_query).await?
-    } else {
-        (String::new(), Vec::new())
-    };
-    start_ai_request_mode(
-        Some(app),
-        runtime.inner().clone(),
-        daena_ai::AiCaller::trusted_shell("trusted-shell", &project_id),
-        endpoint,
-        model,
-        instruction,
-        append_retrieved_context(selection, retrieved_context),
-        None,
-        DEFAULT_LIMITS.default_deadline,
-        citations,
-        true,
-        Some(api_key),
-    )
+    validate_remote_endpoint(&active_provider.endpoint)?;
+    store
+        .set_remote_consent(
+            &project_id,
+            &active_provider.id,
+            &active_provider.endpoint,
+            allowed,
+        )
+        .map(|_| ())
 }
 
 fn remote_consent_matches(
@@ -1113,27 +1300,11 @@ fn remote_consent_matches(
     provider: &str,
     endpoint: &str,
 ) -> bool {
-    settings.ai.remote.consents.iter().any(|consent| {
+    settings.ai.consents.iter().any(|consent| {
         consent.project_id == project_id
             && consent.provider == provider
             && consent.endpoint == endpoint
     })
-}
-
-fn remote_policy_allows(
-    settings: &crate::settings::AppSettings,
-    project_id: &str,
-    provider: &str,
-    endpoint: &str,
-) -> bool {
-    if matches!(
-        settings.ai.remote_policy,
-        AiRemotePolicy::Disabled | AiRemotePolicy::LocalOnly
-    ) {
-        return false;
-    }
-    matches!(settings.ai.remote_policy, AiRemotePolicy::RemoteAllowed)
-        || remote_consent_matches(settings, project_id, provider, endpoint)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1305,6 +1476,54 @@ fn generate_remote_events(
         );
     }
     events
+}
+
+fn remote_http_request(
+    endpoint: &str,
+    api_key: &str,
+    method: &str,
+    suffix: &str,
+    body: Option<&str>,
+    deadline: Duration,
+) -> Result<(u16, Vec<u8>), String> {
+    let mut url = validate_remote_endpoint(endpoint)?;
+    let (resolved_host, resolved_address) =
+        resolve_remote_destination(&url).map_err(|error| error.to_string())?;
+    url.path_segments_mut()
+        .map(|mut segments| {
+            for segment in suffix.trim_start_matches('/').split('/') {
+                segments.push(segment);
+            }
+        })
+        .ok();
+    let client = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve(&resolved_host, resolved_address)
+        .timeout(deadline)
+        .build()
+        .map_err(|_| "remote provider client unavailable".to_string())?;
+    let method = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|_| "remote provider method is invalid".to_string())?;
+    let mut request = client
+        .request(method, url)
+        .header("Accept", "application/json");
+    if !api_key.is_empty() {
+        request = request.bearer_auth(api_key);
+    }
+    if let Some(body) = body {
+        request = request
+            .header("Content-Type", "application/json")
+            .body(body.to_string());
+    }
+    let response = request
+        .send()
+        .map_err(|_| "remote AI provider is unavailable".to_string())?;
+    let status = response.status().as_u16();
+    let bytes = response
+        .bytes()
+        .map_err(|_| "remote AI provider returned an unreadable response".to_string())?
+        .to_vec();
+    Ok((status, bytes))
 }
 
 fn connect_request(
@@ -1479,23 +1698,38 @@ fn register_request(
     Ok(())
 }
 
-async fn provider_status(endpoint: String, model: String) -> AiProviderStatus {
+async fn provider_status(provider: ResolvedAiProvider) -> AiProviderStatus {
+    let endpoint = provider.endpoint.clone();
+    let model = provider.model.clone();
     let mut status = AiProviderStatus {
         endpoint: endpoint.clone(),
         model: model.clone(),
         available: false,
         model_available: false,
+        embedding_available: provider.embedding_available,
+        credential_available: !provider.remote || provider.api_key.is_some(),
         error: None,
     };
     let result = tauri::async_runtime::spawn_blocking(move || {
-        let stream = connect_request(
-            &endpoint,
-            "GET",
-            "models",
-            None,
-            DEFAULT_LIMITS.default_deadline,
-        )?;
-        read_response(stream)
+        if provider.remote {
+            remote_http_request(
+                &endpoint,
+                provider.api_key.as_deref().unwrap_or_default(),
+                "GET",
+                "models",
+                None,
+                DEFAULT_LIMITS.default_deadline,
+            )
+        } else {
+            let stream = connect_request(
+                &endpoint,
+                "GET",
+                "models",
+                None,
+                DEFAULT_LIMITS.default_deadline,
+            )?;
+            read_response(stream)
+        }
     })
     .await;
     let response = match result {
@@ -1510,10 +1744,15 @@ async fn provider_status(endpoint: String, model: String) -> AiProviderStatus {
         }
     };
     if response.0 / 100 != 2 {
+        if provider.remote && matches!(response.0, 401 | 403) {
+            status.available = true;
+            status.credential_available = false;
+        }
         status.error = Some(normalized_http_error(response.0).to_string());
         return status;
     }
     status.available = true;
+    status.credential_available = true;
     match serde_json::from_slice::<OpenAiModels>(&response.1) {
         Ok(models) => status.model_available = models.data.iter().any(|item| item.id == model),
         Err(_error) => status.error = Some(AiError::InvalidProviderResponse.to_string()),
@@ -1522,21 +1761,46 @@ async fn provider_status(endpoint: String, model: String) -> AiProviderStatus {
 }
 
 #[tauri::command]
-pub async fn ai_local_status(endpoint: String, model: String) -> Result<AiProviderStatus, String> {
-    Ok(provider_status(endpoint, model).await)
+pub async fn ai_provider_status(
+    settings: State<'_, Arc<Mutex<SettingsStore>>>,
+) -> Result<AiProviderStatus, String> {
+    let configured = settings
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_string())?
+        .load()?;
+    let provider = resolve_ai_provider_with_credential(&configured, None, false, false)?;
+    Ok(provider_status(provider).await)
 }
 
 #[tauri::command]
-pub async fn ai_local_models(endpoint: String) -> Result<Vec<String>, String> {
+pub async fn ai_provider_models(
+    settings: State<'_, Arc<Mutex<SettingsStore>>>,
+) -> Result<Vec<String>, String> {
+    let configured = settings
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_string())?
+        .load()?;
+    let provider = resolve_ai_provider_with_credential(&configured, None, false, false)?;
     let result = tauri::async_runtime::spawn_blocking(move || {
-        let stream = connect_request(
-            &endpoint,
-            "GET",
-            "models",
-            None,
-            DEFAULT_LIMITS.default_deadline,
-        )?;
-        read_response(stream)
+        if provider.remote {
+            remote_http_request(
+                &provider.endpoint,
+                provider.api_key.as_deref().unwrap_or_default(),
+                "GET",
+                "models",
+                None,
+                DEFAULT_LIMITS.default_deadline,
+            )
+        } else {
+            let stream = connect_request(
+                &provider.endpoint,
+                "GET",
+                "models",
+                None,
+                DEFAULT_LIMITS.default_deadline,
+            )?;
+            read_response(stream)
+        }
     })
     .await
     .map_err(|error| error.to_string())??;
@@ -1555,34 +1819,42 @@ pub async fn ai_local_models(endpoint: String) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn ai_generate_text(
     app: AppHandle,
     core: State<'_, crate::SharedCore>,
     runtime: State<'_, SharedAiRuntime>,
-    endpoint: String,
-    model: String,
+    settings: State<'_, Arc<Mutex<SettingsStore>>>,
+    project_id: String,
     instruction: String,
     selection: String,
     entity_id: Option<String>,
     retrieval_query: Option<String>,
     include_retrieval: bool,
 ) -> Result<String, String> {
+    let configured = settings
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_string())?
+        .load()?;
+    let provider = resolve_ai_provider(&configured, Some(&project_id), include_retrieval)?;
     let (retrieved_context, citations) = if include_retrieval {
         direct_retrieval_context(core, entity_id, retrieval_query).await?
     } else {
         (String::new(), Vec::new())
     };
-    start_ai_request(
+    start_ai_request_mode(
         Some(app),
         runtime.inner().clone(),
         daena_ai::AiCaller::trusted_shell("trusted-shell", "pending"),
-        endpoint,
-        model,
+        provider.endpoint,
+        provider.model,
         instruction,
         append_retrieved_context(selection, retrieved_context),
         None,
         DEFAULT_LIMITS.default_deadline,
         citations,
+        provider.remote,
+        provider.api_key,
     )
 }
 
@@ -1592,8 +1864,8 @@ pub async fn ai_generate_structured(
     app: AppHandle,
     core: State<'_, crate::SharedCore>,
     runtime: State<'_, SharedAiRuntime>,
-    endpoint: String,
-    model: String,
+    settings: State<'_, Arc<Mutex<SettingsStore>>>,
+    project_id: String,
     instruction: String,
     context: String,
     output_contract: serde_json::Value,
@@ -1601,52 +1873,30 @@ pub async fn ai_generate_structured(
     retrieval_query: Option<String>,
     include_retrieval: bool,
 ) -> Result<String, String> {
+    let configured = settings
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_string())?
+        .load()?;
+    let provider = resolve_ai_provider(&configured, Some(&project_id), include_retrieval)?;
     let (retrieved_context, citations) = if include_retrieval {
         direct_retrieval_context(core, entity_id, retrieval_query).await?
     } else {
         (String::new(), Vec::new())
     };
     validate_structured_schema(&output_contract)?;
-    start_ai_request(
+    start_ai_request_mode(
         Some(app),
         runtime.inner().clone(),
         daena_ai::AiCaller::trusted_shell("trusted-shell", "pending"),
-        endpoint,
-        model,
+        provider.endpoint,
+        provider.model,
         instruction,
         append_retrieved_context(context, retrieved_context),
         Some(output_contract),
         DEFAULT_LIMITS.default_deadline,
         citations,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn start_ai_request(
-    app: Option<AppHandle>,
-    runtime: SharedAiRuntime,
-    caller: daena_ai::AiCaller,
-    endpoint: String,
-    model: String,
-    instruction: String,
-    selection: String,
-    output_contract: Option<serde_json::Value>,
-    deadline: Duration,
-    citations: Vec<SourceRef>,
-) -> Result<String, String> {
-    start_ai_request_mode(
-        app,
-        runtime,
-        caller,
-        endpoint,
-        model,
-        instruction,
-        selection,
-        output_contract,
-        deadline,
-        citations,
-        false,
-        None,
+        provider.remote,
+        provider.api_key,
     )
 }
 
@@ -2320,21 +2570,61 @@ mod tests {
     }
 
     #[test]
-    fn remote_policy_denies_without_exact_consent_before_transport() {
+    fn remote_provider_requires_exact_consent_before_transport() {
         let mut settings = crate::settings::AppSettings::default();
-        assert!(!remote_policy_allows(
+        settings.ai.provider.id = "provider".into();
+        settings.ai.provider.endpoint = "https://api.example.com/v1".into();
+        settings.ai.provider.data_boundary = AiDataBoundary::Remote;
+        assert!(!remote_consent_matches(
             &settings,
             "/project",
             "provider",
             "https://api.example.com/v1"
         ));
-        settings.ai.remote_policy = AiRemotePolicy::RemoteAllowed;
-        assert!(remote_policy_allows(
+        settings.ai.consents.push(crate::settings::RemoteConsent {
+            project_id: "/project".into(),
+            provider: "provider".into(),
+            endpoint: "https://api.example.com/v1".into(),
+        });
+        assert!(remote_consent_matches(
             &settings,
             "/project",
             "provider",
             "https://api.example.com/v1"
         ));
+    }
+
+    #[test]
+    fn provider_resolution_requires_consent_before_credential_lookup() {
+        let mut settings = crate::settings::AppSettings::default();
+        settings.ai.provider.id = "provider".into();
+        settings.ai.provider.model = "model".into();
+        settings.ai.provider.endpoint = "https://api.example.com/v1".into();
+        settings.ai.provider.data_boundary = AiDataBoundary::Remote;
+        let error = resolve_ai_provider(&settings, Some("/project"), true).unwrap_err();
+        assert_eq!(error, AiError::RemoteContextDenied.to_string());
+        settings.ai.consents.push(crate::settings::RemoteConsent {
+            project_id: "/project".into(),
+            provider: "provider".into(),
+            endpoint: "https://api.example.com/v1".into(),
+        });
+        assert_eq!(
+            resolve_ai_provider(&settings, Some("/project"), true).unwrap_err(),
+            AiError::AuthenticationFailed.to_string()
+        );
+        let probe = resolve_ai_provider_with_credential(&settings, None, false, false).unwrap();
+        assert!(probe.api_key.is_none());
+    }
+
+    #[test]
+    fn embedding_capability_is_model_profile_scoped() {
+        let mut settings = crate::settings::AppSettings::default();
+        settings.ai.provider.capabilities = vec!["text.generate".into()];
+        let provider = resolve_ai_provider(&settings, None, false).unwrap();
+        assert!(!provider.embedding_available);
+        settings.ai.provider.capabilities.push("text.embed".into());
+        let provider = resolve_ai_provider(&settings, None, false).unwrap();
+        assert!(provider.embedding_available);
     }
 
     #[test]

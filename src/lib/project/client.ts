@@ -203,17 +203,18 @@ export interface AppSettings {
   ai: AiSettings;
 }
 export interface AiSettings {
-  localEndpoint: string;
-  localModel: string;
-  localEmbeddingModel: string;
-  remotePolicy: "disabled" | "localOnly" | "ask" | "approvedPairs" | "remoteAllowed";
-  remote: RemoteAiSettings;
+  provider: AiProviderSettings;
+  consents: Array<{ projectId: string; provider: string; endpoint: string }>;
 }
-export interface RemoteAiSettings {
-  provider: string;
+export interface AiProviderSettings {
+  id: string;
+  name: string;
+  adapter: string;
   endpoint: string;
   model: string;
-  consents: Array<{ projectId: string; provider: string; endpoint: string }>;
+  embeddingModel: string;
+  capabilities: string[];
+  dataBoundary: "local" | "remote";
 }
 export interface RemoteCredentialStatus {
   provider: string;
@@ -222,11 +223,7 @@ export interface RemoteCredentialStatus {
 export interface AppSettingsUpdate {
   general?: { recentProjects?: RecentProjectSetting[] };
   ai?: {
-    localEndpoint?: string;
-    localModel?: string;
-    localEmbeddingModel?: string;
-    remotePolicy?: AiSettings["remotePolicy"];
-    remote?: Partial<RemoteAiSettings>;
+    provider?: Partial<AiProviderSettings>;
   };
 }
 export interface AiProviderStatus {
@@ -234,11 +231,16 @@ export interface AiProviderStatus {
   model: string;
   available: boolean;
   modelAvailable: boolean;
+  embeddingAvailable: boolean;
+  credentialAvailable: boolean;
   error: string | null;
 }
 export interface AiIndexStatus {
   available: boolean;
   state: "disabled" | "absent" | "indexing" | "ready" | "partially_stale" | "incompatible" | "failed" | null;
+  provider: string | null;
+  embeddingAvailable: boolean;
+  message: string | null;
 }
 export interface AiIndexRebuildResult {
   chunkCount: number;
@@ -500,52 +502,25 @@ export const project = {
     }),
   settingsGet: () => invoke<AppSettings>("settings_get"),
   settingsUpdate: (update: AppSettingsUpdate) => invoke<AppSettings>("settings_update", { update }),
-  aiLocalStatus: (endpoint: string, model: string) => invoke<AiProviderStatus>("ai_local_status", { endpoint, model }),
-  aiLocalModels: (endpoint: string) => invoke<string[]>("ai_local_models", { endpoint }),
-  aiRemoteCredentialStatus: (provider: string) =>
-    invoke<RemoteCredentialStatus>("ai_remote_credential_status", { provider }),
-  aiRemoteImportCredential: (provider: string) =>
-    invoke<RemoteCredentialStatus>("ai_remote_import_credential", { provider }),
-  aiRemoteSetConsent: (projectId: string, provider: string, endpoint: string, allowed: boolean) =>
-    invoke<void>("ai_remote_set_consent", { projectId, provider, endpoint, allowed }),
-  aiGenerateRemoteText: (
-    projectId: string,
-    provider: string,
-    endpoint: string,
-    model: string,
-    instruction: string,
-    selection: string,
-    entityId?: string,
-    retrievalQuery?: string,
-  ) =>
-    invoke<string>("ai_generate_remote_text", {
-      projectId,
-      provider,
-      endpoint,
-      model,
-      instruction,
-      selection,
-      entityId,
-      retrievalQuery,
-      includeRetrieval: true,
-    }),
+  aiProviderStatus: () => invoke<AiProviderStatus>("ai_provider_status"),
+  aiProviderModels: () => invoke<string[]>("ai_provider_models"),
+  aiProviderCredentialStatus: () => invoke<RemoteCredentialStatus>("ai_provider_credential_status"),
+  aiProviderImportCredential: () => invoke<RemoteCredentialStatus>("ai_provider_import_credential"),
+  aiRemoteSetConsent: (projectId: string, allowed: boolean) =>
+    invoke<void>("ai_remote_set_consent", { projectId, allowed }),
   aiIndexStatus: () => invoke<AiIndexStatus>("ai_index_status"),
-  aiIndexRebuild: (endpoint: string, model: string) =>
-    invoke<AiIndexRebuildResult>("ai_index_rebuild", { endpoint, model }),
+  aiIndexRebuild: () => invoke<AiIndexRebuildResult>("ai_index_rebuild"),
   aiIndexCancel: () => invoke<void>("ai_index_cancel"),
-  aiIndexSearch: (endpoint: string, model: string, query: string, limit = 8) =>
-    invoke<AiHybridMatch[]>("ai_index_search", { endpoint, model, query, limit }),
+  aiIndexSearch: (query: string, limit = 8) => invoke<AiHybridMatch[]>("ai_index_search", { query, limit }),
   aiGenerateText: (
-    endpoint: string,
-    model: string,
+    projectId: string,
     instruction: string,
     selection: string,
     entityId?: string,
     retrievalQuery?: string,
   ) =>
     invoke<string>("ai_generate_text", {
-      endpoint,
-      model,
+      projectId,
       instruction,
       selection,
       entityId,
@@ -553,8 +528,7 @@ export const project = {
       includeRetrieval: true,
     }),
   aiGenerateStructured: (
-    endpoint: string,
-    model: string,
+    projectId: string,
     instruction: string,
     context: string,
     outputContract: Record<string, unknown>,
@@ -562,8 +536,7 @@ export const project = {
     retrievalQuery?: string,
   ) =>
     invoke<string>("ai_generate_structured", {
-      endpoint,
-      model,
+      projectId,
       instruction,
       context,
       outputContract,

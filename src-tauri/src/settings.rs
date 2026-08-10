@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-pub const SETTINGS_FORMAT_VERSION: u32 = 1;
+pub const SETTINGS_FORMAT_VERSION: u32 = 2;
 const MAX_RECENT_PROJECTS: usize = 6;
 const DEFAULT_AI_ENDPOINT: &str = "http://127.0.0.1:1234/v1";
 const DEFAULT_AI_MODEL: &str = "";
@@ -24,43 +24,71 @@ pub struct GeneralSettings {
     pub recent_projects: Vec<RecentProject>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AiSettings {
-    #[serde(default = "default_ai_endpoint")]
-    pub local_endpoint: String,
-    #[serde(default = "default_ai_model")]
-    pub local_model: String,
     #[serde(default)]
-    pub local_embedding_model: String,
-    #[serde(default)]
-    pub remote_policy: AiRemotePolicy,
-    #[serde(default)]
-    pub remote: RemoteAiSettings,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AiRemotePolicy {
-    Disabled,
-    #[default]
-    LocalOnly,
-    Ask,
-    ApprovedPairs,
-    RemoteAllowed,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RemoteAiSettings {
-    #[serde(default)]
-    pub provider: String,
-    #[serde(default)]
-    pub endpoint: String,
-    #[serde(default)]
-    pub model: String,
+    pub provider: AiProviderSettings,
     #[serde(default)]
     pub consents: Vec<RemoteConsent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum AiDataBoundary {
+    #[serde(rename = "local")]
+    #[default]
+    Local,
+    #[serde(rename = "remote")]
+    Remote,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AiProviderSettings {
+    #[serde(default = "default_provider_id")]
+    pub id: String,
+    #[serde(default = "default_provider_name")]
+    pub name: String,
+    #[serde(default = "default_provider_adapter")]
+    pub adapter: String,
+    #[serde(default = "default_ai_endpoint")]
+    pub endpoint: String,
+    #[serde(default = "default_ai_model")]
+    pub model: String,
+    #[serde(default)]
+    pub embedding_model: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub data_boundary: AiDataBoundary,
+}
+
+fn default_provider_id() -> String {
+    "lm-studio".to_string()
+}
+
+fn default_provider_name() -> String {
+    "LM Studio".to_string()
+}
+
+fn default_provider_adapter() -> String {
+    "openai-compatible".to_string()
+}
+
+impl Default for AiProviderSettings {
+    fn default() -> Self {
+        Self {
+            id: default_provider_id(),
+            name: default_provider_name(),
+            adapter: default_provider_adapter(),
+            endpoint: default_ai_endpoint(),
+            model: default_ai_model(),
+            embedding_model: String::new(),
+            capabilities: Vec::new(),
+            data_boundary: AiDataBoundary::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,18 +104,6 @@ fn default_ai_endpoint() -> String {
 }
 fn default_ai_model() -> String {
     DEFAULT_AI_MODEL.to_string()
-}
-
-impl Default for AiSettings {
-    fn default() -> Self {
-        Self {
-            local_endpoint: default_ai_endpoint(),
-            local_model: default_ai_model(),
-            local_embedding_model: String::new(),
-            remote_policy: AiRemotePolicy::default(),
-            remote: RemoteAiSettings::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,19 +135,20 @@ pub struct GeneralSettingsUpdate {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AiSettingsUpdate {
-    pub local_endpoint: Option<String>,
-    pub local_model: Option<String>,
-    pub local_embedding_model: Option<String>,
-    pub remote_policy: Option<AiRemotePolicy>,
-    pub remote: Option<RemoteAiSettingsUpdate>,
+    pub provider: Option<AiProviderSettingsUpdate>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RemoteAiSettingsUpdate {
-    pub provider: Option<String>,
+pub struct AiProviderSettingsUpdate {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub adapter: Option<String>,
     pub endpoint: Option<String>,
     pub model: Option<String>,
+    pub embedding_model: Option<String>,
+    pub capabilities: Option<Vec<String>>,
+    pub data_boundary: Option<AiDataBoundary>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -197,27 +214,30 @@ impl SettingsStore {
             }
         }
         if let Some(ai) = update.ai {
-            if let Some(endpoint) = ai.local_endpoint {
-                settings.ai.local_endpoint = endpoint;
-            }
-            if let Some(model) = ai.local_model {
-                settings.ai.local_model = model;
-            }
-            if let Some(model) = ai.local_embedding_model {
-                settings.ai.local_embedding_model = model;
-            }
-            if let Some(remote_policy) = ai.remote_policy {
-                settings.ai.remote_policy = remote_policy;
-            }
-            if let Some(remote) = ai.remote {
-                if let Some(provider) = remote.provider {
-                    settings.ai.remote.provider = provider;
+            if let Some(provider) = ai.provider {
+                if let Some(id) = provider.id {
+                    settings.ai.provider.id = id;
                 }
-                if let Some(endpoint) = remote.endpoint {
-                    settings.ai.remote.endpoint = endpoint;
+                if let Some(name) = provider.name {
+                    settings.ai.provider.name = name;
                 }
-                if let Some(model) = remote.model {
-                    settings.ai.remote.model = model;
+                if let Some(adapter) = provider.adapter {
+                    settings.ai.provider.adapter = adapter;
+                }
+                if let Some(endpoint) = provider.endpoint {
+                    settings.ai.provider.endpoint = endpoint;
+                }
+                if let Some(model) = provider.model {
+                    settings.ai.provider.model = model;
+                }
+                if let Some(model) = provider.embedding_model {
+                    settings.ai.provider.embedding_model = model;
+                }
+                if let Some(capabilities) = provider.capabilities {
+                    settings.ai.provider.capabilities = capabilities;
+                }
+                if let Some(data_boundary) = provider.data_boundary {
+                    settings.ai.provider.data_boundary = data_boundary;
                 }
             }
         }
@@ -236,11 +256,10 @@ impl SettingsStore {
         let mut settings = self.load()?;
         settings
             .ai
-            .remote
             .consents
             .retain(|consent| !(consent.project_id == project_id && consent.provider == provider));
         if allowed {
-            settings.ai.remote.consents.push(RemoteConsent {
+            settings.ai.consents.push(RemoteConsent {
                 project_id: project_id.to_string(),
                 provider: provider.to_string(),
                 endpoint: endpoint.to_string(),
@@ -325,6 +344,36 @@ mod tests {
     }
 
     #[test]
+    fn update_merges_active_provider_fields() {
+        let directory =
+            std::env::temp_dir().join(format!("daena-settings-{}", uuid::Uuid::new_v4()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let store = SettingsStore::new(&directory);
+        store
+            .update(AppSettingsUpdate {
+                general: None,
+                ai: Some(AiSettingsUpdate {
+                    provider: Some(AiProviderSettingsUpdate {
+                        name: Some("Remote Writer".into()),
+                        endpoint: Some("https://api.example.com/v1".into()),
+                        capabilities: Some(vec!["text.generate".into(), "text.embed".into()]),
+                        data_boundary: Some(AiDataBoundary::Remote),
+                        ..AiProviderSettingsUpdate::default()
+                    }),
+                }),
+            })
+            .unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.ai.provider.name, "Remote Writer");
+        assert_eq!(loaded.ai.provider.endpoint, "https://api.example.com/v1");
+        assert_eq!(loaded.ai.provider.capabilities.len(), 2);
+        assert_eq!(loaded.ai.provider.data_boundary, AiDataBoundary::Remote);
+        assert_eq!(loaded.ai.provider.model, default_ai_model());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn unknown_fields_are_rejected() {
         let directory =
             std::env::temp_dir().join(format!("daena-settings-{}", uuid::Uuid::new_v4()));
@@ -334,6 +383,23 @@ mod tests {
         fs::write(
             &path,
             b"{\"formatVersion\":1,\"general\":{},\"extra\":true}\n",
+        )
+        .unwrap();
+        let store = SettingsStore::new(&directory);
+        assert!(store.load().unwrap_err().contains("invalid settings.json"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn legacy_local_remote_shape_is_not_migrated() {
+        let directory =
+            std::env::temp_dir().join(format!("daena-settings-{}", uuid::Uuid::new_v4()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("settings.json");
+        fs::write(
+            &path,
+            br#"{"formatVersion":2,"general":{},"ai":{"localEndpoint":"http://127.0.0.1:1234/v1","localModel":"model","remotePolicy":"ask","remote":{}}}"#,
         )
         .unwrap();
         let store = SettingsStore::new(&directory);
@@ -355,15 +421,12 @@ mod tests {
             .set_remote_consent("project", "provider", "https://two.example/v1", true)
             .unwrap();
         let loaded = store.load().unwrap();
-        assert_eq!(loaded.ai.remote.consents.len(), 1);
-        assert_eq!(
-            loaded.ai.remote.consents[0].endpoint,
-            "https://two.example/v1"
-        );
+        assert_eq!(loaded.ai.consents.len(), 1);
+        assert_eq!(loaded.ai.consents[0].endpoint, "https://two.example/v1");
         store
             .set_remote_consent("project", "provider", "https://two.example/v1", false)
             .unwrap();
-        assert!(store.load().unwrap().ai.remote.consents.is_empty());
+        assert!(store.load().unwrap().ai.consents.is_empty());
         let _ = fs::remove_dir_all(directory);
     }
 }

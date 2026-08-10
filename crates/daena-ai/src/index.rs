@@ -183,6 +183,7 @@ pub fn hash_text(text: &str) -> String {
 pub struct EmbeddingMetadata {
     pub provider_id: String,
     pub model_id: String,
+    pub capability_identity: String,
     pub dimension: usize,
     pub normalized: bool,
     pub serializer_version: String,
@@ -730,6 +731,7 @@ mod tests {
         let metadata = EmbeddingMetadata {
             provider_id: "fake".into(),
             model_id: "embed-v1".into(),
+            capability_identity: "text.embed".into(),
             dimension: 2,
             normalized: true,
             serializer_version: EMBEDDING_SERIALIZER_VERSION.into(),
@@ -742,6 +744,19 @@ mod tests {
         assert_eq!(cache.len(), 1);
         cache.replace_metadata(EmbeddingMetadata {
             model_id: "embed-v2".into(),
+            ..metadata
+        });
+        assert_eq!(cache.len(), 0);
+
+        let metadata = EmbeddingMetadata {
+            model_id: "embed-v1".into(),
+            capability_identity: "text.embed".into(),
+            ..embedding_metadata()
+        };
+        cache.replace_metadata(metadata.clone());
+        cache.insert("hash-a".into(), vec![1.0, 0.0]);
+        cache.replace_metadata(EmbeddingMetadata {
+            capability_identity: "text.embed,text.generate".into(),
             ..metadata
         });
         assert_eq!(cache.len(), 0);
@@ -808,6 +823,7 @@ mod tests {
         EmbeddingMetadata {
             provider_id: "fake".into(),
             model_id: "embed-v1".into(),
+            capability_identity: "text.embed".into(),
             dimension: 2,
             normalized: true,
             serializer_version: EMBEDDING_SERIALIZER_VERSION.into(),

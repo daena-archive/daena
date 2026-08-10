@@ -73,16 +73,13 @@
   let conflictDiskBody = $state("");
   let mapSaveStates = $state<Record<string, { status: string; detail: unknown }>>({});
   let mapReloadCounter = $state(0);
+  let mapsEditorKey = $state("welcome");
   let mapRecoveryBusy = $state(false);
   let mapFocusLinkId = $state<string | null>(null);
   let mapSelection = $state<unknown | null>(null);
-  let captureDialog = $state(false);
-  let captureMode = $state<"existing" | "create">("existing");
-  let captureEntityId = $state("");
-  let captureTemplateKey = $state("");
-  let captureName = $state("");
-  let captureRole = $state("story-location");
+  let mapPickPending = $state<null | { kind: "link"; entityId: string; role: string; mapEntityId: string } | { kind: "rebind"; entityId: string; location: MapLocation; mapEntityId: string }>(null);
   let mapReconcileNotice = $state("");
+  let mapPickNotice = $state("");
   let projectDiagnostics = $state<string[]>([]);
   let showSettings = $state(false);
   let settingsSection = $state<SettingsSection>("general");
@@ -393,6 +390,8 @@
       sandboxView = mapId
         ? { plugin: item.plugin, view: item.view }
         : { plugin: item.plugin, view: null };
+      if (mapId) mapsEditorKey = mapId;
+      else if (!sandboxView.view) mapsEditorKey = "welcome";
       return;
     }
     if (item.mode === "host") {
@@ -408,16 +407,19 @@
   async function createMap() {
     if (projectDiagnostics.length > 0) return;
     try {
-      const created = await project.createMap();
-      await loadEntities();
-      selected = created;
+      const mapView = pluginViews().find((item) => item.plugin.id === "daena.maps");
+      if (!mapView) throw new Error("The Maps plugin view is not available");
+      selected = null;
       fields = {};
       relationships = [];
       assets = [];
       mapLocations = [];
-      const mapView = pluginViews().find((item) => item.plugin.id === "daena.maps");
-      if (!mapView) throw new Error("The Maps plugin view is not available");
-      await openPluginView(mapView);
+      mapFocusLinkId = null;
+      showSettings = false;
+      await leavePluginView();
+      // Draft editor: no map entity until the in-FMG Save overlay commits one.
+      mapsEditorKey = `draft-${Date.now()}`;
+      sandboxView = { plugin: mapView.plugin, view: mapView.view };
     } catch (cause) {
       error = friendlyError(cause);
     }
@@ -478,6 +480,11 @@
             });
             descriptor = repaired;
             sourceId = orphan.id;
+          }
+          // Legacy create-first drafts left entities with no source; remove them quietly.
+          if (!sourceId && mapAssets.length === 0) {
+            await project.deleteEntity(map.id).catch(() => undefined);
+            continue;
           }
           if (!sourceId) continue;
           const source = mapAssets.find((asset) => asset.id === sourceId);
@@ -1273,7 +1280,9 @@
 
   async function openMapLocation(location: MapLocation) {
     try {
-      await project.mapsNavigation("openMap", { mapEntityId: location.mapEntityId, linkId: location.id });
+      const mapEntityId = location.mapEntityId;
+      if (!mapEntityId) throw new Error("map-unavailable: this location is missing its map id");
+      await project.mapsNavigation("openMap", { mapEntityId, linkId: location.id });
     } catch (cause) {
       const message = friendlyError(cause);
       if (message.includes("link-unresolved")) {
@@ -1284,6 +1293,84 @@
     }
   }
 
+  async function ensureMapEditorOpen(mapEntityId: string) {
+    const map = entities.find((entity) => entity.id === mapEntityId) ?? (await project.listEntities()).find((entity) => entity.id === mapEntityId);
+    if (!map) throw new Error("map-unavailable: choose a saved map first");
+    const mapsView = pluginViews().find((item) => item.plugin.id === "daena.maps");
+    selected = map;
+    mapsEditorKey = map.id;
+    await loadSelectedState(map);
+    if (mapsView) await openPluginView(mapsView);
+  }
+
+  async function beginMapPick(pending: NonNullable<typeof mapPickPending>) {
+    mapPickPending = pending;
+    mapPickNotice = pending.kind === "rebind"
+      ? "Click the map to rebind this location."
+      : "Click the map to place this link.";
+    await ensureMapEditorOpen(pending.mapEntityId);
+    // Webview remounts when the map key changes; give the bridge a moment to boot.
+    window.setTimeout(() => {
+      void project.mapsEditorStartPick().catch((cause) => { error = friendlyError(cause); });
+    }, 450);
+  }
+
+  async function applyMapPick(anchor: unknown) {
+    const pending = mapPickPending;
+    mapPickPending = null;
+    mapPickNotice = "";
+    if (!pending || !anchor) return;
+    try {
+      if (pending.kind === "link") {
+        const entity = entities.find((candidate) => candidate.id === pending.entityId)
+          ?? (await project.listEntities()).find((candidate) => candidate.id === pending.entityId);
+        if (!entity) throw new Error("Choose an entity to link.");
+        const location: MapLocation = {
+          id: crypto.randomUUID(),
+          mapEntityId: pending.mapEntityId,
+          role: pending.role,
+          label: entity.name,
+          anchor,
+          validity: { from: null, to: null },
+        };
+        await project.upsertMapLocation(entity.id, location);
+        await project.mapsEditorFocusLink(location.id).catch(() => {});
+        section = entity.entity_type === "event" || entity.entity_type === "era" ? "timeline" : "lore";
+        sandboxView = null;
+        await selectEntity(entity);
+        mapLocations = await project.listMapLocations(entity.id);
+      } else {
+        await project.upsertMapLocation(pending.entityId, { ...pending.location, anchor });
+        await project.mapsEditorFocusLink(pending.location.id).catch(() => {});
+        const entity = entities.find((candidate) => candidate.id === pending.entityId)
+          ?? (await project.listEntities()).find((candidate) => candidate.id === pending.entityId);
+        if (entity) {
+          section = entity.entity_type === "event" || entity.entity_type === "era" ? "timeline" : "lore";
+          sandboxView = null;
+          await selectEntity(entity);
+          mapLocations = await project.listMapLocations(entity.id);
+        }
+      }
+    } catch (cause) { error = friendlyError(cause); }
+  }
+
+  async function openMapEntityFromLink(entityId: string) {
+    try {
+      const all = await project.listEntities();
+      entities = all;
+      const entity = all.find((candidate) => candidate.id === entityId);
+      if (!entity) throw new Error("Linked entity was not found.");
+      const target = entity.entity_type === "person" || entity.entity_type === "place" || entity.entity_type === "faction" || entity.entity_type === "artifact" || entity.entity_type === "culture"
+        ? "lore"
+        : entity.entity_type?.startsWith("timeline") || entity.entity_type === "event" || entity.entity_type === "era"
+          ? "timeline"
+          : "lore";
+      section = target;
+      sandboxView = null;
+      await selectEntity(entity);
+    } catch (cause) { error = friendlyError(cause); }
+  }
+
   async function unlinkMapLocation(location: MapLocation) {
     if (!selected || !confirm(`Unlink ${location.label || "this location"}? The entity and map feature will remain.`)) return;
     try { await project.unlinkMapLocation(selected.id, location.id); mapLocations = await project.listMapLocations(selected.id); }
@@ -1292,72 +1379,16 @@
 
   async function editMapLocation(location: MapLocation) {
     if (!selected) return;
-    const role = prompt("Edit location role", location.role)?.trim();
+    const role = window.prompt("Edit location role", location.role)?.trim();
     if (!role) return;
-    const validityText = prompt("Validity JSON (use null bounds for unbounded)", JSON.stringify(location.validity));
-    if (validityText === null) return;
-    let validity: MapLocation["validity"];
-    try { validity = JSON.parse(validityText) as MapLocation["validity"]; } catch { error = "Validity must be valid JSON with from and to fields."; return; }
-    try { await project.upsertMapLocation(selected.id, { ...location, role, validity }); mapLocations = await project.listMapLocations(selected.id); }
+    try { await project.upsertMapLocation(selected.id, { ...location, role }); mapLocations = await project.listMapLocations(selected.id); }
     catch (cause) { error = friendlyError(cause); }
   }
 
   async function rebindMapLocation(location: MapLocation) {
     if (!selected) return;
-    const raw = prompt("Rebind to normalized point x,y (0..1)", "0.5,0.5") ?? "";
-    const [x, y] = raw.split(",").map(Number);
-    if (![x, y].every((value) => Number.isFinite(value) && value >= 0 && value <= 1)) { error = "Use normalized coordinates such as 0.5,0.5."; return; }
-    try { await project.upsertMapLocation(selected.id, { ...location, anchor: { kind: "point", point: [x, y] } }); mapLocations = await project.listMapLocations(selected.id); }
-    catch (cause) { error = friendlyError(cause); }
-  }
-
-  function captureAnchorLabel(): string {
-    const anchor = mapSelection as { kind?: string; featureKind?: string; featureId?: string; point?: number[] } | null;
-    if (!anchor) return "Nothing selected yet — click the map first";
-    if (anchor.kind === "provider-feature") return `${anchor.featureKind ?? "feature"} ${anchor.featureId ?? ""}`.trim();
-    return anchor.point ? `Point (${anchor.point[0].toFixed(3)}, ${anchor.point[1].toFixed(3)})` : "Arbitrary selection";
-  }
-
-  async function requestMapCapture() {
-    if (!currentMapId()) return;
     try {
-      mapSelection = await project.mapsEditorCaptureAnchor();
-      captureMode = "existing";
-      captureEntityId = "";
-      captureTemplateKey = "";
-      captureName = "";
-      captureRole = "story-location";
-      captureDialog = true;
-    } catch (cause) { error = friendlyError(cause); }
-  }
-
-  function closeCaptureDialog() {
-    captureDialog = false;
-    mapSelection = null;
-  }
-
-  async function submitMapCapture() {
-    const mapId = currentMapId();
-    if (!mapId || !mapSelection) return;
-    let entity: Entity;
-    try {
-      if (captureMode === "create") {
-        const option = createGroups().flatMap((group) => group.options).find((candidate) => candidate.key === captureTemplateKey);
-        if (!option || !captureName.trim()) throw new Error("Choose a template and enter a name for the new entity.");
-        const context = buildModuleContext(option.module, projectInfo?.root ?? "");
-        const created = await context.entities.create({ name: captureName.trim(), type: option.template.entityType, fields: {}, relationships: {} });
-        await loadEntities();
-        entity = { id: created.id, name: created.name, entity_type: created.type, deleted: created.deleted, created_at: created.createdAt, updated_at: created.updatedAt, revision: "" };
-      } else {
-        const found = entities.find((candidate) => candidate.id === captureEntityId);
-        if (!found) throw new Error("Choose an entity to link.");
-        entity = found;
-      }
-      const location: MapLocation = { id: crypto.randomUUID(), mapEntityId: mapId, role: captureRole.trim() || "story-location", label: entity.name, anchor: mapSelection, validity: { from: null, to: null } };
-      await project.upsertMapLocation(entity.id, location);
-      if (selected?.id === entity.id) mapLocations = await project.listMapLocations(entity.id);
-      await project.mapsEditorFocusLink(location.id);
-      closeCaptureDialog();
+      await beginMapPick({ kind: "rebind", entityId: selected.id, location, mapEntityId: location.mapEntityId });
     } catch (cause) { error = friendlyError(cause); }
   }
 
@@ -1365,22 +1396,9 @@
     if (!selected) return;
     const maps = entities.filter((entity) => entity.entity_type === "daena.maps:map");
     if (maps.length === 0) { error = "Create or enable a Maps map before linking a location."; return; }
-    let map = maps[0];
-    if (maps.length > 1) {
-      const pick = prompt(`Pick a map:\n${maps.map((candidate, index) => `${index + 1}. ${candidate.name}`).join("\n")}`);
-      const choice = maps[Number(pick) - 1];
-      if (!choice) return;
-      map = choice;
-    }
-    const role = prompt("Role for this map location", "story-location")?.trim();
-    if (!role) return;
-    const raw = prompt("Normalized point x,y (0..1)", "0.5,0.5") ?? "";
-    const [x, y] = raw.split(",").map(Number);
-    if (![x, y].every((value) => Number.isFinite(value) && value >= 0 && value <= 1)) { error = "Use normalized coordinates such as 0.5,0.5."; return; }
+    const map = maps.find((candidate) => candidate.id === currentMapId()) ?? maps[0];
     try {
-      const location: MapLocation = { id: crypto.randomUUID(), mapEntityId: map.id, role, label: selected.name, anchor: { kind: "point", point: [x, y] }, validity: { from: null, to: null } };
-      await project.upsertMapLocation(selected.id, location);
-      mapLocations = await project.listMapLocations(selected.id);
+      await beginMapPick({ kind: "link", entityId: selected.id, role: "story-location", mapEntityId: map.id });
     } catch (cause) { error = friendlyError(cause); }
   }
 
@@ -1956,6 +1974,7 @@
         const item = pluginViews().find((candidate) => candidate.plugin.id === "daena.maps");
         if (!map || !item) throw new Error("map-unavailable: enable the Maps module to open this location");
         selected = map;
+        mapsEditorKey = map.id;
         await loadSelectedState(map);
         await openPluginView(item);
         const linkId = event.payload.linkId ?? null;
@@ -1968,7 +1987,17 @@
     let unlistenMapsState: (() => void) | undefined;
     void listen<{ mapEntityId: string; status: string; detail: unknown }>("maps-state", (event) => {
       const { mapEntityId, status, detail } = event.payload;
-      mapSaveStates[mapEntityId] = { status, detail };
+      if (mapEntityId) mapSaveStates[mapEntityId] = { status, detail };
+      if (status === "saved" && mapEntityId) {
+        void project.listEntities().then((all) => {
+          entities = all;
+          const map = all.find((entity) => entity.id === mapEntityId);
+          if (map) {
+            selected = map;
+            void loadSelectedState(map).catch(() => {});
+          }
+        }).catch(() => {});
+      }
       if (status === "reconcile") {
         const reconcileDetail = detail as { unresolved?: unknown } | null;
         const unresolved = Array.isArray(reconcileDetail?.unresolved) ? reconcileDetail.unresolved.length : 0;
@@ -1976,6 +2005,22 @@
           ? `${unresolved} link${unresolved === 1 ? "" : "s"} on this map are unresolved — the features they pointed to were removed or renumbered.`
           : "";
         if (selected && mapLocations.length > 0) void project.listMapLocations(selected.id).then((locations) => { mapLocations = locations; }).catch(() => {});
+      }
+      if (status === "pick-complete") {
+        const pickDetail = detail as { anchor?: unknown } | null;
+        void applyMapPick(pickDetail?.anchor ?? null);
+      }
+      if (status === "pick-cancelled") {
+        mapPickPending = null;
+        mapPickNotice = "";
+      }
+      if (status === "open-entity") {
+        const openDetail = detail as { entityId?: string } | null;
+        if (openDetail?.entityId) void openMapEntityFromLink(openDetail.entityId);
+      }
+      if (status === "linked") {
+        void project.listEntities().then((all) => { entities = all; }).catch(() => {});
+        if (selected) void project.listMapLocations(selected.id).then((locations) => { mapLocations = locations; }).catch(() => {});
       }
     }).then((cleanup) => { unlistenMapsState = cleanup; }).catch(() => {});
     let unlistenMapsSelection: (() => void) | undefined;
@@ -2306,28 +2351,27 @@
     {:else if hostView}
       <div class="host-view-shell"><button class="quiet-button host-view-back" onclick={() => hostView = null}>Back to workspace</button><HostView plugin={hostView.plugin} view={hostView.view} /></div>
     {:else if sandboxView}
-      {#key `${sandboxView.plugin.id}:${sandboxView.view?.id ?? "default"}:${sandboxView.plugin.id === "daena.maps" && selected?.entity_type === "daena.maps:map" ? selected.id : ""}:${sandboxView.plugin.id === "daena.maps" ? mapReloadCounter : 0}`}
-        {#if sandboxView.plugin.id === "daena.maps" && selected?.entity_type === "daena.maps:map"}
-          {@const mapId = selected.id}
-          {@const mapState = mapSaveStates[mapId] ?? null}
+      {#key `${sandboxView.plugin.id}:${sandboxView.view?.id ?? "default"}:${sandboxView.plugin.id === "daena.maps" ? mapsEditorKey : ""}:${sandboxView.plugin.id === "daena.maps" ? mapReloadCounter : 0}`}
+        {#if sandboxView.plugin.id === "daena.maps" && (selected?.entity_type === "daena.maps:map" || sandboxView.view != null)}
+          {@const mapId = selected?.entity_type === "daena.maps:map" ? selected.id : null}
+          {@const mapState = mapId ? mapSaveStates[mapId] ?? null : null}
           {@const mapDetail = mapConflictDetail(mapState?.detail)}
           <div class="map-editor-shell">
-            <div class="map-editor-toolbar">
-              <span class:map-state-warn={mapState?.status === "dirty" || mapState?.status === "error"} class:map-state-error={mapState?.status === "conflict"} class="map-save-chip"><span class="map-save-dot"></span>{mapSaveLabel(mapState)}</span>
-              {#if mapState?.status === "conflict"}<span class="map-conflict-path">{mapDetail.path ?? "Draft exported as a recovery copy."}</span>{/if}
-              {#if mapReconcileNotice}<span class="map-reconcile-notice">{mapReconcileNotice}</span>{/if}
-              <div class="map-toolbar-actions">
-                <button class="quiet-button" type="button" onclick={requestMapCapture}>Link selection</button>
-                <button class="quiet-button" type="button" disabled={mapState?.status !== "dirty" && mapState?.status !== "error"} onclick={saveCurrentMap}>Save</button>
+            {#if mapId && !mapsEditorKey.startsWith("draft-")}
+              <div class="map-editor-toolbar">
+                <span class:map-state-warn={mapState?.status === "dirty" || mapState?.status === "error"} class:map-state-error={mapState?.status === "conflict"} class="map-save-chip"><span class="map-save-dot"></span>{mapSaveLabel(mapState)}</span>
+                {#if mapState?.status === "conflict"}<span class="map-conflict-path">{mapDetail.path ?? "Draft exported as a recovery copy."}</span>{/if}
+                {#if mapReconcileNotice}<span class="map-reconcile-notice">{mapReconcileNotice}</span>{/if}
+                {#if mapPickNotice}<span class="map-reconcile-notice">{mapPickNotice}</span>{/if}
               </div>
-            </div>
-            {#if mapState?.status === "conflict"}
-              <div class="map-conflict-banner" role="alert">
-                <div class="map-conflict-copy"><strong>This map changed on disk while you were editing</strong><p>Your draft was not saved over it. A recovery copy was exported so nothing is lost.</p>{#if mapDetail.path}<code>{mapDetail.path}</code>{/if}</div>
-                <div class="map-conflict-actions"><button class="primary-button" type="button" disabled={mapRecoveryBusy} onclick={restoreMapDraft}>{mapRecoveryBusy ? "Restoring…" : "Restore draft"}</button><button class="quiet-button" type="button" onclick={reloadMapOriginal}>Reload original</button><button class="quiet-button" type="button" onclick={dismissMapConflict}>Keep editing</button></div>
-              </div>
+              {#if mapState?.status === "conflict"}
+                <div class="map-conflict-banner" role="alert">
+                  <div class="map-conflict-copy"><strong>This map changed on disk while you were editing</strong><p>Your draft was not saved over it. A recovery copy was exported so nothing is lost.</p>{#if mapDetail.path}<code>{mapDetail.path}</code>{/if}</div>
+                  <div class="map-conflict-actions"><button class="primary-button" type="button" disabled={mapRecoveryBusy} onclick={restoreMapDraft}>{mapRecoveryBusy ? "Restoring…" : "Restore draft"}</button><button class="quiet-button" type="button" onclick={reloadMapOriginal}>Reload original</button><button class="quiet-button" type="button" onclick={dismissMapConflict}>Keep editing</button></div>
+                </div>
+              {/if}
             {/if}
-            <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={sandboxView.plugin.name} mapEntityId={mapId} linkId={mapFocusLinkId ?? undefined} />
+            <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={sandboxView.plugin.name} mapEntityId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)} linkId={mapFocusLinkId ?? undefined} />
           </div>
         {:else if sandboxView.plugin.id === "daena.maps" && sandboxView.view == null}
           {@const mapsView = pluginViews().find((item) => item.plugin.id === "daena.maps")}
@@ -2343,12 +2387,13 @@
             <div class="maps-welcome-list panel-surface">
               <div class="panel-heading"><div><span class="panel-kicker">SAVED MAPS</span><strong>{savedMaps().length} saved</strong></div></div>
               {#if savedMaps().length === 0}
-                <div class="list-empty" role="status"><span class="empty-mark" aria-hidden="true">◇</span><strong>No saved maps yet.</strong><p>Create a map and press Save to keep your first world.</p></div>
+                <div class="list-empty" role="status"><span class="empty-mark" aria-hidden="true">◇</span><strong>No saved maps yet.</strong><p>Create a map, then use Save in the map to name and keep your first world.</p></div>
               {:else}
                 <div class="collection-list">
                   {#each savedMaps() as map (map.id)}
                     <button class="collection-item" type="button" onclick={async () => {
                       selected = map;
+                      mapsEditorKey = map.id;
                       await loadSelectedState(map);
                       if (mapsView) await openPluginView(mapsView);
                     }}><span class="item-copy"><strong>{map.name}</strong><small>Updated {runtimeTimestampLabel(map.updated_at)}</small></span><span class="item-arrow" aria-hidden="true">›</span></button>
@@ -2427,7 +2472,7 @@
           {/if}
         </article>
 
-        {#if selected}<aside class="inspector-panel panel-surface"><div class="inspector-heading"><div><span class="panel-kicker">INSPECTOR</span><strong>Details</strong></div><div class="inspector-heading-actions"><span class="inspector-type">{selected.entity_type}</span>{#if emptyInspectorDefinitions().length}<button class="inspector-ai-action" type="button" onclick={() => void fillAiFields()} disabled={aiFieldFillBusy}><span aria-hidden="true">✦</span>{aiFieldFillBusy ? "Finding…" : "Fill with AI"}</button>{/if}</div></div>{#if aiFieldFillOpen}<section class="inspector-ai-fill"><div class="inspector-ai-fill-heading"><strong>{aiFieldFillBusy ? "Finding field suggestions…" : "Review field suggestions"}</strong><button class="quiet-button" type="button" onclick={closeAiFieldFill}>Close</button></div>{#if aiFieldFillBusy}<p>Using this entry and related project context.</p>{:else if Object.keys(aiFieldSuggestions).length === 0}<p>No suggestions are available.</p>{:else}{#each Object.entries(aiFieldSuggestions) as [key, suggestion]}{@const definition = definitions().find((candidate) => candidate.key === key)}<div class="inspector-ai-suggestion"><div><strong>{definition?.label ?? key}</strong><span>{suggestionDisplayValue(key, suggestion)}</span><small>{suggestion.rationale} · {suggestion.confidence} confidence</small></div><div><button class="quiet-button" type="button" onclick={() => acceptAiFieldSuggestion(key)}>Accept</button><button class="quiet-button" type="button" onclick={() => discardAiFieldSuggestion(key)}>Discard</button></div></div>{/each}{/if}</section>{/if}<section class="inspector-section"><h3>Properties</h3>{#each definitions().filter((candidate) => candidate.type !== "relationship") as definition}<div class="property-field"><span>{definition.label}{#if definition.required}<b>*</b>{/if}</span>{#if definition.type === "date"}{#if dateForField(definition.key) || dateEditorOpen[definition.key]}{@const date = dateDraftForField(definition.key) ?? { calendar: "gregorian", era: "CE", precision: "day" }}<div class="date-editor"><div class="date-fields"><label for={`${definition.key}-year`}>Year<input id={`${definition.key}-year`} aria-label={`${definition.label} year`} type="number" min="1" value={date.year ?? ""} onchange={(event) => updateDatePart(definition.key, "year", (event.currentTarget as HTMLInputElement).value, 1)} /></label><label for={`${definition.key}-month`}>Month<input id={`${definition.key}-month`} aria-label={`${definition.label} month`} type="number" min="1" max="12" value={date.month ?? ""} onchange={(event) => updateDatePart(definition.key, "month", (event.currentTarget as HTMLInputElement).value, 1, 12)} /></label><label for={`${definition.key}-day`}>Day<input id={`${definition.key}-day`} aria-label={`${definition.label} day`} type="number" min="1" max="31" value={date.day ?? ""} onchange={(event) => updateDatePart(definition.key, "day", (event.currentTarget as HTMLInputElement).value, 1, 31)} /></label></div><small class="date-preview">{typeof date.year === "number" ? formatCalendarDate(date) : "Add a date"}</small><button class="date-clear" type="button" onclick={() => clearDateField(definition.key)}>Clear date</button></div>{:else}<button class="date-empty" type="button" onclick={() => openDateEditor(definition.key)}>Add a date</button>{/if}{:else if definition.type === "enum" && definition.options?.length}<select aria-label={definition.label} multiple={definition.multiple ?? false} value={definition.multiple ? (Array.isArray(fields[definition.key]) ? fields[definition.key] : []) : String(fields[definition.key] ?? "")} onchange={(event) => updateField(definition.key, event)}>{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}</select>{:else}<input type="text" value={fieldDisplayValue(fields[definition.key])} placeholder="Add {definition.label.toLowerCase()}" oninput={(event) => updateField(definition.key, event)} />{/if}</div>{/each}</section>{#each definitions().filter((candidate) => candidate.type === "relationship") as definition}<section class="inspector-section"><div class="section-title"><h3>{definition.label}</h3><span>{selectedRelationshipIds(definition).length}</span></div><RelationshipPicker field={definition} entities={entities} selectedIds={selectedRelationshipIds(definition)} onChange={(ids) => void updateRelationshipField(definition, ids)} /></section>{/each}<section class="inspector-section"><div class="section-title"><h3>Attachments</h3><span>{assets.length}</span></div><button class="drop-zone" type="button" onclick={attachAsset}><span>＋</span><strong>Attach a file</strong><small>Copied into this project</small></button>{#each assets as asset}<div class="asset-row"><span class="asset-icon">□</span><span><strong>{asset.filename}</strong><small>{Math.max(1, Math.round(asset.size / 1024))} KB</small></span></div>{/each}</section><section class="inspector-section map-contribution" aria-label="Maps contribution"><div class="section-title"><h3>Maps</h3><span>{mapLocations.length}</span></div><p>Shared locations remain on the entity even when Maps is disabled.</p><button class="quiet-button" type="button" onclick={() => void linkEntityToMap()}>＋ Link location</button>{#if mapLocations.length === 0}<small>No map links yet.</small>{:else}{#each mapLocations as location (location.id)}<div class="map-location-row"><div><strong>{location.label || location.role}</strong><small>{location.role} · {location.mapEntityId.slice(0, 8)}{#if location.resolution === "unresolved"} · <span class="map-unresolved-badge">Unresolved</span>{/if}</small></div><div>{#if location.resolution === "unresolved"}<span class="map-unresolved-note" title="The map feature this link pointed to was removed or renumbered.">Feature missing</span>{:else}<button class="quiet-button" type="button" onclick={() => void openMapLocation(location)}>Show on map</button>{/if}<button class="quiet-button" type="button" onclick={() => void editMapLocation(location)}>Edit</button><button class="quiet-button" type="button" onclick={() => void rebindMapLocation(location)}>Rebind</button><button class="quiet-button" type="button" onclick={() => void unlinkMapLocation(location)}>Unlink</button></div></div>{/each}{/if}</section></aside>{:else}<aside class="inspector-panel panel-surface inspector-empty"><span>INSPECTOR</span><p>Select an entry to see its properties, relationships, and attachments.</p></aside>{/if}
+        {#if selected}<aside class="inspector-panel panel-surface"><div class="inspector-heading"><div><span class="panel-kicker">INSPECTOR</span><strong>Details</strong></div><div class="inspector-heading-actions"><span class="inspector-type">{selected.entity_type}</span>{#if emptyInspectorDefinitions().length}<button class="inspector-ai-action" type="button" onclick={() => void fillAiFields()} disabled={aiFieldFillBusy}><span aria-hidden="true">✦</span>{aiFieldFillBusy ? "Finding…" : "Fill with AI"}</button>{/if}</div></div>{#if aiFieldFillOpen}<section class="inspector-ai-fill"><div class="inspector-ai-fill-heading"><strong>{aiFieldFillBusy ? "Finding field suggestions…" : "Review field suggestions"}</strong><button class="quiet-button" type="button" onclick={closeAiFieldFill}>Close</button></div>{#if aiFieldFillBusy}<p>Using this entry and related project context.</p>{:else if Object.keys(aiFieldSuggestions).length === 0}<p>No suggestions are available.</p>{:else}{#each Object.entries(aiFieldSuggestions) as [key, suggestion]}{@const definition = definitions().find((candidate) => candidate.key === key)}<div class="inspector-ai-suggestion"><div><strong>{definition?.label ?? key}</strong><span>{suggestionDisplayValue(key, suggestion)}</span><small>{suggestion.rationale} · {suggestion.confidence} confidence</small></div><div><button class="quiet-button" type="button" onclick={() => acceptAiFieldSuggestion(key)}>Accept</button><button class="quiet-button" type="button" onclick={() => discardAiFieldSuggestion(key)}>Discard</button></div></div>{/each}{/if}</section>{/if}<section class="inspector-section"><h3>Properties</h3>{#each definitions().filter((candidate) => candidate.type !== "relationship") as definition}<div class="property-field"><span>{definition.label}{#if definition.required}<b>*</b>{/if}</span>{#if definition.type === "date"}{#if dateForField(definition.key) || dateEditorOpen[definition.key]}{@const date = dateDraftForField(definition.key) ?? { calendar: "gregorian", era: "CE", precision: "day" }}<div class="date-editor"><div class="date-fields"><label for={`${definition.key}-year`}>Year<input id={`${definition.key}-year`} aria-label={`${definition.label} year`} type="number" min="1" value={date.year ?? ""} onchange={(event) => updateDatePart(definition.key, "year", (event.currentTarget as HTMLInputElement).value, 1)} /></label><label for={`${definition.key}-month`}>Month<input id={`${definition.key}-month`} aria-label={`${definition.label} month`} type="number" min="1" max="12" value={date.month ?? ""} onchange={(event) => updateDatePart(definition.key, "month", (event.currentTarget as HTMLInputElement).value, 1, 12)} /></label><label for={`${definition.key}-day`}>Day<input id={`${definition.key}-day`} aria-label={`${definition.label} day`} type="number" min="1" max="31" value={date.day ?? ""} onchange={(event) => updateDatePart(definition.key, "day", (event.currentTarget as HTMLInputElement).value, 1, 31)} /></label></div><small class="date-preview">{typeof date.year === "number" ? formatCalendarDate(date) : "Add a date"}</small><button class="date-clear" type="button" onclick={() => clearDateField(definition.key)}>Clear date</button></div>{:else}<button class="date-empty" type="button" onclick={() => openDateEditor(definition.key)}>Add a date</button>{/if}{:else if definition.type === "enum" && definition.options?.length}<select aria-label={definition.label} multiple={definition.multiple ?? false} value={definition.multiple ? (Array.isArray(fields[definition.key]) ? fields[definition.key] : []) : String(fields[definition.key] ?? "")} onchange={(event) => updateField(definition.key, event)}>{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}</select>{:else}<input type="text" value={fieldDisplayValue(fields[definition.key])} placeholder="Add {definition.label.toLowerCase()}" oninput={(event) => updateField(definition.key, event)} />{/if}</div>{/each}</section>{#each definitions().filter((candidate) => candidate.type === "relationship") as definition}<section class="inspector-section"><div class="section-title"><h3>{definition.label}</h3><span>{selectedRelationshipIds(definition).length}</span></div><RelationshipPicker field={definition} entities={entities} selectedIds={selectedRelationshipIds(definition)} onChange={(ids) => void updateRelationshipField(definition, ids)} /></section>{/each}<section class="inspector-section"><div class="section-title"><h3>Attachments</h3><span>{assets.length}</span></div><button class="drop-zone" type="button" onclick={attachAsset}><span>＋</span><strong>Attach a file</strong><small>Copied into this project</small></button>{#each assets as asset}<div class="asset-row"><span class="asset-icon">□</span><span><strong>{asset.filename}</strong><small>{Math.max(1, Math.round(asset.size / 1024))} KB</small></span></div>{/each}</section><section class="inspector-section map-contribution" aria-label="Maps contribution"><div class="section-title"><h3>Maps</h3><span>{mapLocations.length}</span></div><p>Click the map to link a place, or use Link location here to pick on the map.</p><button class="quiet-button" type="button" onclick={() => void linkEntityToMap()}>＋ Link location</button>{#if mapLocations.length === 0}<small>No map links yet.</small>{:else}{#each mapLocations as location (location.id)}<div class="map-location-row"><div><strong>{location.label || location.role}</strong><small>{location.role} · {location.mapEntityId.slice(0, 8)}{#if location.resolution === "unresolved"} · <span class="map-unresolved-badge">Unresolved</span>{/if}</small></div><div>{#if location.resolution === "unresolved"}<span class="map-unresolved-note" title="The map feature this link pointed to was removed or renumbered.">Feature missing</span>{:else}<button class="quiet-button" type="button" onclick={() => void openMapLocation(location)}>Show on map</button>{/if}<button class="quiet-button" type="button" onclick={() => void editMapLocation(location)}>Edit</button><button class="quiet-button" type="button" onclick={() => void rebindMapLocation(location)}>Rebind</button><button class="quiet-button" type="button" onclick={() => void unlinkMapLocation(location)}>Unlink</button></div></div>{/each}{/if}</section></aside>{:else}<aside class="inspector-panel panel-surface inspector-empty"><span>INSPECTOR</span><p>Select an entry to see its properties, relationships, and attachments.</p></aside>{/if}
       </section>
     {/if}
     {#if error}<div class="toast" role="alert" aria-live="assertive">{error}<button aria-label="Dismiss" onclick={() => error = ""}>×</button></div>{/if}

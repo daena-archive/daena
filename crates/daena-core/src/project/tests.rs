@@ -2163,8 +2163,39 @@ fn map_entities_and_locations_survive_disposable_index_rebuild() {
                 .unwrap();
     }
 
+    let layer_id = Uuid::new_v4().to_string();
+    store
+        .set_field(FieldValue {
+            entity_id: map_a.id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            key: "layers".into(),
+            value: serde_json::json!({
+                "schemaVersion": 1,
+                "layers": [{
+                    "id": layer_id,
+                    "name": "Settlements",
+                    "order": 0,
+                    "defaultVisible": true,
+                    "style": {"color": "#334155"},
+                    "selector": {"roles": ["birthplace"]}
+                }]
+            }),
+            revision: String::new(),
+        })
+        .unwrap();
+
+    store
+        .create_relationship(RelationshipInput {
+            source_id: place.id.clone(),
+            target_id: map_b.id.clone(),
+            relationship_type: crate::maps::DETAIL_MAP_RELATIONSHIP.into(),
+            metadata: None,
+        })
+        .unwrap();
+
     let location_a = Uuid::new_v4().to_string();
     let location_b = Uuid::new_v4().to_string();
+    let location_c = Uuid::new_v4().to_string();
     store
             .set_field(FieldValue {
                 entity_id: place.id.clone(),
@@ -2188,6 +2219,14 @@ fn map_entities_and_locations_survive_disposable_index_rebuild() {
                             "label": "Regional harbor",
                             "anchor": {"kind": "point", "point": [0.2, 0.8]},
                             "validity": {"from": null, "to": null}
+                        },
+                        {
+                            "id": location_c,
+                            "mapEntityId": map_a.id,
+                            "role": "route",
+                            "label": "Coast road",
+                            "anchor": {"kind": "path", "points": [[0.1, 0.2], [0.3, 0.4]]},
+                            "validity": {"from": null, "to": null}
                         }
                     ]
                 }),
@@ -2198,7 +2237,7 @@ fn map_entities_and_locations_survive_disposable_index_rebuild() {
     store.flush_checkpoint("test export").unwrap();
     let canonical_before = canonical_files(&root);
     let projection_before = store.map_locations_for_entity(place.id.clone()).unwrap();
-    assert_eq!(projection_before.len(), 2);
+    assert_eq!(projection_before.len(), 3);
     assert!(projection_before
         .iter()
         .all(|location| location["resolution"] == "resolved"));
@@ -2206,7 +2245,31 @@ fn map_entities_and_locations_survive_disposable_index_rebuild() {
         .iter()
         .map(|location| location["anchorKind"].as_str().unwrap())
         .collect::<BTreeSet<_>>();
-    assert_eq!(anchor_kinds, BTreeSet::from(["point", "provider-feature"]));
+    assert_eq!(
+        anchor_kinds,
+        BTreeSet::from(["path", "point", "provider-feature"])
+    );
+    let search_before = store
+        .search("World map".into())
+        .unwrap()
+        .into_iter()
+        .map(|entity| entity.id)
+        .collect::<BTreeSet<_>>();
+    assert!(search_before.contains(&map_a.id));
+    let relationships_before = store
+        .list_relationships(place.id.clone())
+        .unwrap()
+        .into_iter()
+        .filter(|relationship| relationship.relationship_type == crate::maps::DETAIL_MAP_RELATIONSHIP)
+        .map(|relationship| {
+            (
+                relationship.source_id,
+                relationship.target_id,
+                relationship.relationship_type,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(relationships_before.len(), 1);
     drop(store);
     std::fs::remove_dir_all(root.join(".daena")).unwrap();
 
@@ -2222,9 +2285,37 @@ fn map_entities_and_locations_survive_disposable_index_rebuild() {
         2
     );
     assert_eq!(
-        rebuilt.map_locations_for_entity(place.id).unwrap(),
+        rebuilt.map_locations_for_entity(place.id.clone()).unwrap(),
         projection_before
     );
+    let layers = rebuilt
+        .list_fields(map_a.id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.namespace == crate::maps::MAP_NAMESPACE && field.key == "layers")
+        .expect("layers field");
+    assert_eq!(layers.value["layers"][0]["id"], layer_id);
+    let search_after = rebuilt
+        .search("World map".into())
+        .unwrap()
+        .into_iter()
+        .map(|entity| entity.id)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(search_after, search_before);
+    let relationships_after = rebuilt
+        .list_relationships(place.id)
+        .unwrap()
+        .into_iter()
+        .filter(|relationship| relationship.relationship_type == crate::maps::DETAIL_MAP_RELATIONSHIP)
+        .map(|relationship| {
+            (
+                relationship.source_id,
+                relationship.target_id,
+                relationship.relationship_type,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(relationships_after, relationships_before);
     drop(rebuilt);
     std::fs::remove_file(source_a).unwrap();
     std::fs::remove_file(source_b).unwrap();
@@ -2240,8 +2331,8 @@ fn map_locations_reject_dangling_maps_and_invalid_geometry() {
             entity_type: Some("place".into()),
         })
         .unwrap();
-    let invalid = store.set_field(FieldValue {
-        entity_id: place.id,
+    let dangling = store.set_field(FieldValue {
+        entity_id: place.id.clone(),
         namespace: crate::maps::MAP_NAMESPACE.into(),
         key: "locations".into(),
         value: serde_json::json!({
@@ -2251,14 +2342,129 @@ fn map_locations_reject_dangling_maps_and_invalid_geometry() {
                 "mapEntityId": Uuid::new_v4(),
                 "role": "origin",
                 "label": "Nowhere",
+                "anchor": {"kind": "point", "point": [0.5, 0.5]},
+                "validity": {"from": null, "to": null}
+            }]
+        }),
+        revision: String::new(),
+    });
+    assert!(dangling
+        .unwrap_err()
+        .to_string()
+        .contains("maps: dangling map reference"));
+
+    let map = store.create_map("Bound map".into()).unwrap();
+    let malformed = store.set_field(FieldValue {
+        entity_id: place.id,
+        namespace: crate::maps::MAP_NAMESPACE.into(),
+        key: "locations".into(),
+        value: serde_json::json!({
+            "schemaVersion": 1,
+            "locations": [{
+                "id": Uuid::new_v4(),
+                "mapEntityId": map.id,
+                "role": "origin",
+                "label": "Out of bounds",
                 "anchor": {"kind": "point", "point": [1.5, 0.5]},
                 "validity": {"from": null, "to": null}
             }]
         }),
         revision: String::new(),
     });
-    assert!(invalid.is_err());
-    assert!(invalid.unwrap_err().to_string().contains("maps:"));
+    assert!(malformed
+        .unwrap_err()
+        .to_string()
+        .contains("maps: invalid geometry:"));
+}
+
+#[test]
+fn map_layers_round_trip_and_reject_non_map_owners() {
+    let store = ProjectStore::in_memory().unwrap();
+    let map = store.create_map("Layered map".into()).unwrap();
+    let place = store
+        .create_entity(CreateEntity {
+            name: "Not a map".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    let layers = serde_json::json!({
+        "schemaVersion": 1,
+        "layers": [{
+            "id": Uuid::new_v4(),
+            "name": "Culture",
+            "order": 1,
+            "defaultVisible": false,
+            "style": {},
+            "selector": {"entityTypes": ["place"]}
+        }]
+    });
+    store
+        .set_field(FieldValue {
+            entity_id: map.id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            key: "layers".into(),
+            value: layers.clone(),
+            revision: String::new(),
+        })
+        .unwrap();
+    let stored = store
+        .list_fields(map.id)
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "layers")
+        .unwrap();
+    assert_eq!(stored.value, layers);
+    let rejected = store.set_field(FieldValue {
+        entity_id: place.id,
+        namespace: crate::maps::MAP_NAMESPACE.into(),
+        key: "layers".into(),
+        value: layers,
+        revision: String::new(),
+    });
+    assert!(rejected
+        .unwrap_err()
+        .to_string()
+        .contains("maps: layers belong only on a map entity"));
+}
+
+#[test]
+fn map_projection_refresh_matches_full_rebuild_after_location_upsert() {
+    let store = ProjectStore::in_memory().unwrap();
+    let map = store.create_map("Incremental map".into()).unwrap();
+    let place = store
+        .create_entity(CreateEntity {
+            name: "Incremental place".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    let location_id = Uuid::new_v4().to_string();
+    store
+        .upsert_map_location(
+            place.id.clone(),
+            crate::maps::LocationReference {
+                id: location_id.clone(),
+                map_entity_id: map.id.clone(),
+                role: "landmark".into(),
+                label: "Tower".into(),
+                anchor: crate::maps::Anchor::Point {
+                    point: crate::maps::Point(0.25, 0.75),
+                },
+                validity: crate::maps::Validity {
+                    from: None,
+                    to: None,
+                },
+            },
+            None,
+        )
+        .unwrap();
+    let incremental = store.map_locations_for_entity(place.id.clone()).unwrap();
+    assert_eq!(incremental.len(), 1);
+    assert_eq!(incremental[0]["id"], location_id);
+    store.reconcile_map_links(map.id).unwrap();
+    assert_eq!(
+        store.map_locations_for_entity(place.id).unwrap(),
+        incremental
+    );
 }
 
 #[test]

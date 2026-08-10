@@ -18,7 +18,8 @@ use daena_plugin_api::rpc::{
     EntityCreateField, EntityCreatePayload, EntityCreateRelationship, EntityDeletePayload,
     EntityGetPayload, EntityListPayload, EntityRecord, EntityUpdatePayload, EventPublishPayload,
     EventTypePayload, FieldListPayload, FieldReadPayload, FieldSetPayload,
-    MapsAssetCreateBeginPayload, MapsAssetCreateCommitPayload, MapsLocationsListPayload,
+    MapsAssetCreateBeginPayload, MapsAssetCreateCommitPayload, MapsLocationsCreateAndLinkPayload,
+    MapsLocationsListPayload, MapsLocationsUnlinkPayload, MapsLocationsUpsertPayload,
     MapsReconcileLinksPayload, MapsRecoveryExportBeginPayload, MapsRecoveryExportCommitPayload,
     MapsRecoveryListPayload, MapsRecoveryRestorePayload, PluginBootstrap,
     RelationshipCreatePayload, RelationshipDeletePayload, RelationshipListPayload,
@@ -357,6 +358,11 @@ fn register_payload(gen: &mut SchemaGenerator, payload_schema: &str) {
         "MapsRecoveryListPayload" => gen.subschema_for::<MapsRecoveryListPayload>(),
         "MapsRecoveryRestorePayload" => gen.subschema_for::<MapsRecoveryRestorePayload>(),
         "MapsLocationsListPayload" => gen.subschema_for::<MapsLocationsListPayload>(),
+        "MapsLocationsUpsertPayload" => gen.subschema_for::<MapsLocationsUpsertPayload>(),
+        "MapsLocationsUnlinkPayload" => gen.subschema_for::<MapsLocationsUnlinkPayload>(),
+        "MapsLocationsCreateAndLinkPayload" => {
+            gen.subschema_for::<MapsLocationsCreateAndLinkPayload>()
+        }
         "MapsReconcileLinksPayload" => gen.subschema_for::<MapsReconcileLinksPayload>(),
         "EventPublishPayload" => gen.subschema_for::<EventPublishPayload>(),
         "EventTypePayload" => gen.subschema_for::<EventTypePayload>(),

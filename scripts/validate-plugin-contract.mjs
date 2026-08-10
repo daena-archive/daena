@@ -25,13 +25,35 @@ for (const [method, contract] of rpcMethods) {
   }
 }
 
-for (const name of ["lore", "timeline", "writing"]) {
+for (const name of ["lore", "timeline", "writing", "maps"]) {
   const manifest = await readJson(`packages/modules/${name}/manifest.json`);
   const required = ["manifestVersion", "id", "name", "version", "publisher", "hostApi", "kind", "entrypoints", "capabilities", "dependencies", "namespaces", "schemas", "templates", "views", "commands", "services", "events", "migrations"];
   for (const key of required) if (!(key in manifest)) throw new Error(`${name}: missing ${key}`);
   if (manifest.manifestVersion !== 1 || manifest.id !== `daena.${name}`) throw new Error(`${name}: identity mismatch`);
   if (manifest.migrations.length !== 1 || manifest.migrations[0].from !== 0 || manifest.migrations[0].to !== 1) throw new Error(`${name}: migration chain mismatch`);
   if (!manifest.namespaces.includes(manifest.schemas[0].namespace)) throw new Error(`${name}: schema namespace is not owned`);
+}
+
+{
+  const maps = await readJson("packages/modules/maps/manifest.json");
+  const relationshipTypes = maps.schemas[0].fields
+    .filter((field) => field.type === "relationship")
+    .map((field) => field.relationshipType)
+    .sort();
+  const expected = ["daena.maps:detail-map", "daena.maps:overview-map", "daena.maps:related-map"];
+  if (JSON.stringify(relationshipTypes) !== JSON.stringify(expected)) {
+    throw new Error(`maps: expected hierarchy relationships ${expected.join(", ")}, got ${relationshipTypes.join(", ")}`);
+  }
+  const fixtures = await readJson("docs/maps/phase-1-fixtures.json");
+  if (!Array.isArray(fixtures.fixtures) || fixtures.fixtures.length < 3) {
+    throw new Error("maps phase-1 fixtures are incomplete");
+  }
+  if (JSON.stringify([...(fixtures.relationships ?? [])].sort()) !== JSON.stringify(expected)) {
+    throw new Error("maps phase-1 fixture relationships drift from the manifest");
+  }
+  for (const fixture of fixtures.fixtures) {
+    if (fixture.value?.schemaVersion !== 1) throw new Error(`${fixture.id}: schemaVersion must be 1`);
+  }
 }
 
 for (const name of ["declarative", "ui", "wasm-service"]) {

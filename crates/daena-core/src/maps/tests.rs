@@ -9,6 +9,51 @@ fn rejects_out_of_range_and_open_geometry() {
     )
     .is_err());
     assert!(anchor(&serde_json::json!({"kind":"path","points":[[0.1,0.1],[0.2,0.2]]})).is_ok());
+    assert!(point(&Point(1.1, 0.2))
+        .unwrap_err()
+        .to_string()
+        .contains("maps: invalid geometry:"));
+}
+
+#[test]
+fn validates_layers_only_on_map_entities() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection
+            .execute(
+                "CREATE TABLE entities (id TEXT PRIMARY KEY, entity_type TEXT, deleted INTEGER NOT NULL DEFAULT 0)",
+                [],
+            )
+            .unwrap();
+    connection
+            .execute(
+                "CREATE TABLE assets (id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, namespace TEXT NOT NULL)",
+                [],
+            )
+            .unwrap();
+    let map_id = Uuid::new_v4().to_string();
+    let place_id = Uuid::new_v4().to_string();
+    connection
+        .execute(
+            "INSERT INTO entities (id, entity_type) VALUES (?1, ?2), (?3, ?4)",
+            params![map_id, MAP_ENTITY_TYPE, place_id, "place"],
+        )
+        .unwrap();
+    let layers = serde_json::json!({
+        "schemaVersion": 1,
+        "layers": [{
+            "id": Uuid::new_v4(),
+            "name": "Political",
+            "order": 0,
+            "defaultVisible": true,
+            "style": {},
+            "selector": {}
+        }]
+    });
+    assert!(validate_field(&connection, &map_id, "layers", &layers).is_ok());
+    assert!(validate_field(&connection, &place_id, "layers", &layers)
+        .unwrap_err()
+        .to_string()
+        .contains("layers belong only on a map entity"));
 }
 
 #[test]

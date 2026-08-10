@@ -3892,6 +3892,9 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
         "maps.recovery.list" => (&["mapEntityId"], &[]),
         "maps.recovery.restore" => (&["mapEntityId", "fileName"], &[]),
         "maps.locations.list" => (&["mapEntityId"], &[]),
+        "maps.locations.upsert" => (&["entityId", "location"], &[]),
+        "maps.locations.unlink" => (&["entityId", "locationId"], &[]),
+        "maps.locations.create_and_link" => (&["name", "entityType", "location"], &[]),
         "maps.reconcile.links" => (&["mapEntityId"], &[]),
         "search.query" => (&["query"], &[]),
         "event.publish" => (&["type", "payload"], &[]),
@@ -4173,6 +4176,52 @@ fn dispatch_module_rpc(
             let map_entity_id = payload_string(&payload, "mapEntityId")?;
             serde_json::to_value(project.map_location_projection(map_entity_id)?)
                 .map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "maps.locations.upsert" => {
+            let entity_id = payload_string(&payload, "entityId")?;
+            let location = payload
+                .get("location")
+                .cloned()
+                .ok_or_else(|| CoreError::Validation("location is required".into()))?;
+            let location: daena_core::maps::LocationReference = serde_json::from_value(location)
+                .map_err(|error| CoreError::Validation(format!("invalid location: {error}")))?;
+            project.upsert_map_location(entity_id, location, request_id)?;
+            Ok(serde_json::Value::Null)
+        }
+        "maps.locations.unlink" => {
+            let entity_id = payload_string(&payload, "entityId")?;
+            let location_id = payload_string(&payload, "locationId")?;
+            project.unlink_map_location(entity_id, location_id, request_id)?;
+            Ok(serde_json::Value::Null)
+        }
+        "maps.locations.create_and_link" => {
+            let name = payload_string(&payload, "name")?;
+            let entity_type = payload_string(&payload, "entityType")?;
+            if entity_type == daena_core::maps::MAP_ENTITY_TYPE {
+                return Err(CoreError::Validation(
+                    "create_and_link cannot create map entities".into(),
+                ));
+            }
+            let location = payload
+                .get("location")
+                .cloned()
+                .ok_or_else(|| CoreError::Validation("location is required".into()))?;
+            let mut location: daena_core::maps::LocationReference =
+                serde_json::from_value(location)
+                    .map_err(|error| CoreError::Validation(format!("invalid location: {error}")))?;
+            let created = project.create_entry_with_request(
+                daena_core::CreateEntry {
+                    name,
+                    entity_type: Some(entity_type),
+                    document: None,
+                    fields: Vec::new(),
+                    relationships: Vec::new(),
+                },
+                request_id,
+            )?;
+            location.label = created.name.clone();
+            project.upsert_map_location(created.id.clone(), location, None)?;
+            serde_json::to_value(created).map_err(|error| CoreError::Validation(error.to_string()))
         }
         "maps.reconcile.links" => {
             let map_entity_id = payload_string(&payload, "mapEntityId")?;
@@ -5131,7 +5180,10 @@ async fn maps_navigation(
     if let Some((map_id, link)) = &outcome.emit {
         app.emit(
             "maps-navigation",
-            serde_json::json!({ "mapEntityId": map_id, "linkId": link }),
+            serde_json::json!({
+                "mapEntityId": map_id,
+                "linkId": link.as_ref().and_then(|value| value.as_str()),
+            }),
         )
         .map_err(|error| error.to_string())?;
     }
@@ -5161,7 +5213,10 @@ fn maps_navigation_service_handler(core: SharedCore) -> daena_plugin_host::Servi
         if let Some((map_id, link)) = &outcome.emit {
             let _ = app.emit(
                 "maps-navigation",
-                serde_json::json!({ "mapEntityId": map_id, "linkId": link }),
+                serde_json::json!({
+                    "mapEntityId": map_id,
+                    "linkId": link.as_ref().and_then(|value| value.as_str()),
+                }),
             );
         }
         outcome.result.map_err(HostError)
@@ -5194,6 +5249,19 @@ async fn maps_editor_capture_anchor(app: tauri::AppHandle) -> Result<(), String>
     webview
         .eval("window.daenaMapProvider && window.daenaMapProvider.captureSelection && window.daenaMapProvider.captureSelection()")
         .map_err(|error| format!("request map editor capture: {error}"))
+}
+
+/// Puts the open Maps child into one-shot pick mode. The next map click publishes
+/// `daena.maps/state@1` with status `pick-complete` (and the anchor in detail).
+#[tauri::command]
+async fn maps_editor_start_pick(app: tauri::AppHandle) -> Result<(), String> {
+    let label = plugin_window_label("daena.maps");
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| "the map editor is not open".to_string())?;
+    webview
+        .eval("window.daenaMapProvider && window.daenaMapProvider.startPick && window.daenaMapProvider.startPick()")
+        .map_err(|error| format!("request map editor pick: {error}"))
 }
 
 /// Pushes a semantic overlay frame into the open Maps child webview. The
@@ -5585,6 +5653,7 @@ pub fn run() {
             maps_navigation,
             maps_editor_save,
             maps_editor_capture_anchor,
+            maps_editor_start_pick,
             maps_editor_set_overlay,
             maps_editor_set_date,
             maps_editor_focus_link,

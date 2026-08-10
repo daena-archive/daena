@@ -464,6 +464,11 @@ the phase does not pass with undocumented global access.
 - Build full and incremental disposable-index projections and reverse lookup.
 - Add SDK/test-host types and conformance fixtures before building UI.
 
+Status: implemented 2026-08-10. Hierarchy UX, cycle breadcrumbs, and derived
+layer overlays remain Phase 5; this phase locks the domain contract, validation,
+projections, and fixtures (`docs/maps/phase-1-fixtures.json`,
+`npm run check:maps:phase1`).
+
 **Exit gate:** Canonical fixtures with multiple maps and multiple locations per
 entity round-trip byte-identically; malformed geometry and dangling live map
 references fail with stable diagnostics; deleting `.daena/` reconstructs

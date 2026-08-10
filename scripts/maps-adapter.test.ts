@@ -53,11 +53,29 @@ Deno.test("Maps bridge does not generate an FMG prompt after startup failure", a
   if (bridge.includes("window.daenaMapDiagnostic?.(error); if (!new URLSearchParams(location.search).get(\"mapEntityId\")) window.generateMapOnLoad?.()")) {
     throw new Error("startup failure still falls through to FMG generation");
   }
-  if (!bridge.includes('await rpc("asset.list", { entityId: map.id, namespace: "maps" })')) {
-    throw new Error("orphan repair asset.list must include maps namespace");
+  if (!bridge.includes("data-daena-link-open")) throw new Error("toolbar Link button is missing");
+  if (!bridge.includes("linkArming")) throw new Error("opt-in link arming is missing");
+  if (!bridge.includes("data-daena-link-x")) throw new Error("editable link coordinates are missing");
+  if (!bridge.includes("max-height:240px")) throw new Error("scrollable entity list is missing");
+  if (!bridge.includes("daena-link-chrome")) throw new Error("in-FMG link chrome is missing");
+  if (!bridge.includes("maps.locations.upsert")) throw new Error("link upsert RPC is missing");
+  if (!bridge.includes("maps.locations.create_and_link")) throw new Error("create-and-link RPC is missing");
+  if (!bridge.includes("startPick")) throw new Error("pick mode for entity-to-map linking is missing");
+  if (!bridge.includes("daena-save-chrome")) throw new Error("in-FMG save chrome is missing");
+  if (!bridge.includes("commitFirstSave")) throw new Error("first-save name commit is missing");
+  if (!bridge.includes('rpc("entity.create"')) throw new Error("draft first-save must create the map entity");
+  if (!bridge.includes("showNameForm") || !bridge.includes("data-daena-name-form")) {
+    throw new Error("first-save in-overlay name form is missing");
   }
-  if (!bridge.includes("if (!mapAsset) { await window.generateMapOnLoad?.(); return; }")) {
-    throw new Error("empty-map generation path changed unexpectedly");
+  if (/\bwindow\.prompt\s*\(/.test(bridge)) {
+    throw new Error("first-save must not call window.prompt in the plugin webview");
+  }
+  if (bridge.includes("fields: [{ namespace: \"maps\", key: \"map\"")) {
+    throw new Error("first-save must not pass object map descriptors through entity.create fields");
+  }
+  if (!bridge.includes("requestSave")) throw new Error("unified save entrypoint is missing");
+  if (bridge.includes("if (!mapAsset) { await window.generateMapOnLoad?.(); return; }")) {
+    throw new Error("draft maps must not early-return before wiring the provider");
   }
   if (!bridge.includes("waitForUploadedPack") || !bridge.includes('"routes" in window.pack.cells')) {
     throw new Error("saved-map load must wait for pack.cells.routes before prepareMapData");

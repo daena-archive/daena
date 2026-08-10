@@ -383,6 +383,37 @@ pub struct MapsLocationsListPayload {
     pub map_entity_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsLocationsUpsertPayload {
+    #[serde(rename = "entityId")]
+    pub entity_id: String,
+    /// Canonical `LocationReference` JSON. Validated by core on write.
+    pub location: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsLocationsUnlinkPayload {
+    #[serde(rename = "entityId")]
+    pub entity_id: String,
+    #[serde(rename = "locationId")]
+    pub location_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsLocationsCreateAndLinkPayload {
+    pub name: String,
+    #[serde(rename = "entityType")]
+    pub entity_type: String,
+    /// Canonical `LocationReference` JSON. Validated by core on write.
+    pub location: Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]

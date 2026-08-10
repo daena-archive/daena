@@ -377,8 +377,21 @@ export interface MapsAssetCreateCommitPayload {
     contentHash: string;
     handle: string;
 }
+export interface MapsLocationsCreateAndLinkPayload {
+    entityType: string;
+    location: unknown;
+    name: string;
+}
 export interface MapsLocationsListPayload {
     mapEntityId: string;
+}
+export interface MapsLocationsUnlinkPayload {
+    entityId: string;
+    locationId: string;
+}
+export interface MapsLocationsUpsertPayload {
+    entityId: string;
+    location: unknown;
 }
 export interface MapsReconcileLinksPayload {
     mapEntityId: string;
@@ -449,7 +462,10 @@ export interface BrokerMethodPayloads {
     "field.set": FieldSetPayload;
     "maps.asset.create.begin": MapsAssetCreateBeginPayload;
     "maps.asset.create.commit": MapsAssetCreateCommitPayload;
+    "maps.locations.create_and_link": MapsLocationsCreateAndLinkPayload;
     "maps.locations.list": MapsLocationsListPayload;
+    "maps.locations.unlink": MapsLocationsUnlinkPayload;
+    "maps.locations.upsert": MapsLocationsUpsertPayload;
     "maps.reconcile.links": MapsReconcileLinksPayload;
     "maps.recovery.export.begin": MapsRecoveryExportBeginPayload;
     "maps.recovery.export.commit": MapsRecoveryExportCommitPayload;

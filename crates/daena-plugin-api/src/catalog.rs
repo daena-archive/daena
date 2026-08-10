@@ -368,6 +368,24 @@ pub const RPC_METHOD_CATALOG: &[RpcMethodDef] = &[
         capability: RpcCapability::Static(&["asset.read:self"]),
     },
     RpcMethodDef {
+        name: "maps.locations.upsert",
+        payload_schema: "MapsLocationsUpsertPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["field.write:self"]),
+    },
+    RpcMethodDef {
+        name: "maps.locations.unlink",
+        payload_schema: "MapsLocationsUnlinkPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["field.write:self"]),
+    },
+    RpcMethodDef {
+        name: "maps.locations.create_and_link",
+        payload_schema: "MapsLocationsCreateAndLinkPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["entity.write", "field.write:self"]),
+    },
+    RpcMethodDef {
         name: "maps.reconcile.links",
         payload_schema: "MapsReconcileLinksPayload",
         requires_revision: false,

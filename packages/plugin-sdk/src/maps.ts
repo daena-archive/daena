@@ -1,6 +1,19 @@
 /** Provider-neutral Maps domain types. Provider-specific selectors stay opaque. */
 export type NormalizedPoint = readonly [number, number];
 
+export const MAP_ENTITY_TYPE = "daena.maps:map" as const;
+export const MAP_NAMESPACE = "maps" as const;
+export const FMG_PROVIDER = "azgaar-fmg" as const;
+
+/** Hierarchy relationship types owned by `daena.maps`. */
+export const MAP_RELATIONSHIP = {
+  DETAIL_MAP: "daena.maps:detail-map",
+  OVERVIEW_MAP: "daena.maps:overview-map",
+  RELATED_MAP: "daena.maps:related-map",
+} as const;
+
+export type MapRelationshipType = (typeof MAP_RELATIONSHIP)[keyof typeof MAP_RELATIONSHIP];
+
 export type MapAnchor =
   | { kind: "point"; point: NormalizedPoint }
   | { kind: "provider-feature"; provider: string; featureKind: string; featureId: string; fallbackPoint: NormalizedPoint }

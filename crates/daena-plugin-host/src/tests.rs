@@ -310,6 +310,24 @@ fn first_party_bundled_bootstrap_grants_declared_capabilities() {
             .cloned()
             .collect::<BTreeSet<_>>()
     );
+    let relationship_types = host
+        .catalog
+        .get("daena.maps")
+        .unwrap()
+        .manifest
+        .schemas
+        .iter()
+        .flat_map(|schema| schema.fields.iter())
+        .filter_map(|field| field.relationship_type.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        relationship_types,
+        BTreeSet::from([
+            "daena.maps:detail-map".into(),
+            "daena.maps:overview-map".into(),
+            "daena.maps:related-map".into()
+        ])
+    );
 
     // Third-party publishers still default to deny-all without consent.
     host.catalog
@@ -866,12 +884,37 @@ fn maps_locations_and_reconcile_are_authorized_for_read_capability() {
             "{method} should be denied without asset.read:self"
         );
     }
+    for method in ["maps.locations.upsert", "maps.locations.unlink"] {
+        let denied = RpcRequest {
+            rpc_version: 1,
+            session_id: session.id.clone(),
+            request_id: "maps-write".into(),
+            method: method.into(),
+            payload: serde_json::json!({
+                "entityId": "e1",
+                "locationId": "l1",
+                "location": {
+                    "id": "l1",
+                    "mapEntityId": "map-1",
+                    "role": "story-location",
+                    "label": "Harbor",
+                    "anchor": { "kind": "point", "point": [0.5, 0.5] },
+                    "validity": { "from": null, "to": null }
+                }
+            }),
+        };
+        assert_eq!(
+            host.rpc("plugin://one", &denied).error.unwrap().code,
+            "capability.denied",
+            "{method} should be denied without field.write:self"
+        );
+    }
     host.grants
         .set(
             "project",
             "com.example.one",
-            &["asset.read:self".into()],
-            ["asset.read:self".into()]
+            &["asset.read:self".into(), "field.write:self".into()],
+            ["asset.read:self".into(), "field.write:self".into()]
                 .into_iter()
                 .collect::<std::collections::BTreeSet<String>>(),
         )
@@ -891,6 +934,33 @@ fn maps_locations_and_reconcile_are_authorized_for_read_capability() {
         assert!(
             response.ok,
             "{method} should authorize with asset.read:self, got: {:?}",
+            response.error.as_ref().map(|error| error.code.clone())
+        );
+        assert_eq!(response.error, None);
+    }
+    for method in ["maps.locations.upsert", "maps.locations.unlink"] {
+        let granted = RpcRequest {
+            rpc_version: 1,
+            session_id: session.id.clone(),
+            request_id: "maps-write".into(),
+            method: method.into(),
+            payload: serde_json::json!({
+                "entityId": "e1",
+                "locationId": "l1",
+                "location": {
+                    "id": "l1",
+                    "mapEntityId": "map-1",
+                    "role": "story-location",
+                    "label": "Harbor",
+                    "anchor": { "kind": "point", "point": [0.5, 0.5] },
+                    "validity": { "from": null, "to": null }
+                }
+            }),
+        };
+        let response = host.rpc("plugin://one", &granted);
+        assert!(
+            response.ok,
+            "{method} should authorize with field.write:self, got: {:?}",
             response.error.as_ref().map(|error| error.code.clone())
         );
         assert_eq!(response.error, None);

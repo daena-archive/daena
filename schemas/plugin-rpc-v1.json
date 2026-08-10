@@ -612,6 +612,26 @@
       ],
       "type": "object"
     },
+    "MapsLocationsCreateAndLinkPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "entityType": {
+          "type": "string"
+        },
+        "location": {
+          "description": "Canonical `LocationReference` JSON. Validated by core on write."
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "entityType",
+        "location",
+        "name"
+      ],
+      "type": "object"
+    },
     "MapsLocationsListPayload": {
       "additionalProperties": false,
       "properties": {
@@ -621,6 +641,38 @@
       },
       "required": [
         "mapEntityId"
+      ],
+      "type": "object"
+    },
+    "MapsLocationsUnlinkPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "entityId": {
+          "type": "string"
+        },
+        "locationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "entityId",
+        "locationId"
+      ],
+      "type": "object"
+    },
+    "MapsLocationsUpsertPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "entityId": {
+          "type": "string"
+        },
+        "location": {
+          "description": "Canonical `LocationReference` JSON. Validated by core on write."
+        }
+      },
+      "required": [
+        "entityId",
+        "location"
       ],
       "type": "object"
     },
@@ -1313,6 +1365,54 @@
           "if": {
             "properties": {
               "method": {
+                "const": "maps.locations.upsert"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/MapsLocationsUpsertPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "maps.locations.unlink"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/MapsLocationsUnlinkPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "maps.locations.create_and_link"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/MapsLocationsCreateAndLinkPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
                 "const": "maps.reconcile.links"
               }
             }
@@ -1500,6 +1600,9 @@
             "maps.recovery.restore",
             "maps.recovery.list",
             "maps.locations.list",
+            "maps.locations.upsert",
+            "maps.locations.unlink",
+            "maps.locations.create_and_link",
             "maps.reconcile.links",
             "event.publish",
             "event.subscribe",
@@ -1757,8 +1860,20 @@
       "payload": "MapsAssetCreateCommitPayload",
       "requestId": "envelope"
     },
+    "maps.locations.create_and_link": {
+      "payload": "MapsLocationsCreateAndLinkPayload",
+      "requestId": "envelope"
+    },
     "maps.locations.list": {
       "payload": "MapsLocationsListPayload",
+      "requestId": "envelope"
+    },
+    "maps.locations.unlink": {
+      "payload": "MapsLocationsUnlinkPayload",
+      "requestId": "envelope"
+    },
+    "maps.locations.upsert": {
+      "payload": "MapsLocationsUpsertPayload",
       "requestId": "envelope"
     },
     "maps.reconcile.links": {

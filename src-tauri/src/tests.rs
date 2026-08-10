@@ -1169,13 +1169,27 @@ fn bundled_maps_shell_is_deterministic_and_provider_fail_closed() {
     assert!(bridge_body.contains("metadata.size === 0"));
     assert!(bridge_body.contains("daena-map-diagnostic"));
     assert!(bridge_body.contains("asset.replace.commit"));
-    assert!(bridge_body.contains("if (!mapAsset) { await window.generateMapOnLoad?.(); return; }"));
     assert!(bridge_body.contains("waitForUploadedPack"));
     assert!(bridge_body.contains(r#"asset.list", { entityId: map.id, namespace: "maps" }"#));
     assert!(bridge_body.contains("Daena Maps provider startup failed"));
     assert!(bridge_body.contains("document.body.appendChild(overlayRoot)"));
     assert!(bridge_body.contains("position:fixed;inset:0"));
     assert!(!bridge_body.contains("host.style.position"));
+    assert!(bridge_body.contains("daena-save-chrome"));
+    assert!(bridge_body.contains("commitFirstSave"));
+    assert!(bridge_body.contains("data-daena-link-open"));
+    assert!(bridge_body.contains("linkArming"));
+    assert!(bridge_body.contains("data-daena-link-x"));
+    assert!(bridge_body.contains("daena-link-chrome"));
+    assert!(bridge_body.contains("maps.locations.upsert"));
+    assert!(bridge_body.contains("maps.locations.create_and_link"));
+    assert!(bridge_body.contains("startPick"));
+    assert!(bridge_body.contains("showNameForm"));
+    assert!(bridge_body.contains("data-daena-name-form"));
+    assert!(!bridge_body.contains("promptMapName"));
+    assert!(bridge_body.contains(r#"rpc("entity.create""#));
+    assert!(!bridge_body.contains(r#"fields: [{ namespace: "maps", key: "map""#));
+    assert!(!bridge_body.contains("if (!mapAsset) { await window.generateMapOnLoad?.(); return; }"));
 
     let bootstrap = tauri::http::Request::builder()
         .uri("plugin://daena.maps/dist/ui/fmg/daena-inline-bootstrap.js")

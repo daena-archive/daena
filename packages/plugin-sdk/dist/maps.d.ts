@@ -1,5 +1,15 @@
 /** Provider-neutral Maps domain types. Provider-specific selectors stay opaque. */
 export type NormalizedPoint = readonly [number, number];
+export declare const MAP_ENTITY_TYPE: "daena.maps:map";
+export declare const MAP_NAMESPACE: "maps";
+export declare const FMG_PROVIDER: "azgaar-fmg";
+/** Hierarchy relationship types owned by `daena.maps`. */
+export declare const MAP_RELATIONSHIP: {
+    readonly DETAIL_MAP: "daena.maps:detail-map";
+    readonly OVERVIEW_MAP: "daena.maps:overview-map";
+    readonly RELATED_MAP: "daena.maps:related-map";
+};
+export type MapRelationshipType = (typeof MAP_RELATIONSHIP)[keyof typeof MAP_RELATIONSHIP];
 export type MapAnchor = {
     kind: "point";
     point: NormalizedPoint;

@@ -18,6 +18,7 @@
     "precheck:manifest-fixtures": "npm run gen:manifest-fixtures",
     "check:manifest-fixtures": "npm run build:plugin-sdk && node scripts/validate-manifest-fixtures.mjs && node scripts/check-manifest-fixtures-drift.mjs",
     "check:maps:phase0": "node scripts/fmg-phase0-check.mjs",
+    "check:maps:phase1": "node scripts/maps-phase1-fixtures.test.mjs",
     "prepare:maps": "node scripts/ensure-fmg-archive.mjs",
     "check:plugin-isolation": "node scripts/check-plugin-isolation.mjs",
     "build:plugin-sdk": "tsc -p packages/plugin-sdk/tsconfig.json",

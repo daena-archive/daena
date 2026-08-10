@@ -10,8 +10,8 @@
   },
   "archive": {
     "path": "src-tauri/plugin-assets/maps/fmg-v1.119.zip",
-    "sha256": "c19a6a96e885fa93559cac05c9f322d3a930de7becbb84a19f19632ac8529e2d",
-    "uncompressedBytes": 24477236
+    "sha256": "72d34508870fe701cb2f83b704a03622550822c0f5776cbc303bd77785aaaa32",
+    "uncompressedBytes": 24505419
   },
   "build": {
     "node": "26.6.0",
@@ -38,6 +38,7 @@
     "same-origin /__asset transfer URLs for https-scheme plugin webviews",
     "await FMG uploadMap parse via pack-cells poll before hiding loading",
     "await uploadMap parse until pack.cells.routes exists before prepareMapData",
-    "maps bridge: host semantic overlay on body so #map stays position:absolute and FMG options stay top-left"
+    "maps bridge: host semantic overlay on body so #map stays position:absolute and FMG options stay top-left",
+    "maps bridge: draft open with in-FMG save overlay and deferred entity create until named save"
   ]
 }

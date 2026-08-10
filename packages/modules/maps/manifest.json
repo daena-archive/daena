@@ -18,7 +18,10 @@
     "fields": [
       { "key": "map", "label": "Map descriptor", "type": "text", "entityTypes": ["daena.maps:map"] },
       { "key": "locations", "label": "Location references", "type": "text" },
-      { "key": "layers", "label": "Semantic layer definitions", "type": "text", "entityTypes": ["daena.maps:map"] }
+      { "key": "layers", "label": "Semantic layer definitions", "type": "text", "entityTypes": ["daena.maps:map"] },
+      { "key": "detailMap", "label": "Detail map", "type": "relationship", "relationshipType": "daena.maps:detail-map", "targetEntityTypes": ["daena.maps:map"] },
+      { "key": "overviewMap", "label": "Overview map", "type": "relationship", "relationshipType": "daena.maps:overview-map", "targetEntityTypes": ["daena.maps:map"] },
+      { "key": "relatedMap", "label": "Related map", "type": "relationship", "relationshipType": "daena.maps:related-map", "targetEntityTypes": ["daena.maps:map"] }
     ]
   }],
   "templates": [{ "id": "map", "name": "Map", "entityType": "daena.maps:map", "fields": { "map": null } }],

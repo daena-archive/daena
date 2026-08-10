@@ -8,6 +8,9 @@ use uuid::Uuid;
 pub const MAP_ENTITY_TYPE: &str = "daena.maps:map";
 pub const MAP_NAMESPACE: &str = "maps";
 pub const FMG_PROVIDER: &str = "azgaar-fmg";
+pub const DETAIL_MAP_RELATIONSHIP: &str = "daena.maps:detail-map";
+pub const OVERVIEW_MAP_RELATIONSHIP: &str = "daena.maps:overview-map";
+pub const RELATED_MAP_RELATIONSHIP: &str = "daena.maps:related-map";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -115,7 +118,7 @@ fn point(point: &Point) -> Result<(), CoreError> {
         || !(0.0..=1.0).contains(&point.1)
     {
         return Err(invalid(
-            "coordinates must be finite normalized values in [0, 1]",
+            "invalid geometry: coordinates must be finite normalized values in [0, 1]",
         ));
     }
     Ok(())
@@ -216,7 +219,9 @@ fn anchor(value: &Value) -> Result<Anchor, CoreError> {
         }
         Anchor::Path { points } => {
             if points.len() < 2 {
-                return Err(invalid("path requires at least two points"));
+                return Err(invalid(
+                    "invalid geometry: path requires at least two points",
+                ));
             }
             for p in points {
                 point(p)?;
@@ -224,12 +229,14 @@ fn anchor(value: &Value) -> Result<Anchor, CoreError> {
         }
         Anchor::Area { rings } => {
             if rings.is_empty() {
-                return Err(invalid("area requires at least one ring"));
+                return Err(invalid(
+                    "invalid geometry: area requires at least one ring",
+                ));
             }
             for ring in rings {
                 if ring.len() < 4 || ring.first() != ring.last() {
                     return Err(invalid(
-                        "area rings must be closed and contain at least four points",
+                        "invalid geometry: area rings must be closed and contain at least four points",
                     ));
                 }
                 for p in ring {
@@ -325,7 +332,7 @@ pub fn validate_field(
             }
             let map_provider: Option<String> = connection.query_row("SELECT json_extract(value, '$.provider.id') FROM entity_fields WHERE entity_id=?1 AND namespace=?2 AND key='map'", [&location.map_entity_id, MAP_NAMESPACE], |row| row.get(0)).optional().map_err(CoreError::from)?;
             if map_provider.is_none() {
-                return Err(invalid("location references a missing or non-map entity"));
+                return Err(invalid("dangling map reference"));
             }
             if location.role.trim().is_empty()
                 || location.role.len() > 128
@@ -349,6 +356,9 @@ pub fn validate_field(
         }
         Ok(())
     } else if key == "layers" {
+        if entity_type.as_deref() != Some(MAP_ENTITY_TYPE) {
+            return Err(invalid("layers belong only on a map entity"));
+        }
         let object = value
             .as_object()
             .ok_or_else(|| invalid("layers must be an object"))?;

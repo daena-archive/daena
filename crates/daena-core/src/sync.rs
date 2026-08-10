@@ -402,6 +402,7 @@ pub(crate) fn hash_path(root: &Path, relative: &str) -> Result<Option<String>, C
     hash_file(&normalized_project_path(root, relative)?)
 }
 
+#[cfg(not(windows))]
 fn sync_directory(path: &Path) -> Result<(), CoreError> {
     let directory = File::open(path).map_err(|source| CoreError::Io {
         operation: "open sync directory",
@@ -411,6 +412,11 @@ fn sync_directory(path: &Path) -> Result<(), CoreError> {
         operation: "sync portable parent directory",
         source,
     })
+}
+
+#[cfg(windows)]
+fn sync_directory(_path: &Path) -> Result<(), CoreError> {
+    Ok(())
 }
 
 fn lock_is_stale(path: &Path) -> bool {

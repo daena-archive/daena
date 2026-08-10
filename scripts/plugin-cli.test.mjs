@@ -28,18 +28,27 @@ try {
     execFileSync("node", [cli, "validate", join(workspace, "examples/plugins", example)], { stdio: "pipe" });
   }
   const unsafeArchive = join(temporary, "unsafe.wbplugin");
-  writeFileSync(unsafeArchive, createZipArchive([
-    { name: "manifest.json", data: "{}" },
-    { name: "MANIFEST.json", data: "{}" },
-  ]));
-  assert.throws(() => execFileSync("node", [cli, "validate", unsafeArchive], { stdio: "pipe" }), /duplicate|case-colliding/i);
+  writeFileSync(
+    unsafeArchive,
+    createZipArchive([
+      { name: "manifest.json", data: "{}" },
+      { name: "MANIFEST.json", data: "{}" },
+    ]),
+  );
+  assert.throws(
+    () => execFileSync("node", [cli, "validate", unsafeArchive], { stdio: "pipe" }),
+    /duplicate|case-colliding/i,
+  );
   const shapeOnly = join(temporary, "shape-only");
   cpSync(join(workspace, "examples/plugins/declarative"), shapeOnly, { recursive: true });
   const shapeManifest = JSON.parse(readFileSync(join(shapeOnly, "manifest.json"), "utf8"));
   shapeManifest.schemas[0].fields[0].options = "not-an-array";
   shapeManifest.templates[0].fields = {};
   writeFileSync(join(shapeOnly, "manifest.json"), `${JSON.stringify(shapeManifest, null, 2)}\n`);
-  assert.throws(() => execFileSync("node", [cli, "validate", shapeOnly], { stdio: "pipe" }), /schema:\/schemas\/0\/fields\/0\/options/);
+  assert.throws(
+    () => execFileSync("node", [cli, "validate", shapeOnly], { stdio: "pipe" }),
+    /schema:\/schemas\/0\/fields\/0\/options/,
+  );
   const ecosystemNames = join(temporary, "ecosystem-names");
   cpSync(join(workspace, "examples/plugins/declarative"), ecosystemNames, { recursive: true });
   const ecosystemManifest = JSON.parse(readFileSync(join(ecosystemNames, "manifest.json"), "utf8"));

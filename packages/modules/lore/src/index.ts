@@ -1,5 +1,10 @@
 import type { Core, ElementDefinition, NodeSingular } from "cytoscape";
-import { type EntitySummary, type ModuleContext, type DaenaModule, type Relationship } from "../../../module-api/src/index";
+import {
+  type EntitySummary,
+  type ModuleContext,
+  type DaenaModule,
+  type Relationship,
+} from "../../../module-api/src/index";
 import type { ModuleManifest } from "../../../module-api/src/index";
 import manifestJson from "../manifest.json";
 
@@ -15,20 +20,25 @@ function hslToHex(hue: number, saturation: number, lightness: number) {
   const chroma = (1 - Math.abs(2 * lightness - 1)) * saturation;
   const segment = hue / 60;
   const second = chroma * (1 - Math.abs((segment % 2) - 1));
-  const [red, green, blue] = segment < 1
-    ? [chroma, second, 0]
-    : segment < 2
-      ? [second, chroma, 0]
-      : segment < 3
-        ? [0, chroma, second]
-        : segment < 4
-          ? [0, second, chroma]
-          : segment < 5
-            ? [second, 0, chroma]
-            : [chroma, 0, second];
-  const match = lightness - (chroma / 2);
+  const [red, green, blue] =
+    segment < 1
+      ? [chroma, second, 0]
+      : segment < 2
+        ? [second, chroma, 0]
+        : segment < 3
+          ? [0, chroma, second]
+          : segment < 4
+            ? [0, second, chroma]
+            : segment < 5
+              ? [second, 0, chroma]
+              : [chroma, 0, second];
+  const match = lightness - chroma / 2;
   return `#${[red, green, blue]
-    .map((channel) => Math.round((channel + match) * 255).toString(16).padStart(2, "0"))
+    .map((channel) =>
+      Math.round((channel + match) * 255)
+        .toString(16)
+        .padStart(2, "0"),
+    )
     .join("")}`;
 }
 
@@ -43,10 +53,7 @@ function colorsForHue(hue: number): NodeColors {
 function colorsForTypes(types: Iterable<string>): Map<string, NodeColors> {
   const uniqueTypes = [...new Set(types)].sort();
   const count = Math.max(uniqueTypes.length, 1);
-  return new Map(uniqueTypes.map((type, index) => [
-    type,
-    colorsForHue((24 + (index * 360) / count) % 360),
-  ]));
+  return new Map(uniqueTypes.map((type, index) => [type, colorsForHue((24 + (index * 360) / count) % 360)]));
 }
 
 function createGraphStyles(): HTMLStyleElement {
@@ -99,7 +106,10 @@ function stablePositions(entities: EntitySummary[]): Map<string, { x: number; y:
 }
 
 function separateOverlappingNodes(graph: Core) {
-  const nodes = graph.nodes().toArray().sort((left, right) => left.id().localeCompare(right.id()));
+  const nodes = graph
+    .nodes()
+    .toArray()
+    .sort((left, right) => left.id().localeCompare(right.id()));
   const gap = 36;
 
   for (let pass = 0; pass < 32; pass += 1) {
@@ -116,10 +126,14 @@ function separateOverlappingNodes(graph: Core) {
 
         const firstPosition = first.position();
         const secondPosition = second.position();
-        const horizontalDirection = secondPosition.x > firstPosition.x ||
-          (secondPosition.x === firstPosition.x && secondIndex % 2 === 0) ? 1 : -1;
-        const verticalDirection = secondPosition.y > firstPosition.y ||
-          (secondPosition.y === firstPosition.y && secondIndex % 2 === 0) ? 1 : -1;
+        const horizontalDirection =
+          secondPosition.x > firstPosition.x || (secondPosition.x === firstPosition.x && secondIndex % 2 === 0)
+            ? 1
+            : -1;
+        const verticalDirection =
+          secondPosition.y > firstPosition.y || (secondPosition.y === firstPosition.y && secondIndex % 2 === 0)
+            ? 1
+            : -1;
         if (overlapX <= overlapY) {
           const shift = overlapX / 2;
           first.position({ x: firstPosition.x - horizontalDirection * shift, y: firstPosition.y });
@@ -173,7 +187,13 @@ function isGraphNode(value: NodeSingular | EntitySummary): value is NodeSingular
   return typeof (value as NodeSingular).id === "function";
 }
 
-function renderSelection(details: HTMLElement, nodeOrEntity: NodeSingular | EntitySummary, entities: Map<string, EntitySummary>, relationships: Relationship[], context: ModuleContext) {
+function renderSelection(
+  details: HTMLElement,
+  nodeOrEntity: NodeSingular | EntitySummary,
+  entities: Map<string, EntitySummary>,
+  relationships: Relationship[],
+  context: ModuleContext,
+) {
   const entity = isGraphNode(nodeOrEntity) ? entities.get(nodeOrEntity.id()) : nodeOrEntity;
   if (!entity) return;
   const connected = relationships
@@ -227,231 +247,246 @@ async function showOnMap(context: ModuleContext, entityId: string) {
     }
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause);
-    if (message.includes("not-on-map") || message.includes("link-unresolved") || message.includes("map-unavailable") || message.includes("forbidden") || message.includes("denied")) return;
+    if (
+      message.includes("not-on-map") ||
+      message.includes("link-unresolved") ||
+      message.includes("map-unavailable") ||
+      message.includes("forbidden") ||
+      message.includes("denied")
+    )
+      return;
     console.error("show on map failed", cause);
   }
 }
 
 export const lore: DaenaModule = {
   manifest,
-  views: [{
-    id: "lore-entities",
-    title: "Lore Entries",
-    mount: (element: HTMLElement, context: ModuleContext) => {
-      let cancelled = false;
-      let graph: Core | null = null;
-      const style = createGraphStyles();
-      const render = async () => {
-        const entities = (await context.entities.list()).sort(compareEntities);
-        const relationships = (await Promise.all(entities.map((entity) => context.relationships.list(entity.id))))
-          .flat()
-          .filter((relationship, index, all) => all.findIndex((candidate) => candidate.id === relationship.id) === index)
-          .filter((relationship) => entities.some((entity) => entity.id === relationship.sourceId) && entities.some((entity) => entity.id === relationship.targetId))
-          .sort((left, right) => left.id.localeCompare(right.id));
-        if (cancelled) return;
+  views: [
+    {
+      id: "lore-entities",
+      title: "Lore Entries",
+      mount: (element: HTMLElement, context: ModuleContext) => {
+        let cancelled = false;
+        let graph: Core | null = null;
+        const style = createGraphStyles();
+        const render = async () => {
+          const entities = (await context.entities.list()).sort(compareEntities);
+          const relationships = (await Promise.all(entities.map((entity) => context.relationships.list(entity.id))))
+            .flat()
+            .filter(
+              (relationship, index, all) => all.findIndex((candidate) => candidate.id === relationship.id) === index,
+            )
+            .filter(
+              (relationship) =>
+                entities.some((entity) => entity.id === relationship.sourceId) &&
+                entities.some((entity) => entity.id === relationship.targetId),
+            )
+            .sort((left, right) => left.id.localeCompare(right.id));
+          if (cancelled) return;
 
-        element.replaceChildren();
-        element.className = "projection-graph";
-        const shell = document.createElement("div");
-        shell.className = "lore-graph-shell";
-        const header = document.createElement("div");
-        header.className = "projection-header";
-        const heading = document.createElement("h3");
-        heading.textContent = "World graph";
-        const summary = document.createElement("small");
-        summary.textContent = `${entities.length} entities · ${relationships.length} links`;
-        header.append(heading, summary);
-        shell.append(style, header);
+          element.replaceChildren();
+          element.className = "projection-graph";
+          const shell = document.createElement("div");
+          shell.className = "lore-graph-shell";
+          const header = document.createElement("div");
+          header.className = "projection-header";
+          const heading = document.createElement("h3");
+          heading.textContent = "World graph";
+          const summary = document.createElement("small");
+          summary.textContent = `${entities.length} entities · ${relationships.length} links`;
+          header.append(heading, summary);
+          shell.append(style, header);
 
-        if (entities.length === 0) {
-          const empty = document.createElement("p");
-          empty.className = "lore-graph-empty";
-          empty.textContent = "No entities yet.";
-          shell.append(empty);
+          if (entities.length === 0) {
+            const empty = document.createElement("p");
+            empty.className = "lore-graph-empty";
+            empty.textContent = "No entities yet.";
+            shell.append(empty);
+            element.append(shell);
+            return;
+          }
+
+          const toolbar = document.createElement("div");
+          toolbar.className = "lore-graph-toolbar";
+          const legend = document.createElement("div");
+          legend.className = "lore-graph-legend";
+          const typeNames = [...new Set(entities.map((entity) => displayType(entity.type)))].sort();
+          const colorsByType = colorsForTypes(typeNames);
+          for (const type of typeNames) {
+            const legendItem = document.createElement("span");
+            legendItem.className = "lore-graph-legend-item";
+            const swatch = document.createElement("span");
+            swatch.className = "lore-graph-legend-swatch";
+            const colors = colorsByType.get(type)!;
+            swatch.style.color = colors.border;
+            swatch.style.background = colors.fill;
+            const label = document.createElement("span");
+            label.textContent = type;
+            legendItem.append(swatch, label);
+            legend.append(legendItem);
+          }
+          const actions = document.createElement("div");
+          actions.className = "lore-graph-toolbar-actions";
+          const fitButton = document.createElement("button");
+          fitButton.type = "button";
+          fitButton.textContent = "Fit graph";
+          const layoutButton = document.createElement("button");
+          layoutButton.type = "button";
+          layoutButton.textContent = "Rearrange";
+          actions.append(fitButton, layoutButton);
+          toolbar.append(legend, actions);
+          shell.append(toolbar);
+
+          const canvas = document.createElement("div");
+          canvas.className = "lore-graph-canvas";
+          shell.append(canvas);
+          const details = document.createElement("div");
+          details.className = "lore-graph-details";
+          const hint = document.createElement("small");
+          hint.textContent = "Hover or select an entity to inspect its connections.";
+          details.append(hint);
+          shell.append(details);
           element.append(shell);
-          return;
-        }
 
-        const toolbar = document.createElement("div");
-        toolbar.className = "lore-graph-toolbar";
-        const legend = document.createElement("div");
-        legend.className = "lore-graph-legend";
-        const typeNames = [...new Set(entities.map((entity) => displayType(entity.type)))].sort();
-        const colorsByType = colorsForTypes(typeNames);
-        for (const type of typeNames) {
-          const legendItem = document.createElement("span");
-          legendItem.className = "lore-graph-legend-item";
-          const swatch = document.createElement("span");
-          swatch.className = "lore-graph-legend-swatch";
-          const colors = colorsByType.get(type)!;
-          swatch.style.color = colors.border;
-          swatch.style.background = colors.fill;
-          const label = document.createElement("span");
-          label.textContent = type;
-          legendItem.append(swatch, label);
-          legend.append(legendItem);
-        }
-        const actions = document.createElement("div");
-        actions.className = "lore-graph-toolbar-actions";
-        const fitButton = document.createElement("button");
-        fitButton.type = "button";
-        fitButton.textContent = "Fit graph";
-        const layoutButton = document.createElement("button");
-        layoutButton.type = "button";
-        layoutButton.textContent = "Rearrange";
-        actions.append(fitButton, layoutButton);
-        toolbar.append(legend, actions);
-        shell.append(toolbar);
-
-        const canvas = document.createElement("div");
-        canvas.className = "lore-graph-canvas";
-        shell.append(canvas);
-        const details = document.createElement("div");
-        details.className = "lore-graph-details";
-        const hint = document.createElement("small");
-        hint.textContent = "Hover or select an entity to inspect its connections.";
-        details.append(hint);
-        shell.append(details);
-        element.append(shell);
-
-        const entityMap = new Map(entities.map((entity) => [entity.id, entity]));
-        const positions = stablePositions(entities);
-        const { default: createCytoscape } = await import("cytoscape");
-        if (cancelled) return;
-        const layout = {
-          name: relationships.length > 0 ? "cose" as const : "grid" as const,
-          animate: false,
-          fit: false,
-          padding: 72,
-          randomize: false,
-          avoidOverlap: true,
-          nodeDimensionsIncludeLabels: true,
-          componentSpacing: 88,
-          nodeRepulsion: 18000,
-          nodeOverlap: 56,
-          idealEdgeLength: 340,
-          edgeElasticity: 0.18,
-          gravity: 0.55,
-          numIter: 3000,
-        };
-        graph = createCytoscape({
-          container: canvas,
-          elements: graphElements(entities, relationships, positions, colorsByType),
-          minZoom: 0.25,
-          maxZoom: 3,
-          wheelSensitivity: 0.18,
-          style: [
-            {
-              selector: "node",
-              style: {
-                "background-color": "data(fill)",
-                "border-color": "data(border)",
-                "border-width": 2,
-                color: "data(text)",
-                label: "data(label)",
-                "font-family": "Inter, ui-sans-serif, system-ui, sans-serif",
-                "font-size": 11,
-                "font-weight": 600,
-                "text-wrap": "ellipsis",
-                "text-max-width": "112px",
-                "text-valign": "center",
-                "text-halign": "center",
-                width: "label",
-                height: 34,
-                padding: "10px",
-                shape: "round-rectangle",
-                "overlay-opacity": 0,
+          const entityMap = new Map(entities.map((entity) => [entity.id, entity]));
+          const positions = stablePositions(entities);
+          const { default: createCytoscape } = await import("cytoscape");
+          if (cancelled) return;
+          const layout = {
+            name: relationships.length > 0 ? ("cose" as const) : ("grid" as const),
+            animate: false,
+            fit: false,
+            padding: 72,
+            randomize: false,
+            avoidOverlap: true,
+            nodeDimensionsIncludeLabels: true,
+            componentSpacing: 88,
+            nodeRepulsion: 18000,
+            nodeOverlap: 56,
+            idealEdgeLength: 340,
+            edgeElasticity: 0.18,
+            gravity: 0.55,
+            numIter: 3000,
+          };
+          graph = createCytoscape({
+            container: canvas,
+            elements: graphElements(entities, relationships, positions, colorsByType),
+            minZoom: 0.25,
+            maxZoom: 3,
+            wheelSensitivity: 0.18,
+            style: [
+              {
+                selector: "node",
+                style: {
+                  "background-color": "data(fill)",
+                  "border-color": "data(border)",
+                  "border-width": 2,
+                  color: "data(text)",
+                  label: "data(label)",
+                  "font-family": "Inter, ui-sans-serif, system-ui, sans-serif",
+                  "font-size": 11,
+                  "font-weight": 600,
+                  "text-wrap": "ellipsis",
+                  "text-max-width": "112px",
+                  "text-valign": "center",
+                  "text-halign": "center",
+                  width: "label",
+                  height: 34,
+                  padding: "10px",
+                  shape: "round-rectangle",
+                  "overlay-opacity": 0,
+                },
               },
-            },
-            {
-              selector: "edge",
-              style: {
-                width: 1.6,
-                "line-color": "#c6b9a7",
-                "target-arrow-color": "#c6b9a7",
-                "target-arrow-shape": "triangle",
-                "curve-style": "bezier",
-                label: "",
-                color: "#8d8273",
-                "font-family": "Inter, ui-sans-serif, system-ui, sans-serif",
-                "font-size": 10,
-                "text-wrap": "ellipsis",
-                "text-max-width": "130px",
-                "text-background-color": "#fffefa",
-                "text-background-opacity": 0.9,
-                "text-background-padding": "2px",
-                "text-rotation": "autorotate",
-                "overlay-opacity": 0,
+              {
+                selector: "edge",
+                style: {
+                  width: 1.6,
+                  "line-color": "#c6b9a7",
+                  "target-arrow-color": "#c6b9a7",
+                  "target-arrow-shape": "triangle",
+                  "curve-style": "bezier",
+                  label: "",
+                  color: "#8d8273",
+                  "font-family": "Inter, ui-sans-serif, system-ui, sans-serif",
+                  "font-size": 10,
+                  "text-wrap": "ellipsis",
+                  "text-max-width": "130px",
+                  "text-background-color": "#fffefa",
+                  "text-background-opacity": 0.9,
+                  "text-background-padding": "2px",
+                  "text-rotation": "autorotate",
+                  "overlay-opacity": 0,
+                },
               },
-            },
-            {
-              selector: "edge.related, edge.selected",
-              style: {
-                label: "",
-                width: 2.4,
-                "line-color": "#a87945",
-                "target-arrow-color": "#a87945",
-                color: "#6f4d2f",
+              {
+                selector: "edge.related, edge.selected",
+                style: {
+                  label: "",
+                  width: 2.4,
+                  "line-color": "#a87945",
+                  "target-arrow-color": "#a87945",
+                  color: "#6f4d2f",
+                },
               },
-            },
-            {
-              selector: "edge.hover-related",
-              style: { label: "data(label)" },
-            },
-            { selector: ".faded", style: { opacity: 0.16 } },
-            { selector: ".hovered", style: { "border-width": 3, "border-color": "#8b5c2e" } },
-            { selector: "node.selected", style: { "border-width": 4, "border-color": "#8b5c2e" } },
-          ],
-        });
-        const arrangeGraph = () => {
-          if (!graph) return;
-          graph.layout(layout).run();
-          separateOverlappingNodes(graph);
-          graph.fit(undefined, 72);
-        };
-        arrangeGraph();
-
-        fitButton.onclick = () => graph?.fit(undefined, 72);
-        layoutButton.onclick = () => {
-          if (!graph) return;
-          graph.nodes().forEach((node) => {
-            const position = positions.get(node.id());
-            if (position) node.position(position);
+              {
+                selector: "edge.hover-related",
+                style: { label: "data(label)" },
+              },
+              { selector: ".faded", style: { opacity: 0.16 } },
+              { selector: ".hovered", style: { "border-width": 3, "border-color": "#8b5c2e" } },
+              { selector: "node.selected", style: { "border-width": 4, "border-color": "#8b5c2e" } },
+            ],
           });
+          const arrangeGraph = () => {
+            if (!graph) return;
+            graph.layout(layout).run();
+            separateOverlappingNodes(graph);
+            graph.fit(undefined, 72);
+          };
           arrangeGraph();
+
+          fitButton.onclick = () => graph?.fit(undefined, 72);
+          layoutButton.onclick = () => {
+            if (!graph) return;
+            graph.nodes().forEach((node) => {
+              const position = positions.get(node.id());
+              if (position) node.position(position);
+            });
+            arrangeGraph();
+          };
+          graph.on("mouseover", "node", (event) => {
+            const node = event.target;
+            node.addClass("hovered");
+            applyNeighborhoodHighlight(graph!, node, true);
+          });
+          graph.on("mouseout", "node", (event) => {
+            event.target.removeClass("hovered");
+            const selected = graph!.nodes("node.selected");
+            applyNeighborhoodHighlight(graph!, selected.length > 0 ? selected[0] : null);
+          });
+          graph.on("tap", "node", (event) => {
+            const node = event.target;
+            graph!.elements().removeClass("selected");
+            node.addClass("selected");
+            node.connectedEdges().addClass("selected");
+            renderSelection(details, node, entityMap, relationships, context);
+            applyNeighborhoodHighlight(graph!, node);
+          });
+          graph.on("tap", (event) => {
+            if (event.target !== graph) return;
+            graph!.elements().removeClass("selected");
+            applyNeighborhoodHighlight(graph!, null);
+            details.replaceChildren(hint);
+          });
         };
-        graph.on("mouseover", "node", (event) => {
-          const node = event.target;
-          node.addClass("hovered");
-          applyNeighborhoodHighlight(graph!, node, true);
-        });
-        graph.on("mouseout", "node", (event) => {
-          event.target.removeClass("hovered");
-          const selected = graph!.nodes("node.selected");
-          applyNeighborhoodHighlight(graph!, selected.length > 0 ? selected[0] : null);
-        });
-        graph.on("tap", "node", (event) => {
-          const node = event.target;
-          graph!.elements().removeClass("selected");
-          node.addClass("selected");
-          node.connectedEdges().addClass("selected");
-          renderSelection(details, node, entityMap, relationships, context);
-          applyNeighborhoodHighlight(graph!, node);
-        });
-        graph.on("tap", (event) => {
-          if (event.target !== graph) return;
-          graph!.elements().removeClass("selected");
-          applyNeighborhoodHighlight(graph!, null);
-          details.replaceChildren(hint);
-        });
-      };
-      void render();
-      return () => {
-        cancelled = true;
-        graph?.destroy();
-        graph = null;
-        element.replaceChildren();
-      };
+        void render();
+        return () => {
+          cancelled = true;
+          graph?.destroy();
+          graph = null;
+          element.replaceChildren();
+        };
+      },
     },
-  }],
+  ],
 };

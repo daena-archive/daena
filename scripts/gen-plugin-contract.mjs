@@ -31,8 +31,7 @@ const suppliedSchemaDir = process.env.DAENA_SCHEMA_DIR;
 const schemaDir = suppliedSchemaDir ?? "schemas";
 const generatedTsPath = process.env.DAENA_GENERATED_TS ?? "packages/plugin-sdk/src/generated.ts";
 
-const readJson = async (path) =>
-  JSON.parse(await readFile(resolve(root, schemaDir, path), "utf8"));
+const readJson = async (path) => JSON.parse(await readFile(resolve(root, schemaDir, path), "utf8"));
 
 // ---------------------------------------------------------------------------
 // Step 1 — run the Rust contract generator (skipped when schemas are supplied)
@@ -73,8 +72,7 @@ const refName = (ref) => ref.replace(/^#\/\$defs\//, "");
 const isIdentifier = (key) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key);
 const quoteKey = (key) => (isIdentifier(key) ? key : JSON.stringify(key));
 
-const literalToTs = (v) =>
-  typeof v === "string" ? JSON.stringify(v) : String(v);
+const literalToTs = (v) => (typeof v === "string" ? JSON.stringify(v) : String(v));
 
 function arrayToTs(schema) {
   const inner = schema.items ? schemaToTs(schema.items) : "unknown";
@@ -124,11 +122,7 @@ function schemaToTs(schema) {
   const t = schema.type;
   if (Array.isArray(t)) {
     const parts = t.map((t2) =>
-      t2 === "array"
-        ? arrayToTs(schema)
-        : t2 === "object"
-          ? objectToTs(schema)
-          : scalarToTs(t2),
+      t2 === "array" ? arrayToTs(schema) : t2 === "object" ? objectToTs(schema) : scalarToTs(t2),
     );
     return parts.join(" | ");
   }
@@ -253,10 +247,16 @@ rpcLines.push(defToDeclaration("EntityRecord", rpcDefs.EntityRecord));
 // SDK-only helpers not derivable from the schemas.
 rpcLines.push(`export interface MutationOptions { expectedRevision?: string; requestId?: string }`);
 rpcLines.push(`export interface RevisionedEntityPayload { id: string; expectedRevision: string }`);
-rpcLines.push(`export interface RevisionedDocumentPayload { entityId: string; body: string; format?: string; expectedRevision: string }`);
-rpcLines.push(`export interface RevisionedFieldPayload { entityId: string; namespace: string; key: string; value: unknown; expectedRevision: string }`);
+rpcLines.push(
+  `export interface RevisionedDocumentPayload { entityId: string; body: string; format?: string; expectedRevision: string }`,
+);
+rpcLines.push(
+  `export interface RevisionedFieldPayload { entityId: string; namespace: string; key: string; value: unknown; expectedRevision: string }`,
+);
 rpcLines.push(`export interface RevisionedRelationshipPayload { id: string; expectedRevision: string }`);
-rpcLines.push(`export interface RevisionedAssetPayload { entityId: string; namespace: string; filename: string; contentHash: string; size: number; mimeType: string; path: string; expectedRevision: string }`);
+rpcLines.push(
+  `export interface RevisionedAssetPayload { entityId: string; namespace: string; filename: string; contentHash: string; size: number; mimeType: string; path: string; expectedRevision: string }`,
+);
 
 for (const name of ["EntityCreateDocument", "EntityCreateField", "EntityCreateRelationship"]) {
   rpcLines.push(defToDeclaration(name, rpcDefs[name]));
@@ -279,8 +279,12 @@ const payloadEntries = Object.entries(xMethods)
 rpcLines.push(`export interface BrokerMethodPayloads {\n${payloadEntries}\n}`);
 rpcLines.push(`export type BrokerMethod = keyof BrokerMethodPayloads;`);
 
-rpcLines.push(`export interface MigrationAuthoringOptions {\n  recovery?: Migration["recovery"];\n  description?: string;\n}`);
-rpcLines.push(`export type LifecycleState = "discovered" | "validated" | "installed" | "resolved" | "activating" | "active" | "deactivating" | "failed" | "quarantined" | "incompatible" | "uninstalling" | "removed";`);
+rpcLines.push(
+  `export interface MigrationAuthoringOptions {\n  recovery?: Migration["recovery"];\n  description?: string;\n}`,
+);
+rpcLines.push(
+  `export type LifecycleState = "discovered" | "validated" | "installed" | "resolved" | "activating" | "active" | "deactivating" | "failed" | "quarantined" | "incompatible" | "uninstalling" | "removed";`,
+);
 
 // ---------------------------------------------------------------------------
 // Write

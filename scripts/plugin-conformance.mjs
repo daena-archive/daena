@@ -20,7 +20,8 @@ for (const fixturePath of fixturePaths) {
   manifest = JSON.parse(await readFile(resolve(fixturePath), "utf8"));
   const host = new FakePluginHost({ manifest, grants: ["entity.read"] });
   const results = await runConformance(host);
-  for (const result of results) assert.equal(result.passed, true, `${fixturePath}: ${result.name}: ${result.detail ?? "failed"}`);
+  for (const result of results)
+    assert.equal(result.passed, true, `${fixturePath}: ${result.name}: ${result.detail ?? "failed"}`);
   brokerChecks += results.length;
 }
 
@@ -51,7 +52,9 @@ const revisionHost = new FakePluginHost({
 });
 const revisionClient = revisionHost.client();
 const created = await revisionClient.createEntity("Revisioned note", "note", { requestId: "revisioned-create" });
-const replayed = await revisionClient.createEntity("This must not duplicate", "note", { requestId: "revisioned-create" });
+const replayed = await revisionClient.createEntity("This must not duplicate", "note", {
+  requestId: "revisioned-create",
+});
 assert.equal(replayed.id, created.id);
 const updated = await revisionClient.updateEntity(created.id, "Updated note", "note", {
   expectedRevision: created.revision,
@@ -75,7 +78,12 @@ const aiRequest = await aiClient.startAiRequest({
   taskId: "conformance.biography",
   userInstruction: "draft a biography",
   immediateContext: { name: "Ada" },
-  outputContract: { type: "object", properties: { name: { type: "string" } }, required: ["name"], additionalProperties: false },
+  outputContract: {
+    type: "object",
+    properties: { name: { type: "string" } },
+    required: ["name"],
+    additionalProperties: false,
+  },
 });
 const aiEvents = await aiClient.pollAiRequest(aiRequest.requestId);
 assert.equal(aiEvents.at(-1)?.phase, "completed");
@@ -90,4 +98,6 @@ await assert.rejects(
   }),
   (error) => error?.code === "capability-denied",
 );
-console.log(`plugin conformance passed (${brokerChecks} broker checks across ${fixturePaths.length} fixtures + lifecycle install/enable/upgrade/rollback/uninstall checks)`);
+console.log(
+  `plugin conformance passed (${brokerChecks} broker checks across ${fixturePaths.length} fixtures + lifecycle install/enable/upgrade/rollback/uninstall checks)`,
+);

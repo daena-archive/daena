@@ -27,7 +27,7 @@ html = html.replace(
 // tag: the browser fetches the module as soon as the parser reaches it, so a
 // base inserted after it would never apply to the module's relative URL.
 if (!html.includes('<base href="/dist/ui/fmg/"')) {
-  html = html.replace("<head>", "<head>\n    <base href=\"/dist/ui/fmg/\" />");
+  html = html.replace("<head>", '<head>\n    <base href="/dist/ui/fmg/" />');
 }
 html = html.replace(/(src|href)="\/Fantasy-Map-Generator\//g, '$1="');
 
@@ -39,7 +39,8 @@ html = html.replace(/(src|href)="\/Fantasy-Map-Generator\//g, '$1="');
 // stays hidden in the Daena webview.
 html = html.replace(/\s*<script defer src="daena-bridge\.js"><\/script>/g, "");
 html = html.replace(/\s*<script defer src="daena-inline-bootstrap\.js"><\/script>/g, "");
-const bridge = '    <script defer src="daena-bridge.js"></script>\n    <script defer src="daena-inline-bootstrap.js"></script>';
+const bridge =
+  '    <script defer src="daena-bridge.js"></script>\n    <script defer src="daena-inline-bootstrap.js"></script>';
 if (html.includes('<base href="/dist/ui/fmg/" />')) {
   html = html.replace('<base href="/dist/ui/fmg/" />', `<base href="/dist/ui/fmg/" />\n${bridge}`);
 } else if (html.includes('<script type="module"')) {
@@ -89,10 +90,7 @@ if (!main.includes("if (DAENA_HOST) return; // Daena bridge owns startup load"))
 }
 // Allow Daena to boot when hostname is empty under the custom protocol.
 if (!main.includes("!location.hostname && !window.DAENA_HOST")) {
-  main = main.replace(
-    "  if (!location.hostname) {",
-    "  if (!location.hostname && !window.DAENA_HOST) {",
-  );
+  main = main.replace("  if (!location.hostname) {", "  if (!location.hostname && !window.DAENA_HOST) {");
 }
 // Do not suppress FMG's hideLoading under Daena. Earlier experiments left the
 // loading rose up forever when the bridge did not own the overlay lifecycle.
@@ -105,7 +103,7 @@ main = main.replace(
   "  } else {\n    hideLoading();\n    await checkLoadParameters();\n  }",
 );
 // plugin:// cannot register service workers; skip under the Daena host marker.
-if (!main.includes("!window.DAENA_HOST && \"serviceWorker\"")) {
+if (!main.includes('!window.DAENA_HOST && "serviceWorker"')) {
   main = main.replace(
     'if (PRODUCTION && "serviceWorker" in navigator)',
     'if (PRODUCTION && !window.DAENA_HOST && "serviceWorker" in navigator)',
@@ -136,7 +134,7 @@ for (const name of readdirSync(dist)) {
   }
   if (
     moduleSource.includes('if(!n.cells?.p)throw new Error("Pack cells not found")') &&
-    !moduleSource.includes("if(window.DAENA_HOST)return;throw new Error(\"Pack cells not found\")")
+    !moduleSource.includes('if(window.DAENA_HOST)return;throw new Error("Pack cells not found")')
   ) {
     moduleSource = moduleSource.replace(
       'if(!n.cells?.p)throw new Error("Pack cells not found")',
@@ -186,11 +184,11 @@ bridgeSource = bridgeSource.replace(
   '})().catch(error => { console.error("Daena Maps provider startup failed:", error); window.daenaMapDiagnostic?.(error); });',
 );
 bridgeSource = bridgeSource.replace(
-  '  const source = await loadAsset(mapAsset.assetId);\n  const asset = {mapId: mapAsset.mapId, assetId: mapAsset.assetId, revision: metadata.revision, contentHash: metadata.contentHash};',
-  '  const asset = {mapId: mapAsset.mapId, assetId: mapAsset.assetId, revision: metadata.revision, contentHash: metadata.contentHash};\n  const source = metadata.size === 0 ? null : await loadAsset(mapAsset.assetId);',
+  "  const source = await loadAsset(mapAsset.assetId);\n  const asset = {mapId: mapAsset.mapId, assetId: mapAsset.assetId, revision: metadata.revision, contentHash: metadata.contentHash};",
+  "  const asset = {mapId: mapAsset.mapId, assetId: mapAsset.assetId, revision: metadata.revision, contentHash: metadata.contentHash};\n  const source = metadata.size === 0 ? null : await loadAsset(mapAsset.assetId);",
 );
 bridgeSource = bridgeSource.replace(
-  '  await window.daenaMapProvider.load(source);',
+  "  await window.daenaMapProvider.load(source);",
   '  if (source === null) {\n    if (typeof window.generateMapOnLoad !== "function") throw new Error("new map source is empty and FMG generation is unavailable");\n    await window.generateMapOnLoad();\n    await saveAsset(asset);\n  } else {\n    await window.daenaMapProvider.load(source);\n    lastSavedHash = await sha256(new TextEncoder().encode(prepareMapData()));\n    publishState("clean");\n  }',
 );
 bridgeSource = bridgeSource.replace(
@@ -201,10 +199,7 @@ bridgeSource = bridgeSource.replace(
   '})().catch(error => { console.error("Daena Maps provider startup failed:", error); if (!new URLSearchParams(location.search).get("mapEntityId")) window.generateMapOnLoad?.(); });',
   '})().catch(error => { console.error("Daena Maps provider startup failed:", error); window.daenaMapDiagnostic?.(error); });',
 );
-bridgeSource = bridgeSource.replace(
-  'mimeType: "application/octet-stream"',
-  'mimeType: "application/x-fmg-map"',
-);
+bridgeSource = bridgeSource.replace('mimeType: "application/octet-stream"', 'mimeType: "application/x-fmg-map"');
 bridgeSource = bridgeSource.replace(
   '  const requestedMapEntityId = params.get("mapEntityId");\n  const requestedMapEntityId = params.get("mapEntityId");',
   '  const requestedMapEntityId = params.get("mapEntityId");',
@@ -212,8 +207,8 @@ bridgeSource = bridgeSource.replace(
 // Older generated archives may already contain a first-pass bridge. Normalize
 // that shape too so regeneration is idempotent across the ignored artifact.
 bridgeSource = bridgeSource.replace(
-  '  const source = await loadAsset(mapAsset.assetId);',
-  '  const source = metadata.size === 0 ? null : await loadAsset(mapAsset.assetId);',
+  "  const source = await loadAsset(mapAsset.assetId);",
+  "  const source = metadata.size === 0 ? null : await loadAsset(mapAsset.assetId);",
 );
 bridgeSource = bridgeSource.replace(
   '  window.daenaMapProvider = {provider: "azgaar-fmg", capabilities: async () => ({provider: "azgaar-fmg", adapterVersion: 1, featureKinds: Object.keys(featureCollections), supportsEditing: true}), load: bytes => uploadMap(new File([bytes], "daena.map", {type: "application/octet-stream"})), serialize: () => new TextEncoder().encode(prepareMapData()), listFeatures, resolveAnchor, focus: async anchor => { const result = await resolveAnchor(anchor); if (result.point) zoomTo(result.point[0] * graphWidth, result.point[1] * graphHeight, 8, 500); }, save: () => saveAsset(asset), dispose: () => { delete window.daenaMapProvider; }};',
@@ -221,12 +216,12 @@ bridgeSource = bridgeSource.replace(
 );
 bridgeSource = bridgeSource.replace(
   '  } else {\n    if (source === null) {\n    if (typeof window.generateMapOnLoad !== "function") throw new Error("new map source is empty and FMG generation is unavailable");\n    await window.generateMapOnLoad();\n    await saveAsset(asset);\n  } else {\n    await window.daenaMapProvider.load(source);\n  }\n  }',
-  '  } else {\n    await window.daenaMapProvider.load(source);\n  }',
+  "  } else {\n    await window.daenaMapProvider.load(source);\n  }",
 );
-if (!bridgeSource.includes('window.daenaMapDiagnostic = showDiagnostic;')) {
+if (!bridgeSource.includes("window.daenaMapDiagnostic = showDiagnostic;")) {
   bridgeSource = bridgeSource.replace(
-    '    panel.textContent = `Daena Maps: ${message}`;\n  }',
-    '    panel.textContent = `Daena Maps: ${message}`;\n  }\n  window.daenaMapDiagnostic = showDiagnostic;',
+    "    panel.textContent = `Daena Maps: ${message}`;\n  }",
+    "    panel.textContent = `Daena Maps: ${message}`;\n  }\n  window.daenaMapDiagnostic = showDiagnostic;",
   );
 }
 if (!bridgeSource.includes("Pack cells not found")) {
@@ -247,13 +242,19 @@ writeFileSync(bridgePath, bridgeSource);
 
 const bootstrapPath = join(dist, "daena-inline-bootstrap.js");
 const handlers = events
-  .map(({ id, type, code }) => `for (const element of document.querySelectorAll('[data-daena-event="${id}"]')) element.addEventListener(${JSON.stringify(type)}, function (domEvent) { ${code} });`)
+  .map(
+    ({ id, type, code }) =>
+      `for (const element of document.querySelectorAll('[data-daena-event="${id}"]')) element.addEventListener(${JSON.stringify(type)}, function (domEvent) { ${code} });`,
+  )
   .join("\n");
 // On a re-run every inline handler was already externalized, so `events` is
 // empty. Rewriting then would shrink the bootstrap back to the style-restore
 // loop and silently drop the event re-attachment, so keep the existing file.
 if (events.length > 0 || !existsSync(bootstrapPath)) {
-  writeFileSync(bootstrapPath, `"use strict";\n${handlers}\nfor (const element of document.querySelectorAll("[data-daena-style]")) element.style.cssText = decodeURIComponent(element.dataset.daenaStyle);\n`);
+  writeFileSync(
+    bootstrapPath,
+    `"use strict";\n${handlers}\nfor (const element of document.querySelectorAll("[data-daena-style]")) element.style.cssText = decodeURIComponent(element.dataset.daenaStyle);\n`,
+  );
 }
 
 const files = [];

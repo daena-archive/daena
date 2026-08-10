@@ -15,7 +15,8 @@ window.DAENA_HOST = true;
     if (!panel) {
       panel = document.createElement("div");
       panel.id = "daena-map-diagnostic";
-      panel.style.cssText = "position:fixed;z-index:2147483647;left:16px;right:16px;bottom:16px;padding:12px 16px;border:1px solid #d97706;border-radius:8px;background:#fffbeb;color:#78350f;font:14px system-ui,sans-serif;box-shadow:0 4px 18px #0003";
+      panel.style.cssText =
+        "position:fixed;z-index:2147483647;left:16px;right:16px;bottom:16px;padding:12px 16px;border:1px solid #d97706;border-radius:8px;background:#fffbeb;color:#78350f;font:14px system-ui,sans-serif;box-shadow:0 4px 18px #0003";
       document.body.appendChild(panel);
     }
     panel.textContent = `Daena Maps: ${message}`;
@@ -28,19 +29,28 @@ window.DAENA_HOST = true;
   let dirty = false;
   let savingNow = false;
   async function post(body) {
-    const response = await fetch("/__rpc", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const response = await fetch("/__rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
     const value = await response.json();
     if (!response.ok) throw new Error(value.error?.message || value.error || `Daena RPC failed (${response.status})`);
     return value;
   }
-  const isSessionFailure = value => value?.ok === false && ["session.revoked", "session.stale", "session.expired", "session.invalid"].includes(value.error?.code);
+  const isSessionFailure = (value) =>
+    value?.ok === false &&
+    ["session.revoked", "session.stale", "session.expired", "session.invalid"].includes(value.error?.code);
   async function rpc(method, payload) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       if (!sessionId) sessionId = (await post({ op: "bootstrap", pluginId: "daena.maps", projectId })).sessionId;
       const requestId = `maps-fmg-${++requestSequence}`;
       const value = await post({ op: "rpc", request: { rpcVersion: 1, sessionId, requestId, method, payload } });
       if (value.ok) return value.result;
-      if (attempt === 0 && isSessionFailure(value)) { sessionId = undefined; continue; }
+      if (attempt === 0 && isSessionFailure(value)) {
+        sessionId = undefined;
+        continue;
+      }
       const error = new Error(value.error?.message || "Daena RPC failed");
       error.code = value.error?.code;
       throw error;
@@ -48,11 +58,13 @@ window.DAENA_HOST = true;
   }
   async function sha256(bytes) {
     const hashBuffer = await crypto.subtle.digest("SHA-256", bytes);
-    return `sha256:${Array.from(new Uint8Array(hashBuffer), value => value.toString(16).padStart(2, "0")).join("")}`;
+    return `sha256:${Array.from(new Uint8Array(hashBuffer), (value) => value.toString(16).padStart(2, "0")).join("")}`;
   }
   function publishState(status, detail = null) {
     if (!mapId) return;
-    void rpc("event.publish", { type: "daena.maps/state@1", payload: { mapEntityId: mapId, status, detail } }).catch(() => undefined);
+    void rpc("event.publish", { type: "daena.maps/state@1", payload: { mapEntityId: mapId, status, detail } }).catch(
+      () => undefined,
+    );
   }
   function setDirty(value) {
     if (dirty === value) {
@@ -68,7 +80,7 @@ window.DAENA_HOST = true;
     for (const map of maps) {
       if (requestedMapEntityId && map.id !== requestedMapEntityId) continue;
       const field = await rpc("field.read", { entityId: map.id, namespace: "maps", key: "map" });
-      const descriptor = Array.isArray(field) ? field[0]?.value : field?.value ?? field;
+      const descriptor = Array.isArray(field) ? field[0]?.value : (field?.value ?? field);
       let assetId = descriptor?.sourceAssetId ?? null;
       // Repair orphans where .map bytes exist but sourceAssetId was never linked.
       if (!assetId) {
@@ -78,7 +90,19 @@ window.DAENA_HOST = true;
           .sort((left, right) => String(right.created_at ?? "").localeCompare(String(left.created_at ?? "")))[0];
         if (orphan) {
           assetId = orphan.id;
-          await rpc("field.set", { entityId: map.id, namespace: "maps", key: "map", value: { schemaVersion: 1, provider: { id: "azgaar-fmg", adapterVersion: 1, sourceFormat: "fmg-map" }, sourceAssetId: orphan.id, previewAssetId: descriptor?.previewAssetId ?? null, defaultView: descriptor?.defaultView ?? { center: [0.5, 0.5], zoom: 1 } }, expectedRevision: "" });
+          await rpc("field.set", {
+            entityId: map.id,
+            namespace: "maps",
+            key: "map",
+            value: {
+              schemaVersion: 1,
+              provider: { id: "azgaar-fmg", adapterVersion: 1, sourceFormat: "fmg-map" },
+              sourceAssetId: orphan.id,
+              previewAssetId: descriptor?.previewAssetId ?? null,
+              defaultView: descriptor?.defaultView ?? { center: [0.5, 0.5], zoom: 1 },
+            },
+            expectedRevision: "",
+          });
         }
       }
       if (requestedMapEntityId) return { mapId: map.id, assetId };
@@ -98,7 +122,10 @@ window.DAENA_HOST = true;
     const contentHash = await sha256(bytes);
     const transfer = await rpc("maps.recovery.export.begin", { mapEntityId: mapId, size: bytes.length });
     for (let offset = 0, chunk = 0; offset < bytes.length; offset += transfer.maxChunkBytes, chunk += 1) {
-      const response = await fetch(transfer.url.replace(/\/0\?/, `/${chunk}?`), { method: "PUT", body: bytes.slice(offset, offset + transfer.maxChunkBytes) });
+      const response = await fetch(transfer.url.replace(/\/0\?/, `/${chunk}?`), {
+        method: "PUT",
+        body: bytes.slice(offset, offset + transfer.maxChunkBytes),
+      });
       if (!response.ok) throw new Error(`map draft export failed (${response.status})`);
     }
     return rpc("maps.recovery.export.commit", { handle: transfer.handle, contentHash });
@@ -114,7 +141,10 @@ window.DAENA_HOST = true;
       if (asset.assetId === null) {
         const transfer = await rpc("maps.asset.create.begin", { mapEntityId: asset.mapId, size: bytes.length });
         for (let offset = 0, chunk = 0; offset < bytes.length; offset += transfer.maxChunkBytes, chunk += 1) {
-          const response = await fetch(transfer.url.replace(/\/0\?/, `/${chunk}?`), { method: "PUT", body: bytes.slice(offset, offset + transfer.maxChunkBytes) });
+          const response = await fetch(transfer.url.replace(/\/0\?/, `/${chunk}?`), {
+            method: "PUT",
+            body: bytes.slice(offset, offset + transfer.maxChunkBytes),
+          });
           if (!response.ok) throw new Error(`map source upload failed (${response.status})`);
         }
         saved = await rpc("maps.asset.create.commit", { handle: transfer.handle, contentHash: hash });
@@ -125,9 +155,18 @@ window.DAENA_HOST = true;
         // trusted host path. Do not follow up with field.set: the maps schema
         // declares the descriptor as text, so an object value is rejected.
       } else {
-        const transfer = await rpc("asset.replace.begin", { assetId: asset.assetId, namespace: "maps", expectedRevision: asset.revision, size: bytes.length, mimeType: "application/x-fmg-map" });
+        const transfer = await rpc("asset.replace.begin", {
+          assetId: asset.assetId,
+          namespace: "maps",
+          expectedRevision: asset.revision,
+          size: bytes.length,
+          mimeType: "application/x-fmg-map",
+        });
         for (let offset = 0, chunk = 0; offset < bytes.length; offset += transfer.maxChunkBytes, chunk += 1) {
-          const response = await fetch(transfer.url.replace(/\/0\?/, `/${chunk}?`), { method: "PUT", body: bytes.slice(offset, offset + transfer.maxChunkBytes) });
+          const response = await fetch(transfer.url.replace(/\/0\?/, `/${chunk}?`), {
+            method: "PUT",
+            body: bytes.slice(offset, offset + transfer.maxChunkBytes),
+          });
           if (!response.ok) throw new Error(`map source upload failed (${response.status})`);
         }
         saved = await rpc("asset.replace.commit", { handle: transfer.handle, contentHash: hash });
@@ -143,7 +182,7 @@ window.DAENA_HOST = true;
       // surface as unresolved rather than on the next full index build.
       const reconciled = await rpc("maps.reconcile.links", { mapEntityId: mapId }).catch(() => null);
       if (Array.isArray(reconciled)) {
-        const unresolved = reconciled.filter(item => !item.resolved).map(item => item.locationId);
+        const unresolved = reconciled.filter((item) => !item.resolved).map((item) => item.locationId);
         await refreshOverlay().catch(() => undefined);
         publishState("reconcile", { total: reconciled.length, unresolved });
       }
@@ -152,7 +191,11 @@ window.DAENA_HOST = true;
       if (message.includes("asset revision conflict")) {
         try {
           const draft = await exportDraft();
-          const fileName = draft.fileName ?? String(draft.path ?? "").split("/").pop();
+          const fileName =
+            draft.fileName ??
+            String(draft.path ?? "")
+              .split("/")
+              .pop();
           publishState("conflict", { path: draft.path ?? null, fileName });
         } catch (exportError) {
           publishState("conflict", {});
@@ -166,7 +209,7 @@ window.DAENA_HOST = true;
       updateSaveChrome();
     }
   }
-  const isConflictMessage = message => String(message).includes("asset revision conflict");
+  const isConflictMessage = (message) => String(message).includes("asset revision conflict");
   function showDiagnosticUnlessConflict(error) {
     if (!isConflictMessage(error instanceof Error ? error.message : error)) showDiagnostic(error);
     throw error;
@@ -198,7 +241,8 @@ window.DAENA_HOST = true;
     if (saveChrome && saveChrome.isConnected) return saveChrome;
     saveChrome = document.createElement("div");
     saveChrome.id = "daena-save-chrome";
-    saveChrome.style.cssText = "position:fixed;z-index:2147483000;top:14px;right:14px;display:flex;flex-direction:column;align-items:stretch;gap:8px;padding:8px 10px;border:1px solid rgba(255,255,255,.18);border-radius:10px;background:rgba(32,40,36,.92);color:#f4f1ea;font:12px system-ui,sans-serif;box-shadow:0 8px 24px #0005;pointer-events:auto;min-width:240px";
+    saveChrome.style.cssText =
+      "position:fixed;z-index:2147483000;top:14px;right:14px;display:flex;flex-direction:column;align-items:stretch;gap:8px;padding:8px 10px;border:1px solid rgba(255,255,255,.18);border-radius:10px;background:rgba(32,40,36,.92);color:#f4f1ea;font:12px system-ui,sans-serif;box-shadow:0 8px 24px #0005;pointer-events:auto;min-width:240px";
     saveChrome.innerHTML = `
       <div data-daena-save-row style="display:flex;align-items:center;gap:8px">
         <span data-daena-save-status style="opacity:.9;flex:1">Unsaved map</span>
@@ -220,10 +264,18 @@ window.DAENA_HOST = true;
     const form = saveChrome.querySelector("[data-daena-name-form]");
     const input = saveChrome.querySelector("[data-daena-name-input]");
     const cancel = saveChrome.querySelector("[data-daena-name-cancel]");
-    button.addEventListener("click", () => { void requestSave().catch(error => { showDiagnostic(error); }); });
-    linkOpen.addEventListener("click", () => { void requestLinkFromToolbar().catch(showDiagnostic); });
-    cancel.addEventListener("click", () => { hideNameForm(); });
-    form.addEventListener("submit", event => {
+    button.addEventListener("click", () => {
+      void requestSave().catch((error) => {
+        showDiagnostic(error);
+      });
+    });
+    linkOpen.addEventListener("click", () => {
+      void requestLinkFromToolbar().catch(showDiagnostic);
+    });
+    cancel.addEventListener("click", () => {
+      hideNameForm();
+    });
+    form.addEventListener("submit", (event) => {
       event.preventDefault();
       const name = String(input.value || "").trim();
       if (!name) {
@@ -231,7 +283,9 @@ window.DAENA_HOST = true;
         return;
       }
       hideNameForm();
-      void commitFirstSave(name).catch(error => { showDiagnostic(error); });
+      void commitFirstSave(name).catch((error) => {
+        showDiagnostic(error);
+      });
     });
     document.body.appendChild(saveChrome);
     updateSaveChrome();
@@ -299,8 +353,10 @@ window.DAENA_HOST = true;
   ];
   function anchorLabel(anchor) {
     if (!anchor) return "Nothing selected";
-    if (anchor.kind === "provider-feature") return `${anchor.featureKind || "feature"} ${anchor.featureId || ""}`.trim();
-    if (anchor.kind === "point" && Array.isArray(anchor.point)) return `Point (${anchor.point[0].toFixed(3)}, ${anchor.point[1].toFixed(3)})`;
+    if (anchor.kind === "provider-feature")
+      return `${anchor.featureKind || "feature"} ${anchor.featureId || ""}`.trim();
+    if (anchor.kind === "point" && Array.isArray(anchor.point))
+      return `Point (${anchor.point[0].toFixed(3)}, ${anchor.point[1].toFixed(3)})`;
     return "Selection";
   }
   function anchorPoint(anchor) {
@@ -315,13 +371,22 @@ window.DAENA_HOST = true;
       return left.featureKind === right.featureKind && String(left.featureId) === String(right.featureId);
     }
     if (left.kind === "point" && right.kind === "point") {
-      return Math.hypot((left.point?.[0] ?? 0) - (right.point?.[0] ?? 0), (left.point?.[1] ?? 0) - (right.point?.[1] ?? 0)) < 0.01;
+      return (
+        Math.hypot((left.point?.[0] ?? 0) - (right.point?.[0] ?? 0), (left.point?.[1] ?? 0) - (right.point?.[1] ?? 0)) <
+        0.01
+      );
     }
     return false;
   }
   function locationAnchor(row) {
     if (row.anchorKind === "provider-feature" && row.featureKind && row.featureId) {
-      return { kind: "provider-feature", provider: row.provider || "azgaar-fmg", featureKind: row.featureKind, featureId: String(row.featureId), fallbackPoint: overlayPoint(row) || [0.5, 0.5] };
+      return {
+        kind: "provider-feature",
+        provider: row.provider || "azgaar-fmg",
+        featureKind: row.featureKind,
+        featureId: String(row.featureId),
+        fallbackPoint: overlayPoint(row) || [0.5, 0.5],
+      };
     }
     const point = overlayPoint(row);
     return point ? { kind: "point", point } : null;
@@ -353,7 +418,8 @@ window.DAENA_HOST = true;
     if (linkChrome && linkChrome.isConnected) return linkChrome;
     linkChrome = document.createElement("div");
     linkChrome.id = "daena-link-chrome";
-    linkChrome.style.cssText = "position:fixed;z-index:2147483000;top:62px;right:14px;display:none;flex-direction:column;gap:10px;width:300px;max-height:calc(100vh - 90px);overflow:auto;padding:12px;border:1px solid rgba(255,255,255,.18);border-radius:10px;background:rgba(32,40,36,.96);color:#f4f1ea;font:12px system-ui,sans-serif;box-shadow:0 8px 24px #0005;pointer-events:auto";
+    linkChrome.style.cssText =
+      "position:fixed;z-index:2147483000;top:62px;right:14px;display:none;flex-direction:column;gap:10px;width:300px;max-height:calc(100vh - 90px);overflow:auto;padding:12px;border:1px solid rgba(255,255,255,.18);border-radius:10px;background:rgba(32,40,36,.96);color:#f4f1ea;font:12px system-ui,sans-serif;box-shadow:0 8px 24px #0005;pointer-events:auto";
     linkChrome.innerHTML = `
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
         <div style="min-width:0">
@@ -406,10 +472,18 @@ window.DAENA_HOST = true;
     linkChrome.querySelector("[data-daena-link-close]").addEventListener("click", () => hideLinkChrome());
     linkChrome.querySelector("[data-daena-mode-existing]").addEventListener("click", () => setLinkMode("existing"));
     linkChrome.querySelector("[data-daena-mode-create]").addEventListener("click", () => setLinkMode("create"));
-    linkChrome.querySelector("[data-daena-link-search]").addEventListener("input", () => { void refreshEntityOptions(); });
-    linkChrome.querySelector("[data-daena-link-existing-submit]").addEventListener("click", () => { void submitLinkExisting().catch(showDiagnostic); });
-    linkChrome.querySelector("[data-daena-link-create-submit]").addEventListener("click", () => { void submitLinkCreate().catch(showDiagnostic); });
-    linkChrome.querySelector("[data-daena-link-apply-point]").addEventListener("click", () => { applyEditedCoordinates(); });
+    linkChrome.querySelector("[data-daena-link-search]").addEventListener("input", () => {
+      void refreshEntityOptions();
+    });
+    linkChrome.querySelector("[data-daena-link-existing-submit]").addEventListener("click", () => {
+      void submitLinkExisting().catch(showDiagnostic);
+    });
+    linkChrome.querySelector("[data-daena-link-create-submit]").addEventListener("click", () => {
+      void submitLinkCreate().catch(showDiagnostic);
+    });
+    linkChrome.querySelector("[data-daena-link-apply-point]").addEventListener("click", () => {
+      applyEditedCoordinates();
+    });
     linkChrome.querySelector("[data-daena-link-resnap]").addEventListener("click", () => {
       linkArming = true;
       updateLinkOpenButton();
@@ -424,8 +498,10 @@ window.DAENA_HOST = true;
     const createBtn = linkChrome.querySelector("[data-daena-mode-create]");
     const existingForm = linkChrome.querySelector("[data-daena-link-existing-form]");
     const createForm = linkChrome.querySelector("[data-daena-link-create-form]");
-    const active = "flex:1;appearance:none;border:1px solid rgba(255,255,255,.2);border-radius:7px;padding:6px 8px;background:#d5ab6c;color:#2c4032;font:700 11px system-ui,sans-serif;cursor:pointer";
-    const idle = "flex:1;appearance:none;border:1px solid rgba(255,255,255,.2);border-radius:7px;padding:6px 8px;background:transparent;color:#d7ddd6;font:700 11px system-ui,sans-serif;cursor:pointer";
+    const active =
+      "flex:1;appearance:none;border:1px solid rgba(255,255,255,.2);border-radius:7px;padding:6px 8px;background:#d5ab6c;color:#2c4032;font:700 11px system-ui,sans-serif;cursor:pointer";
+    const idle =
+      "flex:1;appearance:none;border:1px solid rgba(255,255,255,.2);border-radius:7px;padding:6px 8px;background:transparent;color:#d7ddd6;font:700 11px system-ui,sans-serif;cursor:pointer";
     existingBtn.style.cssText = mode === "existing" ? active : idle;
     createBtn.style.cssText = mode === "create" ? active : idle;
     existingForm.style.display = mode === "existing" ? "grid" : "none";
@@ -445,7 +521,7 @@ window.DAENA_HOST = true;
     ensureLinkChrome();
     const x = Number(linkChrome.querySelector("[data-daena-link-x]").value);
     const y = Number(linkChrome.querySelector("[data-daena-link-y]").value);
-    if (![x, y].every(value => Number.isFinite(value) && value >= 0 && value <= 1)) return null;
+    if (![x, y].every((value) => Number.isFinite(value) && value >= 0 && value <= 1)) return null;
     return [x, y];
   }
   function applyEditedCoordinates() {
@@ -464,20 +540,30 @@ window.DAENA_HOST = true;
     if (!point) return linkAnchor;
     const base = linkBaseAnchor || linkAnchor;
     const original = anchorPoint(base);
-    const unchanged = original
-      && Math.abs(original[0] - point[0]) < 0.0005
-      && Math.abs(original[1] - point[1]) < 0.0005;
+    const unchanged =
+      original && Math.abs(original[0] - point[0]) < 0.0005 && Math.abs(original[1] - point[1]) < 0.0005;
     if (unchanged && base) return base;
     return { kind: "point", point };
   }
   async function refreshEntityOptions() {
     ensureLinkChrome();
-    const query = String(linkChrome.querySelector("[data-daena-link-search]").value || "").trim().toLowerCase();
+    const query = String(linkChrome.querySelector("[data-daena-link-search]").value || "")
+      .trim()
+      .toLowerCase();
     const list = linkChrome.querySelector("[data-daena-link-entity]");
     const entities = await rpc("entity.list", {}).catch(() => []);
     const options = (Array.isArray(entities) ? entities : [])
-      .filter(entity => entity?.entity_type !== "daena.maps:map" && entity?.type !== "daena.maps:map")
-      .filter(entity => !query || String(entity.name || "").toLowerCase().includes(query) || String(entity.entity_type || entity.type || "").toLowerCase().includes(query))
+      .filter((entity) => entity?.entity_type !== "daena.maps:map" && entity?.type !== "daena.maps:map")
+      .filter(
+        (entity) =>
+          !query ||
+          String(entity.name || "")
+            .toLowerCase()
+            .includes(query) ||
+          String(entity.entity_type || entity.type || "")
+            .toLowerCase()
+            .includes(query),
+      )
       .slice(0, 120);
     list.replaceChildren();
     if (options.length === 0) {
@@ -488,7 +574,7 @@ window.DAENA_HOST = true;
       selectedEntityId = null;
       return;
     }
-    if (!options.some(entity => entity.id === selectedEntityId)) selectedEntityId = options[0].id;
+    if (!options.some((entity) => entity.id === selectedEntityId)) selectedEntityId = options[0].id;
     for (const entity of options) {
       const option = document.createElement("button");
       option.type = "button";
@@ -511,7 +597,7 @@ window.DAENA_HOST = true;
     box.replaceChildren();
     if (!mapId || !linkAnchor) return;
     const rows = await rpc("maps.locations.list", { mapEntityId: mapId }).catch(() => []);
-    const matches = (Array.isArray(rows) ? rows : []).filter(row => {
+    const matches = (Array.isArray(rows) ? rows : []).filter((row) => {
       const anchor = locationAnchor(row);
       return anchorsMatch(anchor, linkAnchor);
     });
@@ -524,21 +610,24 @@ window.DAENA_HOST = true;
     }
     for (const row of matches) {
       const item = document.createElement("div");
-      item.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 7px;border:1px solid rgba(255,255,255,.12);border-radius:7px;background:#1b2420";
+      item.style.cssText =
+        "display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 7px;border:1px solid rgba(255,255,255,.12);border-radius:7px;background:#1b2420";
       item.innerHTML = `<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><strong style="display:block;font-size:11px">${row.label || row.role}</strong><small style="opacity:.7">${row.role}${row.resolution === "unresolved" ? " · unresolved" : ""}</small></span>`;
       const actions = document.createElement("div");
       actions.style.cssText = "display:flex;gap:4px;flex:0 0 auto";
       const open = document.createElement("button");
       open.type = "button";
       open.textContent = "Open";
-      open.style.cssText = "appearance:none;border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:4px 6px;background:transparent;color:#f4f1ea;font:11px system-ui,sans-serif;cursor:pointer";
+      open.style.cssText =
+        "appearance:none;border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:4px 6px;background:transparent;color:#f4f1ea;font:11px system-ui,sans-serif;cursor:pointer";
       open.addEventListener("click", () => {
         publishState("open-entity", { entityId: row.entityId, linkId: row.id });
       });
       const unlink = document.createElement("button");
       unlink.type = "button";
       unlink.textContent = "Unlink";
-      unlink.style.cssText = "appearance:none;border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:4px 6px;background:transparent;color:#f4c7c0;font:11px system-ui,sans-serif;cursor:pointer";
+      unlink.style.cssText =
+        "appearance:none;border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:4px 6px;background:transparent;color:#f4c7c0;font:11px system-ui,sans-serif;cursor:pointer";
       unlink.addEventListener("click", () => {
         void rpc("maps.locations.unlink", { entityId: row.entityId, locationId: row.id })
           .then(() => refreshOverlay())
@@ -561,7 +650,10 @@ window.DAENA_HOST = true;
     linkChrome.style.display = "flex";
     linkChrome.querySelector("[data-daena-link-selection]").textContent = anchorLabel(anchor);
     linkChrome.querySelector("[data-daena-link-role]").value = "story-location";
-    linkChrome.querySelector("[data-daena-link-name]").value = anchor.kind === "provider-feature" ? `${anchor.featureKind || "Feature"} ${anchor.featureId || ""}`.trim() : "Untitled place";
+    linkChrome.querySelector("[data-daena-link-name]").value =
+      anchor.kind === "provider-feature"
+        ? `${anchor.featureKind || "Feature"} ${anchor.featureId || ""}`.trim()
+        : "Untitled place";
     fillCoordinateFields(anchor);
     setLinkMode("existing");
     setLinkStatus("");
@@ -599,7 +691,8 @@ window.DAENA_HOST = true;
     return {
       id: crypto.randomUUID(),
       mapEntityId: mapId,
-      role: String(linkChrome.querySelector("[data-daena-link-role]").value || "story-location").trim() || "story-location",
+      role:
+        String(linkChrome.querySelector("[data-daena-link-role]").value || "story-location").trim() || "story-location",
       label: entityName || "Location",
       anchor,
       validity: { from: null, to: null },
@@ -607,7 +700,10 @@ window.DAENA_HOST = true;
   }
   async function submitLinkExisting() {
     const entityId = selectedEntityId;
-    if (!entityId) { setLinkStatus("Choose an entity"); return; }
+    if (!entityId) {
+      setLinkStatus("Choose an entity");
+      return;
+    }
     const selected = linkChrome.querySelector(`[data-entity-id="${entityId}"] strong`);
     const name = selected?.textContent || "Location";
     await rpc("maps.locations.upsert", { entityId, location: buildLocation(name) });
@@ -619,7 +715,10 @@ window.DAENA_HOST = true;
   async function submitLinkCreate() {
     const name = String(linkChrome.querySelector("[data-daena-link-name]").value || "").trim();
     const entityType = linkChrome.querySelector("[data-daena-link-type]").value || "place";
-    if (!name) { setLinkStatus("Enter a name"); return; }
+    if (!name) {
+      setLinkStatus("Enter a name");
+      return;
+    }
     const created = await rpc("maps.locations.create_and_link", {
       name,
       entityType,
@@ -666,13 +765,19 @@ window.DAENA_HOST = true;
         else if (hash !== lastSavedHash) setDirty(true);
         else if (dirty && hash === lastSavedHash) setDirty(false);
         updateSaveChrome();
-      } catch (_) { /* FMG is not ready or mid-operation; try again on the next tick */ }
+      } catch (_) {
+        /* FMG is not ready or mid-operation; try again on the next tick */
+      }
     }, 1500);
   };
-  const waitForProvider = () => new Promise(resolve => {
-    const poll = () => typeof window.uploadMap === "function" && typeof window.prepareMapData === "function" ? resolve() : setTimeout(poll, 25);
-    poll();
-  });
+  const waitForProvider = () =>
+    new Promise((resolve) => {
+      const poll = () =>
+        typeof window.uploadMap === "function" && typeof window.prepareMapData === "function"
+          ? resolve()
+          : setTimeout(poll, 25);
+      poll();
+    });
   await waitForProvider();
   // No mapEntityId means a disposable draft: generate in memory and create the
   // entity only when the in-FMG Save overlay commits a name.
@@ -682,47 +787,84 @@ window.DAENA_HOST = true;
     asset = { mapId: mapAsset.mapId, assetId: mapAsset.assetId, revision: null, contentHash: null };
     if (asset.assetId !== null) {
       const metadata = await rpc("asset.read.begin", { assetId: asset.assetId, namespace: "maps" });
-      asset = { mapId: asset.mapId, assetId: asset.assetId, revision: metadata.revision, contentHash: metadata.contentHash };
+      asset = {
+        mapId: asset.mapId,
+        assetId: asset.assetId,
+        revision: metadata.revision,
+        contentHash: metadata.contentHash,
+      };
       source = metadata.size === 0 ? null : await loadAsset(asset.assetId);
     }
     mapId = asset.mapId;
   } else if (requestedMapEntityId) {
     throw new Error(`requested map is unavailable: ${requestedMapEntityId}`);
   }
-  const featureCollections = { burg: "burgs", state: "states", province: "provinces", river: "rivers", marker: "markers" };
-  const pointFor = feature => [feature.x / graphWidth, feature.y / graphHeight];
-  const listFeatures = async query => Object.entries(featureCollections).flatMap(([kind, collectionName]) => (pack[collectionName] || []).filter(feature => (!query?.kind || query.kind === kind) && (!query?.text || String(feature.name || feature.i).toLowerCase().includes(query.text.toLowerCase()))).map(feature => ({ kind, id: String(feature.i), label: feature.name, point: pointFor(feature) })));
-  const resolveAnchor = async anchor => {
-    if (anchor.kind !== "provider-feature") return { resolved: true, point: anchor.point || anchor.fallbackPoint || anchor.points?.[0] || anchor.rings?.[0]?.[0] || null };
-    const feature = (pack[featureCollections[anchor.featureKind]] || []).find(item => String(item.i) === String(anchor.featureId));
+  const featureCollections = {
+    burg: "burgs",
+    state: "states",
+    province: "provinces",
+    river: "rivers",
+    marker: "markers",
+  };
+  const pointFor = (feature) => [feature.x / graphWidth, feature.y / graphHeight];
+  const listFeatures = async (query) =>
+    Object.entries(featureCollections).flatMap(([kind, collectionName]) =>
+      (pack[collectionName] || [])
+        .filter(
+          (feature) =>
+            (!query?.kind || query.kind === kind) &&
+            (!query?.text ||
+              String(feature.name || feature.i)
+                .toLowerCase()
+                .includes(query.text.toLowerCase())),
+        )
+        .map((feature) => ({ kind, id: String(feature.i), label: feature.name, point: pointFor(feature) })),
+    );
+  const resolveAnchor = async (anchor) => {
+    if (anchor.kind !== "provider-feature")
+      return {
+        resolved: true,
+        point: anchor.point || anchor.fallbackPoint || anchor.points?.[0] || anchor.rings?.[0]?.[0] || null,
+      };
+    const feature = (pack[featureCollections[anchor.featureKind]] || []).find(
+      (item) => String(item.i) === String(anchor.featureId),
+    );
     return feature ? { resolved: true, point: pointFor(feature) } : { resolved: false, point: anchor.fallbackPoint };
   };
   // Capture support. FMG's selection state is not exposed by the vendored
   // bundle, so capture uses click-to-pick: the last pointer position inside
   // the map SVG, snapped to the nearest feature within ~2% of the graph.
   let lastPointer = null;
-  window.addEventListener("pointerdown", event => {
-    const svg = event.target?.closest?.("svg");
-    if (!svg) return;
-    const rect = svg.getBoundingClientRect();
-    if (!rect.width || !rect.height) return;
-    lastPointer = [(event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height];
-    if (!mapId) return;
-    void computeSelection().then(anchor => {
-      if (!anchor) return;
-      void rpc("event.publish", { type: "daena.maps/selection@1", payload: { mapEntityId: mapId, anchor } }).catch(() => undefined);
-      if (pickMode) {
-        pickMode = false;
-        publishState("pick-complete", { anchor });
-        hideLinkChrome();
-        endPickUi();
-        return;
-      }
-      if (linkArming) {
-        void openLinkChrome(anchor).catch(showDiagnostic);
-      }
-    }).catch(() => undefined);
-  }, true);
+  window.addEventListener(
+    "pointerdown",
+    (event) => {
+      const svg = event.target?.closest?.("svg");
+      if (!svg) return;
+      const rect = svg.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      lastPointer = [(event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height];
+      if (!mapId) return;
+      void computeSelection()
+        .then((anchor) => {
+          if (!anchor) return;
+          void rpc("event.publish", { type: "daena.maps/selection@1", payload: { mapEntityId: mapId, anchor } }).catch(
+            () => undefined,
+          );
+          if (pickMode) {
+            pickMode = false;
+            publishState("pick-complete", { anchor });
+            hideLinkChrome();
+            endPickUi();
+            return;
+          }
+          if (linkArming) {
+            void openLinkChrome(anchor).catch(showDiagnostic);
+          }
+        })
+        .catch(() => undefined);
+    },
+    true,
+  );
   async function computeSelection() {
     const point = lastPointer;
     if (!point) return null;
@@ -741,14 +883,22 @@ window.DAENA_HOST = true;
       }
     }
     if (nearest && nearestDistance <= 0.0004) {
-      return { kind: "provider-feature", provider: "azgaar-fmg", featureKind: nearest.kind, featureId: String(nearest.feature.i), fallbackPoint: pointFor(nearest.feature) };
+      return {
+        kind: "provider-feature",
+        provider: "azgaar-fmg",
+        featureKind: nearest.kind,
+        featureId: String(nearest.feature.i),
+        fallbackPoint: pointFor(nearest.feature),
+      };
     }
     return { kind: "point", point };
   }
   async function publishSelection() {
     if (!mapId) return;
     const anchor = await computeSelection().catch(() => null);
-    void rpc("event.publish", { type: "daena.maps/selection@1", payload: { mapEntityId: mapId, anchor } }).catch(() => undefined);
+    void rpc("event.publish", { type: "daena.maps/selection@1", payload: { mapEntityId: mapId, anchor } }).catch(
+      () => undefined,
+    );
     return anchor;
   }
   // Semantic overlay. The overlay is derived state: it is rebuilt from the
@@ -772,11 +922,14 @@ window.DAENA_HOST = true;
   }
   function overlayPoint(location) {
     if (location.anchorKind === "provider-feature" && location.featureKind && location.featureId) {
-      const feature = (pack[featureCollections[location.featureKind]] || []).find(item => String(item.i) === String(location.featureId));
+      const feature = (pack[featureCollections[location.featureKind]] || []).find(
+        (item) => String(item.i) === String(location.featureId),
+      );
       if (feature && Number.isFinite(feature.x) && Number.isFinite(feature.y)) return pointFor(feature);
     }
     const [minX, minY, maxX, maxY] = location.bounds || [null, null, null, null];
-    if (Number.isFinite(minX) && Number.isFinite(minY) && Number.isFinite(maxX) && Number.isFinite(maxY)) return [(minX + maxX) / 2, (minY + maxY) / 2];
+    if (Number.isFinite(minX) && Number.isFinite(minY) && Number.isFinite(maxX) && Number.isFinite(maxY))
+      return [(minX + maxX) / 2, (minY + maxY) / 2];
     return null;
   }
   function inValidity(location) {
@@ -797,7 +950,8 @@ window.DAENA_HOST = true;
       if (!point) continue;
       const marker = document.createElement("div");
       marker.title = `${location.label || location.role} (${location.role})`;
-      marker.style.cssText = "position:absolute;width:10px;height:10px;margin:-5px 0 0 -5px;border-radius:50%;background:#e11d48;border:1.5px solid #fff;box-shadow:0 1px 3px #0006;";
+      marker.style.cssText =
+        "position:absolute;width:10px;height:10px;margin:-5px 0 0 -5px;border-radius:50%;background:#e11d48;border:1.5px solid #fff;box-shadow:0 1px 3px #0006;";
       marker.style.left = `${(point[0] * 100).toFixed(2)}%`;
       marker.style.top = `${(point[1] * 100).toFixed(2)}%`;
       root.appendChild(marker);
@@ -822,7 +976,7 @@ window.DAENA_HOST = true;
   }
   async function focusByLink(linkId) {
     if (!overlayFrame) return false;
-    const location = overlayFrame.find(item => item.id === linkId);
+    const location = overlayFrame.find((item) => item.id === linkId);
     if (!location || location.resolution === "unresolved") return false;
     const point = overlayPoint(location);
     if (!point) return false;
@@ -856,7 +1010,9 @@ window.DAENA_HOST = true;
       const key = JSON.stringify(anchor);
       if (key === lastSelectionPayload) return;
       lastSelectionPayload = key;
-      void rpc("event.publish", { type: "daena.maps/selection@1", payload: { mapEntityId: mapId, anchor } }).catch(() => undefined);
+      void rpc("event.publish", { type: "daena.maps/selection@1", payload: { mapEntityId: mapId, anchor } }).catch(
+        () => undefined,
+      );
     }, 900);
   };
   function packIsReadyForSerialize() {
@@ -886,7 +1042,10 @@ window.DAENA_HOST = true;
     await waitForUploadedPack();
   }
   async function reloadSource() {
-    if (!asset.assetId) { showDiagnostic(new Error("this map has no saved source yet")); return; }
+    if (!asset.assetId) {
+      showDiagnostic(new Error("this map has no saved source yet"));
+      return;
+    }
     const bytes = await loadAsset(asset.assetId);
     await loadMapSource(bytes);
     lastSavedHash = await sha256(new TextEncoder().encode(prepareMapData()));
@@ -894,13 +1053,52 @@ window.DAENA_HOST = true;
     publishState("clean");
     await refreshOverlay().catch(() => undefined);
   }
-  window.daenaMapProvider = { provider: "azgaar-fmg", capabilities: async () => ({ provider: "azgaar-fmg", adapterVersion: 1, featureKinds: Object.keys(featureCollections), supportsEditing: true }), load: loadMapSource, serialize: () => new TextEncoder().encode(prepareMapData()), listFeatures, resolveAnchor, captureSelection: publishSelection, startPick, focus: async anchor => { const result = await resolveAnchor(anchor); if (result.point) zoomTo(result.point[0] * graphWidth, result.point[1] * graphHeight, 8, 500); }, focusByLink, setSemanticOverlay: frame => { overlayFrame = Array.isArray(frame?.locations) ? frame.locations : null; setOverlayDate(frame?.date ?? null); }, setDate: setOverlayDate, save: () => requestSave(), exportDraft, reloadSource, dispose: () => { delete window.daenaMapProvider; } };
+  window.daenaMapProvider = {
+    provider: "azgaar-fmg",
+    capabilities: async () => ({
+      provider: "azgaar-fmg",
+      adapterVersion: 1,
+      featureKinds: Object.keys(featureCollections),
+      supportsEditing: true,
+    }),
+    load: loadMapSource,
+    serialize: () => new TextEncoder().encode(prepareMapData()),
+    listFeatures,
+    resolveAnchor,
+    captureSelection: publishSelection,
+    startPick,
+    focus: async (anchor) => {
+      const result = await resolveAnchor(anchor);
+      if (result.point) zoomTo(result.point[0] * graphWidth, result.point[1] * graphHeight, 8, 500);
+    },
+    focusByLink,
+    setSemanticOverlay: (frame) => {
+      overlayFrame = Array.isArray(frame?.locations) ? frame.locations : null;
+      setOverlayDate(frame?.date ?? null);
+    },
+    setDate: setOverlayDate,
+    save: () => requestSave(),
+    exportDraft,
+    reloadSource,
+    dispose: () => {
+      delete window.daenaMapProvider;
+    },
+  };
   const originalSave = window.saveMap;
-  window.saveMap = method => method === "machine" || method === "dropbox" || method === "storage" ? requestSave().catch(showDiagnosticUnlessConflict) : originalSave?.(method);
-  window.addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void requestSave().catch(showDiagnosticUnlessConflict); } });
+  window.saveMap = (method) =>
+    method === "machine" || method === "dropbox" || method === "storage"
+      ? requestSave().catch(showDiagnosticUnlessConflict)
+      : originalSave?.(method);
+  window.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      void requestSave().catch(showDiagnosticUnlessConflict);
+    }
+  });
   ensureSaveChrome();
   if (source === null) {
-    if (typeof window.generateMapOnLoad !== "function") throw new Error("new map source is empty and FMG generation is unavailable");
+    if (typeof window.generateMapOnLoad !== "function")
+      throw new Error("new map source is empty and FMG generation is unavailable");
     await window.generateMapOnLoad();
     setDirty(true);
   } else {
@@ -913,7 +1111,7 @@ window.DAENA_HOST = true;
   void refreshOverlay();
   startDirtyWatcher();
   startSelectionWatcher();
-})().catch(error => {
+})().catch((error) => {
   console.error("Daena Maps provider startup failed:", error);
   window.daenaMapDiagnostic?.(error);
 });

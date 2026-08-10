@@ -11,8 +11,7 @@ const fixtureDir = resolve(root, "schemas/fixtures/manifest");
 
 const index = JSON.parse(await readFile(resolve(fixtureDir, "index.json"), "utf8"));
 const cases = index.fixtures;
-const readJson = async (file) =>
-  JSON.parse(await readFile(resolve(fixtureDir, file), "utf8"));
+const readJson = async (file) => JSON.parse(await readFile(resolve(fixtureDir, file), "utf8"));
 
 const tsOutcomes = [];
 for (const { file } of cases) {
@@ -37,11 +36,7 @@ const rustStdout = execFileSync(
 );
 const rustOutcomes = JSON.parse(rustStdout.trim());
 
-assert.equal(
-  rustOutcomes.length,
-  cases.length,
-  "Rust validator must exercise every indexed fixture",
-);
+assert.equal(rustOutcomes.length, cases.length, "Rust validator must exercise every indexed fixture");
 
 for (let i = 0; i < cases.length; i += 1) {
   const expected = cases[i].expected;

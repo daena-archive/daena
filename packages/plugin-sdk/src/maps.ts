@@ -16,7 +16,13 @@ export type MapRelationshipType = (typeof MAP_RELATIONSHIP)[keyof typeof MAP_REL
 
 export type MapAnchor =
   | { kind: "point"; point: NormalizedPoint }
-  | { kind: "provider-feature"; provider: string; featureKind: string; featureId: string; fallbackPoint: NormalizedPoint }
+  | {
+      kind: "provider-feature";
+      provider: string;
+      featureKind: string;
+      featureId: string;
+      fallbackPoint: NormalizedPoint;
+    }
   | { kind: "path"; points: readonly NormalizedPoint[] }
   | { kind: "area"; rings: readonly (readonly NormalizedPoint[])[] };
 

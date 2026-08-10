@@ -1,4 +1,19 @@
-export type { PluginManifest, FieldDefinition, SchemaContribution, EntityTemplate, Migration, MigrationOperation, View, ViewComponent, Command, CommandAction, Service, Event, Services, Events } from "../../plugin-sdk/src/generated";
+export type {
+  PluginManifest,
+  FieldDefinition,
+  SchemaContribution,
+  EntityTemplate,
+  Migration,
+  MigrationOperation,
+  View,
+  ViewComponent,
+  Command,
+  CommandAction,
+  Service,
+  Event,
+  Services,
+  Events,
+} from "../../plugin-sdk/src/generated";
 import type { PluginManifest, Migration } from "../../plugin-sdk/src/generated";
 import type { MapNavigationService, MapLocationsMutations } from "../../plugin-sdk/src/maps";
 
@@ -129,13 +144,17 @@ export function createProposalPreview(options: ProposalPreviewOptions): HTMLElem
   const accept = document.createElement("button");
   accept.type = "button";
   accept.textContent = options.acceptLabel ?? "Accept proposal";
-  accept.onclick = () => void options.onAccept(editor.value).then(() => {
-    heading.textContent = "Proposal accepted";
-    accept.disabled = true;
-    discard.disabled = true;
-  }).catch((cause) => {
-    heading.textContent = cause instanceof Error ? cause.message : String(cause);
-  });
+  accept.onclick = () =>
+    void options
+      .onAccept(editor.value)
+      .then(() => {
+        heading.textContent = "Proposal accepted";
+        accept.disabled = true;
+        discard.disabled = true;
+      })
+      .catch((cause) => {
+        heading.textContent = cause instanceof Error ? cause.message : String(cause);
+      });
   actions.append(discard, accept);
   if (options.citations?.length) {
     const inspector = document.createElement("details");
@@ -148,7 +167,12 @@ export function createProposalPreview(options: ProposalPreviewOptions): HTMLElem
       const item = document.createElement("li");
       const source = citation.canonicalPath ?? citation.sourceKind;
       item.textContent = `${citation.stale ? "Stale · " : ""}${source} · revision ${citation.revision}`;
-      if (citation.byteStart !== null && citation.byteStart !== undefined && citation.byteEnd !== null && citation.byteEnd !== undefined) {
+      if (
+        citation.byteStart !== null &&
+        citation.byteStart !== undefined &&
+        citation.byteEnd !== null &&
+        citation.byteEnd !== undefined
+      ) {
         item.textContent += ` · bytes ${citation.byteStart}-${citation.byteEnd}`;
       }
       list.append(item);
@@ -208,7 +232,10 @@ export interface ModuleContext {
     delete(id: UUID, options?: MutationOptions): Promise<void>;
   };
   documents: {
-    save(input: { entityId: UUID; body: string; format?: DocumentRecord["format"] }, options?: MutationOptions): Promise<DocumentRecord>;
+    save(
+      input: { entityId: UUID; body: string; format?: DocumentRecord["format"] },
+      options?: MutationOptions,
+    ): Promise<DocumentRecord>;
   };
   fields: {
     list(entityId: UUID): Promise<Record<string, unknown>>;
@@ -222,7 +249,10 @@ export interface ModuleContext {
   };
   assets: {
     list(entityId: UUID): Promise<AssetRecord[]>;
-    register(input: Omit<AssetRecord, "id" | "createdAt" | "revision" | "entityId"> & { entityId: UUID }, options?: MutationOptions): Promise<AssetRecord>;
+    register(
+      input: Omit<AssetRecord, "id" | "createdAt" | "revision" | "entityId"> & { entityId: UUID },
+      options?: MutationOptions,
+    ): Promise<AssetRecord>;
   };
   search(query: string): Promise<EntitySummary[]>;
   ai: {
@@ -252,9 +282,11 @@ export function requireCapabilities(manifest: ModuleManifest, required: Capabili
 }
 
 export function isMigrationContiguous(migrations: DeclarativeMigration[], current: number): boolean {
-  return [...migrations].sort((a, b) => a.from - b.from).every((migration) => {
-    const valid = migration.from === current;
-    current = migration.to;
-    return valid && migration.to > migration.from;
-  });
+  return [...migrations]
+    .sort((a, b) => a.from - b.from)
+    .every((migration) => {
+      const valid = migration.from === current;
+      current = migration.to;
+      return valid && migration.to > migration.from;
+    });
 }

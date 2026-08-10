@@ -9,7 +9,13 @@ export const FMG_PROVIDER = "azgaar-fmg" as const;
 export type NormalizedPoint = readonly [number, number];
 export type MapAnchor =
   | { kind: "point"; point: NormalizedPoint }
-  | { kind: "provider-feature"; provider: string; featureKind: string; featureId: string; fallbackPoint: NormalizedPoint }
+  | {
+      kind: "provider-feature";
+      provider: string;
+      featureKind: string;
+      featureId: string;
+      fallbackPoint: NormalizedPoint;
+    }
   | { kind: "path"; points: readonly NormalizedPoint[] }
   | { kind: "area"; rings: readonly (readonly NormalizedPoint[])[] };
 
@@ -62,11 +68,7 @@ export interface MapProviderAdapter {
   dispose(): Promise<void>;
 }
 
-export type MapEditorDiagnosticCode =
-  | "provider-unavailable"
-  | "asset-missing"
-  | "asset-malformed"
-  | "asset-conflict";
+export type MapEditorDiagnosticCode = "provider-unavailable" | "asset-missing" | "asset-malformed" | "asset-conflict";
 
 export type MapEditorDiagnostic = {
   code: MapEditorDiagnosticCode;
@@ -81,16 +83,34 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 function point(value: unknown): value is NormalizedPoint {
-  return Array.isArray(value) && value.length === 2 && value.every((part) => typeof part === "number" && Number.isFinite(part) && part >= 0 && part <= 1);
+  return (
+    Array.isArray(value) &&
+    value.length === 2 &&
+    value.every((part) => typeof part === "number" && Number.isFinite(part) && part >= 0 && part <= 1)
+  );
 }
 
 function anchor(value: unknown): value is MapAnchor {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Record<string, unknown>;
   if (candidate.kind === "point") return point(candidate.point);
-  if (candidate.kind === "provider-feature") return candidate.provider === FMG_PROVIDER && typeof candidate.featureKind === "string" && typeof candidate.featureId === "string" && point(candidate.fallbackPoint);
-  if (candidate.kind === "path") return Array.isArray(candidate.points) && candidate.points.length >= 2 && candidate.points.every(point);
-  if (candidate.kind === "area") return Array.isArray(candidate.rings) && candidate.rings.length > 0 && candidate.rings.every((ring) => Array.isArray(ring) && ring.length >= 4 && ring[0] === ring[ring.length - 1] && ring.every(point));
+  if (candidate.kind === "provider-feature")
+    return (
+      candidate.provider === FMG_PROVIDER &&
+      typeof candidate.featureKind === "string" &&
+      typeof candidate.featureId === "string" &&
+      point(candidate.fallbackPoint)
+    );
+  if (candidate.kind === "path")
+    return Array.isArray(candidate.points) && candidate.points.length >= 2 && candidate.points.every(point);
+  if (candidate.kind === "area")
+    return (
+      Array.isArray(candidate.rings) &&
+      candidate.rings.length > 0 &&
+      candidate.rings.every(
+        (ring) => Array.isArray(ring) && ring.length >= 4 && ring[0] === ring[ring.length - 1] && ring.every(point),
+      )
+    );
   return false;
 }
 
@@ -103,15 +123,35 @@ export class JsonProviderAdapter implements MapProviderAdapter {
   private listeners = new Set<(event: ProviderEvent) => void>();
 
   async capabilities(): Promise<ProviderCapabilities> {
-    return { provider: FMG_PROVIDER, adapterVersion: 1, featureKinds: ["burg", "state", "province", "river", "marker"], supportsEditing: true };
+    return {
+      provider: FMG_PROVIDER,
+      adapterVersion: 1,
+      featureKinds: ["burg", "state", "province", "river", "marker"],
+      supportsEditing: true,
+    };
   }
 
   async load(bytes: Uint8Array): Promise<LoadedMap> {
     let value: unknown;
-    try { value = JSON.parse(decoder.decode(bytes)); } catch { throw new Error("FMG fixture source is malformed"); }
-    if (!value || typeof value !== "object" || !Array.isArray((value as Record<string, unknown>).features)) throw new Error("FMG fixture source is malformed");
+    try {
+      value = JSON.parse(decoder.decode(bytes));
+    } catch {
+      throw new Error("FMG fixture source is malformed");
+    }
+    if (!value || typeof value !== "object" || !Array.isArray((value as Record<string, unknown>).features))
+      throw new Error("FMG fixture source is malformed");
     const features = (value as Record<string, unknown>).features as unknown[];
-    if (!features.every((item) => item && typeof item === "object" && typeof (item as Record<string, unknown>).kind === "string" && typeof (item as Record<string, unknown>).id === "string" && point((item as Record<string, unknown>).point))) throw new Error("FMG fixture feature is malformed");
+    if (
+      !features.every(
+        (item) =>
+          item &&
+          typeof item === "object" &&
+          typeof (item as Record<string, unknown>).kind === "string" &&
+          typeof (item as Record<string, unknown>).id === "string" &&
+          point((item as Record<string, unknown>).point),
+      )
+    )
+      throw new Error("FMG fixture feature is malformed");
     this.source = structuredClone(value) as Record<string, unknown>;
     this.dirty = false;
     this.emit({ type: "ready" });
@@ -143,25 +183,64 @@ export class JsonProviderAdapter implements MapProviderAdapter {
 
   async listFeatures(query: FeatureQuery = {}): Promise<ProviderFeature[]> {
     const features = (this.source?.features ?? []) as Array<Record<string, unknown>>;
-    return features.filter((feature) => (!query.kind || feature.kind === query.kind) && (!query.text || String(feature.label ?? "").toLocaleLowerCase().includes(query.text.toLocaleLowerCase()))).map((feature) => ({ kind: feature.kind as string, id: feature.id as string, label: feature.label as string | undefined, point: feature.point as NormalizedPoint }));
+    return features
+      .filter(
+        (feature) =>
+          (!query.kind || feature.kind === query.kind) &&
+          (!query.text ||
+            String(feature.label ?? "")
+              .toLocaleLowerCase()
+              .includes(query.text.toLocaleLowerCase())),
+      )
+      .map((feature) => ({
+        kind: feature.kind as string,
+        id: feature.id as string,
+        label: feature.label as string | undefined,
+        point: feature.point as NormalizedPoint,
+      }));
   }
 
-  async captureSelection(): Promise<MapAnchor | null> { return this.selection; }
+  async captureSelection(): Promise<MapAnchor | null> {
+    return this.selection;
+  }
 
   async resolveAnchor(value: MapAnchor): Promise<{ resolved: boolean; point: NormalizedPoint | null }> {
     if (!anchor(value)) return { resolved: false, point: null };
-    if (value.kind !== "provider-feature") return { resolved: true, point: value.kind === "point" ? value.point : value.kind === "path" ? value.points[0] : value.rings[0][0] };
+    if (value.kind !== "provider-feature")
+      return {
+        resolved: true,
+        point: value.kind === "point" ? value.point : value.kind === "path" ? value.points[0] : value.rings[0][0],
+      };
     const feature = (await this.listFeatures({ kind: value.featureKind })).find((item) => item.id === value.featureId);
     return feature ? { resolved: true, point: feature.point } : { resolved: false, point: value.fallbackPoint };
   }
 
-  async focus(value: MapAnchor): Promise<void> { this.selection = value; this.emit({ type: "selection-changed", anchor: value }); this.emit({ type: "viewport-changed" }); }
+  async focus(value: MapAnchor): Promise<void> {
+    this.selection = value;
+    this.emit({ type: "selection-changed", anchor: value });
+    this.emit({ type: "viewport-changed" });
+  }
   async setSemanticOverlay(_frame: OverlayFrame): Promise<void> {}
-  subscribe(listener: (event: ProviderEvent) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
-  async dispose(): Promise<void> { this.listeners.clear(); this.source = undefined; this.selection = null; this.dirty = false; }
+  subscribe(listener: (event: ProviderEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+  async dispose(): Promise<void> {
+    this.listeners.clear();
+    this.source = undefined;
+    this.selection = null;
+    this.dirty = false;
+  }
 
-  markDirty(): void { if (!this.dirty) { this.dirty = true; this.emit({ type: "dirty", dirty: true }); } }
-  private emit(event: ProviderEvent): void { for (const listener of this.listeners) listener(event); }
+  markDirty(): void {
+    if (!this.dirty) {
+      this.dirty = true;
+      this.emit({ type: "dirty", dirty: true });
+    }
+  }
+  private emit(event: ProviderEvent): void {
+    for (const listener of this.listeners) listener(event);
+  }
 }
 
 type BrowserProvider = {
@@ -186,9 +265,23 @@ export class FmgBrowserAdapter implements MapProviderAdapter {
     if (provider.provider !== FMG_PROVIDER) throw new Error("unsupported map provider");
     this.provider = provider;
   }
-  async capabilities(): Promise<ProviderCapabilities> { return this.provider.capabilities?.() ?? { provider: FMG_PROVIDER, adapterVersion: 1, featureKinds: ["burg", "state", "province", "river", "marker"], supportsEditing: true }; }
-  async load(source: Uint8Array): Promise<LoadedMap> { await this.provider.load(source); return { provider: FMG_PROVIDER, sourceHash: await digest(source), dirty: false }; }
-  async serialize(): Promise<Uint8Array> { return this.provider.serialize(); }
+  async capabilities(): Promise<ProviderCapabilities> {
+    return (
+      this.provider.capabilities?.() ?? {
+        provider: FMG_PROVIDER,
+        adapterVersion: 1,
+        featureKinds: ["burg", "state", "province", "river", "marker"],
+        supportsEditing: true,
+      }
+    );
+  }
+  async load(source: Uint8Array): Promise<LoadedMap> {
+    await this.provider.load(source);
+    return { provider: FMG_PROVIDER, sourceHash: await digest(source), dirty: false };
+  }
+  async serialize(): Promise<Uint8Array> {
+    return this.provider.serialize();
+  }
   async open(session: MapEditorSession, source?: Uint8Array): Promise<void> {
     if (source) await this.provider.load(source);
     session.dirty = false;
@@ -202,13 +295,27 @@ export class FmgBrowserAdapter implements MapProviderAdapter {
     await this.provider.dispose?.();
     return true;
   }
-  async listFeatures(query?: FeatureQuery): Promise<ProviderFeature[]> { return this.provider.listFeatures?.(query) ?? []; }
-  async captureSelection(): Promise<MapAnchor | null> { return this.provider.captureSelection?.() ?? null; }
-  async resolveAnchor(value: MapAnchor): Promise<{ resolved: boolean; point: NormalizedPoint | null }> { return this.provider.resolveAnchor?.(value) ?? { resolved: false, point: null }; }
-  async focus(value: MapAnchor): Promise<void> { await this.provider.focus?.(value); }
-  async setSemanticOverlay(frame: OverlayFrame): Promise<void> { await this.provider.setSemanticOverlay?.(frame); }
-  subscribe(listener: (event: ProviderEvent) => void): () => void { return this.provider.subscribe?.(listener) ?? (() => undefined); }
-  async dispose(): Promise<void> { await this.provider.dispose?.(); }
+  async listFeatures(query?: FeatureQuery): Promise<ProviderFeature[]> {
+    return this.provider.listFeatures?.(query) ?? [];
+  }
+  async captureSelection(): Promise<MapAnchor | null> {
+    return this.provider.captureSelection?.() ?? null;
+  }
+  async resolveAnchor(value: MapAnchor): Promise<{ resolved: boolean; point: NormalizedPoint | null }> {
+    return this.provider.resolveAnchor?.(value) ?? { resolved: false, point: null };
+  }
+  async focus(value: MapAnchor): Promise<void> {
+    await this.provider.focus?.(value);
+  }
+  async setSemanticOverlay(frame: OverlayFrame): Promise<void> {
+    await this.provider.setSemanticOverlay?.(frame);
+  }
+  subscribe(listener: (event: ProviderEvent) => void): () => void {
+    return this.provider.subscribe?.(listener) ?? (() => undefined);
+  }
+  async dispose(): Promise<void> {
+    await this.provider.dispose?.();
+  }
 }
 
 async function digest(bytes: Uint8Array): Promise<string> {
@@ -218,26 +325,64 @@ async function digest(bytes: Uint8Array): Promise<string> {
 
 export class UnavailableProviderAdapter implements MapProviderAdapter {
   readonly provider = FMG_PROVIDER;
-  constructor(private readonly diagnostic: MapEditorDiagnostic = { code: "provider-unavailable", message: "The pinned FMG editor bundle is not included in this build.", recoverable: false }) {}
-  getDiagnostic(): MapEditorDiagnostic { return this.diagnostic; }
-  private unavailable(): never { throw new Error(this.diagnostic.message); }
-  async capabilities(): Promise<ProviderCapabilities> { return this.unavailable(); }
-  async load(_source: Uint8Array): Promise<LoadedMap> { return this.unavailable(); }
-  async serialize(): Promise<Uint8Array> { return this.unavailable(); }
-  async listFeatures(_query?: FeatureQuery): Promise<ProviderFeature[]> { return this.unavailable(); }
-  async captureSelection(): Promise<MapAnchor | null> { return this.unavailable(); }
-  async resolveAnchor(_anchor: MapAnchor): Promise<{ resolved: boolean; point: NormalizedPoint | null }> { return this.unavailable(); }
-  async focus(_anchor: MapAnchor): Promise<void> { return this.unavailable(); }
-  async setSemanticOverlay(_frame: OverlayFrame): Promise<void> { return this.unavailable(); }
-  subscribe(_listener: (event: ProviderEvent) => void): () => void { return () => undefined; }
+  constructor(
+    private readonly diagnostic: MapEditorDiagnostic = {
+      code: "provider-unavailable",
+      message: "The pinned FMG editor bundle is not included in this build.",
+      recoverable: false,
+    },
+  ) {}
+  getDiagnostic(): MapEditorDiagnostic {
+    return this.diagnostic;
+  }
+  private unavailable(): never {
+    throw new Error(this.diagnostic.message);
+  }
+  async capabilities(): Promise<ProviderCapabilities> {
+    return this.unavailable();
+  }
+  async load(_source: Uint8Array): Promise<LoadedMap> {
+    return this.unavailable();
+  }
+  async serialize(): Promise<Uint8Array> {
+    return this.unavailable();
+  }
+  async listFeatures(_query?: FeatureQuery): Promise<ProviderFeature[]> {
+    return this.unavailable();
+  }
+  async captureSelection(): Promise<MapAnchor | null> {
+    return this.unavailable();
+  }
+  async resolveAnchor(_anchor: MapAnchor): Promise<{ resolved: boolean; point: NormalizedPoint | null }> {
+    return this.unavailable();
+  }
+  async focus(_anchor: MapAnchor): Promise<void> {
+    return this.unavailable();
+  }
+  async setSemanticOverlay(_frame: OverlayFrame): Promise<void> {
+    return this.unavailable();
+  }
+  subscribe(_listener: (event: ProviderEvent) => void): () => void {
+    return () => undefined;
+  }
   async dispose(): Promise<void> {}
-  async open(_session: MapEditorSession, _source?: Uint8Array): Promise<void> { return this.unavailable(); }
-  async save(_session: MapEditorSession): Promise<MapEditorSaveResult> { return this.unavailable(); }
-  async close(_session: MapEditorSession): Promise<boolean> { return false; }
+  async open(_session: MapEditorSession, _source?: Uint8Array): Promise<void> {
+    return this.unavailable();
+  }
+  async save(_session: MapEditorSession): Promise<MapEditorSaveResult> {
+    return this.unavailable();
+  }
+  async close(_session: MapEditorSession): Promise<boolean> {
+    return false;
+  }
 }
 
 export function diagnosticForAssetState(state: "missing" | "malformed" | "conflict"): MapEditorDiagnostic {
-  const messages = { missing: "The map source asset is missing.", malformed: "The map source asset is malformed.", conflict: "The map source changed outside Daena." } as const;
+  const messages = {
+    missing: "The map source asset is missing.",
+    malformed: "The map source asset is malformed.",
+    conflict: "The map source changed outside Daena.",
+  } as const;
   return { code: `asset-${state}`, message: messages[state], recoverable: true };
 }
 
@@ -258,15 +403,22 @@ export class MapEditorController {
 
   constructor(private readonly adapter: MapProviderAdapter) {}
 
-  getSession(): MapEditorSession | null { return this.session; }
+  getSession(): MapEditorSession | null {
+    return this.session;
+  }
 
   subscribe(listener: (event: MapEditorControllerEvent) => void): () => void {
     this.listeners.add(listener);
-    return () => { this.listeners.delete(listener); };
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   async open(session: MapEditorSession, source?: Uint8Array): Promise<void> {
-    if (this.unsubscribeProvider) { this.unsubscribeProvider(); this.unsubscribeProvider = null; }
+    if (this.unsubscribeProvider) {
+      this.unsubscribeProvider();
+      this.unsubscribeProvider = null;
+    }
     this.unsubscribeProvider = this.adapter.subscribe((event) => {
       if (event.type === "dirty") {
         if (this.session && this.session.dirty !== event.dirty) {
@@ -308,7 +460,10 @@ export class MapEditorController {
   async close(): Promise<boolean> {
     const session = this.session;
     this.session = null;
-    if (this.unsubscribeProvider) { this.unsubscribeProvider(); this.unsubscribeProvider = null; }
+    if (this.unsubscribeProvider) {
+      this.unsubscribeProvider();
+      this.unsubscribeProvider = null;
+    }
     if (!session) return false;
     const discarded = await this.adapter.close(session);
     await this.adapter.dispose();

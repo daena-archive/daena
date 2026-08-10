@@ -58,11 +58,17 @@ export class FakePluginHost implements PluginRpcTransport {
     this.grants = new Set(options.grants ?? options.manifest.capabilities);
   }
 
-  client(): PluginRpcClient { return createPluginRpcClient(this); }
+  client(): PluginRpcClient {
+    return createPluginRpcClient(this);
+  }
 
-  revoke(): void { this.revoked = true; }
+  revoke(): void {
+    this.revoked = true;
+  }
 
-  seed(entity: EntityRecord): void { this.entities.set(entity.id, structuredClone(entity)); }
+  seed(entity: EntityRecord): void {
+    this.entities.set(entity.id, structuredClone(entity));
+  }
 
   registerService(name: string, major: number, handler: ServiceHandler): void {
     this.services.set(`${name}@${major}`, handler);
@@ -88,9 +94,12 @@ export class FakePluginHost implements PluginRpcTransport {
     const view = this.hostView(viewId);
     const command = this.manifest.commands.find((candidate) => candidate.id === commandId);
     if (!command?.action) throw new Error("declarative command is not executable");
-    if (command.exposure?.length && !command.exposure.includes("view")) throw new Error("declarative command is not exposed to views");
-    if (command.capabilities?.some((capability) => !this.grants.has(capability))) throw new Error("declarative command capability is not granted");
-    if (!view.components?.some((component) => component.type === "button" && component.command === commandId)) throw new Error("declarative command is not exposed by this view");
+    if (command.exposure?.length && !command.exposure.includes("view"))
+      throw new Error("declarative command is not exposed to views");
+    if (command.capabilities?.some((capability) => !this.grants.has(capability)))
+      throw new Error("declarative command capability is not granted");
+    if (!view.components?.some((component) => component.type === "button" && component.command === commandId))
+      throw new Error("declarative command is not exposed by this view");
     if (Object.keys(payload).length > 0 && !command.input) throw new Error("declarative command does not accept input");
     return { type: command.action.type };
   }
@@ -106,20 +115,42 @@ export class FakePluginHost implements PluginRpcTransport {
     try {
       const result = await (async () => {
         switch (method) {
-        case "plugin.bootstrap": return this.bootstrap();
-        case "entity.list": this.require("entity.read"); return this.list(payload);
-        case "entity.create": this.require("entity.write"); return this.create(payload);
-        case "entity.update": this.require("entity.write"); return this.update(payload);
-        case "entity.delete": this.require("entity.delete"); return this.remove(payload);
-        case "event.publish": this.requireDynamic("event.publish", payload); return this.publish(payload);
-        case "event.subscribe": this.requireDynamic("event.subscribe", payload); return this.subscribe(payload);
-        case "event.poll": this.requireDynamic("event.subscribe", payload); return this.poll(payload);
-        case "service.call": this.requireDynamic("service.call", payload); return await this.callService(payload);
-        case "ai.request.start": return this.startAi(payload);
-        case "ai.request.poll": return this.pollAi(payload);
-        case "ai.request.cancel": return this.cancelAi(payload);
-        case "ai.request.result": return this.resultAi(payload);
-        default: throw failure("unknown-method", `unsupported plugin method: ${method}`);
+          case "plugin.bootstrap":
+            return this.bootstrap();
+          case "entity.list":
+            this.require("entity.read");
+            return this.list(payload);
+          case "entity.create":
+            this.require("entity.write");
+            return this.create(payload);
+          case "entity.update":
+            this.require("entity.write");
+            return this.update(payload);
+          case "entity.delete":
+            this.require("entity.delete");
+            return this.remove(payload);
+          case "event.publish":
+            this.requireDynamic("event.publish", payload);
+            return this.publish(payload);
+          case "event.subscribe":
+            this.requireDynamic("event.subscribe", payload);
+            return this.subscribe(payload);
+          case "event.poll":
+            this.requireDynamic("event.subscribe", payload);
+            return this.poll(payload);
+          case "service.call":
+            this.requireDynamic("service.call", payload);
+            return await this.callService(payload);
+          case "ai.request.start":
+            return this.startAi(payload);
+          case "ai.request.poll":
+            return this.pollAi(payload);
+          case "ai.request.cancel":
+            return this.cancelAi(payload);
+          case "ai.request.result":
+            return this.resultAi(payload);
+          default:
+            throw failure("unknown-method", `unsupported plugin method: ${method}`);
         }
       })();
       if (requestId && ["entity.create", "entity.update", "entity.delete"].includes(method)) {
@@ -150,34 +181,50 @@ export class FakePluginHost implements PluginRpcTransport {
   }
 
   private startAi(payload: unknown): { requestId: string } {
-    const value = payload as { operation?: unknown; taskId?: unknown; userInstruction?: unknown; immediateContext?: unknown; outputContract?: unknown };
+    const value = payload as {
+      operation?: unknown;
+      taskId?: unknown;
+      userInstruction?: unknown;
+      immediateContext?: unknown;
+      outputContract?: unknown;
+    };
     const operation = value.operation;
     const capability = operation === "generate_structured" ? "ai.text.generate-structured" : "ai.text.generate";
     this.require(capability);
-    if (!(["generate_text", "generate_structured"].includes(String(operation))) || typeof value.userInstruction !== "string" || !value.userInstruction.trim()) {
+    if (
+      !["generate_text", "generate_structured"].includes(String(operation)) ||
+      typeof value.userInstruction !== "string" ||
+      !value.userInstruction.trim()
+    ) {
       throw failure("invalid-payload", "ai.request.start requires a supported operation and instruction");
     }
     const requestId = `${this.manifest.id}:ai:${this.aiResults.size + 1}`;
-    const output = operation === "generate_structured"
-      ? structuredClone(value.immediateContext ?? {})
-      : `${value.userInstruction}: ${String((value.immediateContext as { selection?: unknown } | undefined)?.selection ?? "")}`;
+    const output =
+      operation === "generate_structured"
+        ? structuredClone(value.immediateContext ?? {})
+        : `${value.userInstruction}: ${String((value.immediateContext as { selection?: unknown } | undefined)?.selection ?? "")}`;
     if (operation === "generate_structured") validateFakeAiOutput(value.outputContract, output);
     this.aiResults.set(requestId, output);
     this.aiCapabilities.set(requestId, capability);
-    this.aiEvents.set(requestId, [{ sequence: 0, requestId, phase: "started" }, { sequence: 1, requestId, phase: "completed", output }]);
+    this.aiEvents.set(requestId, [
+      { sequence: 0, requestId, phase: "started" },
+      { sequence: 1, requestId, phase: "completed", output },
+    ]);
     return { requestId };
   }
 
   private pollAi(payload: unknown): unknown[] {
     const requestId = (payload as { requestId?: unknown }).requestId;
-    if (typeof requestId !== "string" || !this.aiEvents.has(requestId)) throw failure("not-found", "AI request does not exist");
+    if (typeof requestId !== "string" || !this.aiEvents.has(requestId))
+      throw failure("not-found", "AI request does not exist");
     this.requireAi(requestId);
     return structuredClone(this.aiEvents.get(requestId) ?? []);
   }
 
   private cancelAi(payload: unknown): void {
     const requestId = (payload as { requestId?: unknown }).requestId;
-    if (typeof requestId !== "string" || !this.aiResults.has(requestId)) throw failure("not-found", "AI request does not exist");
+    if (typeof requestId !== "string" || !this.aiResults.has(requestId))
+      throw failure("not-found", "AI request does not exist");
     this.requireAi(requestId);
     this.aiResults.delete(requestId);
     this.aiEvents.set(requestId, [{ sequence: 0, requestId, phase: "cancelled" }]);
@@ -185,7 +232,8 @@ export class FakePluginHost implements PluginRpcTransport {
 
   private resultAi(payload: unknown): unknown {
     const requestId = (payload as { requestId?: unknown }).requestId;
-    if (typeof requestId !== "string" || !this.aiResults.has(requestId)) throw failure("not-found", "AI result does not exist");
+    if (typeof requestId !== "string" || !this.aiResults.has(requestId))
+      throw failure("not-found", "AI result does not exist");
     this.requireAi(requestId);
     return structuredClone(this.aiResults.get(requestId));
   }
@@ -199,19 +247,27 @@ export class FakePluginHost implements PluginRpcTransport {
   private requireDynamic(prefix: string, payload: unknown): void {
     const value = payload as Record<string, unknown>;
     const name = prefix.startsWith("event.") ? value.type : `${value.name}@${value.major}`;
-    if (typeof name !== "string" || !this.grants.has(`${prefix}:${name}`) && !this.grants.has(`${prefix}:<type>`) && !this.grants.has(`${prefix}:<name>`)) {
+    if (
+      typeof name !== "string" ||
+      (!this.grants.has(`${prefix}:${name}`) &&
+        !this.grants.has(`${prefix}:<type>`) &&
+        !this.grants.has(`${prefix}:<name>`))
+    ) {
       throw failure("capability-denied", `capability is not granted: ${prefix}:${String(name)}`);
     }
   }
 
   private list(payload: unknown): EntityRecord[] {
     const type = (payload as { entityType?: unknown }).entityType;
-    return [...this.entities.values()].filter((entity) => typeof type !== "string" || entity.entityType === type).map((entity) => structuredClone(entity));
+    return [...this.entities.values()]
+      .filter((entity) => typeof type !== "string" || entity.entityType === type)
+      .map((entity) => structuredClone(entity));
   }
 
   private create(payload: unknown): EntityRecord {
     const value = payload as { name?: unknown; type?: unknown };
-    if (typeof value.name !== "string" || !value.name.trim()) throw failure("invalid-payload", "entity.create requires name");
+    if (typeof value.name !== "string" || !value.name.trim())
+      throw failure("invalid-payload", "entity.create requires name");
     const entity: EntityRecord = {
       id: `${this.manifest.id}:${this.nextEntity++}`,
       name: value.name,
@@ -227,7 +283,8 @@ export class FakePluginHost implements PluginRpcTransport {
 
   private update(payload: unknown): EntityRecord {
     const value = payload as { id?: unknown; name?: unknown; type?: unknown; expectedRevision?: unknown };
-    if (typeof value.id !== "string" || !this.entities.has(value.id)) throw failure("not-found", "entity does not exist");
+    if (typeof value.id !== "string" || !this.entities.has(value.id))
+      throw failure("not-found", "entity does not exist");
     const entity = this.entities.get(value.id)!;
     this.checkRevision(entity, value.expectedRevision);
     if (typeof value.name === "string") entity.name = value.name;
@@ -258,7 +315,8 @@ export class FakePluginHost implements PluginRpcTransport {
   private publish(payload: unknown): void {
     const value = payload as { type?: unknown; payload?: unknown };
     if (typeof value.type !== "string") throw failure("invalid-payload", "event type is required");
-    if (this.subscriptions.has(value.type)) this.queues.set(value.type, [...(this.queues.get(value.type) ?? []), structuredClone(value.payload)]);
+    if (this.subscriptions.has(value.type))
+      this.queues.set(value.type, [...(this.queues.get(value.type) ?? []), structuredClone(value.payload)]);
   }
 
   private subscribe(payload: unknown): void {
@@ -278,10 +336,15 @@ export class FakePluginHost implements PluginRpcTransport {
 
   private async callService(payload: unknown): Promise<unknown> {
     const value = payload as { name?: unknown; major?: unknown; payload?: unknown; deadlineMs?: unknown };
-    if (typeof value.name !== "string" || typeof value.major !== "number") throw failure("invalid-payload", "service name and major are required");
+    if (typeof value.name !== "string" || typeof value.major !== "number")
+      throw failure("invalid-payload", "service name and major are required");
     const handler = this.services.get(`${value.name}@${value.major}`);
     if (!handler) throw failure("provider-unavailable", "service provider is unavailable", true);
-    return handler(value.payload, { pluginId: this.manifest.id, projectId: this.projectId, deadlineMs: typeof value.deadlineMs === "number" ? value.deadlineMs : 5000 });
+    return handler(value.payload, {
+      pluginId: this.manifest.id,
+      projectId: this.projectId,
+      deadlineMs: typeof value.deadlineMs === "number" ? value.deadlineMs : 5000,
+    });
   }
 }
 
@@ -290,19 +353,33 @@ function validateFakeAiOutput(schema: unknown, value: unknown): void {
   const node = schema as Record<string, unknown>;
   switch (node.type) {
     case "object": {
-      if (!value || typeof value !== "object" || Array.isArray(value)) throw failure("invalid-output", "structured output must be an object");
-      const properties = (node.properties && typeof node.properties === "object") ? node.properties as Record<string, unknown> : {};
-      for (const required of Array.isArray(node.required) ? node.required : []) if (typeof required === "string" && !(required in value)) throw failure("invalid-output", `missing structured field: ${required}`);
-      if (node.additionalProperties === false) for (const key of Object.keys(value)) if (!(key in properties)) throw failure("invalid-output", `unknown structured field: ${key}`);
-      for (const [key, child] of Object.entries(properties)) if (key in value) validateFakeAiOutput(child, (value as Record<string, unknown>)[key]);
+      if (!value || typeof value !== "object" || Array.isArray(value))
+        throw failure("invalid-output", "structured output must be an object");
+      const properties =
+        node.properties && typeof node.properties === "object" ? (node.properties as Record<string, unknown>) : {};
+      for (const required of Array.isArray(node.required) ? node.required : [])
+        if (typeof required === "string" && !(required in value))
+          throw failure("invalid-output", `missing structured field: ${required}`);
+      if (node.additionalProperties === false)
+        for (const key of Object.keys(value))
+          if (!(key in properties)) throw failure("invalid-output", `unknown structured field: ${key}`);
+      for (const [key, child] of Object.entries(properties))
+        if (key in value) validateFakeAiOutput(child, (value as Record<string, unknown>)[key]);
       return;
     }
     case "string":
-      if (typeof value !== "string" || (typeof node.maxLength === "number" && value.length > node.maxLength)) throw failure("invalid-output", "structured string is invalid");
+      if (typeof value !== "string" || (typeof node.maxLength === "number" && value.length > node.maxLength))
+        throw failure("invalid-output", "structured string is invalid");
       return;
-    case "boolean": if (typeof value !== "boolean") throw failure("invalid-output", "structured boolean is invalid"); return;
-    case "number": case "integer": if (typeof value !== "number") throw failure("invalid-output", "structured number is invalid"); return;
-    default: throw failure("invalid-output", "unsupported structured output type");
+    case "boolean":
+      if (typeof value !== "boolean") throw failure("invalid-output", "structured boolean is invalid");
+      return;
+    case "number":
+    case "integer":
+      if (typeof value !== "number") throw failure("invalid-output", "structured number is invalid");
+      return;
+    default:
+      throw failure("invalid-output", "unsupported structured output type");
   }
 }
 
@@ -310,7 +387,11 @@ function isPluginRpcError(value: unknown): value is PluginRpcError {
   return typeof value === "object" && value !== null && typeof (value as { code?: unknown }).code === "string";
 }
 
-export interface ConformanceResult { name: string; passed: boolean; detail?: string }
+export interface ConformanceResult {
+  name: string;
+  passed: boolean;
+  detail?: string;
+}
 
 export interface PluginLifecycleSnapshot {
   pluginId: string;
@@ -364,7 +445,8 @@ export class FakePluginLifecycleHost {
 
   uninstallCode(pluginId: string, version: string): void {
     const versions = this.requireVersions(pluginId);
-    if (this.selected.get(pluginId) === version && this.enabled.has(pluginId)) throw new Error("cannot uninstall the selected enabled version");
+    if (this.selected.get(pluginId) === version && this.enabled.has(pluginId))
+      throw new Error("cannot uninstall the selected enabled version");
     if (!versions.delete(version)) throw new Error("plugin version is not installed");
     if (versions.size === 0) {
       this.versions.delete(pluginId);
@@ -400,7 +482,7 @@ export class FakePluginLifecycleHost {
 function compareVersions(left: string, right: string): number {
   const a = left.split(".").map(Number);
   const b = right.split(".").map(Number);
-  return (a[0] - b[0]) || (a[1] - b[1]) || (a[2] - b[2]);
+  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
 }
 
 export async function runConformance(host: FakePluginHost): Promise<ConformanceResult[]> {
@@ -409,17 +491,29 @@ export async function runConformance(host: FakePluginHost): Promise<ConformanceR
   const check = async (name: string, operation: () => Promise<unknown>, expectedFailure?: string) => {
     try {
       await operation();
-      results.push({ name, passed: !expectedFailure, detail: expectedFailure ? "operation unexpectedly succeeded" : undefined });
+      results.push({
+        name,
+        passed: !expectedFailure,
+        detail: expectedFailure ? "operation unexpectedly succeeded" : undefined,
+      });
     } catch (error) {
-      const code = error instanceof Error && "code" in error ? String((error as Error & { code: unknown }).code) : "unknown";
+      const code =
+        error instanceof Error && "code" in error ? String((error as Error & { code: unknown }).code) : "unknown";
       results.push({ name, passed: code === expectedFailure, detail: code });
     }
   };
   const bootstrap = await client.bootstrap();
-  results.push({ name: "host assigns plugin identity", passed: bootstrap.pluginId === host.manifest.id && bootstrap.sessionId === host.sessionId });
+  results.push({
+    name: "host assigns plugin identity",
+    passed: bootstrap.pluginId === host.manifest.id && bootstrap.sessionId === host.sessionId,
+  });
   await check("entity read is granted", () => client.listEntities());
   await check("undeclared delete is denied", () => client.deleteEntity("missing"), "capability-denied");
-  await check("undeclared event publish is denied", () => client.publishEvent("com.example.event", 1, {}), "capability-denied");
+  await check(
+    "undeclared event publish is denied",
+    () => client.publishEvent("com.example.event", 1, {}),
+    "capability-denied",
+  );
   await check("unknown RPC is rejected", () => client.call("host.filesystem", {}), "unknown-method");
   host.revoke();
   await check("revoked session is denied", () => client.bootstrap(), "session-revoked");

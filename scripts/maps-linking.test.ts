@@ -6,9 +6,7 @@ function bridge(): Promise<string> {
 
 Deno.test("Maps bridge exposes capture, overlay, date, and focus-by-link on the provider", async () => {
   const source = await bridge();
-  const providerLiteral = source
-    .split("window.daenaMapProvider = ")[1]
-    .split("\n")[0];
+  const providerLiteral = source.split("window.daenaMapProvider = ")[1].split("\n")[0];
   for (const method of ["captureSelection", "setSemanticOverlay", "setDate", "focusByLink"]) {
     if (!providerLiteral.includes(method)) throw new Error(`provider is missing ${method}`);
   }
@@ -53,16 +51,25 @@ Deno.test("Maps bridge never renders unresolved or out-of-validity markers", asy
 
 Deno.test("Json adapter captures provider-feature selections in anchor form", async () => {
   const adapter = new JsonProviderAdapter();
-  await adapter.open({
-    mapId: "map-1",
-    asset: { assetId: "asset-1", contentHash: "sha256:test", revision: 1 },
-    dirty: false,
-  }, new TextEncoder().encode(JSON.stringify({
-    features: [
-      { kind: "burg", id: "42", label: "Old Harbor", point: [0.613, 0.428] },
-    ],
-  })));
-  adapter.focus({ kind: "provider-feature", provider: "azgaar-fmg", featureKind: "burg", featureId: "42", fallbackPoint: [0.613, 0.428] });
+  await adapter.open(
+    {
+      mapId: "map-1",
+      asset: { assetId: "asset-1", contentHash: "sha256:test", revision: 1 },
+      dirty: false,
+    },
+    new TextEncoder().encode(
+      JSON.stringify({
+        features: [{ kind: "burg", id: "42", label: "Old Harbor", point: [0.613, 0.428] }],
+      }),
+    ),
+  );
+  adapter.focus({
+    kind: "provider-feature",
+    provider: "azgaar-fmg",
+    featureKind: "burg",
+    featureId: "42",
+    fallbackPoint: [0.613, 0.428],
+  });
   const anchor: MapAnchor | null = await adapter.captureSelection();
   await adapter.close({
     mapId: "map-1",
@@ -74,7 +81,11 @@ Deno.test("Json adapter captures provider-feature selections in anchor form", as
 });
 
 Deno.test("Maps manifest declares the selection event as publishable", async () => {
-  const manifest = JSON.parse(await Deno.readTextFile(new URL("../packages/modules/maps/manifest.json", import.meta.url)));
-  const selection = (manifest.events?.publishes ?? []).find((event: { name?: string }) => event.name === "daena.maps/selection");
+  const manifest = JSON.parse(
+    await Deno.readTextFile(new URL("../packages/modules/maps/manifest.json", import.meta.url)),
+  );
+  const selection = (manifest.events?.publishes ?? []).find(
+    (event: { name?: string }) => event.name === "daena.maps/selection",
+  );
   if (!selection) throw new Error("selection event is not declared as publishable");
 });

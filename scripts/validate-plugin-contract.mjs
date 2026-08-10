@@ -8,10 +8,14 @@ const rpcSchema = await readJson("schemas/plugin-rpc-v1.json");
 const errorSchema = await readJson("schemas/plugin-error-v1.json");
 const capabilityRegistry = await readJson("schemas/capability-registry-v1.json");
 
-if (manifestSchema.$id !== "https://github.com/daena-archive/daena/schemas/plugin-manifest-v1.json") throw new Error("manifest schema id mismatch");
-if (rpcSchema.$id !== "https://github.com/daena-archive/daena/schemas/plugin-rpc-v1.json") throw new Error("RPC schema id mismatch");
-if (errorSchema.$id !== "https://github.com/daena-archive/daena/schemas/plugin-error-v1.json") throw new Error("error schema id mismatch");
-if (capabilityRegistry.version !== 1 || capabilityRegistry.deniedByDefault.length === 0) throw new Error("capability registry is incomplete");
+if (manifestSchema.$id !== "https://github.com/daena-archive/daena/schemas/plugin-manifest-v1.json")
+  throw new Error("manifest schema id mismatch");
+if (rpcSchema.$id !== "https://github.com/daena-archive/daena/schemas/plugin-rpc-v1.json")
+  throw new Error("RPC schema id mismatch");
+if (errorSchema.$id !== "https://github.com/daena-archive/daena/schemas/plugin-error-v1.json")
+  throw new Error("error schema id mismatch");
+if (capabilityRegistry.version !== 1 || capabilityRegistry.deniedByDefault.length === 0)
+  throw new Error("capability registry is incomplete");
 const rpcMethods = Object.entries(rpcSchema["x-methods"] ?? {});
 const requestSchema = rpcSchema.$defs?.request;
 if (rpcMethods.length < 20 || !requestSchema?.properties?.method?.enum || !Array.isArray(requestSchema.allOf)) {
@@ -27,11 +31,32 @@ for (const [method, contract] of rpcMethods) {
 
 for (const name of ["lore", "timeline", "writing", "maps"]) {
   const manifest = await readJson(`packages/modules/${name}/manifest.json`);
-  const required = ["manifestVersion", "id", "name", "version", "publisher", "hostApi", "kind", "entrypoints", "capabilities", "dependencies", "namespaces", "schemas", "templates", "views", "commands", "services", "events", "migrations"];
+  const required = [
+    "manifestVersion",
+    "id",
+    "name",
+    "version",
+    "publisher",
+    "hostApi",
+    "kind",
+    "entrypoints",
+    "capabilities",
+    "dependencies",
+    "namespaces",
+    "schemas",
+    "templates",
+    "views",
+    "commands",
+    "services",
+    "events",
+    "migrations",
+  ];
   for (const key of required) if (!(key in manifest)) throw new Error(`${name}: missing ${key}`);
   if (manifest.manifestVersion !== 1 || manifest.id !== `daena.${name}`) throw new Error(`${name}: identity mismatch`);
-  if (manifest.migrations.length !== 1 || manifest.migrations[0].from !== 0 || manifest.migrations[0].to !== 1) throw new Error(`${name}: migration chain mismatch`);
-  if (!manifest.namespaces.includes(manifest.schemas[0].namespace)) throw new Error(`${name}: schema namespace is not owned`);
+  if (manifest.migrations.length !== 1 || manifest.migrations[0].from !== 0 || manifest.migrations[0].to !== 1)
+    throw new Error(`${name}: migration chain mismatch`);
+  if (!manifest.namespaces.includes(manifest.schemas[0].namespace))
+    throw new Error(`${name}: schema namespace is not owned`);
 }
 
 {
@@ -42,7 +67,9 @@ for (const name of ["lore", "timeline", "writing", "maps"]) {
     .sort();
   const expected = ["daena.maps:detail-map", "daena.maps:overview-map", "daena.maps:related-map"];
   if (JSON.stringify(relationshipTypes) !== JSON.stringify(expected)) {
-    throw new Error(`maps: expected hierarchy relationships ${expected.join(", ")}, got ${relationshipTypes.join(", ")}`);
+    throw new Error(
+      `maps: expected hierarchy relationships ${expected.join(", ")}, got ${relationshipTypes.join(", ")}`,
+    );
   }
   const fixtures = await readJson("docs/maps/phase-1-fixtures.json");
   if (!Array.isArray(fixtures.fixtures) || fixtures.fixtures.length < 3) {

@@ -38,19 +38,22 @@ try {
   const schemaOut = join(temp, "schemas");
   mkdirSync(schemaOut, { recursive: true });
 
-  run([
-    "cargo",
-    "run",
-    "--quiet",
-    "--manifest-path",
-    "crates/daena-plugin-api/Cargo.toml",
-    "--features",
-    "gen",
-    "--locked",
-    "--offline",
-    "--bin",
-    "gen-contract",
-  ], { DAENA_SCHEMA_OUT_DIR: schemaOut });
+  run(
+    [
+      "cargo",
+      "run",
+      "--quiet",
+      "--manifest-path",
+      "crates/daena-plugin-api/Cargo.toml",
+      "--features",
+      "gen",
+      "--locked",
+      "--offline",
+      "--bin",
+      "gen-contract",
+    ],
+    { DAENA_SCHEMA_OUT_DIR: schemaOut },
+  );
 
   const tsOut = join(temp, "generated.ts");
   run(["node", "scripts/gen-plugin-contract.mjs"], {

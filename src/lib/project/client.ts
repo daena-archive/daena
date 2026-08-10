@@ -10,19 +10,73 @@ export interface Entity {
   updated_at: string;
   revision: string;
 }
-export interface Document { id: string; entity_id: string; format: string; body: string; updated_at: string; revision: string; }
-export interface FieldValue { entity_id: string; namespace: string; key: string; value: unknown; revision: string; }
-export interface Relationship { id: string; source_id: string; target_id: string; relationship_type: string; metadata: string; revision: string; }
-export interface MapLocation { id: string; mapEntityId: string; role: string; label: string; anchor: unknown; validity: { from: unknown | null; to: unknown | null }; anchorKind?: string; resolution?: string; }
-export interface MapRecoveryCopy { fileName: string; path: string; createdAt: string; }
-export interface Asset { id: string; entity_id: string; namespace: string; filename: string; content_hash: string; size: number; mime_type: string; path: string; created_at: string; revision: string; }
+export interface Document {
+  id: string;
+  entity_id: string;
+  format: string;
+  body: string;
+  updated_at: string;
+  revision: string;
+}
+export interface FieldValue {
+  entity_id: string;
+  namespace: string;
+  key: string;
+  value: unknown;
+  revision: string;
+}
+export interface Relationship {
+  id: string;
+  source_id: string;
+  target_id: string;
+  relationship_type: string;
+  metadata: string;
+  revision: string;
+}
+export interface MapLocation {
+  id: string;
+  mapEntityId: string;
+  role: string;
+  label: string;
+  anchor: unknown;
+  validity: { from: unknown | null; to: unknown | null };
+  anchorKind?: string;
+  resolution?: string;
+}
+export interface MapRecoveryCopy {
+  fileName: string;
+  path: string;
+  createdAt: string;
+}
+export interface Asset {
+  id: string;
+  entity_id: string;
+  namespace: string;
+  filename: string;
+  content_hash: string;
+  size: number;
+  mime_type: string;
+  path: string;
+  created_at: string;
+  revision: string;
+}
 export interface SyncSummary {
   state: string;
   dirty_count: number;
   export_error: string | null;
 }
-export interface ProjectInfo { name: string; root: string; index_status: string; assets: string; sync: SyncSummary; }
-export interface ExternalChangeReport { changed: boolean; paths: string[]; diagnostics: string[]; }
+export interface ProjectInfo {
+  name: string;
+  root: string;
+  index_status: string;
+  assets: string;
+  sync: SyncSummary;
+}
+export interface ExternalChangeReport {
+  changed: boolean;
+  paths: string[];
+  diagnostics: string[];
+}
 export interface GitStatus {
   repository: boolean;
   branch: string | null;
@@ -39,7 +93,11 @@ export interface GitPreflight {
   staged_paths: string[];
   unmerged_paths: string[];
 }
-export interface GitLogEntry { hash: string; date: string; subject: string; }
+export interface GitLogEntry {
+  hash: string;
+  date: string;
+  subject: string;
+}
 export interface GitToolInfo {
   available: boolean;
   version: string | null;
@@ -65,8 +123,18 @@ export interface GitResetResult {
 }
 export type { ModuleManifest };
 export type ProjectModuleManifest = ModuleManifest & { enabled: boolean };
-export interface InstalledPluginVersion { id: string; version: string; publisher: string; digest: string; signed: boolean; }
-export interface LifecycleInfo { state: string; failures: number; lastError: string | null; }
+export interface InstalledPluginVersion {
+  id: string;
+  version: string;
+  publisher: string;
+  digest: string;
+  signed: boolean;
+}
+export interface LifecycleInfo {
+  state: string;
+  failures: number;
+  lastError: string | null;
+}
 export interface InstalledVersionInfo {
   version: string;
   publisher: string;
@@ -79,7 +147,11 @@ export interface InstalledVersionInfo {
   bundled: boolean;
   rollbackAvailable: boolean;
 }
-export interface DependencyState { resolved: boolean; order: string[]; error: string | null; }
+export interface DependencyState {
+  resolved: boolean;
+  order: string[];
+  error: string | null;
+}
 export interface PluginAdminEntry extends ProjectModuleManifest {
   enabled: boolean;
   selectedVersion: string | null;
@@ -90,8 +162,13 @@ export interface PluginAdminEntry extends ProjectModuleManifest {
   installedVersions: InstalledVersionInfo[];
   dependencyState: DependencyState;
 }
-export interface PluginAdminView { plugins: PluginAdminEntry[]; }
-export interface RecentProjectSetting { name: string; root: string; }
+export interface PluginAdminView {
+  plugins: PluginAdminEntry[];
+}
+export interface RecentProjectSetting {
+  name: string;
+  root: string;
+}
 export interface GeneralSettings {
   recentProjects: RecentProjectSetting[];
 }
@@ -119,7 +196,13 @@ export interface RemoteCredentialStatus {
 }
 export interface AppSettingsUpdate {
   general?: { recentProjects?: RecentProjectSetting[] };
-  ai?: { localEndpoint?: string; localModel?: string; localEmbeddingModel?: string; remotePolicy?: AiSettings["remotePolicy"]; remote?: Partial<RemoteAiSettings> };
+  ai?: {
+    localEndpoint?: string;
+    localModel?: string;
+    localEmbeddingModel?: string;
+    remotePolicy?: AiSettings["remotePolicy"];
+    remote?: Partial<RemoteAiSettings>;
+  };
 }
 export interface AiProviderStatus {
   endpoint: string;
@@ -166,7 +249,10 @@ export interface PluginUpgradePlan {
   target: { signed: boolean; publisher: string };
 }
 type DialogSelection = string | string[] | null;
-export interface MutationOptions { expectedRevision?: string; requestId?: string; }
+export interface MutationOptions {
+  expectedRevision?: string;
+  requestId?: string;
+}
 
 const requestId = (options?: MutationOptions) => options?.requestId ?? crypto.randomUUID();
 
@@ -181,7 +267,8 @@ export const project = {
   close: () => invoke<void>("project_close"),
   info: () => invoke<ProjectInfo | null>("project_info"),
   importCheckpoint: () => invoke<ExternalChangeReport>("project_import_checkpoint"),
-  saveRecoveryCopy: (entityId: string, body: string) => invoke<string>("project_save_recovery_copy", { entityId, body }),
+  saveRecoveryCopy: (entityId: string, body: string) =>
+    invoke<string>("project_save_recovery_copy", { entityId, body }),
   gitStatus: () => invoke<GitStatus>("project_git_status"),
   gitPreflight: () => invoke<GitPreflight>("project_git_preflight"),
   gitStagingPreview: () => invoke<GitPreflight>("project_git_staging_preview"),
@@ -203,7 +290,12 @@ export const project = {
   openExternalUrl: (url: string) => invoke<void>("open_external_url", { url }),
   listEntities: () => invoke<Entity[]>("project_list_entities"),
   search: (query: string) => invoke<Entity[]>("project_search", { query }),
-  deleteEntity: (id: string, options?: MutationOptions) => invoke<void>("project_delete_entity", { id, expected_revision: options?.expectedRevision ?? null, request_id: requestId(options) }),
+  deleteEntity: (id: string, options?: MutationOptions) =>
+    invoke<void>("project_delete_entity", {
+      id,
+      expected_revision: options?.expectedRevision ?? null,
+      request_id: requestId(options),
+    }),
   createEntity: (name: string, entityType?: string, options?: MutationOptions) =>
     invoke<Entity>("project_create_entity", {
       input: { name, entity_type: entityType || null },
@@ -211,19 +303,75 @@ export const project = {
     }),
   createMap: (name = "Untitled map") => invoke<Entity>("project_create_map", { name }),
   updateEntity: (id: string, name?: string | null, entityType?: string | null, options?: MutationOptions) =>
-    invoke<Entity>("project_update_entity", { id, name: name ?? null, entity_type: entityType ?? null, expected_revision: options?.expectedRevision ?? null, request_id: requestId(options) }),
+    invoke<Entity>("project_update_entity", {
+      id,
+      name: name ?? null,
+      entity_type: entityType ?? null,
+      expected_revision: options?.expectedRevision ?? null,
+      request_id: requestId(options),
+    }),
   listDocuments: (entityId: string) => invoke<Document[]>("project_list_documents", { entityId }),
-  saveDocument: (entityId: string, body: string, format: "markdown" | "plain-text" | "rich-text" = "markdown", options?: MutationOptions) => invoke<void>("project_save_document", { input: { entity_id: entityId, body, format }, expected_revision: options?.expectedRevision ?? null, request_id: requestId(options) }),
-  saveEntry: (input: { document: { entity_id: string; body: string; format?: "markdown" | "plain-text" | "rich-text" }; fields: FieldValue[] }, options?: MutationOptions) => invoke<void>("project_save_entry", { input, expected_revision: options?.expectedRevision ?? null, request_id: requestId(options) }),
+  saveDocument: (
+    entityId: string,
+    body: string,
+    format: "markdown" | "plain-text" | "rich-text" = "markdown",
+    options?: MutationOptions,
+  ) =>
+    invoke<void>("project_save_document", {
+      input: { entity_id: entityId, body, format },
+      expected_revision: options?.expectedRevision ?? null,
+      request_id: requestId(options),
+    }),
+  saveEntry: (
+    input: {
+      document: { entity_id: string; body: string; format?: "markdown" | "plain-text" | "rich-text" };
+      fields: FieldValue[];
+    },
+    options?: MutationOptions,
+  ) =>
+    invoke<void>("project_save_entry", {
+      input,
+      expected_revision: options?.expectedRevision ?? null,
+      request_id: requestId(options),
+    }),
   listFields: (entityId: string) => invoke<FieldValue[]>("project_list_fields", { entityId }),
-  setField: (field: FieldValue, options?: MutationOptions) => invoke<void>("project_set_field", { field, request_id: requestId(options) }),
-  createRelationship: (sourceId: string, targetId: string, type: string, metadata?: Record<string, unknown>, options?: MutationOptions) =>
-    invoke<Relationship>("project_create_relationship", { input: { source_id: sourceId, target_id: targetId, relationship_type: type, metadata: metadata ? JSON.stringify(metadata) : null }, expected_revision: options?.expectedRevision ?? null, request_id: requestId(options) }),
+  setField: (field: FieldValue, options?: MutationOptions) =>
+    invoke<void>("project_set_field", { field, request_id: requestId(options) }),
+  createRelationship: (
+    sourceId: string,
+    targetId: string,
+    type: string,
+    metadata?: Record<string, unknown>,
+    options?: MutationOptions,
+  ) =>
+    invoke<Relationship>("project_create_relationship", {
+      input: {
+        source_id: sourceId,
+        target_id: targetId,
+        relationship_type: type,
+        metadata: metadata ? JSON.stringify(metadata) : null,
+      },
+      expected_revision: options?.expectedRevision ?? null,
+      request_id: requestId(options),
+    }),
   listRelationships: (entityId: string) => invoke<Relationship[]>("project_list_relationships", { entityId }),
   listMapLocations: (entityId: string) => invoke<MapLocation[]>("project_list_map_locations", { entityId }),
-  upsertMapLocation: (entityId: string, location: MapLocation, options?: MutationOptions) => invoke<void>("project_upsert_map_location", { entityId, location, request_id: requestId(options) }),
-  unlinkMapLocation: (entityId: string, locationId: string, options?: MutationOptions) => invoke<void>("project_unlink_map_location", { entityId, locationId, request_id: requestId(options) }),
-  mapsNavigation: (operation: string, input: { mapEntityId?: string; entityId?: string; linkId?: string; date?: unknown; entityIds?: string[] } = {}) => invoke<unknown>("maps_navigation", { operation, mapEntityId: input.mapEntityId ?? null, entityId: input.entityId ?? null, linkId: input.linkId ?? null, date: input.date ?? null, entityIds: input.entityIds ?? null }),
+  upsertMapLocation: (entityId: string, location: MapLocation, options?: MutationOptions) =>
+    invoke<void>("project_upsert_map_location", { entityId, location, request_id: requestId(options) }),
+  unlinkMapLocation: (entityId: string, locationId: string, options?: MutationOptions) =>
+    invoke<void>("project_unlink_map_location", { entityId, locationId, request_id: requestId(options) }),
+  mapsNavigation: (
+    operation: string,
+    input: { mapEntityId?: string; entityId?: string; linkId?: string; date?: unknown; entityIds?: string[] } = {},
+  ) =>
+    invoke<unknown>("maps_navigation", {
+      operation,
+      mapEntityId: input.mapEntityId ?? null,
+      entityId: input.entityId ?? null,
+      linkId: input.linkId ?? null,
+      date: input.date ?? null,
+      entityIds: input.entityIds ?? null,
+    }),
   mapsEditorSave: () => invoke<void>("maps_editor_save"),
   mapsEditorCaptureAnchor: () => invoke<void>("maps_editor_capture_anchor"),
   mapsEditorStartPick: () => invoke<void>("maps_editor_start_pick"),
@@ -231,35 +379,72 @@ export const project = {
   mapsEditorSetDate: (date: unknown) => invoke<void>("maps_editor_set_date", { date }),
   mapsEditorFocusLink: (linkId: string) => invoke<void>("maps_editor_focus_link", { linkId }),
   mapsRecoveryList: (entityId: string) => invoke<MapRecoveryCopy[]>("maps_recovery_list", { entityId }),
-  mapsRecoveryRestore: (entityId: string, fileName: string) => invoke<Asset>("maps_recovery_restore", { entityId, fileName }),
-  registerAsset: (input: { entity_id: string; namespace: string; filename: string; content_hash: string; size: number; mime_type: string; path: string }, options?: MutationOptions) =>
-    invoke<Asset>("project_register_asset", { input, expected_revision: options?.expectedRevision ?? null, request_id: requestId(options) }),
-  registerAssetFile: (input: { entity_id: string; namespace: string; source_path: string; filename: string; mime_type: string }, options?: MutationOptions) =>
-    invoke<Asset>("project_register_asset_file", { input, expected_revision: options?.expectedRevision ?? null, request_id: requestId(options) }),
+  mapsRecoveryRestore: (entityId: string, fileName: string) =>
+    invoke<Asset>("maps_recovery_restore", { entityId, fileName }),
+  registerAsset: (
+    input: {
+      entity_id: string;
+      namespace: string;
+      filename: string;
+      content_hash: string;
+      size: number;
+      mime_type: string;
+      path: string;
+    },
+    options?: MutationOptions,
+  ) =>
+    invoke<Asset>("project_register_asset", {
+      input,
+      expected_revision: options?.expectedRevision ?? null,
+      request_id: requestId(options),
+    }),
+  registerAssetFile: (
+    input: { entity_id: string; namespace: string; source_path: string; filename: string; mime_type: string },
+    options?: MutationOptions,
+  ) =>
+    invoke<Asset>("project_register_asset_file", {
+      input,
+      expected_revision: options?.expectedRevision ?? null,
+      request_id: requestId(options),
+    }),
   listAssets: (entityId: string) => invoke<Asset[]>("project_list_assets", { entityId }),
   backup: () => invoke<string>("project_backup"),
   recoveryBackup: () => invoke<string>("project_recovery_backup"),
   restoreRecoveryBackup: (path: string) => invoke<void>("project_restore_recovery_backup", { path }),
   restore: (path: string) => invoke<void>("project_restore", { path }),
-  restorePayload: (payload: string, options?: MutationOptions) => invoke<void>("project_restore_payload", { payload, request_id: requestId(options) }),
+  restorePayload: (payload: string, options?: MutationOptions) =>
+    invoke<void>("project_restore_payload", { payload, request_id: requestId(options) }),
   rebuildSearch: () => invoke<void>("project_rebuild_search"),
   seedExample: () => invoke<number>("project_seed_example"),
   listModuleManifests: () => invoke<ProjectModuleManifest[]>("module_list_manifests"),
-  enableModule: (id: string, grantedCapabilities?: string[]) => invoke<void>("module_enable", { id, grantedCapabilities }),
+  enableModule: (id: string, grantedCapabilities?: string[]) =>
+    invoke<void>("module_enable", { id, grantedCapabilities }),
   disableModule: (id: string) => invoke<void>("module_disable", { id }),
   adminView: () => invoke<PluginAdminView>("plugin_admin_view"),
-  openPluginWebview: (pluginId: string, viewId?: string) =>
-    invoke<void>("plugin_open_webview", { pluginId, viewId }),
-  mountPluginWebview: (pluginId: string, viewId: string | undefined, bounds: { x: number; y: number; width: number; height: number; viewportWidth: number; viewportHeight: number }, mapEntityId?: string, linkId?: string) =>
-    invoke<void>("plugin_mount_webview", { pluginId, viewId, mapEntityId, linkId, bounds }),
-  resizePluginWebview: (pluginId: string, bounds: { x: number; y: number; width: number; height: number; viewportWidth: number; viewportHeight: number }) =>
-    invoke<void>("plugin_resize_webview", { pluginId, bounds }),
+  openPluginWebview: (pluginId: string, viewId?: string) => invoke<void>("plugin_open_webview", { pluginId, viewId }),
+  mountPluginWebview: (
+    pluginId: string,
+    viewId: string | undefined,
+    bounds: { x: number; y: number; width: number; height: number; viewportWidth: number; viewportHeight: number },
+    mapEntityId?: string,
+    linkId?: string,
+  ) => invoke<void>("plugin_mount_webview", { pluginId, viewId, mapEntityId, linkId, bounds }),
+  resizePluginWebview: (
+    pluginId: string,
+    bounds: { x: number; y: number; width: number; height: number; viewportWidth: number; viewportHeight: number },
+  ) => invoke<void>("plugin_resize_webview", { pluginId, bounds }),
   unmountPluginWebview: (pluginId: string) => invoke<void>("plugin_unmount_webview", { pluginId }),
   closeAllPluginWebviews: () => invoke<void>("plugin_close_all_webviews"),
   hostViewData: (pluginId: string, viewId: string, selectedEntityId?: string) =>
     invoke<HostViewData>("plugin_host_view_data", { pluginId, viewId, selectedEntityId: selectedEntityId ?? null }),
-  hostViewSetField: (pluginId: string, viewId: string, componentId: string, entityId: string, key: string, value: unknown) =>
-    invoke<void>("plugin_host_view_set_field", { pluginId, viewId, componentId, entityId, key, value }),
+  hostViewSetField: (
+    pluginId: string,
+    viewId: string,
+    componentId: string,
+    entityId: string,
+    key: string,
+    value: unknown,
+  ) => invoke<void>("plugin_host_view_set_field", { pluginId, viewId, componentId, entityId, key, value }),
   hostViewInvokeCommand: (pluginId: string, viewId: string, commandId: string, payload?: Record<string, unknown>) =>
     invoke<string>("plugin_host_invoke_command", { pluginId, viewId, commandId, payload: payload ?? {} }),
   closePluginWebview: (pluginId: string) => invoke<void>("plugin_close_webview", { pluginId }),
@@ -269,8 +454,7 @@ export const project = {
     invoke<void>("plugin_upgrade", { pluginId, version, consent }),
   pluginUpgradePlan: (pluginId: string, version: string) =>
     invoke<PluginUpgradePlan>("plugin_upgrade_plan", { pluginId, version }),
-  rollbackPlugin: (pluginId: string, version: string) =>
-    invoke<void>("plugin_rollback", { pluginId, version }),
+  rollbackPlugin: (pluginId: string, version: string) => invoke<void>("plugin_rollback", { pluginId, version }),
   uninstallPluginCode: (pluginId: string, version: string) =>
     invoke<void>("plugin_uninstall_code", { pluginId, version }),
   deletePluginData: (pluginId: string, confirmation: string) =>
@@ -281,28 +465,82 @@ export const project = {
       options: {
         directory: false,
         multiple: false,
-      filters: [{ name: "Daena Archive plugin", extensions: ["wbplugin"] }],
+        filters: [{ name: "Daena Archive plugin", extensions: ["wbplugin"] }],
       },
     }),
   settingsGet: () => invoke<AppSettings>("settings_get"),
   settingsUpdate: (update: AppSettingsUpdate) => invoke<AppSettings>("settings_update", { update }),
   aiLocalStatus: (endpoint: string, model: string) => invoke<AiProviderStatus>("ai_local_status", { endpoint, model }),
   aiLocalModels: (endpoint: string) => invoke<string[]>("ai_local_models", { endpoint }),
-  aiRemoteCredentialStatus: (provider: string) => invoke<RemoteCredentialStatus>("ai_remote_credential_status", { provider }),
-  aiRemoteImportCredential: (provider: string) => invoke<RemoteCredentialStatus>("ai_remote_import_credential", { provider }),
+  aiRemoteCredentialStatus: (provider: string) =>
+    invoke<RemoteCredentialStatus>("ai_remote_credential_status", { provider }),
+  aiRemoteImportCredential: (provider: string) =>
+    invoke<RemoteCredentialStatus>("ai_remote_import_credential", { provider }),
   aiRemoteSetConsent: (projectId: string, provider: string, endpoint: string, allowed: boolean) =>
     invoke<void>("ai_remote_set_consent", { projectId, provider, endpoint, allowed }),
-  aiGenerateRemoteText: (projectId: string, provider: string, endpoint: string, model: string, instruction: string, selection: string, entityId?: string, retrievalQuery?: string) =>
-    invoke<string>("ai_generate_remote_text", { projectId, provider, endpoint, model, instruction, selection, entityId, retrievalQuery, includeRetrieval: true }),
+  aiGenerateRemoteText: (
+    projectId: string,
+    provider: string,
+    endpoint: string,
+    model: string,
+    instruction: string,
+    selection: string,
+    entityId?: string,
+    retrievalQuery?: string,
+  ) =>
+    invoke<string>("ai_generate_remote_text", {
+      projectId,
+      provider,
+      endpoint,
+      model,
+      instruction,
+      selection,
+      entityId,
+      retrievalQuery,
+      includeRetrieval: true,
+    }),
   aiIndexStatus: () => invoke<AiIndexStatus>("ai_index_status"),
-  aiIndexRebuild: (endpoint: string, model: string) => invoke<AiIndexRebuildResult>("ai_index_rebuild", { endpoint, model }),
+  aiIndexRebuild: (endpoint: string, model: string) =>
+    invoke<AiIndexRebuildResult>("ai_index_rebuild", { endpoint, model }),
   aiIndexCancel: () => invoke<void>("ai_index_cancel"),
   aiIndexSearch: (endpoint: string, model: string, query: string, limit = 8) =>
     invoke<AiHybridMatch[]>("ai_index_search", { endpoint, model, query, limit }),
-  aiGenerateText: (endpoint: string, model: string, instruction: string, selection: string, entityId?: string, retrievalQuery?: string) =>
-    invoke<string>("ai_generate_text", { endpoint, model, instruction, selection, entityId, retrievalQuery, includeRetrieval: true }),
-  aiGenerateStructured: (endpoint: string, model: string, instruction: string, context: string, outputContract: Record<string, unknown>, entityId?: string, retrievalQuery?: string) =>
-    invoke<string>("ai_generate_structured", { endpoint, model, instruction, context, outputContract, entityId, retrievalQuery, includeRetrieval: true }),
+  aiGenerateText: (
+    endpoint: string,
+    model: string,
+    instruction: string,
+    selection: string,
+    entityId?: string,
+    retrievalQuery?: string,
+  ) =>
+    invoke<string>("ai_generate_text", {
+      endpoint,
+      model,
+      instruction,
+      selection,
+      entityId,
+      retrievalQuery,
+      includeRetrieval: true,
+    }),
+  aiGenerateStructured: (
+    endpoint: string,
+    model: string,
+    instruction: string,
+    context: string,
+    outputContract: Record<string, unknown>,
+    entityId?: string,
+    retrievalQuery?: string,
+  ) =>
+    invoke<string>("ai_generate_structured", {
+      endpoint,
+      model,
+      instruction,
+      context,
+      outputContract,
+      entityId,
+      retrievalQuery,
+      includeRetrieval: true,
+    }),
   aiCancelText: (requestId: string) => invoke<void>("ai_cancel_text", { requestId }),
   aiPollText: (requestId: string) => invoke<AiStreamEvent[]>("ai_poll_text", { requestId }),
 };

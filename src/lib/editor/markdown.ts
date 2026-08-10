@@ -15,21 +15,37 @@ function inlineMarkdown(value: string): string {
     const index = tokens.push(html) - 1;
     return `\u0000${index}\u0000`;
   };
-  let text = value.replace(/<(u|mark)>([\s\S]*?)<\/\1>/gi, (_, tag: string, body: string) => protect(`<${tag.toLowerCase()}>${escapeHtml(body)}</${tag.toLowerCase()}>`));
+  let text = value.replace(/<(u|mark)>([\s\S]*?)<\/\1>/gi, (_, tag: string, body: string) =>
+    protect(`<${tag.toLowerCase()}>${escapeHtml(body)}</${tag.toLowerCase()}>`),
+  );
   text = text.replace(/`([^`\n]+)`/g, (_, code: string) => protect(`<code>${escapeHtml(code)}</code>`));
   text = escapeHtml(text);
-  text = text.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g, (_, alt: string, rawUrl: string, title?: string) => {
-    const url = safeUrl(rawUrl);
-    return url ? `<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}"${title ? ` title="${escapeHtml(title)}"` : ""}>` : escapeHtml(alt);
-  });
+  text = text.replace(
+    /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g,
+    (_, alt: string, rawUrl: string, title?: string) => {
+      const url = safeUrl(rawUrl);
+      return url
+        ? `<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}"${title ? ` title="${escapeHtml(title)}"` : ""}>`
+        : escapeHtml(alt);
+    },
+  );
   text = text.replace(/\[([^\]]+)\]\(\s*javascript:[^\n]*\)/gi, "$1");
-  text = text.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g, (_, label: string, rawUrl: string, title?: string) => {
-    const url = safeUrl(rawUrl);
-    return url ? `<a href="${escapeHtml(url)}">${label}</a>` : label;
-  });
-  text = text.replace(/\*\*([^*\n]+)\*\*|__([^_\n]+)__/g, (_, strong: string, alternate: string) => `<strong>${strong ?? alternate}</strong>`);
+  text = text.replace(
+    /\[([^\]]+)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g,
+    (_, label: string, rawUrl: string, title?: string) => {
+      const url = safeUrl(rawUrl);
+      return url ? `<a href="${escapeHtml(url)}">${label}</a>` : label;
+    },
+  );
+  text = text.replace(
+    /\*\*([^*\n]+)\*\*|__([^_\n]+)__/g,
+    (_, strong: string, alternate: string) => `<strong>${strong ?? alternate}</strong>`,
+  );
   text = text.replace(/~~([^~\n]+)~~/g, "<s>$1</s>");
-  text = text.replace(/(?<!\w)\*([^*\n]+)\*(?!\w)|(?<!\w)_([^_\n]+)_(?!\w)/g, (_, italic: string, alternate: string) => `<em>${italic ?? alternate}</em>`);
+  text = text.replace(
+    /(?<!\w)\*([^*\n]+)\*(?!\w)|(?<!\w)_([^_\n]+)_(?!\w)/g,
+    (_, italic: string, alternate: string) => `<em>${italic ?? alternate}</em>`,
+  );
   return text.replace(/\u0000(\d+)\u0000/g, (_, index: string) => tokens[Number(index)] ?? "");
 }
 
@@ -38,7 +54,10 @@ function renderBlock(lines: string[]): string {
   let index = 0;
   while (index < lines.length) {
     const line = lines[index];
-    if (!line.trim()) { index += 1; continue; }
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
     const aligned = line.match(/^\s*<div\s+align=["'](left|center|right)["']>([\s\S]*)<\/div>\s*$/i);
     if (aligned) {
       output.push(`<p style="text-align: ${aligned[1].toLowerCase()}">${inlineMarkdown(aligned[2])}</p>`);
@@ -51,12 +70,22 @@ function renderBlock(lines: string[]): string {
       index += 1;
       while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) body.push(lines[index++]);
       if (index < lines.length) index += 1;
-      output.push(`<pre><code${fence[1] ? ` data-language="${escapeHtml(fence[1])}"` : ""}>${escapeHtml(body.join("\n"))}</code></pre>`);
+      output.push(
+        `<pre><code${fence[1] ? ` data-language="${escapeHtml(fence[1])}"` : ""}>${escapeHtml(body.join("\n"))}</code></pre>`,
+      );
       continue;
     }
     const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
-    if (heading) { output.push(`<h${heading[1].length}>${inlineMarkdown(heading[2])}</h${heading[1].length}>`); index += 1; continue; }
-    if (/^\s{0,3}(?:\*\s*){3,}$|^\s{0,3}(?:-\s*){3,}$|^\s{0,3}(?:_\s*){3,}$/.test(line)) { output.push("<hr>"); index += 1; continue; }
+    if (heading) {
+      output.push(`<h${heading[1].length}>${inlineMarkdown(heading[2])}</h${heading[1].length}>`);
+      index += 1;
+      continue;
+    }
+    if (/^\s{0,3}(?:\*\s*){3,}$|^\s{0,3}(?:-\s*){3,}$|^\s{0,3}(?:_\s*){3,}$/.test(line)) {
+      output.push("<hr>");
+      index += 1;
+      continue;
+    }
     if (/^\s*>/.test(line)) {
       const quote: string[] = [];
       while (index < lines.length && /^\s*>/.test(lines[index])) quote.push(lines[index++].replace(/^\s*>\s?/, ""));
@@ -78,7 +107,12 @@ function renderBlock(lines: string[]): string {
     }
     const paragraph: string[] = [line];
     index += 1;
-    while (index < lines.length && lines[index].trim() && !/^\s*(?:```|#{1,6}\s|>|[-+*]\s+|\d+[.)]\s+)/.test(lines[index])) paragraph.push(lines[index++]);
+    while (
+      index < lines.length &&
+      lines[index].trim() &&
+      !/^\s*(?:```|#{1,6}\s|>|[-+*]\s+|\d+[.)]\s+)/.test(lines[index])
+    )
+      paragraph.push(lines[index++]);
     output.push(`<p>${inlineMarkdown(paragraph.join("\n")).replaceAll("\n", "<br>")}</p>`);
   }
   return output.join("");
@@ -101,27 +135,71 @@ function serializeNode(node: Node): string {
     return `<div align="${alignment}">${content}</div>\n\n`;
   }
   switch (node.tagName.toLowerCase()) {
-    case "strong": case "b": return `**${content}**`;
-    case "em": case "i": return `*${content}*`;
-    case "u": return `<u>${content}</u>`;
-    case "s": case "strike": case "del": return `~~${content}~~`;
-    case "code": return node.parentElement?.tagName.toLowerCase() === "pre" ? content : `\`${content}\``;
-    case "a": { const href = safeUrl(node.getAttribute("href") ?? ""); return href ? `[${content}](${href})` : content; }
-    case "br": return "\n";
-    case "h1": case "h2": case "h3": case "h4": case "h5": case "h6": return `${"#".repeat(Number(node.tagName[1]))} ${content.trim()}\n\n`;
-    case "p": case "div": return `${content.trim()}\n\n`;
-    case "blockquote": return content.trim().split("\n").map((line) => `> ${line}`).join("\n") + "\n\n";
-    case "hr": return "---\n\n";
+    case "strong":
+    case "b":
+      return `**${content}**`;
+    case "em":
+    case "i":
+      return `*${content}*`;
+    case "u":
+      return `<u>${content}</u>`;
+    case "s":
+    case "strike":
+    case "del":
+      return `~~${content}~~`;
+    case "code":
+      return node.parentElement?.tagName.toLowerCase() === "pre" ? content : `\`${content}\``;
+    case "a": {
+      const href = safeUrl(node.getAttribute("href") ?? "");
+      return href ? `[${content}](${href})` : content;
+    }
+    case "br":
+      return "\n";
+    case "h1":
+    case "h2":
+    case "h3":
+    case "h4":
+    case "h5":
+    case "h6":
+      return `${"#".repeat(Number(node.tagName[1]))} ${content.trim()}\n\n`;
+    case "p":
+    case "div":
+      return `${content.trim()}\n\n`;
+    case "blockquote":
+      return (
+        content
+          .trim()
+          .split("\n")
+          .map((line) => `> ${line}`)
+          .join("\n") + "\n\n"
+      );
+    case "hr":
+      return "---\n\n";
     case "pre": {
       const code = node.querySelector("code");
-      const language = code?.getAttribute("data-language") ?? code?.className.match(/(?:^|\s)language-([\w-]+)/)?.[1] ?? "";
+      const language =
+        code?.getAttribute("data-language") ?? code?.className.match(/(?:^|\s)language-([\w-]+)/)?.[1] ?? "";
       return `\`\`\`${language}\n${content.replace(/^\n|\n$/g, "")}\n\`\`\`\n\n`;
     }
-    case "ul": return [...node.children].map((item) => `- ${[...item.childNodes].map(serializeNode).join("").trim()}\n`).join("") + "\n";
-    case "ol": return [...node.children].map((item, index) => `${index + 1}. ${[...item.childNodes].map(serializeNode).join("").trim()}\n`).join("") + "\n";
-    case "li": return content;
-    case "img": { const src = safeUrl(node.getAttribute("src") ?? ""); return src ? `![${node.getAttribute("alt") ?? ""}](${src})` : ""; }
-    default: return content;
+    case "ul":
+      return (
+        [...node.children].map((item) => `- ${[...item.childNodes].map(serializeNode).join("").trim()}\n`).join("") +
+        "\n"
+      );
+    case "ol":
+      return (
+        [...node.children]
+          .map((item, index) => `${index + 1}. ${[...item.childNodes].map(serializeNode).join("").trim()}\n`)
+          .join("") + "\n"
+      );
+    case "li":
+      return content;
+    case "img": {
+      const src = safeUrl(node.getAttribute("src") ?? "");
+      return src ? `![${node.getAttribute("alt") ?? ""}](${src})` : "";
+    }
+    default:
+      return content;
   }
 }
 
@@ -129,6 +207,10 @@ export function htmlToMarkdown(html: string): string {
   if (typeof DOMParser === "undefined") return html.trim() ? `${html.trim()}\n` : "";
   const document = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html");
   const body = document.body;
-  const markdown = [...body.childNodes].map(serializeNode).join("").replace(/\n{3,}/g, "\n\n").trim();
+  const markdown = [...body.childNodes]
+    .map(serializeNode)
+    .join("")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
   return markdown ? `${markdown}\n` : "";
 }

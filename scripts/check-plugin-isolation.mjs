@@ -8,12 +8,20 @@ const tauriSource = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
 const tauri = fs.readFileSync("src-tauri/tauri.conf.json", "utf8");
 const capability = fs.readFileSync("src-tauri/capabilities/plugin.json", "utf8");
 
-assert.equal(/packages\/modules\/(?:index\.ts|lore\/src|timeline\/src)/.test(route), false, "main route must not import plugin implementations");
+assert.equal(
+  /packages\/modules\/(?:index\.ts|lore\/src|timeline\/src)/.test(route),
+  false,
+  "main route must not import plugin implementations",
+);
 assert.doesNotMatch(frame, /srcdoc|sandbox=/, "main webview must not host plugin code");
 assert.match(frame, /mountPluginWebview/);
 assert.match(frame, /resizePluginWebview/);
 assert.match(frame, /unmountPluginWebview/);
-assert.doesNotMatch(plugin, /__TAURI_INTERNALS__|@tauri-apps/, "plugin bundle must use the broker protocol, not Tauri APIs");
+assert.doesNotMatch(
+  plugin,
+  /__TAURI_INTERNALS__|@tauri-apps/,
+  "plugin bundle must use the broker protocol, not Tauri APIs",
+);
 assert.match(plugin, /createBrowserPluginRpcTransport/);
 assert.match(tauriSource, /plugin-sdk\.js/);
 assert.match(tauriSource, /WebviewWindowBuilder::new/);
@@ -32,7 +40,7 @@ assert.match(tauriSource, /use_https_scheme\(true\)/);
 assert.match(tauriSource, /register_uri_scheme_protocol\("plugin"/);
 assert.doesNotMatch(
   tauriSource,
-/register_uri_scheme_protocol\("plugin-daena-(?:lore|timeline)"/,
+  /register_uri_scheme_protocol\("plugin-daena-(?:lore|timeline)"/,
   "plugin assets must use the shared broker protocol",
 );
 assert.match(tauriSource, /plugin_protocol_response\(/);

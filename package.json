@@ -21,6 +21,8 @@
     "check:maps:phase1": "node scripts/maps-phase1-fixtures.test.mjs",
     "prepare:maps": "node scripts/ensure-fmg-archive.mjs",
     "check:plugin-isolation": "node scripts/check-plugin-isolation.mjs",
+    "format": "prettier --write \"src/**/*.{js,ts,svelte}\" \"packages/**/*.{js,ts,svelte}\" \"scripts/**/*.{js,mjs,ts}\"",
+    "format:check": "prettier --check \"src/**/*.{js,ts,svelte}\" \"packages/**/*.{js,ts,svelte}\" \"scripts/**/*.{js,mjs,ts}\"",
     "build:plugin-sdk": "tsc -p packages/plugin-sdk/tsconfig.json",
     "build:plugin-examples": "npm run build:plugin-sdk && node scripts/build-example-wasm.mjs",
     "pretest:plugin-conformance": "npm run gen:manifest-fixtures",
@@ -61,6 +63,8 @@
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "svelte": "^5.0.0",
     "svelte-check": "^4.0.0",
+    "prettier": "^3.6.2",
+    "prettier-plugin-svelte": "^3.4.0",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",
     "@tauri-apps/cli": "^2"

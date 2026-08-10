@@ -26,6 +26,8 @@
     "npm:@tiptap/extensions@^3.29.2": "3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2_@tiptap+pm@3.29.2",
     "npm:ajv@^8.20.0": "8.20.0",
     "npm:cytoscape@^3.34.0": "3.34.0",
+    "npm:prettier-plugin-svelte@^3.4.0": "3.5.2_prettier@3.9.6_svelte@5.56.8",
+    "npm:prettier@^3.6.2": "3.9.6",
     "npm:svelte-check@4": "4.7.4_svelte@5.56.8_typescript@5.6.3",
     "npm:svelte@5": "5.56.8",
     "npm:typescript@~5.6.2": "5.6.3",
@@ -761,6 +763,17 @@
         "source-map-js"
       ]
     },
+    "prettier-plugin-svelte@3.5.2_prettier@3.9.6_svelte@5.56.8": {
+      "integrity": "sha512-ItFouLvzSFE3ulNl4DKoWM3BGcbDCNVpIyy/Y3F2gC3aNiGLxtFUdffVqO5Z5hhYG+DFT5KULWaxmeFFpdbvaQ==",
+      "dependencies": [
+        "prettier",
+        "svelte"
+      ]
+    },
+    "prettier@3.9.6": {
+      "integrity": "sha512-OpN0zzVdiaiAhxpuuj5efpIS4sY9j7bY6uR5mnj5yPzGkdkjNKSJeUThPb60Jw29QuAZgA4o+/iB49kFiaBX6g==",
+      "bin": true
+    },
     "prosemirror-changeset@2.4.1": {
       "integrity": "sha512-96WBLhOaYhJ+kPhLg3uW359Tz6I/MfcrQfL4EGv4SrcqKEMC1gmoGrXHecPE8eOwTVCJ4IwgfzM8fFad25wNfw==",
       "dependencies": [
@@ -1032,6 +1045,8 @@
         "npm:@tiptap/extension-underline@^3.29.2",
         "npm:@tiptap/extensions@^3.29.2",
         "npm:cytoscape@^3.34.0",
+        "npm:prettier-plugin-svelte@^3.4.0",
+        "npm:prettier@^3.6.2",
         "npm:svelte-check@4",
         "npm:svelte@5",
         "npm:typescript@~5.6.2",

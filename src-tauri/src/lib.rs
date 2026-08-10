@@ -4598,37 +4598,59 @@ async fn project_close(
     ai_runtime: tauri::State<'_, ai::SharedAiRuntime>,
     watcher: tauri::State<'_, SharedProjectWatcher>,
 ) -> Result<(), String> {
-    stop_project_watcher(watcher.inner())?;
-    flush_project_checkpoint(state.clone(), "project lifecycle transition").await?;
     let plugins = plugins.inner().clone();
     let ai_runtime = ai_runtime.inner().clone();
-    with_core(state, move |core| {
-        let project_id = core.info().map(|info| info.root);
-        core.close_without_flush(trusted_shell())?;
-        ai::detach_project_index(&ai_runtime);
-        if let Some(project_id) = project_id {
-            let plugin_ids = {
-                let mut host = plugins
-                    .lock()
-                    .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
-                for request_id in host.ai_request_ids_for(&project_id, None) {
-                    let _ = ai::cancel_ai_request(&ai_runtime, &request_id);
-                    let _ = ai::remove_ai_citations(&ai_runtime, &request_id);
-                    host.remove_ai_request(&request_id);
-                }
-                host.deactivate_project(&project_id);
-                host.catalog
-                    .list()
-                    .map(|entry| entry.manifest.id.clone())
-                    .collect::<Vec<_>>()
-            };
-            for plugin_id in plugin_ids {
-                close_plugin_webview(&app, &plugin_id);
-            }
-        }
-        Ok(())
+    let app = app.clone();
+    let core = state.inner().clone();
+    let watcher = watcher.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        close_project_for_app(&app, &core, &plugins, &ai_runtime, &watcher)
     })
     .await
+    .map_err(|error| format!("project close worker failed: {error}"))?
+}
+
+fn close_project_for_app(
+    app: &tauri::AppHandle,
+    core: &SharedCore,
+    plugins: &SharedPluginHost,
+    ai_runtime: &ai::SharedAiRuntime,
+    watcher: &SharedProjectWatcher,
+) -> Result<(), String> {
+    stop_project_watcher(watcher)?;
+    flush_checkpoint_for_shared_core(core, "project lifecycle transition")?;
+    let session = current_session(core)?;
+    let mut service = session
+        .core
+        .lock()
+        .map_err(|_| "core lock poisoned".to_string())?;
+    let Some(project_id) = service.info().map(|info| info.root) else {
+        return Ok(());
+    };
+    service
+        .close_without_flush(trusted_shell())
+        .map_err(|error| error.to_string())?;
+    ai::detach_project_index(ai_runtime);
+    let plugin_ids = {
+        let mut host = plugins
+            .lock()
+            .map_err(|_| "plugin host lock poisoned".to_string())?;
+        for request_id in host.ai_request_ids_for(&project_id, None) {
+            let _ = ai::cancel_ai_request(ai_runtime, &request_id);
+            let _ = ai::remove_ai_citations(ai_runtime, &request_id);
+            host.remove_ai_request(&request_id);
+        }
+        host.deactivate_project(&project_id);
+        host.catalog
+            .list()
+            .map(|entry| entry.manifest.id.clone())
+            .collect::<Vec<_>>()
+    };
+    drop(service);
+    for plugin_id in plugin_ids {
+        close_plugin_webview(app, &plugin_id);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -5671,6 +5693,10 @@ pub fn run() {
     let startup_plugins = plugins.clone();
     let watcher = Arc::new(Mutex::new(ProjectWatcher::default()));
     let ai_runtime = protocol_ai_runtime.clone();
+    let close_core = core.clone();
+    let close_plugins = plugins.clone();
+    let close_watcher = watcher.clone();
+    let close_ai_runtime = ai_runtime.clone();
     tauri::Builder::default()
         .setup(move |app| {
             let _ = APP_HANDLE.set(app.handle().clone());
@@ -5695,6 +5721,24 @@ pub fn run() {
                 eprintln!("ignoring rejected installed plugin package: {error}");
             }
             Ok(())
+        })
+        .on_window_event(move |window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                if let Err(error) = close_project_for_app(
+                    &window.app_handle(),
+                    &close_core,
+                    &close_plugins,
+                    &close_ai_runtime,
+                    &close_watcher,
+                ) {
+                    eprintln!("project cleanup during window close failed: {error}");
+                }
+                let _ = window.destroy();
+            }
         })
         .register_uri_scheme_protocol("plugin", move |ctx, request| {
             plugin_protocol_response(

@@ -4,6 +4,17 @@ import type { EntityTemplate, FieldDefinition } from "../../../packages/plugin-s
 
 export type { EntityTemplate, FieldDefinition };
 
+export interface FieldScopeOverride {
+  fieldKey: string;
+  entityTypes: string[];
+}
+
+export interface TemplateOverride {
+  templateId: string;
+  fields: Record<string, unknown>;
+  requiredFields?: string[] | null;
+}
+
 export interface ModuleSchemaOverlay {
   version: number;
   disabledEntityTypes?: string[];
@@ -12,6 +23,8 @@ export interface ModuleSchemaOverlay {
   customEntityTypes?: string[];
   customFields?: FieldDefinition[];
   customTemplates?: EntityTemplate[];
+  fieldScopeOverrides?: FieldScopeOverride[];
+  templateOverrides?: TemplateOverride[];
 }
 
 export interface ModuleSchemaEditorState {

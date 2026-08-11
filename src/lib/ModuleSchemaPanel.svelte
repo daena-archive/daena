@@ -110,6 +110,15 @@ function normalizeOverlay(value: ModuleSchemaOverlay): ModuleSchemaOverlay {
     entityType: ensureTypeId(template.entityType, "type"),
     description: template.description?.trim() ? template.description.trim() : null,
   }));
+  const fieldScopeOverrides = cloneJson(value.fieldScopeOverrides ?? [])
+    .map((scope) => ({
+      fieldKey: scope.fieldKey,
+      entityTypes: [...new Set(scope.entityTypes.map((name) => ensureTypeId(name, "type")).filter(Boolean))].sort(),
+    }))
+    .sort((left, right) => left.fieldKey.localeCompare(right.fieldKey));
+  const templateOverrides = cloneJson(value.templateOverrides ?? []).sort((left, right) =>
+    left.templateId.localeCompare(right.templateId),
+  );
   return {
     version: value.version || 1,
     disabledEntityTypes: [...(value.disabledEntityTypes ?? [])].sort(),
@@ -118,6 +127,8 @@ function normalizeOverlay(value: ModuleSchemaOverlay): ModuleSchemaOverlay {
     customEntityTypes,
     customFields,
     customTemplates,
+    fieldScopeOverrides,
+    templateOverrides,
   };
 }
 
@@ -148,6 +159,7 @@ let editingFieldKey = $state<string | null>(null);
 let editFieldLabel = $state("");
 let editFieldType = $state<FieldType>("text");
 let editFieldEntityTypes = $state<string[]>([]);
+let editingBuiltinFieldKey = $state<string | null>(null);
 
 let newTemplateName = $state("");
 let newTemplateEntityType = $state("");
@@ -156,6 +168,9 @@ let editingTemplateId = $state<string | null>(null);
 let editTemplateName = $state("");
 let editTemplateEntityType = $state("");
 let editTemplateDescription = $state("");
+let editingBuiltinTemplateId = $state<string | null>(null);
+let editingTemplateFieldKeys = $state<string[]>([]);
+let editingTemplateRequiredFields = $state<string[]>([]);
 
 function reportDirty(next: boolean) {
   dirtyFlag = next;
@@ -196,6 +211,67 @@ function effectiveTypes() {
   ];
 }
 
+function builtinFieldScope(field: FieldDefinition): string[] {
+  const override = (draft.fieldScopeOverrides ?? []).find((scope) => scope.fieldKey === field.key);
+  return override ? override.entityTypes : field.entityTypes?.length ? [...field.entityTypes] : effectiveTypes();
+}
+
+function fieldAppliesTo(field: FieldDefinition, entityType: string): boolean {
+  const scope = packageFields.some((candidate) => candidate.key === field.key)
+    ? builtinFieldScope(field)
+    : (field.entityTypes ?? []);
+  return scope.includes(entityType);
+}
+
+function effectiveFieldsForType(entityType: string): FieldDefinition[] {
+  return [...packageFields, ...(draft.customFields ?? [])].filter(
+    (field) => !isDisabled(draft.disabledFields, field.key) && fieldAppliesTo(field, entityType),
+  );
+}
+
+function updateBuiltinFieldScope(field: FieldDefinition, entityTypes: string[]) {
+  const nextTypes = [...new Set(entityTypes)].sort();
+  const baseline = field.entityTypes?.length ? [...field.entityTypes].sort() : effectiveTypes().sort();
+  const fieldScopeOverrides = (draft.fieldScopeOverrides ?? []).filter((scope) => scope.fieldKey !== field.key);
+  const disabledFields = new Set(draft.disabledFields ?? []);
+  if (nextTypes.length === 0) {
+    disabledFields.add(field.key);
+  } else {
+    disabledFields.delete(field.key);
+    if (JSON.stringify(nextTypes) !== JSON.stringify(baseline)) {
+      fieldScopeOverrides.push({ fieldKey: field.key, entityTypes: nextTypes });
+    }
+  }
+  const applies = (key: string, type: string) => {
+    if (key === field.key) return nextTypes.includes(type);
+    const candidate = [...packageFields, ...(draft.customFields ?? [])].find((item) => item.key === key);
+    return candidate ? fieldAppliesTo(candidate, type) : false;
+  };
+  const pruneTemplate = (template: EntityTemplate) => {
+    const fields = { ...(template.fields as Record<string, unknown>) };
+    for (const key of Object.keys(fields)) if (!applies(key, template.entityType)) delete fields[key];
+    return {
+      ...template,
+      fields,
+      requiredFields: template.requiredFields?.filter((key) => key in fields) ?? null,
+    };
+  };
+  setDraft({
+    ...draft,
+    disabledFields: [...disabledFields].sort(),
+    fieldScopeOverrides,
+    customTemplates: (draft.customTemplates ?? []).map(pruneTemplate),
+    templateOverrides: (draft.templateOverrides ?? []).map((override) => {
+      const template = packageTemplates.find((candidate) => candidate.id === override.templateId);
+      if (!template) return override;
+      const fields = { ...override.fields };
+      for (const key of Object.keys(fields)) if (!applies(key, template.entityType)) delete fields[key];
+      return { ...override, fields, requiredFields: override.requiredFields?.filter((key) => key in fields) ?? null };
+    }),
+  });
+  editingBuiltinFieldKey = null;
+}
+
 function scopeLabel(entityTypes: string[] | undefined): string {
   if (!entityTypes || entityTypes.length === 0) return "No types";
   return entityTypes.map(humanizeId).join(", ");
@@ -224,6 +300,55 @@ function defaultTemplateFields(entityType: string): Record<string, unknown> {
       field.type === "number" ? "" : field.type === "boolean" ? false : field.type === "relationship" ? [] : "";
   }
   return fields;
+}
+
+function defaultFieldValue(field: FieldDefinition): unknown {
+  if (field.type === "boolean") return false;
+  if (field.type === "relationship" || (field.type === "entity-ref" && field.multiple)) return [];
+  return "";
+}
+
+function fieldsForTemplate(template: EntityTemplate, builtin: boolean): Record<string, unknown> {
+  if (builtin) {
+    const override = (draft.templateOverrides ?? []).find((candidate) => candidate.templateId === template.id);
+    if (override) return { ...override.fields };
+  }
+  return { ...(template.fields as Record<string, unknown>) };
+}
+
+function beginTemplateFieldEdit(template: EntityTemplate, builtin: boolean) {
+  editingTypeId = null;
+  editingFieldKey = null;
+  editingBuiltinFieldKey = null;
+  editingTemplateId = builtin ? null : template.id;
+  editingBuiltinTemplateId = builtin ? template.id : null;
+  editTemplateName = template.name;
+  editTemplateEntityType = template.entityType;
+  editTemplateDescription = template.description ?? "";
+  const fields = fieldsForTemplate(template, builtin);
+  editingTemplateFieldKeys = Object.keys(fields).sort();
+  editingTemplateRequiredFields = [
+    ...((builtin
+      ? (draft.templateOverrides ?? []).find((candidate) => candidate.templateId === template.id)?.requiredFields
+      : template.requiredFields) ?? []),
+  ].sort();
+}
+
+function templateFieldsFromSelection(template: EntityTemplate): Record<string, unknown> {
+  const existing = fieldsForTemplate(template, Boolean(editingBuiltinTemplateId));
+  return Object.fromEntries(
+    editingTemplateFieldKeys.map((key) => {
+      const field = effectiveFieldsForType(template.entityType).find((candidate) => candidate.key === key);
+      return [key, key in existing ? existing[key] : field ? defaultFieldValue(field) : ""];
+    }),
+  );
+}
+
+function cancelTemplateFieldEdit() {
+  cancelTemplateEdit();
+  editingBuiltinTemplateId = null;
+  editingTemplateFieldKeys = [];
+  editingTemplateRequiredFields = [];
 }
 
 async function save() {
@@ -454,12 +579,7 @@ function cancelTemplateEdit() {
 }
 
 function startTemplateEdit(template: EntityTemplate) {
-  editingTypeId = null;
-  editingFieldKey = null;
-  editingTemplateId = template.id;
-  editTemplateName = template.name;
-  editTemplateEntityType = template.entityType;
-  editTemplateDescription = template.description ?? "";
+  beginTemplateFieldEdit(template, false);
 }
 
 function addCustomTemplate() {
@@ -512,11 +632,29 @@ function commitTemplateEdit() {
         name,
         entityType,
         description: description || null,
-        fields: entityChanged ? defaultTemplateFields(entityType) : template.fields,
+        fields: entityChanged ? defaultTemplateFields(entityType) : templateFieldsFromSelection(template),
+        requiredFields: entityChanged
+          ? []
+          : editingTemplateRequiredFields.filter((key) => editingTemplateFieldKeys.includes(key)),
       };
     }),
   });
-  cancelTemplateEdit();
+  cancelTemplateFieldEdit();
+}
+
+function commitBuiltinTemplateEdit() {
+  if (!editingBuiltinTemplateId) return;
+  const template = packageTemplates.find((candidate) => candidate.id === editingBuiltinTemplateId);
+  if (!template) return;
+  const fields = templateFieldsFromSelection(template);
+  const templateOverrides = (draft.templateOverrides ?? []).filter((candidate) => candidate.templateId !== template.id);
+  templateOverrides.push({
+    templateId: template.id,
+    fields,
+    requiredFields: editingTemplateRequiredFields.filter((key) => key in fields),
+  });
+  setDraft({ ...draft, templateOverrides });
+  cancelTemplateFieldEdit();
 }
 
 function removeCustomTemplate(id: string) {
@@ -563,7 +701,7 @@ function removeCustomTemplate(id: string) {
     <div class="block">
       <div class="block-heading">
         <h4>Builtin fields</h4>
-        <span class="block-hint">Click to enable or disable</span>
+        <span class="block-hint">Enable fields and choose the entity types they apply to</span>
       </div>
       <div class="chip-row">
         {#each packageFields as field}
@@ -578,12 +716,48 @@ function removeCustomTemplate(id: string) {
           </button>
         {/each}
       </div>
+      <ul class="list compact-list">
+        {#each packageFields as field}
+          <li class="list-item">
+            {#if editingBuiltinFieldKey === field.key}
+              <div class="edit-form">
+                <div class="type-select" role="group" aria-label={`Entity types for ${field.label}`}>
+                  <span class="type-select-label">Applies to</span>
+                  <div class="chip-row compact">
+                    {#each effectiveTypes() as type}
+                      <button
+                        type="button"
+                        class="chip select"
+                        class:selected={builtinFieldScope(field).includes(type)}
+                        aria-pressed={builtinFieldScope(field).includes(type)}
+                        onclick={() => updateBuiltinFieldScope(field, toggleInList(builtinFieldScope(field), type))}
+                        >{humanizeId(type)}</button>
+                    {/each}
+                  </div>
+                </div>
+                <div class="edit-actions">
+                  <button type="button" class="quiet" onclick={() => (editingBuiltinFieldKey = null)}>Done</button>
+                </div>
+              </div>
+            {:else}
+              <div class="item-main">
+                <strong>{field.label || humanizeId(field.key)}</strong><span class="meta"
+                  >{scopeLabel(builtinFieldScope(field))}</span>
+              </div>
+              <div class="item-actions">
+                <button type="button" class="quiet" onclick={() => (editingBuiltinFieldKey = field.key)}
+                  >Edit scope</button>
+              </div>
+            {/if}
+          </li>
+        {/each}
+      </ul>
     </div>
 
     <div class="block">
       <div class="block-heading">
         <h4>Builtin templates</h4>
-        <span class="block-hint">Click to enable or disable</span>
+        <span class="block-hint">Enable templates and choose their included fields</span>
       </div>
       <div class="chip-row">
         {#each packageTemplates as template}
@@ -598,6 +772,65 @@ function removeCustomTemplate(id: string) {
           </button>
         {/each}
       </div>
+      <ul class="list compact-list">
+        {#each packageTemplates as template}
+          <li class="list-item">
+            {#if editingBuiltinTemplateId === template.id}
+              <div class="edit-form">
+                <div class="type-select" role="group" aria-label={`Fields for ${template.name}`}>
+                  <span class="type-select-label">Included fields</span>
+                  <div class="chip-row compact">
+                    {#each effectiveFieldsForType(template.entityType) as field}
+                      <button
+                        type="button"
+                        class="chip select"
+                        class:selected={editingTemplateFieldKeys.includes(field.key)}
+                        aria-pressed={editingTemplateFieldKeys.includes(field.key)}
+                        onclick={() => {
+                          editingTemplateFieldKeys = toggleInList(editingTemplateFieldKeys, field.key);
+                          if (!editingTemplateFieldKeys.includes(field.key))
+                            editingTemplateRequiredFields = editingTemplateRequiredFields.filter(
+                              (key) => key !== field.key,
+                            );
+                        }}>{field.label || humanizeId(field.key)}</button>
+                    {/each}
+                  </div>
+                </div>
+                <div class="type-select" role="group" aria-label={`Required fields for ${template.name}`}>
+                  <span class="type-select-label">Required fields</span>
+                  <div class="chip-row compact">
+                    {#each editingTemplateFieldKeys as key}
+                      <button
+                        type="button"
+                        class="chip select"
+                        class:selected={editingTemplateRequiredFields.includes(key)}
+                        aria-pressed={editingTemplateRequiredFields.includes(key)}
+                        onclick={() =>
+                          (editingTemplateRequiredFields = toggleInList(editingTemplateRequiredFields, key))}
+                        >{packageFields.find((field) => field.key === key)?.label || humanizeId(key)}</button>
+                    {/each}
+                  </div>
+                </div>
+                <div class="edit-actions">
+                  <button type="button" class="action" onclick={commitBuiltinTemplateEdit}>Save fields</button><button
+                    type="button"
+                    class="quiet"
+                    onclick={cancelTemplateFieldEdit}>Cancel</button>
+                </div>
+              </div>
+            {:else}
+              <div class="item-main">
+                <strong>{template.name}</strong><span class="meta"
+                  >{Object.keys(fieldsForTemplate(template, true)).length} fields</span>
+              </div>
+              <div class="item-actions">
+                <button type="button" class="quiet" onclick={() => beginTemplateFieldEdit(template, true)}
+                  >Customize fields</button>
+              </div>
+            {/if}
+          </li>
+        {/each}
+      </ul>
     </div>
 
     <div class="block">
@@ -787,6 +1020,41 @@ function removeCustomTemplate(id: string) {
                     <span>Description <em>(optional)</em></span>
                     <input bind:value={editTemplateDescription} placeholder="A kind of being in this world." />
                   </label>
+                  <div class="type-select" role="group" aria-label={`Fields for ${template.name}`}>
+                    <span class="type-select-label">Included fields</span>
+                    <div class="chip-row compact">
+                      {#each effectiveFieldsForType(template.entityType) as field}
+                        <button
+                          type="button"
+                          class="chip select"
+                          class:selected={editingTemplateFieldKeys.includes(field.key)}
+                          aria-pressed={editingTemplateFieldKeys.includes(field.key)}
+                          onclick={() => {
+                            editingTemplateFieldKeys = toggleInList(editingTemplateFieldKeys, field.key);
+                            if (!editingTemplateFieldKeys.includes(field.key))
+                              editingTemplateRequiredFields = editingTemplateRequiredFields.filter(
+                                (key) => key !== field.key,
+                              );
+                          }}>{field.label || humanizeId(field.key)}</button>
+                      {/each}
+                    </div>
+                  </div>
+                  <div class="type-select" role="group" aria-label={`Required fields for ${template.name}`}>
+                    <span class="type-select-label">Required fields</span>
+                    <div class="chip-row compact">
+                      {#each editingTemplateFieldKeys as key}
+                        <button
+                          type="button"
+                          class="chip select"
+                          class:selected={editingTemplateRequiredFields.includes(key)}
+                          aria-pressed={editingTemplateRequiredFields.includes(key)}
+                          onclick={() =>
+                            (editingTemplateRequiredFields = toggleInList(editingTemplateRequiredFields, key))}
+                          >{[...packageFields, ...(draft.customFields ?? [])].find((field) => field.key === key)
+                            ?.label || humanizeId(key)}</button>
+                      {/each}
+                    </div>
+                  </div>
                   <div class="edit-actions">
                     <button type="button" class="action" onclick={commitTemplateEdit}>Save</button>
                     <button type="button" class="quiet" onclick={cancelTemplateEdit}>Cancel</button>

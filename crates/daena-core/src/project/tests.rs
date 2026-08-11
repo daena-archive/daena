@@ -946,6 +946,12 @@ fn lore_schema_overlay_survives_directory_reopen_and_checkpoint() {
     let overlay = serde_json::json!({
         "version": 1,
         "disabledTemplates": ["concept"],
+        "fieldScopeOverrides": [{ "fieldKey": "aliases", "entityTypes": ["person", "faction"] }],
+        "templateOverrides": [{
+            "templateId": "person",
+            "fields": { "summary": "", "aliases": "", "occupation": "" },
+            "requiredFields": ["occupation"]
+        }],
         "customEntityTypes": ["species"],
         "customFields": [{
             "key": "lifespan",

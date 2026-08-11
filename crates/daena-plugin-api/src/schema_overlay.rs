@@ -35,6 +35,31 @@ pub struct ModuleSchemaOverlay {
     pub custom_fields: Vec<FieldDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub custom_templates: Vec<EntityTemplate>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub field_scope_overrides: Vec<FieldScopeOverride>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub template_overrides: Vec<TemplateOverride>,
+}
+
+/// Project-specific applicability for a packaged field. Package field metadata
+/// remains immutable; the overlay only decides which entity types use it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldScopeOverride {
+    pub field_key: String,
+    pub entity_types: Vec<String>,
+}
+
+/// Project-specific field selection for a packaged template.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct TemplateOverride {
+    pub template_id: String,
+    pub fields: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_fields: Option<Vec<String>>,
 }
 
 /// Package builtins + current overlay for the schema settings editor.
@@ -62,6 +87,8 @@ impl Default for ModuleSchemaOverlay {
             custom_entity_types: Vec::new(),
             custom_fields: Vec::new(),
             custom_templates: Vec::new(),
+            field_scope_overrides: Vec::new(),
+            template_overrides: Vec::new(),
         }
     }
 }
@@ -74,6 +101,8 @@ impl ModuleSchemaOverlay {
             && self.custom_entity_types.is_empty()
             && self.custom_fields.is_empty()
             && self.custom_templates.is_empty()
+            && self.field_scope_overrides.is_empty()
+            && self.template_overrides.is_empty()
     }
 }
 
@@ -217,6 +246,52 @@ pub fn validate_module_overlay(
         .chain(overlay.custom_entity_types.iter().map(String::as_str))
         .collect();
 
+    let mut field_scope_keys = BTreeSet::new();
+    for scope in &overlay.field_scope_overrides {
+        if !package_fields.contains(scope.field_key.as_str()) {
+            return Err(format!(
+                "field scope override references unknown builtin field: {}",
+                scope.field_key
+            ));
+        }
+        if overlay
+            .disabled_fields
+            .iter()
+            .any(|disabled| disabled == &scope.field_key)
+        {
+            return Err(format!(
+                "field scope override references disabled field: {}",
+                scope.field_key
+            ));
+        }
+        if !field_scope_keys.insert(scope.field_key.as_str()) {
+            return Err(format!(
+                "duplicate field scope override: {}",
+                scope.field_key
+            ));
+        }
+        if scope.entity_types.is_empty() {
+            return Err(format!(
+                "field scope override requires at least one entity type: {}",
+                scope.field_key
+            ));
+        }
+        if unique_len(&scope.entity_types) != scope.entity_types.len() {
+            return Err(format!(
+                "field scope override entityTypes must be unique: {}",
+                scope.field_key
+            ));
+        }
+        for entity_type in &scope.entity_types {
+            if !effective_types.contains(entity_type.as_str()) {
+                return Err(format!(
+                    "field scope override {} references unknown entity type: {entity_type}",
+                    scope.field_key
+                ));
+            }
+        }
+    }
+
     let mut custom_field_keys = BTreeSet::new();
     for field in &overlay.custom_fields {
         if !is_field_key(&field.key) {
@@ -314,6 +389,27 @@ pub fn validate_module_overlay(
         .chain(custom_field_keys.iter().copied())
         .collect();
 
+    let field_applies_to = |key: &str, entity_type: &str| {
+        if let Some(scope) = overlay
+            .field_scope_overrides
+            .iter()
+            .find(|scope| scope.field_key == key)
+        {
+            return scope.entity_types.iter().any(|candidate| candidate == entity_type);
+        }
+        package_schema
+            .fields
+            .iter()
+            .chain(overlay.custom_fields.iter())
+            .find(|field| field.key == key)
+            .is_some_and(|field| {
+                field
+                    .entity_types
+                    .as_ref()
+                    .is_none_or(|types| types.iter().any(|candidate| candidate == entity_type))
+            })
+    };
+
     let mut custom_template_ids = BTreeSet::new();
     for template in &overlay.custom_templates {
         if template.id.trim().is_empty() || template.name.trim().is_empty() {
@@ -348,6 +444,12 @@ pub fn validate_module_overlay(
                     template.id
                 ));
             }
+            if !field_applies_to(key, &template.entity_type) {
+                return Err(format!(
+                    "custom template {} references field outside its entity type: {key}",
+                    template.id
+                ));
+            }
         }
         if let Some(required) = &template.required_fields {
             for key in required {
@@ -355,6 +457,79 @@ pub fn validate_module_overlay(
                     return Err(format!(
                         "custom template {} requiredFields entry missing from fields: {key}",
                         template.id
+                    ));
+                }
+            }
+        }
+    }
+
+    let mut template_override_ids = BTreeSet::new();
+    for template in &overlay.template_overrides {
+        if !package_templates.contains(template.template_id.as_str()) {
+            return Err(format!(
+                "template override references unknown builtin template: {}",
+                template.template_id
+            ));
+        }
+        if overlay
+            .disabled_templates
+            .iter()
+            .any(|disabled| disabled == &template.template_id)
+        {
+            return Err(format!(
+                "template override references disabled template: {}",
+                template.template_id
+            ));
+        }
+        if !template_override_ids.insert(template.template_id.as_str()) {
+            return Err(format!(
+                "duplicate template override: {}",
+                template.template_id
+            ));
+        }
+        let package_template = package
+            .templates
+            .iter()
+            .find(|candidate| candidate.id == template.template_id)
+            .expect("package template was checked above");
+        if !effective_types.contains(package_template.entity_type.as_str()) {
+            return Err(format!(
+                "template override references disabled entity type: {}",
+                template.template_id
+            ));
+        }
+        let fields = template.fields.as_object().ok_or_else(|| {
+            format!(
+                "template override {} fields must be an object",
+                template.template_id
+            )
+        })?;
+        for key in fields.keys() {
+            if !effective_fields.contains(key.as_str()) {
+                return Err(format!(
+                    "template override {} references unknown field: {key}",
+                    template.template_id
+                ));
+            }
+            if !field_applies_to(key, &package_template.entity_type) {
+                return Err(format!(
+                    "template override {} references field outside its entity type: {key}",
+                    template.template_id
+                ));
+            }
+        }
+        if let Some(required) = &template.required_fields {
+            if unique_len(required) != required.len() {
+                return Err(format!(
+                    "template override {} requiredFields must be unique",
+                    template.template_id
+                ));
+            }
+            for key in required {
+                if !fields.contains_key(key) {
+                    return Err(format!(
+                        "template override {} requiredFields entry missing from fields: {key}",
+                        template.template_id
                     ));
                 }
             }
@@ -401,6 +576,15 @@ pub fn merge_module_manifest(
             .any(|disabled| disabled == &field.key)
     });
     schema.fields.extend(overlay.custom_fields.clone());
+    for field in &mut schema.fields {
+        if let Some(scope) = overlay
+            .field_scope_overrides
+            .iter()
+            .find(|scope| scope.field_key == field.key)
+        {
+            field.entity_types = Some(scope.entity_types.clone());
+        }
+    }
 
     merged.templates.retain(|template| {
         !overlay
@@ -412,6 +596,33 @@ pub fn merge_module_manifest(
                 .iter()
                 .any(|entity_type| entity_type == &template.entity_type)
     });
+    for template in &mut merged.templates {
+        if let Some(fields) = template.fields.as_object_mut() {
+            fields.retain(|key, _| {
+                schema
+                    .fields
+                    .iter()
+                    .find(|field| field.key == *key)
+                    .is_some_and(|field| {
+                        field
+                            .entity_types
+                            .as_ref()
+                            .is_none_or(|types| types.iter().any(|type_id| type_id == &template.entity_type))
+                    })
+            });
+            if let Some(required) = &mut template.required_fields {
+                required.retain(|key| fields.contains_key(key));
+            }
+        }
+        if let Some(override_template) = overlay
+            .template_overrides
+            .iter()
+            .find(|override_template| override_template.template_id == template.id)
+        {
+            template.fields = override_template.fields.clone();
+            template.required_fields = override_template.required_fields.clone();
+        }
+    }
     merged
         .templates
         .extend(overlay.custom_templates.clone());
@@ -633,6 +844,59 @@ mod tests {
             .unwrap();
         assert!(!schema.fields.iter().any(|field| field.key == "endsAt"));
         assert!(schema.fields.iter().any(|field| field.key == "importance"));
+    }
+
+    #[test]
+    fn merges_builtin_field_scope_and_template_selection() {
+        let package = lore_manifest();
+        let overlay = ModuleSchemaOverlay {
+            version: SCHEMA_OVERLAY_VERSION,
+            field_scope_overrides: vec![FieldScopeOverride {
+                field_key: "aliases".into(),
+                entity_types: vec!["person".into(), "faction".into()],
+            }],
+            template_overrides: vec![TemplateOverride {
+                template_id: "person".into(),
+                fields: serde_json::json!({ "summary": "", "aliases": "", "occupation": "" }),
+                required_fields: Some(vec!["occupation".into()]),
+            }],
+            ..ModuleSchemaOverlay::default()
+        };
+
+        let merged = merge_module_manifest(&package, &overlay).expect("merge");
+        let schema = merged.schemas.iter().find(|schema| schema.namespace == "lore").unwrap();
+        assert_eq!(
+            schema
+                .fields
+                .iter()
+                .find(|field| field.key == "aliases")
+                .and_then(|field| field.entity_types.clone()),
+            Some(vec!["person".into(), "faction".into()])
+        );
+        let person = merged.templates.iter().find(|template| template.id == "person").unwrap();
+        assert_eq!(person.fields, serde_json::json!({ "summary": "", "aliases": "", "occupation": "" }));
+        assert_eq!(person.required_fields, Some(vec!["occupation".into()]));
+    }
+
+    #[test]
+    fn rejects_template_override_field_outside_its_scope() {
+        let package = lore_manifest();
+        let overlay = ModuleSchemaOverlay {
+            version: SCHEMA_OVERLAY_VERSION,
+            field_scope_overrides: vec![FieldScopeOverride {
+                field_key: "aliases".into(),
+                entity_types: vec!["faction".into()],
+            }],
+            template_overrides: vec![TemplateOverride {
+                template_id: "person".into(),
+                fields: serde_json::json!({ "aliases": "" }),
+                required_fields: None,
+            }],
+            ..ModuleSchemaOverlay::default()
+        };
+        assert!(validate_module_overlay(&package, &overlay)
+            .unwrap_err()
+            .contains("outside its entity type"));
     }
 
     #[test]

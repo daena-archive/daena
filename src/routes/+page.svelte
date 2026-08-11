@@ -471,6 +471,11 @@ function updateCreateDatePart(key: string, part: "year" | "month" | "day", raw: 
   if (!Number.isFinite(parsed)) return;
   updateCreateDateField(key, { [part]: Math.min(max ?? parsed, Math.max(min, parsed)) });
 }
+function updateCreateDateTime(key: string, raw: string) {
+  const [hour, minute, second] = raw.split(":").map(Number);
+  if (![hour, minute, second].every(Number.isFinite)) return;
+  updateCreateDateField(key, { hour, minute, second, precision: "second" });
+}
 function clearCreateDateField(key: string) {
   setCreateField(key, "");
   createDateEditorOpen = { ...createDateEditorOpen, [key]: false };
@@ -942,6 +947,15 @@ function updateDatePart(key: string, part: "year" | "month" | "day", raw: string
   if (!Number.isFinite(parsed)) return;
   const value = Math.min(max ?? parsed, Math.max(min, parsed));
   updateDateField(key, { [part]: value });
+}
+function updateDateTime(key: string, raw: string) {
+  const [hour, minute, second] = raw.split(":").map(Number);
+  if (![hour, minute, second].every(Number.isFinite)) return;
+  updateDateField(key, { hour, minute, second, precision: "second" });
+}
+function calendarTimeValue(date: Partial<CalendarDate>): string {
+  if (![date.hour, date.minute, date.second].every((part) => typeof part === "number")) return "";
+  return [date.hour, date.minute, date.second].map((part) => String(part).padStart(2, "0")).join(":");
 }
 function clearDateField(key: string) {
   fields = { ...fields, [key]: "" };
@@ -3137,6 +3151,18 @@ onMount(() => {
                                     (event.currentTarget as HTMLInputElement).value,
                                     1,
                                     31,
+                                  )} /></label
+                            ><label class="date-time-field" for={`create-${item.field.key}-time`}
+                              >Time<input
+                                id={`create-${item.field.key}-time`}
+                                aria-label={`${item.field.label} time`}
+                                type="time"
+                                step="1"
+                                value={calendarTimeValue(date)}
+                                onchange={(event) =>
+                                  updateCreateDateTime(
+                                    item.field.key,
+                                    (event.currentTarget as HTMLInputElement).value,
                                   )} /></label>
                           </div>
                           <small class="date-preview"
@@ -4010,6 +4036,18 @@ onMount(() => {
                                   (event.currentTarget as HTMLInputElement).value,
                                   1,
                                   31,
+                                )} /></label
+                          ><label class="date-time-field" for={`${definition.key}-time`}
+                            >Time<input
+                              id={`${definition.key}-time`}
+                              aria-label={`${definition.label} time`}
+                              type="time"
+                              step="1"
+                              value={calendarTimeValue(date)}
+                              onchange={(event) =>
+                                updateDateTime(
+                                  definition.key,
+                                  (event.currentTarget as HTMLInputElement).value,
                                 )} /></label>
                         </div>
                         <small class="date-preview"
@@ -5053,7 +5091,7 @@ onMount(() => {
 }
 .date-fields {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(108px, 1.6fr);
   gap: 6px;
 }
 .date-fields label {
@@ -5078,6 +5116,12 @@ onMount(() => {
   border-color: #c99965;
   box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
   outline: 0;
+}
+.inspector-section .date-fields {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.inspector-section .date-time-field {
+  grid-column: 1 / -1;
 }
 .date-preview {
   color: var(--accent);

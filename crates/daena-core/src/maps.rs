@@ -138,16 +138,25 @@ fn date(value: &Value, label: &str) -> Result<(), CoreError> {
             Some("BCE") | Some("CE")
         )
         || object.get("year").and_then(Value::as_i64).is_none()
-        || !matches!(precision, "year" | "month" | "day")
+        || !matches!(precision, "year" | "month" | "day" | "hour" | "minute" | "second")
     {
         return Err(invalid(format!("{label} is not a valid Daena date")));
     }
     let month = object.get("month").and_then(Value::as_i64);
     let day = object.get("day").and_then(Value::as_i64);
+    let hour = object.get("hour").and_then(Value::as_i64);
+    let minute = object.get("minute").and_then(Value::as_i64);
+    let second = object.get("second").and_then(Value::as_i64);
     if matches!(precision, "month" | "day") && !matches!(month, Some(1..=12))
-        || precision == "day" && !matches!(day, Some(1..=31))
-        || precision == "year" && (month.is_some() || day.is_some())
-        || precision == "month" && day.is_some()
+        || matches!(precision, "day" | "hour" | "minute" | "second") && !matches!(day, Some(1..=31))
+        || matches!(precision, "hour" | "minute" | "second") && !matches!(hour, Some(0..=23))
+        || matches!(precision, "minute" | "second") && !matches!(minute, Some(0..=59))
+        || precision == "second" && !matches!(second, Some(0..=59))
+        || precision == "year" && (month.is_some() || day.is_some() || hour.is_some() || minute.is_some() || second.is_some())
+        || precision == "month" && (day.is_some() || hour.is_some() || minute.is_some() || second.is_some())
+        || precision == "day" && (hour.is_some() || minute.is_some() || second.is_some())
+        || precision == "hour" && (minute.is_some() || second.is_some())
+        || precision == "minute" && second.is_some()
     {
         return Err(invalid(format!("{label} has inconsistent precision")));
     }

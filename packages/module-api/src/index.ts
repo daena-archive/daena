@@ -216,7 +216,10 @@ export interface CalendarDate {
   year: number;
   month?: number;
   day?: number;
-  precision: "year" | "month" | "day";
+  hour?: number;
+  minute?: number;
+  second?: number;
+  precision: "year" | "month" | "day" | "hour" | "minute" | "second";
 }
 
 export type ModuleManifest = Omit<PluginManifest, "id"> & { id: ModuleId };

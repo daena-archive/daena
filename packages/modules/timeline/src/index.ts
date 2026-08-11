@@ -21,6 +21,11 @@ type TimelineEvent = {
   colors: EventColors;
 };
 
+type UndatedEvent = {
+  entity: { id: string; name: string };
+  fields: Record<string, unknown>;
+};
+
 function hslToHex(hue: number, saturation: number, lightness: number) {
   const chroma = (1 - Math.abs(2 * lightness - 1)) * saturation;
   const segment = hue / 60;
@@ -69,8 +74,12 @@ function toJsDate(value: unknown): Date | null {
   if (!date) return null;
   const month = (date.month ?? 1) - 1;
   const day = date.day ?? 1;
-  const utc = Date.UTC(date.year, month, day);
-  return Number.isFinite(utc) ? new Date(utc) : null;
+  // Date.UTC treats years 0–99 as 1900–1999. Set the full UTC year after
+  // construction so authored fictional years retain their literal value.
+  const result = new Date(0);
+  result.setUTCFullYear(date.year, month, day);
+  result.setUTCHours(date.hour ?? 0, date.minute ?? 0, date.second ?? 0, 0);
+  return Number.isFinite(result.getTime()) ? result : null;
 }
 
 function asJsDate(value: unknown): Date | null {
@@ -100,7 +109,10 @@ function calendarFromJsDate(value: Date): CalendarDate {
     year: value.getUTCFullYear(),
     month: value.getUTCMonth() + 1,
     day: value.getUTCDate(),
-    precision: "day",
+    hour: value.getUTCHours(),
+    minute: value.getUTCMinutes(),
+    second: value.getUTCSeconds(),
+    precision: "second",
   };
 }
 
@@ -124,6 +136,17 @@ function createTimelineStyles(): HTMLStyleElement {
     .timeline-toolbar-actions { display: flex; gap: 7px; }
     .timeline-toolbar button { border: 1px solid #d9cdbd; border-radius: 7px; padding: 6px 9px; background: #fffefa; color: #62594e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
     .timeline-toolbar button:hover, .timeline-toolbar button:focus-visible { border-color: #b4773f; color: #55351f; outline: none; }
+    .timeline-scope { min-width: 130px; border: 1px solid #d9cdbd; border-radius: 7px; padding: 6px 9px; background: #fffefa; color: #62594e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; }
+    .timeline-workspace { display: grid; grid-template-columns: var(--timeline-outline-width, 300px) 8px minmax(0, 1fr); min-height: 380px; }
+    .timeline-outline { overflow: auto; max-height: min(58vh, 560px); padding: 10px; border-right: 1px solid #e9e1d4; background: #fffefa; }
+    .timeline-outline-resize { cursor: col-resize; background: #f4eee3; touch-action: none; }
+    .timeline-outline-resize:hover, .timeline-outline-resize:focus-visible { background: #dfcfb8; outline: none; }
+    .timeline-outline-heading { display: block; margin: 4px 5px 8px; color: #8f897e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; }
+    .timeline-outline-year { margin: 12px 5px 5px; color: #62594e; font: 600 12px var(--font-display, Georgia, serif); }
+    .timeline-event-card { display: grid; width: 100%; gap: 3px; margin: 2px 0; padding: 8px 9px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+    .timeline-event-card:hover, .timeline-event-card:focus-visible, .timeline-event-card.is-selected { border-color: #d9cdbd; background: #f7f1e7; outline: none; }
+    .timeline-event-card strong { color: #302c26; font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif; }
+    .timeline-event-card small { color: #8f897e; font: 10px/1.35 Inter, ui-sans-serif, system-ui, sans-serif; }
     .timeline-canvas { position: relative; height: min(58vh, 560px); min-height: 380px; background: radial-gradient(circle at 50% 42%, #fffdf7 0, #fbf8f0 52%, #f4eee3 100%); }
     .timeline-canvas .vis-timeline { border: 0; background: transparent; }
     .timeline-canvas .vis-panel.vis-background, .timeline-canvas .vis-panel.vis-center, .timeline-canvas .vis-panel.vis-left, .timeline-canvas .vis-panel.vis-right, .timeline-canvas .vis-panel.vis-top, .timeline-canvas .vis-panel.vis-bottom { border-color: #e9e1d4; }
@@ -141,11 +164,17 @@ function createTimelineStyles(): HTMLStyleElement {
     .timeline-map-button { width: fit-content; padding: 5px 9px; border: 1px solid #d9cdbd; border-radius: 7px; background: #fffefa; color: #62594e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
     .timeline-map-button:hover, .timeline-map-button:focus-visible { border-color: #b4773f; color: #55351f; outline: none; }
     .timeline-empty, .timeline-undated, .timeline-error { margin: 0; padding: 28px 18px; color: #8f897e; font: 12px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
-    .timeline-undated { padding: 10px 15px; border-top: 1px solid #e9e1d4; background: #fffefa; }
+    .timeline-undated { padding: 12px 15px; border-top: 1px solid #e9e1d4; background: #fffefa; }
+    .timeline-undated-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+    .timeline-undated-list button { border: 1px solid #d9cdbd; border-radius: 999px; padding: 5px 8px; background: #fffefa; color: #62594e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
+    .timeline-undated-list button:hover, .timeline-undated-list button:focus-visible { border-color: #b4773f; color: #55351f; outline: none; }
     .timeline-error { color: #9a4d3f; }
     @media (max-width: 760px) {
       .timeline-toolbar { justify-content: stretch; }
       .timeline-toolbar-actions { flex-wrap: wrap; }
+      .timeline-workspace { grid-template-columns: 1fr !important; }
+      .timeline-outline { max-height: 260px; border-right: 0; border-bottom: 1px solid #e9e1d4; }
+      .timeline-outline-resize { display: none; }
       .timeline-canvas { height: 420px; min-height: 320px; }
     }
   `;
@@ -194,6 +223,52 @@ function renderSelection(details: HTMLElement, event: TimelineEvent, context: Mo
   details.append(name, range, mapButton);
 }
 
+function renderUndatedSelection(details: HTMLElement, event: UndatedEvent, context: ModuleContext) {
+  details.replaceChildren();
+  const name = document.createElement("strong");
+  name.textContent = event.entity.name;
+  const status = document.createElement("small");
+  status.textContent = "No date yet — add a start or end date to place this event in the chronology.";
+  const mapButton = document.createElement("button");
+  mapButton.type = "button";
+  mapButton.className = "timeline-map-button";
+  mapButton.textContent = "Show on map";
+  mapButton.onclick = () => void showOnMap(context, event.entity.id);
+  details.append(name, status, mapButton);
+}
+
+function eventYear(event: TimelineEvent): number {
+  return event.start.getUTCFullYear();
+}
+
+function renderOutline(outline: HTMLElement, events: TimelineEvent[], onSelect: (event: TimelineEvent) => void): void {
+  const heading = document.createElement("span");
+  heading.className = "timeline-outline-heading";
+  heading.textContent = "Chronological outline";
+  outline.append(heading);
+  let currentYear: number | null = null;
+  for (const event of events) {
+    const year = eventYear(event);
+    if (year !== currentYear) {
+      currentYear = year;
+      const yearHeading = document.createElement("div");
+      yearHeading.className = "timeline-outline-year";
+      yearHeading.textContent = String(year);
+      outline.append(yearHeading);
+    }
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "timeline-event-card";
+    const name = document.createElement("strong");
+    name.textContent = event.entity.name;
+    const range = document.createElement("small");
+    range.textContent = rangeLabel(event.fields.startsAt, event.fields.endsAt);
+    card.append(name, range);
+    card.onclick = () => onSelect(event);
+    outline.append(card);
+  }
+}
+
 function toDataItem(event: TimelineEvent): DataItem {
   const item: DataItem = {
     id: event.entity.id,
@@ -228,15 +303,25 @@ export const timeline: DaenaModule = {
         let cancelled = false;
         let chart: Timeline | null = null;
         let resizeObserver: ResizeObserver | null = null;
+        let activeYear: number | null = null;
+        let outlineWidth = 300;
+        let outlineCollapsed = false;
+        let removeOutlineResize: (() => void) | null = null;
         const style = createTimelineStyles();
         const render = async () => {
           try {
+            resizeObserver?.disconnect();
+            resizeObserver = null;
+            removeOutlineResize?.();
+            removeOutlineResize = null;
+            chart?.destroy();
+            chart = null;
             const entities = await context.entities.list({ type: "event" });
             const loaded = await Promise.all(
               entities.map(async (entity) => ({ entity, fields: await context.fields.list(entity.id) })),
             );
             const dated: TimelineEvent[] = [];
-            const undated: { entity: { id: string; name: string }; fields: Record<string, unknown> }[] = [];
+            const undated: UndatedEvent[] = [];
             for (const entry of loaded) {
               const start = toJsDate(entry.fields.startsAt) ?? toJsDate(entry.fields.endsAt);
               if (!start) {
@@ -253,6 +338,9 @@ export const timeline: DaenaModule = {
               });
             }
             dated.sort((left, right) => compareCalendarDates(left.fields.startsAt, right.fields.startsAt));
+            const years = [...new Set(dated.map(eventYear))];
+            if (activeYear !== null && !years.includes(activeYear)) activeYear = null;
+            const visible = activeYear === null ? dated : dated.filter((event) => eventYear(event) === activeYear);
             if (cancelled) return;
 
             element.replaceChildren();
@@ -265,9 +353,10 @@ export const timeline: DaenaModule = {
             heading.textContent = "Chronology";
             const summary = document.createElement("small");
             summary.textContent =
-              undated.length > 0 ? `${dated.length} dated · ${undated.length} undated` : `${dated.length} events`;
+              undated.length > 0 ? `${dated.length} placed · ${undated.length} unplaced` : `${dated.length} events`;
             header.append(heading, summary);
             shell.append(style, header);
+            let details: HTMLElement | null = null;
 
             if (dated.length === 0 && undated.length === 0) {
               const empty = document.createElement("p");
@@ -282,33 +371,112 @@ export const timeline: DaenaModule = {
               const empty = document.createElement("p");
               empty.className = "timeline-empty";
               empty.textContent = "No dated events to plot yet.";
-              shell.append(empty);
+              const detailPanel = document.createElement("div");
+              details = detailPanel;
+              detailPanel.className = "timeline-details";
+              const hint = document.createElement("small");
+              hint.textContent = "Choose an unplaced event below to inspect it.";
+              detailPanel.append(hint);
+              shell.append(empty, detailPanel);
             } else {
               const toolbar = document.createElement("div");
               toolbar.className = "timeline-toolbar";
+              const scope = document.createElement("select");
+              scope.className = "timeline-scope";
+              scope.setAttribute("aria-label", "Chronology scope");
+              const allDates = document.createElement("option");
+              allDates.value = "";
+              allDates.textContent = "All dates";
+              scope.append(allDates);
+              for (const year of years) {
+                const option = document.createElement("option");
+                option.value = String(year);
+                option.textContent = String(year);
+                if (year === activeYear) option.selected = true;
+                scope.append(option);
+              }
+              scope.onchange = () => {
+                activeYear = scope.value ? Number(scope.value) : null;
+                void render();
+              };
               const actions = document.createElement("div");
               actions.className = "timeline-toolbar-actions";
               const zoomInButton = createToolbarButton("Zoom in");
               const zoomOutButton = createToolbarButton("Zoom out");
               const fitButton = createToolbarButton("Fit view");
-              actions.append(zoomOutButton, zoomInButton, fitButton);
-              toolbar.append(actions);
+              const outlineButton = createToolbarButton(outlineCollapsed ? "Show outline" : "Hide outline");
+              outlineButton.onclick = () => {
+                outlineCollapsed = !outlineCollapsed;
+                void render();
+              };
+              actions.append(zoomOutButton, zoomInButton, fitButton, outlineButton);
+              toolbar.append(scope, actions);
 
+              const workspace = document.createElement("div");
+              workspace.className = "timeline-workspace";
+              if (outlineCollapsed) workspace.style.gridTemplateColumns = "minmax(0, 1fr)";
+              else workspace.style.setProperty("--timeline-outline-width", `${outlineWidth}px`);
+              const outline = document.createElement("aside");
+              outline.className = "timeline-outline";
               const canvas = document.createElement("div");
               canvas.className = "timeline-canvas";
-              const details = document.createElement("div");
-              details.className = "timeline-details";
+              const detailPanel = document.createElement("div");
+              details = detailPanel;
+              detailPanel.className = "timeline-details";
               const hint = document.createElement("small");
-              hint.textContent = "Select an event to inspect its range.";
-              details.append(hint);
-              shell.append(toolbar, canvas, details);
+              hint.textContent = "Choose an event from the outline or timeline to inspect it.";
+              detailPanel.append(hint);
+              const selectEvent = (event: TimelineEvent) => {
+                chart?.setSelection([event.entity.id], {
+                  focus: true,
+                  animation: {},
+                });
+                chart?.focus(event.entity.id, { animation: { duration: 220, easingFunction: "easeInOutQuad" } });
+                renderSelection(detailPanel, event, context);
+              };
+              if (visible.length > 0) renderOutline(outline, visible, selectEvent);
+              else {
+                const empty = document.createElement("p");
+                empty.className = "timeline-empty";
+                empty.textContent = "No events in this year.";
+                outline.append(empty);
+              }
+              if (!outlineCollapsed) {
+                const resizeHandle = document.createElement("div");
+                resizeHandle.className = "timeline-outline-resize";
+                resizeHandle.setAttribute("role", "separator");
+                resizeHandle.setAttribute("aria-label", "Resize chronological outline");
+                resizeHandle.tabIndex = 0;
+                resizeHandle.onpointerdown = (event) => {
+                  event.preventDefault();
+                  const startX = event.clientX;
+                  const startWidth = outlineWidth;
+                  const onMove = (move: PointerEvent) => {
+                    outlineWidth = Math.max(210, Math.min(520, startWidth + move.clientX - startX));
+                    workspace.style.setProperty("--timeline-outline-width", `${outlineWidth}px`);
+                    chart?.redraw();
+                  };
+                  const onUp = () => {
+                    window.removeEventListener("pointermove", onMove);
+                    window.removeEventListener("pointerup", onUp);
+                    removeOutlineResize = null;
+                  };
+                  removeOutlineResize = onUp;
+                  window.addEventListener("pointermove", onMove);
+                  window.addEventListener("pointerup", onUp, { once: true });
+                };
+                workspace.append(outline, resizeHandle, canvas);
+              } else {
+                workspace.append(canvas);
+              }
+              shell.append(toolbar, workspace, detailPanel);
               element.append(shell);
 
               await import("vis-timeline/styles/vis-timeline-graph2d.min.css");
               const { Timeline: TimelineCtor } = await import("vis-timeline/standalone");
               if (cancelled) return;
 
-              const eventsById = new Map(dated.map((event) => [event.entity.id, event]));
+              const eventsById = new Map(visible.map((event) => [event.entity.id, event]));
               const options: TimelineOptions = {
                 stack: true,
                 stackSubgroups: true,
@@ -325,10 +493,10 @@ export const timeline: DaenaModule = {
                   majorLabels: formatAxisDate,
                 },
               };
-              if (dated.length >= 40) {
+              if (visible.length >= 40) {
                 options.cluster = { titleTemplate: "{count} events", showStipes: true, maxItems: 8 };
               }
-              chart = new TimelineCtor(canvas, dated.map(toDataItem), options);
+              chart = new TimelineCtor(canvas, visible.map(toDataItem), options);
               chart.fit({ animation: false });
 
               zoomInButton.onclick = () => chart?.zoomIn(0.4);
@@ -339,15 +507,15 @@ export const timeline: DaenaModule = {
                 const selectedId = properties.items[0];
                 const event = selectedId != null ? eventsById.get(String(selectedId)) : undefined;
                 if (!event) {
-                  details.replaceChildren(hint);
+                  detailPanel.replaceChildren(hint);
                   return;
                 }
-                renderSelection(details, event, context);
+                selectEvent(event);
               });
               chart.on("click", (properties) => {
                 if (properties.item != null) return;
                 chart?.setSelection([]);
-                details.replaceChildren(hint);
+                detailPanel.replaceChildren(hint);
               });
 
               resizeObserver = new ResizeObserver(() => chart?.redraw());
@@ -355,9 +523,22 @@ export const timeline: DaenaModule = {
             }
 
             if (undated.length > 0) {
-              const note = document.createElement("p");
+              const note = document.createElement("div");
               note.className = "timeline-undated";
-              note.textContent = `Not plotted (no date): ${undated.map((entry) => entry.entity.name).join(", ")}`;
+              const label = document.createElement("small");
+              label.textContent = "Unplaced events";
+              const list = document.createElement("div");
+              list.className = "timeline-undated-list";
+              for (const entry of undated) {
+                const button = document.createElement("button");
+                button.type = "button";
+                button.textContent = entry.entity.name;
+                button.onclick = () => {
+                  if (details) renderUndatedSelection(details, entry, context);
+                };
+                list.append(button);
+              }
+              note.append(label, list);
               shell.append(note);
             }
             if (!element.contains(shell)) element.append(shell);
@@ -383,6 +564,8 @@ export const timeline: DaenaModule = {
           cancelled = true;
           resizeObserver?.disconnect();
           resizeObserver = null;
+          removeOutlineResize?.();
+          removeOutlineResize = null;
           chart?.destroy();
           chart = null;
           element.replaceChildren();

@@ -2655,6 +2655,23 @@ async function importPortableCheckpoint() {
 async function createPortableBackup() {
   return project.backup();
 }
+async function exportMarkdownProject() {
+  if (projectTransitionBusy) return;
+  showProjectMenu = false;
+  try {
+    const selection = await project.pickDirectory();
+    const destination = typeof selection === "string" ? selection : null;
+    if (!destination) return;
+    let output = "";
+    await runProjectTransition("Exporting Markdown…", async () => {
+      if (!(await flushAutoSave())) return;
+      output = await project.exportMarkdown(destination);
+    });
+    if (output) error = `Markdown export written to ${output}`;
+  } catch (cause) {
+    error = friendlyError(cause);
+  }
+}
 async function createRecoveryBackup() {
   return project.recoveryBackup();
 }
@@ -2851,6 +2868,8 @@ onMount(() => {
           <div class="project-menu" role="menu">
             <button class="rail-button" role="menuitem" onclick={openProjectDirectory}
               ><span class="rail-icon">↗</span><span>Open another folder</span></button>
+            <button class="rail-button" role="menuitem" onclick={() => void exportMarkdownProject()}
+              ><span class="rail-icon">⇩</span><span>Export Markdown</span></button>
             <button class="rail-button" role="menuitem" onclick={() => void rebuildSearchIndex()}
               ><span class="rail-icon">⌕</span><span>Rebuild index</span></button>
             <button class="rail-button" role="menuitem" onclick={seedExample}

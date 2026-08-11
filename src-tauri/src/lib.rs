@@ -5584,6 +5584,14 @@ async fn project_backup(
 }
 
 #[tauri::command]
+async fn project_export_markdown(
+    state: tauri::State<'_, SharedCore>,
+    destination: String,
+) -> Result<String, String> {
+    with_read_project(state, move |project| project.export_markdown_to(destination)).await
+}
+
+#[tauri::command]
 async fn project_recovery_backup(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
@@ -5862,6 +5870,7 @@ pub fn run() {
             project_register_asset_file,
             project_list_assets,
             project_backup,
+            project_export_markdown,
             project_recovery_backup,
             project_restore_recovery_backup,
             project_restore,

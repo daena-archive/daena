@@ -448,6 +448,7 @@ export const project = {
     }),
   listAssets: (entityId: string) => invoke<Asset[]>("project_list_assets", { entityId }),
   backup: () => invoke<string>("project_backup"),
+  exportMarkdown: (destination: string) => invoke<string>("project_export_markdown", { destination }),
   recoveryBackup: () => invoke<string>("project_recovery_backup"),
   restoreRecoveryBackup: (path: string) => invoke<void>("project_restore_recovery_backup", { path }),
   restore: (path: string) => invoke<void>("project_restore", { path }),

@@ -1634,6 +1634,74 @@ fn seed_example_survives_reopen() {
 }
 
 #[test]
+fn markdown_export_uses_flat_named_files_and_relative_relationship_links() {
+    let root = std::env::temp_dir().join(format!("daena-markdown-export-{}", Uuid::new_v4()));
+    let destination = std::env::temp_dir().join(format!("daena-markdown-destination-{}", Uuid::new_v4()));
+    let mut store = ProjectStore::open_directory(&root).unwrap();
+    store.seed_example().unwrap();
+
+    let eldermere = store
+        .list_entities()
+        .unwrap()
+        .into_iter()
+        .find(|entity| entity.name == "Eldermere")
+        .unwrap();
+    let lord_ashford = store
+        .list_entities()
+        .unwrap()
+        .into_iter()
+        .find(|entity| entity.name == "Lord Ashford")
+        .unwrap();
+    store
+        .save_document(SaveDocument {
+            entity_id: eldermere.id.clone(),
+            body: format!(
+                "The court follows [[Lord Ashford]]({}). The record also names [Lord Ashford](daena://entity/{}).",
+                lord_ashford.id, lord_ashford.id
+            ),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+
+    let export = store.export_markdown_to(&destination).unwrap();
+    let export = Path::new(&export);
+    let eldermere_markdown = std::fs::read_to_string(export.join("Eldermere.md")).unwrap();
+    assert!(eldermere_markdown.contains("[Lord Ashford](Lord%20Ashford.md)"));
+    assert!(eldermere_markdown.contains("## Relationships"));
+    assert!(!eldermere_markdown.contains("[[Lord Ashford]]"));
+    assert!(export.join("Lord Ashford.md").is_file());
+    assert!(!export.join("entities").exists());
+
+    drop(store);
+    std::fs::remove_dir_all(&root).unwrap();
+    std::fs::remove_dir_all(&destination).unwrap();
+}
+
+#[test]
+fn markdown_export_prefixes_colliding_entity_names() {
+    let destination = std::env::temp_dir().join(format!("daena-markdown-collision-{}", Uuid::new_v4()));
+    let store = ProjectStore::in_memory().unwrap();
+    let first = store
+        .create_entity(CreateEntity {
+            name: "Twin".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let second = store
+        .create_entity(CreateEntity {
+            name: "Twin".into(),
+            entity_type: None,
+        })
+        .unwrap();
+
+    let export = store.export_markdown_to(&destination).unwrap();
+    let export = Path::new(&export);
+    assert!(export.join(format!("Twin-{}.md", &first.id[..8])).is_file());
+    assert!(export.join(format!("Twin-{}.md", &second.id[..8])).is_file());
+    std::fs::remove_dir_all(&destination).unwrap();
+}
+
+#[test]
 fn restore_replaces_records_missing_from_the_backup() {
     let source = ProjectStore::in_memory().unwrap();
     source

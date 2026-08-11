@@ -354,6 +354,136 @@ fn validate_document_format(format: Option<&str>, directory_backed: bool) -> Res
     Ok(())
 }
 
+fn markdown_export_stem(value: &str) -> String {
+    let mut stem = value
+        .chars()
+        .map(|character| {
+            if character.is_control() || matches!(character, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    stem = stem.trim().trim_matches('.').to_string();
+    if stem.is_empty() || stem == "." || stem == ".." {
+        stem = "Untitled".into();
+    }
+    stem.chars().take(120).collect()
+}
+
+fn markdown_export_target(filename: &str) -> String {
+    let mut target = String::new();
+    for byte in filename.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
+            target.push(byte as char);
+        } else if byte == b' ' {
+            target.push_str("%20");
+        } else {
+            target.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    target
+}
+
+fn markdown_escape_label(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('[', "\\[")
+        .replace(']', "\\]")
+}
+
+fn rewrite_markdown_entity_links(body: &str, filenames: &BTreeMap<String, String>) -> String {
+    let mut output = String::with_capacity(body.len());
+    let mut in_fence = false;
+    for (line_index, line) in body.split('\n').enumerate() {
+        if line_index > 0 {
+            output.push('\n');
+        }
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            output.push_str(line);
+            continue;
+        }
+        if in_fence {
+            output.push_str(line);
+            continue;
+        }
+
+        let mut cursor = 0;
+        while cursor < line.len() {
+            if line[cursor..].starts_with('`') {
+                if let Some(end) = line[cursor + 1..].find('`') {
+                    let end = cursor + end + 2;
+                    output.push_str(&line[cursor..end]);
+                    cursor = end;
+                    continue;
+                }
+            }
+            if line[cursor..].starts_with("[[") {
+                if let Some(label_end) = line[cursor + 2..].find("]](") {
+                    let label_start = cursor + 2;
+                    let label_end = label_start + label_end;
+                    let id_start = label_end + 3;
+                    if let Some(id_end) = line[id_start..].find(')') {
+                        let id_end = id_start + id_end;
+                        let entity_id = &line[id_start..id_end];
+                        if let Some(filename) = filenames.get(entity_id) {
+                            let label = &line[label_start..label_end];
+                            output.push('[');
+                            output.push_str(&markdown_escape_label(label));
+                            output.push_str("](");
+                            output.push_str(&markdown_export_target(filename));
+                            output.push(')');
+                            cursor = id_end + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+            if line[cursor..].starts_with('[') && !line[cursor..].starts_with("[[") {
+                if let Some(label_end) = line[cursor + 1..].find("](") {
+                    let label_start = cursor + 1;
+                    let label_end = label_start + label_end;
+                    let target_start = label_end + 2;
+                    if let Some(target_end) = line[target_start..].find(')') {
+                        let target_end = target_start + target_end;
+                        if let Some(entity_id) = line[target_start..target_end].strip_prefix("daena://entity/") {
+                            if let Some(filename) = filenames.get(entity_id) {
+                                let label = &line[label_start..label_end];
+                                output.push('[');
+                                output.push_str(&markdown_escape_label(label));
+                                output.push_str("](");
+                                output.push_str(&markdown_export_target(filename));
+                                output.push(')');
+                                cursor = target_end + 1;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(next) = line[cursor..].chars().next() {
+                output.push(next);
+                cursor += next.len_utf8();
+            } else {
+                break;
+            }
+        }
+    }
+    output
+}
+
+fn markdown_relationship_heading(value: &str) -> String {
+    let label = value.replace(['_', '-'], " ");
+    let mut characters = label.chars();
+    match characters.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
+        None => "Relationship".into(),
+    }
+}
+
 fn project_database_path(root: &Path) -> PathBuf {
     root.join(".daena/index.sqlite")
 }
@@ -4228,6 +4358,131 @@ impl ProjectStore {
             asset.revision = self.revision_for_asset(&asset.id)?;
         }
         Ok(assets)
+    }
+
+    pub fn export_markdown_to(&self, destination: impl AsRef<Path>) -> Result<String, CoreError> {
+        let mut entities = self.list_entities()?;
+        entities.sort_by(|left, right| {
+            left.name
+                .to_lowercase()
+                .cmp(&right.name.to_lowercase())
+                .then_with(|| left.id.cmp(&right.id))
+        });
+
+        let mut proposed = entities
+            .iter()
+            .map(|entity| format!("{}.md", markdown_export_stem(&entity.name)))
+            .collect::<Vec<_>>();
+        let mut collisions: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (index, filename) in proposed.iter().enumerate() {
+            collisions
+                .entry(filename.to_lowercase())
+                .or_default()
+                .push(index);
+        }
+        for indexes in collisions.values().filter(|indexes| indexes.len() > 1) {
+            for index in indexes {
+                let suffix = entities[*index].id.chars().take(8).collect::<String>();
+                proposed[*index] = format!("{}-{suffix}.md", markdown_export_stem(&entities[*index].name));
+            }
+        }
+
+        let filenames = entities
+            .iter()
+            .zip(proposed.iter())
+            .map(|(entity, filename)| (entity.id.clone(), filename.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let names = entities
+            .iter()
+            .map(|entity| (entity.id.clone(), entity.name.clone()))
+            .collect::<BTreeMap<_, _>>();
+
+        let destination = destination.as_ref();
+        std::fs::create_dir_all(destination).map_err(|source| CoreError::Io {
+            operation: "create Markdown export destination",
+            source,
+        })?;
+        let project_name = self
+            .info()
+            .map(|info| info.name)
+            .unwrap_or_else(|| "Daena Archive".into());
+        let export_stem = markdown_export_stem(&project_name);
+        let mut export_directory = destination.join(format!("{export_stem}-markdown"));
+        let mut suffix = 2;
+        while export_directory.exists() {
+            export_directory = destination.join(format!("{export_stem}-markdown-{suffix}"));
+            suffix += 1;
+        }
+        std::fs::create_dir(&export_directory).map_err(|source| CoreError::Io {
+            operation: "create Markdown export directory",
+            source,
+        })?;
+
+        for (entity, filename) in entities.iter().zip(proposed.iter()) {
+            let documents = self.list_documents(entity.id.clone())?;
+            let document = documents.into_iter().next();
+            if let Some(document) = &document {
+                if document.format != "markdown" {
+                    return Err(CoreError::Validation(
+                        "Markdown export requires Markdown documents".into(),
+                    ));
+                }
+            }
+            let body = document.map(|document| document.body).unwrap_or_default();
+            let mut markdown = rewrite_markdown_entity_links(&body, &filenames);
+            markdown.push_str("\n\n## Relationships\n\n");
+
+            let mut grouped: BTreeMap<String, Vec<(String, Option<String>)>> = BTreeMap::new();
+            for relationship in self
+                .list_relationships(entity.id.clone())?
+                .into_iter()
+                .filter(|relationship| relationship.source_id == entity.id)
+            {
+                let target_name = names
+                    .get(&relationship.target_id)
+                    .cloned()
+                    .unwrap_or_else(|| relationship.target_id.clone());
+                let target_filename = filenames.get(&relationship.target_id).cloned();
+                grouped
+                    .entry(relationship.relationship_type)
+                    .or_default()
+                    .push((target_name, target_filename));
+            }
+
+            if grouped.is_empty() {
+                markdown.push_str("_No outgoing relationships._\n");
+            } else {
+                for (relationship_type, mut targets) in grouped {
+                    targets.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+                    markdown.push_str("### ");
+                    markdown.push_str(&markdown_relationship_heading(&relationship_type));
+                    markdown.push_str("\n\n");
+                    for (target_name, target_filename) in targets {
+                        markdown.push_str("- ");
+                        if let Some(target_filename) = target_filename {
+                            markdown.push('[');
+                            markdown.push_str(&markdown_escape_label(&target_name));
+                            markdown.push_str("](");
+                            markdown.push_str(&markdown_export_target(&target_filename));
+                            markdown.push_str(")\n");
+                        } else {
+                            markdown.push_str(&markdown_escape_label(&target_name));
+                            markdown.push_str("\n");
+                        }
+                    }
+                    markdown.push('\n');
+                }
+            }
+
+            std::fs::write(export_directory.join(filename), markdown).map_err(|source| {
+                CoreError::Io {
+                    operation: "write Markdown export file",
+                    source,
+                }
+            })?;
+        }
+
+        Ok(export_directory.to_string_lossy().into_owned())
     }
 
     pub fn backup(&self) -> Result<String, CoreError> {

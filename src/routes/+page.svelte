@@ -246,6 +246,7 @@ $effect(() => {
 $effect(() => {
   const modalOpen =
     showCreateForm ||
+    aiRewriteOpen ||
     editorFullscreen ||
     upgradePreview !== null ||
     confirmAction !== null ||
@@ -339,6 +340,14 @@ function suggestionDisplayValue(key: string, suggestion: AiFieldSuggestion) {
     return fieldDisplayValue(suggestion.value);
   const names = new Map(entities.map((entity) => [entity.id, entity.name]));
   return suggestion.value.map((id) => names.get(id) ?? id).join(", ");
+}
+function suggestionConfidenceTone(confidence: string) {
+  const normalized = confidence.trim().toLowerCase();
+  return normalized === "high" || normalized === "medium" || normalized === "low" ? normalized : "unknown";
+}
+function suggestionConfidenceLabel(confidence: string) {
+  const tone = suggestionConfidenceTone(confidence);
+  return tone.charAt(0).toUpperCase() + tone.slice(1);
 }
 function createOptions(): CreateOption[] {
   return modules
@@ -1265,9 +1274,10 @@ function handleAiFieldFillEvent(payload: AiStreamEvent) {
           (!Array.isArray(rawValue) ||
             rawValue.length === 0 ||
             rawValue.length > 5 ||
-            rawValue.some((item) => typeof item !== "string"))
+            rawValue.some((item) => typeof item !== "string" || !item.trim()))
         )
           continue;
+        if (!usesValues && (typeof rawValue !== "string" || !rawValue.trim())) continue;
         if (definition?.type === "relationship") {
           const allowedIds = new Set(
             entities
@@ -1283,7 +1293,7 @@ function handleAiFieldFillEvent(payload: AiStreamEvent) {
         }
         suggestions[key] = {
           value: usesValues ? (rawValue as string[]) : String(rawValue),
-          rationale: String(value.rationale ?? "Suggested from related project context."),
+          rationale: typeof value.rationale === "string" ? value.rationale.trim() : "",
           confidence: String(value.confidence ?? "unknown"),
         };
       }
@@ -1408,6 +1418,10 @@ async function acceptAiFieldSuggestion(key: string) {
   delete remaining[key];
   aiFieldSuggestions = remaining;
   markEntryDirty();
+}
+async function acceptAllAiFieldSuggestions() {
+  for (const key of Object.keys(aiFieldSuggestions)) await acceptAiFieldSuggestion(key);
+  if (Object.keys(aiFieldSuggestions).length === 0) closeAiFieldFill();
 }
 function discardAiFieldSuggestion(key: string) {
   const remaining = { ...aiFieldSuggestions };
@@ -3874,59 +3888,76 @@ onMount(() => {
               </div>
             {/if}
             {#if aiRewriteOpen}
-              <section class="ai-rewrite-panel" aria-label="AI proposal">
-                <div class="ai-rewrite-heading">
-                  <div>
-                    <span class="panel-kicker">{aiSettings.provider.name || "AI provider"}</span><strong
-                      >{aiBusy
-                        ? aiMode === "generate"
-                          ? "Generating text…"
-                          : "Rewriting selection…"
-                        : aiPreviewOutput
+              <div class="ai-rewrite-modal-backdrop">
+                <div
+                  class="ai-rewrite-panel"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="ai-rewrite-title"
+                  tabindex="-1"
+                  onkeydown={(event) => {
+                    if (event.key === "Escape" && !aiBusy) closeAiRewrite();
+                  }}>
+                  <div class="ai-rewrite-heading">
+                    <div>
+                      <span class="panel-kicker">{aiSettings.provider.name || "AI provider"}</span><strong
+                        id="ai-rewrite-title"
+                        >{aiBusy
                           ? aiMode === "generate"
-                            ? "Review generated text"
-                            : "Review rewrite"
-                          : aiMode === "generate"
-                            ? "Generate text"
-                            : "Rewrite selection"}</strong>
+                            ? "Generating text…"
+                            : "Rewriting selection…"
+                          : aiPreviewOutput
+                            ? aiMode === "generate"
+                              ? "Review generated text"
+                              : "Review rewrite"
+                            : aiMode === "generate"
+                              ? "Generate text"
+                              : "Rewrite selection"}</strong>
+                    </div>
                   </div>
-                  <button class="quiet-button" type="button" onclick={closeAiRewrite}>Discard</button>
-                </div>
-                {#if !aiPreviewOutput}<label class="ai-instruction"
-                    >Instruction<textarea
-                      rows="2"
-                      bind:value={aiInstruction}
-                      disabled={aiBusy}
-                      placeholder={`Tell ${aiSettings.provider.name || "the AI provider"} how to rewrite the selection`}
-                    ></textarea
-                    ></label
-                  >{/if}
-                <AiProposalPreview
-                  original={aiSourceSelectionPlain}
-                  bind:proposal={aiPreviewOutput}
-                  streamText={aiStreamText}
-                  busy={aiBusy}
-                  onCancel={() => (aiBusy && aiRequestId ? void project.aiCancelText(aiRequestId) : closeAiRewrite())}
-                  onDiscard={closeAiRewrite}
-                  onAccept={() => void acceptAiRewrite()} />
-                {#if aiUsage}<p class="muted-note">
-                    Provider usage: {aiUsage.inputTokens} input + {aiUsage.outputTokens} output tokens.
-                  </p>{/if}
-                {#if !aiBusy && !aiPreviewOutput}<div class="ai-rewrite-actions">
+                  {#if !aiBusy}<label class="ai-instruction"
+                      >Instruction<textarea
+                        rows="2"
+                        bind:value={aiInstruction}
+                        disabled={aiBusy}
+                        placeholder={`Tell ${aiSettings.provider.name || "the AI provider"} how to rewrite the selection`}
+                      ></textarea
+                      ></label
+                    >{/if}
+                  <AiProposalPreview
+                    original={aiSourceSelectionPlain}
+                    bind:proposal={aiPreviewOutput}
+                    streamText={aiStreamText}
+                    busy={aiBusy}
+                    onCancel={() => (aiBusy && aiRequestId ? void project.aiCancelText(aiRequestId) : closeAiRewrite())}
+                    onDiscard={closeAiRewrite}
+                    onAccept={() => void acceptAiRewrite()} />
+                  {#if aiUsage}<p class="muted-note">
+                      Provider usage: {aiUsage.inputTokens} input + {aiUsage.outputTokens} output tokens.
+                    </p>{/if}
+                  {#if !aiBusy && aiPreviewOutput}<div class="ai-rewrite-actions">
+                      <button class="primary-button" type="button" onclick={() => void acceptAiRewrite()}
+                        >Accept proposal</button>
+                    <button class="quiet-button ai-retry-button" type="button" onclick={() => void startAiRewrite()}>Retry</button>
+                    <button class="quiet-button ai-discard-button" type="button" onclick={closeAiRewrite}>Discard</button>
+                    </div>
+                  {:else if !aiBusy}<div class="ai-rewrite-actions">
                     <button
                       class="primary-button"
                       type="button"
                       disabled={(aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim()}
                       onclick={() => void startAiRewrite()}
                       >{aiMode === "generate" ? "Generate text" : "Generate rewrite"}</button>
-                  </div>{/if}
-              </section>
+                    <button class="quiet-button" type="button" onclick={closeAiRewrite}>Cancel</button>
+                    </div>{/if}
+                </div>
+              </div>
             {/if}
             <RichTextEditor
               bind:this={editorRef}
               value={documentBody}
               {entities}
-              editable={projectDiagnostics.length === 0 && !aiBusy}
+              editable={projectDiagnostics.length === 0 && !aiBusy && !aiRewriteOpen}
               fullscreen={editorFullscreen}
               onChange={updateDocumentBody}
               onSelectionChange={setAiSelection}
@@ -3975,7 +4006,7 @@ onMount(() => {
                   <strong>{aiFieldFillBusy ? "Finding field suggestions…" : "Review field suggestions"}</strong><button
                     class="quiet-button"
                     type="button"
-                    onclick={closeAiFieldFill}>Close</button>
+                    onclick={closeAiFieldFill}>{aiFieldFillBusy ? "Cancel" : "Close"}</button>
                 </div>
                 {#if aiFieldFillBusy}<p>
                     Using this entry and related project context.
@@ -3984,10 +4015,18 @@ onMount(() => {
                   </p>{:else}{#each Object.entries(aiFieldSuggestions) as [key, suggestion]}{@const definition =
                       definitions().find((candidate) => candidate.key === key)}
                     <div class="inspector-ai-suggestion">
-                      <div>
-                        <strong>{definition?.label ?? key}</strong><span>{suggestionDisplayValue(key, suggestion)}</span
-                        ><small>{suggestion.rationale} · {suggestion.confidence} confidence</small>
+                      <div class="inspector-ai-suggestion-heading">
+                        <strong>{definition?.label ?? key}</strong><button
+                          type="button"
+                          class={`inspector-ai-confidence confidence-${suggestionConfidenceTone(suggestion.confidence)}`}
+                          aria-label={`${suggestionConfidenceLabel(suggestion.confidence)} confidence${suggestion.rationale ? ". Show reasoning" : ""}`}
+                          >{suggestionConfidenceLabel(suggestion.confidence)}{#if suggestion.rationale}<span
+                              class="inspector-ai-reasoning"
+                              role="tooltip">{suggestion.rationale}</span
+                            >{/if}</button
+                        >
                       </div>
+                      <span>{suggestionDisplayValue(key, suggestion)}</span>
                       <div>
                         <button class="quiet-button" type="button" onclick={() => acceptAiFieldSuggestion(key)}
                           >Accept</button
@@ -3995,6 +4034,14 @@ onMount(() => {
                           >Discard</button>
                       </div>
                     </div>{/each}{/if}
+                {#if !aiFieldFillBusy}<div class="inspector-ai-fill-actions">
+                    {#if Object.keys(aiFieldSuggestions).length > 0}<button
+                        class="primary-button"
+                        type="button"
+                        onclick={() => void acceptAllAiFieldSuggestions()}>Accept all</button
+                      >{/if}<button class="quiet-button" type="button" onclick={() => void fillAiFields()}>Retry</button
+                    ><button class="quiet-button" type="button" onclick={closeAiFieldFill}>Close</button>
+                  </div>{/if}
               </section>{/if}
             <section class="inspector-section">
               <h3>Properties</h3>
@@ -4905,21 +4952,55 @@ onMount(() => {
   align-items: center;
   gap: 6px;
 }
+.ai-rewrite-modal-backdrop {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(34, 31, 26, 0.42);
+  overscroll-behavior: contain;
+}
 .ai-rewrite-panel {
   display: grid;
+  width: min(760px, 100%);
+  max-height: min(82vh, 760px);
   gap: 12px;
-  margin-bottom: 14px;
+  overflow: auto;
   padding: 14px;
   border: 1px solid #d8c3a5;
   border-radius: 10px;
   background: #fff8ed;
+  box-shadow: 0 24px 70px rgba(34, 31, 26, 0.24);
+  overscroll-behavior: contain;
 }
 .ai-rewrite-heading,
 .ai-rewrite-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 10px;
+}
+.ai-retry-button {
+  border-color: #c9b486;
+  background: #fffaf1;
+  color: #795a2e;
+}
+.ai-retry-button:hover {
+  border-color: #ae8e57;
+  background: #fff4df;
+  color: #63471f;
+}
+.ai-discard-button {
+  border-color: #d8b2a8;
+  background: #fff8f6;
+  color: #9a4d3f;
+}
+.ai-discard-button:hover {
+  border-color: #bd8276;
+  background: #fff0ec;
+  color: #813d32;
 }
 .ai-rewrite-heading strong {
   display: block;
@@ -4944,31 +5025,13 @@ onMount(() => {
   color: var(--ink);
   font: 12px/1.45 var(--font-body);
 }
-.ai-stream-output,
-.ai-proposal-editor {
-  max-height: 220px;
-  overflow: auto;
-  margin: 0;
-  padding: 11px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--surface);
-  color: var(--ink);
-  white-space: pre-wrap;
-  font: 12px/1.55 var(--font-body);
-}
-.ai-proposal-editor {
-  width: 100%;
-  resize: vertical;
-}
-.ai-diff-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
 @media (max-width: 620px) {
-  .ai-diff-grid {
-    grid-template-columns: 1fr;
+  .ai-rewrite-modal-backdrop {
+    align-items: end;
+    padding: 10px;
+  }
+  .ai-rewrite-panel {
+    max-height: 90vh;
   }
 }
 @media (max-width: 760px) {
@@ -5073,29 +5136,111 @@ onMount(() => {
   border-top: 1px solid #ead7c2;
 }
 .inspector-ai-suggestion strong,
-.inspector-ai-suggestion span,
-.inspector-ai-suggestion small {
+ .inspector-ai-suggestion span {
   display: block;
 }
 .inspector-ai-suggestion strong {
   color: var(--ink-soft);
   font-size: 10px;
 }
+.inspector-ai-suggestion-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.inspector-ai-suggestion-heading strong {
+  min-width: 0;
+}
 .inspector-ai-suggestion span {
-  margin-top: 4px;
+  margin-top: 0;
   color: var(--ink);
   font-size: 11px;
   line-height: 1.45;
 }
-.inspector-ai-suggestion small {
+.inspector-ai-confidence {
+  all: unset;
+  box-sizing: border-box;
+  position: relative;
+  width: max-content;
+  min-width: 0;
+  max-width: 100%;
+  height: 20px;
+  min-height: 20px;
+  max-height: 20px;
   margin-top: 4px;
-  color: var(--ink-faint);
-  font-size: 9px;
-  line-height: 1.4;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 3px 7px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font: 700 9px/1 var(--font-body);
+  font-size: 9px !important;
+  line-height: 1 !important;
+  white-space: nowrap;
+  cursor: help;
+}
+.confidence-high {
+  color: #46704d !important;
+  background: #f1f8f1;
+}
+.confidence-medium {
+  color: #9a702f !important;
+  background: #fff8e8;
+}
+.confidence-low,
+.confidence-unknown {
+  color: #9a4d3f !important;
+  background: #fff3f0;
+}
+.inspector-ai-suggestion .inspector-ai-reasoning {
+  position: absolute;
+  z-index: 5;
+  bottom: calc(100% + 7px);
+  right: 0;
+  display: none;
+  width: min(280px, 70vw);
+  height: auto;
+  max-height: none;
+  margin-top: 0;
+  padding: 8px 9px;
+  border: 1px solid #d9cdbd;
+  border-radius: 7px;
+  background: #302c26;
+  color: #fffefa !important;
+  font-size: 10px !important;
+  font-weight: 400;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  box-shadow: 0 6px 18px rgba(48, 44, 38, 0.18);
+}
+.inspector-ai-confidence:hover .inspector-ai-reasoning,
+.inspector-ai-confidence:focus-visible .inspector-ai-reasoning {
+  display: block;
 }
 .inspector-ai-suggestion > div:last-child {
   display: flex;
   gap: 6px;
+}
+.inspector-ai-fill-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #ead7c2;
+}
+.inspector-ai-suggestion .quiet-button:last-child {
+  border-color: #d8b2a8;
+  background: #fff8f6;
+  color: #9a4d3f;
+}
+.inspector-ai-suggestion .quiet-button:last-child:hover {
+  border-color: #bd8276;
+  background: #fff0ec;
+  color: #813d32;
 }
 .date-editor {
   display: grid;

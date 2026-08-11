@@ -18,74 +18,37 @@ let {
 } = $props();
 </script>
 
-{#if busy}
-  <pre class="ai-stream-output" aria-live="polite">{streamText || "Waiting for local AI…"}</pre>
-{:else if proposal}
-  <div class="ai-diff-grid">
-    <div>
-      <span>Original</span>
-      <pre>{original}</pre>
-    </div>
-    <div>
-      <span>Editable proposal</span><textarea class="ai-proposal-editor" rows="8" bind:value={proposal}></textarea>
-    </div>
+{#if busy || proposal}
+  <div class="ai-diff-grid" aria-label="AI proposal comparison">
+    <section class="ai-diff-card ai-diff-original">
+      <header class="ai-diff-card-header">
+        <div><strong>Original</strong><small>Current text</small></div>
+        <span class="ai-diff-badge">Read-only</span>
+      </header>
+      <pre>{original || "No existing text — this will be inserted at the cursor."}</pre>
+    </section>
+    <section class="ai-diff-card ai-diff-proposal">
+      <header class="ai-diff-card-header">
+        <div><strong>Proposal</strong><small>{busy ? "Generating live" : "Edit before accepting"}</small></div>
+        <span class="ai-diff-badge">{busy ? "Streaming" : "Editable"}</span>
+      </header>
+      {#if busy}
+        <pre class="ai-proposal-output" aria-live="polite">{streamText || "Generating proposal…"}</pre>
+      {:else}
+        <textarea class="ai-proposal-editor" rows="9" bind:value={proposal} aria-label="Editable AI proposal"
+        ></textarea>
+      {/if}
+    </section>
   </div>
 {/if}
 
-<div class="ai-rewrite-actions">
+<div class="ai-rewrite-actions" class:ai-streaming-actions={busy}>
   {#if busy}
-    <button class="quiet-button" type="button" onclick={onCancel}>Cancel</button>
-  {:else if proposal}
-    <button class="quiet-button" type="button" onclick={onDiscard}>Discard</button>
-    <button class="primary-button" type="button" onclick={onAccept}>Accept proposal</button>
-  {:else}
     <button class="quiet-button" type="button" onclick={onCancel}>Cancel</button>
   {/if}
 </div>
 
 <style>
-.primary-button {
-  padding: 10px 15px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
-  background: var(--accent-dark);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 700;
-  box-shadow:
-    0 2px 0 #263d30,
-    0 7px 16px rgba(42, 68, 51, 0.16);
-  cursor: pointer;
-  transition:
-    background 0.16s ease,
-    box-shadow 0.16s ease,
-    transform 0.16s ease;
-}
-
-.primary-button:hover {
-  background: #2b4535;
-  box-shadow:
-    0 2px 0 #263d30,
-    0 10px 20px rgba(42, 68, 51, 0.2);
-  transform: translateY(-1px);
-}
-.primary-button:active {
-  box-shadow:
-    0 1px 0 #263d30,
-    0 3px 8px rgba(42, 68, 51, 0.14);
-  transform: translateY(1px);
-}
-.primary-button:focus-visible {
-  outline: 3px solid rgba(180, 119, 63, 0.32);
-  outline-offset: 2px;
-}
-.primary-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  box-shadow: none;
-  transform: none;
-}
-
 .quiet-button {
   padding: 10px 12px;
   border: 1px solid #ded8cd;
@@ -125,8 +88,80 @@ let {
   transform: none;
 }
 
-.ai-diff-grid pre {
-  max-height: 220px;
+.ai-streaming-actions {
+  display: flex;
+  justify-content: center;
+}
+
+.ai-diff-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ai-diff-card {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.ai-diff-original {
+  border-color: #d9d2c7;
+  background: #f7f4ef;
+}
+
+.ai-diff-proposal {
+  border-color: #c9d8ca;
+  background: #f5faf5;
+}
+
+.ai-diff-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ai-diff-card-header div {
+  display: grid;
+  gap: 3px;
+}
+
+.ai-diff-card-header strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.ai-diff-card-header small {
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+
+.ai-diff-badge {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: var(--ink-faint);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ai-diff-proposal .ai-diff-badge {
+  color: #46704d;
+}
+
+.ai-diff-card pre,
+.ai-proposal-editor {
+  box-sizing: border-box;
+  height: 220px;
   overflow: auto;
   margin: 0;
   padding: 11px;
@@ -138,12 +173,26 @@ let {
   font: 12px/1.55 var(--font-body);
 }
 
-.ai-diff-grid > div > span {
-  display: block;
-  margin-bottom: 5px;
-  color: var(--ink-faint);
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
+.ai-proposal-output {
+  border-color: #b9d0bb !important;
+  background: #fff !important;
+}
+
+.ai-proposal-editor {
+  width: 100%;
+  min-height: 0;
+  resize: vertical;
+  outline: none;
+}
+
+.ai-proposal-editor:focus {
+  border-color: var(--accent-dark);
+  box-shadow: 0 0 0 3px rgba(70, 112, 77, 0.14);
+}
+
+@media (max-width: 620px) {
+  .ai-diff-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

@@ -694,12 +694,9 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                     ))
                 })?;
                 let declared_target_types = target_entity_types.iter().collect::<BTreeSet<_>>();
-                if target_entity_types.is_empty()
-                    || declared_target_types.len() != target_entity_types.len()
-                    || !declared_target_types.is_subset(&entity_types)
-                {
+                if target_entity_types.is_empty() || declared_target_types.len() != target_entity_types.len() {
                     return Err(ContractError(format!(
-                        "relationship field {} declares unknown or duplicate target entity types",
+                        "relationship field {} declares duplicate target entity types",
                         field.key
                     )));
                 }

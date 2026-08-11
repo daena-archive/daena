@@ -16,6 +16,8 @@ type EventColors = { fill: string; border: string; text: string };
 type TimelineEvent = {
   entity: { id: string; name: string };
   fields: Record<string, unknown>;
+  locationName?: string;
+  participantNames: string[];
   start: Date;
   end: Date | null;
   colors: EventColors;
@@ -24,6 +26,8 @@ type TimelineEvent = {
 type UndatedEvent = {
   entity: { id: string; name: string };
   fields: Record<string, unknown>;
+  locationName?: string;
+  participantNames: string[];
 };
 
 function hslToHex(hue: number, saturation: number, lightness: number) {
@@ -128,6 +132,13 @@ function rangeLabel(startsAt: unknown, endsAt: unknown) {
   return `${start} – ${end}`;
 }
 
+function contextLabel(event: TimelineEvent | UndatedEvent): string {
+  const labels = [event.locationName, event.participantNames.length ? event.participantNames.join(", ") : ""].filter(
+    Boolean,
+  );
+  return labels.join(" · ");
+}
+
 function createTimelineStyles(): HTMLStyleElement {
   const style = document.createElement("style");
   style.textContent = `
@@ -215,12 +226,20 @@ function renderSelection(details: HTMLElement, event: TimelineEvent, context: Mo
   name.textContent = event.entity.name;
   const range = document.createElement("small");
   range.textContent = rangeLabel(event.fields.startsAt, event.fields.endsAt);
+  const contextText = contextLabel(event);
+  if (contextText) {
+    const contextLine = document.createElement("small");
+    contextLine.textContent = contextText;
+    details.append(name, range, contextLine);
+  } else {
+    details.append(name, range);
+  }
   const mapButton = document.createElement("button");
   mapButton.type = "button";
   mapButton.className = "timeline-map-button";
   mapButton.textContent = "Show on map";
   mapButton.onclick = () => void showOnMap(context, event.entity.id);
-  details.append(name, range, mapButton);
+  details.append(mapButton);
 }
 
 function renderUndatedSelection(details: HTMLElement, event: UndatedEvent, context: ModuleContext) {
@@ -229,12 +248,20 @@ function renderUndatedSelection(details: HTMLElement, event: UndatedEvent, conte
   name.textContent = event.entity.name;
   const status = document.createElement("small");
   status.textContent = "No date yet — add a start or end date to place this event in the chronology.";
+  const contextText = contextLabel(event);
+  if (contextText) {
+    const contextLine = document.createElement("small");
+    contextLine.textContent = contextText;
+    details.append(name, status, contextLine);
+  } else {
+    details.append(name, status);
+  }
   const mapButton = document.createElement("button");
   mapButton.type = "button";
   mapButton.className = "timeline-map-button";
   mapButton.textContent = "Show on map";
   mapButton.onclick = () => void showOnMap(context, event.entity.id);
-  details.append(name, status, mapButton);
+  details.append(mapButton);
 }
 
 function eventYear(event: TimelineEvent): number {
@@ -316,9 +343,32 @@ export const timeline: DaenaModule = {
             removeOutlineResize = null;
             chart?.destroy();
             chart = null;
-            const entities = await context.entities.list({ type: "event" });
+            const entityTypes = new Set(context.module.schemas.flatMap((schema) => schema.entityTypes));
+            const entities = (await context.entities.list()).filter(
+              (entity) => entity.type !== null && entityTypes.has(entity.type),
+            );
             const loaded = await Promise.all(
-              entities.map(async (entity) => ({ entity, fields: await context.fields.list(entity.id) })),
+              entities.map(async (entity) => {
+                const fields = await context.fields.list(entity.id);
+                const relationships = (await context.relationships.list(entity.id)).filter(
+                  (relationship) => relationship.type === "occurred_at" || relationship.type === "involves",
+                );
+                const targets = await Promise.all(
+                  relationships.map((relationship) => context.entities.get(relationship.targetId)),
+                );
+                return {
+                  entity,
+                  fields,
+                  locationName: relationships
+                    .map((relationship, index) =>
+                      relationship.type === "occurred_at" ? targets[index]?.name : undefined,
+                    )
+                    .find((name): name is string => Boolean(name)),
+                  participantNames: relationships
+                    .map((relationship, index) => (relationship.type === "involves" ? targets[index]?.name : undefined))
+                    .filter((name): name is string => Boolean(name)),
+                };
+              }),
             );
             const dated: TimelineEvent[] = [];
             const undated: UndatedEvent[] = [];
@@ -332,6 +382,8 @@ export const timeline: DaenaModule = {
               dated.push({
                 entity: entry.entity,
                 fields: entry.fields,
+                locationName: entry.locationName,
+                participantNames: entry.participantNames,
                 start,
                 end: end && end.getTime() >= start.getTime() ? end : null,
                 colors: colorsForHue(hueForId(entry.entity.id)),
@@ -353,7 +405,7 @@ export const timeline: DaenaModule = {
             heading.textContent = "Chronology";
             const summary = document.createElement("small");
             summary.textContent =
-              undated.length > 0 ? `${dated.length} placed · ${undated.length} unplaced` : `${dated.length} events`;
+              undated.length > 0 ? `${dated.length} placed · ${undated.length} unplaced` : `${dated.length} items`;
             header.append(heading, summary);
             shell.append(style, header);
             let details: HTMLElement | null = null;
@@ -361,7 +413,7 @@ export const timeline: DaenaModule = {
             if (dated.length === 0 && undated.length === 0) {
               const empty = document.createElement("p");
               empty.className = "timeline-empty";
-              empty.textContent = "No timeline events yet.";
+              empty.textContent = "No timeline items yet.";
               shell.append(empty);
               element.append(shell);
               return;
@@ -370,12 +422,12 @@ export const timeline: DaenaModule = {
             if (dated.length === 0) {
               const empty = document.createElement("p");
               empty.className = "timeline-empty";
-              empty.textContent = "No dated events to plot yet.";
+              empty.textContent = "No dated timeline items to plot yet.";
               const detailPanel = document.createElement("div");
               details = detailPanel;
               detailPanel.className = "timeline-details";
               const hint = document.createElement("small");
-              hint.textContent = "Choose an unplaced event below to inspect it.";
+              hint.textContent = "Choose an unplaced item below to inspect it.";
               detailPanel.append(hint);
               shell.append(empty, detailPanel);
             } else {
@@ -424,7 +476,7 @@ export const timeline: DaenaModule = {
               details = detailPanel;
               detailPanel.className = "timeline-details";
               const hint = document.createElement("small");
-              hint.textContent = "Choose an event from the outline or timeline to inspect it.";
+              hint.textContent = "Choose an item from the outline or timeline to inspect it.";
               detailPanel.append(hint);
               const selectEvent = (event: TimelineEvent) => {
                 chart?.setSelection([event.entity.id], {
@@ -438,7 +490,7 @@ export const timeline: DaenaModule = {
               else {
                 const empty = document.createElement("p");
                 empty.className = "timeline-empty";
-                empty.textContent = "No events in this year.";
+                empty.textContent = "No items in this year.";
                 outline.append(empty);
               }
               if (!outlineCollapsed) {
@@ -526,7 +578,7 @@ export const timeline: DaenaModule = {
               const note = document.createElement("div");
               note.className = "timeline-undated";
               const label = document.createElement("small");
-              label.textContent = "Unplaced events";
+              label.textContent = "Unplaced items";
               const list = document.createElement("div");
               list.className = "timeline-undated-list";
               for (const entry of undated) {

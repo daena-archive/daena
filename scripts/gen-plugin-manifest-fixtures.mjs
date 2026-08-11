@@ -86,10 +86,10 @@ const fixtures = [
     },
   },
   {
-    rule: "relationship-bad-target",
+    rule: "relationship-duplicate-target",
     expected: "rejected",
     mutate: (m) => {
-      m.schemas[0].fields[3].targetEntityTypes = ["ghost"];
+      m.schemas[0].fields[3].targetEntityTypes = ["place", "place"];
       return m;
     },
   },

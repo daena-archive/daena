@@ -12,13 +12,18 @@
   "namespaces": ["timeline"],
   "schemas": [{
     "namespace": "timeline",
-    "entityTypes": ["event"],
+    "entityTypes": ["event", "encounter"],
     "fields": [
-      { "key": "startsAt", "label": "Starts", "type": "date", "required": false },
-      { "key": "endsAt", "label": "Ends", "type": "date" }
+      { "key": "startsAt", "label": "Starts", "type": "date", "required": false, "entityTypes": ["event", "encounter"] },
+      { "key": "endsAt", "label": "Ends", "type": "date", "entityTypes": ["event", "encounter"] },
+      { "key": "location", "label": "Location", "type": "relationship", "relationshipType": "occurred_at", "targetEntityTypes": ["place"], "entityTypes": ["encounter"] },
+      { "key": "participants", "label": "Participants", "type": "relationship", "relationshipType": "involves", "targetEntityTypes": ["person"], "entityTypes": ["encounter"] }
     ]
   }],
-  "templates": [{ "id": "event", "name": "Timeline event", "entityType": "event", "description": "A moment, turning point, or span of history.", "icon": "E", "fields": { "startsAt": "", "endsAt": "" } }],
+  "templates": [
+    { "id": "event", "name": "Timeline event", "entityType": "event", "description": "A moment, turning point, or span of history.", "icon": "E", "fields": { "startsAt": "", "endsAt": "" } },
+    { "id": "encounter", "name": "Encounter", "entityType": "encounter", "description": "A meeting or interaction between people at a place and time.", "icon": "X", "fields": { "startsAt": "", "endsAt": "", "location": [], "participants": [] } }
+  ],
   "views": [],
   "commands": [{ "id": "show-on-map", "title": "Show event on map", "action": { "type": "refresh-view" }, "exposure": ["view"] }],
   "services": { "provides": [{ "name": "daena.timeline.resolve-date", "major": 1 }], "consumes": [{ "name": "daena.maps/navigation", "major": 1 }] },

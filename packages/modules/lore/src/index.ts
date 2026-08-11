@@ -286,7 +286,10 @@ export const lore: DaenaModule = {
         let graph: Core | null = null;
         const style = createGraphStyles();
         const render = async () => {
-          const entities = (await context.entities.list()).sort(compareEntities);
+          const entityTypes = new Set(context.module.schemas.flatMap((schema) => schema.entityTypes));
+          const entities = (await context.entities.list())
+            .filter((entity) => entity.type !== null && entityTypes.has(entity.type))
+            .sort(compareEntities);
           const relationships = (await Promise.all(entities.map((entity) => context.relationships.list(entity.id))))
             .flat()
             .filter(

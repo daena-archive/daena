@@ -285,6 +285,15 @@ function workspaceModuleId(target: WorkspaceSection) {
         ? "daena.writing"
         : "daena.maps";
 }
+function manifestForWorkspaceSection(target: WorkspaceSection): ModuleManifest | null {
+  const moduleId = workspaceModuleId(target);
+  const fromProject = modules.find((module) => module.id === moduleId);
+  if (fromProject) return fromProject as unknown as ModuleManifest;
+  if (target === "lore") return loreManifestJson as unknown as ModuleManifest;
+  if (target === "timeline") return timelineManifestJson as unknown as ModuleManifest;
+  if (target === "writing") return writingManifestJson as unknown as ModuleManifest;
+  return null;
+}
 function enabledWorkspaceSections() {
   return workspaceSectionOrder.filter((target) =>
     modules.some((module) => module.id === workspaceModuleId(target) && module.enabled),
@@ -760,39 +769,24 @@ function mapConflictDetail(detail: unknown): { path?: string } {
 function visibleEntities() {
   const term = query.trim().toLowerCase();
   if (section === "maps") return [];
+  const entityTypes = new Set(
+    manifestForWorkspaceSection(section)?.schemas.flatMap((schema) => schema.entityTypes) ?? [],
+  );
   return entities.filter((entity) => {
-    const belongs =
-      section === "timeline"
-        ? entity.entity_type === "event"
-        : section === "writing"
-          ? entity.entity_type === (writingView === "manuscripts" ? "manuscript" : "reference-page")
-          : entity.entity_type !== "event" &&
-            entity.entity_type !== "manuscript" &&
-            entity.entity_type !== "reference-page";
+    const belongs = entity.entity_type !== null && entityTypes.has(entity.entity_type);
     return belongs && (!term || `${entity.name} ${entity.entity_type ?? ""}`.toLowerCase().includes(term));
   });
 }
 
 function entityGlyph(entity: Pick<Entity, "entity_type">) {
-  return entity.entity_type === "person"
-    ? "P"
-    : entity.entity_type === "place"
-      ? "L"
-      : entity.entity_type === "faction"
-        ? "F"
-        : entity.entity_type === "artifact"
-          ? "A"
-          : entity.entity_type === "culture"
-            ? "C"
-            : entity.entity_type === "concept"
-              ? "◇"
-              : entity.entity_type === "event"
-                ? "E"
-                : entity.entity_type === "manuscript"
-                  ? "M"
-                  : entity.entity_type === "reference-page"
-                    ? "R"
-                    : "?";
+  if (!entity.entity_type) return "?";
+  for (const target of workspaceSectionOrder) {
+    const template = manifestForWorkspaceSection(target)?.templates.find(
+      (candidate) => candidate.entityType === entity.entity_type,
+    );
+    if (template?.icon) return template.icon;
+  }
+  return "?";
 }
 
 function entityGlyphClass(entity: Pick<Entity, "entity_type">) {
@@ -801,12 +795,12 @@ function entityGlyphClass(entity: Pick<Entity, "entity_type">) {
 
 async function selectSearchResult(entity: Entity) {
   if (!(await flushAutoSave())) return;
-  section =
-    entity.entity_type === "event"
-      ? "timeline"
-      : entity.entity_type === "manuscript" || entity.entity_type === "reference-page"
-        ? "writing"
-        : "lore";
+  const owner = workspaceSectionOrder.find((target) =>
+    manifestForWorkspaceSection(target)?.schemas.some((schema) =>
+      schema.entityTypes.includes(entity.entity_type ?? ""),
+    ),
+  );
+  section = owner && owner !== "maps" ? owner : "lore";
   if (entity.entity_type === "reference-page") writingView = "reference";
   if (entity.entity_type === "manuscript") writingView = "manuscripts";
   hostView = null;

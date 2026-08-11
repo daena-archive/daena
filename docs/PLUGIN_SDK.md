@@ -177,6 +177,10 @@ Supported field types are `text`, `number`, `boolean`, `date`, `enum`,
 `entity-ref`, and `relationship`. Relationship fields must declare a
 `relationshipType` and non-empty `targetEntityTypes`.
 
+`entityTypes` identify the entity types owned or presented by the plugin.
+Relationship `targetEntityTypes` may reference entity types owned by another
+plugin; they describe valid cross-plugin targets and do not transfer ownership.
+
 Templates provide initial values for declared fields and may include an
 opening document. They cannot introduce fields or entity types that the
 schema does not declare.

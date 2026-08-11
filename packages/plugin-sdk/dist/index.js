@@ -594,9 +594,8 @@ export function validatePluginManifest(manifest) {
                 errors.push(`relationship field ${field.key} is incomplete`);
             if (field.type === "relationship" &&
                 field.targetEntityTypes &&
-                (field.targetEntityTypes.some((type) => !entityTypes.has(type)) ||
-                    new Set(field.targetEntityTypes).size !== field.targetEntityTypes.length))
-                errors.push(`relationship field ${field.key} has unknown or duplicate target entity types`);
+                new Set(field.targetEntityTypes).size !== field.targetEntityTypes.length)
+                errors.push(`relationship field ${field.key} has duplicate target entity types`);
             if (field.type !== "relationship" && (field.relationshipType || field.targetEntityTypes))
                 errors.push(`non-relationship field ${field.key} has relationship metadata`);
         }

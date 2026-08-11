@@ -459,6 +459,78 @@ fn related_retrieval_limits_lexical_matches_to_the_entity_neighborhood() {
 }
 
 #[test]
+fn related_retrieval_supports_two_hops_and_preserves_relationship_context() {
+    let project = ProjectStore::in_memory().unwrap();
+    let john = project
+        .create_entity(CreateEntity {
+            name: "John".into(),
+            entity_type: Some("person".into()),
+        })
+        .unwrap();
+    let city = project
+        .create_entity(CreateEntity {
+            name: "City A".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    let country = project
+        .create_entity(CreateEntity {
+            name: "Country B".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    project
+        .create_relationship(RelationshipInput {
+            source_id: john.id.clone(),
+            target_id: city.id.clone(),
+            relationship_type: "lives_in".into(),
+            metadata: None,
+        })
+        .unwrap();
+    project
+        .create_relationship(RelationshipInput {
+            source_id: city.id.clone(),
+            target_id: country.id.clone(),
+            relationship_type: "located_in".into(),
+            metadata: None,
+        })
+        .unwrap();
+    project
+        .save_document(SaveDocument {
+            entity_id: country.id,
+            body: "English is commonly spoken here.".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+
+    let caller = daena_ai::AiCaller::authorized_plugin(
+        "daena.lore",
+        "project",
+        vec![
+            "document.read".into(),
+            "relationship.read".into(),
+        ],
+        vec!["project:project".into()],
+        1,
+        "two-hop-query",
+    );
+    let policy = daena_plugin_api::AiRetrievalPolicyPayload {
+        mode: daena_plugin_api::AiRetrievalMode::Related,
+        query: None,
+        seed_ids: vec![john.id],
+        allowed_source_kinds: vec!["document".into(), "relationship".into()],
+        relationship_depth: 2,
+        passage_count: 8,
+        include_shared_fields: false,
+    };
+    let (context, citations) = ai::build_retrieval_context(&project, &caller, &policy).unwrap();
+    assert!(context.contains("John --lives_in--> City A"));
+    assert!(context.contains("City A --located_in--> Country B"));
+    assert!(context.contains("English is commonly spoken here."));
+    assert!(citations.iter().any(|citation| citation.source_kind == "relationship"));
+}
+
+#[test]
 fn broker_retrieval_attaches_citations_until_inspected() {
     let core = new_shared_core();
     current_session(&core)

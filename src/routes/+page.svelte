@@ -1388,6 +1388,7 @@ async function fillAiFields() {
       outputContract,
       selected.id,
       retrievalQuery,
+      2,
     );
     aiFieldFillRequestId = requestId;
     aiFieldUnlisten = await listen<AiStreamEvent>(`ai-stream:${requestId}`, (event) =>
@@ -1506,6 +1507,7 @@ async function startAiRewrite() {
       sourceText,
       selected?.id,
       retrievalQuery,
+      2,
     );
     aiRequestId = requestId;
     aiUnlisten = await listen<AiStreamEvent>(`ai-stream:${requestId}`, (event) => {

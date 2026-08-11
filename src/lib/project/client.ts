@@ -531,6 +531,7 @@ export const project = {
     selection: string,
     entityId?: string,
     retrievalQuery?: string,
+    retrievalDepth = 2,
   ) =>
     invoke<string>("ai_generate_text", {
       projectId,
@@ -538,6 +539,7 @@ export const project = {
       selection,
       entityId,
       retrievalQuery,
+      retrievalDepth,
       includeRetrieval: true,
     }),
   aiGenerateStructured: (
@@ -547,6 +549,7 @@ export const project = {
     outputContract: Record<string, unknown>,
     entityId?: string,
     retrievalQuery?: string,
+    retrievalDepth = 2,
   ) =>
     invoke<string>("ai_generate_structured", {
       projectId,
@@ -555,6 +558,7 @@ export const project = {
       outputContract,
       entityId,
       retrievalQuery,
+      retrievalDepth,
       includeRetrieval: true,
     }),
   aiCancelText: (requestId: string) => invoke<void>("ai_cancel_text", { requestId }),

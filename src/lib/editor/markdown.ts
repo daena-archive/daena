@@ -1,4 +1,4 @@
-const SAFE_URL = /^(?:https?:|mailto:|#)/i;
+const SAFE_URL = /^(?:https?:|mailto:|#|daena:\/\/entity\/)/i;
 
 function escapeHtml(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
@@ -17,6 +17,11 @@ function inlineMarkdown(value: string): string {
   };
   let text = value.replace(/<(u|mark)>([\s\S]*?)<\/\1>/gi, (_, tag: string, body: string) =>
     protect(`<${tag.toLowerCase()}>${escapeHtml(body)}</${tag.toLowerCase()}>`),
+  );
+  text = text.replace(/\[\[([^\]]+)\]\]\(([^)\s]+)\)/g, (_, label: string, id: string) =>
+    protect(
+      `<a href="daena://entity/${encodeURIComponent(id)}" data-entity-id="${escapeHtml(id)}" class="entity-reference">${escapeHtml(label)}</a>`,
+    ),
   );
   text = text.replace(/`([^`\n]+)`/g, (_, code: string) => protect(`<code>${escapeHtml(code)}</code>`));
   text = escapeHtml(text);
@@ -150,6 +155,8 @@ function serializeNode(node: Node): string {
     case "code":
       return node.parentElement?.tagName.toLowerCase() === "pre" ? content : `\`${content}\``;
     case "a": {
+      const entityId = node.getAttribute("data-entity-id");
+      if (entityId) return `[[${content}]](${entityId})`;
       const href = safeUrl(node.getAttribute("href") ?? "");
       return href ? `[${content}](${href})` : content;
     }

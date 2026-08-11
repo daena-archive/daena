@@ -67,7 +67,12 @@ function entityFor(id: string) {
       {#each selectedIds as id}
         {@const entity = entityFor(id)}
         {#if entity}
-          <button type="button" class="relationship-chip" onclick={() => remove(id)} title={`Remove ${entity.name}`}>
+          <button
+            type="button"
+            class="relationship-chip"
+            data-entity-id={id}
+            onclick={() => remove(id)}
+            title={`Remove ${entity.name}`}>
             <span>{entity.name}</span><b aria-hidden="true">×</b>
           </button>
         {/if}

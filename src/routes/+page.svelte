@@ -39,6 +39,7 @@ import SchemaSettingsPanel from "$lib/SchemaSettingsPanel.svelte";
 import { allowLeaveSchemaEditor, isSchemaEditorDirty } from "$lib/schemaEditorGuard";
 import GitSettingsPanel from "$lib/GitSettingsPanel.svelte";
 import RelationshipPicker from "$lib/RelationshipPicker.svelte";
+import EntityHoverCard from "$lib/EntityHoverCard.svelte";
 import loreManifestJson from "../../packages/modules/lore/manifest.json";
 import timelineManifestJson from "../../packages/modules/timeline/manifest.json";
 import writingManifestJson from "../../packages/modules/writing/manifest.json";
@@ -3911,6 +3912,7 @@ onMount(() => {
             <RichTextEditor
               bind:this={editorRef}
               value={documentBody}
+              {entities}
               editable={projectDiagnostics.length === 0 && !aiBusy}
               fullscreen={editorFullscreen}
               onChange={updateDocumentBody}
@@ -4141,7 +4143,8 @@ onMount(() => {
         {error}<button aria-label="Dismiss" onclick={() => (error = "")}>×</button>
       </div>{/if}
   </section>
-  {#if ready}<button
+  {#if ready}<EntityHoverCard {entities} onOpen={(entity) => void selectEntity(entity)} />
+    <button
       class="mobile-create-button"
       aria-label="New entry"
       aria-expanded={showCreateForm}

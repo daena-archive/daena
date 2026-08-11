@@ -5282,74 +5282,9 @@ impl ProjectStore {
         tx.execute("INSERT OR IGNORE INTO module_versions(module_id,version) VALUES ('daena.lore',1), ('daena.timeline',1)", [])?;
         tx.execute("INSERT OR IGNORE INTO module_namespaces(module_id,namespace) VALUES ('daena.lore','lore'), ('daena.timeline','timeline')", [])?;
         tx.commit()?;
-        let map = self.create_map("The Known Coast".into())?;
-        for (entity_id, role, label, feature_id, x, y) in [
-            (eldermere_id, "capital", "Eldermere", "101", 0.62, 0.44),
-            (
-                glass_coast_id,
-                "region",
-                "The Glass Coast",
-                "102",
-                0.18,
-                0.71,
-            ),
-            (
-                frostgate_id,
-                "frontier",
-                "Frostgate Pass",
-                "103",
-                0.85,
-                0.12,
-            ),
-            (
-                lantern_marsh_id,
-                "region",
-                "Lantern Marsh",
-                "104",
-                0.77,
-                0.38,
-            ),
-            (
-                mira_vale_id,
-                "home",
-                "Mira Vale's workshop",
-                "105",
-                0.55,
-                0.63,
-            ),
-            (
-                crown_salt_id,
-                "resting-place",
-                "Crown of Salt",
-                "106",
-                0.31,
-                0.29,
-            ),
-        ] {
-            self.upsert_map_location(
-                entity_id,
-                crate::maps::LocationReference {
-                    id: Uuid::new_v4().to_string(),
-                    map_entity_id: map.id.clone(),
-                    role: role.into(),
-                    label: label.into(),
-                    anchor: crate::maps::Anchor::ProviderFeature {
-                        provider: crate::maps::FMG_PROVIDER.into(),
-                        feature_kind: "burg".into(),
-                        feature_id: feature_id.into(),
-                        fallback_point: crate::maps::Point(x, y),
-                    },
-                    validity: crate::maps::Validity {
-                        from: None,
-                        to: None,
-                    },
-                },
-                None,
-            )?;
-        }
         self.rebuild_search()?;
         self.notify_export_worker()?;
-        Ok(26)
+        Ok(25)
     }
 
     pub fn get_module_version(&self, module_id: &str) -> Result<i64, CoreError> {

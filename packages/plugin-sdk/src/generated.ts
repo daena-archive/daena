@@ -8,404 +8,83 @@
 
 export type PluginKind = "declarative" | "sandboxed";
 export type FieldType = "text" | "number" | "boolean" | "date" | "enum" | "entity-ref" | "relationship";
-export interface Entrypoints {
-  ui?: string;
-  wasm?: string;
-}
-export interface Dependency {
-  required: boolean;
-  version: string;
-}
-export interface FieldDefinition {
-  entityTypes?: string[];
-  key: string;
-  label: string;
-  multiple?: boolean;
-  options?: string[] | null;
-  relationshipType?: string;
-  required?: boolean | null;
-  shared?: boolean;
-  targetEntityTypes?: string[];
-  type: FieldType;
-}
-export interface SchemaContribution {
-  entityTypes: string[];
-  fields: FieldDefinition[];
-  namespace: string;
-}
-export interface EntityTemplate {
-  description?: string | null;
-  document?: string | null;
-  entityType: string;
-  fields: Record<string, unknown>;
-  icon?: string | null;
-  id: string;
-  name: string;
-  requiredFields?: string[] | null;
-}
-export type MigrationOperation =
-  | { kind: "create-namespace"; namespace: string }
-  | { field: FieldDefinition; kind: "add-field"; namespace: string }
-  | { from: string; kind: "rename-field"; namespace: string; to: string }
-  | { key: string; kind: "drop-field"; namespace: string };
-export interface Migration {
-  from: number;
-  id: string;
-  operations: MigrationOperation[];
-  recovery: "backup" | "preserve-data";
-  to: number;
-}
-export type ViewComponent =
-  | { id: string; text: string; type: "heading" }
-  | { id: string; text: string; type: "text" }
-  | { entityType: string; id: string; limit: number; title: string; type: "entity-list" }
-  | { id: string; source: string; title: string; type: "entity-detail" }
-  | {
-      editable: boolean;
-      fields: string[];
-      id: string;
-      namespace: string;
-      source: string;
-      title: string;
-      type: "field-form";
-    }
-  | { command: string; id: string; label: string; type: "button" };
-export interface View {
-  components?: ViewComponent[];
-  id: string;
-  title: string;
-}
+export interface Entrypoints { ui?: string; wasm?: string }
+export interface Dependency { required: boolean; version: string }
+export interface FieldDefinition { entityTypes?: string[]; key: string; label: string; multiple?: boolean; options?: string[] | null; relationshipType?: string; required?: boolean | null; shared?: boolean; targetEntityTypes?: string[]; type: FieldType }
+export interface SchemaContribution { entityTypes: string[]; fields: FieldDefinition[]; namespace: string }
+export interface EntityTemplate { description?: string | null; document?: string | null; entityType: string; fields: Record<string, unknown>; icon?: string | null; id: string; name: string; requiredFields?: string[] | null }
+export type MigrationOperation = { kind: "create-namespace"; namespace: string } | { field: FieldDefinition; kind: "add-field"; namespace: string } | { from: string; kind: "rename-field"; namespace: string; to: string } | { key: string; kind: "drop-field"; namespace: string };
+export interface Migration { from: number; id: string; operations: MigrationOperation[]; recovery: "backup" | "preserve-data"; to: number }
+export type ViewComponent = { id: string; text: string; type: "heading" } | { id: string; text: string; type: "text" } | { entityType: string; id: string; limit: number; title: string; type: "entity-list" } | { id: string; source: string; title: string; type: "entity-detail" } | { editable: boolean; fields: string[]; id: string; namespace: string; source: string; title: string; type: "field-form" } | { command: string; id: string; label: string; type: "button" };
+export interface View { components?: ViewComponent[]; id: string; title: string }
 export type CommandAction = { type: "refresh-view" };
 export type CommandExposure = "view" | "broker";
 export type CommandValueType = "object" | "string" | "number" | "boolean" | "array" | "null";
-export interface CommandProperty {
-  type: CommandValueType;
-}
-export interface CommandSchema {
-  additionalProperties?: boolean;
-  properties?: Record<string, CommandProperty>;
-  required?: string[];
-  type: "object";
-}
-export interface Command {
-  action?: CommandAction;
-  capabilities?: string[];
-  exposure?: CommandExposure[];
-  id: string;
-  input?: CommandSchema | null;
-  output?: CommandSchema | null;
-  title: string;
-}
+export interface CommandProperty { type: CommandValueType }
+export interface CommandSchema { additionalProperties?: boolean; properties?: Record<string, CommandProperty>; required?: string[]; type: "object" }
+export interface Command { action?: CommandAction; capabilities?: string[]; exposure?: CommandExposure[]; id: string; input?: CommandSchema | null; output?: CommandSchema | null; title: string }
 export type PluginStability = "stable" | "beta" | "experimental";
-export interface Service {
-  major: number;
-  name: string;
-}
-export interface Event {
-  name: string;
-  version: number;
-}
-export interface Services {
-  consumes: Service[];
-  provides: Service[];
-}
-export interface Events {
-  publishes: Event[];
-  subscribes: Event[];
-}
-export interface PluginManifest {
-  capabilities: string[];
-  commands: Command[];
-  dependencies: Record<string, Dependency>;
-  enabledByDefault?: boolean;
-  entrypoints: Entrypoints;
-  events: Events;
-  hostApi: string;
-  id: string;
-  kind: PluginKind;
-  manifestVersion: 1;
-  migrations: Migration[];
-  name: string;
-  namespaces: string[];
-  publisher: string;
-  schemas: SchemaContribution[];
-  services: Services;
-  stability?: PluginStability;
-  templates: EntityTemplate[];
-  version: string;
-  views: View[];
-}
+export interface Service { major: number; name: string }
+export interface Event { name: string; version: number }
+export interface Services { consumes: Service[]; provides: Service[] }
+export interface Events { publishes: Event[]; subscribes: Event[] }
+export interface PluginManifest { capabilities: string[]; commands: Command[]; dependencies: Record<string, Dependency>; enabledByDefault?: boolean; entrypoints: Entrypoints; events: Events; hostApi: string; id: string; kind: PluginKind; manifestVersion: 1; migrations: Migration[]; name: string; namespaces: string[]; publisher: string; schemas: SchemaContribution[]; services: Services; stability?: PluginStability; templates: EntityTemplate[]; version: string; views: View[] }
 
-export interface RpcRequest {
-  rpcVersion: 1;
-  sessionId: string;
-  requestId: string;
-  method: string;
-  payload: unknown;
-}
-export interface RpcError {
-  code: string;
-  details?: unknown;
-  message: string;
-  retryable: boolean;
-}
+export interface RpcRequest { rpcVersion: 1; sessionId: string; requestId: string; method: string; payload: unknown }
+export interface RpcError { code: string; details?: unknown; message: string; retryable: boolean }
 export type PluginRpcError = RpcError;
-export interface RpcSuccess {
-  rpcVersion: 1;
-  requestId: string;
-  ok: true;
-  result: unknown;
-}
-export interface RpcFailure {
-  rpcVersion: 1;
-  requestId: string;
-  ok: false;
-  error: RpcError;
-}
+export interface RpcSuccess { rpcVersion: 1; requestId: string; ok: true; result: unknown }
+export interface RpcFailure { rpcVersion: 1; requestId: string; ok: false; error: RpcError }
 export type RpcResponse = RpcSuccess | RpcFailure;
-export interface PluginBootstrap {
-  grantedCapabilities: string[];
-  hostApi: string;
-  optionalFeatures: string[];
-  pluginId: string;
-  projectId: string;
-  rpcVersion: number;
-  sessionId: string;
-  version: string;
-}
-export interface EntityRecord {
-  createdAt: string;
-  deleted: boolean;
-  entityType?: string | null;
-  id: string;
-  name: string;
-  revision: string;
-  updatedAt: string;
-}
-export interface MutationOptions {
-  expectedRevision?: string;
-  requestId?: string;
-}
-export interface RevisionedEntityPayload {
-  id: string;
-  expectedRevision: string;
-}
-export interface RevisionedDocumentPayload {
-  entityId: string;
-  body: string;
-  format?: string;
-  expectedRevision: string;
-}
-export interface RevisionedFieldPayload {
-  entityId: string;
-  namespace: string;
-  key: string;
-  value: unknown;
-  expectedRevision: string;
-}
-export interface RevisionedRelationshipPayload {
-  id: string;
-  expectedRevision: string;
-}
-export interface RevisionedAssetPayload {
-  entityId: string;
-  namespace: string;
-  filename: string;
-  contentHash: string;
-  size: number;
-  mimeType: string;
-  path: string;
-  expectedRevision: string;
-}
-export interface EntityCreateDocument {
-  body: string;
-  format?: string | null;
-}
-export interface EntityCreateField {
-  key: string;
-  namespace: string;
-  value: unknown;
-}
-export interface EntityCreateRelationship {
-  relationship_type: string;
-  target_ids: string[];
-}
+export interface PluginBootstrap { grantedCapabilities: string[]; hostApi: string; optionalFeatures: string[]; pluginId: string; projectId: string; rpcVersion: number; sessionId: string; version: string }
+export interface EntityRecord { createdAt: string; deleted: boolean; entityType?: string | null; id: string; name: string; revision: string; updatedAt: string }
+export interface MutationOptions { expectedRevision?: string; requestId?: string }
+export interface RevisionedEntityPayload { id: string; expectedRevision: string }
+export interface RevisionedDocumentPayload { entityId: string; body: string; format?: string; expectedRevision: string }
+export interface RevisionedFieldPayload { entityId: string; namespace: string; key: string; value: unknown; expectedRevision: string }
+export interface RevisionedRelationshipPayload { id: string; expectedRevision: string }
+export interface RevisionedAssetPayload { entityId: string; namespace: string; filename: string; contentHash: string; size: number; mimeType: string; path: string; expectedRevision: string }
+export interface EntityCreateDocument { body: string; format?: string | null }
+export interface EntityCreateField { key: string; namespace: string; value: unknown }
+export interface EntityCreateRelationship { relationship_type: string; target_ids: string[] }
 export type AiRetrievalMode = "none" | "explicit_only" | "related" | "project";
-export interface AiRetrievalPolicyPayload {
-  allowedSourceKinds: string[];
-  includeSharedFields: boolean;
-  mode: AiRetrievalMode;
-  passageCount: number;
-  query?: string | null;
-  relationshipDepth: number;
-  seedIds: string[];
-}
-export interface AiRequestIdPayload {
-  requestId: string;
-}
-export interface AiRequestStartPayload {
-  deadlineMs?: number | null;
-  immediateContext: unknown;
-  operation: string;
-  outputContract?: unknown;
-  retrievalPolicy?: AiRetrievalPolicyPayload | null;
-  taskId: string;
-  userInstruction: string;
-}
-export interface AssetListPayload {
-  entityId: string;
-  namespace?: string | null;
-}
-export interface AssetReadBeginPayload {
-  assetId: string;
-  namespace: string;
-}
-export interface AssetRegisterPayload {
-  content_hash: string;
-  entity_id: string;
-  expectedRevision: string;
-  filename: string;
-  mime_type: string;
-  namespace: string;
-  path: string;
-  size: number;
-}
-export interface AssetReplaceBeginPayload {
-  assetId: string;
-  expectedRevision: string;
-  mimeType: string;
-  namespace: string;
-  size: number;
-}
-export interface AssetReplaceCommitPayload {
-  contentHash: string;
-  handle: string;
-}
-export interface AssetTransferCancelPayload {
-  handle: string;
-}
-export interface DocumentListPayload {
-  entityId: string;
-}
-export interface DocumentSavePayload {
-  body: string;
-  entityId: string;
-  expectedRevision: string;
-  format?: string | null;
-}
-export interface EntityCreatePayload {
-  document?: EntityCreateDocument | null;
-  fields?: EntityCreateField[];
-  name: string;
-  relationships?: EntityCreateRelationship[];
-  type?: string | null;
-}
-export interface EntityDeletePayload {
-  expectedRevision: string;
-  id: string;
-}
-export interface EntityGetPayload {
-  id: string;
-}
-export interface EntityListPayload {
-  entityType?: string | null;
-}
-export interface EntityUpdatePayload {
-  expectedRevision: string;
-  id: string;
-  name?: string | null;
-  type?: string | null;
-}
-export interface EventTypePayload {
-  type: string;
-}
-export interface EventPublishPayload {
-  payload: unknown;
-  type: string;
-}
-export interface FieldListPayload {
-  entityId: string;
-  namespace: string;
-}
-export interface FieldReadPayload {
-  entityId: string;
-  key: string;
-  namespace: string;
-}
-export interface FieldSetPayload {
-  entityId: string;
-  expectedRevision: string;
-  key: string;
-  namespace: string;
-  value: unknown;
-}
-export interface MapsAssetCreateBeginPayload {
-  mapEntityId: string;
-  mimeType?: string | null;
-  size: number;
-}
-export interface MapsAssetCreateCommitPayload {
-  contentHash: string;
-  handle: string;
-}
-export interface MapsLocationsCreateAndLinkPayload {
-  entityType: string;
-  location: unknown;
-  name: string;
-}
-export interface MapsLocationsListPayload {
-  mapEntityId: string;
-}
-export interface MapsLocationsUnlinkPayload {
-  entityId: string;
-  locationId: string;
-}
-export interface MapsLocationsUpsertPayload {
-  entityId: string;
-  location: unknown;
-}
-export interface MapsReconcileLinksPayload {
-  mapEntityId: string;
-}
-export interface MapsRecoveryExportBeginPayload {
-  mapEntityId: string;
-  size: number;
-}
-export interface MapsRecoveryExportCommitPayload {
-  contentHash: string;
-  handle: string;
-}
-export interface MapsRecoveryListPayload {
-  mapEntityId: string;
-}
-export interface MapsRecoveryRestorePayload {
-  fileName: string;
-  mapEntityId: string;
-}
-export interface RelationshipCreatePayload {
-  expectedRevision: string;
-  metadata?: string | null;
-  relationship_type: string;
-  source_id: string;
-  target_id: string;
-}
-export interface RelationshipDeletePayload {
-  expectedRevision: string;
-  id: string;
-  relationship_type?: string | null;
-}
-export interface RelationshipListPayload {
-  entityId: string;
-}
-export interface SearchQueryPayload {
-  query: string;
-}
-export interface ServiceCallPayload {
-  deadlineMs?: number | null;
-  major: number;
-  name: string;
-  payload: unknown;
-}
+export interface AiRetrievalPolicyPayload { allowedSourceKinds: string[]; includeSharedFields: boolean; mode: AiRetrievalMode; passageCount: number; query?: string | null; relationshipDepth: number; seedIds: string[] }
+export interface AiRequestIdPayload { requestId: string }
+export interface AiRequestStartPayload { deadlineMs?: number | null; immediateContext: unknown; operation: string; outputContract?: unknown; retrievalPolicy?: AiRetrievalPolicyPayload | null; taskId: string; userInstruction: string }
+export interface AssetListPayload { entityId: string; namespace?: string | null }
+export interface AssetReadBeginPayload { assetId: string; namespace: string }
+export interface AssetRegisterPayload { content_hash: string; entity_id: string; expectedRevision: string; filename: string; mime_type: string; namespace: string; path: string; size: number }
+export interface AssetReplaceBeginPayload { assetId: string; expectedRevision: string; mimeType: string; namespace: string; size: number }
+export interface AssetReplaceCommitPayload { contentHash: string; handle: string }
+export interface AssetTransferCancelPayload { handle: string }
+export interface DocumentListPayload { entityId: string }
+export interface DocumentSavePayload { body: string; entityId: string; expectedRevision: string; format?: string | null }
+export interface EntityCreatePayload { document?: EntityCreateDocument | null; fields?: EntityCreateField[]; name: string; relationships?: EntityCreateRelationship[]; type?: string | null }
+export interface EntityDeletePayload { expectedRevision: string; id: string }
+export interface EntityGetPayload { id: string }
+export interface EntityListPayload { entityType?: string | null }
+export interface EntityUpdatePayload { expectedRevision: string; id: string; name?: string | null; type?: string | null }
+export interface EventTypePayload { type: string }
+export interface EventPublishPayload { payload: unknown; type: string }
+export interface FieldListPayload { entityId: string; namespace: string }
+export interface FieldReadPayload { entityId: string; key: string; namespace: string }
+export interface FieldSetPayload { entityId: string; expectedRevision: string; key: string; namespace: string; value: unknown }
+export interface MapsAssetCreateBeginPayload { mapEntityId: string; mimeType?: string | null; size: number }
+export interface MapsAssetCreateCommitPayload { contentHash: string; handle: string }
+export interface MapsLocationsCreateAndLinkPayload { entityType: string; location: unknown; name: string }
+export interface MapsLocationsListPayload { mapEntityId: string }
+export interface MapsLocationsUnlinkPayload { entityId: string; locationId: string }
+export interface MapsLocationsUpsertPayload { entityId: string; location: unknown }
+export interface MapsReconcileLinksPayload { mapEntityId: string }
+export interface MapsRecoveryExportBeginPayload { mapEntityId: string; size: number }
+export interface MapsRecoveryExportCommitPayload { contentHash: string; handle: string }
+export interface MapsRecoveryListPayload { mapEntityId: string }
+export interface MapsRecoveryRestorePayload { fileName: string; mapEntityId: string }
+export interface RelationshipCreatePayload { expectedRevision: string; metadata?: string | null; relationship_type: string; source_id: string; target_id: string }
+export interface RelationshipDeletePayload { expectedRevision: string; id: string; relationship_type?: string | null }
+export interface RelationshipListPayload { entityId: string }
+export interface SearchQueryPayload { query: string }
+export interface ServiceCallPayload { deadlineMs?: number | null; major: number; name: string; payload: unknown }
 export interface BrokerMethodPayloads {
   "ai.request.cancel": AiRequestIdPayload;
   "ai.request.citations": AiRequestIdPayload;
@@ -453,16 +132,4 @@ export interface MigrationAuthoringOptions {
   recovery?: Migration["recovery"];
   description?: string;
 }
-export type LifecycleState =
-  | "discovered"
-  | "validated"
-  | "installed"
-  | "resolved"
-  | "activating"
-  | "active"
-  | "deactivating"
-  | "failed"
-  | "quarantined"
-  | "incompatible"
-  | "uninstalling"
-  | "removed";
+export type LifecycleState = "discovered" | "validated" | "installed" | "resolved" | "activating" | "active" | "deactivating" | "failed" | "quarantined" | "incompatible" | "uninstalling" | "removed";

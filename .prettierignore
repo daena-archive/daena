@@ -5,3 +5,4 @@ dist/
 **/dist/
 third_party/
 target/
+packages/plugin-sdk/src/generated.ts

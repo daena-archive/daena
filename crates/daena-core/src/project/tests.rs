@@ -1870,7 +1870,7 @@ fn directory_projects_create_portable_layout() {
     assert_eq!(manifest.name, root.file_name().unwrap().to_string_lossy());
     assert_eq!(
         std::fs::read_to_string(root.join(".gitignore")).unwrap(),
-        ".daena/\n"
+        ".daena/\ncheckpoint.json\n"
     );
     assert!(root.join("assets/images").is_dir());
     assert!(root.join("assets/videos").is_dir());

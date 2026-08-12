@@ -136,6 +136,10 @@ export interface GitLogEntry {
   date: string;
   subject: string;
 }
+export interface GitChange {
+  status: string;
+  path: string;
+}
 export interface GitToolInfo {
   available: boolean;
   version: string | null;
@@ -315,8 +319,11 @@ export const project = {
   gitLog: () => invoke<GitLogEntry[]>("project_git_log"),
   gitCommit: (message: string, paths?: string[]) =>
     invoke<GitStatus>("project_git_commit", { message, paths: paths ?? null }),
+  gitSuperSquash: (message: string) => invoke<GitStatus>("project_git_super_squash", { message }),
   gitToolInfo: () => invoke<GitToolInfo>("git_tool_info"),
   gitShowTree: (hash: string) => invoke<string[]>("project_git_show_tree", { hash }),
+  gitShowChanges: (hash: string) => invoke<GitChange[]>("project_git_show_changes", { hash }),
+  gitShowDiff: (hash: string, path: string) => invoke<string>("project_git_show_diff", { hash, path }),
   gitShowFile: (hash: string, path: string) => invoke<string>("project_git_show_file", { hash, path }),
   gitResetHard: (hash: string) => invoke<GitResetResult>("project_git_reset_hard", { hash }),
   gitRemoteList: () => invoke<GitRemote[]>("project_git_remote_list"),

@@ -2,6 +2,7 @@
 import {
   project,
   type Entity,
+  type GitChange,
   type GitLogEntry,
   type GitPreflight,
   type GitRemote,
@@ -29,6 +30,7 @@ type ChangeGroup = {
   subtitle: string;
   paths: string[];
 };
+type SnapshotChangeGroup = { label: string; changes: GitChange[]; kind: "added" | "modified" | "deleted" | "other" };
 
 type RemoteModalMode = "add" | "edit";
 
@@ -47,12 +49,26 @@ let remoteName = $state("");
 let remoteUrl = $state("");
 let editingRemoteName = $state<string | null>(null);
 let selectedCommit = $state<string | null>(null);
-let snapshotPaths = $state<string[]>([]);
-let selectedSnapshotPath = $state<string | null>(null);
-let snapshotBody = $state("");
+let snapshotChanges = $state<GitChange[]>([]);
 let recoveryUpstream = $state<GitUpstream | null>(null);
-let showResetConfirm = $state(false);
-let pendingResetHash = $state<string | null>(null);
+let snapshotLoadToken = 0;
+let selectedChangePath = $state<string | null>(null);
+let changeDiff = $state("");
+let diffLoading = $state(false);
+let wrapDiffLines = $state(false);
+let expandedSnapshotGroups = $state<string[]>([]);
+let snapshotChangeGroups = $derived(groupSnapshotChanges(snapshotChanges, entities));
+let diffLines = $derived(changeDiff.split("\n").filter((line) => !isDiffMetadata(line)));
+type GitConfirmation = {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  run: () => Promise<boolean | void>;
+  squash?: boolean;
+};
+let confirmation = $state<GitConfirmation | null>(null);
+let confirmationBusy = $state(false);
+let squashMessage = $state("Consolidate snapshot history");
 
 function friendly(cause: unknown) {
   return cause instanceof Error ? cause.message : String(cause);
@@ -87,8 +103,116 @@ function summarizeRoles(paths: string[]): string {
   return roles.length > 0 ? roles.join(" · ") : `${paths.length} file${paths.length === 1 ? "" : "s"}`;
 }
 
+function changeStatus(status: string) {
+  return status.slice(0, 1).toUpperCase();
+}
+
+function changeKind(status: string): "added" | "modified" | "deleted" {
+  const code = changeStatus(status);
+  return code === "A" ? "added" : code === "D" ? "deleted" : "modified";
+}
+
+function groupSnapshotChanges(changes: GitChange[], entityList: Entity[]): SnapshotChangeGroup[] {
+  const groups = new Map<string, GitChange[]>();
+  const entityNames = new Map(entityList.map((entity) => [entity.id, entity.name]));
+  for (const change of changes) {
+    const entityId = change.path.startsWith("entities/") ? change.path.split("/")[1] : null;
+    const label = entityId
+      ? (entityNames.get(entityId) ?? `Deleted entity (${entityId.slice(0, 8)})`)
+      : change.path.startsWith("plugins/")
+        ? "Plugins"
+        : change.path.startsWith("assets/")
+          ? "Assets"
+          : "Project";
+    groups.set(label, [...(groups.get(label) ?? []), change]);
+  }
+  return [...groups.entries()].map(([label, groupedChanges]) => ({
+    label,
+    changes: groupedChanges,
+    kind: label.startsWith("Deleted entity")
+      ? "deleted"
+      : groupedChanges.some((change) => change.path.endsWith("/entity.json") && changeStatus(change.status) === "A")
+        ? "added"
+        : groupedChanges.some((change) => change.path.endsWith("/entity.json") && changeStatus(change.status) === "D")
+          ? "deleted"
+          : label === "Project" || label === "Plugins" || label === "Assets"
+            ? "other"
+            : "modified",
+  }));
+}
+
+function snapshotChangeLabel(path: string) {
+  if (!path.startsWith("entities/")) return path;
+  const [, , ...parts] = path.split("/");
+  const relative = parts.join("/");
+  const fileLabel = relative === "document.md"
+    ? "Document"
+    : relative === "relationships.json"
+      ? "Relationships"
+      : relative === "assets.json"
+        ? "Asset links"
+        : relative === "entity.json"
+          ? "Identity"
+          : relative.startsWith("fields/")
+            ? `Field · ${relative.slice("fields/".length)}`
+            : relative;
+  return fileLabel;
+}
+
+function snapshotGroupExpanded(label: string) {
+  return expandedSnapshotGroups.includes(label);
+}
+
+function toggleSnapshotGroup(label: string) {
+  expandedSnapshotGroups = snapshotGroupExpanded(label)
+    ? expandedSnapshotGroups.filter((item) => item !== label)
+    : [...expandedSnapshotGroups, label];
+}
+
+function diffLineClass(line: string) {
+  return line.startsWith("+++") || line.startsWith("---")
+    ? "diff-file-header"
+    : line.startsWith("+")
+      ? "diff-added"
+      : line.startsWith("-")
+        ? "diff-removed"
+        : line.startsWith("@@")
+          ? "diff-hunk"
+          : "diff-context";
+}
+
+function isDiffMetadata(line: string) {
+  return (
+    line.startsWith("diff --git ") ||
+    line.startsWith("new file mode ") ||
+    line.startsWith("deleted file mode ") ||
+    line.startsWith("old mode ") ||
+    line.startsWith("new mode ") ||
+    line.startsWith("similarity index ") ||
+    line.startsWith("rename from ") ||
+    line.startsWith("rename to ") ||
+    line.startsWith("index ") ||
+    line.startsWith("--- ") ||
+    line.startsWith("+++ ") ||
+    line.startsWith("Binary files ")
+  );
+}
+
 function shortId(id: string) {
   return id.length > 8 ? id.slice(0, 8) : id;
+}
+
+function snapshotDateLabel(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString([], {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 function buildChangeGroups(paths: string[], entityList: Entity[]): ChangeGroup[] {
@@ -183,6 +307,8 @@ function selectedPathsFromGroups(groupIds: string[], groups: ChangeGroup[]) {
 }
 
 let selectedPaths = $derived(selectedPathsFromGroups(selectedGroupIds, changeGroups));
+let selectedFileCount = $derived(selectedPaths.length);
+let totalChangeCount = $derived(preflight?.staging_paths.length ?? 0);
 
 function groupIsSelected(groupId: string) {
   return selectedGroupIds.includes(groupId);
@@ -200,6 +326,33 @@ function selectAllGroups() {
 
 function clearGroups() {
   selectedGroupIds = [];
+}
+
+function askConfirmation(
+  title: string,
+  message: string,
+  confirmLabel: string,
+  run: () => Promise<boolean | void>,
+  squash = false,
+) {
+  confirmation = { title, message, confirmLabel, run, squash };
+}
+
+function closeConfirmation() {
+  if (confirmationBusy) return;
+  confirmation = null;
+}
+
+async function runConfirmation() {
+  const action = confirmation;
+  if (!action) return;
+  confirmationBusy = true;
+  try {
+    const completed = await action.run();
+    if (completed !== false) confirmation = null;
+  } finally {
+    confirmationBusy = false;
+  }
 }
 
 function syncSelectedGroups(groups: ChangeGroup[], previousSelected: string[]) {
@@ -279,7 +432,7 @@ function generateMessage() {
 }
 
 async function initializeGit() {
-  await withBusy("Initializing Git…", async () => {
+  await withBusy("Enabling snapshots…", async () => {
     status = await project.gitInit();
     await refresh();
   });
@@ -288,11 +441,30 @@ async function initializeGit() {
 async function commitSelected() {
   if (!commitMessage.trim() || selectedPaths.length === 0) return;
   if (beforeWrite && !(await beforeWrite())) return;
-  await withBusy("Committing…", async () => {
+  await withBusy("Creating snapshot…", async () => {
     status = await project.gitCommit(commitMessage.trim(), selectedPaths);
     commitMessage = "";
     await refresh();
   });
+}
+
+function askSuperSquash() {
+  if (!preflight?.ready || preflight.staging_paths.length > 0 || log.length < 2) return;
+  squashMessage = "Consolidate snapshot history";
+  askConfirmation(
+    "Keep only the latest snapshot?",
+    "This permanently replaces the snapshot history with one snapshot representing the latest committed state. All earlier snapshots will be pruned. Remote history may diverge and require an explicit force-push with lease.",
+    "Keep latest snapshot",
+    async () => {
+      if (beforeWrite && !(await beforeWrite())) return false;
+      await withBusy("Squashing snapshots…", async () => {
+        status = await project.gitSuperSquash(squashMessage.trim() || "Consolidate snapshot history");
+        closeSnapshotModal();
+        await refresh();
+      });
+    },
+    true,
+  );
 }
 
 function openAddRemoteModal() {
@@ -335,11 +507,17 @@ async function submitRemoteModal() {
   });
 }
 
-async function removeRemote(name: string) {
-  if (!window.confirm(`Remove the Git remote "${name}"? This changes repository configuration only.`)) return;
-  await withBusy("Removing remote…", async () => {
-    remotes = await project.gitRemoteRemove(name);
-  });
+function removeRemote(name: string) {
+  askConfirmation(
+    `Remove ${name}?`,
+    "This removes the remote from this repository. It does not delete anything from the remote server.",
+    "Remove remote",
+    async () => {
+      await withBusy("Removing remote…", async () => {
+        remotes = await project.gitRemoteRemove(name);
+      });
+    },
+  );
 }
 
 async function openDownload() {
@@ -351,84 +529,105 @@ async function openDownload() {
 }
 
 async function selectCommit(hash: string) {
+  if (selectedCommit === hash) return;
+  const loadToken = ++snapshotLoadToken;
   selectedCommit = hash;
-  selectedSnapshotPath = null;
-  snapshotBody = "";
+  selectedChangePath = null;
+  changeDiff = "";
+  snapshotChanges = [];
   await withBusy("Loading snapshot…", async () => {
-    snapshotPaths = await project.gitShowTree(hash);
+    const changes = await project.gitShowChanges(hash);
+    if (loadToken === snapshotLoadToken && selectedCommit === hash) {
+      snapshotChanges = changes;
+      expandedSnapshotGroups = groupSnapshotChanges(changes, entities).map((group) => group.label);
+    }
   });
 }
 
-async function selectSnapshotPath(path: string) {
+function closeSnapshotModal() {
+  snapshotLoadToken += 1;
+  selectedCommit = null;
+  selectedChangePath = null;
+  changeDiff = "";
+  snapshotChanges = [];
+  expandedSnapshotGroups = [];
+}
+
+async function selectSnapshotChange(path: string) {
   if (!selectedCommit) return;
-  selectedSnapshotPath = path;
-  await withBusy("Loading file…", async () => {
-    snapshotBody = await project.gitShowFile(selectedCommit!, path);
-  });
+  selectedChangePath = path;
+  diffLoading = true;
+  try {
+    changeDiff = await project.gitShowDiff(selectedCommit, path);
+  } catch (cause) {
+    onError(friendly(cause));
+    changeDiff = "";
+  } finally {
+    diffLoading = false;
+  }
 }
 
 function askReset(hash: string) {
-  pendingResetHash = hash;
-  showResetConfirm = true;
+  askConfirmation(
+    `Hard-reset to ${hash}?`,
+    "This discards later commits and all uncommitted changes. Remotes may diverge and need recovery afterward.",
+    "Hard-reset to snapshot",
+    async () => {
+      if (beforeWrite && !(await beforeWrite())) return false;
+      await withBusy("Restoring snapshot…", async () => {
+        const result = await project.gitResetHard(hash);
+        status = result.status;
+        recoveryUpstream = result.divergedFromUpstream ? result.upstream : null;
+        selectedCommit = null;
+        await refresh();
+        if (result.divergedFromUpstream) recoveryUpstream = result.upstream;
+      });
+    },
+  );
 }
 
-async function confirmReset() {
-  const hash = pendingResetHash;
-  if (!hash) return;
-  if (beforeWrite && !(await beforeWrite())) return;
-  showResetConfirm = false;
-  pendingResetHash = null;
-  await withBusy("Restoring snapshot…", async () => {
-    const result = await project.gitResetHard(hash);
-    status = result.status;
-    recoveryUpstream = result.divergedFromUpstream ? result.upstream : null;
-    selectedCommit = null;
-    snapshotPaths = [];
-    snapshotBody = "";
-    await refresh();
-    if (result.divergedFromUpstream) recoveryUpstream = result.upstream;
-  });
-}
-
-async function forcePushRecovery() {
+function forcePushRecovery() {
   if (!recoveryUpstream) return;
-  if (
-    !window.confirm(
-      `Force-push local history to ${recoveryUpstream.remote}/${recoveryUpstream.branch} with lease? This may rewrite the remote history.`,
-    )
-  )
-    return;
-  await withBusy("Force-pushing with lease…", async () => {
-    status = await project.gitPush(recoveryUpstream!.remote, recoveryUpstream!.branch, true);
-    recoveryUpstream = null;
-    await refresh();
-  });
+  const upstream = recoveryUpstream;
+  askConfirmation(
+    "Rewrite the remote history?",
+    `Force-push local history to ${upstream.remote}/${upstream.branch} with lease. This may rewrite the remote history, but the lease protects newer remote work.`,
+    "Force-push with lease",
+    async () => {
+      await withBusy("Force-pushing with lease…", async () => {
+        status = await project.gitPush(upstream.remote, upstream.branch, true);
+        recoveryUpstream = null;
+        await refresh();
+      });
+    },
+  );
 }
 
-async function restoreFromRemote() {
-  if (
-    !window.confirm(
-      "Restore the project from its upstream remote? This discards the local hard-reset state and rebuilds the project index.",
-    )
-  )
-    return;
-  await withBusy("Restoring from remote…", async () => {
-    const result = await project.gitRestoreFromUpstream();
-    status = result.status;
-    recoveryUpstream = null;
-    await refresh();
-  });
+function restoreFromRemote() {
+  askConfirmation(
+    "Restore from the remote?",
+    "This discards the local hard-reset state and rebuilds the project index from the upstream remote.",
+    "Restore from remote",
+    async () => {
+      await withBusy("Restoring from remote…", async () => {
+        const result = await project.gitRestoreFromUpstream();
+        status = result.status;
+        recoveryUpstream = null;
+        await refresh();
+      });
+    },
+  );
 }
 </script>
 
 <div class="git-settings">
   <div class="settings-section-heading">
-    <strong>Git</strong>
-    <p>Optional version control for this project's canonical files.</p>
+    <strong>Snapshots</strong>
+    <p>Save named versions of this project's canonical files.</p>
   </div>
 
   <section class="git-block">
-    <h3>Git tool</h3>
+    <h3>Version control</h3>
     {#if tool === null}
       <p class="settings-empty">Checking Git…</p>
     {:else if tool.available}
@@ -440,17 +639,29 @@ async function restoreFromRemote() {
   </section>
 
   {#if !projectOpen}
-    <p class="settings-empty">Open a project to manage remotes, commits, and history.</p>
+    <p class="settings-empty">Open a project to manage snapshots, remotes, and history.</p>
   {:else if tool && !tool.available}
-    <p class="settings-empty">Install Git to use version control for this project.</p>
+    <p class="settings-empty">Install Git to save snapshots for this project.</p>
   {:else if status && !status.repository}
     <section class="git-block">
       <h3>Repository</h3>
-      <p class="settings-empty">This project folder is not a Git repository yet.</p>
+      <p class="settings-empty">Snapshots are not enabled for this project yet.</p>
       <button type="button" class="primary-button" disabled={busy} onclick={() => void initializeGit()}
-        >Initialize Git</button>
+        >Enable snapshots</button>
     </section>
   {:else if status}
+    <section class="git-overview" aria-label="Repository status">
+      <div>
+        <span class="panel-kicker">REPOSITORY</span>
+        <strong>{status.branch || "Detached HEAD"}</strong>
+        <small>{totalChangeCount === 0 ? "No snapshot-ready changes" : `${totalChangeCount} snapshot-ready changes`}</small>
+      </div>
+      <div class:git-overview-warn={!preflight?.ready || totalChangeCount > 0} class="git-overview-stat">
+        <strong>{totalChangeCount}</strong>
+        <small>{totalChangeCount === 1 ? "snapshot-ready change" : "snapshot-ready changes"}</small>
+      </div>
+      <button type="button" class="quiet-button" disabled={busy} onclick={() => void refresh()}>Refresh</button>
+    </section>
     {#if recoveryUpstream}
       <section class="git-recovery" role="status">
         <strong>Remote history diverged after restore</strong>
@@ -500,20 +711,23 @@ async function restoreFromRemote() {
 
     <section class="git-block">
       <h3>Changes</h3>
-      <p class="git-branch">Branch · {status.branch || "detached"}</p>
+      <p class="git-section-copy">Choose the canonical project changes to include in the next snapshot.</p>
       {#if preflight && !preflight.ready}
         <p class="plugin-warning">{preflight.diagnostics[0] ?? "Commit preflight blocked."}</p>
       {/if}
       {#if changeGroups.length === 0}
         <p class="settings-empty">Working tree has no canonical changes to commit.</p>
       {:else}
-        <div class="git-actions">
-          <button type="button" class="quiet-button" onclick={selectAllGroups}>Select all</button>
-          <button type="button" class="quiet-button" onclick={clearGroups}>Select none</button>
+        <div class="git-change-toolbar">
+          <div><strong>{selectedFileCount} of {totalChangeCount} files selected</strong><small>Selection is limited to canonical project files.</small></div>
+          <div class="git-actions">
+            <button type="button" class="quiet-button" onclick={selectAllGroups}>Select all</button>
+            <button type="button" class="quiet-button" onclick={clearGroups}>Select none</button>
+          </div>
         </div>
         <ul class="git-change-list">
           {#each changeGroups as group}
-            <li>
+            <li class:selected={groupIsSelected(group.id)}>
               <label>
                 <input type="checkbox" checked={groupIsSelected(group.id)} onchange={() => toggleGroup(group.id)} />
                 <span>
@@ -524,64 +738,126 @@ async function restoreFromRemote() {
             </li>
           {/each}
         </ul>
-        <label class="create-input-field" for="git-commit-message">
-          <span>Commit message</span>
-          <textarea
-            id="git-commit-message"
-            rows="4"
-            bind:value={commitMessage}
-            placeholder="Describe the selected changes"></textarea>
-        </label>
-        <div class="git-commit-actions">
-          <button type="button" class="quiet-button" onclick={generateMessage}>Generate message</button>
-          <button
-            type="button"
-            class="primary-button"
-            disabled={busy || !commitMessage.trim() || selectedPaths.length === 0 || !preflight?.ready}
-            onclick={() => void commitSelected()}>Commit selected</button>
+        <div class="git-commit-card">
+          <label class="create-input-field" for="git-commit-message">
+            <span>Snapshot message</span>
+            <textarea
+              id="git-commit-message"
+              rows="4"
+              bind:value={commitMessage}
+              placeholder="Describe this snapshot"></textarea>
+          </label>
+          <div class="git-commit-actions">
+            <button type="button" class="quiet-button" onclick={generateMessage}>Generate message</button>
+            <button
+              type="button"
+              class="primary-button"
+              disabled={busy || !commitMessage.trim() || selectedPaths.length === 0 || !preflight?.ready}
+              onclick={() => void commitSelected()}>Create snapshot · {selectedFileCount} {selectedFileCount === 1 ? "file" : "files"}</button>
+          </div>
         </div>
       {/if}
     </section>
 
     <section class="git-block">
-      <h3>History</h3>
+      <div class="git-block-heading">
+        <div>
+          <h3>Snapshot history</h3>
+          {#if preflight?.staging_paths.length}<small class="git-section-note">Commit pending changes before squashing history.</small>{/if}
+        </div>
+        {#if log.length > 1}<button
+            type="button"
+            class="quiet-button"
+            disabled={busy || !preflight?.ready || preflight.staging_paths.length > 0}
+            onclick={askSuperSquash}>Keep latest</button>{/if}
+      </div>
       {#if log.length === 0}
-        <p class="settings-empty">No commits yet.</p>
+        <p class="settings-empty">No snapshots yet.</p>
       {:else}
         <ul class="git-log-list">
           {#each log as entry}
             <li class:active={selectedCommit === entry.hash}>
               <button type="button" class="git-log-button" onclick={() => void selectCommit(entry.hash)}>
                 <strong>{entry.subject}</strong>
-                <small>{entry.hash} · {entry.date}</small>
+                <small>{entry.hash} · {snapshotDateLabel(entry.date)}</small>
               </button>
               <button type="button" class="quiet-button" disabled={busy} onclick={() => askReset(entry.hash)}
-                >Restore…</button>
+                >Restore</button>
             </li>
           {/each}
         </ul>
       {/if}
       {#if selectedCommit}
-        <div class="git-snapshot">
-          <strong>Snapshot files · {selectedCommit}</strong>
-          {#if snapshotPaths.length === 0}
-            <p class="settings-empty">No canonical files in this snapshot.</p>
-          {:else}
-            <ul class="git-path-list compact">
-              {#each snapshotPaths as path}
-                <li>
-                  <button
-                    type="button"
-                    class:active={selectedSnapshotPath === path}
-                    class="git-file-button"
-                    onclick={() => void selectSnapshotPath(path)}>{path}</button>
-                </li>
-              {/each}
-            </ul>
-          {/if}
-          {#if selectedSnapshotPath}
-            <pre class="git-file-preview">{snapshotBody}</pre>
-          {/if}
+        {@const snapshotEntry = log.find((entry) => entry.hash === selectedCommit)}
+        <div class="modal-backdrop">
+          <div class="dialog git-snapshot-dialog" role="dialog" aria-modal="true" aria-labelledby="snapshot-title">
+            <div class="new-form-heading">
+              <div>
+                <span class="panel-kicker">SNAPSHOT DETAILS</span>
+                <strong id="snapshot-title">{snapshotEntry?.subject ?? "Snapshot details"}</strong>
+                <small class="git-snapshot-meta"
+                  >{snapshotEntry ? snapshotDateLabel(snapshotEntry.date) : selectedCommit} · {selectedCommit}</small
+                >
+              </div>
+              <button type="button" class="new-form-close" aria-label="Close snapshot details" onclick={closeSnapshotModal}
+                >×</button>
+            </div>
+            <div class="git-snapshot-summary">
+              <strong>{snapshotChanges.length} changed {snapshotChanges.length === 1 ? "file" : "files"}</strong>
+              <span>Select a file to inspect its diff.</span>
+            </div>
+            {#if snapshotChanges.length === 0}
+              <p class="settings-empty">{busy ? "Loading changes…" : "No canonical file changes in this snapshot."}</p>
+            {:else}
+              <div class="git-snapshot-layout">
+                <div class="git-snapshot-files">
+                  {#each snapshotChangeGroups as group}
+                    <section class:change-added={group.kind === "added"} class:change-modified={group.kind === "modified"} class:change-deleted={group.kind === "deleted"} class="git-change-category">
+                      <button type="button" class="git-change-category-toggle" onclick={() => toggleSnapshotGroup(group.label)}>
+                        <span class="git-tree-chevron" aria-hidden="true">{snapshotGroupExpanded(group.label) ? "⌄" : "›"}</span>
+                        <span class="git-change-kind">{group.kind === "other" ? "Changes" : group.kind}</span>
+                        <span>{group.label}</span>
+                        <small>{group.changes.length}</small>
+                      </button>
+                      {#if snapshotGroupExpanded(group.label)}<ul class="git-path-list compact">
+                          {#each group.changes as change (change.path)}
+                            <li>
+                              <button
+                                type="button"
+                                class:active={selectedChangePath === change.path}
+                                class="git-file-button"
+                                onclick={() => void selectSnapshotChange(change.path)}><span class:change-added={changeStatus(change.status) === "A"} class:change-deleted={changeStatus(change.status) === "D"} class="git-change-status">{changeStatus(change.status)}</span><span
+                                >{snapshotChangeLabel(change.path)}</span></button>
+                            </li>
+                          {/each}
+                        </ul>{/if}
+                    </section>
+                  {/each}
+                </div>
+                <div class="git-diff-panel">
+                  {#if diffLoading}
+                    <p class="settings-empty">Loading diff…</p>
+                  {:else if selectedChangePath}
+                    <div class="git-diff-heading">
+                      <strong>{selectedChangePath}</strong>
+                      <label class="diff-wrap-toggle">
+                        <input type="checkbox" bind:checked={wrapDiffLines} />
+                        <span>Wrap lines</span>
+                      </label>
+                    </div>
+                    {#if changeDiff}
+                      <pre class:diff-wrap={wrapDiffLines} class="git-diff-view">{#each diffLines as line}<span class={diffLineClass(line)}>{line}
+</span>{/each}</pre>
+                    {:else}
+                      <p class="settings-empty">No textual diff available for this file.</p>
+                    {/if}
+                  {:else}
+                    <p class="settings-empty">Choose a changed file to view its diff.</p>
+                  {/if}
+                </div>
+              </div>
+            {/if}
+          </div>
         </div>
       {/if}
     </section>
@@ -593,7 +869,7 @@ async function restoreFromRemote() {
     <div class="dialog" role="dialog" aria-modal="true">
       <div class="new-form-heading">
         <div>
-          <span class="panel-kicker">GIT REMOTE</span>
+          <span class="panel-kicker">SNAPSHOT REMOTE</span>
           <strong>{remoteModalMode === "add" ? "Add remote" : `Edit ${editingRemoteName}`}</strong>
         </div>
         <button type="button" class="new-form-close" onclick={closeRemoteModal}>×</button>
@@ -629,36 +905,27 @@ async function restoreFromRemote() {
   </div>
 {/if}
 
-{#if showResetConfirm && pendingResetHash}
+{#if confirmation}
   <div class="modal-backdrop">
-    <div class="dialog" role="alertdialog" aria-modal="true">
+    <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="git-confirm-title">
       <div class="new-form-heading">
         <div>
-          <span class="panel-kicker">DESTRUCTIVE RESTORE</span>
-          <strong>Hard-reset to {pendingResetHash}?</strong>
+          <span class="panel-kicker">CONFIRM SNAPSHOT ACTION</span>
+          <strong id="git-confirm-title">{confirmation.title}</strong>
         </div>
-        <button
-          type="button"
-          class="new-form-close"
-          onclick={() => {
-            showResetConfirm = false;
-            pendingResetHash = null;
-          }}>×</button>
+        <button type="button" class="new-form-close" disabled={confirmationBusy} onclick={closeConfirmation}>×</button>
       </div>
-      <p class="dialog-body-copy">
-        This runs <code>git reset --hard</code>. Later commits are discarded. Uncommitted changes are discarded. Remotes
-        may diverge and need a force-push with lease or a restore from remote.
-      </p>
+      <p class="dialog-body-copy">{confirmation.message}</p>
+      {#if confirmation.squash}
+        <label class="create-input-field squash-message-field" for="squash-message">
+          <span>Snapshot message <small>(optional)</small></span>
+          <input id="squash-message" bind:value={squashMessage} placeholder="Consolidate snapshot history" />
+        </label>
+      {/if}
       <div class="new-form-actions">
-        <button
-          type="button"
-          class="quiet-button"
-          onclick={() => {
-            showResetConfirm = false;
-            pendingResetHash = null;
-          }}>Cancel</button>
-        <button type="button" class="primary-button danger-button" disabled={busy} onclick={() => void confirmReset()}
-          >Hard-reset to snapshot</button>
+        <button type="button" class="quiet-button" disabled={confirmationBusy} onclick={closeConfirmation}>Cancel</button>
+        <button type="button" class="primary-button danger-button" disabled={busy || confirmationBusy} onclick={() => void runConfirmation()}
+          >{confirmation.confirmLabel}</button>
       </div>
     </div>
   </div>
@@ -667,7 +934,58 @@ async function restoreFromRemote() {
 <style>
 .git-settings {
   display: grid;
-  gap: 22px;
+  gap: 16px;
+}
+.git-overview,
+.git-block {
+  padding: 17px 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+.git-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 18px;
+}
+.git-overview strong,
+.git-overview small {
+  display: block;
+}
+.git-overview > div:first-child strong {
+  font-size: 15px;
+}
+.git-overview small {
+  margin-top: 4px;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+.git-overview-stat {
+  min-width: 92px;
+  padding-left: 18px;
+  border-left: 1px solid var(--line);
+}
+.git-overview-stat strong {
+  color: var(--accent-dark);
+  font-size: 19px;
+}
+.git-overview-stat.git-overview-warn strong {
+  color: var(--accent);
+}
+.git-section-copy {
+  margin: -4px 0 13px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.git-section-note {
+  display: block;
+  margin-top: 4px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 500;
 }
 .git-block h3 {
   margin: 0 0 10px;
@@ -683,8 +1001,7 @@ async function restoreFromRemote() {
 .git-block-heading h3 {
   margin: 0;
 }
-.git-tool-ok,
-.git-branch {
+.git-tool-ok {
   margin: 0 0 10px;
   color: var(--ink-soft);
   font-size: 12px;
@@ -695,11 +1012,41 @@ async function restoreFromRemote() {
   gap: 8px;
   margin-bottom: 12px;
 }
+.git-change-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.git-change-toolbar strong,
+.git-change-toolbar small {
+  display: block;
+}
+.git-change-toolbar strong {
+  font-size: 12px;
+}
+.git-change-toolbar small {
+  margin-top: 3px;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+.git-change-toolbar .git-actions {
+  margin: 0;
+}
 .git-commit-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 12px;
+}
+.git-commit-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #e5d8c6;
+  border-radius: 10px;
+  background: #fcf8f1;
 }
 .git-remote-list,
 .git-path-list,
@@ -749,6 +1096,16 @@ async function restoreFromRemote() {
   gap: 10px;
   font-size: 12px;
 }
+.git-change-list li {
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--canvas, #f7f4ee);
+}
+.git-change-list li.selected {
+  border-color: #d8c3a5;
+  background: #fffaf2;
+}
 .git-change-list strong {
   font-size: 13px;
 }
@@ -759,25 +1116,174 @@ async function restoreFromRemote() {
 .git-log-button,
 .git-file-button {
   width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
   border: 0;
   background: transparent;
   text-align: left;
   cursor: pointer;
   color: inherit;
+  font-size: 12px;
+  line-height: 1.35;
   padding: 8px 0;
+}
+.git-change-status {
+  flex: 0 0 22px;
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  text-align: center;
+}
+.git-change-status.change-added {
+  color: #3f8b4d;
+}
+.git-change-status.change-deleted {
+  color: #a44d42;
 }
 .git-log-list li.active,
 .git-file-button.active {
   color: var(--accent-dark, #365342);
 }
-.git-snapshot {
-  margin-top: 14px;
+.git-snapshot-dialog {
+  width: calc(100vw - 64px);
+  max-width: 1400px;
+  min-width: 960px;
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+}
+.git-snapshot-meta {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  margin-top: 4px;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+.git-snapshot-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.git-snapshot-summary span {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+.git-snapshot-layout {
   display: grid;
-  gap: 10px;
+  grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.8fr);
+  gap: 16px;
+}
+.git-snapshot-files {
+  min-width: 0;
+  max-height: 460px;
+  overflow: auto;
+}
+.git-change-category + .git-change-category {
+  margin-top: 15px;
+}
+.git-change-category-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 7px 9px;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 3px solid var(--line);
+  border-radius: 5px;
+  background: var(--canvas);
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-family: inherit;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-align: left;
+  cursor: pointer;
+}
+.git-change-category.change-added .git-change-category-toggle {
+  border-left-color: #5b9b68;
+  background: #edf7ec;
+  color: #3f7449;
+}
+.git-change-category.change-modified .git-change-category-toggle {
+  border-left-color: #c9973e;
+  background: #fff7e5;
+  color: #946c24;
+}
+.git-change-category.change-deleted .git-change-category-toggle {
+  border-left-color: #b85b4e;
+  background: #fbecea;
+  color: #98443a;
+}
+.git-change-kind {
+  flex: 0 0 auto;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.git-tree-chevron {
+  flex: 0 0 10px;
+  font-size: 14px;
+  line-height: 1;
+}
+.git-change-category-toggle > span:nth-last-of-type(1) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-change-category-toggle small {
+  margin-left: auto;
+  color: inherit;
+  font-size: 10px;
+}
+.git-change-category .git-path-list {
+  margin-bottom: 0;
+}
+.git-diff-panel {
+  min-width: 0;
+  min-height: 240px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--canvas);
+}
+.git-diff-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+  font-size: 11px;
+}
+.git-diff-heading strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.diff-wrap-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-size: 10px;
+}
+.diff-wrap-toggle input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent-dark);
 }
 .git-file-preview {
   margin: 0;
-  max-height: 280px;
+  max-height: 420px;
   overflow: auto;
   padding: 12px;
   border: 1px solid var(--line);
@@ -785,6 +1291,54 @@ async function restoreFromRemote() {
   background: #f7f4ee;
   font-size: 11px;
   white-space: pre-wrap;
+}
+.git-diff-view {
+  max-height: 420px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7f4ee;
+  color: var(--ink);
+  font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre;
+}
+.git-diff-view.diff-wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.git-diff-view span {
+  display: block;
+  min-height: 1.55em;
+  padding: 0 10px;
+}
+.git-diff-view .diff-added {
+  background: #e7f3e5;
+  color: #2f6b3b;
+}
+.git-diff-view .diff-removed {
+  background: #f7e5e1;
+  color: #9b4438;
+}
+.git-diff-view .diff-hunk {
+  background: #e8edf6;
+  color: #4a638c;
+}
+.git-diff-view .diff-file-header {
+  color: var(--ink-soft);
+  font-weight: 700;
+}
+@media (max-width: 700px) {
+  .git-snapshot-dialog {
+    width: calc(100vw - 24px);
+    min-width: 0;
+  }
+  .git-snapshot-layout {
+    grid-template-columns: 1fr;
+  }
+  .git-diff-panel {
+    min-height: 180px;
+  }
 }
 .git-recovery {
   padding: 14px;
@@ -967,6 +1521,14 @@ async function restoreFromRemote() {
   font-size: 13px;
   line-height: 1.55;
 }
+.squash-message-field {
+  margin: 16px 0 4px;
+}
+.squash-message-field > span small {
+  color: var(--ink-faint);
+  font-size: 10px;
+  font-weight: 500;
+}
 .new-form-actions {
   display: flex;
   justify-content: flex-end;
@@ -976,5 +1538,31 @@ async function restoreFromRemote() {
   margin: 0 0 10px;
   color: #a1482f;
   font-size: 12px;
+}
+@media (max-width: 620px) {
+  .git-overview {
+    grid-template-columns: 1fr auto;
+  }
+  .git-overview-stat {
+    padding-left: 0;
+    border-left: 0;
+    text-align: right;
+  }
+  .git-overview > .quiet-button {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+  .git-change-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .git-change-toolbar .git-actions {
+    margin-top: 2px;
+  }
+  .git-remote-list li,
+  .git-log-list li {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 </style>

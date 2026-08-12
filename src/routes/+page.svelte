@@ -11,8 +11,6 @@ import {
   type ProjectModuleManifest,
   type ProjectInfo,
   type GitStatus,
-  type GitPreflight,
-  type GitLogEntry,
   type PluginAdminEntry,
   type PluginUpgradePlan,
   type AiSettings,
@@ -223,10 +221,6 @@ let deleteBusy = $state(false);
 let deleteBackupPath = $state("");
 let projectInfo = $state<ProjectInfo | null>(null);
 let gitStatus = $state<GitStatus | null>(null);
-let gitPreflight = $state<GitPreflight | null>(null);
-let gitLog = $state<GitLogEntry[]>([]);
-let showGit = $state(false);
-let gitBusy = $state(false);
 let gitMessage = $state("");
 let showProjectMenu = $state(false);
 let recentProjects = $state<RecentProject[]>([]);
@@ -367,6 +361,26 @@ function createGroups(): CreateGroup[] {
 }
 function selectedCreateOption() {
   return createOptions().find((option) => option.key === selectedCreateKey) ?? null;
+}
+function defaultCreateOption(options: CreateOption[]) {
+  const moduleId = workspaceModuleId(section);
+  const entityType =
+    section === "timeline"
+      ? "event"
+      : section === "writing"
+        ? writingView === "manuscripts"
+          ? "manuscript"
+          : "reference-page"
+        : null;
+  return (
+    options.find(
+      (option) =>
+        option.module.id === moduleId && (entityType === null || option.template.entityType === entityType),
+    ) ??
+    options.find((option) => entityType !== null && option.template.entityType === entityType) ??
+    options[0] ??
+    null
+  );
 }
 function createFieldsFor(option: CreateOption | null = selectedCreateOption()): CreateField[] {
   if (!option) return [];
@@ -855,7 +869,7 @@ function sectionLabel() {
   if (showSettings) {
     if (settingsSection === "plugins") return "Settings · Plugins";
     if (settingsSection === "schema") return "Settings · Schema";
-    if (settingsSection === "git") return "Settings · Git";
+    if (settingsSection === "git") return "Settings · Snapshots";
     return "Settings";
   }
   return section === "lore"
@@ -1603,16 +1617,11 @@ async function loadEntities() {
 }
 
 async function refreshGit() {
-  gitBusy = true;
   gitMessage = "";
   try {
     gitStatus = await project.gitStatus();
-    gitPreflight = gitStatus.repository ? await project.gitStagingPreview() : null;
-    gitLog = gitStatus.repository ? await project.gitLog() : [];
   } catch (cause) {
     gitMessage = friendlyError(cause);
-  } finally {
-    gitBusy = false;
   }
 }
 
@@ -1690,23 +1699,8 @@ async function closeProject() {
     hostView = null;
     sandboxView = null;
     gitStatus = null;
-    gitPreflight = null;
-    gitLog = [];
     ready = false;
   });
-}
-
-async function initializeGit() {
-  gitBusy = true;
-  gitMessage = "";
-  try {
-    await project.gitInit();
-    await refreshGit();
-  } catch (cause) {
-    gitMessage = friendlyError(cause);
-  } finally {
-    gitBusy = false;
-  }
 }
 
 async function flushAutoSave() {
@@ -2066,7 +2060,8 @@ function toggleCreateForm() {
     error = "Enable a module with a creation template to get started.";
     return;
   }
-  if (!options.some((option) => option.key === selectedCreateKey)) selectCreateOption(options[0].key);
+  const defaultOption = defaultCreateOption(options);
+  if (defaultOption && selectedCreateKey !== defaultOption.key) selectCreateOption(defaultOption.key);
   else if (Object.keys(createFieldValues).length === 0) resetCreateFields(selectedCreateOption());
   showCreateForm = true;
   setTimeout(() => document.getElementById("new-entity")?.focus(), 0);
@@ -2937,47 +2932,11 @@ onMount(() => {
     <div class="rail-spacer"></div>
     {#if ready}
       <button
-        aria-expanded={showGit}
-        class:active={showGit}
-        class="rail-button muted-button"
-        onclick={() => {
-          showGit = !showGit;
-          if (showGit) void refreshGit();
-        }}><span class="rail-icon">⑂</span><span>Git</span></button>
-      {#if showGit}<div class="module-menu git-menu">
-          <strong
-            >{gitBusy
-              ? "Checking Git…"
-              : gitStatus?.repository
-                ? `Git · ${gitStatus.branch || "detached"}`
-                : "Git is not initialized"}</strong
-          ><small
-            >{gitMessage ||
-              (gitStatus?.repository
-                ? gitStatus.changes.length === 0
-                  ? "Working tree clean"
-                  : `${gitStatus.changes.length} changed file${gitStatus.changes.length === 1 ? "" : "s"}`
-                : "Initialize Git to track this project")}</small
-          >{#if gitStatus?.repository}<button
-              disabled={gitBusy}
-              onclick={() => {
-                showGit = false;
-                void openSettings("git");
-              }}>Open Git settings</button
-            >{:else}<button disabled={gitBusy} onclick={initializeGit}
-              >{gitBusy ? "Initializing…" : "Initialize Git"}</button
-            >{/if}{#if gitPreflight}<div class="git-preview">
-              <strong
-                >{gitPreflight.ready
-                  ? gitPreflight.staging_paths.length === 0
-                    ? "Nothing to commit"
-                    : `${gitPreflight.staging_paths.length} change${gitPreflight.staging_paths.length === 1 ? "" : "s"} ready`
-                  : "Commit preflight blocked"}</strong
-              >{#if gitPreflight.ready && gitPreflight.staging_paths.length > 0}<small
-                  >Review and commit in Git settings</small
-                >{:else if gitPreflight.diagnostics.length > 0}<small>{gitPreflight.diagnostics[0]}</small>{/if}
-            </div>{/if}
-        </div>{/if}
+        class="rail-button muted-button rail-git-button"
+        title={gitMessage || (gitStatus?.repository ? `Snapshots · ${gitStatus.branch || "detached"}` : "Open Snapshots settings")}
+        onclick={() => void openSettings("git")}><span class="rail-icon">⑂</span><span>Snapshots</span>{#if gitStatus?.repository && gitStatus.changes.length > 0}<small
+          class="rail-git-count">{gitStatus.changes.length}</small>{/if}</button
+      >
     {/if}
     <button
       aria-expanded={showSettings}
@@ -4336,6 +4295,22 @@ onMount(() => {
 }
 .muted-button {
   color: #91a397;
+}
+.rail-git-button {
+  position: relative;
+}
+.rail-git-count {
+  display: grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: auto;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #d5ab6c;
+  color: #2c4032;
+  font-size: 10px;
+  font-weight: 800;
 }
 .rail-spacer {
   flex: 1;
@@ -6139,49 +6114,6 @@ onMount(() => {
 }
 .dialog .new-form-actions {
   margin-top: 20px;
-}
-.git-menu strong,
-.git-menu small {
-  display: block;
-}
-.git-menu strong {
-  color: #eef0e9;
-  font-size: 11px;
-}
-.git-menu small {
-  padding: 4px 0;
-  color: #aab9ad;
-  font-size: 10px;
-}
-.git-preview {
-  display: grid;
-  gap: 4px;
-  margin-top: 5px;
-  padding-top: 6px;
-  border-top: 1px solid rgba(170, 185, 173, 0.2);
-}
-.git-preview strong {
-  font-size: 10px;
-}
-.git-preview small {
-  max-height: 72px;
-  overflow: auto;
-  line-height: 1.45;
-}
-.git-menu button {
-  width: 100%;
-  margin-top: 7px;
-  padding: 7px;
-  border: 0;
-  border-radius: 6px;
-  background: #d5ab6c;
-  color: #2c4032;
-  font-size: 10px;
-  cursor: pointer;
-}
-.git-menu button:disabled {
-  opacity: 0.55;
-  cursor: wait;
 }
 .search-modal {
   position: absolute;

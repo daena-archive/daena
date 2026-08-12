@@ -303,7 +303,7 @@ async function handleClose() {
         type="button"
         class:active={section === "git"}
         class="settings-nav-button"
-        onclick={() => void goToSection("git")}>Git</button>
+        onclick={() => void goToSection("git")}>Snapshots</button>
     </nav>
 
     <div class="settings-panel">

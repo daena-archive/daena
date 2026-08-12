@@ -267,9 +267,15 @@ pub struct GitStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitLogEntry {
-    pub hash: String,
-    pub date: String,
-    pub subject: String,
+  pub hash: String,
+  pub date: String,
+  pub subject: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitChange {
+  pub status: String,
+  pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -909,7 +915,7 @@ impl ProjectStore {
             metadata.validate(&metadata_path)?;
         }
         let gitignore = root.join(".gitignore");
-        let required_gitignore = [".daena/"];
+        let required_gitignore = [".daena/", "checkpoint.json"];
         let existing_gitignore = if gitignore.exists() {
             std::fs::read_to_string(&gitignore)
                 .map_err(|error| CoreError::NotFound(error.to_string()))?
@@ -2138,7 +2144,7 @@ impl ProjectStore {
         let output = self.run_git(&[
             "log",
             "-50",
-            "--date=short",
+            "--date=iso-strict",
             "--pretty=format:%h%x09%ad%x09%s",
         ])?;
         if !output.status.success() {
@@ -2369,6 +2375,55 @@ impl ProjectStore {
         self.git_status()
     }
 
+    pub fn git_super_squash_after_checkpoint(&self, message: &str) -> Result<GitStatus, CoreError> {
+        if message.trim().is_empty() {
+            return Err(CoreError::NotFound("snapshot message cannot be empty".into()));
+        }
+        let preflight = self.git_preflight_after_checkpoint()?;
+        if !preflight.ready {
+            return Err(CoreError::Conflict(format!(
+                "cannot squash while canonical diagnostics remain: {}",
+                preflight.diagnostics.join("; ")
+            )));
+        }
+        if !preflight.staging_paths.is_empty() {
+            return Err(CoreError::Git(
+                "commit snapshot-ready changes before squashing history".into(),
+            ));
+        }
+        let head = self.run_git(&["rev-parse", "--verify", "HEAD"])?;
+        if !head.status.success() {
+            return Err(CoreError::Git("no snapshot history to squash".into()));
+        }
+        let read_tree = self.run_git(&["read-tree", "HEAD"])?;
+        if !read_tree.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&read_tree.stderr).trim().into(),
+            ));
+        }
+        let tree = self.run_git(&["write-tree"])?;
+        if !tree.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&tree.stderr).trim().into(),
+            ));
+        }
+        let tree_hash = String::from_utf8_lossy(&tree.stdout).trim().to_owned();
+        let commit = self.run_git(&["commit-tree", &tree_hash, "-m", message.trim()])?;
+        if !commit.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&commit.stderr).trim().into(),
+            ));
+        }
+        let commit_hash = String::from_utf8_lossy(&commit.stdout).trim().to_owned();
+        let reset = self.run_git(&["reset", "--soft", &commit_hash])?;
+        if !reset.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&reset.stderr).trim().into(),
+            ));
+        }
+        self.git_status()
+    }
+
     pub fn git_tool_info() -> GitToolInfo {
         match Command::new("git").args(["--version"]).output() {
             Ok(output) if output.status.success() => {
@@ -2482,6 +2537,78 @@ impl ProjectStore {
             .filter(|path| !path.is_empty() && Self::is_canonical_git_path(path))
             .map(str::to_string)
             .collect())
+    }
+
+    pub fn git_show_changes(&self, hash: &str) -> Result<Vec<GitChange>, CoreError> {
+        if !self.git_status()?.repository {
+            return Err(CoreError::Git("project is not a git repository".into()));
+        }
+        let hash = hash.trim();
+        if hash.is_empty() {
+            return Err(CoreError::Validation("commit hash cannot be empty".into()));
+        }
+        let output = self.run_git(&[
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "--name-status",
+            "-r",
+            "--find-renames",
+            hash,
+        ])?;
+        if !output.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&output.stderr).trim().into(),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| {
+                let mut parts = line.splitn(2, '\t');
+                let status = parts.next()?.trim();
+                let path = parts.next()?.trim();
+                if status.is_empty() || path.is_empty() || !Self::is_canonical_git_path(path) {
+                    return None;
+                }
+                Some(GitChange {
+                    status: status.into(),
+                    path: path.into(),
+                })
+            })
+            .collect())
+    }
+
+    pub fn git_show_diff(&self, hash: &str, path: &str) -> Result<String, CoreError> {
+        if !self.git_status()?.repository {
+            return Err(CoreError::Git("project is not a git repository".into()));
+        }
+        let hash = hash.trim();
+        let path = path.trim();
+        if hash.is_empty() || path.is_empty() {
+            return Err(CoreError::Validation(
+                "commit hash and path are required".into(),
+            ));
+        }
+        if !Self::is_canonical_git_path(path) {
+            return Err(CoreError::Validation(
+                "snapshot diffs are limited to canonical paths".into(),
+            ));
+        }
+        let output = self.run_git(&[
+            "diff-tree",
+            "--root",
+            "-p",
+            "--no-commit-id",
+            hash,
+            "--",
+            path,
+        ])?;
+        if !output.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&output.stderr).trim().into(),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into())
     }
 
     pub fn git_show_file(&self, hash: &str, path: &str) -> Result<String, CoreError> {

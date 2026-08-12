@@ -4737,11 +4737,37 @@ async fn project_git_commit(
 }
 
 #[tauri::command]
+async fn project_git_super_squash(
+    state: tauri::State<'_, SharedCore>,
+    message: String,
+) -> Result<GitStatus, String> {
+    flush_project_checkpoint(state.clone(), "git super squash").await?;
+    with_read_project(state, move |project| project.git_super_squash_after_checkpoint(&message)).await
+}
+
+#[tauri::command]
 async fn project_git_show_tree(
     state: tauri::State<'_, SharedCore>,
     hash: String,
 ) -> Result<Vec<String>, String> {
     with_read_project(state, move |project| project.git_show_tree(&hash)).await
+}
+
+#[tauri::command]
+async fn project_git_show_changes(
+    state: tauri::State<'_, SharedCore>,
+    hash: String,
+) -> Result<Vec<daena_core::GitChange>, String> {
+    with_read_project(state, move |project| project.git_show_changes(&hash)).await
+}
+
+#[tauri::command]
+async fn project_git_show_diff(
+    state: tauri::State<'_, SharedCore>,
+    hash: String,
+    path: String,
+) -> Result<String, String> {
+    with_read_project(state, move |project| project.git_show_diff(&hash, &path)).await
 }
 
 #[tauri::command]
@@ -5830,7 +5856,10 @@ pub fn run() {
             project_git_init,
             project_git_log,
             project_git_commit,
+            project_git_super_squash,
             project_git_show_tree,
+            project_git_show_changes,
+            project_git_show_diff,
             project_git_show_file,
             project_git_reset_hard,
             project_git_remote_list,

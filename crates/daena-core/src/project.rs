@@ -1,5 +1,5 @@
 use crate::error::CoreError;
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{named_params, params, Connection, OpenFlags, OptionalExtension};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cell::Cell;
@@ -203,6 +203,17 @@ pub struct ModuleRecord {
     pub updated_at: String,
     #[serde(default)]
     pub revision: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ModuleRecordListParams<'a> {
+    pub query: Option<&'a str>,
+    pub limit: usize,
+    pub offset: usize,
+    pub sort: Option<&'a str>,
+    pub status: Option<&'a str>,
+    pub tag: Option<&'a str>,
+    pub homonyms_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -5550,28 +5561,61 @@ impl ProjectStore {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<ModuleRecord>, CoreError> {
+        self.list_module_records_with(
+            module_id,
+            collection,
+            owner_entity_id,
+            ModuleRecordListParams {
+                query,
+                limit,
+                offset,
+                ..ModuleRecordListParams::default()
+            },
+        )
+    }
+
+    pub fn list_module_records_with(
+        &self,
+        module_id: &str,
+        collection: &str,
+        owner_entity_id: &str,
+        params: ModuleRecordListParams<'_>,
+    ) -> Result<Vec<ModuleRecord>, CoreError> {
         validate_module_record_scope(module_id, collection, owner_entity_id)?;
         self.ensure_live_module_record_owner(owner_entity_id)?;
-        let limit = limit.clamp(1, 100) as i64;
-        let offset = i64::try_from(offset)
+        let limit = params.limit.clamp(1, 100) as i64;
+        let offset = i64::try_from(params.offset)
             .map_err(|_| CoreError::Validation("record offset is too large".into()))?;
-        let query = query.unwrap_or_default().trim();
+        let query = params.query.unwrap_or_default().trim();
         if query.len() > 200 {
             return Err(CoreError::Validation(
                 "record search query exceeds 200 bytes".into(),
             ));
         }
-        let sql = if query.is_empty() {
-            "SELECT module_id,collection,id,owner_entity_id,value,created_at,updated_at FROM module_records WHERE module_id=?1 AND collection=?2 AND owner_entity_id=?3 ORDER BY lower(json_extract(value, '$.lemma')), id LIMIT ?4 OFFSET ?5"
+        let status = optional_record_filter(params.status, "record status")?;
+        let tag = optional_record_filter(params.tag, "record tag")?;
+        let order = module_record_order_sql(params.sort.unwrap_or("lemma"), if query.is_empty() {
+            ""
         } else {
-            "SELECT r.module_id,r.collection,r.id,r.owner_entity_id,r.value,r.created_at,r.updated_at FROM module_records r JOIN module_record_search s ON s.record_id=r.id WHERE s.module_id=?1 AND s.collection=?2 AND s.owner_entity_id=?3 AND module_record_search MATCH ?4 ORDER BY lower(json_extract(r.value, '$.lemma')), r.id LIMIT ?5 OFFSET ?6"
+            "r."
+        })?;
+        let filters = module_record_filter_sql(if query.is_empty() { "" } else { "r." });
+        let sql = if query.is_empty() {
+            format!(
+                "SELECT module_id,collection,id,owner_entity_id,value,created_at,updated_at FROM module_records WHERE module_id=:module AND collection=:collection AND owner_entity_id=:owner {filters} ORDER BY {order} LIMIT :limit OFFSET :offset"
+            )
+        } else {
+            format!(
+                "SELECT r.module_id,r.collection,r.id,r.owner_entity_id,r.value,r.created_at,r.updated_at FROM module_records r JOIN module_record_search s ON s.record_id=r.id WHERE s.module_id=:module AND s.collection=:collection AND s.owner_entity_id=:owner AND module_record_search MATCH :terms {filters} ORDER BY {order} LIMIT :limit OFFSET :offset"
+            )
         };
         let terms = query
             .split_whitespace()
             .map(|term| format!("\"{}\"*", term.replace('"', "")))
             .collect::<Vec<_>>()
             .join(" AND ");
-        let mut statement = self.connection.prepare(sql)?;
+        let homonyms = i64::from(params.homonyms_only);
+        let mut statement = self.connection.prepare(&sql)?;
         let read_record = |row: &rusqlite::Row<'_>| {
                 let encoded: String = row.get(4)?;
                 Ok(ModuleRecord {
@@ -5587,12 +5631,31 @@ impl ProjectStore {
             };
         let rows = if query.is_empty() {
             statement.query_map(
-                params![module_id, collection, owner_entity_id, limit, offset],
+                named_params! {
+                    ":module": module_id,
+                    ":collection": collection,
+                    ":owner": owner_entity_id,
+                    ":status": status,
+                    ":tag": tag,
+                    ":homonyms": homonyms,
+                    ":limit": limit,
+                    ":offset": offset,
+                },
                 read_record,
             )?
         } else {
             statement.query_map(
-                params![module_id, collection, owner_entity_id, terms, limit, offset],
+                named_params! {
+                    ":module": module_id,
+                    ":collection": collection,
+                    ":owner": owner_entity_id,
+                    ":terms": terms,
+                    ":status": status,
+                    ":tag": tag,
+                    ":homonyms": homonyms,
+                    ":limit": limit,
+                    ":offset": offset,
+                },
                 read_record,
             )?
         };
@@ -6555,6 +6618,51 @@ fn staged_canonical_sources(
             })
         })
         .collect()
+}
+
+fn optional_record_filter<'a>(
+    value: Option<&'a str>,
+    label: &str,
+) -> Result<Option<&'a str>, CoreError> {
+    let value = value.map(str::trim).filter(|item| !item.is_empty());
+    if let Some(value) = value {
+        if value.len() > 128 {
+            return Err(CoreError::Validation(format!("{label} exceeds 128 bytes")));
+        }
+    }
+    Ok(value)
+}
+
+fn module_record_order_sql(sort: &str, alias: &str) -> Result<String, CoreError> {
+    let id = format!("{alias}id");
+    Ok(match sort {
+        "" | "lemma" => format!("lower(json_extract({alias}value, '$.lemma')), {id}"),
+        "updatedAt" => format!("{alias}updated_at DESC, {id}"),
+        "status" => format!(
+            "lower(COALESCE(json_extract({alias}value, '$.status'), '')), lower(json_extract({alias}value, '$.lemma')), {id}"
+        ),
+        _ => {
+            return Err(CoreError::Validation(
+                "record sort must be lemma, updatedAt, or status".into(),
+            ))
+        }
+    })
+}
+
+fn module_record_filter_sql(alias: &str) -> String {
+    let json_source = if alias.is_empty() {
+        "module_records.value".into()
+    } else {
+        format!("{alias}value")
+    };
+    format!(
+        "AND (:status IS NULL OR json_extract({json_source}, '$.status') = :status) \
+         AND (:tag IS NULL OR EXISTS (SELECT 1 FROM json_each({json_source}, '$.tags') AS tag_item WHERE tag_item.atom = :tag)) \
+         AND (:homonyms = 0 OR lower(json_extract({json_source}, '$.lemma')) IN ( \
+            SELECT lower(json_extract(value, '$.lemma')) FROM module_records \
+            WHERE module_id=:module AND collection=:collection AND owner_entity_id=:owner \
+            GROUP BY lower(json_extract(value, '$.lemma')) HAVING COUNT(*) > 1))"
+    )
 }
 
 fn validate_module_record_scope(

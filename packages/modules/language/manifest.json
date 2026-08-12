@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "daena.language",
   "name": "Language",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "daena-archive",
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "sandboxed",
@@ -38,10 +38,17 @@
       "properties": {
         "lemma": { "type": "string" },
         "partOfSpeech": { "type": "string" },
+        "status": { "type": "string" },
+        "tags": { "type": "array" },
+        "etymology": { "type": "string" },
+        "sourceNotes": { "type": "string" },
+        "notes": { "type": "string" },
         "meanings": { "type": "array" },
         "pronunciation": { "type": "string" },
-        "notes": { "type": "string" },
-        "example": { "type": "object" }
+        "pronunciations": { "type": "array" },
+        "forms": { "type": "array" },
+        "example": { "type": "object" },
+        "senses": { "type": "array" }
       },
       "required": ["lemma", "meanings"],
       "additionalProperties": false

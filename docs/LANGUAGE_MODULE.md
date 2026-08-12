@@ -16,7 +16,7 @@ The module must fit Daena rather than become a separate application inside it:
 - SQLite is live runtime authority, and deterministic portable files provide the checkpoint used for Git, inspection, and clean reconstruction;
 - UI and creation behavior are derived from the enabled module manifest, not checks for a hard-coded Language module ID.
 
-This document defines iteration 1 and the boundaries later iterations must preserve. It is not approval to implement the later feature list now.
+This document defines iteration 1, iteration 2, and the boundaries later iterations must preserve. It is not approval to implement the later feature list now.
 
 ## 2. Product model
 
@@ -321,6 +321,13 @@ Implement only this vertical slice:
 5. Add scoped lexeme search and its rebuildable projection.
 6. Verify iteration 1 exit gates.
 
+Iteration 2:
+
+1. Extend the lexeme schema with nested senses, forms, pronunciations, tags, and status while remaining backward-compatible.
+2. Add allowlisted `record.list` sort and filter parameters.
+3. Replace the lexicon editor with the richer form, filters, homonym workflow, and JSON import/export.
+4. Verify iteration 2 exit gates.
+
 Do not begin phonology, grammar, paradigms, samples, AI, or relationship-specific work as part of this slice.
 
 ## 7. Verification and exit gates
@@ -343,21 +350,45 @@ Iteration 1 is complete only when all of these are demonstrated:
 - Focused Rust tests, broker conformance tests, frontend checks, and a rendered desktop interaction pass succeed.
 - The rendered pass covers empty, populated, loading, save failure, deletion confirmation, and stale-conflict states.
 
+Iteration 2 is complete only when all of these are demonstrated:
+
+- A lexeme can store multiple senses, examples, forms, and pronunciation variants with stable nested IDs.
+- Iteration 1 lexemes open and save without losing lemma, meanings, pronunciation, or example.
+- Status and tag filters and lemma/status/updated sorts return the expected page.
+- Homonyms remain distinct; the editor reports other matches and can create another entry with the same lemma.
+- JSON export round-trips authored lexeme values; JSON import recreates them as new records.
+- Search still matches lemma, glosses, and nested definitions within one Language.
+- Generated `record.list` schemas and TypeScript SDK include the new allowlisted list parameters.
+
 ## 8. Later iterations
 
 Later work must extend the same Language entity and generic module-record boundary. Each iteration should be independently useful.
 
 ### Iteration 2: richer lexicon
 
-- structured senses with gloss, definition, and usage notes;
-- multiple examples per sense;
-- alternate forms and pronunciation variants;
-- etymology and source notes;
-- tags, status, filters, and better sorting;
-- lossless bulk import/export;
-- duplicate and homonym workflows.
+Iteration 2 extends the same Language entity and `lexemes` collection. Senses, forms, examples, and pronunciation variants remain module-owned structured objects with stable IDs nested in the lexeme value. The generic record primitive is still scoped to an owner entity, not a parent record; nested families avoid a parallel identity/revision plane until a later generic parent-record contract exists.
 
-Keep lexemes, senses, forms, and examples module-owned.
+Iteration 1 lexemes remain valid. On edit, `meanings`, a top-level `example`, and a single `pronunciation` are normalized into senses and pronunciation variants. Saves keep `meanings` as the list of sense glosses so list columns and search stay compatible.
+
+#### User outcome
+
+An author can document multiple senses and examples for a word, record alternate forms and pronunciations, tag and filter the lexicon, inspect homonyms, and round-trip a language's vocabulary through JSON without leaving the module.
+
+#### Required capabilities
+
+1. Structured senses with optional gloss, definition, usage notes, and multiple examples.
+2. Alternate forms and pronunciation variants with optional notes.
+3. Etymology and source notes on the lexeme.
+4. Optional status and tags, with list filters and allowlisted sorts (`lemma`, `status`, `updatedAt`).
+5. Homonym notice in the editor, **Add homonym**, and a **Homonyms only** list filter.
+6. Lossless JSON export of authored lexeme values and import that recreates those values as new records.
+7. Iteration 1 create/read/update/delete, paging, search, revision, and checkpoint behavior remains true.
+
+`record.list` may accept allowlisted `sort`, `status`, `tag`, and `homonymsOnly` parameters. It still must not accept raw SQL or arbitrary JSON predicates.
+
+#### Non-goals
+
+Iteration 2 does not add separate sense/form/example collections, parent-record IDs, spreadsheet editing, specialist interchange formats, or phonology/grammar work.
 
 ### Iteration 3: phonology and orthography
 

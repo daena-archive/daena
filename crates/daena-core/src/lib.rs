@@ -13,7 +13,8 @@ pub use project::{
     Asset, AssetFileInput, AssetInput, AssetReplaceInput, CheckpointHandle, CreateEntity,
     CreateEntry, CreateEntryDocument, CreateEntryField, Document, Entity, ExternalChangeReport,
     FieldValue, Generation, GitChange, GitLogEntry, GitPreflight, GitRemote, GitResetResult, GitStatus,
-    GitToolInfo, GitUpstream, MigrationHistoryEntry, ModuleField, ModuleNamespace, ModuleState,
+    GitToolInfo, GitUpstream, MigrationHistoryEntry, ModuleField, ModuleNamespace, ModuleRecordListParams,
+    ModuleState,
     PluginBackup, ProjectInfo, ProjectSnapshot, ProjectStore, Relationship, RelationshipInput,
     SaveDocument, SaveEntry, SearchPassage, SyncSummary,
 };

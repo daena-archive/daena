@@ -424,10 +424,14 @@ export interface RecordDeletePayload {
 }
 export interface RecordListPayload {
     collection: string;
+    homonymsOnly?: boolean | null;
     limit?: number | null;
     offset?: number | null;
     ownerEntityId: string;
     query?: string | null;
+    sort?: string | null;
+    status?: string | null;
+    tag?: string | null;
 }
 export interface RecordUpdatePayload {
     collection: string;

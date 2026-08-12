@@ -206,6 +206,10 @@ export interface ModuleRecordQuery {
   query?: string;
   limit?: number;
   offset?: number;
+  sort?: "lemma" | "updatedAt" | "status";
+  status?: string;
+  tag?: string;
+  homonymsOnly?: boolean;
 }
 
 export interface EntityQuery {

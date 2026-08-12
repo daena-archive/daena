@@ -361,6 +361,10 @@ export function buildModuleContext(manifest: ModuleManifest, projectId: string):
           query: query.query,
           limit: query.limit,
           offset: query.offset,
+          sort: query.sort,
+          status: query.status,
+          tag: query.tag,
+          homonymsOnly: query.homonymsOnly,
         });
         return records.map((record) => toModuleRecord<T>(record));
       },

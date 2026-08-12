@@ -4075,7 +4075,7 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
         ),
         "record.list" => (
             &["collection", "ownerEntityId"],
-            &["query", "limit", "offset"],
+            &["query", "limit", "offset", "sort", "status", "tag", "homonymsOnly"],
         ),
         "record.create" => (&["collection", "ownerEntityId", "value"], &[]),
         "record.update" => (
@@ -4400,13 +4400,22 @@ fn dispatch_module_rpc(
                 .get("offset")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or_default() as usize;
-            serde_json::to_value(project.list_module_records(
+            serde_json::to_value(project.list_module_records_with(
                 module_id,
                 &payload_string(&payload, "collection")?,
                 &payload_string(&payload, "ownerEntityId")?,
-                payload.get("query").and_then(serde_json::Value::as_str),
-                limit,
-                offset,
+                daena_core::ModuleRecordListParams {
+                    query: payload.get("query").and_then(serde_json::Value::as_str),
+                    limit,
+                    offset,
+                    sort: payload.get("sort").and_then(serde_json::Value::as_str),
+                    status: payload.get("status").and_then(serde_json::Value::as_str),
+                    tag: payload.get("tag").and_then(serde_json::Value::as_str),
+                    homonyms_only: payload
+                        .get("homonymsOnly")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                },
             )?)
             .map_err(|error| CoreError::Validation(error.to_string()))
         }

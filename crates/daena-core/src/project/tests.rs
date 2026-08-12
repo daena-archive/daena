@@ -1034,10 +1034,101 @@ fn module_records_are_scoped_revisioned_and_rebuild_from_checkpoint() {
             "daena.language",
             "lexemes",
             &language.id,
-            serde_json::json!({"lemma": "sol", "meanings": ["soil"]}),
+            serde_json::json!({
+                "lemma": "sol",
+                "meanings": ["soil"],
+                "status": "archaic",
+                "tags": ["nature"],
+                "senses": [{ "id": "s1", "gloss": "soil", "definition": "earth" }]
+            }),
             Some(&Uuid::new_v4().to_string()),
         )
         .unwrap();
+    let all = store
+        .list_module_records("daena.language", "lexemes", &language.id, None, 50, 0)
+        .unwrap();
+    assert_eq!(
+        all.len(),
+        2,
+        "all records: {:?}",
+        all.iter().map(|record| &record.value).collect::<Vec<_>>()
+    );
+    let by_status = store
+        .list_module_records_with(
+            "daena.language",
+            "lexemes",
+            &language.id,
+            crate::ModuleRecordListParams {
+                status: Some("archaic"),
+                limit: 50,
+                ..crate::ModuleRecordListParams::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        by_status.len(),
+        1,
+        "status filter: {:?}",
+        by_status.iter().map(|record| &record.value).collect::<Vec<_>>()
+    );
+    let filtered = store
+        .list_module_records_with(
+            "daena.language",
+            "lexemes",
+            &language.id,
+            crate::ModuleRecordListParams {
+                status: Some("archaic"),
+                tag: Some("nature"),
+                sort: Some("status"),
+                limit: 50,
+                ..crate::ModuleRecordListParams::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].value["lemma"], "sol");
+    assert!(store
+        .list_module_records_with(
+            "daena.language",
+            "lexemes",
+            &language.id,
+            crate::ModuleRecordListParams {
+                sort: Some("createdAt"),
+                limit: 50,
+                ..crate::ModuleRecordListParams::default()
+            },
+        )
+        .is_err());
+    assert_eq!(
+        store
+            .list_module_records_with(
+                "daena.language",
+                "lexemes",
+                &language.id,
+                crate::ModuleRecordListParams {
+                    homonyms_only: true,
+                    limit: 50,
+                    ..crate::ModuleRecordListParams::default()
+                },
+            )
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        store
+            .list_module_records(
+                "daena.language",
+                "lexemes",
+                &language.id,
+                Some("earth"),
+                50,
+                0,
+            )
+            .unwrap()
+            .len(),
+        1
+    );
     let disposable = store
         .create_module_record(
             "daena.language",

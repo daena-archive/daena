@@ -846,6 +846,12 @@
         "collection": {
           "type": "string"
         },
+        "homonymsOnly": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "limit": {
           "format": "uint32",
           "minimum": 0.0,
@@ -866,6 +872,24 @@
           "type": "string"
         },
         "query": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sort": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tag": {
           "type": [
             "string",
             "null"

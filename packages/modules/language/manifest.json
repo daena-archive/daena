@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "daena.language",
   "name": "Language",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "daena-archive",
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "sandboxed",
@@ -25,7 +25,7 @@
     "id": "language",
     "name": "Language",
     "entityType": "language",
-    "description": "Document a fictional language, its sounds, writing, grammar, and lexicon.",
+    "description": "Document a fictional language, its sounds, writing, grammar, forms, and lexicon.",
     "icon": "Aa",
     "fields": { "nativeName": "", "aliases": "", "status": "", "family": "", "writingSystem": "" },
     "document": ""
@@ -49,7 +49,8 @@
           "pronunciations": { "type": "array" },
           "forms": { "type": "array" },
           "example": { "type": "object" },
-          "senses": { "type": "array" }
+          "senses": { "type": "array" },
+          "paradigmId": { "type": "string" }
         },
         "required": ["lemma", "meanings"],
         "additionalProperties": false
@@ -120,6 +121,23 @@
           "links": { "type": "array" }
         },
         "required": ["title", "section", "body", "links"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "paradigms",
+      "ownerEntityTypes": ["language"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "kind": { "type": "string" },
+          "partOfSpeech": { "type": "string" },
+          "notes": { "type": "string" },
+          "slots": { "type": "array" },
+          "rules": { "type": "array" }
+        },
+        "required": ["name", "kind", "slots", "rules"],
         "additionalProperties": false
       }
     }

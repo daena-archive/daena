@@ -3774,7 +3774,7 @@ onMount(() => {
               : section === "timeline"
                 ? "Events, eras, and the threads that connect them."
                 : section === "language"
-                  ? "Document fictional languages, their sounds, writing, grammar, and vocabulary."
+                  ? "Document fictional languages, their sounds, writing, grammar, forms, and vocabulary."
                   : writingView === "manuscripts"
                     ? "Draft stories, essays, and other long-form work."
                     : "Build the pages, notes, and references behind the story."}

@@ -1426,6 +1426,112 @@ fn language_grammar_topics_round_trip_and_sort_by_section_title() {
 }
 
 #[test]
+fn language_paradigms_round_trip_and_sort_by_name() {
+    let root = std::env::temp_dir().join(format!("daena-language-paradigms-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let language = store
+        .create_entity(CreateEntity {
+            name: "Asteri".into(),
+            entity_type: Some("language".into()),
+        })
+        .unwrap();
+    store
+        .create_module_record(
+            "daena.language",
+            "paradigms",
+            &language.id,
+            serde_json::json!({
+                "name": "Weak verb",
+                "kind": "inflection",
+                "slots": [{ "id": "s1", "label": "1sg" }],
+                "rules": [{
+                    "id": "r1",
+                    "name": "default",
+                    "kind": "inflection",
+                    "operations": [{ "id": "o1", "slotId": "s1", "op": "suffix", "value": "o" }]
+                }]
+            }),
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+    store
+        .create_module_record(
+            "daena.language",
+            "paradigms",
+            &language.id,
+            serde_json::json!({
+                "name": "Agent noun",
+                "kind": "derivation",
+                "slots": [{ "id": "s1", "label": "agent" }],
+                "rules": [{
+                    "id": "r1",
+                    "name": "agent",
+                    "kind": "derivation",
+                    "operations": [{ "id": "o1", "slotId": "s1", "op": "suffix", "value": "er" }]
+                }]
+            }),
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+    let tables = store
+        .list_module_records_with(
+            "daena.language",
+            "paradigms",
+            &language.id,
+            crate::ModuleRecordListParams {
+                sort: Some("name"),
+                limit: 50,
+                ..crate::ModuleRecordListParams::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        tables
+            .iter()
+            .map(|record| record.value["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["Agent noun", "Weak verb"]
+    );
+    assert_eq!(
+        store
+            .list_module_records(
+                "daena.language",
+                "paradigms",
+                &language.id,
+                Some("Agent"),
+                50,
+                0,
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+    let other = store
+        .create_entity(CreateEntity {
+            name: "Other".into(),
+            entity_type: Some("language".into()),
+        })
+        .unwrap();
+    assert!(store
+        .list_module_records("daena.language", "paradigms", &other.id, None, 50, 0)
+        .unwrap()
+        .is_empty());
+    store.flush_checkpoint("paradigm-test").unwrap();
+    drop(store);
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(
+        rebuilt
+            .list_module_records("daena.language", "paradigms", &language.id, None, 50, 0)
+            .unwrap()
+            .len(),
+        2
+    );
+    drop(rebuilt);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn lore_schema_overlay_survives_directory_reopen_and_checkpoint() {
     let root = std::env::temp_dir().join(format!("daena-lore-overlay-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();

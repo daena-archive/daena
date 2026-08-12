@@ -16,7 +16,7 @@ The module must fit Daena rather than become a separate application inside it:
 - SQLite is live runtime authority, and deterministic portable files provide the checkpoint used for Git, inspection, and clean reconstruction;
 - UI and creation behavior are derived from the enabled module manifest, not checks for a hard-coded Language module ID.
 
-This document defines iterations 1–4 and the boundaries later iterations must preserve. It is not approval to implement the later feature list now.
+This document defines iterations 1–5 and the boundaries later iterations must preserve. It is not approval to implement the later feature list now.
 
 ## 2. Product model
 
@@ -342,7 +342,14 @@ Iteration 4:
 3. Add a Grammar pane with section navigation and typed lexeme/example links.
 4. Verify iteration 4 exit gates.
 
-Do not begin paradigms, samples, AI, or relationship-specific work as part of this slice.
+Iteration 5:
+
+1. Add a Language-owned `paradigms` collection with nested slots and rules.
+2. Generate form previews from those rules without writing generated cells into lexemes.
+3. Add a Forms pane plus lexeme overrides that distinguish authored from generated provenance.
+4. Verify iteration 5 exit gates.
+
+Do not begin samples, AI, or relationship-specific work as part of this slice.
 
 ## 7. Verification and exit gates
 
@@ -390,6 +397,15 @@ Iteration 4 is complete only when all of these are demonstrated:
 - Typed links can point at lexemes and examples in the same Language and open the linked word.
 - Grammar records survive checkpoint rebuild and stay scoped to one Language.
 - Sounds, writing, and lexicon panes remain available.
+
+Iteration 5 is complete only when all of these are demonstrated:
+
+- A Language can store inflectional and derivational paradigm tables as module-owned records.
+- Generated-form previews fill from rules; more specific lemma-ending matches win over default rules.
+- Irregular and other authored forms can override a generated cell and keep an explicit authored provenance.
+- Changing a rule updates the generated preview and never deletes or rewrites authored forms, exceptions, or examples.
+- Paradigm records survive checkpoint rebuild and stay scoped to one Language.
+- Grammar, sounds, writing, and lexicon panes remain available.
 
 ## 8. Later iterations
 
@@ -471,12 +487,29 @@ Iteration 4 does not generate paradigms, parse the language, or add interlinear 
 
 ### Iteration 5: morphology and paradigms
 
-- inflectional and derivational rules;
-- paradigm definitions and generated-form previews;
-- irregular and authored overrides;
-- explicit provenance distinguishing generated from authored forms.
+Iteration 5 adds a Language-owned `paradigms` collection. Each paradigm has a name, inflection or derivation kind, slots, and nested rules. Rules stay nested in the paradigm value so they do not need a parent-record identity plane.
+
+Generation is a derived preview: prefix, suffix, replace-suffix, and identity operations compute cells from the lemma or typed stem. Generated cells are not written to the lexeme unless the author pins an override. Lexeme `forms` remain the authored store; pinned cells record `paradigmId`, `slotId`, and `provenance: override`. Existing alternate forms without those fields stay authored.
+
+A lexeme may optionally point at a paradigm through `paradigmId` so the lexicon editor can show the same preview.
+
+#### User outcome
+
+An author can define a conjugation or derivation table, see generated forms for a stem, pin irregular overrides on a word, and change a rule without losing those exceptions.
+
+#### Required capabilities
+
+1. Inflectional and derivational paradigm records with named slots.
+2. Nested rules with optional lemma-ending matches and affix operations.
+3. Generated-form previews that label each cell generated, authored, or missing.
+4. Authored overrides that win over generated cells and survive rule edits.
+5. Iteration 1–4 lexicon, phonology, orthography, and grammar behavior remains true.
 
 Changing a rule must never silently destroy authored forms, exceptions, or examples.
+
+#### Non-goals
+
+Iteration 5 does not add a full morphological parser, automatic paradigm inference, or sample/interlinear text.
 
 ### Iteration 6: samples and interlinear text
 

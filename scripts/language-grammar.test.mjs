@@ -23,7 +23,7 @@ assert.match(html, /<strong>SVO<\/strong>/);
 assert.match(html, /data-lexeme-id="f4c4f6b9-7c1e-4b8a-9d2e-0a3b5c7d9e11"/);
 assert.match(html, /<li>nouns first<\/li>/);
 
-const unsafe = grammarMarkdownToHtml('<script>alert(1)</script>\n[click](javascript:alert(1))\n**ok**');
+const unsafe = grammarMarkdownToHtml("<script>alert(1)</script>\n[click](javascript:alert(1))\n**ok**");
 assert.match(unsafe, /&lt;script&gt;/);
 assert.equal(unsafe.includes("<script>"), false);
 assert.equal(unsafe.includes('href="javascript:'), false);

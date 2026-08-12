@@ -17,6 +17,9 @@ export type LexemeForm = {
   form: string;
   kind?: string;
   pronunciation?: string;
+  provenance?: "authored" | "override";
+  paradigmId?: string;
+  slotId?: string;
 };
 
 export type LexemePronunciation = {
@@ -37,6 +40,7 @@ export type LexemeValue = {
   pronunciations: LexemePronunciation[];
   forms: LexemeForm[];
   senses: LexemeSense[];
+  paradigmId?: string;
 };
 
 export const LEXICON_FORMAT = "daena.language.lexicon";
@@ -59,7 +63,7 @@ const LONG = 2000;
 const MAX_TAGS = 16;
 const MAX_SENSES = 32;
 const MAX_EXAMPLES = 8;
-const MAX_FORMS = 16;
+const MAX_FORMS = 64;
 const MAX_PRONUNCIATIONS = 8;
 
 function id() {
@@ -128,12 +132,17 @@ export function normalizeLexeme(value: unknown): LexemeValue {
         .map((item) => {
           const entry = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
           const form = text(entry.form);
+          const provenance =
+            entry.provenance === "override" ? "override" : entry.provenance === "authored" ? "authored" : undefined;
           return form
             ? {
                 id: text(entry.id) || id(),
                 form,
                 kind: optional(entry.kind),
                 pronunciation: optional(entry.pronunciation),
+                provenance,
+                paradigmId: optional(entry.paradigmId),
+                slotId: optional(entry.slotId),
               }
             : null;
         })
@@ -172,6 +181,7 @@ export function normalizeLexeme(value: unknown): LexemeValue {
     pronunciations,
     forms,
     senses: normalizedSenses,
+    paradigmId: optional(record.paradigmId),
   };
 }
 
@@ -189,6 +199,7 @@ export function serializeLexeme(value: LexemeValue): Record<string, unknown> {
     pronunciations: normalized.pronunciations,
     forms: normalized.forms,
     senses: normalized.senses,
+    paradigmId: normalized.paradigmId,
   };
 }
 

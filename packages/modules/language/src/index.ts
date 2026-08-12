@@ -49,11 +49,27 @@ import {
   type GrammarSectionId,
   type GrammarTopic,
 } from "./grammar";
+import {
+  clearOverride,
+  emptyOperation,
+  emptyParadigm,
+  emptyRule,
+  emptySlot,
+  normalizeParadigm,
+  OPERATION_KINDS,
+  PARADIGM_KINDS,
+  pinOverride,
+  previewParadigm,
+  serializeParadigm,
+  type MorphOperationKind,
+  type Paradigm,
+  type ParadigmKind,
+} from "./morphology";
 import { alertMessage, button, emptyMessage, field, groupHead, input, replaceEditor, row, textarea } from "./ui";
 
 const manifest = manifestJson as unknown as ModuleManifest;
 
-type Pane = "lexicon" | "sounds" | "writing" | "grammar";
+type Pane = "lexicon" | "sounds" | "writing" | "grammar" | "forms";
 
 export const language: DaenaModule = {
   manifest,
@@ -94,6 +110,12 @@ export const language: DaenaModule = {
         let grammarEditorOpen = false;
         let grammarDraft: GrammarTopic = emptyGrammarTopic();
         let pendingLexemeId: string | null = null;
+        let paradigms: ModuleRecord<Paradigm>[] = [];
+        let paradigmEditing: ModuleRecord<Paradigm> | null = null;
+        let paradigmEditorOpen = false;
+        let paradigmDraft: Paradigm = emptyParadigm();
+        let previewStem = "";
+        let previewLexemeId = "";
 
         const root = document.createElement("section");
         root.className = "language-workspace";
@@ -122,6 +144,12 @@ export const language: DaenaModule = {
           .grammar-preview p,.grammar-preview ul,.grammar-preview ol{margin:0 0 8px}
           .grammar-ref{padding:0;border:0;border-bottom:1px dotted var(--accent-dark);background:transparent;color:var(--accent-dark);font:inherit;cursor:pointer}
           .grammar-nav{display:grid;gap:12px;margin-top:14px}
+          .paradigm-preview{width:100%;border-collapse:collapse;margin:12px 0;font-size:12px}
+          .paradigm-preview th,.paradigm-preview td{border:1px solid var(--line);padding:8px;text-align:left}
+          .paradigm-preview th{background:var(--paper-strong);font-weight:600;color:var(--ink-soft)}
+          .form-provenance{font-size:10px;letter-spacing:.02em;text-transform:uppercase;color:var(--ink-soft)}
+          .form-provenance.is-authored{color:var(--accent-dark)}
+          .form-provenance.is-missing{color:var(--ink-faint)}
           .lexeme-row{display:grid;grid-template-columns:minmax(100px,1.1fr) minmax(70px,.5fr) minmax(120px,1.3fr) minmax(70px,.5fr);gap:12px;padding:10px;border-bottom:1px solid var(--line);border-radius:0}.lexeme-row:hover{background:var(--paper-strong)}.lexeme-row small{color:var(--ink-faint)}
           .language-button{padding:8px 12px;border:1px solid var(--accent-dark);border-radius:8px;background:var(--accent-dark);color:white;cursor:pointer}.language-button.secondary{background:transparent;color:var(--accent-dark)}
           .language-empty,.language-status{margin:18px 0;color:var(--ink-soft);font-size:12px;line-height:1.6}.language-status.error{color:#a14f42}
@@ -137,26 +165,31 @@ export const language: DaenaModule = {
         async function loadRecords() {
           if (!selectedLanguage) {
             records = [];
+            paradigms = [];
             render();
             return;
           }
           const token = ++request;
           try {
-            const result = await context.records.list<LexemeValue>("lexemes", selectedLanguage.id, {
-              query: search || undefined,
-              status: statusFilter || undefined,
-              tag: tagFilter || undefined,
-              sort,
-              homonymsOnly: homonymsOnly || undefined,
-              limit: 51,
-              offset: page * 50,
-            });
+            const [result, paradigmList] = await Promise.all([
+              context.records.list<LexemeValue>("lexemes", selectedLanguage.id, {
+                query: search || undefined,
+                status: statusFilter || undefined,
+                tag: tagFilter || undefined,
+                sort,
+                homonymsOnly: homonymsOnly || undefined,
+                limit: 51,
+                offset: page * 50,
+              }),
+              context.records.list<Paradigm>("paradigms", selectedLanguage.id, { limit: 100, sort: "name" }),
+            ]);
             if (!cancelled && token === request) {
               hasNextPage = result.length > 50;
               records = result.slice(0, 50).map((record) => ({
                 ...record,
                 value: normalizeLexeme(record.value),
               }));
+              paradigms = paradigmList.map((record) => ({ ...record, value: normalizeParadigm(record.value) }));
               if (editing) {
                 const current = records.find((record) => record.id === editing?.id);
                 if (current) editing = current;
@@ -200,6 +233,64 @@ export const language: DaenaModule = {
           searchTimer = window.setTimeout(() => void loadRecords(), 180);
         }
 
+        function formPreviewTable(
+          paradigm: Paradigm,
+          stem: string,
+          forms: LexemeValue["forms"],
+          paradigmId: string,
+          actions?: {
+            onPin?: (slot: Paradigm["slots"][number], form: string) => void;
+            onClear?: (slot: Paradigm["slots"][number]) => void;
+          },
+        ) {
+          const table = document.createElement("table");
+          table.className = "paradigm-preview";
+          const head = document.createElement("thead");
+          const headRow = document.createElement("tr");
+          for (const label of ["Slot", "Form", "Source", "Rule", "Override"]) {
+            const cell = document.createElement("th");
+            cell.textContent = label;
+            headRow.append(cell);
+          }
+          head.append(headRow);
+          const body = document.createElement("tbody");
+          for (const cell of previewParadigm(paradigm, stem, forms, paradigmId)) {
+            const rowEl = document.createElement("tr");
+            const slot = document.createElement("th");
+            slot.scope = "row";
+            slot.textContent = cell.slot.features ? `${cell.slot.label} (${cell.slot.features})` : cell.slot.label;
+            const formCell = document.createElement("td");
+            formCell.textContent = cell.form || "—";
+            if (cell.provenance === "authored" && cell.generated && cell.generated !== cell.form) {
+              const generated = document.createElement("small");
+              generated.textContent = ` rule: ${cell.generated}`;
+              formCell.append(generated);
+            }
+            const source = document.createElement("td");
+            const badge = document.createElement("span");
+            badge.className = `form-provenance${cell.provenance === "authored" ? " is-authored" : cell.provenance === "missing" ? " is-missing" : ""}`;
+            badge.textContent =
+              cell.provenance === "authored" ? "authored" : cell.provenance === "generated" ? "generated" : "no rule";
+            source.append(badge);
+            const rule = document.createElement("td");
+            rule.textContent = cell.ruleName || "—";
+            const override = document.createElement("td");
+            if (actions?.onPin && cell.form && cell.provenance === "generated") {
+              override.append(
+                button("Pin override", "language-button secondary", () => actions.onPin?.(cell.slot, cell.form)),
+              );
+            } else if (actions?.onClear && cell.provenance === "authored") {
+              override.append(
+                button("Clear override", "language-button secondary", () => actions.onClear?.(cell.slot)),
+              );
+            }
+            rowEl.append(slot, formCell, source, rule, override);
+            body.append(rowEl);
+          }
+          table.append(head, body);
+          return table;
+        }
+
         function editForm(error = "") {
           const form = document.createElement("form");
           form.className = "language-editor";
@@ -218,6 +309,25 @@ export const language: DaenaModule = {
             field("Status (optional)", input("status", draft.status, "language-status")),
             field("Tags — comma or line separated (optional)", textarea("tags", draft.tags.join("\n"), 2)),
           );
+          const paradigmSelect = document.createElement("select");
+          paradigmSelect.name = "paradigmId";
+          paradigmSelect.setAttribute("aria-label", "Paradigm");
+          paradigmSelect.append(new Option("None", "", !draft.paradigmId, !draft.paradigmId));
+          for (const record of paradigms) {
+            paradigmSelect.append(
+              new Option(
+                record.value.name || "Untitled paradigm",
+                record.id,
+                record.id === draft.paradigmId,
+                record.id === draft.paradigmId,
+              ),
+            );
+          }
+          paradigmSelect.onchange = () => {
+            capture(form);
+            replaceEditor(form, editForm(error));
+          };
+          form.append(field("Paradigm (optional)", paradigmSelect));
           if (homonymCount > 0) {
             const notice = document.createElement("p");
             notice.className = "language-status";
@@ -339,6 +449,32 @@ export const language: DaenaModule = {
             field("Source notes (optional)", textarea("sourceNotes", draft.sourceNotes)),
             field("Notes (optional)", textarea("notes", draft.notes)),
           );
+          const attached = paradigms.find((record) => record.id === draft.paradigmId);
+          if (attached) {
+            const preview = document.createElement("section");
+            preview.className = "language-group";
+            const heading = document.createElement("h3");
+            heading.textContent = "Generated forms preview";
+            preview.append(
+              heading,
+              emptyMessage(
+                "Generated cells are a preview. Pinning stores an authored override on this word; changing a rule does not delete pinned or other authored forms.",
+              ),
+              formPreviewTable(attached.value, draft.lemma, draft.forms, attached.id, {
+                onPin: (slot, formValue) => {
+                  capture(form);
+                  draft.forms = pinOverride(draft.forms, attached.id, slot, formValue);
+                  replaceEditor(form, editForm(error));
+                },
+                onClear: (slot) => {
+                  capture(form);
+                  draft.forms = clearOverride(draft.forms, attached.id, slot);
+                  replaceEditor(form, editForm(error));
+                },
+              }),
+            );
+            form.append(preview);
+          }
           if (error) {
             const message = document.createElement("p");
             message.className = "language-status error";
@@ -438,6 +574,7 @@ export const language: DaenaModule = {
           draft.etymology = String(data.get("etymology") ?? "");
           draft.sourceNotes = String(data.get("sourceNotes") ?? "");
           draft.notes = String(data.get("notes") ?? "");
+          draft.paradigmId = String(data.get("paradigmId") ?? "") || undefined;
           draft.pronunciations = draft.pronunciations.map((item, index) => ({
             ...item,
             value: String(data.get(`pronunciation-${index}`) ?? ""),
@@ -512,12 +649,18 @@ export const language: DaenaModule = {
           grammarEditing = null;
           grammarEditorOpen = false;
           grammarDraft = emptyGrammarTopic();
+          paradigmEditing = null;
+          paradigmEditorOpen = false;
+          paradigmDraft = emptyParadigm();
+          previewStem = "";
+          previewLexemeId = "";
         }
 
         async function loadPane() {
           if (pane === "sounds") return loadSounds();
           if (pane === "writing") return loadWriting();
           if (pane === "grammar") return loadGrammar();
+          if (pane === "forms") return loadForms();
           return loadRecords();
         }
 
@@ -598,6 +741,33 @@ export const language: DaenaModule = {
               if (grammarEditing) {
                 const current = grammarTopics.find((record) => record.id === grammarEditing?.id);
                 if (current) grammarEditing = current;
+              }
+              render();
+            }
+          } catch (cause) {
+            if (!cancelled && token === request) render(cause instanceof Error ? cause.message : String(cause));
+          }
+        }
+
+        async function loadForms() {
+          if (!selectedLanguage) {
+            paradigms = [];
+            records = [];
+            render();
+            return;
+          }
+          const token = ++request;
+          try {
+            const [tables, lexemes] = await Promise.all([
+              context.records.list<Paradigm>("paradigms", selectedLanguage.id, { limit: 100, sort: "name" }),
+              context.records.list<LexemeValue>("lexemes", selectedLanguage.id, { limit: 100, sort: "lemma" }),
+            ]);
+            if (!cancelled && token === request) {
+              paradigms = tables.map((record) => ({ ...record, value: normalizeParadigm(record.value) }));
+              records = lexemes.map((record) => ({ ...record, value: normalizeLexeme(record.value) }));
+              if (paradigmEditing) {
+                const current = paradigms.find((record) => record.id === paradigmEditing?.id);
+                if (current) paradigmEditing = current;
               }
               render();
             }
@@ -1410,6 +1580,390 @@ export const language: DaenaModule = {
           }
         }
 
+        function captureParadigm(form: HTMLFormElement) {
+          const data = new FormData(form);
+          paradigmDraft.name = String(data.get("name") ?? "");
+          paradigmDraft.kind = (String(data.get("kind") ?? "inflection") || "inflection") as ParadigmKind;
+          paradigmDraft.partOfSpeech = String(data.get("partOfSpeech") ?? "");
+          paradigmDraft.notes = String(data.get("notes") ?? "");
+          paradigmDraft.slots = paradigmDraft.slots.map((slot, index) => ({
+            ...slot,
+            label: String(data.get(`slot-label-${index}`) ?? ""),
+            features: String(data.get(`slot-features-${index}`) ?? "") || undefined,
+          }));
+          paradigmDraft.rules = paradigmDraft.rules.map((rule, index) => ({
+            ...rule,
+            name: String(data.get(`rule-name-${index}`) ?? ""),
+            kind: (String(data.get(`rule-kind-${index}`) ?? paradigmDraft.kind) || paradigmDraft.kind) as ParadigmKind,
+            match: String(data.get(`rule-match-${index}`) ?? "") || undefined,
+            notes: String(data.get(`rule-notes-${index}`) ?? "") || undefined,
+            operations: rule.operations.map((operation, operationIndex) => ({
+              ...operation,
+              slotId: String(data.get(`op-slot-${index}-${operationIndex}`) ?? ""),
+              op: (String(data.get(`op-kind-${index}-${operationIndex}`) ?? "suffix") ||
+                "suffix") as MorphOperationKind,
+              from: String(data.get(`op-from-${index}-${operationIndex}`) ?? "") || undefined,
+              value: String(data.get(`op-value-${index}-${operationIndex}`) ?? "") || undefined,
+            })),
+          }));
+        }
+
+        function selectControl(name: string, value: string, options: { id: string; label: string }[], label: string) {
+          const control = document.createElement("select");
+          control.name = name;
+          control.setAttribute("aria-label", label);
+          for (const option of options) {
+            control.append(new Option(option.label, option.id, option.id === value, option.id === value));
+          }
+          return control;
+        }
+
+        async function persistLexemeForms(record: ModuleRecord<LexemeValue>, forms: LexemeValue["forms"]) {
+          if (!selectedLanguage) return;
+          const value = normalizeLexeme({ ...record.value, forms });
+          const updated = await context.records.update(
+            "lexemes",
+            record.id,
+            selectedLanguage.id,
+            serializeLexeme(value),
+            { expectedRevision: record.revision, requestId: crypto.randomUUID() },
+          );
+          const next = { ...updated, value: normalizeLexeme(updated.value) };
+          records = records.map((item) => (item.id === next.id ? next : item));
+        }
+
+        function paradigmForm(error = "") {
+          const form = document.createElement("form");
+          form.className = "language-editor";
+          form.append(
+            field("Name", input("name", paradigmDraft.name)),
+            field("Kind", selectControl("kind", paradigmDraft.kind, PARADIGM_KINDS, "Paradigm kind")),
+            field("Part of speech (optional)", input("partOfSpeech", paradigmDraft.partOfSpeech, "language-pos")),
+            field("Notes (optional)", textarea("notes", paradigmDraft.notes)),
+          );
+          const posList = datalist("language-pos", PART_OF_SPEECH_SUGGESTIONS);
+          form.append(posList);
+          const slots = document.createElement("section");
+          slots.className = "language-group";
+          slots.append(
+            groupHead("Slots", () => {
+              captureParadigm(form);
+              paradigmDraft.slots.push(emptySlot());
+              replaceEditor(form, paradigmForm(error), "[name=name]");
+            }),
+          );
+          if (paradigmDraft.slots.length === 0) {
+            slots.append(emptyMessage("Add cells such as 1sg, plural, or comparative."));
+          }
+          for (const [index, slot] of paradigmDraft.slots.entries()) {
+            slots.append(
+              row(
+                [
+                  field("Slot label", input(`slot-label-${index}`, slot.label)),
+                  field("Features (optional)", input(`slot-features-${index}`, slot.features)),
+                ],
+                () => {
+                  captureParadigm(form);
+                  const removed = paradigmDraft.slots[index]?.id;
+                  paradigmDraft.slots.splice(index, 1);
+                  for (const rule of paradigmDraft.rules) {
+                    rule.operations = rule.operations.filter((item) => item.slotId !== removed);
+                  }
+                  replaceEditor(form, paradigmForm(error), "[name=name]");
+                },
+              ),
+            );
+          }
+          form.append(slots);
+          const rules = document.createElement("section");
+          rules.className = "language-group";
+          rules.append(
+            groupHead("Rules", () => {
+              captureParadigm(form);
+              paradigmDraft.rules.push(emptyRule(paradigmDraft.kind));
+              replaceEditor(form, paradigmForm(error), "[name=name]");
+            }),
+          );
+          if (paradigmDraft.rules.length === 0) {
+            rules.append(emptyMessage("Add an inflection or derivation rule. More specific suffix matches win."));
+          }
+          const slotOptions = paradigmDraft.slots
+            .filter((slot) => slot.label.trim())
+            .map((slot) => ({ id: slot.id, label: slot.label }));
+          for (const [index, rule] of paradigmDraft.rules.entries()) {
+            const block = document.createElement("section");
+            block.className = "language-group";
+            const head = document.createElement("div");
+            head.className = "language-group-head";
+            const heading = document.createElement("h3");
+            heading.textContent = rule.name || `Rule ${index + 1}`;
+            head.append(
+              heading,
+              button("Remove", "language-button secondary language-danger", () => {
+                captureParadigm(form);
+                paradigmDraft.rules.splice(index, 1);
+                replaceEditor(form, paradigmForm(error), "[name=name]");
+              }),
+            );
+            block.append(
+              head,
+              field("Rule name", input(`rule-name-${index}`, rule.name)),
+              field("Kind", selectControl(`rule-kind-${index}`, rule.kind, PARADIGM_KINDS, "Rule kind")),
+              field("Match lemma ending (optional)", input(`rule-match-${index}`, rule.match)),
+              field("Notes (optional)", textarea(`rule-notes-${index}`, rule.notes, 2)),
+            );
+            for (const [operationIndex, operation] of rule.operations.entries()) {
+              block.append(
+                row(
+                  [
+                    field(
+                      "Slot",
+                      selectControl(
+                        `op-slot-${index}-${operationIndex}`,
+                        operation.slotId,
+                        slotOptions,
+                        "Operation slot",
+                      ),
+                    ),
+                    field(
+                      "Operation",
+                      selectControl(
+                        `op-kind-${index}-${operationIndex}`,
+                        operation.op,
+                        OPERATION_KINDS,
+                        "Operation kind",
+                      ),
+                    ),
+                    field("Replace from (optional)", input(`op-from-${index}-${operationIndex}`, operation.from)),
+                    field(
+                      "Affix or replacement (optional)",
+                      input(`op-value-${index}-${operationIndex}`, operation.value),
+                    ),
+                  ],
+                  () => {
+                    captureParadigm(form);
+                    paradigmDraft.rules[index].operations.splice(operationIndex, 1);
+                    replaceEditor(form, paradigmForm(error), "[name=name]");
+                  },
+                ),
+              );
+            }
+            block.append(
+              button("Add operation", "language-button secondary", () => {
+                captureParadigm(form);
+                paradigmDraft.rules[index].operations.push(emptyOperation(paradigmDraft.slots[0]?.id ?? ""));
+                replaceEditor(form, paradigmForm(error), "[name=name]");
+              }),
+            );
+            rules.append(block);
+          }
+          form.append(rules);
+          const preview = document.createElement("section");
+          preview.className = "language-group";
+          const previewHead = document.createElement("h3");
+          previewHead.textContent = "Generated preview";
+          preview.append(
+            previewHead,
+            emptyMessage(
+              "This table is computed from the current rules. Saving a rule never rewrites authored word forms.",
+            ),
+          );
+          const lexemeSelect = document.createElement("select");
+          lexemeSelect.name = "previewLexemeId";
+          lexemeSelect.setAttribute("aria-label", "Preview lexeme");
+          lexemeSelect.append(new Option("Type a stem", "", !previewLexemeId, !previewLexemeId));
+          for (const record of records) {
+            lexemeSelect.append(
+              new Option(record.value.lemma, record.id, record.id === previewLexemeId, record.id === previewLexemeId),
+            );
+          }
+          lexemeSelect.onchange = () => {
+            captureParadigm(form);
+            previewLexemeId = String(new FormData(form).get("previewLexemeId") ?? "");
+            const chosen = records.find((record) => record.id === previewLexemeId);
+            previewStem = chosen?.value.lemma ?? previewStem;
+            replaceEditor(form, paradigmForm(error), "[name=name]");
+          };
+          const stemInput = input(
+            "previewStem",
+            previewStem || records.find((record) => record.id === previewLexemeId)?.value.lemma || "",
+          );
+          stemInput.onchange = () => {
+            previewStem = stemInput.value;
+          };
+          preview.append(field("Preview lexeme (optional)", lexemeSelect), field("Stem", stemInput));
+          const stem = previewStem || records.find((record) => record.id === previewLexemeId)?.value.lemma || "";
+          const previewLexeme = records.find((record) => record.id === previewLexemeId);
+          const previewParadigmId = paradigmEditing?.id ?? "";
+          preview.append(
+            formPreviewTable(
+              normalizeParadigm(paradigmDraft),
+              stem,
+              previewLexeme?.value.forms ?? [],
+              previewParadigmId,
+              previewLexeme && previewParadigmId
+                ? {
+                    onPin: (slot, formValue) => {
+                      captureParadigm(form);
+                      previewStem = String(new FormData(form).get("previewStem") ?? previewStem);
+                      void persistLexemeForms(
+                        previewLexeme,
+                        pinOverride(previewLexeme.value.forms, previewParadigmId, slot, formValue),
+                      ).then(
+                        () => replaceEditor(form, paradigmForm(error), "[name=name]"),
+                        (cause) => render(cause instanceof Error ? cause.message : String(cause)),
+                      );
+                    },
+                    onClear: (slot) => {
+                      captureParadigm(form);
+                      previewStem = String(new FormData(form).get("previewStem") ?? previewStem);
+                      void persistLexemeForms(
+                        previewLexeme,
+                        clearOverride(previewLexeme.value.forms, previewParadigmId, slot),
+                      ).then(
+                        () => replaceEditor(form, paradigmForm(error), "[name=name]"),
+                        (cause) => render(cause instanceof Error ? cause.message : String(cause)),
+                      );
+                    },
+                  }
+                : undefined,
+            ),
+          );
+          form.append(preview);
+          if (error) form.append(alertMessage(error));
+          const actions = document.createElement("div");
+          actions.className = "language-actions";
+          const left = document.createElement("span");
+          if (paradigmEditing) {
+            left.append(
+              button("Delete", "language-button secondary language-danger", async () => {
+                if (!selectedLanguage || !paradigmEditing || !window.confirm(`Delete “${paradigmEditing.value.name}”?`))
+                  return;
+                try {
+                  await context.records.delete("paradigms", paradigmEditing.id, selectedLanguage.id, {
+                    expectedRevision: paradigmEditing.revision,
+                    requestId: crypto.randomUUID(),
+                  });
+                  paradigmEditing = null;
+                  paradigmEditorOpen = false;
+                  paradigmDraft = emptyParadigm();
+                  await loadForms();
+                } catch (cause) {
+                  render(cause instanceof Error ? cause.message : String(cause));
+                }
+              }),
+            );
+          }
+          const right = document.createElement("span");
+          right.append(
+            button("Cancel", "language-button secondary", () => {
+              paradigmEditing = null;
+              paradigmEditorOpen = false;
+              paradigmDraft = emptyParadigm();
+              render();
+            }),
+          );
+          const save = document.createElement("button");
+          save.type = "submit";
+          save.className = "language-button";
+          save.textContent = "Save paradigm";
+          right.append(save);
+          actions.append(left, right);
+          form.append(actions);
+          form.onsubmit = async (event) => {
+            event.preventDefault();
+            if (!selectedLanguage) return;
+            captureParadigm(form);
+            previewStem = String(new FormData(form).get("previewStem") ?? "");
+            previewLexemeId = String(new FormData(form).get("previewLexemeId") ?? "");
+            const value = normalizeParadigm(paradigmDraft);
+            if (!value.name) {
+              form.querySelector<HTMLInputElement>("[name=name]")?.focus();
+              render("Name is required.");
+              return;
+            }
+            paradigmDraft = value;
+            try {
+              const payload = serializeParadigm(value);
+              if (paradigmEditing) {
+                const updated = await context.records.update(
+                  "paradigms",
+                  paradigmEditing.id,
+                  selectedLanguage.id,
+                  payload,
+                  { expectedRevision: paradigmEditing.revision, requestId: crypto.randomUUID() },
+                );
+                paradigmEditing = { ...updated, value: normalizeParadigm(updated.value) };
+              } else {
+                const created = await context.records.create("paradigms", selectedLanguage.id, payload, {
+                  requestId: crypto.randomUUID(),
+                });
+                paradigmEditing = { ...created, value: normalizeParadigm(created.value) };
+              }
+              paradigmEditorOpen = true;
+              paradigmDraft = paradigmEditing.value;
+              await loadForms();
+            } catch (cause) {
+              render(cause instanceof Error ? cause.message : String(cause));
+            }
+          };
+          return form;
+        }
+
+        function renderForms(panel: HTMLElement, error: string) {
+          const toolbar = document.createElement("div");
+          toolbar.className = "language-toolbar";
+          const title = document.createElement("h2");
+          title.textContent = selectedLanguage ? `${selectedLanguage.name} forms` : "Forms";
+          const add = button("Add paradigm", "language-button", () => {
+            paradigmEditing = null;
+            paradigmEditorOpen = true;
+            paradigmDraft = emptyParadigm();
+            previewStem = "";
+            previewLexemeId = "";
+            render();
+          });
+          add.disabled = !selectedLanguage;
+          toolbar.append(title, add);
+          panel.append(toolbar);
+          if (paradigmEditorOpen) {
+            panel.append(paradigmForm(error));
+            return;
+          }
+          if (error) panel.append(alertMessage(error));
+          else if (!selectedLanguage) panel.append(emptyMessage("Select a language to document its paradigms."));
+          else if (paradigms.length === 0) {
+            panel.append(
+              emptyMessage("No paradigms yet. Add an inflection or derivation table, then preview generated forms."),
+            );
+          } else {
+            const list = document.createElement("ul");
+            list.className = "lexeme-list";
+            for (const record of paradigms) {
+              const item = document.createElement("li");
+              const rowButton = document.createElement("button");
+              rowButton.type = "button";
+              rowButton.className = "lexeme-row";
+              const name = document.createElement("strong");
+              name.textContent = record.value.name;
+              const kind = document.createElement("small");
+              kind.textContent = record.value.kind;
+              const detail = document.createElement("span");
+              detail.textContent = `${record.value.slots.length} slot${record.value.slots.length === 1 ? "" : "s"} · ${record.value.rules.length} rule${record.value.rules.length === 1 ? "" : "s"}`;
+              rowButton.append(name, kind, detail);
+              rowButton.onclick = () => {
+                paradigmEditing = record;
+                paradigmEditorOpen = true;
+                paradigmDraft = normalizeParadigm(record.value);
+                render();
+              };
+              item.append(rowButton);
+              list.append(item);
+            }
+            panel.append(list);
+          }
+        }
+
         function render(error = "") {
           if (cancelled) return;
           root.replaceChildren(style);
@@ -1467,6 +2021,7 @@ export const language: DaenaModule = {
             ["sounds", "Sounds"],
             ["writing", "Writing"],
             ["grammar", "Grammar"],
+            ["forms", "Forms"],
           ] as const) {
             const tab = button(label, "", () => {
               pane = id;
@@ -1492,6 +2047,12 @@ export const language: DaenaModule = {
           }
           if (pane === "grammar") {
             renderGrammar(lexiconPanel, error);
+            root.append(languagesPanel, lexiconPanel);
+            element.replaceChildren(root);
+            return;
+          }
+          if (pane === "forms") {
+            renderForms(lexiconPanel, error);
             root.append(languagesPanel, lexiconPanel);
             element.replaceChildren(root);
             return;

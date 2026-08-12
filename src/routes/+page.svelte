@@ -374,8 +374,7 @@ function defaultCreateOption(options: CreateOption[]) {
         : null;
   return (
     options.find(
-      (option) =>
-        option.module.id === moduleId && (entityType === null || option.template.entityType === entityType),
+      (option) => option.module.id === moduleId && (entityType === null || option.template.entityType === entityType),
     ) ??
     options.find((option) => entityType !== null && option.template.entityType === entityType) ??
     options[0] ??
@@ -2933,10 +2932,13 @@ onMount(() => {
     {#if ready}
       <button
         class="rail-button muted-button rail-git-button"
-        title={gitMessage || (gitStatus?.repository ? `Snapshots · ${gitStatus.branch || "detached"}` : "Open Snapshots settings")}
-        onclick={() => void openSettings("git")}><span class="rail-icon">⑂</span><span>Snapshots</span>{#if gitStatus?.repository && gitStatus.changes.length > 0}<small
-          class="rail-git-count">{gitStatus.changes.length}</small>{/if}</button
-      >
+        title={gitMessage ||
+          (gitStatus?.repository ? `Snapshots · ${gitStatus.branch || "detached"}` : "Open Snapshots settings")}
+        onclick={() => void openSettings("git")}
+        ><span class="rail-icon">⑂</span><span>Snapshots</span
+        >{#if gitStatus?.repository && gitStatus.changes.length > 0}<small class="rail-git-count"
+            >{gitStatus.changes.length}</small
+          >{/if}</button>
     {/if}
     <button
       aria-expanded={showSettings}
@@ -3582,7 +3584,11 @@ onMount(() => {
             onDirtyChange={setSchemaEditorDirty} />
         {/snippet}
         {#snippet git()}
-          <GitSettingsPanel projectOpen={ready} onError={(message) => (error = message)} beforeWrite={flushAutoSave} />
+          <GitSettingsPanel
+            projectOpen={ready}
+            projectId={projectInfo?.root ?? ""}
+            onError={(message) => (error = message)}
+            beforeWrite={flushAutoSave} />
         {/snippet}
       </SettingsView>
     {:else if !ready}
@@ -3899,17 +3905,19 @@ onMount(() => {
                   {#if !aiBusy && aiPreviewOutput}<div class="ai-rewrite-actions">
                       <button class="primary-button" type="button" onclick={() => void acceptAiRewrite()}
                         >Accept proposal</button>
-                    <button class="quiet-button ai-retry-button" type="button" onclick={() => void startAiRewrite()}>Retry</button>
-                    <button class="quiet-button ai-discard-button" type="button" onclick={closeAiRewrite}>Discard</button>
+                      <button class="quiet-button ai-retry-button" type="button" onclick={() => void startAiRewrite()}
+                        >Retry</button>
+                      <button class="quiet-button ai-discard-button" type="button" onclick={closeAiRewrite}
+                        >Discard</button>
                     </div>
                   {:else if !aiBusy}<div class="ai-rewrite-actions">
-                    <button
-                      class="primary-button"
-                      type="button"
-                      disabled={(aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim()}
-                      onclick={() => void startAiRewrite()}
-                      >{aiMode === "generate" ? "Generate text" : "Generate rewrite"}</button>
-                    <button class="quiet-button" type="button" onclick={closeAiRewrite}>Cancel</button>
+                      <button
+                        class="primary-button"
+                        type="button"
+                        disabled={(aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim()}
+                        onclick={() => void startAiRewrite()}
+                        >{aiMode === "generate" ? "Generate text" : "Generate rewrite"}</button>
+                      <button class="quiet-button" type="button" onclick={closeAiRewrite}>Cancel</button>
                     </div>{/if}
                 </div>
               </div>
@@ -3984,8 +3992,7 @@ onMount(() => {
                           >{suggestionConfidenceLabel(suggestion.confidence)}{#if suggestion.rationale}<span
                               class="inspector-ai-reasoning"
                               role="tooltip">{suggestion.rationale}</span
-                            >{/if}</button
-                        >
+                            >{/if}</button>
                       </div>
                       <span>{suggestionDisplayValue(key, suggestion)}</span>
                       <div>
@@ -5113,7 +5120,7 @@ onMount(() => {
   border-top: 1px solid #ead7c2;
 }
 .inspector-ai-suggestion strong,
- .inspector-ai-suggestion span {
+.inspector-ai-suggestion span {
   display: block;
 }
 .inspector-ai-suggestion strong {

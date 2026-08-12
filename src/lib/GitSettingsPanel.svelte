@@ -1,4 +1,5 @@
 <script lang="ts">
+import { listen } from "@tauri-apps/api/event";
 import {
   project,
   type Entity,
@@ -9,15 +10,18 @@ import {
   type GitStatus,
   type GitToolInfo,
   type GitUpstream,
+  type AiStreamEvent,
 } from "$lib/project/client";
 
 let {
   projectOpen,
+  projectId,
   onError,
   onBusyMessage,
   beforeWrite,
 }: {
   projectOpen: boolean;
+  projectId: string;
   onError: (message: string) => void;
   onBusyMessage?: (message: string) => void;
   beforeWrite?: () => Promise<boolean>;
@@ -49,12 +53,19 @@ let remoteName = $state("");
 let remoteUrl = $state("");
 let editingRemoteName = $state<string | null>(null);
 let selectedCommit = $state<string | null>(null);
+let selectedCommitMessage = $state("");
 let snapshotChanges = $state<GitChange[]>([]);
 let recoveryUpstream = $state<GitUpstream | null>(null);
 let snapshotLoadToken = 0;
 let selectedChangePath = $state<string | null>(null);
 let changeDiff = $state("");
 let diffLoading = $state(false);
+let aiMessageBusy = $state(false);
+let aiMessageRequestId = $state<string | null>(null);
+let aiMessageBase = $state("");
+let aiMessageStream = $state("");
+let aiMessageLastSequence = $state(-1);
+let aiMessageUnlisten: (() => void) | null = null;
 let wrapDiffLines = $state(false);
 let expandedSnapshotGroups = $state<string[]>([]);
 let snapshotChangeGroups = $derived(groupSnapshotChanges(snapshotChanges, entities));
@@ -85,6 +96,124 @@ async function withBusy<T>(label: string, run: () => Promise<T>) {
   } finally {
     busy = false;
     onBusyMessage?.("");
+  }
+}
+
+function clearAiMessageListener() {
+  aiMessageUnlisten?.();
+  aiMessageUnlisten = null;
+}
+
+function handleAiMessageEvent(event: AiStreamEvent) {
+  // The same buffered event can also arrive through the live listener. The
+  // sequence guard prevents polling from duplicating streamed text or
+  // finalizing the request twice.
+  if (event.sequence <= aiMessageLastSequence) return;
+  aiMessageLastSequence = event.sequence;
+
+  if (event.phase === "delta" && event.delta) {
+    aiMessageStream += event.delta;
+    commitMessage = appendAiMessage(aiMessageBase, aiMessageStream);
+  }
+  if (event.phase === "completed") {
+    // Normally the terminal output and deltas contain the same response. If
+    // a provider's terminal event is truncated, retain the fuller streamed
+    // response so comment paragraphs are not lost at completion.
+    const terminalText = event.output ?? "";
+    const finalText = terminalText.length >= aiMessageStream.length ? terminalText : aiMessageStream;
+    commitMessage = appendAiMessage(aiMessageBase, formatSnapshotMessage(finalText));
+    aiMessageBusy = false;
+    aiMessageRequestId = null;
+    clearAiMessageListener();
+  } else if (event.phase === "failed" || event.phase === "cancelled" || event.phase === "deadline_exceeded") {
+    commitMessage = aiMessageBase;
+    aiMessageBusy = false;
+    aiMessageRequestId = null;
+    clearAiMessageListener();
+    if (event.phase !== "cancelled") onError(event.error ?? "Could not generate a snapshot message.");
+  }
+}
+
+function appendAiMessage(base: string, generated: string) {
+  const cleanBase = formatSnapshotMessage(base);
+  const cleanGenerated = formatSnapshotMessage(generated);
+  return cleanGenerated ? (cleanBase ? `${cleanBase}\n\n${cleanGenerated}` : cleanGenerated) : cleanBase;
+}
+
+function formatSnapshotMessage(value: string) {
+  const lines = value.replaceAll("\r\n", "\n").split("\n");
+  const title = lines.shift()?.trim() ?? "";
+  const comments = lines.join("\n").trim();
+  return comments ? `${title}\n\n${comments}` : title;
+}
+
+async function generateAiMessage() {
+  if (!projectId || aiMessageBusy || !preflight?.ready || selectedPaths.length === 0) return;
+  aiMessageBusy = true;
+  aiMessageBase = commitMessage;
+  aiMessageStream = "";
+  aiMessageLastSequence = -1;
+  try {
+    const selectedGroups = changeGroups.filter((group) => selectedGroupIds.includes(group.id));
+    const diff = await project.gitWorktreeDiff(selectedPaths);
+    const readableDiff = diff
+      .split("\n")
+      .filter((line) => !isDiffMetadata(line))
+      .join("\n")
+      .trim();
+    const changeLabels = selectedGroups
+      .map(
+        (group) =>
+          `${group.title} (${group.subtitle})\n${group.paths.map((path) => `Changed: ${snapshotChangeLabel(path)}`).join("\n")}`,
+      )
+      .join("\n\n");
+    const previousMessages = log
+      .map((entry) => entry.subject.trim())
+      .filter(Boolean)
+      .slice(0, 5);
+    const context = [
+      "CONFIRMED SNAPSHOT CHANGES",
+      "The labels below identify the affected entities and file roles. The diff is the actual selected project change.",
+      changeLabels,
+      "ACTUAL DIFF\n" + readableDiff,
+      ...(previousMessages.length > 0
+        ? [
+            "PREVIOUS SNAPSHOT MESSAGES",
+            "Use these project-authored messages as style examples only; do not copy their facts:",
+            previousMessages.map((message) => `- ${message}`).join("\n"),
+          ]
+        : []),
+    ].join("\n\n");
+    const instruction =
+      "Write a concise snapshot message from the confirmed changes. Put a title of 72 characters or fewer on the first line. Optionally add the comment body after a newline; never combine them on one line. Use plain text without labels, Markdown, bullets, paths, UUIDs, hashes, or internal identifiers.";
+    console.info("[Snapshots AI] sending message-generation request", {
+      projectId,
+      instruction,
+      selection: context,
+      selectedPaths,
+    });
+    const requestId = await project.aiGenerateText(projectId, instruction, context, undefined, context, 1);
+    aiMessageRequestId = requestId;
+    aiMessageUnlisten = await listen<AiStreamEvent>(`ai-stream:${requestId}`, (event) => {
+      handleAiMessageEvent(event.payload);
+    });
+    const buffered = await project.aiPollText(requestId);
+    for (const event of buffered) handleAiMessageEvent(event);
+  } catch (cause) {
+    clearAiMessageListener();
+    commitMessage = aiMessageBase;
+    aiMessageBusy = false;
+    aiMessageRequestId = null;
+    onError(friendly(cause));
+  }
+}
+
+async function cancelAiMessage() {
+  if (!aiMessageRequestId) return;
+  try {
+    await project.aiCancelText(aiMessageRequestId);
+  } catch (cause) {
+    onError(friendly(cause));
   }
 }
 
@@ -145,17 +274,18 @@ function snapshotChangeLabel(path: string) {
   if (!path.startsWith("entities/")) return path;
   const [, , ...parts] = path.split("/");
   const relative = parts.join("/");
-  const fileLabel = relative === "document.md"
-    ? "Document"
-    : relative === "relationships.json"
-      ? "Relationships"
-      : relative === "assets.json"
-        ? "Asset links"
-        : relative === "entity.json"
-          ? "Identity"
-          : relative.startsWith("fields/")
-            ? `Field · ${relative.slice("fields/".length)}`
-            : relative;
+  const fileLabel =
+    relative === "document.md"
+      ? "Document"
+      : relative === "relationships.json"
+        ? "Relationships"
+        : relative === "assets.json"
+          ? "Asset links"
+          : relative === "entity.json"
+            ? "Identity"
+            : relative.startsWith("fields/")
+              ? `Field · ${relative.slice("fields/".length)}`
+              : relative;
   return fileLabel;
 }
 
@@ -442,7 +572,7 @@ async function commitSelected() {
   if (!commitMessage.trim() || selectedPaths.length === 0) return;
   if (beforeWrite && !(await beforeWrite())) return;
   await withBusy("Creating snapshot…", async () => {
-    status = await project.gitCommit(commitMessage.trim(), selectedPaths);
+    status = await project.gitCommit(formatSnapshotMessage(commitMessage), selectedPaths);
     commitMessage = "";
     await refresh();
   });
@@ -532,12 +662,14 @@ async function selectCommit(hash: string) {
   if (selectedCommit === hash) return;
   const loadToken = ++snapshotLoadToken;
   selectedCommit = hash;
+  selectedCommitMessage = "";
   selectedChangePath = null;
   changeDiff = "";
   snapshotChanges = [];
   await withBusy("Loading snapshot…", async () => {
-    const changes = await project.gitShowChanges(hash);
+    const [message, changes] = await Promise.all([project.gitShowMessage(hash), project.gitShowChanges(hash)]);
     if (loadToken === snapshotLoadToken && selectedCommit === hash) {
+      selectedCommitMessage = message;
       snapshotChanges = changes;
       expandedSnapshotGroups = groupSnapshotChanges(changes, entities).map((group) => group.label);
     }
@@ -547,6 +679,7 @@ async function selectCommit(hash: string) {
 function closeSnapshotModal() {
   snapshotLoadToken += 1;
   selectedCommit = null;
+  selectedCommitMessage = "";
   selectedChangePath = null;
   changeDiff = "";
   snapshotChanges = [];
@@ -654,7 +787,8 @@ function restoreFromRemote() {
       <div>
         <span class="panel-kicker">REPOSITORY</span>
         <strong>{status.branch || "Detached HEAD"}</strong>
-        <small>{totalChangeCount === 0 ? "No snapshot-ready changes" : `${totalChangeCount} snapshot-ready changes`}</small>
+        <small
+          >{totalChangeCount === 0 ? "No snapshot-ready changes" : `${totalChangeCount} snapshot-ready changes`}</small>
       </div>
       <div class:git-overview-warn={!preflight?.ready || totalChangeCount > 0} class="git-overview-stat">
         <strong>{totalChangeCount}</strong>
@@ -719,7 +853,10 @@ function restoreFromRemote() {
         <p class="settings-empty">Working tree has no canonical changes to commit.</p>
       {:else}
         <div class="git-change-toolbar">
-          <div><strong>{selectedFileCount} of {totalChangeCount} files selected</strong><small>Selection is limited to canonical project files.</small></div>
+          <div>
+            <strong>{selectedFileCount} of {totalChangeCount} files selected</strong><small
+              >Selection is limited to canonical project files.</small>
+          </div>
           <div class="git-actions">
             <button type="button" class="quiet-button" onclick={selectAllGroups}>Select all</button>
             <button type="button" class="quiet-button" onclick={clearGroups}>Select none</button>
@@ -739,13 +876,22 @@ function restoreFromRemote() {
           {/each}
         </ul>
         <div class="git-commit-card">
-          <label class="create-input-field" for="git-commit-message">
+          <label class="create-input-field git-message-field" for="git-commit-message">
             <span>Snapshot message</span>
             <textarea
               id="git-commit-message"
               rows="4"
               bind:value={commitMessage}
-              placeholder="Describe this snapshot"></textarea>
+              placeholder="Describe this snapshot"
+              disabled={busy || aiMessageBusy}></textarea>
+            <button
+              type="button"
+              class="git-ai-message-button"
+              aria-label={aiMessageBusy ? "Cancel AI message generation" : "Generate snapshot message with AI"}
+              title={aiMessageBusy ? "Cancel generation" : "Generate snapshot message with AI"}
+              disabled={busy || (!aiMessageBusy && (!preflight?.ready || selectedPaths.length === 0))}
+              onclick={() => void (aiMessageBusy ? cancelAiMessage() : generateAiMessage())}
+              >{aiMessageBusy ? "×" : "✦"}</button>
           </label>
           <div class="git-commit-actions">
             <button type="button" class="quiet-button" onclick={generateMessage}>Generate message</button>
@@ -753,7 +899,8 @@ function restoreFromRemote() {
               type="button"
               class="primary-button"
               disabled={busy || !commitMessage.trim() || selectedPaths.length === 0 || !preflight?.ready}
-              onclick={() => void commitSelected()}>Create snapshot · {selectedFileCount} {selectedFileCount === 1 ? "file" : "files"}</button>
+              onclick={() => void commitSelected()}
+              >Create snapshot · {selectedFileCount} {selectedFileCount === 1 ? "file" : "files"}</button>
           </div>
         </div>
       {/if}
@@ -763,13 +910,16 @@ function restoreFromRemote() {
       <div class="git-block-heading">
         <div>
           <h3>Snapshot history</h3>
-          {#if preflight?.staging_paths.length}<small class="git-section-note">Commit pending changes before squashing history.</small>{/if}
+          {#if preflight?.staging_paths.length}<small class="git-section-note"
+              >Commit pending changes before squashing history.</small
+            >{/if}
         </div>
         {#if log.length > 1}<button
             type="button"
             class="quiet-button"
             disabled={busy || !preflight?.ready || preflight.staging_paths.length > 0}
-            onclick={askSuperSquash}>Keep latest</button>{/if}
+            onclick={askSuperSquash}>Keep latest</button
+          >{/if}
       </div>
       {#if log.length === 0}
         <p class="settings-empty">No snapshots yet.</p>
@@ -796,11 +946,20 @@ function restoreFromRemote() {
                 <span class="panel-kicker">SNAPSHOT DETAILS</span>
                 <strong id="snapshot-title">{snapshotEntry?.subject ?? "Snapshot details"}</strong>
                 <small class="git-snapshot-meta"
-                  >{snapshotEntry ? snapshotDateLabel(snapshotEntry.date) : selectedCommit} · {selectedCommit}</small
-                >
+                  >{snapshotEntry ? snapshotDateLabel(snapshotEntry.date) : selectedCommit} · {selectedCommit}</small>
+                {#if selectedCommitMessage}
+                  {@const messageParts = selectedCommitMessage.replaceAll("\r\n", "\n").split("\n")}
+                  {@const messageBody = messageParts.slice(1).join("\n").trim()}
+                  {#if messageBody}
+                    <p class="git-snapshot-comment">{messageBody}</p>
+                  {/if}
+                {/if}
               </div>
-              <button type="button" class="new-form-close" aria-label="Close snapshot details" onclick={closeSnapshotModal}
-                >×</button>
+              <button
+                type="button"
+                class="new-form-close"
+                aria-label="Close snapshot details"
+                onclick={closeSnapshotModal}>×</button>
             </div>
             <div class="git-snapshot-summary">
               <strong>{snapshotChanges.length} changed {snapshotChanges.length === 1 ? "file" : "files"}</strong>
@@ -812,9 +971,17 @@ function restoreFromRemote() {
               <div class="git-snapshot-layout">
                 <div class="git-snapshot-files">
                   {#each snapshotChangeGroups as group}
-                    <section class:change-added={group.kind === "added"} class:change-modified={group.kind === "modified"} class:change-deleted={group.kind === "deleted"} class="git-change-category">
-                      <button type="button" class="git-change-category-toggle" onclick={() => toggleSnapshotGroup(group.label)}>
-                        <span class="git-tree-chevron" aria-hidden="true">{snapshotGroupExpanded(group.label) ? "⌄" : "›"}</span>
+                    <section
+                      class:change-added={group.kind === "added"}
+                      class:change-modified={group.kind === "modified"}
+                      class:change-deleted={group.kind === "deleted"}
+                      class="git-change-category">
+                      <button
+                        type="button"
+                        class="git-change-category-toggle"
+                        onclick={() => toggleSnapshotGroup(group.label)}>
+                        <span class="git-tree-chevron" aria-hidden="true"
+                          >{snapshotGroupExpanded(group.label) ? "⌄" : "›"}</span>
                         <span class="git-change-kind">{group.kind === "other" ? "Changes" : group.kind}</span>
                         <span>{group.label}</span>
                         <small>{group.changes.length}</small>
@@ -826,8 +993,12 @@ function restoreFromRemote() {
                                 type="button"
                                 class:active={selectedChangePath === change.path}
                                 class="git-file-button"
-                                onclick={() => void selectSnapshotChange(change.path)}><span class:change-added={changeStatus(change.status) === "A"} class:change-deleted={changeStatus(change.status) === "D"} class="git-change-status">{changeStatus(change.status)}</span><span
-                                >{snapshotChangeLabel(change.path)}</span></button>
+                                onclick={() => void selectSnapshotChange(change.path)}
+                                ><span
+                                  class:change-added={changeStatus(change.status) === "A"}
+                                  class:change-deleted={changeStatus(change.status) === "D"}
+                                  class="git-change-status">{changeStatus(change.status)}</span
+                                ><span>{snapshotChangeLabel(change.path)}</span></button>
                             </li>
                           {/each}
                         </ul>{/if}
@@ -846,7 +1017,9 @@ function restoreFromRemote() {
                       </label>
                     </div>
                     {#if changeDiff}
-                      <pre class:diff-wrap={wrapDiffLines} class="git-diff-view">{#each diffLines as line}<span class={diffLineClass(line)}>{line}
+                      <pre class:diff-wrap={wrapDiffLines} class="git-diff-view">{#each diffLines as line}<span
+                            class={diffLineClass(line)}
+                            >{line}
 </span>{/each}</pre>
                     {:else}
                       <p class="settings-empty">No textual diff available for this file.</p>
@@ -923,9 +1096,13 @@ function restoreFromRemote() {
         </label>
       {/if}
       <div class="new-form-actions">
-        <button type="button" class="quiet-button" disabled={confirmationBusy} onclick={closeConfirmation}>Cancel</button>
-        <button type="button" class="primary-button danger-button" disabled={busy || confirmationBusy} onclick={() => void runConfirmation()}
-          >{confirmation.confirmLabel}</button>
+        <button type="button" class="quiet-button" disabled={confirmationBusy} onclick={closeConfirmation}
+          >Cancel</button>
+        <button
+          type="button"
+          class="primary-button danger-button"
+          disabled={busy || confirmationBusy}
+          onclick={() => void runConfirmation()}>{confirmation.confirmLabel}</button>
       </div>
     </div>
   </div>
@@ -1161,6 +1338,13 @@ function restoreFromRemote() {
   color: var(--ink-soft);
   font-size: 11px;
 }
+.git-snapshot-comment {
+  margin: 12px 0 0;
+  max-width: 78ch;
+  color: var(--ink-soft);
+  white-space: pre-wrap;
+  line-height: 1.55;
+}
 .git-snapshot-summary {
   display: flex;
   align-items: baseline;
@@ -1300,7 +1484,11 @@ function restoreFromRemote() {
   border-radius: 8px;
   background: #f7f4ee;
   color: var(--ink);
-  font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    11px/1.55 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
   white-space: pre;
 }
 .git-diff-view.diff-wrap {
@@ -1478,6 +1666,35 @@ function restoreFromRemote() {
 .create-input-field > textarea:focus {
   border-color: #c99965;
   box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
+}
+.git-message-field {
+  position: relative;
+}
+.git-message-field > textarea {
+  padding-bottom: 30px;
+}
+.git-ai-message-button {
+  position: absolute;
+  bottom: 9px;
+  left: 9px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: #f2e4d2;
+  color: var(--accent);
+  font-size: 13px;
+  cursor: pointer;
+}
+.git-ai-message-button:hover {
+  background: #ead7bc;
+}
+.git-ai-message-button:disabled {
+  opacity: 0.55;
+  cursor: wait;
 }
 .modal-backdrop {
   position: fixed;

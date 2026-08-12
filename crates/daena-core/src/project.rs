@@ -2539,6 +2539,23 @@ impl ProjectStore {
             .collect())
     }
 
+    pub fn git_show_message(&self, hash: &str) -> Result<String, CoreError> {
+        if !self.git_status()?.repository {
+            return Err(CoreError::Git("project is not a git repository".into()));
+        }
+        let hash = hash.trim();
+        if hash.is_empty() {
+            return Err(CoreError::Validation("commit hash cannot be empty".into()));
+        }
+        let output = self.run_git(&["show", "-s", "--format=%B", hash])?;
+        if !output.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&output.stderr).trim().into(),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().into())
+    }
+
     pub fn git_show_changes(&self, hash: &str) -> Result<Vec<GitChange>, CoreError> {
         if !self.git_status()?.repository {
             return Err(CoreError::Git("project is not a git repository".into()));
@@ -2603,6 +2620,59 @@ impl ProjectStore {
             "--",
             path,
         ])?;
+        if !output.status.success() {
+            return Err(CoreError::Git(
+                String::from_utf8_lossy(&output.stderr).trim().into(),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into())
+    }
+
+    pub fn git_worktree_diff(&self, paths: &[String]) -> Result<String, CoreError> {
+        if !self.git_status()?.repository {
+            return Err(CoreError::Git("project is not a git repository".into()));
+        }
+        if paths.is_empty() {
+            return Err(CoreError::Validation("at least one diff path is required".into()));
+        }
+        if paths.iter().any(|path| !Self::is_canonical_git_path(path)) {
+            return Err(CoreError::Validation(
+                "snapshot diffs are limited to canonical paths".into(),
+            ));
+        }
+        let head = self.run_git(&["rev-parse", "--verify", "HEAD"])?;
+        if !head.status.success() {
+            let mut combined = String::new();
+            for path in paths {
+                let output = self.run_git(&[
+                    "diff",
+                    "--no-index",
+                    "--no-color",
+                    "--no-ext-diff",
+                    "--unified=3",
+                    "/dev/null",
+                    path,
+                ])?;
+                if !output.status.success() && output.status.code() != Some(1) {
+                    return Err(CoreError::Git(
+                        String::from_utf8_lossy(&output.stderr).trim().into(),
+                    ));
+                }
+                combined.push_str(&String::from_utf8_lossy(&output.stdout));
+            }
+            return Ok(combined);
+        }
+        let mut args = vec![
+            "diff".to_string(),
+            "HEAD".to_string(),
+            "--no-color".to_string(),
+            "--no-ext-diff".to_string(),
+            "--unified=3".to_string(),
+            "--".to_string(),
+        ];
+        args.extend(paths.iter().cloned());
+        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+        let output = self.run_git(&args)?;
         if !output.status.success() {
             return Err(CoreError::Git(
                 String::from_utf8_lossy(&output.stderr).trim().into(),

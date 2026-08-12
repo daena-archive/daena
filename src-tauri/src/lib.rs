@@ -4754,6 +4754,14 @@ async fn project_git_show_tree(
 }
 
 #[tauri::command]
+async fn project_git_show_message(
+    state: tauri::State<'_, SharedCore>,
+    hash: String,
+) -> Result<String, String> {
+    with_read_project(state, move |project| project.git_show_message(&hash)).await
+}
+
+#[tauri::command]
 async fn project_git_show_changes(
     state: tauri::State<'_, SharedCore>,
     hash: String,
@@ -4768,6 +4776,14 @@ async fn project_git_show_diff(
     path: String,
 ) -> Result<String, String> {
     with_read_project(state, move |project| project.git_show_diff(&hash, &path)).await
+}
+
+#[tauri::command]
+async fn project_git_worktree_diff(
+    state: tauri::State<'_, SharedCore>,
+    paths: Vec<String>,
+) -> Result<String, String> {
+    with_read_project(state, move |project| project.git_worktree_diff(&paths)).await
 }
 
 #[tauri::command]
@@ -5858,8 +5874,10 @@ pub fn run() {
             project_git_commit,
             project_git_super_squash,
             project_git_show_tree,
+            project_git_show_message,
             project_git_show_changes,
             project_git_show_diff,
+            project_git_worktree_diff,
             project_git_show_file,
             project_git_reset_hard,
             project_git_remote_list,

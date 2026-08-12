@@ -16,7 +16,7 @@ The module must fit Daena rather than become a separate application inside it:
 - SQLite is live runtime authority, and deterministic portable files provide the checkpoint used for Git, inspection, and clean reconstruction;
 - UI and creation behavior are derived from the enabled module manifest, not checks for a hard-coded Language module ID.
 
-This document defines iterations 1–5 and the boundaries later iterations must preserve. It is not approval to implement the later feature list now.
+This document defines iterations 1–6 and the boundaries later iterations must preserve. It is not approval to implement the later feature list now.
 
 ## 2. Product model
 
@@ -349,7 +349,14 @@ Iteration 5:
 3. Add a Forms pane plus lexeme overrides that distinguish authored from generated provenance.
 4. Verify iteration 5 exit gates.
 
-Do not begin samples, AI, or relationship-specific work as part of this slice.
+Iteration 6:
+
+1. Add a Language-owned `samples` collection for sentences and paragraphs.
+2. Store translation, transliteration, and optional interlinear tokens with lexeme links and grammar tags.
+3. Add a Samples pane with an editable form and a readable rendered view.
+4. Verify iteration 6 exit gates.
+
+Do not begin AI or relationship-specific work as part of this slice.
 
 ## 7. Verification and exit gates
 
@@ -406,6 +413,15 @@ Iteration 5 is complete only when all of these are demonstrated:
 - Changing a rule updates the generated preview and never deletes or rewrites authored forms, exceptions, or examples.
 - Paradigm records survive checkpoint rebuild and stay scoped to one Language.
 - Grammar, sounds, writing, and lexicon panes remain available.
+
+Iteration 6 is complete only when all of these are demonstrated:
+
+- A Language can store sentence and paragraph samples as module-owned records.
+- Samples can include translation, transliteration, and optional interlinear tokens.
+- Tokens can carry glosses, grammar annotations, and lexeme links that open the linked word.
+- Tokenizing whitespace preserves matching authored glosses and links rather than wiping them.
+- Sample records survive checkpoint rebuild and stay scoped to one Language.
+- Forms, grammar, sounds, writing, and lexicon panes remain available.
 
 ## 8. Later iterations
 
@@ -513,13 +529,27 @@ Iteration 5 does not add a full morphological parser, automatic paradigm inferen
 
 ### Iteration 6: samples and interlinear text
 
-- sentence and paragraph samples;
-- translation and transliteration;
-- optional interlinear glossing;
-- token-level lexeme links and grammar annotations;
-- editable and readable rendered views.
+Iteration 6 adds a Language-owned `samples` collection. Each sample is a sentence or paragraph with source text plus optional translation, transliteration, notes, and nested interlinear tokens. Tokens stay nested in the sample value so they do not need a parent-record identity plane. Samples remain module-owned; they are not promoted to global entities.
 
-Samples remain module-owned unless a later product decision explicitly promotes them.
+Interlinear tokens store a surface form, optional gloss, optional grammar annotation, and an optional lexeme ID in the same Language. Tokenize splits the source text on whitespace and reuses existing tokens when the surface form still matches, so retokenizing does not wipe authored glosses or links for words that remain.
+
+The Samples pane has an editor and a readable rendered view: source text, stacked token columns, transliteration, and translation. Linked token surfaces open the lexicon the same way grammar links do.
+
+#### User outcome
+
+An author can collect example sentences and short passages, gloss them interlinearly, link tokens to lexicon entries, and read a rendered sample next to the editable form.
+
+#### Required capabilities
+
+1. Sentence and paragraph sample records.
+2. Translation and transliteration fields.
+3. Optional interlinear tokens with glosses, grammar annotations, and lexeme links.
+4. Editable token rows and a readable rendered preview.
+5. Iteration 1–5 lexicon, phonology, orthography, grammar, and paradigm behavior remains true.
+
+#### Non-goals
+
+Iteration 6 does not add corpus statistics, audio, automatic aligners, or specialist interchange formats.
 
 ### Iteration 7: advanced tools
 

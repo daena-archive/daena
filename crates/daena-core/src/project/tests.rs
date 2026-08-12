@@ -1532,6 +1532,118 @@ fn language_paradigms_round_trip_and_sort_by_name() {
 }
 
 #[test]
+fn language_samples_round_trip_and_sort_by_title() {
+    let root = std::env::temp_dir().join(format!("daena-language-samples-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let language = store
+        .create_entity(CreateEntity {
+            name: "Asteri".into(),
+            entity_type: Some("language".into()),
+        })
+        .unwrap();
+    let lexeme = store
+        .create_module_record(
+            "daena.language",
+            "lexemes",
+            &language.id,
+            serde_json::json!({"lemma": "sol", "meanings": ["sun"]}),
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+    store
+        .create_module_record(
+            "daena.language",
+            "samples",
+            &language.id,
+            serde_json::json!({
+                "title": "Sunrise",
+                "kind": "sentence",
+                "text": "sol oritur",
+                "translation": "the sun rises",
+                "tokens": [{
+                    "id": "t1",
+                    "text": "sol",
+                    "gloss": "sun",
+                    "grammar": "NOM",
+                    "lexemeId": lexeme.id
+                }]
+            }),
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+    store
+        .create_module_record(
+            "daena.language",
+            "samples",
+            &language.id,
+            serde_json::json!({
+                "title": "Evening",
+                "kind": "paragraph",
+                "text": "luna lucet.",
+                "tokens": []
+            }),
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+    let items = store
+        .list_module_records_with(
+            "daena.language",
+            "samples",
+            &language.id,
+            crate::ModuleRecordListParams {
+                sort: Some("title"),
+                limit: 50,
+                ..crate::ModuleRecordListParams::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        items
+            .iter()
+            .map(|record| record.value["title"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["Evening", "Sunrise"]
+    );
+    assert_eq!(
+        store
+            .list_module_records(
+                "daena.language",
+                "samples",
+                &language.id,
+                Some("oritur"),
+                50,
+                0,
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+    let other = store
+        .create_entity(CreateEntity {
+            name: "Other".into(),
+            entity_type: Some("language".into()),
+        })
+        .unwrap();
+    assert!(store
+        .list_module_records("daena.language", "samples", &other.id, None, 50, 0)
+        .unwrap()
+        .is_empty());
+    store.flush_checkpoint("sample-test").unwrap();
+    drop(store);
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(
+        rebuilt
+            .list_module_records("daena.language", "samples", &language.id, None, 50, 0)
+            .unwrap()
+            .len(),
+        2
+    );
+    drop(rebuilt);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn lore_schema_overlay_survives_directory_reopen_and_checkpoint() {
     let root = std::env::temp_dir().join(format!("daena-lore-overlay-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();

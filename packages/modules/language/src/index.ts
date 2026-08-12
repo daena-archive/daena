@@ -66,10 +66,23 @@ import {
   type ParadigmKind,
 } from "./morphology";
 import { alertMessage, button, emptyMessage, field, groupHead, input, replaceEditor, row, textarea } from "./ui";
+import {
+  emptySample,
+  emptyToken,
+  groupSamples,
+  normalizeSample,
+  SAMPLE_KINDS,
+  samplePreviewHtml,
+  sampleTitle,
+  serializeSample,
+  tokenizeSample,
+  type Sample,
+  type SampleKind,
+} from "./samples";
 
 const manifest = manifestJson as unknown as ModuleManifest;
 
-type Pane = "lexicon" | "sounds" | "writing" | "grammar" | "forms";
+type Pane = "lexicon" | "sounds" | "writing" | "grammar" | "forms" | "samples";
 
 export const language: DaenaModule = {
   manifest,
@@ -116,6 +129,10 @@ export const language: DaenaModule = {
         let paradigmDraft: Paradigm = emptyParadigm();
         let previewStem = "";
         let previewLexemeId = "";
+        let samples: ModuleRecord<Sample>[] = [];
+        let sampleEditing: ModuleRecord<Sample> | null = null;
+        let sampleEditorOpen = false;
+        let sampleDraft: Sample = emptySample();
 
         const root = document.createElement("section");
         root.className = "language-workspace";
@@ -131,7 +148,7 @@ export const language: DaenaModule = {
           .language-filters{display:grid;grid-template-columns:minmax(140px,1.4fr) repeat(3,minmax(90px,.7fr)) auto;gap:8px;margin-top:14px}
           .language-search,.language-filters input,.language-filters select{box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:inherit;font:inherit}
           .language-check{display:flex;align-items:center;gap:6px;color:var(--ink-soft);font-size:11px;white-space:nowrap}
-          .language-tabs{display:flex;gap:6px;margin:0 0 14px}
+          .language-tabs{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px}
           .language-tabs button{padding:7px 11px;border:1px solid var(--line);border-radius:999px;background:transparent;color:inherit;cursor:pointer}
           .language-tabs button[aria-current=page]{border-color:var(--accent-dark);background:var(--paper-strong);color:var(--accent-dark)}
           .language-chart{width:100%;border-collapse:collapse;margin:12px 0;font-size:12px}
@@ -150,6 +167,14 @@ export const language: DaenaModule = {
           .form-provenance{font-size:10px;letter-spacing:.02em;text-transform:uppercase;color:var(--ink-soft)}
           .form-provenance.is-authored{color:var(--accent-dark)}
           .form-provenance.is-missing{color:var(--ink-faint)}
+          .sample-block{padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--paper-strong,transparent);font-size:13px;line-height:1.55}
+          .sample-interlinear{display:flex;flex-wrap:wrap;gap:10px 16px;margin:10px 0}
+          .sample-token{display:grid;gap:2px;justify-items:center;text-align:center}
+          .sample-token .surface,.sample-ref{font-weight:600}
+          .sample-token .gloss,.sample-token .grammar,.sample-transliteration{color:var(--ink-soft);font-size:11px}
+          .sample-translation{margin:8px 0 0;font-style:italic}
+          .sample-ref{padding:0;border:0;border-bottom:1px dotted var(--accent-dark);background:transparent;color:var(--accent-dark);font:inherit;cursor:pointer}
+          .sample-source{margin:0 0 8px;white-space:pre-wrap}
           .lexeme-row{display:grid;grid-template-columns:minmax(100px,1.1fr) minmax(70px,.5fr) minmax(120px,1.3fr) minmax(70px,.5fr);gap:12px;padding:10px;border-bottom:1px solid var(--line);border-radius:0}.lexeme-row:hover{background:var(--paper-strong)}.lexeme-row small{color:var(--ink-faint)}
           .language-button{padding:8px 12px;border:1px solid var(--accent-dark);border-radius:8px;background:var(--accent-dark);color:white;cursor:pointer}.language-button.secondary{background:transparent;color:var(--accent-dark)}
           .language-empty,.language-status{margin:18px 0;color:var(--ink-soft);font-size:12px;line-height:1.6}.language-status.error{color:#a14f42}
@@ -654,6 +679,9 @@ export const language: DaenaModule = {
           paradigmDraft = emptyParadigm();
           previewStem = "";
           previewLexemeId = "";
+          sampleEditing = null;
+          sampleEditorOpen = false;
+          sampleDraft = emptySample();
         }
 
         async function loadPane() {
@@ -661,6 +689,7 @@ export const language: DaenaModule = {
           if (pane === "writing") return loadWriting();
           if (pane === "grammar") return loadGrammar();
           if (pane === "forms") return loadForms();
+          if (pane === "samples") return loadSamples();
           return loadRecords();
         }
 
@@ -768,6 +797,33 @@ export const language: DaenaModule = {
               if (paradigmEditing) {
                 const current = paradigms.find((record) => record.id === paradigmEditing?.id);
                 if (current) paradigmEditing = current;
+              }
+              render();
+            }
+          } catch (cause) {
+            if (!cancelled && token === request) render(cause instanceof Error ? cause.message : String(cause));
+          }
+        }
+
+        async function loadSamples() {
+          if (!selectedLanguage) {
+            samples = [];
+            records = [];
+            render();
+            return;
+          }
+          const token = ++request;
+          try {
+            const [items, lexemes] = await Promise.all([
+              context.records.list<Sample>("samples", selectedLanguage.id, { limit: 100, sort: "title" }),
+              context.records.list<LexemeValue>("lexemes", selectedLanguage.id, { limit: 100, sort: "lemma" }),
+            ]);
+            if (!cancelled && token === request) {
+              samples = items.map((record) => ({ ...record, value: normalizeSample(record.value) }));
+              records = lexemes.map((record) => ({ ...record, value: normalizeLexeme(record.value) }));
+              if (sampleEditing) {
+                const current = samples.find((record) => record.id === sampleEditing?.id);
+                if (current) sampleEditing = current;
               }
               render();
             }
@@ -1307,6 +1363,8 @@ export const language: DaenaModule = {
           pendingLexemeId = lexemeId;
           pane = "lexicon";
           grammarEditorOpen = false;
+          sampleEditorOpen = false;
+          paradigmEditorOpen = false;
           search = "";
           statusFilter = "";
           tagFilter = "";
@@ -1964,6 +2022,277 @@ export const language: DaenaModule = {
           }
         }
 
+        function captureSample(form: HTMLFormElement) {
+          const data = new FormData(form);
+          sampleDraft.title = String(data.get("title") ?? "");
+          sampleDraft.kind = (String(data.get("kind") ?? "sentence") || "sentence") as SampleKind;
+          sampleDraft.text = String(data.get("text") ?? "");
+          sampleDraft.translation = String(data.get("translation") ?? "");
+          sampleDraft.transliteration = String(data.get("transliteration") ?? "");
+          sampleDraft.notes = String(data.get("notes") ?? "");
+          sampleDraft.tokens = sampleDraft.tokens.map((token, index) => ({
+            ...token,
+            text: String(data.get(`token-text-${index}`) ?? ""),
+            gloss: String(data.get(`token-gloss-${index}`) ?? "") || undefined,
+            grammar: String(data.get(`token-grammar-${index}`) ?? "") || undefined,
+            lexemeId: String(data.get(`token-lexeme-${index}`) ?? "") || undefined,
+          }));
+        }
+
+        function bindSampleRefs(root: HTMLElement) {
+          for (const control of root.querySelectorAll<HTMLButtonElement>(".sample-ref")) {
+            control.onclick = () => {
+              const lexemeId = control.dataset.lexemeId;
+              if (lexemeId) openLinkedLexeme(lexemeId);
+            };
+          }
+        }
+
+        function sampleForm(error = "") {
+          const form = document.createElement("form");
+          form.className = "language-editor";
+          const kindSelect = document.createElement("select");
+          kindSelect.name = "kind";
+          kindSelect.setAttribute("aria-label", "Sample kind");
+          for (const item of SAMPLE_KINDS) {
+            kindSelect.append(
+              new Option(item.label, item.id, item.id === sampleDraft.kind, item.id === sampleDraft.kind),
+            );
+          }
+          form.append(
+            field("Title (optional)", input("title", sampleDraft.title)),
+            field("Kind", kindSelect),
+            field("Text", textarea("text", sampleDraft.text, sampleDraft.kind === "paragraph" ? 6 : 3)),
+            field("Transliteration (optional)", textarea("transliteration", sampleDraft.transliteration, 2)),
+            field("Translation (optional)", textarea("translation", sampleDraft.translation, 2)),
+            field("Notes (optional)", textarea("notes", sampleDraft.notes, 2)),
+          );
+          const tokens = document.createElement("section");
+          tokens.className = "language-group";
+          const tokenHead = document.createElement("div");
+          tokenHead.className = "language-group-head";
+          const tokenTitle = document.createElement("h3");
+          tokenTitle.textContent = "Interlinear tokens";
+          tokenHead.append(
+            tokenTitle,
+            button("Tokenize text", "language-button secondary", () => {
+              captureSample(form);
+              sampleDraft.tokens = tokenizeSample(sampleDraft.text, sampleDraft.tokens);
+              replaceEditor(form, sampleForm(error), "[name=title]");
+            }),
+            button("Add", "language-button secondary", () => {
+              captureSample(form);
+              sampleDraft.tokens.push(emptyToken());
+              replaceEditor(form, sampleForm(error), "[name=title]");
+            }),
+          );
+          tokens.append(tokenHead);
+          tokens.append(
+            emptyMessage(
+              "Tokenize splits the sample on whitespace. Matching surface forms keep their glosses, grammar tags, and lexeme links.",
+            ),
+          );
+          const lexemeOptions = records.map((record) => ({ id: record.id, label: record.value.lemma }));
+          for (const [index, token] of sampleDraft.tokens.entries()) {
+            const lexemeSelect = document.createElement("select");
+            lexemeSelect.name = `token-lexeme-${index}`;
+            lexemeSelect.setAttribute("aria-label", `Lexeme for token ${index + 1}`);
+            lexemeSelect.append(new Option("None", "", !token.lexemeId, !token.lexemeId));
+            for (const option of lexemeOptions) {
+              lexemeSelect.append(
+                new Option(option.label, option.id, option.id === token.lexemeId, option.id === token.lexemeId),
+              );
+            }
+            tokens.append(
+              row(
+                [
+                  field("Form", input(`token-text-${index}`, token.text)),
+                  field("Gloss (optional)", input(`token-gloss-${index}`, token.gloss)),
+                  field("Grammar (optional)", input(`token-grammar-${index}`, token.grammar)),
+                  field("Lexeme (optional)", lexemeSelect),
+                ],
+                () => {
+                  captureSample(form);
+                  sampleDraft.tokens.splice(index, 1);
+                  replaceEditor(form, sampleForm(error), "[name=title]");
+                },
+              ),
+            );
+          }
+          form.append(tokens);
+          const preview = document.createElement("section");
+          preview.className = "sample-block";
+          const previewTitle = document.createElement("h3");
+          previewTitle.textContent = "Readable preview";
+          preview.append(previewTitle);
+          const html = samplePreviewHtml(normalizeSample(sampleDraft));
+          if (html) {
+            const body = document.createElement("div");
+            body.innerHTML = html;
+            bindSampleRefs(body);
+            preview.append(body);
+          } else {
+            preview.append(emptyMessage("Add text or tokens to see the rendered sample."));
+          }
+          form.append(preview);
+          if (error) form.append(alertMessage(error));
+          const actions = document.createElement("div");
+          actions.className = "language-actions";
+          const left = document.createElement("span");
+          if (sampleEditing) {
+            left.append(
+              button("Delete", "language-button secondary language-danger", async () => {
+                if (
+                  !selectedLanguage ||
+                  !sampleEditing ||
+                  !window.confirm(`Delete “${sampleTitle(sampleEditing.value)}”?`)
+                )
+                  return;
+                try {
+                  await context.records.delete("samples", sampleEditing.id, selectedLanguage.id, {
+                    expectedRevision: sampleEditing.revision,
+                    requestId: crypto.randomUUID(),
+                  });
+                  sampleEditing = null;
+                  sampleEditorOpen = false;
+                  sampleDraft = emptySample();
+                  await loadSamples();
+                } catch (cause) {
+                  render(cause instanceof Error ? cause.message : String(cause));
+                }
+              }),
+            );
+          }
+          const right = document.createElement("span");
+          right.append(
+            button("Cancel", "language-button secondary", () => {
+              sampleEditing = null;
+              sampleEditorOpen = false;
+              sampleDraft = emptySample();
+              render();
+            }),
+          );
+          const save = document.createElement("button");
+          save.type = "submit";
+          save.className = "language-button";
+          save.textContent = "Save sample";
+          right.append(save);
+          actions.append(left, right);
+          form.append(actions);
+          form.onsubmit = async (event) => {
+            event.preventDefault();
+            if (!selectedLanguage) return;
+            captureSample(form);
+            const value = normalizeSample(sampleDraft);
+            if (!value.text.trim()) {
+              form.querySelector<HTMLTextAreaElement>("[name=text]")?.focus();
+              render("Text is required.");
+              return;
+            }
+            sampleDraft = value;
+            try {
+              const payload = serializeSample(value);
+              if (sampleEditing) {
+                const updated = await context.records.update(
+                  "samples",
+                  sampleEditing.id,
+                  selectedLanguage.id,
+                  payload,
+                  { expectedRevision: sampleEditing.revision, requestId: crypto.randomUUID() },
+                );
+                sampleEditing = { ...updated, value: normalizeSample(updated.value) };
+              } else {
+                const created = await context.records.create("samples", selectedLanguage.id, payload, {
+                  requestId: crypto.randomUUID(),
+                });
+                sampleEditing = { ...created, value: normalizeSample(created.value) };
+              }
+              sampleEditorOpen = true;
+              sampleDraft = sampleEditing.value;
+              await loadSamples();
+            } catch (cause) {
+              render(cause instanceof Error ? cause.message : String(cause));
+            }
+          };
+          return form;
+        }
+
+        function renderSamples(panel: HTMLElement, error: string) {
+          const toolbar = document.createElement("div");
+          toolbar.className = "language-toolbar";
+          const title = document.createElement("h2");
+          title.textContent = selectedLanguage ? `${selectedLanguage.name} samples` : "Samples";
+          const add = button("Add sample", "language-button", () => {
+            sampleEditing = null;
+            sampleEditorOpen = true;
+            sampleDraft = emptySample("sentence");
+            render();
+          });
+          add.disabled = !selectedLanguage;
+          toolbar.append(title, add);
+          panel.append(toolbar);
+          if (sampleEditorOpen) {
+            panel.append(sampleForm(error));
+            return;
+          }
+          if (error) panel.append(alertMessage(error));
+          else if (!selectedLanguage)
+            panel.append(emptyMessage("Select a language to collect sample sentences and paragraphs."));
+          else {
+            const nav = document.createElement("div");
+            nav.className = "grammar-nav";
+            for (const group of groupSamples(samples)) {
+              const block = document.createElement("section");
+              block.className = "language-group";
+              const head = document.createElement("div");
+              head.className = "language-group-head";
+              const heading = document.createElement("h3");
+              heading.textContent = group.label;
+              head.append(
+                heading,
+                button("Add", "language-button secondary", () => {
+                  sampleEditing = null;
+                  sampleEditorOpen = true;
+                  sampleDraft = emptySample(group.id);
+                  render();
+                }),
+              );
+              block.append(head);
+              if (group.samples.length === 0) {
+                block.append(emptyMessage(`No ${group.label.toLowerCase()} yet.`));
+              } else {
+                const list = document.createElement("ul");
+                list.className = "lexeme-list";
+                for (const record of group.samples) {
+                  const item = document.createElement("li");
+                  const rowButton = document.createElement("button");
+                  rowButton.type = "button";
+                  rowButton.className = "lexeme-row";
+                  const name = document.createElement("strong");
+                  name.textContent = sampleTitle(record.value);
+                  const preview = document.createElement("span");
+                  preview.textContent =
+                    record.value.translation || record.value.text.trim().split("\n")[0] || "No text yet";
+                  const count = document.createElement("small");
+                  count.textContent = `${record.value.tokens.length} token${record.value.tokens.length === 1 ? "" : "s"}`;
+                  rowButton.append(name, preview, count);
+                  rowButton.onclick = () => {
+                    sampleEditing = record;
+                    sampleEditorOpen = true;
+                    sampleDraft = normalizeSample(record.value);
+                    render();
+                  };
+                  item.append(rowButton);
+                  list.append(item);
+                }
+                block.append(list);
+              }
+              nav.append(block);
+            }
+            panel.append(nav);
+          }
+        }
+
         function render(error = "") {
           if (cancelled) return;
           root.replaceChildren(style);
@@ -2022,6 +2351,7 @@ export const language: DaenaModule = {
             ["writing", "Writing"],
             ["grammar", "Grammar"],
             ["forms", "Forms"],
+            ["samples", "Samples"],
           ] as const) {
             const tab = button(label, "", () => {
               pane = id;
@@ -2053,6 +2383,12 @@ export const language: DaenaModule = {
           }
           if (pane === "forms") {
             renderForms(lexiconPanel, error);
+            root.append(languagesPanel, lexiconPanel);
+            element.replaceChildren(root);
+            return;
+          }
+          if (pane === "samples") {
+            renderSamples(lexiconPanel, error);
             root.append(languagesPanel, lexiconPanel);
             element.replaceChildren(root);
             return;

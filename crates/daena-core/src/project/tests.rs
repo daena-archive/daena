@@ -1202,6 +1202,125 @@ fn module_records_are_scoped_revisioned_and_rebuild_from_checkpoint() {
 }
 
 #[test]
+fn language_phonology_and_orthography_records_round_trip() {
+    let root = std::env::temp_dir().join(format!("daena-language-phonology-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let language = store
+        .create_entity(CreateEntity {
+            name: "Asteri".into(),
+            entity_type: Some("language".into()),
+        })
+        .unwrap();
+    store
+        .create_module_record(
+            "daena.language",
+            "phonemes",
+            &language.id,
+            serde_json::json!({
+                "symbol": "ʒ",
+                "kind": "consonant",
+                "place": "postalveolar",
+                "manner": "fricative"
+            }),
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+    store
+        .create_module_record(
+            "daena.language",
+            "phonemes",
+            &language.id,
+            serde_json::json!({
+                "symbol": "a",
+                "kind": "vowel",
+                "height": "open",
+                "backness": "front"
+            }),
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+    store
+        .create_module_record(
+            "daena.language",
+            "phonology",
+            &language.id,
+            serde_json::json!({ "syllableStructure": "(C)V(C)", "tone": "none" }),
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+    store
+        .create_module_record(
+            "daena.language",
+            "orthographies",
+            &language.id,
+            serde_json::json!({
+                "name": "High script",
+                "mappings": [{ "id": "m1", "grapheme": "zh", "sounds": ["ʒ"] }]
+            }),
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+    let phonemes = store
+        .list_module_records_with(
+            "daena.language",
+            "phonemes",
+            &language.id,
+            crate::ModuleRecordListParams {
+                sort: Some("symbol"),
+                limit: 50,
+                ..crate::ModuleRecordListParams::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        phonemes
+            .iter()
+            .map(|record| record.value["symbol"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["a", "ʒ"]
+    );
+    assert_eq!(
+        store
+            .list_module_records(
+                "daena.language",
+                "phonemes",
+                &language.id,
+                Some("fricative"),
+                50,
+                0,
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+    store.flush_checkpoint("phonology-test").unwrap();
+    drop(store);
+    let plugin_json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("plugins/daena.language.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(plugin_json["records"].as_array().unwrap().len(), 4);
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(
+        rebuilt
+            .list_module_records("daena.language", "phonemes", &language.id, None, 50, 0)
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        rebuilt
+            .list_module_records("daena.language", "orthographies", &language.id, None, 50, 0)
+            .unwrap()
+            .len(),
+        1
+    );
+    drop(rebuilt);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn lore_schema_overlay_survives_directory_reopen_and_checkpoint() {
     let root = std::env::temp_dir().join(format!("daena-lore-overlay-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();

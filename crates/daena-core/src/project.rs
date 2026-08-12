@@ -6637,13 +6637,15 @@ fn module_record_order_sql(sort: &str, alias: &str) -> Result<String, CoreError>
     let id = format!("{alias}id");
     Ok(match sort {
         "" | "lemma" => format!("lower(json_extract({alias}value, '$.lemma')), {id}"),
+        "symbol" => format!("lower(json_extract({alias}value, '$.symbol')), {id}"),
+        "name" => format!("lower(json_extract({alias}value, '$.name')), {id}"),
         "updatedAt" => format!("{alias}updated_at DESC, {id}"),
         "status" => format!(
-            "lower(COALESCE(json_extract({alias}value, '$.status'), '')), lower(json_extract({alias}value, '$.lemma')), {id}"
+            "lower(COALESCE(json_extract({alias}value, '$.status'), '')), lower(COALESCE(json_extract({alias}value, '$.lemma'), json_extract({alias}value, '$.name'), json_extract({alias}value, '$.symbol'), '')), {id}"
         ),
         _ => {
             return Err(CoreError::Validation(
-                "record sort must be lemma, updatedAt, or status".into(),
+                "record sort must be lemma, symbol, name, updatedAt, or status".into(),
             ))
         }
     })

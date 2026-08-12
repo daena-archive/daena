@@ -3774,7 +3774,7 @@ onMount(() => {
               : section === "timeline"
                 ? "Events, eras, and the threads that connect them."
                 : section === "language"
-                  ? "Document fictional languages and develop their vocabulary."
+                  ? "Document fictional languages, their sounds, writing, and vocabulary."
                   : writingView === "manuscripts"
                     ? "Draft stories, essays, and other long-form work."
                     : "Build the pages, notes, and references behind the story."}
@@ -3782,7 +3782,7 @@ onMount(() => {
         </div>
         <div class="heading-actions">
           {#if section !== "writing" && section !== "maps"}<button class="quiet-button" onclick={openProjection}
-              >Open {section === "lore" ? "graph" : section === "timeline" ? "timeline" : "lexicon"} ↗</button
+              >Open {section === "lore" ? "graph" : section === "timeline" ? "timeline" : "language"} ↗</button
             >{/if}
         </div>
       </div>

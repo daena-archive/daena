@@ -18,42 +18,31 @@ import {
   STATUS_SUGGESTIONS,
   type LexemeValue,
 } from "./lexeme";
+import { emptyOrthography, normalizeOrthography, serializeOrthography, type OrthographyValue } from "./orthography";
+import {
+  BACKNESS_SUGGESTIONS,
+  consonantChart,
+  emptyPhoneme,
+  emptyPhonologyNotes,
+  HEIGHT_SUGGESTIONS,
+  MANNER_SUGGESTIONS,
+  normalizePhoneme,
+  normalizePhonologyNotes,
+  PHONEME_KINDS,
+  PLACE_SUGGESTIONS,
+  ROUNDING_SUGGESTIONS,
+  serializePhoneme,
+  serializePhonologyNotes,
+  vowelChart,
+  VOICING_SUGGESTIONS,
+  type PhonemeValue,
+  type PhonologyNotes,
+} from "./phonology";
+import { alertMessage, button, emptyMessage, field, groupHead, input, replaceEditor, row, textarea } from "./ui";
 
 const manifest = manifestJson as unknown as ModuleManifest;
 
-function field(label: string, control: HTMLElement) {
-  const wrapper = document.createElement("label");
-  wrapper.className = "language-field";
-  const title = document.createElement("span");
-  title.textContent = label;
-  wrapper.append(title, control);
-  return wrapper;
-}
-
-function input(name: string, value = "", list?: string) {
-  const control = document.createElement("input");
-  control.name = name;
-  control.value = value;
-  if (list) control.setAttribute("list", list);
-  return control;
-}
-
-function textarea(name: string, value = "", rows = 3) {
-  const control = document.createElement("textarea");
-  control.name = name;
-  control.value = value;
-  control.rows = rows;
-  return control;
-}
-
-function button(label: string, className: string, onclick: () => void) {
-  const control = document.createElement("button");
-  control.type = "button";
-  control.className = className;
-  control.textContent = label;
-  control.onclick = onclick;
-  return control;
-}
+type Pane = "lexicon" | "sounds" | "writing";
 
 export const language: DaenaModule = {
   manifest,
@@ -78,6 +67,17 @@ export const language: DaenaModule = {
         let homonymCount = 0;
         let request = 0;
         let searchTimer: number | null = null;
+        let pane: Pane = "lexicon";
+        let phonemes: ModuleRecord<PhonemeValue>[] = [];
+        let phonemeEditing: ModuleRecord<PhonemeValue> | null = null;
+        let phonemeEditorOpen = false;
+        let phonemeDraft: PhonemeValue = emptyPhoneme();
+        let phonologyRecord: ModuleRecord<PhonologyNotes> | null = null;
+        let phonologyDraft: PhonologyNotes = emptyPhonologyNotes();
+        let orthographies: ModuleRecord<OrthographyValue>[] = [];
+        let orthographyEditing: ModuleRecord<OrthographyValue> | null = null;
+        let orthographyEditorOpen = false;
+        let orthographyDraft: OrthographyValue = emptyOrthography();
 
         const root = document.createElement("section");
         root.className = "language-workspace";
@@ -93,6 +93,14 @@ export const language: DaenaModule = {
           .language-filters{display:grid;grid-template-columns:minmax(140px,1.4fr) repeat(3,minmax(90px,.7fr)) auto;gap:8px;margin-top:14px}
           .language-search,.language-filters input,.language-filters select{box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:inherit;font:inherit}
           .language-check{display:flex;align-items:center;gap:6px;color:var(--ink-soft);font-size:11px;white-space:nowrap}
+          .language-tabs{display:flex;gap:6px;margin:0 0 14px}
+          .language-tabs button{padding:7px 11px;border:1px solid var(--line);border-radius:999px;background:transparent;color:inherit;cursor:pointer}
+          .language-tabs button[aria-current=page]{border-color:var(--accent-dark);background:var(--paper-strong);color:var(--accent-dark)}
+          .language-chart{width:100%;border-collapse:collapse;margin:12px 0;font-size:12px}
+          .language-chart th,.language-chart td{border:1px solid var(--line);padding:8px;text-align:center;min-width:52px}
+          .language-chart th{background:var(--paper-strong);font-weight:600;color:var(--ink-soft)}
+          .language-chart button{border:0;background:transparent;color:inherit;font:inherit;cursor:pointer}
+          .language-chart .is-empty{color:var(--ink-faint)}
           .lexeme-row{display:grid;grid-template-columns:minmax(100px,1.1fr) minmax(70px,.5fr) minmax(120px,1.3fr) minmax(70px,.5fr);gap:12px;padding:10px;border-bottom:1px solid var(--line);border-radius:0}.lexeme-row:hover{background:var(--paper-strong)}.lexeme-row small{color:var(--ink-faint)}
           .language-button{padding:8px 12px;border:1px solid var(--accent-dark);border-radius:8px;background:var(--accent-dark);color:white;cursor:pointer}.language-button.secondary{background:transparent;color:var(--accent-dark)}
           .language-empty,.language-status{margin:18px 0;color:var(--ink-soft);font-size:12px;line-height:1.6}.language-status.error{color:#a14f42}
@@ -422,27 +430,6 @@ export const language: DaenaModule = {
           }));
         }
 
-        function groupHead(title: string, add: () => void) {
-          const head = document.createElement("div");
-          head.className = "language-group-head";
-          const heading = document.createElement("h3");
-          heading.textContent = title;
-          head.append(heading, button("Add", "language-button secondary", add));
-          return head;
-        }
-
-        function row(fields: HTMLElement[], remove: () => void) {
-          const wrap = document.createElement("div");
-          wrap.className = "language-inline";
-          wrap.append(...fields, button("Remove", "language-button secondary language-danger", remove));
-          return wrap;
-        }
-
-        function replaceEditor(current: HTMLElement, next: HTMLElement) {
-          current.replaceWith(next);
-          next.querySelector<HTMLInputElement>("[name=lemma]")?.focus();
-        }
-
         async function exportLexicon() {
           if (!selectedLanguage) return;
           const values: LexemeValue[] = [];
@@ -474,9 +461,598 @@ export const language: DaenaModule = {
               });
             }
             page = 0;
-            await loadRecords();
+            await loadPane();
           } catch (cause) {
             render(cause instanceof Error ? cause.message : String(cause));
+          }
+        }
+
+        function resetEditors() {
+          editing = null;
+          editorOpen = false;
+          draft = emptyLexeme();
+          phonemeEditing = null;
+          phonemeEditorOpen = false;
+          phonemeDraft = emptyPhoneme();
+          orthographyEditing = null;
+          orthographyEditorOpen = false;
+          orthographyDraft = emptyOrthography();
+        }
+
+        async function loadPane() {
+          if (pane === "sounds") return loadSounds();
+          if (pane === "writing") return loadWriting();
+          return loadRecords();
+        }
+
+        async function loadSounds() {
+          if (!selectedLanguage) {
+            phonemes = [];
+            phonologyRecord = null;
+            phonologyDraft = emptyPhonologyNotes();
+            render();
+            return;
+          }
+          const token = ++request;
+          try {
+            const [inventory, notes] = await Promise.all([
+              context.records.list<PhonemeValue>("phonemes", selectedLanguage.id, { limit: 100, sort: "symbol" }),
+              context.records.list<PhonologyNotes>("phonology", selectedLanguage.id, { limit: 1 }),
+            ]);
+            if (!cancelled && token === request) {
+              phonemes = inventory.map((record) => ({ ...record, value: normalizePhoneme(record.value) }));
+              phonologyRecord = notes[0] ? { ...notes[0], value: normalizePhonologyNotes(notes[0].value) } : null;
+              phonologyDraft = phonologyRecord?.value ?? emptyPhonologyNotes();
+              if (phonemeEditing) {
+                const current = phonemes.find((record) => record.id === phonemeEditing?.id);
+                if (current) phonemeEditing = current;
+              }
+              render();
+            }
+          } catch (cause) {
+            if (!cancelled && token === request) render(cause instanceof Error ? cause.message : String(cause));
+          }
+        }
+
+        async function loadWriting() {
+          if (!selectedLanguage) {
+            orthographies = [];
+            render();
+            return;
+          }
+          const token = ++request;
+          try {
+            const [systems, inventory] = await Promise.all([
+              context.records.list<OrthographyValue>("orthographies", selectedLanguage.id, {
+                limit: 100,
+                sort: "name",
+              }),
+              context.records.list<PhonemeValue>("phonemes", selectedLanguage.id, { limit: 100, sort: "symbol" }),
+            ]);
+            if (!cancelled && token === request) {
+              orthographies = systems.map((record) => ({ ...record, value: normalizeOrthography(record.value) }));
+              phonemes = inventory.map((record) => ({ ...record, value: normalizePhoneme(record.value) }));
+              if (orthographyEditing) {
+                const current = orthographies.find((record) => record.id === orthographyEditing?.id);
+                if (current) orthographyEditing = current;
+              }
+              render();
+            }
+          } catch (cause) {
+            if (!cancelled && token === request) render(cause instanceof Error ? cause.message : String(cause));
+          }
+        }
+
+        function datalist(id: string, values: string[]) {
+          const list = document.createElement("datalist");
+          list.id = id;
+          list.append(...values.map((item) => new Option(item)));
+          return list;
+        }
+
+        function capturePhoneme(form: HTMLFormElement) {
+          const data = new FormData(form);
+          phonemeDraft = normalizePhoneme({
+            symbol: data.get("symbol"),
+            ipa: data.get("ipa"),
+            kind: data.get("kind"),
+            place: data.get("place"),
+            manner: data.get("manner"),
+            voicing: data.get("voicing"),
+            height: data.get("height"),
+            backness: data.get("backness"),
+            rounding: data.get("rounding"),
+            notes: data.get("notes"),
+            example: data.get("example"),
+          });
+        }
+
+        function phonemeForm(error = "") {
+          const form = document.createElement("form");
+          form.className = "language-editor";
+          const kindSelect = document.createElement("select");
+          kindSelect.name = "kind";
+          kindSelect.setAttribute("aria-label", "Sound kind");
+          for (const item of PHONEME_KINDS) {
+            kindSelect.append(new Option(item, item, item === phonemeDraft.kind, item === phonemeDraft.kind));
+          }
+          form.append(
+            datalist("language-place", PLACE_SUGGESTIONS),
+            datalist("language-manner", MANNER_SUGGESTIONS),
+            datalist("language-voice", VOICING_SUGGESTIONS),
+            datalist("language-height", HEIGHT_SUGGESTIONS),
+            datalist("language-backness", BACKNESS_SUGGESTIONS),
+            datalist("language-rounding", ROUNDING_SUGGESTIONS),
+            field("Symbol", input("symbol", phonemeDraft.symbol)),
+            field("IPA (optional)", input("ipa", phonemeDraft.ipa)),
+            field("Kind", kindSelect),
+            field("Place (optional)", input("place", phonemeDraft.place, "language-place")),
+            field("Manner (optional)", input("manner", phonemeDraft.manner, "language-manner")),
+            field("Voicing (optional)", input("voicing", phonemeDraft.voicing, "language-voice")),
+            field("Height (optional)", input("height", phonemeDraft.height, "language-height")),
+            field("Backness (optional)", input("backness", phonemeDraft.backness, "language-backness")),
+            field("Rounding (optional)", input("rounding", phonemeDraft.rounding, "language-rounding")),
+            field("Example (optional)", input("example", phonemeDraft.example)),
+            field("Notes (optional)", textarea("notes", phonemeDraft.notes)),
+          );
+          if (error) form.append(alertMessage(error));
+          const actions = document.createElement("div");
+          actions.className = "language-actions";
+          const left = document.createElement("span");
+          if (phonemeEditing) {
+            left.append(
+              button("Delete", "language-button secondary language-danger", async () => {
+                if (!selectedLanguage || !phonemeEditing || !window.confirm(`Delete “${phonemeEditing.value.symbol}”?`))
+                  return;
+                try {
+                  await context.records.delete("phonemes", phonemeEditing.id, selectedLanguage.id, {
+                    expectedRevision: phonemeEditing.revision,
+                    requestId: crypto.randomUUID(),
+                  });
+                  phonemeEditing = null;
+                  phonemeEditorOpen = false;
+                  phonemeDraft = emptyPhoneme();
+                  await loadSounds();
+                } catch (cause) {
+                  render(cause instanceof Error ? cause.message : String(cause));
+                }
+              }),
+            );
+          }
+          const right = document.createElement("span");
+          right.append(
+            button("Cancel", "language-button secondary", () => {
+              phonemeEditing = null;
+              phonemeEditorOpen = false;
+              phonemeDraft = emptyPhoneme();
+              render();
+            }),
+          );
+          const save = document.createElement("button");
+          save.type = "submit";
+          save.className = "language-button";
+          save.textContent = "Save sound";
+          right.append(save);
+          actions.append(left, right);
+          form.append(actions);
+          form.onsubmit = async (event) => {
+            event.preventDefault();
+            if (!selectedLanguage) return;
+            capturePhoneme(form);
+            if (!phonemeDraft.symbol) {
+              form.querySelector<HTMLInputElement>("[name=symbol]")?.focus();
+              render("Symbol is required. IPA is optional.");
+              return;
+            }
+            try {
+              const payload = serializePhoneme(phonemeDraft);
+              if (phonemeEditing) {
+                const updated = await context.records.update(
+                  "phonemes",
+                  phonemeEditing.id,
+                  selectedLanguage.id,
+                  payload,
+                  { expectedRevision: phonemeEditing.revision, requestId: crypto.randomUUID() },
+                );
+                phonemeEditing = { ...updated, value: normalizePhoneme(updated.value) };
+              } else {
+                const created = await context.records.create("phonemes", selectedLanguage.id, payload, {
+                  requestId: crypto.randomUUID(),
+                });
+                phonemeEditing = { ...created, value: normalizePhoneme(created.value) };
+              }
+              phonemeEditorOpen = true;
+              phonemeDraft = phonemeEditing.value;
+              await loadSounds();
+            } catch (cause) {
+              render(cause instanceof Error ? cause.message : String(cause));
+            }
+          };
+          return form;
+        }
+
+        function captureOrthography(form: HTMLFormElement) {
+          const data = new FormData(form);
+          orthographyDraft.name = String(data.get("name") ?? "");
+          orthographyDraft.status = String(data.get("status") ?? "");
+          orthographyDraft.notes = String(data.get("notes") ?? "");
+          orthographyDraft.mappings = orthographyDraft.mappings.map((item, index) => ({
+            ...item,
+            grapheme: String(data.get(`grapheme-${index}`) ?? ""),
+            sounds: String(data.get(`sounds-${index}`) ?? "").split(/[\s,]+/),
+            environment: String(data.get(`environment-${index}`) ?? ""),
+            notes: String(data.get(`mapping-notes-${index}`) ?? ""),
+          }));
+        }
+
+        function orthographyForm(error = "") {
+          const form = document.createElement("form");
+          form.className = "language-editor";
+          form.append(
+            datalist("language-status", STATUS_SUGGESTIONS),
+            datalist(
+              "language-sounds",
+              phonemes.map((item) => item.value.symbol),
+            ),
+            field("Name", input("name", orthographyDraft.name)),
+            field("Status (optional)", input("status", orthographyDraft.status, "language-status")),
+            field("Notes (optional)", textarea("notes", orthographyDraft.notes)),
+          );
+          const mappings = document.createElement("section");
+          mappings.className = "language-group";
+          mappings.append(
+            groupHead("Grapheme to sound", () => {
+              captureOrthography(form);
+              orthographyDraft.mappings.push({ id: crypto.randomUUID(), grapheme: "", sounds: [] });
+              replaceEditor(form, orthographyForm(error), "[name=name]");
+            }),
+          );
+          for (const [index, item] of orthographyDraft.mappings.entries()) {
+            mappings.append(
+              row(
+                [
+                  field("Grapheme", input(`grapheme-${index}`, item.grapheme)),
+                  field("Sounds", input(`sounds-${index}`, item.sounds.join(" "), "language-sounds")),
+                  field("Environment (optional)", input(`environment-${index}`, item.environment)),
+                  field("Notes (optional)", input(`mapping-notes-${index}`, item.notes)),
+                ],
+                () => {
+                  captureOrthography(form);
+                  orthographyDraft.mappings.splice(index, 1);
+                  replaceEditor(form, orthographyForm(error), "[name=name]");
+                },
+              ),
+            );
+          }
+          form.append(mappings);
+          if (error) form.append(alertMessage(error));
+          const actions = document.createElement("div");
+          actions.className = "language-actions";
+          const left = document.createElement("span");
+          if (orthographyEditing) {
+            left.append(
+              button("Delete", "language-button secondary language-danger", async () => {
+                if (
+                  !selectedLanguage ||
+                  !orthographyEditing ||
+                  !window.confirm(`Delete “${orthographyEditing.value.name}”?`)
+                )
+                  return;
+                try {
+                  await context.records.delete("orthographies", orthographyEditing.id, selectedLanguage.id, {
+                    expectedRevision: orthographyEditing.revision,
+                    requestId: crypto.randomUUID(),
+                  });
+                  orthographyEditing = null;
+                  orthographyEditorOpen = false;
+                  orthographyDraft = emptyOrthography();
+                  await loadWriting();
+                } catch (cause) {
+                  render(cause instanceof Error ? cause.message : String(cause));
+                }
+              }),
+            );
+          }
+          const right = document.createElement("span");
+          right.append(
+            button("Cancel", "language-button secondary", () => {
+              orthographyEditing = null;
+              orthographyEditorOpen = false;
+              orthographyDraft = emptyOrthography();
+              render();
+            }),
+          );
+          const save = document.createElement("button");
+          save.type = "submit";
+          save.className = "language-button";
+          save.textContent = "Save writing system";
+          right.append(save);
+          actions.append(left, right);
+          form.append(actions);
+          form.onsubmit = async (event) => {
+            event.preventDefault();
+            if (!selectedLanguage) return;
+            captureOrthography(form);
+            const value = normalizeOrthography(orthographyDraft);
+            if (!value.name) {
+              form.querySelector<HTMLInputElement>("[name=name]")?.focus();
+              render("Writing system name is required.");
+              return;
+            }
+            orthographyDraft = value;
+            try {
+              const payload = serializeOrthography(value);
+              if (orthographyEditing) {
+                const updated = await context.records.update(
+                  "orthographies",
+                  orthographyEditing.id,
+                  selectedLanguage.id,
+                  payload,
+                  { expectedRevision: orthographyEditing.revision, requestId: crypto.randomUUID() },
+                );
+                orthographyEditing = { ...updated, value: normalizeOrthography(updated.value) };
+              } else {
+                const created = await context.records.create("orthographies", selectedLanguage.id, payload, {
+                  requestId: crypto.randomUUID(),
+                });
+                orthographyEditing = { ...created, value: normalizeOrthography(created.value) };
+              }
+              orthographyEditorOpen = true;
+              orthographyDraft = orthographyEditing.value;
+              await loadWriting();
+            } catch (cause) {
+              render(cause instanceof Error ? cause.message : String(cause));
+            }
+          };
+          return form;
+        }
+
+        function chartTable(
+          caption: string,
+          chart: ReturnType<typeof consonantChart>,
+          onSelect: (item: PhonemeValue) => void,
+        ) {
+          const wrap = document.createElement("section");
+          wrap.className = "language-group";
+          const heading = document.createElement("h3");
+          heading.textContent = caption;
+          wrap.append(heading);
+          if (!chart.columns.length) {
+            wrap.append(
+              emptyMessage(
+                "Add place and manner (or height and backness) to place sounds on this chart. Incomplete inventories are allowed.",
+              ),
+            );
+            return wrap;
+          }
+          const table = document.createElement("table");
+          table.className = "language-chart";
+          const head = document.createElement("thead");
+          const headRow = document.createElement("tr");
+          headRow.append(document.createElement("th"));
+          for (const column of chart.columns) {
+            const cell = document.createElement("th");
+            cell.scope = "col";
+            cell.textContent = column;
+            headRow.append(cell);
+          }
+          head.append(headRow);
+          const body = document.createElement("tbody");
+          for (const rowLabel of chart.rows) {
+            const tableRow = document.createElement("tr");
+            const rowHead = document.createElement("th");
+            rowHead.scope = "row";
+            rowHead.textContent = rowLabel;
+            tableRow.append(rowHead);
+            for (const column of chart.columns) {
+              const cell = document.createElement("td");
+              const items = chart.cells.find((entry) => entry.row === rowLabel && entry.column === column)?.items ?? [];
+              if (!items.length) {
+                cell.className = "is-empty";
+                cell.textContent = "·";
+              } else {
+                for (const item of items) {
+                  const symbol = button(item.symbol, "language-button secondary", () => onSelect(item));
+                  symbol.title = item.ipa ? `${item.symbol} (${item.ipa})` : item.symbol;
+                  cell.append(symbol);
+                }
+              }
+              tableRow.append(cell);
+            }
+            body.append(tableRow);
+          }
+          table.append(head, body);
+          wrap.append(table);
+          if (chart.unplaced.length) {
+            const leftover = document.createElement("p");
+            leftover.className = "language-empty";
+            leftover.textContent = `Unplaced: ${chart.unplaced.map((item) => item.symbol).join(", ")}`;
+            wrap.append(leftover);
+          }
+          return wrap;
+        }
+
+        async function savePhonology(form: HTMLFormElement) {
+          if (!selectedLanguage) return;
+          const data = new FormData(form);
+          phonologyDraft = normalizePhonologyNotes({
+            syllableStructure: data.get("syllableStructure"),
+            stress: data.get("stress"),
+            tone: data.get("tone"),
+            phonotactics: data.get("phonotactics"),
+            notes: data.get("notes"),
+          });
+          const payload = serializePhonologyNotes(phonologyDraft);
+          if (phonologyRecord) {
+            const updated = await context.records.update(
+              "phonology",
+              phonologyRecord.id,
+              selectedLanguage.id,
+              payload,
+              {
+                expectedRevision: phonologyRecord.revision,
+                requestId: crypto.randomUUID(),
+              },
+            );
+            phonologyRecord = { ...updated, value: normalizePhonologyNotes(updated.value) };
+          } else {
+            const created = await context.records.create("phonology", selectedLanguage.id, payload, {
+              requestId: crypto.randomUUID(),
+            });
+            phonologyRecord = { ...created, value: normalizePhonologyNotes(created.value) };
+          }
+          phonologyDraft = phonologyRecord.value;
+        }
+
+        function openPhoneme(record: ModuleRecord<PhonemeValue>) {
+          phonemeEditing = record;
+          phonemeEditorOpen = true;
+          phonemeDraft = normalizePhoneme(record.value);
+          render();
+        }
+
+        function renderSounds(panel: HTMLElement, error: string) {
+          const toolbar = document.createElement("div");
+          toolbar.className = "language-toolbar";
+          const title = document.createElement("h2");
+          title.textContent = selectedLanguage ? `${selectedLanguage.name} sounds` : "Sounds";
+          const add = button("Add sound", "language-button", () => {
+            phonemeEditing = null;
+            phonemeEditorOpen = true;
+            phonemeDraft = emptyPhoneme();
+            render();
+          });
+          add.disabled = !selectedLanguage;
+          toolbar.append(title, add);
+          panel.append(toolbar);
+          if (!selectedLanguage) {
+            panel.append(emptyMessage("Select a language to document its sounds."));
+            return;
+          }
+          if (phonemeEditorOpen) {
+            panel.append(phonemeForm(error));
+            return;
+          }
+          const notes = document.createElement("form");
+          notes.className = "language-editor";
+          notes.append(
+            field("Syllable structure (optional)", textarea("syllableStructure", phonologyDraft.syllableStructure, 2)),
+            field("Stress (optional)", textarea("stress", phonologyDraft.stress, 2)),
+            field("Tone (optional)", textarea("tone", phonologyDraft.tone, 2)),
+            field("Phonotactics (optional)", textarea("phonotactics", phonologyDraft.phonotactics, 2)),
+            field("Notes (optional)", textarea("notes", phonologyDraft.notes, 2)),
+          );
+          const saveNotes = document.createElement("button");
+          saveNotes.type = "submit";
+          saveNotes.className = "language-button";
+          saveNotes.textContent = "Save sound notes";
+          notes.append(saveNotes);
+          notes.onsubmit = async (event) => {
+            event.preventDefault();
+            try {
+              await savePhonology(notes);
+              render();
+            } catch (cause) {
+              render(cause instanceof Error ? cause.message : String(cause));
+            }
+          };
+          panel.append(notes);
+          const values = phonemes.map((record) => record.value);
+          const openFromChart = (item: PhonemeValue) => {
+            const record = phonemes.find(
+              (entry) => entry.value.symbol === item.symbol && entry.value.kind === item.kind,
+            );
+            if (record) openPhoneme(record);
+          };
+          panel.append(chartTable("Consonants", consonantChart(values), openFromChart));
+          panel.append(chartTable("Vowels", vowelChart(values), openFromChart));
+          const other = phonemes.filter((record) => record.value.kind === "tone" || record.value.kind === "other");
+          if (other.length) {
+            const leftover = emptyMessage(`Other sounds: ${other.map((record) => record.value.symbol).join(", ")}`);
+            panel.append(leftover);
+          }
+          if (error) panel.append(alertMessage(error));
+          else if (phonemes.length === 0)
+            panel.append(
+              emptyMessage(
+                "No sounds yet. Add consonants and vowels; charts stay empty until place, manner, height, or backness is filled in.",
+              ),
+            );
+          else {
+            const list = document.createElement("ul");
+            list.className = "lexeme-list";
+            for (const record of phonemes) {
+              const item = document.createElement("li");
+              const rowButton = document.createElement("button");
+              rowButton.type = "button";
+              rowButton.className = "lexeme-row";
+              const symbol = document.createElement("strong");
+              symbol.textContent = record.value.symbol;
+              const kind = document.createElement("small");
+              kind.textContent = record.value.kind;
+              const detail = document.createElement("span");
+              detail.textContent =
+                record.value.ipa ||
+                [record.value.place, record.value.manner, record.value.height, record.value.backness]
+                  .filter(Boolean)
+                  .join(" · ") ||
+                "No features yet";
+              rowButton.append(symbol, kind, detail);
+              rowButton.onclick = () => openPhoneme(record);
+              item.append(rowButton);
+              list.append(item);
+            }
+            panel.append(list);
+          }
+        }
+
+        function renderWriting(panel: HTMLElement, error: string) {
+          const toolbar = document.createElement("div");
+          toolbar.className = "language-toolbar";
+          const title = document.createElement("h2");
+          title.textContent = selectedLanguage ? `${selectedLanguage.name} writing` : "Writing";
+          const add = button("Add writing system", "language-button", () => {
+            orthographyEditing = null;
+            orthographyEditorOpen = true;
+            orthographyDraft = emptyOrthography();
+            render();
+          });
+          add.disabled = !selectedLanguage;
+          toolbar.append(title, add);
+          panel.append(toolbar);
+          if (orthographyEditorOpen) {
+            panel.append(orthographyForm(error));
+            return;
+          }
+          if (error) panel.append(alertMessage(error));
+          else if (!selectedLanguage) panel.append(emptyMessage("Select a language to document its writing systems."));
+          else if (orthographies.length === 0)
+            panel.append(emptyMessage("No writing systems yet. Add one and map graphemes to sounds."));
+          else {
+            const list = document.createElement("ul");
+            list.className = "lexeme-list";
+            for (const record of orthographies) {
+              const item = document.createElement("li");
+              const rowButton = document.createElement("button");
+              rowButton.type = "button";
+              rowButton.className = "lexeme-row";
+              const name = document.createElement("strong");
+              name.textContent = record.value.name;
+              const status = document.createElement("small");
+              status.textContent = record.value.status || "—";
+              const count = document.createElement("span");
+              count.textContent = `${record.value.mappings.length} mapping${record.value.mappings.length === 1 ? "" : "s"}`;
+              rowButton.append(name, status, count);
+              rowButton.onclick = () => {
+                orthographyEditing = record;
+                orthographyEditorOpen = true;
+                orthographyDraft = normalizeOrthography(record.value);
+                render();
+              };
+              item.append(rowButton);
+              list.append(item);
+            }
+            panel.append(list);
           }
         }
 
@@ -501,23 +1077,21 @@ export const language: DaenaModule = {
               if (selectedLanguage?.id === language.id) languageButton.setAttribute("aria-current", "page");
               languageButton.onclick = () => {
                 selectedLanguage = language;
-                editing = null;
-                editorOpen = false;
-                draft = emptyLexeme();
+                resetEditors();
                 search = "";
                 statusFilter = "";
                 tagFilter = "";
                 sort = "lemma";
                 homonymsOnly = false;
                 page = 0;
-                void loadRecords();
+                void loadPane();
               };
               item.append(languageButton);
               languagesList.append(item);
             }
             if (!selectedLanguage && languages[0]) {
               selectedLanguage = languages[0];
-              void loadRecords();
+              void loadPane();
             }
             if (languages.length === 0) {
               const empty = document.createElement("p");
@@ -530,6 +1104,37 @@ export const language: DaenaModule = {
 
           const lexiconPanel = document.createElement("main");
           lexiconPanel.className = "language-panel";
+          const tabs = document.createElement("div");
+          tabs.className = "language-tabs";
+          tabs.setAttribute("role", "tablist");
+          tabs.setAttribute("aria-label", "Language workspace");
+          for (const [id, label] of [
+            ["lexicon", "Lexicon"],
+            ["sounds", "Sounds"],
+            ["writing", "Writing"],
+          ] as const) {
+            const tab = button(label, "", () => {
+              pane = id;
+              resetEditors();
+              void loadPane();
+            });
+            tab.setAttribute("role", "tab");
+            if (pane === id) tab.setAttribute("aria-current", "page");
+            tabs.append(tab);
+          }
+          lexiconPanel.append(tabs);
+          if (pane === "sounds") {
+            renderSounds(lexiconPanel, error);
+            root.append(languagesPanel, lexiconPanel);
+            element.replaceChildren(root);
+            return;
+          }
+          if (pane === "writing") {
+            renderWriting(lexiconPanel, error);
+            root.append(languagesPanel, lexiconPanel);
+            element.replaceChildren(root);
+            return;
+          }
           const toolbar = document.createElement("div");
           toolbar.className = "language-toolbar";
           const title = document.createElement("h2");

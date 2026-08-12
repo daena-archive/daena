@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "daena.language",
   "name": "Language",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "daena-archive",
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "sandboxed",
@@ -25,35 +25,90 @@
     "id": "language",
     "name": "Language",
     "entityType": "language",
-    "description": "Document a fictional language and build its lexicon.",
+    "description": "Document a fictional language, its sounds, writing, and lexicon.",
     "icon": "Aa",
     "fields": { "nativeName": "", "aliases": "", "status": "", "family": "", "writingSystem": "" },
     "document": ""
   }],
-  "records": [{
-    "id": "lexemes",
-    "ownerEntityTypes": ["language"],
-    "schema": {
-      "type": "object",
-      "properties": {
-        "lemma": { "type": "string" },
-        "partOfSpeech": { "type": "string" },
-        "status": { "type": "string" },
-        "tags": { "type": "array" },
-        "etymology": { "type": "string" },
-        "sourceNotes": { "type": "string" },
-        "notes": { "type": "string" },
-        "meanings": { "type": "array" },
-        "pronunciation": { "type": "string" },
-        "pronunciations": { "type": "array" },
-        "forms": { "type": "array" },
-        "example": { "type": "object" },
-        "senses": { "type": "array" }
-      },
-      "required": ["lemma", "meanings"],
-      "additionalProperties": false
+  "records": [
+    {
+      "id": "lexemes",
+      "ownerEntityTypes": ["language"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "lemma": { "type": "string" },
+          "partOfSpeech": { "type": "string" },
+          "status": { "type": "string" },
+          "tags": { "type": "array" },
+          "etymology": { "type": "string" },
+          "sourceNotes": { "type": "string" },
+          "notes": { "type": "string" },
+          "meanings": { "type": "array" },
+          "pronunciation": { "type": "string" },
+          "pronunciations": { "type": "array" },
+          "forms": { "type": "array" },
+          "example": { "type": "object" },
+          "senses": { "type": "array" }
+        },
+        "required": ["lemma", "meanings"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "phonemes",
+      "ownerEntityTypes": ["language"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "symbol": { "type": "string" },
+          "ipa": { "type": "string" },
+          "kind": { "type": "string" },
+          "place": { "type": "string" },
+          "manner": { "type": "string" },
+          "voicing": { "type": "string" },
+          "height": { "type": "string" },
+          "backness": { "type": "string" },
+          "rounding": { "type": "string" },
+          "notes": { "type": "string" },
+          "example": { "type": "string" }
+        },
+        "required": ["symbol"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "phonology",
+      "ownerEntityTypes": ["language"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "syllableStructure": { "type": "string" },
+          "stress": { "type": "string" },
+          "tone": { "type": "string" },
+          "phonotactics": { "type": "string" },
+          "notes": { "type": "string" }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "orthographies",
+      "ownerEntityTypes": ["language"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "status": { "type": "string" },
+          "notes": { "type": "string" },
+          "mappings": { "type": "array" }
+        },
+        "required": ["name", "mappings"],
+        "additionalProperties": false
+      }
     }
-  }],
+  ],
   "views": [],
   "commands": [],
   "services": { "provides": [], "consumes": [] },

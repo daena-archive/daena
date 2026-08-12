@@ -206,7 +206,7 @@ export interface ModuleRecordQuery {
   query?: string;
   limit?: number;
   offset?: number;
-  sort?: "lemma" | "updatedAt" | "status";
+  sort?: "lemma" | "symbol" | "name" | "updatedAt" | "status";
   status?: string;
   tag?: string;
   homonymsOnly?: boolean;

@@ -8,7 +8,7 @@ export type ProjectionModuleId = "lore" | "timeline" | "language";
 const projectionModules: Record<ProjectionModuleId, { title: string; module: DaenaModule }> = {
   lore: { title: "World graph", module: lore },
   timeline: { title: "Chronology", module: timeline },
-  language: { title: "Lexicon", module: language },
+  language: { title: "Language", module: language },
 };
 
 export function projectionModule(id: ProjectionModuleId) {

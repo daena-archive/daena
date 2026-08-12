@@ -16,7 +16,7 @@ The module must fit Daena rather than become a separate application inside it:
 - SQLite is live runtime authority, and deterministic portable files provide the checkpoint used for Git, inspection, and clean reconstruction;
 - UI and creation behavior are derived from the enabled module manifest, not checks for a hard-coded Language module ID.
 
-This document defines iteration 1, iteration 2, and the boundaries later iterations must preserve. It is not approval to implement the later feature list now.
+This document defines iterations 1–3 and the boundaries later iterations must preserve. It is not approval to implement the later feature list now.
 
 ## 2. Product model
 
@@ -328,7 +328,14 @@ Iteration 2:
 3. Replace the lexicon editor with the richer form, filters, homonym workflow, and JSON import/export.
 4. Verify iteration 2 exit gates.
 
-Do not begin phonology, grammar, paradigms, samples, AI, or relationship-specific work as part of this slice.
+Iteration 3:
+
+1. Add Language-owned `phonemes`, `phonology`, and `orthographies` record collections.
+2. Add allowlisted `symbol` and `name` sorts for those collections.
+3. Add Sounds and Writing panes with optional IPA-style charts and grapheme-to-sound mappings.
+4. Verify iteration 3 exit gates.
+
+Do not begin grammar, paradigms, samples, AI, or relationship-specific work as part of this slice.
 
 ## 7. Verification and exit gates
 
@@ -359,6 +366,15 @@ Iteration 2 is complete only when all of these are demonstrated:
 - JSON export round-trips authored lexeme values; JSON import recreates them as new records.
 - Search still matches lemma, glosses, and nested definitions within one Language.
 - Generated `record.list` schemas and TypeScript SDK include the new allowlisted list parameters.
+
+Iteration 3 is complete only when all of these are demonstrated:
+
+- A Language can store consonant and vowel inventory items, phonotactic notes, and one or more orthographies as module-owned records.
+- IPA is optional; user-defined symbols are accepted.
+- Incomplete inventories still save; unplaced sounds appear outside the chart rather than being rejected.
+- Grapheme-to-sound mappings can name sounds by symbol without requiring a complete inventory.
+- Phonology and orthography data survive checkpoint rebuild and stay scoped to one Language.
+- Lexicon behavior from iterations 1 and 2 remains available in the same workspace.
 
 ## 8. Later iterations
 
@@ -392,14 +408,30 @@ Iteration 2 does not add separate sense/form/example collections, parent-record 
 
 ### Iteration 3: phonology and orthography
 
-- consonant and vowel inventories;
-- IPA and user-defined notation;
-- syllable structure, stress, tone, and phonotactic notes;
-- separate orthography systems;
-- grapheme-to-sound mappings;
-- optional familiar IPA-style visualizations.
+Iteration 3 adds Language-owned record families beside `lexemes`:
 
-Formal validation must remain optional. Authors can document incomplete or nonstandard systems.
+- `phonemes` — inventory items with a required symbol and optional IPA, kind, articulatory features, and notes;
+- `phonology` — optional syllable, stress, tone, and phonotactic notes for the language;
+- `orthographies` — named writing systems with grapheme-to-sound mappings.
+
+Formal validation stays optional. Charts are a derived view of authored features: consonants group by place and manner, vowels by height and backness. Missing features leave a sound unplaced instead of blocking save.
+
+#### User outcome
+
+An author can sketch a sound inventory and one or more writing systems without finishing an IPA chart first, then see a familiar grid fill in as features are added.
+
+#### Required capabilities
+
+1. Consonant and vowel (and optional tone/other) inventory records.
+2. Optional IPA alongside user-defined notation.
+3. Syllable structure, stress, tone, and phonotactic notes.
+4. Multiple orthography records with grapheme-to-sound mappings.
+5. Optional IPA-style consonant and vowel charts derived from authored features.
+6. Iteration 1–2 lexicon behavior remains true.
+
+#### Non-goals
+
+Iteration 3 does not add phonotactic engines, sound-change rules, custom fonts, audio, or required IPA validity.
 
 ### Iteration 4: grammar reference
 

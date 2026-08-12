@@ -38,11 +38,22 @@ import {
   type PhonemeValue,
   type PhonologyNotes,
 } from "./phonology";
+import {
+  emptyGrammarTopic,
+  grammarLinkMarkup,
+  grammarMarkdownToHtml,
+  GRAMMAR_SECTIONS,
+  groupGrammarTopics,
+  normalizeGrammarTopic,
+  serializeGrammarTopic,
+  type GrammarSectionId,
+  type GrammarTopic,
+} from "./grammar";
 import { alertMessage, button, emptyMessage, field, groupHead, input, replaceEditor, row, textarea } from "./ui";
 
 const manifest = manifestJson as unknown as ModuleManifest;
 
-type Pane = "lexicon" | "sounds" | "writing";
+type Pane = "lexicon" | "sounds" | "writing" | "grammar";
 
 export const language: DaenaModule = {
   manifest,
@@ -78,6 +89,11 @@ export const language: DaenaModule = {
         let orthographyEditing: ModuleRecord<OrthographyValue> | null = null;
         let orthographyEditorOpen = false;
         let orthographyDraft: OrthographyValue = emptyOrthography();
+        let grammarTopics: ModuleRecord<GrammarTopic>[] = [];
+        let grammarEditing: ModuleRecord<GrammarTopic> | null = null;
+        let grammarEditorOpen = false;
+        let grammarDraft: GrammarTopic = emptyGrammarTopic();
+        let pendingLexemeId: string | null = null;
 
         const root = document.createElement("section");
         root.className = "language-workspace";
@@ -101,6 +117,11 @@ export const language: DaenaModule = {
           .language-chart th{background:var(--paper-strong);font-weight:600;color:var(--ink-soft)}
           .language-chart button{border:0;background:transparent;color:inherit;font:inherit;cursor:pointer}
           .language-chart .is-empty{color:var(--ink-faint)}
+          .grammar-preview{padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--paper-strong,transparent);font-size:13px;line-height:1.55}
+          .grammar-preview h1,.grammar-preview h2,.grammar-preview h3{margin:0 0 8px;font-family:var(--font-display);font-weight:500}
+          .grammar-preview p,.grammar-preview ul,.grammar-preview ol{margin:0 0 8px}
+          .grammar-ref{padding:0;border:0;border-bottom:1px dotted var(--accent-dark);background:transparent;color:var(--accent-dark);font:inherit;cursor:pointer}
+          .grammar-nav{display:grid;gap:12px;margin-top:14px}
           .lexeme-row{display:grid;grid-template-columns:minmax(100px,1.1fr) minmax(70px,.5fr) minmax(120px,1.3fr) minmax(70px,.5fr);gap:12px;padding:10px;border-bottom:1px solid var(--line);border-radius:0}.lexeme-row:hover{background:var(--paper-strong)}.lexeme-row small{color:var(--ink-faint)}
           .language-button{padding:8px 12px;border:1px solid var(--accent-dark);border-radius:8px;background:var(--accent-dark);color:white;cursor:pointer}.language-button.secondary{background:transparent;color:var(--accent-dark)}
           .language-empty,.language-status{margin:18px 0;color:var(--ink-soft);font-size:12px;line-height:1.6}.language-status.error{color:#a14f42}
@@ -139,6 +160,17 @@ export const language: DaenaModule = {
               if (editing) {
                 const current = records.find((record) => record.id === editing?.id);
                 if (current) editing = current;
+              }
+              if (pendingLexemeId) {
+                const target =
+                  records.find((record) => record.id === pendingLexemeId) ??
+                  (editing?.id === pendingLexemeId ? editing : null);
+                if (target) {
+                  editing = target;
+                  editorOpen = true;
+                  draft = normalizeLexeme(target.value);
+                  pendingLexemeId = null;
+                }
               }
               render();
             }
@@ -477,11 +509,15 @@ export const language: DaenaModule = {
           orthographyEditing = null;
           orthographyEditorOpen = false;
           orthographyDraft = emptyOrthography();
+          grammarEditing = null;
+          grammarEditorOpen = false;
+          grammarDraft = emptyGrammarTopic();
         }
 
         async function loadPane() {
           if (pane === "sounds") return loadSounds();
           if (pane === "writing") return loadWriting();
+          if (pane === "grammar") return loadGrammar();
           return loadRecords();
         }
 
@@ -535,6 +571,33 @@ export const language: DaenaModule = {
               if (orthographyEditing) {
                 const current = orthographies.find((record) => record.id === orthographyEditing?.id);
                 if (current) orthographyEditing = current;
+              }
+              render();
+            }
+          } catch (cause) {
+            if (!cancelled && token === request) render(cause instanceof Error ? cause.message : String(cause));
+          }
+        }
+
+        async function loadGrammar() {
+          if (!selectedLanguage) {
+            grammarTopics = [];
+            records = [];
+            render();
+            return;
+          }
+          const token = ++request;
+          try {
+            const [topics, lexemes] = await Promise.all([
+              context.records.list<GrammarTopic>("grammar", selectedLanguage.id, { limit: 100, sort: "title" }),
+              context.records.list<LexemeValue>("lexemes", selectedLanguage.id, { limit: 100, sort: "lemma" }),
+            ]);
+            if (!cancelled && token === request) {
+              grammarTopics = topics.map((record) => ({ ...record, value: normalizeGrammarTopic(record.value) }));
+              records = lexemes.map((record) => ({ ...record, value: normalizeLexeme(record.value) }));
+              if (grammarEditing) {
+                const current = grammarTopics.find((record) => record.id === grammarEditing?.id);
+                if (current) grammarEditing = current;
               }
               render();
             }
@@ -1056,6 +1119,297 @@ export const language: DaenaModule = {
           }
         }
 
+        function exampleChoices() {
+          return records.flatMap((record) =>
+            record.value.senses.flatMap((sense) =>
+              sense.examples.map((example) => ({
+                lexemeId: record.id,
+                lemma: record.value.lemma,
+                exampleId: example.id,
+                text: example.text,
+              })),
+            ),
+          );
+        }
+
+        function openLinkedLexeme(lexemeId: string) {
+          const target = records.find((record) => record.id === lexemeId);
+          pendingLexemeId = lexemeId;
+          pane = "lexicon";
+          grammarEditorOpen = false;
+          search = "";
+          statusFilter = "";
+          tagFilter = "";
+          homonymsOnly = false;
+          page = 0;
+          if (target) {
+            editing = target;
+            editorOpen = true;
+            draft = normalizeLexeme(target.value);
+          }
+          void loadRecords();
+        }
+
+        function bindGrammarRefs(root: HTMLElement) {
+          for (const control of root.querySelectorAll<HTMLButtonElement>(".grammar-ref")) {
+            control.onclick = () => {
+              const lexemeId = control.dataset.lexemeId;
+              if (lexemeId) openLinkedLexeme(lexemeId);
+            };
+          }
+        }
+
+        function captureGrammar(form: HTMLFormElement) {
+          const data = new FormData(form);
+          grammarDraft.title = String(data.get("title") ?? "");
+          grammarDraft.section = (String(data.get("section") ?? "other") || "other") as GrammarSectionId;
+          grammarDraft.body = String(data.get("body") ?? "");
+        }
+
+        function grammarForm(error = "") {
+          const form = document.createElement("form");
+          form.className = "language-editor";
+          const sectionSelect = document.createElement("select");
+          sectionSelect.name = "section";
+          sectionSelect.setAttribute("aria-label", "Grammar section");
+          for (const item of GRAMMAR_SECTIONS) {
+            sectionSelect.append(
+              new Option(item.label, item.id, item.id === grammarDraft.section, item.id === grammarDraft.section),
+            );
+          }
+          form.append(
+            field("Title", input("title", grammarDraft.title)),
+            field("Section", sectionSelect),
+            field("Notes (Markdown)", textarea("body", grammarDraft.body, 10)),
+          );
+          const preview = document.createElement("div");
+          preview.className = "grammar-preview";
+          preview.setAttribute("aria-label", "Markdown preview");
+          preview.innerHTML = grammarMarkdownToHtml(grammarDraft.body) || "<p>Preview appears as you write.</p>";
+          bindGrammarRefs(preview);
+          form.append(preview);
+          form.querySelector<HTMLTextAreaElement>("[name=body]")!.oninput = (event) => {
+            preview.innerHTML =
+              grammarMarkdownToHtml((event.target as HTMLTextAreaElement).value) ||
+              "<p>Preview appears as you write.</p>";
+            bindGrammarRefs(preview);
+          };
+          const links = document.createElement("section");
+          links.className = "language-group";
+          const head = document.createElement("div");
+          head.className = "language-group-head";
+          const heading = document.createElement("h3");
+          heading.textContent = "Links to words";
+          head.append(heading);
+          links.append(head);
+          for (const [index, item] of grammarDraft.links.entries()) {
+            const lexeme = records.find((record) => record.id === item.lexemeId);
+            const label = item.label || lexeme?.value.lemma || "Missing word";
+            links.append(
+              row([field("Linked word", input(`link-label-${index}`, label))], () => {
+                captureGrammar(form);
+                grammarDraft.links.splice(index, 1);
+                replaceEditor(form, grammarForm(error), "[name=title]");
+              }),
+            );
+          }
+          const addLexeme = document.createElement("select");
+          addLexeme.setAttribute("aria-label", "Link a lexeme");
+          addLexeme.append(new Option("Link a word…", ""));
+          for (const record of records) {
+            addLexeme.append(new Option(record.value.lemma, record.id));
+          }
+          addLexeme.onchange = () => {
+            const lexemeId = addLexeme.value;
+            const lexeme = records.find((record) => record.id === lexemeId);
+            if (!lexemeId || !lexeme) return;
+            captureGrammar(form);
+            const link = {
+              id: crypto.randomUUID(),
+              kind: "lexeme" as const,
+              lexemeId,
+              label: lexeme.value.lemma,
+            };
+            grammarDraft.links.push(link);
+            grammarDraft.body = `${grammarDraft.body.trim()}\n\n${grammarLinkMarkup(link)}\n`;
+            replaceEditor(form, grammarForm(error), "[name=title]");
+          };
+          const addExample = document.createElement("select");
+          addExample.setAttribute("aria-label", "Link an example");
+          addExample.append(new Option("Link an example…", ""));
+          for (const example of exampleChoices()) {
+            addExample.append(
+              new Option(`${example.lemma}: ${example.text}`, `${example.lexemeId}:${example.exampleId}`),
+            );
+          }
+          addExample.onchange = () => {
+            const [lexemeId, exampleId] = addExample.value.split(":");
+            const example = exampleChoices().find((item) => item.lexemeId === lexemeId && item.exampleId === exampleId);
+            if (!lexemeId || !exampleId || !example) return;
+            captureGrammar(form);
+            const link = {
+              id: crypto.randomUUID(),
+              kind: "example" as const,
+              lexemeId,
+              exampleId,
+              label: example.text,
+            };
+            grammarDraft.links.push(link);
+            grammarDraft.body = `${grammarDraft.body.trim()}\n\n${grammarLinkMarkup(link)}\n`;
+            replaceEditor(form, grammarForm(error), "[name=title]");
+          };
+          links.append(addLexeme, addExample);
+          form.append(links);
+          if (error) form.append(alertMessage(error));
+          const actions = document.createElement("div");
+          actions.className = "language-actions";
+          const left = document.createElement("span");
+          if (grammarEditing) {
+            left.append(
+              button("Delete", "language-button secondary language-danger", async () => {
+                if (!selectedLanguage || !grammarEditing || !window.confirm(`Delete “${grammarEditing.value.title}”?`))
+                  return;
+                try {
+                  await context.records.delete("grammar", grammarEditing.id, selectedLanguage.id, {
+                    expectedRevision: grammarEditing.revision,
+                    requestId: crypto.randomUUID(),
+                  });
+                  grammarEditing = null;
+                  grammarEditorOpen = false;
+                  grammarDraft = emptyGrammarTopic();
+                  await loadGrammar();
+                } catch (cause) {
+                  render(cause instanceof Error ? cause.message : String(cause));
+                }
+              }),
+            );
+          }
+          const right = document.createElement("span");
+          right.append(
+            button("Cancel", "language-button secondary", () => {
+              grammarEditing = null;
+              grammarEditorOpen = false;
+              grammarDraft = emptyGrammarTopic();
+              render();
+            }),
+          );
+          const save = document.createElement("button");
+          save.type = "submit";
+          save.className = "language-button";
+          save.textContent = "Save topic";
+          right.append(save);
+          actions.append(left, right);
+          form.append(actions);
+          form.onsubmit = async (event) => {
+            event.preventDefault();
+            if (!selectedLanguage) return;
+            captureGrammar(form);
+            const value = normalizeGrammarTopic(grammarDraft);
+            if (!value.title) {
+              form.querySelector<HTMLInputElement>("[name=title]")?.focus();
+              render("Title is required.");
+              return;
+            }
+            grammarDraft = value;
+            try {
+              const payload = serializeGrammarTopic(value);
+              if (grammarEditing) {
+                const updated = await context.records.update(
+                  "grammar",
+                  grammarEditing.id,
+                  selectedLanguage.id,
+                  payload,
+                  { expectedRevision: grammarEditing.revision, requestId: crypto.randomUUID() },
+                );
+                grammarEditing = { ...updated, value: normalizeGrammarTopic(updated.value) };
+              } else {
+                const created = await context.records.create("grammar", selectedLanguage.id, payload, {
+                  requestId: crypto.randomUUID(),
+                });
+                grammarEditing = { ...created, value: normalizeGrammarTopic(created.value) };
+              }
+              grammarEditorOpen = true;
+              grammarDraft = grammarEditing.value;
+              await loadGrammar();
+            } catch (cause) {
+              render(cause instanceof Error ? cause.message : String(cause));
+            }
+          };
+          return form;
+        }
+
+        function renderGrammar(panel: HTMLElement, error: string) {
+          const toolbar = document.createElement("div");
+          toolbar.className = "language-toolbar";
+          const title = document.createElement("h2");
+          title.textContent = selectedLanguage ? `${selectedLanguage.name} grammar` : "Grammar";
+          const add = button("Add topic", "language-button", () => {
+            grammarEditing = null;
+            grammarEditorOpen = true;
+            grammarDraft = emptyGrammarTopic("word-order");
+            render();
+          });
+          add.disabled = !selectedLanguage;
+          toolbar.append(title, add);
+          panel.append(toolbar);
+          if (grammarEditorOpen) {
+            panel.append(grammarForm(error));
+            return;
+          }
+          if (error) panel.append(alertMessage(error));
+          else if (!selectedLanguage) panel.append(emptyMessage("Select a language to document its grammar."));
+          else {
+            const nav = document.createElement("div");
+            nav.className = "grammar-nav";
+            for (const group of groupGrammarTopics(grammarTopics)) {
+              const block = document.createElement("section");
+              block.className = "language-group";
+              const head = document.createElement("div");
+              head.className = "language-group-head";
+              const heading = document.createElement("h3");
+              heading.textContent = group.label;
+              head.append(
+                heading,
+                button("Add", "language-button secondary", () => {
+                  grammarEditing = null;
+                  grammarEditorOpen = true;
+                  grammarDraft = emptyGrammarTopic(group.id);
+                  render();
+                }),
+              );
+              block.append(head);
+              if (group.topics.length === 0) {
+                block.append(emptyMessage("No notes in this section yet."));
+              } else {
+                const list = document.createElement("ul");
+                list.className = "lexeme-list";
+                for (const record of group.topics) {
+                  const item = document.createElement("li");
+                  const rowButton = document.createElement("button");
+                  rowButton.type = "button";
+                  rowButton.className = "lexeme-row";
+                  const topicTitle = document.createElement("strong");
+                  topicTitle.textContent = record.value.title;
+                  const preview = document.createElement("span");
+                  preview.textContent = record.value.body.trim().split("\n")[0] || "No notes yet";
+                  rowButton.append(topicTitle, preview);
+                  rowButton.onclick = () => {
+                    grammarEditing = record;
+                    grammarEditorOpen = true;
+                    grammarDraft = normalizeGrammarTopic(record.value);
+                    render();
+                  };
+                  item.append(rowButton);
+                  list.append(item);
+                }
+                block.append(list);
+              }
+              nav.append(block);
+            }
+            panel.append(nav);
+          }
+        }
+
         function render(error = "") {
           if (cancelled) return;
           root.replaceChildren(style);
@@ -1112,6 +1466,7 @@ export const language: DaenaModule = {
             ["lexicon", "Lexicon"],
             ["sounds", "Sounds"],
             ["writing", "Writing"],
+            ["grammar", "Grammar"],
           ] as const) {
             const tab = button(label, "", () => {
               pane = id;
@@ -1131,6 +1486,12 @@ export const language: DaenaModule = {
           }
           if (pane === "writing") {
             renderWriting(lexiconPanel, error);
+            root.append(languagesPanel, lexiconPanel);
+            element.replaceChildren(root);
+            return;
+          }
+          if (pane === "grammar") {
+            renderGrammar(lexiconPanel, error);
             root.append(languagesPanel, lexiconPanel);
             element.replaceChildren(root);
             return;

@@ -16,7 +16,7 @@ The module must fit Daena rather than become a separate application inside it:
 - SQLite is live runtime authority, and deterministic portable files provide the checkpoint used for Git, inspection, and clean reconstruction;
 - UI and creation behavior are derived from the enabled module manifest, not checks for a hard-coded Language module ID.
 
-This document defines iterations 1–3 and the boundaries later iterations must preserve. It is not approval to implement the later feature list now.
+This document defines iterations 1–4 and the boundaries later iterations must preserve. It is not approval to implement the later feature list now.
 
 ## 2. Product model
 
@@ -335,7 +335,14 @@ Iteration 3:
 3. Add Sounds and Writing panes with optional IPA-style charts and grapheme-to-sound mappings.
 4. Verify iteration 3 exit gates.
 
-Do not begin grammar, paradigms, samples, AI, or relationship-specific work as part of this slice.
+Iteration 4:
+
+1. Add a Language-owned `grammar` record collection for Markdown topics.
+2. Add an allowlisted `title` sort.
+3. Add a Grammar pane with section navigation and typed lexeme/example links.
+4. Verify iteration 4 exit gates.
+
+Do not begin paradigms, samples, AI, or relationship-specific work as part of this slice.
 
 ## 7. Verification and exit gates
 
@@ -375,6 +382,14 @@ Iteration 3 is complete only when all of these are demonstrated:
 - Grapheme-to-sound mappings can name sounds by symbol without requiring a complete inventory.
 - Phonology and orthography data survive checkpoint rebuild and stay scoped to one Language.
 - Lexicon behavior from iterations 1 and 2 remains available in the same workspace.
+
+Iteration 4 is complete only when all of these are demonstrated:
+
+- Grammar topics can be created, edited, deleted, and grouped under word order, noun, pronoun, verb, modifier, clause, agreement, and other.
+- Topic notes are Markdown and render a safe preview.
+- Typed links can point at lexemes and examples in the same Language and open the linked word.
+- Grammar records survive checkpoint rebuild and stay scoped to one Language.
+- Sounds, writing, and lexicon panes remain available.
 
 ## 8. Later iterations
 
@@ -435,11 +450,24 @@ Iteration 3 does not add phonotactic engines, sound-change rules, custom fonts, 
 
 ### Iteration 4: grammar reference
 
-- navigable grammar topics and Markdown notes;
-- word order, noun, pronoun, verb, modifier, clause, and agreement sections;
-- typed links from grammar notes to lexemes and examples.
+Iteration 4 adds a Language-owned `grammar` collection. Each topic has a title, a section, Markdown notes, and typed links to lexemes or examples. Suggested sections are word order, nouns, pronouns, verbs, modifiers, clauses, and agreement; authors may also file topics under other.
 
-Begin with structured documentation, not an executable grammar engine.
+This is structured documentation, not an executable grammar engine. Links store lexeme (and optional example) IDs rather than creating global entities or cross-entity relationships.
+
+#### User outcome
+
+An author can keep a navigable grammar sketch next to the lexicon, write Markdown notes, and jump from a grammar mention to the linked word.
+
+#### Required capabilities
+
+1. Navigable grammar topics grouped by the suggested sections.
+2. Markdown notes with a readable preview.
+3. Typed links from topics to lexemes and examples in the same Language.
+4. Iteration 1–3 lexicon, phonology, and orthography behavior remains true.
+
+#### Non-goals
+
+Iteration 4 does not generate paradigms, parse the language, or add interlinear samples.
 
 ### Iteration 5: morphology and paradigms
 

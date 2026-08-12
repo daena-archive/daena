@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "daena.language",
   "name": "Language",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "daena-archive",
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "sandboxed",
@@ -25,7 +25,7 @@
     "id": "language",
     "name": "Language",
     "entityType": "language",
-    "description": "Document a fictional language, its sounds, writing, and lexicon.",
+    "description": "Document a fictional language, its sounds, writing, grammar, and lexicon.",
     "icon": "Aa",
     "fields": { "nativeName": "", "aliases": "", "status": "", "family": "", "writingSystem": "" },
     "document": ""
@@ -105,6 +105,21 @@
           "mappings": { "type": "array" }
         },
         "required": ["name", "mappings"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "grammar",
+      "ownerEntityTypes": ["language"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "section": { "type": "string" },
+          "body": { "type": "string" },
+          "links": { "type": "array" }
+        },
+        "required": ["title", "section", "body", "links"],
         "additionalProperties": false
       }
     }

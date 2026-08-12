@@ -192,6 +192,22 @@ export interface FieldRecord {
   revision: string;
 }
 
+export interface ModuleRecord<T = Record<string, unknown>> {
+  id: UUID;
+  collection: string;
+  ownerEntityId: UUID;
+  value: T;
+  createdAt: string;
+  updatedAt: string;
+  revision: string;
+}
+
+export interface ModuleRecordQuery {
+  query?: string;
+  limit?: number;
+  offset?: number;
+}
+
 export interface EntityQuery {
   type?: string;
   text?: string;
@@ -244,6 +260,27 @@ export interface ModuleContext {
     list(entityId: UUID): Promise<Record<string, unknown>>;
     listRecords(entityId: UUID): Promise<FieldRecord[]>;
     set(entityId: UUID, key: string, value: unknown, options?: MutationOptions): Promise<void>;
+  };
+  records: {
+    list<T = Record<string, unknown>>(
+      collection: string,
+      ownerEntityId: UUID,
+      query?: ModuleRecordQuery,
+    ): Promise<ModuleRecord<T>[]>;
+    create<T = Record<string, unknown>>(
+      collection: string,
+      ownerEntityId: UUID,
+      value: T,
+      options?: MutationOptions,
+    ): Promise<ModuleRecord<T>>;
+    update<T = Record<string, unknown>>(
+      collection: string,
+      id: UUID,
+      ownerEntityId: UUID,
+      value: T,
+      options: MutationOptions,
+    ): Promise<ModuleRecord<T>>;
+    delete(collection: string, id: UUID, ownerEntityId: UUID, options: MutationOptions): Promise<void>;
   };
   relationships: {
     list(entityId: UUID): Promise<Relationship[]>;

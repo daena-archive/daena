@@ -1,7 +1,7 @@
 use crate::error::CoreError;
 use crate::project::{
-    Asset, Document, Entity, FieldValue, MigrationHistoryEntry, ModuleNamespace, ModuleState,
-    ProjectSnapshot, Relationship,
+    Asset, Document, Entity, FieldValue, MigrationHistoryEntry, ModuleNamespace, ModuleRecord,
+    ModuleState, ProjectSnapshot, Relationship,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -297,13 +297,50 @@ pub struct PluginStateFile {
     pub selected_package_version: Option<String>,
     pub migrations: Vec<CanonicalMigration>,
     pub preserved_state: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub records: Vec<CanonicalModuleRecord>,
     /// Project-owned schema overlay JSON (currently used by Lore).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_overlay: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct CanonicalModuleRecord {
+    pub collection: String,
+    pub id: String,
+    pub owner_entity_id: String,
+    pub value: serde_json::Value,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 fn default_plugin_enabled() -> bool {
     true
+}
+
+fn canonical_module_records(
+    snapshot: &ProjectSnapshot,
+    plugin_id: &str,
+) -> Vec<CanonicalModuleRecord> {
+    let mut records = snapshot
+        .module_records
+        .iter()
+        .filter(|record| record.module_id == plugin_id)
+        .map(|record| CanonicalModuleRecord {
+            collection: record.collection.clone(),
+            id: record.id.clone(),
+            owner_entity_id: record.owner_entity_id.clone(),
+            value: record.value.clone(),
+            created_at: record.created_at.clone(),
+            updated_at: record.updated_at.clone(),
+        })
+        .collect::<Vec<_>>();
+    records.sort_by(|left, right| {
+        (&left.collection, &left.id).cmp(&(&right.collection, &right.id))
+    });
+    records
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -393,6 +430,29 @@ impl PluginStateFile {
                 "plugin.preserved-state",
                 "preserved state must be an object",
             ));
+        }
+        let mut record_ids = BTreeSet::new();
+        for record in &self.records {
+            validate_component(&record.collection, path, "plugin.record.collection")?;
+            validate_uuid(path, "plugin.record.id", &record.id)?;
+            validate_uuid(path, "plugin.record.owner", &record.owner_entity_id)?;
+            if !record.value.is_object() {
+                return Err(codec_error(
+                    path,
+                    "plugin.record.value",
+                    "record value must be an object",
+                ));
+            }
+            if record.created_at.trim().is_empty() || record.updated_at.trim().is_empty() {
+                return Err(codec_error(
+                    path,
+                    "plugin.record.timestamp",
+                    "record timestamps cannot be empty",
+                ));
+            }
+            if !record_ids.insert(record.id.clone()) {
+                return Err(codec_error(path, "plugin.record.id", "duplicate record ID"));
+            }
         }
         let mut namespaces = BTreeSet::new();
         for namespace in &self.namespaces {
@@ -725,6 +785,9 @@ pub fn write_canonical_project(
     for migration in &snapshot.migration_history {
         plugin_ids.insert(migration.module_id.clone());
     }
+    for record in &snapshot.module_records {
+        plugin_ids.insert(record.module_id.clone());
+    }
     if plugins_root.exists() {
         for entry in fs::read_dir(&plugins_root)
             .map_err(|error| codec_error(&plugins_root, "plugins.read", error))?
@@ -788,6 +851,7 @@ pub fn write_canonical_project(
             .as_ref()
             .map(|state| state.preserved_state.clone())
             .unwrap_or_else(|| serde_json::json!({}));
+        let records = canonical_module_records(snapshot, &plugin_id);
         let schema_overlay = module
             .and_then(|module| module.schema_overlay.clone())
             .or_else(|| {
@@ -805,6 +869,7 @@ pub fn write_canonical_project(
             selected_package_version: module.and_then(|module| module.package_version.clone()),
             migrations,
             preserved_state,
+            records,
             schema_overlay,
         };
         write_json(&path, &state)?;
@@ -1003,6 +1068,7 @@ pub(crate) fn write_canonical_plugin(
         .as_ref()
         .map(|state| state.preserved_state.clone())
         .unwrap_or_else(|| serde_json::json!({}));
+    let records = canonical_module_records(snapshot, plugin_id);
     let schema_overlay = module
         .and_then(|module| module.schema_overlay.clone())
         .or_else(|| {
@@ -1022,6 +1088,7 @@ pub(crate) fn write_canonical_plugin(
             selected_package_version: module.and_then(|module| module.package_version.clone()),
             migrations,
             preserved_state,
+            records,
             schema_overlay,
         },
     )?;
@@ -1294,6 +1361,7 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
     let mut modules = Vec::new();
     let mut module_namespaces = Vec::new();
     let mut migration_history = Vec::new();
+    let mut module_records = Vec::new();
     let mut known_owners = BTreeSet::new();
     if plugins_dir.exists() {
         let mut entries = fs::read_dir(&plugins_dir)
@@ -1347,6 +1415,25 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
                 package_version: state.selected_package_version,
                 schema_overlay: state.schema_overlay,
             });
+            for record in state.records {
+                if !entity_ids.contains(&record.owner_entity_id) {
+                    return Err(codec_error(
+                        &path,
+                        "plugin.record.owner",
+                        "record owner entity is missing",
+                    ));
+                }
+                module_records.push(ModuleRecord {
+                    module_id: plugin_id.into(),
+                    collection: record.collection,
+                    id: record.id,
+                    owner_entity_id: record.owner_entity_id,
+                    value: record.value,
+                    created_at: record.created_at,
+                    updated_at: record.updated_at,
+                    revision: String::new(),
+                });
+            }
             for migration in state.migrations {
                 migration_history.push(MigrationHistoryEntry {
                     module_id: plugin_id.into(),
@@ -1389,6 +1476,10 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
     migration_history.sort_by(|left, right| {
         (&left.module_id, &left.migration_id).cmp(&(&right.module_id, &right.migration_id))
     });
+    module_records.sort_by(|left, right| {
+        (&left.module_id, &left.collection, &left.id)
+            .cmp(&(&right.module_id, &right.collection, &right.id))
+    });
     Ok(CanonicalProject {
         manifest,
         snapshot: ProjectSnapshot {
@@ -1401,6 +1492,7 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
             modules,
             module_namespaces,
             module_fields: Vec::new(),
+            module_records,
             migration_history,
         },
     })

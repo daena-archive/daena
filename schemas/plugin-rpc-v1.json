@@ -798,6 +798,112 @@
       ],
       "type": "object"
     },
+    "RecordCreatePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "collection": {
+          "type": "string"
+        },
+        "ownerEntityId": {
+          "type": "string"
+        },
+        "value": true
+      },
+      "required": [
+        "collection",
+        "ownerEntityId",
+        "value"
+      ],
+      "type": "object"
+    },
+    "RecordDeletePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "collection": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "ownerEntityId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "collection",
+        "expectedRevision",
+        "id",
+        "ownerEntityId"
+      ],
+      "type": "object"
+    },
+    "RecordListPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "collection": {
+          "type": "string"
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ownerEntityId": {
+          "type": "string"
+        },
+        "query": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "collection",
+        "ownerEntityId"
+      ],
+      "type": "object"
+    },
+    "RecordUpdatePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "collection": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "ownerEntityId": {
+          "type": "string"
+        },
+        "value": true
+      },
+      "required": [
+        "collection",
+        "expectedRevision",
+        "id",
+        "ownerEntityId",
+        "value"
+      ],
+      "type": "object"
+    },
     "RelationshipCreatePayload": {
       "additionalProperties": false,
       "properties": {
@@ -1085,6 +1191,70 @@
             "properties": {
               "payload": {
                 "$ref": "#/$defs/FieldSetPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "record.list"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/RecordListPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "record.create"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/RecordCreatePayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "record.update"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/RecordUpdatePayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "record.delete"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/RecordDeletePayload"
               }
             }
           }
@@ -1583,6 +1753,10 @@
             "field.read",
             "field.list",
             "field.set",
+            "record.list",
+            "record.create",
+            "record.update",
+            "record.delete",
             "relationship.list",
             "relationship.create",
             "relationship.delete",
@@ -1895,6 +2069,35 @@
     "maps.recovery.restore": {
       "payload": "MapsRecoveryRestorePayload",
       "requestId": "envelope"
+    },
+    "record.create": {
+      "payload": "RecordCreatePayload",
+      "requestId": "envelope"
+    },
+    "record.delete": {
+      "payload": "RecordDeletePayload",
+      "requestId": "envelope",
+      "requiredPayload": [
+        "collection",
+        "expectedRevision",
+        "id",
+        "ownerEntityId"
+      ]
+    },
+    "record.list": {
+      "payload": "RecordListPayload",
+      "requestId": "envelope"
+    },
+    "record.update": {
+      "payload": "RecordUpdatePayload",
+      "requestId": "envelope",
+      "requiredPayload": [
+        "collection",
+        "expectedRevision",
+        "id",
+        "ownerEntityId",
+        "value"
+      ]
     },
     "relationship.create": {
       "payload": "RelationshipCreatePayload",

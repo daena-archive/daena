@@ -266,6 +266,30 @@ pub const RPC_METHOD_CATALOG: &[RpcMethodDef] = &[
         capability: RpcCapability::FieldWrite,
     },
     RpcMethodDef {
+        name: "record.list",
+        payload_schema: "RecordListPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["record.read:self"]),
+    },
+    RpcMethodDef {
+        name: "record.create",
+        payload_schema: "RecordCreatePayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["record.write:self"]),
+    },
+    RpcMethodDef {
+        name: "record.update",
+        payload_schema: "RecordUpdatePayload",
+        requires_revision: true,
+        capability: RpcCapability::Static(&["record.write:self"]),
+    },
+    RpcMethodDef {
+        name: "record.delete",
+        payload_schema: "RecordDeletePayload",
+        requires_revision: true,
+        capability: RpcCapability::Static(&["record.write:self"]),
+    },
+    RpcMethodDef {
         name: "relationship.list",
         payload_schema: "RelationshipListPayload",
         requires_revision: false,
@@ -463,7 +487,7 @@ mod tests {
             assert!(!entry.payload_schema.is_empty());
             assert!(!entry.name.is_empty());
         }
-        assert_eq!(RPC_METHOD_CATALOG.len(), 40);
+        assert_eq!(RPC_METHOD_CATALOG.len(), 44);
         let revision_methods = RPC_METHOD_CATALOG
             .iter()
             .filter(|entry| entry.requires_revision)
@@ -476,6 +500,8 @@ mod tests {
                 "entity.delete",
                 "document.save",
                 "field.set",
+                "record.update",
+                "record.delete",
                 "relationship.create",
                 "relationship.delete",
                 "asset.register",

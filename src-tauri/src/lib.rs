@@ -899,6 +899,9 @@ fn plugin_asset_response(
                 include_str!("../../packages/modules/writing/manifest.json")
             }
             "daena.maps" => include_str!("../../packages/modules/maps/manifest.json"),
+            "daena.language" => {
+                include_str!("../../packages/modules/language/manifest.json")
+            }
             _ => return None,
         };
         serde_json::from_str::<PluginManifest>(manifest).ok()
@@ -1121,6 +1124,24 @@ fn plugin_protocol_response(
                 if current_project.as_deref() != Some(session.project_id.as_str()) {
                     return Err("plugin session is not bound to the open project".into());
                 }
+                let record_owner_entity_types = request
+                    .method
+                    .starts_with("record.")
+                    .then(|| {
+                        let collection = request
+                            .payload
+                            .get("collection")
+                            .and_then(serde_json::Value::as_str)?;
+                        plugins
+                            .lock()
+                            .ok()?
+                            .record_owner_entity_types(
+                                &session.project_id,
+                                &session.plugin_id,
+                                collection,
+                            )
+                    })
+                    .flatten();
                 let publish_payload =
                     (request.method == "event.publish").then(|| request.payload.clone());
                 let value = if matches!(
@@ -1187,13 +1208,16 @@ fn plugin_protocol_response(
                         },
                     )?
                 } else {
-                    let session = current_session(core)?;
-                    let mut core = session
+                    let plugin_id = session.plugin_id.clone();
+                    let core_session = current_session(core)?;
+                    let mut core = core_session
                         .core
                         .lock()
                         .map_err(|_| "core lock poisoned".to_string())?;
                     dispatch_module_rpc(
                         &mut core,
+                        Some(&plugin_id),
+                        record_owner_entity_types,
                         &request.method,
                         request.payload,
                         mutation_request_id,
@@ -2494,6 +2518,18 @@ async fn plugin_rpc(
     } else {
         let project_id = session.project_id;
         let request_id_for_dispatch = sanitize_mutation_request_id(&request_id).map(str::to_owned);
+        let record_owner_entity_types = method
+            .starts_with("record.")
+            .then(|| {
+                let collection = payload
+                    .get("collection")
+                    .and_then(serde_json::Value::as_str)?;
+                state
+                    .lock()
+                    .ok()?
+                    .record_owner_entity_types(&project_id, &session.plugin_id, collection)
+            })
+            .flatten();
         with_core(core, move |core| {
             let current_project = core
                 .info()
@@ -2504,7 +2540,14 @@ async fn plugin_rpc(
                     operation: "access another project",
                 });
             }
-            dispatch_module_rpc(core, &method, payload, request_id_for_dispatch.as_deref())
+            dispatch_module_rpc(
+                core,
+                Some(&session.plugin_id),
+                record_owner_entity_types,
+                &method,
+                payload,
+                request_id_for_dispatch.as_deref(),
+            )
         })
         .await
     };
@@ -2871,18 +2914,13 @@ async fn sync_project_usage_and_wait(
         let project_id = current_info(&core)?
             .ok_or_else(|| "project is not open".to_string())?
             .root;
-        let defaults = {
+        let bundled = {
             let host = plugins
                 .lock()
                 .map_err(|_| "plugin host lock poisoned".to_string())?;
             host.catalog
                 .list()
-                .map(|entry| {
-                    (
-                        entry.manifest.id.clone(),
-                        entry.manifest.enabled_by_default.unwrap_or(true),
-                    )
-                })
+                .map(|entry| (entry.manifest.clone(), entry.digest.clone()))
                 .collect::<Vec<_>>()
         };
         let project_root = Path::new(&project_id);
@@ -2892,15 +2930,41 @@ async fn sync_project_usage_and_wait(
             .module_states()
             .map_err(|error| error.to_string())?
             .into_iter()
-            .map(|module| module.module_id)
-            .collect::<BTreeSet<_>>();
-        let missing_disabled = defaults
+            .map(|module| (module.module_id, (module.enabled, module.version)))
+            .collect::<BTreeMap<_, _>>();
+        let missing_disabled = bundled
             .iter()
-            .filter(|(module_id, enabled)| !enabled && !states.contains(module_id))
-            .map(|(module_id, _)| module_id.clone())
+            .filter(|(manifest, _)| {
+                !manifest.enabled_by_default.unwrap_or(true) && !states.contains_key(&manifest.id)
+            })
+            .map(|(manifest, _)| manifest.id.clone())
+            .collect::<Vec<_>>();
+        let pending_migrations = bundled
+            .iter()
+            .filter(|(manifest, _)| {
+                states
+                    .get(&manifest.id)
+                    .map(|(enabled, _)| *enabled)
+                    .unwrap_or_else(|| manifest.enabled_by_default.unwrap_or(true))
+            })
+            .map(|(manifest, digest)| {
+                let current = states
+                    .get(&manifest.id)
+                    .map(|(_, version)| *version)
+                    .unwrap_or_default();
+                core_migrations(manifest, digest).map(|migrations| {
+                    migrations
+                        .into_iter()
+                        .filter(|migration| migration.from >= current)
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
             .collect::<Vec<_>>();
 
-        if !missing_disabled.is_empty() {
+        if !missing_disabled.is_empty() || !pending_migrations.is_empty() {
             let session = current_session(&core)?;
             let mut service = session
                 .core
@@ -2919,6 +2983,11 @@ async fn sync_project_usage_and_wait(
             for module_id in missing_disabled {
                 project
                     .set_module_enabled(module_id, false)
+                    .map_err(|error| error.to_string())?;
+            }
+            if !pending_migrations.is_empty() {
+                project
+                    .apply_migrations(&pending_migrations)
                     .map_err(|error| error.to_string())?;
             }
         }
@@ -2975,6 +3044,10 @@ fn bundled_plugin_host(core: SharedCore) -> Result<PluginHost, String> {
         ),
         (
             include_str!("../../packages/modules/maps/manifest.json"),
+            None,
+        ),
+        (
+            include_str!("../../packages/modules/language/manifest.json"),
             None,
         ),
     ] {
@@ -4000,6 +4073,25 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
             &["entityId", "namespace", "key", "value", "expectedRevision"],
             &[],
         ),
+        "record.list" => (
+            &["collection", "ownerEntityId"],
+            &["query", "limit", "offset"],
+        ),
+        "record.create" => (&["collection", "ownerEntityId", "value"], &[]),
+        "record.update" => (
+            &[
+                "collection",
+                "id",
+                "ownerEntityId",
+                "value",
+                "expectedRevision",
+            ],
+            &[],
+        ),
+        "record.delete" => (
+            &["collection", "id", "ownerEntityId", "expectedRevision"],
+            &[],
+        ),
         "relationship.list" => (&["entityId"], &[]),
         "relationship.create" => (
             &[
@@ -4083,8 +4175,37 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
     Ok(())
 }
 
+fn validate_record_owner_entity_type(
+    project: &ProjectStore,
+    owner_entity_id: &str,
+    allowed: Option<&[String]>,
+) -> Result<(), CoreError> {
+    let allowed = allowed.ok_or_else(|| {
+        CoreError::Unauthorized {
+            operation: "access undeclared module record collection",
+        }
+    })?;
+    let owner = project
+        .list_entities()?
+        .into_iter()
+        .find(|entity| entity.id == owner_entity_id)
+        .ok_or_else(|| CoreError::NotFound("module record owner entity not found".into()))?;
+    if !owner
+        .entity_type
+        .as_ref()
+        .is_some_and(|entity_type| allowed.contains(entity_type))
+    {
+        return Err(CoreError::Unauthorized {
+            operation: "use disallowed module record owner entity type",
+        });
+    }
+    Ok(())
+}
+
 fn dispatch_module_rpc(
     core: &mut CoreService,
+    plugin_id: Option<&str>,
+    record_owner_entity_types: Option<Vec<String>>,
     method: &str,
     payload: serde_json::Value,
     request_id: Option<&str>,
@@ -4258,6 +4379,106 @@ fn dispatch_module_rpc(
                 )?,
             };
             project.set_field_with_request(field, request_id)?;
+            Ok(serde_json::Value::Null)
+        }
+        "record.list" => {
+            let module_id = plugin_id.ok_or_else(|| {
+                CoreError::Unauthorized {
+                    operation: "access module records without plugin identity",
+                }
+            })?;
+            validate_record_owner_entity_type(
+                project,
+                &payload_string(&payload, "ownerEntityId")?,
+                record_owner_entity_types.as_deref(),
+            )?;
+            let limit = payload
+                .get("limit")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(50) as usize;
+            let offset = payload
+                .get("offset")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default() as usize;
+            serde_json::to_value(project.list_module_records(
+                module_id,
+                &payload_string(&payload, "collection")?,
+                &payload_string(&payload, "ownerEntityId")?,
+                payload.get("query").and_then(serde_json::Value::as_str),
+                limit,
+                offset,
+            )?)
+            .map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "record.create" => {
+            let module_id = plugin_id.ok_or_else(|| CoreError::Unauthorized {
+                operation: "create module records without plugin identity",
+            })?;
+            validate_record_owner_entity_type(
+                project,
+                &payload_string(&payload, "ownerEntityId")?,
+                record_owner_entity_types.as_deref(),
+            )?;
+            serde_json::to_value(project.create_module_record(
+                module_id,
+                &payload_string(&payload, "collection")?,
+                &payload_string(&payload, "ownerEntityId")?,
+                payload
+                    .get("value")
+                    .cloned()
+                    .ok_or_else(|| CoreError::Validation("record value is required".into()))?,
+                request_id,
+            )?)
+            .map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "record.update" => {
+            let module_id = plugin_id.ok_or_else(|| CoreError::Unauthorized {
+                operation: "update module records without plugin identity",
+            })?;
+            validate_record_owner_entity_type(
+                project,
+                &payload_string(&payload, "ownerEntityId")?,
+                record_owner_entity_types.as_deref(),
+            )?;
+            serde_json::to_value(project.update_module_record(
+                module_id,
+                &payload_string(&payload, "collection")?,
+                &payload_string(&payload, "id")?,
+                &payload_string(&payload, "ownerEntityId")?,
+                payload
+                    .get("value")
+                    .cloned()
+                    .ok_or_else(|| CoreError::Validation("record value is required".into()))?,
+                &required_payload_string(
+                    &payload,
+                    &["expectedRevision", "expected_revision", "revision"],
+                    "expectedRevision",
+                )?,
+                request_id,
+            )?)
+            .map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "record.delete" => {
+            let module_id = plugin_id.ok_or_else(|| CoreError::Unauthorized {
+                operation: "delete module records without plugin identity",
+            })?;
+            validate_record_owner_entity_type(
+                project,
+                &payload_string(&payload, "ownerEntityId")?,
+                record_owner_entity_types.as_deref(),
+            )?;
+            project.delete_module_record(
+                module_id,
+                &payload_string(&payload, "collection")?,
+                &payload_string(&payload, "id")?,
+                &payload_string(&payload, "ownerEntityId")?,
+                &required_payload_string(
+                    &payload,
+                    &["expectedRevision", "expected_revision", "revision"],
+                    "expectedRevision",
+                )?,
+                request_id,
+            )?;
             Ok(serde_json::Value::Null)
         }
         "relationship.list" => {
@@ -4443,8 +4664,32 @@ async fn trusted_module_rpc(
             },
         );
     }
+    let record_owner_entity_types = if method.starts_with("record.") {
+        let record_plugin_id = plugin_id
+            .as_deref()
+            .ok_or_else(|| "module record requests require plugin identity".to_string())?;
+        let collection = payload
+            .get("collection")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "record collection is required".to_string())?;
+        let mut host = plugins
+            .lock()
+            .map_err(|_| "plugin host lock poisoned".to_string())?;
+        host.authorize_bundled(record_plugin_id, &project_id, &method, payload.clone())
+            .map_err(|error| error.to_string())?;
+        host.record_owner_entity_types(&project_id, record_plugin_id, collection)
+    } else {
+        None
+    };
     let result = with_core(state, move |core| {
-        dispatch_module_rpc(core, &method, payload, request_id.as_deref())
+        dispatch_module_rpc(
+            core,
+            plugin_id.as_deref(),
+            record_owner_entity_types,
+            &method,
+            payload,
+            request_id.as_deref(),
+        )
     })
     .await?;
     publish_core_mutation_event(plugins.inner(), &project_id, &event_method, &result)?;

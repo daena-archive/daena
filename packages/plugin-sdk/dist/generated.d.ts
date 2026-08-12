@@ -411,6 +411,31 @@ export interface MapsRecoveryRestorePayload {
     fileName: string;
     mapEntityId: string;
 }
+export interface RecordCreatePayload {
+    collection: string;
+    ownerEntityId: string;
+    value: unknown;
+}
+export interface RecordDeletePayload {
+    collection: string;
+    expectedRevision: string;
+    id: string;
+    ownerEntityId: string;
+}
+export interface RecordListPayload {
+    collection: string;
+    limit?: number | null;
+    offset?: number | null;
+    ownerEntityId: string;
+    query?: string | null;
+}
+export interface RecordUpdatePayload {
+    collection: string;
+    expectedRevision: string;
+    id: string;
+    ownerEntityId: string;
+    value: unknown;
+}
 export interface RelationshipCreatePayload {
     expectedRevision: string;
     metadata?: string | null;
@@ -471,6 +496,10 @@ export interface BrokerMethodPayloads {
     "maps.recovery.export.commit": MapsRecoveryExportCommitPayload;
     "maps.recovery.list": MapsRecoveryListPayload;
     "maps.recovery.restore": MapsRecoveryRestorePayload;
+    "record.create": RecordCreatePayload;
+    "record.delete": RecordDeletePayload;
+    "record.list": RecordListPayload;
+    "record.update": RecordUpdatePayload;
     "relationship.create": RelationshipCreatePayload;
     "relationship.delete": RelationshipDeletePayload;
     "relationship.list": RelationshipListPayload;

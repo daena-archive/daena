@@ -25,6 +25,8 @@ pub const KNOWN_CAPABILITIES: &[&str] = &[
     "field.read:self",
     "field.read:shared",
     "field.write:self",
+    "record.read:self",
+    "record.write:self",
     "relationship.read",
     "relationship.write",
     "asset.read:self",
@@ -107,6 +109,18 @@ pub const CAPABILITY_REGISTRY: &[CapabilityEntry] = &[
         id: "field.write:self",
         resource: "plugin.namespace",
         operations: &["create", "update"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "record.read:self",
+        resource: "plugin.records",
+        operations: &["read"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "record.write:self",
+        resource: "plugin.records",
+        operations: &["create", "update", "delete"],
         confirmation: None,
     },
     CapabilityEntry {
@@ -280,6 +294,16 @@ pub struct EntityTemplate {
     #[serde(rename = "requiredFields")]
     pub required_fields: Option<Vec<String>>,
     pub document: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct RecordCollection {
+    pub id: String,
+    #[serde(rename = "ownerEntityTypes")]
+    pub owner_entity_types: Vec<String>,
+    pub schema: CommandSchema,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -492,6 +516,8 @@ pub struct PluginManifest {
     pub namespaces: Vec<String>,
     pub schemas: Vec<SchemaContribution>,
     pub templates: Vec<EntityTemplate>,
+    #[serde(default)]
+    pub records: Vec<RecordCollection>,
     pub views: Vec<View>,
     pub commands: Vec<Command>,
     pub services: Services,
@@ -800,6 +826,44 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                 )));
             }
         }
+    }
+    let mut record_ids = BTreeSet::new();
+    for collection in &manifest.records {
+        if !is_identifier(&collection.id) || !record_ids.insert(&collection.id) {
+            return Err(ContractError(format!(
+                "invalid or duplicate record collection: {}",
+                collection.id
+            )));
+        }
+        if collection.owner_entity_types.is_empty()
+            || collection
+                .owner_entity_types
+                .iter()
+                .any(|entity_type| !entity_types.contains(entity_type))
+        {
+            return Err(ContractError(format!(
+                "record collection {} declares unknown owner entity types",
+                collection.id
+            )));
+        }
+        validate_command_value(&collection.schema, &serde_json::Value::Object(
+            collection
+                .schema
+                .properties
+                .iter()
+                .filter_map(|(key, property)| {
+                    let value = match property.value_type {
+                        CommandValueType::Object => serde_json::json!({}),
+                        CommandValueType::String => serde_json::json!("value"),
+                        CommandValueType::Number => serde_json::json!(1),
+                        CommandValueType::Boolean => serde_json::json!(true),
+                        CommandValueType::Array => serde_json::json!([]),
+                        CommandValueType::Null => serde_json::Value::Null,
+                    };
+                    Some((key.clone(), value))
+                })
+                .collect(),
+        ))?;
     }
     let mut command_ids = BTreeSet::new();
     for command in &manifest.commands {

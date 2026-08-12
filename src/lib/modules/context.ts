@@ -9,6 +9,8 @@ import type {
   DocumentRecord,
   AssetRecord,
   FieldRecord,
+  ModuleRecord,
+  ModuleRecordQuery,
   Relationship,
   UUID,
   MutationOptions,
@@ -61,6 +63,15 @@ interface RawAsset {
   mime_type: string;
   path: string;
   created_at: string;
+  revision: string;
+}
+interface RawModuleRecord {
+  id: string;
+  collection: string;
+  owner_entity_id: string;
+  value: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
   revision: string;
 }
 
@@ -126,6 +137,18 @@ function toAsset(asset: RawAsset): AssetRecord {
     path: asset.path,
     createdAt: asset.created_at,
     revision: asset.revision,
+  };
+}
+
+function toModuleRecord<T>(record: RawModuleRecord): ModuleRecord<T> {
+  return {
+    id: toUUID(record.id),
+    collection: record.collection,
+    ownerEntityId: toUUID(record.owner_entity_id),
+    value: record.value as T,
+    createdAt: record.created_at,
+    updatedAt: record.updated_at,
+    revision: record.revision,
   };
 }
 
@@ -326,6 +349,45 @@ export function buildModuleContext(manifest: ModuleManifest, projectId: string):
           "field.set",
           { entityId, namespace, key, value, expectedRevision: options?.expectedRevision },
           options?.requestId,
+        );
+      },
+    },
+    records: {
+      list: async <T>(collection: string, ownerEntityId: UUID, query: ModuleRecordQuery = {}) => {
+        checkCapability(manifest, "record.read:self");
+        const records = await rpc.call<RawModuleRecord[]>("record.list", {
+          collection,
+          ownerEntityId,
+          query: query.query,
+          limit: query.limit,
+          offset: query.offset,
+        });
+        return records.map((record) => toModuleRecord<T>(record));
+      },
+      create: async <T>(collection: string, ownerEntityId: UUID, value: T, options?: MutationOptions) => {
+        checkCapability(manifest, "record.write:self");
+        const record = await rpc.call<RawModuleRecord>(
+          "record.create",
+          { collection, ownerEntityId, value },
+          options?.requestId,
+        );
+        return toModuleRecord<T>(record);
+      },
+      update: async <T>(collection: string, id: UUID, ownerEntityId: UUID, value: T, options: MutationOptions) => {
+        checkCapability(manifest, "record.write:self");
+        const record = await rpc.call<RawModuleRecord>(
+          "record.update",
+          { collection, id, ownerEntityId, value, expectedRevision: options.expectedRevision },
+          options.requestId,
+        );
+        return toModuleRecord<T>(record);
+      },
+      delete: async (collection: string, id: UUID, ownerEntityId: UUID, options: MutationOptions) => {
+        checkCapability(manifest, "record.write:self");
+        await rpc.call<null>(
+          "record.delete",
+          { collection, id, ownerEntityId, expectedRevision: options.expectedRevision },
+          options.requestId,
         );
       },
     },

@@ -97,7 +97,7 @@ fn fresh_runtime_starts_with_checkpoint_generation_metadata() {
             },
         )
         .unwrap();
-    assert_eq!(metadata.0, 4);
+    assert_eq!(metadata.0, 5);
     assert_eq!(metadata.1, 3);
     assert_eq!(metadata.2, 0);
     assert_eq!(metadata.3, 0);
@@ -936,6 +936,177 @@ fn disabled_module_survives_directory_reopen() {
     let reopened = ProjectStore::open_directory(&root).unwrap();
     assert!(!reopened.is_module_enabled("daena.lore").unwrap());
     drop(reopened);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn module_records_are_scoped_revisioned_and_rebuild_from_checkpoint() {
+    let root = std::env::temp_dir().join(format!("daena-module-records-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let language = store
+        .create_entity(CreateEntity {
+            name: "Asteri".into(),
+            entity_type: Some("language".into()),
+        })
+        .unwrap();
+    let other = store
+        .create_entity(CreateEntity {
+            name: "Other".into(),
+            entity_type: Some("language".into()),
+        })
+        .unwrap();
+    let request_id = Uuid::new_v4().to_string();
+    let first = store
+        .create_module_record(
+            "daena.language",
+            "lexemes",
+            &language.id,
+            serde_json::json!({"lemma": "sol", "meanings": ["sun"]}),
+            Some(&request_id),
+        )
+        .unwrap();
+    let retried = store
+        .create_module_record(
+            "daena.language",
+            "lexemes",
+            &language.id,
+            serde_json::json!({"lemma": "sol", "meanings": ["sun"]}),
+            Some(&request_id),
+        )
+        .unwrap();
+    assert_eq!(first.id, retried.id);
+    assert!(store
+        .create_module_record(
+            "daena.language",
+            "lexemes",
+            &language.id,
+            serde_json::json!({"lemma": "sol", "meanings": ["star"]}),
+            Some(&request_id),
+        )
+        .is_err());
+    assert!(store
+        .list_module_records(
+            "daena.language",
+            "lexemes",
+            &other.id,
+            None,
+            50,
+            0,
+        )
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .update_module_record(
+            "daena.language",
+            "lexemes",
+            &first.id,
+            &other.id,
+            serde_json::json!({"lemma": "sol", "meanings": ["sun"]}),
+            &first.revision,
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .is_err());
+    let updated = store
+        .update_module_record(
+            "daena.language",
+            "lexemes",
+            &first.id,
+            &language.id,
+            serde_json::json!({"lemma": "sol", "meanings": ["sun", "day"]}),
+            &first.revision,
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+    assert_ne!(updated.revision, first.revision);
+    assert!(store
+        .update_module_record(
+            "daena.language",
+            "lexemes",
+            &first.id,
+            &language.id,
+            serde_json::json!({"lemma": "sol", "meanings": ["sun"]}),
+            &first.revision,
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .is_err());
+    store
+        .create_module_record(
+            "daena.language",
+            "lexemes",
+            &language.id,
+            serde_json::json!({"lemma": "sol", "meanings": ["soil"]}),
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+    let disposable = store
+        .create_module_record(
+            "daena.language",
+            "lexemes",
+            &language.id,
+            serde_json::json!({"lemma": "luna", "meanings": ["moon"]}),
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+    let delete_request_id = Uuid::new_v4().to_string();
+    store
+        .delete_module_record(
+            "daena.language",
+            "lexemes",
+            &disposable.id,
+            &language.id,
+            &disposable.revision,
+            Some(&delete_request_id),
+        )
+        .unwrap();
+    store
+        .delete_module_record(
+            "daena.language",
+            "lexemes",
+            &disposable.id,
+            &language.id,
+            &disposable.revision,
+            Some(&delete_request_id),
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .list_module_records(
+                "daena.language",
+                "lexemes",
+                &language.id,
+                Some("sol"),
+                50,
+                0,
+            )
+            .unwrap()
+            .len(),
+        2
+    );
+    store.flush_checkpoint("module-record-test").unwrap();
+    drop(store);
+
+    let plugin_json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("plugins/daena.language.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(plugin_json["records"].as_array().unwrap().len(), 2);
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(
+        rebuilt
+            .list_module_records(
+                "daena.language",
+                "lexemes",
+                &language.id,
+                None,
+                50,
+                0,
+            )
+            .unwrap()
+            .len(),
+        2
+    );
+    drop(rebuilt);
     std::fs::remove_dir_all(root).unwrap();
 }
 

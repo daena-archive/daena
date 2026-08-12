@@ -215,6 +215,53 @@ pub struct FieldSetPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
+pub struct RecordListPayload {
+    pub collection: String,
+    #[serde(rename = "ownerEntityId")]
+    pub owner_entity_id: String,
+    pub query: Option<String>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct RecordCreatePayload {
+    pub collection: String,
+    #[serde(rename = "ownerEntityId")]
+    pub owner_entity_id: String,
+    pub value: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct RecordUpdatePayload {
+    pub collection: String,
+    pub id: String,
+    #[serde(rename = "ownerEntityId")]
+    pub owner_entity_id: String,
+    pub value: Value,
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct RecordDeletePayload {
+    pub collection: String,
+    pub id: String,
+    #[serde(rename = "ownerEntityId")]
+    pub owner_entity_id: String,
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct RelationshipListPayload {
     #[serde(rename = "entityId")]
     pub entity_id: String,

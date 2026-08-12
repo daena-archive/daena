@@ -857,6 +857,7 @@ fn bundled_manifests_supply_generic_migrations() {
     let lore = host.catalog.get("daena.lore").unwrap();
     let timeline = host.catalog.get("daena.timeline").unwrap();
     let writing = host.catalog.get("daena.writing").unwrap();
+    let language = host.catalog.get("daena.language").unwrap();
     assert_eq!(
         core_migration(&lore.manifest).unwrap().unwrap().id,
         "lore-v1"
@@ -869,12 +870,21 @@ fn bundled_manifests_supply_generic_migrations() {
         core_migration(&writing.manifest).unwrap().unwrap().id,
         "writing-v1"
     );
+    assert_eq!(
+        core_migration(&language.manifest).unwrap().unwrap().id,
+        "language-v1"
+    );
 }
 
 #[test]
 fn bundled_workspace_manifests_do_not_declare_duplicate_sidebar_views() {
     let host = bundled_plugin_host(new_shared_core()).unwrap();
-    for plugin_id in ["daena.lore", "daena.timeline", "daena.writing"] {
+    for plugin_id in [
+        "daena.lore",
+        "daena.timeline",
+        "daena.writing",
+        "daena.language",
+    ] {
         assert!(
             host.catalog
                 .get(plugin_id)
@@ -992,6 +1002,8 @@ fn broker_dispatch_uses_plugin_project_authority() {
     core.open_memory(AuthorityContext::trusted_shell()).unwrap();
     let created = dispatch_module_rpc(
         &mut core,
+        None,
+        None,
         "entity.create",
         serde_json::json!({"name": "Broker Entity", "type": "person"}),
         None,
@@ -999,16 +1011,78 @@ fn broker_dispatch_uses_plugin_project_authority() {
     .unwrap();
     assert_eq!(created["name"], "Broker Entity");
     let entities =
-        dispatch_module_rpc(&mut core, "entity.list", serde_json::json!({}), None).unwrap();
+        dispatch_module_rpc(
+            &mut core,
+            None,
+            None,
+            "entity.list",
+            serde_json::json!({}),
+            None,
+        )
+        .unwrap();
     assert_eq!(entities.as_array().unwrap().len(), 1);
     let missing_revision = dispatch_module_rpc(
         &mut core,
+        None,
+        None,
         "entity.update",
         serde_json::json!({"id": created["id"]}),
         None,
     )
     .unwrap_err();
     assert!(missing_revision.to_string().contains("expectedRevision"));
+}
+
+#[test]
+fn broker_dispatch_enforces_module_record_owner_entity_types() {
+    let mut core = CoreService::new();
+    core.open_memory(AuthorityContext::trusted_shell()).unwrap();
+    let person = dispatch_module_rpc(
+        &mut core,
+        None,
+        None,
+        "entity.create",
+        serde_json::json!({"name": "Person", "type": "person"}),
+        None,
+    )
+    .unwrap();
+    let denied = dispatch_module_rpc(
+        &mut core,
+        Some("daena.language"),
+        Some(vec!["language".into()]),
+        "record.create",
+        serde_json::json!({
+            "collection": "lexemes",
+            "ownerEntityId": person["id"],
+            "value": {"lemma": "sol", "meanings": ["sun"]}
+        }),
+        Some(&uuid::Uuid::new_v4().to_string()),
+    );
+    assert!(matches!(denied, Err(CoreError::Unauthorized { .. })));
+
+    let language = dispatch_module_rpc(
+        &mut core,
+        None,
+        None,
+        "entity.create",
+        serde_json::json!({"name": "Asteri", "type": "language"}),
+        None,
+    )
+    .unwrap();
+    let created = dispatch_module_rpc(
+        &mut core,
+        Some("daena.language"),
+        Some(vec!["language".into()]),
+        "record.create",
+        serde_json::json!({
+            "collection": "lexemes",
+            "ownerEntityId": language["id"],
+            "value": {"lemma": "sol", "meanings": ["sun"]}
+        }),
+        Some(&uuid::Uuid::new_v4().to_string()),
+    )
+    .unwrap();
+    assert_eq!(created["value"]["lemma"], "sol");
 }
 
 #[test]

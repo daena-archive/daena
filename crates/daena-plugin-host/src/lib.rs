@@ -2606,6 +2606,21 @@ impl PluginHost {
             .map_err(|error| HostError(format!("{}: {}", error.code, error.message)))
     }
 
+    pub fn record_owner_entity_types(
+        &self,
+        project_id: &str,
+        plugin_id: &str,
+        collection: &str,
+    ) -> Option<Vec<String>> {
+        self.runtime_entry(project_id, plugin_id)
+            .or_else(|| self.catalog.get(plugin_id).cloned())?
+            .manifest
+            .records
+            .into_iter()
+            .find(|candidate| candidate.id == collection)
+            .map(|candidate| candidate.owner_entity_types)
+    }
+
     pub fn register_ai_request(
         &mut self,
         request_id: &str,
@@ -3039,6 +3054,33 @@ fn validate_declared_resource(
     payload: &serde_json::Value,
 ) -> Result<(), RpcError> {
     match method {
+        "record.list" | "record.create" | "record.update" | "record.delete" => {
+            let collection_id = payload
+                .get("collection")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    rpc_error("payload.invalid", "record operations require collection", false)
+                })?;
+            let collection = manifest
+                .records
+                .iter()
+                .find(|collection| collection.id == collection_id)
+                .ok_or_else(|| {
+                    rpc_error(
+                        "record.undeclared",
+                        "record collection is not declared by the manifest",
+                        false,
+                    )
+                })?;
+            if matches!(method, "record.create" | "record.update") {
+                let value = payload.get("value").ok_or_else(|| {
+                    rpc_error("payload.invalid", "record value is required", false)
+                })?;
+                daena_plugin_api::validate_command_value(&collection.schema, value).map_err(
+                    |error| rpc_error("record.invalid", error.to_string(), false),
+                )?;
+            }
+        }
         "event.publish" | "event.subscribe" | "event.poll" => {
             let event_type = payload
                 .get("type")

@@ -192,6 +192,19 @@ pub struct ModuleField {
     pub required: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModuleRecord {
+    pub module_id: String,
+    pub collection: String,
+    pub id: String,
+    pub owner_entity_id: String,
+    pub value: serde_json::Value,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub revision: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MigrationHistoryEntry {
     pub module_id: String,
@@ -234,6 +247,8 @@ pub struct ProjectSnapshot {
     pub module_namespaces: Vec<ModuleNamespace>,
     #[serde(default)]
     pub module_fields: Vec<ModuleField>,
+    #[serde(default)]
+    pub module_records: Vec<ModuleRecord>,
     #[serde(default)]
     pub migration_history: Vec<MigrationHistoryEntry>,
 }
@@ -618,7 +633,7 @@ fn ensure_runtime_asset(
 }
 
 const RUNTIME_STORAGE_ROLE: &str = "daena.runtime";
-const RUNTIME_SCHEMA_VERSION: i64 = 4;
+const RUNTIME_SCHEMA_VERSION: i64 = 5;
 const EXPORTER_CONTRACT_VERSION: &str = "2";
 
 fn reset_required_error() -> CoreError {
@@ -1685,6 +1700,25 @@ impl ProjectStore {
         self.revision_digest(&value)
     }
 
+    fn revision_for_module_record(&self, id: &str) -> Result<String, CoreError> {
+        let value = self.connection.query_row(
+            "SELECT module_id,collection,id,owner_entity_id,value,created_at,updated_at FROM module_records WHERE id=?1",
+            params![id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            },
+        )?;
+        self.revision_digest(&value)
+    }
+
     fn revision_digest<T: Serialize>(&self, value: &T) -> Result<String, CoreError> {
         let epoch: String = self.connection.query_row(
             "SELECT database_epoch FROM runtime_meta WHERE key='runtime'",
@@ -1773,12 +1807,23 @@ impl ProjectStore {
         for entity in &snapshot.entities {
             crate::storage::write_canonical_entity(&staging_root, &manifest, snapshot, &entity.id)?;
         }
-        for module in &snapshot.modules {
+        let plugin_ids = snapshot
+            .modules
+            .iter()
+            .map(|module| module.module_id.as_str())
+            .chain(
+                snapshot
+                    .module_records
+                    .iter()
+                    .map(|record| record.module_id.as_str()),
+            )
+            .collect::<BTreeSet<_>>();
+        for plugin_id in plugin_ids {
             crate::storage::write_canonical_plugin(
                 &staging_root,
                 &manifest,
                 snapshot,
-                &module.module_id,
+                plugin_id,
             )?;
         }
         let mut current_sources = staged_canonical_sources(&staging_root, snapshot)?;
@@ -2992,7 +3037,9 @@ impl ProjectStore {
               CREATE TABLE IF NOT EXISTS module_state(module_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1);
               CREATE TABLE IF NOT EXISTS module_package_versions(module_id TEXT PRIMARY KEY, package_version TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS module_namespaces(module_id TEXT NOT NULL, namespace TEXT NOT NULL, PRIMARY KEY(module_id, namespace));
-              CREATE TABLE IF NOT EXISTS module_fields(module_id TEXT NOT NULL, namespace TEXT NOT NULL, key TEXT NOT NULL, field_type TEXT NOT NULL, required INTEGER NOT NULL, PRIMARY KEY(module_id, namespace, key));
+             CREATE TABLE IF NOT EXISTS module_fields(module_id TEXT NOT NULL, namespace TEXT NOT NULL, key TEXT NOT NULL, field_type TEXT NOT NULL, required INTEGER NOT NULL, PRIMARY KEY(module_id, namespace, key));
+              CREATE TABLE IF NOT EXISTS module_records(id TEXT PRIMARY KEY, module_id TEXT NOT NULL, collection TEXT NOT NULL, owner_entity_id TEXT NOT NULL REFERENCES entities(id), value TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(module_id, collection, id));
+              CREATE INDEX IF NOT EXISTS module_records_owner_idx ON module_records(module_id, collection, owner_entity_id, id);
               CREATE TABLE IF NOT EXISTS entity_fields(entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(entity_id, namespace, key));
              CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, filename TEXT NOT NULL, content_hash TEXT NOT NULL, size INTEGER NOT NULL, mime_type TEXT NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS map_projection (map_entity_id TEXT PRIMARY KEY, provider TEXT NOT NULL, source_asset_id TEXT NOT NULL, source_path TEXT, source_hash TEXT);
@@ -3012,6 +3059,7 @@ impl ProjectStore {
             "module_package_versions",
             "module_namespaces",
             "module_fields",
+            "module_records",
             "module_schema_overlays",
             "migration_history",
             "plugin_backups",
@@ -3072,7 +3120,18 @@ impl ProjectStore {
                 [],
                 |row| row.get(0),
             )?;
-        if search_missing {
+        let record_search_table_exists: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='module_record_search')",
+            [],
+            |row| row.get(0),
+        )?;
+        let record_search_missing = !record_search_table_exists
+            || self.connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM module_records) AND NOT EXISTS(SELECT 1 FROM module_record_search)",
+                [],
+                |row| row.get(0),
+            )?;
+        if search_missing || record_search_missing {
             self.rebuild_search()?;
         }
         Ok(())
@@ -4098,6 +4157,23 @@ impl ProjectStore {
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
+        let module_records = self
+            .connection
+            .prepare("SELECT module_id,collection,id,owner_entity_id,value,created_at,updated_at FROM module_records ORDER BY module_id,collection,id")?
+            .query_map([], |row| {
+                let value: String = row.get(4)?;
+                Ok(ModuleRecord {
+                    module_id: row.get(0)?,
+                    collection: row.get(1)?,
+                    id: row.get(2)?,
+                    owner_entity_id: row.get(3)?,
+                    value: decode_field_value(value),
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                    revision: String::new(),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
         let migration_history = self
             .connection
             .prepare("SELECT module_id,migration_id,from_version,to_version,checksum,package_digest,applied_at FROM migration_history ORDER BY module_id,migration_id")?
@@ -4123,6 +4199,7 @@ impl ProjectStore {
             modules,
             module_namespaces,
             module_fields,
+            module_records,
             migration_history,
         })
     }
@@ -4198,6 +4275,7 @@ impl ProjectStore {
                  DELETE FROM entity_fields;
                  DELETE FROM documents;
                  DELETE FROM relationships;
+                 DELETE FROM module_records;
                  DELETE FROM entities;
                  DELETE FROM module_state;
                  DELETE FROM module_versions;
@@ -4251,6 +4329,14 @@ impl ProjectStore {
             transaction.execute(
                 "INSERT INTO module_fields(module_id,namespace,key,field_type,required) VALUES (?1,?2,?3,?4,?5)",
                 params![field.module_id, field.namespace, field.key, field.field_type, field.required as i64],
+            )?;
+        }
+        for record in &snapshot.module_records {
+            let value = serde_json::to_string(&record.value)
+                .map_err(|error| CoreError::Validation(error.to_string()))?;
+            transaction.execute(
+                "INSERT INTO module_records(module_id,collection,id,owner_entity_id,value,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO UPDATE SET module_id=excluded.module_id,collection=excluded.collection,owner_entity_id=excluded.owner_entity_id,value=excluded.value,created_at=excluded.created_at,updated_at=excluded.updated_at",
+                params![record.module_id, record.collection, record.id, record.owner_entity_id, value, record.created_at, record.updated_at],
             )?;
         }
         for migration in &snapshot.migration_history {
@@ -5402,6 +5488,274 @@ impl ProjectStore {
     /// Remove only data owned by a plugin. Code uninstall and disablement do
     /// not call this method; callers must present the explicit confirmation
     /// phrase and a backup is created before the destructive transaction.
+    pub fn create_module_record(
+        &self,
+        module_id: &str,
+        collection: &str,
+        owner_entity_id: &str,
+        value: serde_json::Value,
+        request_id: Option<&str>,
+    ) -> Result<ModuleRecord, CoreError> {
+        validate_module_record_input(module_id, collection, owner_entity_id, &value)?;
+        let fingerprint = digest_bytes(
+            &serde_json::to_vec(&(module_id, collection, owner_entity_id, &value))
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if let Some(mut record) = self.committed_mutation_with_fingerprint::<ModuleRecord>(
+            request_id,
+            Some(&fingerprint),
+        )? {
+            record.revision = self.revision_for_module_record(&record.id)?;
+            return Ok(record);
+        }
+        self.ensure_live_module_record_owner(owner_entity_id)?;
+        let id = Uuid::new_v4().to_string();
+        let now = chrono_like_now();
+        let encoded = serde_json::to_string(&value)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let result = ModuleRecord {
+            module_id: module_id.into(),
+            collection: collection.into(),
+            id: id.clone(),
+            owner_entity_id: owner_entity_id.into(),
+            value: value.clone(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            revision: String::new(),
+        };
+        let request_id = self.request_id(request_id)?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&serde_json::to_value(&result)?),
+            &[format!("plugins/{module_id}.json")],
+            &fingerprint,
+        )?;
+        transaction.execute(
+            "INSERT INTO module_records(module_id,collection,id,owner_entity_id,value,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?6)",
+            params![module_id, collection, id, owner_entity_id, encoded, now],
+        )?;
+        transaction.commit()?;
+        self.notify_export_worker()?;
+        let mut record = result;
+        record.revision = self.revision_for_module_record(&record.id)?;
+        Ok(record)
+    }
+
+    pub fn list_module_records(
+        &self,
+        module_id: &str,
+        collection: &str,
+        owner_entity_id: &str,
+        query: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<ModuleRecord>, CoreError> {
+        validate_module_record_scope(module_id, collection, owner_entity_id)?;
+        self.ensure_live_module_record_owner(owner_entity_id)?;
+        let limit = limit.clamp(1, 100) as i64;
+        let offset = i64::try_from(offset)
+            .map_err(|_| CoreError::Validation("record offset is too large".into()))?;
+        let query = query.unwrap_or_default().trim();
+        if query.len() > 200 {
+            return Err(CoreError::Validation(
+                "record search query exceeds 200 bytes".into(),
+            ));
+        }
+        let sql = if query.is_empty() {
+            "SELECT module_id,collection,id,owner_entity_id,value,created_at,updated_at FROM module_records WHERE module_id=?1 AND collection=?2 AND owner_entity_id=?3 ORDER BY lower(json_extract(value, '$.lemma')), id LIMIT ?4 OFFSET ?5"
+        } else {
+            "SELECT r.module_id,r.collection,r.id,r.owner_entity_id,r.value,r.created_at,r.updated_at FROM module_records r JOIN module_record_search s ON s.record_id=r.id WHERE s.module_id=?1 AND s.collection=?2 AND s.owner_entity_id=?3 AND module_record_search MATCH ?4 ORDER BY lower(json_extract(r.value, '$.lemma')), r.id LIMIT ?5 OFFSET ?6"
+        };
+        let terms = query
+            .split_whitespace()
+            .map(|term| format!("\"{}\"*", term.replace('"', "")))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let mut statement = self.connection.prepare(sql)?;
+        let read_record = |row: &rusqlite::Row<'_>| {
+                let encoded: String = row.get(4)?;
+                Ok(ModuleRecord {
+                    module_id: row.get(0)?,
+                    collection: row.get(1)?,
+                    id: row.get(2)?,
+                    owner_entity_id: row.get(3)?,
+                    value: decode_field_value(encoded),
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                    revision: String::new(),
+                })
+            };
+        let rows = if query.is_empty() {
+            statement.query_map(
+                params![module_id, collection, owner_entity_id, limit, offset],
+                read_record,
+            )?
+        } else {
+            statement.query_map(
+                params![module_id, collection, owner_entity_id, terms, limit, offset],
+                read_record,
+            )?
+        };
+        let mut records = rows.collect::<Result<Vec<_>, _>>()?;
+        for record in &mut records {
+            record.revision = self.revision_for_module_record(&record.id)?;
+        }
+        Ok(records)
+    }
+
+    pub fn update_module_record(
+        &self,
+        module_id: &str,
+        collection: &str,
+        id: &str,
+        owner_entity_id: &str,
+        value: serde_json::Value,
+        expected_revision: &str,
+        request_id: Option<&str>,
+    ) -> Result<ModuleRecord, CoreError> {
+        validate_module_record_input(module_id, collection, owner_entity_id, &value)?;
+        Uuid::parse_str(id)
+            .map_err(|_| CoreError::Validation("module record ID must be a UUID".into()))?;
+        let fingerprint = digest_bytes(
+            &serde_json::to_vec(&(
+                module_id,
+                collection,
+                id,
+                owner_entity_id,
+                &value,
+                expected_revision,
+            ))
+            .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if let Some(mut record) = self.committed_mutation_with_fingerprint::<ModuleRecord>(
+            request_id,
+            Some(&fingerprint),
+        )? {
+            record.revision = self.revision_for_module_record(&record.id)?;
+            return Ok(record);
+        }
+        let current = self.module_record(module_id, collection, id, owner_entity_id)?;
+        Self::ensure_expected_revision(Some(expected_revision), current.revision, "module record")?;
+        let now = chrono_like_now();
+        let encoded = serde_json::to_string(&value)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let result = ModuleRecord {
+            value: value.clone(),
+            updated_at: now.clone(),
+            revision: String::new(),
+            ..current
+        };
+        let request_id = self.request_id(request_id)?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&serde_json::to_value(&result)?),
+            &[format!("plugins/{module_id}.json")],
+            &fingerprint,
+        )?;
+        transaction.execute(
+            "UPDATE module_records SET value=?1,updated_at=?2 WHERE id=?3 AND module_id=?4 AND collection=?5 AND owner_entity_id=?6",
+            params![encoded, now, id, module_id, collection, owner_entity_id],
+        )?;
+        transaction.commit()?;
+        self.notify_export_worker()?;
+        let mut record = result;
+        record.revision = self.revision_for_module_record(id)?;
+        Ok(record)
+    }
+
+    pub fn delete_module_record(
+        &self,
+        module_id: &str,
+        collection: &str,
+        id: &str,
+        owner_entity_id: &str,
+        expected_revision: &str,
+        request_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        validate_module_record_scope(module_id, collection, owner_entity_id)?;
+        Uuid::parse_str(id)
+            .map_err(|_| CoreError::Validation("module record ID must be a UUID".into()))?;
+        let fingerprint = digest_bytes(
+            &serde_json::to_vec(&(module_id, collection, id, owner_entity_id, expected_revision))
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if self
+            .committed_mutation_with_fingerprint::<serde_json::Value>(
+                request_id,
+                Some(&fingerprint),
+            )?
+            .is_some()
+        {
+            return Ok(());
+        }
+        let current = self.module_record(module_id, collection, id, owner_entity_id)?;
+        Self::ensure_expected_revision(Some(expected_revision), current.revision, "module record")?;
+        let request_id = self.request_id(request_id)?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&serde_json::Value::Null),
+            &[format!("plugins/{module_id}.json")],
+            &fingerprint,
+        )?;
+        transaction.execute(
+            "DELETE FROM module_records WHERE id=?1 AND module_id=?2 AND collection=?3 AND owner_entity_id=?4",
+            params![id, module_id, collection, owner_entity_id],
+        )?;
+        transaction.commit()?;
+        self.notify_export_worker()?;
+        Ok(())
+    }
+
+    fn module_record(
+        &self,
+        module_id: &str,
+        collection: &str,
+        id: &str,
+        owner_entity_id: &str,
+    ) -> Result<ModuleRecord, CoreError> {
+        validate_module_record_scope(module_id, collection, owner_entity_id)?;
+        let mut record = self
+            .connection
+            .query_row(
+                "SELECT module_id,collection,id,owner_entity_id,value,created_at,updated_at FROM module_records WHERE id=?1 AND module_id=?2 AND collection=?3 AND owner_entity_id=?4",
+                params![id, module_id, collection, owner_entity_id],
+                |row| {
+                    let encoded: String = row.get(4)?;
+                    Ok(ModuleRecord {
+                        module_id: row.get(0)?,
+                        collection: row.get(1)?,
+                        id: row.get(2)?,
+                        owner_entity_id: row.get(3)?,
+                        value: decode_field_value(encoded),
+                        created_at: row.get(5)?,
+                        updated_at: row.get(6)?,
+                        revision: String::new(),
+                    })
+                },
+            )
+            .optional()?
+            .ok_or_else(|| CoreError::NotFound("module record not found".into()))?;
+        record.revision = self.revision_for_module_record(&record.id)?;
+        Ok(record)
+    }
+
+    fn ensure_live_module_record_owner(&self, owner_entity_id: &str) -> Result<(), CoreError> {
+        let exists = self
+            .connection
+            .query_row(
+                "SELECT 1 FROM entities WHERE id=?1 AND deleted=0",
+                params![owner_entity_id],
+                |_| Ok(()),
+            )
+            .optional()?;
+        if exists.is_none() {
+            return Err(CoreError::NotFound(
+                "module record owner entity not found".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn delete_plugin_data(
         &self,
         plugin_id: &str,
@@ -5445,6 +5799,10 @@ impl ProjectStore {
             params![plugin_id],
         )?;
         transaction.execute(
+            "DELETE FROM module_records WHERE module_id=?1",
+            params![plugin_id],
+        )?;
+        transaction.execute(
             "DELETE FROM module_namespaces WHERE module_id=?1",
             params![plugin_id],
         )?;
@@ -5479,7 +5837,11 @@ impl ProjectStore {
              DROP TRIGGER IF EXISTS entity_fields_search_insert;
              DROP TRIGGER IF EXISTS entity_fields_search_update;
              DROP TRIGGER IF EXISTS entity_fields_search_delete;
+             DROP TRIGGER IF EXISTS module_records_search_insert;
+             DROP TRIGGER IF EXISTS module_records_search_update;
+             DROP TRIGGER IF EXISTS module_records_search_delete;
              DROP TABLE IF EXISTS world_search;
+             DROP TABLE IF EXISTS module_record_search;
              CREATE VIRTUAL TABLE world_search USING fts5(entity_id UNINDEXED, source_path UNINDEXED, source_hash UNINDEXED, content);
              INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT e.id, 'entities/' || e.id || '/entity.json', '', e.name || ' ' || COALESCE(e.entity_type, '') FROM entities e WHERE e.deleted=0;
              INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT d.entity_id, 'entities/' || d.entity_id || '/document.md', '', d.body FROM documents d JOIN entities e ON e.id = d.entity_id WHERE e.deleted=0;
@@ -5492,6 +5854,13 @@ impl ProjectStore {
              CREATE TRIGGER entity_fields_search_insert AFTER INSERT ON entity_fields BEGIN DELETE FROM world_search WHERE entity_id = new.entity_id; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT id, 'entities/' || id || '/entity.json', '', name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = new.entity_id AND deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT documents.entity_id, 'entities/' || documents.entity_id || '/document.md', '', documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE documents.entity_id = new.entity_id AND entities.deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT entity_fields.entity_id, 'entities/' || entity_fields.entity_id || '/fields', '', entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entity_fields.entity_id = new.entity_id AND entities.deleted=0; END;
              CREATE TRIGGER entity_fields_search_update AFTER UPDATE OF namespace, key, value ON entity_fields BEGIN DELETE FROM world_search WHERE entity_id = new.entity_id; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT id, 'entities/' || id || '/entity.json', '', name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = new.entity_id AND deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT documents.entity_id, 'entities/' || documents.entity_id || '/document.md', '', documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE documents.entity_id = new.entity_id AND entities.deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT entity_fields.entity_id, 'entities/' || entity_fields.entity_id || '/fields', '', entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entity_fields.entity_id = new.entity_id AND entities.deleted=0; END;
              CREATE TRIGGER entity_fields_search_delete AFTER DELETE ON entity_fields BEGIN DELETE FROM world_search WHERE entity_id = old.entity_id; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT id, 'entities/' || id || '/entity.json', '', name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = old.entity_id AND deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT documents.entity_id, 'entities/' || documents.entity_id || '/document.md', '', documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE documents.entity_id = old.entity_id AND entities.deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT entity_fields.entity_id, 'entities/' || entity_fields.entity_id || '/fields', '', entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entity_fields.entity_id = old.entity_id AND entities.deleted=0; END;"
+        )?;
+        self.connection.execute_batch(
+            "CREATE VIRTUAL TABLE module_record_search USING fts5(module_id UNINDEXED, collection UNINDEXED, owner_entity_id UNINDEXED, record_id UNINDEXED, content);
+             INSERT INTO module_record_search(module_id,collection,owner_entity_id,record_id,content) SELECT module_id,collection,owner_entity_id,id,value FROM module_records;
+             CREATE TRIGGER module_records_search_insert AFTER INSERT ON module_records BEGIN INSERT INTO module_record_search(module_id,collection,owner_entity_id,record_id,content) VALUES (new.module_id,new.collection,new.owner_entity_id,new.id,new.value); END;
+             CREATE TRIGGER module_records_search_update AFTER UPDATE ON module_records BEGIN DELETE FROM module_record_search WHERE record_id=old.id; INSERT INTO module_record_search(module_id,collection,owner_entity_id,record_id,content) VALUES (new.module_id,new.collection,new.owner_entity_id,new.id,new.value); END;
+             CREATE TRIGGER module_records_search_delete AFTER DELETE ON module_records BEGIN DELETE FROM module_record_search WHERE record_id=old.id; END;",
         )?;
         self.rebuild_maps_projection()?;
         Ok(())
@@ -6156,6 +6525,15 @@ fn staged_canonical_sources(
             paths.push(format!("plugins/{}.json", module.module_id));
         }
     }
+    for record in &snapshot.module_records {
+        let path = crate::storage::normalized_project_path(
+            root,
+            &format!("plugins/{}.json", record.module_id),
+        )?;
+        if path.is_file() {
+            paths.push(format!("plugins/{}.json", record.module_id));
+        }
+    }
     for asset in &snapshot.assets {
         let path = crate::storage::normalized_project_path(root, &asset.path)?;
         if path.is_file() {
@@ -6177,6 +6555,53 @@ fn staged_canonical_sources(
             })
         })
         .collect()
+}
+
+fn validate_module_record_scope(
+    module_id: &str,
+    collection: &str,
+    owner_entity_id: &str,
+) -> Result<(), CoreError> {
+    let valid_component = |value: &str| {
+        !value.is_empty()
+            && value.len() <= 128
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    };
+    if !valid_component(module_id) {
+        return Err(CoreError::Validation("invalid module record module ID".into()));
+    }
+    if !valid_component(collection) {
+        return Err(CoreError::Validation(
+            "invalid module record collection".into(),
+        ));
+    }
+    Uuid::parse_str(owner_entity_id)
+        .map_err(|_| CoreError::Validation("module record owner must be a UUID".into()))?;
+    Ok(())
+}
+
+fn validate_module_record_input(
+    module_id: &str,
+    collection: &str,
+    owner_entity_id: &str,
+    value: &serde_json::Value,
+) -> Result<(), CoreError> {
+    validate_module_record_scope(module_id, collection, owner_entity_id)?;
+    if !value.is_object() {
+        return Err(CoreError::Validation(
+            "module record value must be an object".into(),
+        ));
+    }
+    let bytes = serde_json::to_vec(value)
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+    if bytes.len() > 64 * 1024 {
+        return Err(CoreError::Validation(
+            "module record exceeds 64 KiB".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn revision_digest<T: Serialize>(value: &T) -> Result<String, CoreError> {

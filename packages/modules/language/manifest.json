@@ -1,0 +1,55 @@
+{
+  "manifestVersion": 1,
+  "id": "daena.language",
+  "name": "Language",
+  "version": "0.1.0",
+  "publisher": "daena-archive",
+  "hostApi": ">=1.0.0 <2.0.0",
+  "kind": "sandboxed",
+  "entrypoints": { "ui": "dist/ui/index.html" },
+  "capabilities": ["entity.read", "entity.write", "document.read", "document.write", "field.read:self", "field.write:self", "record.read:self", "record.write:self"],
+  "dependencies": {},
+  "namespaces": ["language"],
+  "schemas": [{
+    "namespace": "language",
+    "entityTypes": ["language"],
+    "fields": [
+      { "key": "nativeName", "label": "Native name", "type": "text" },
+      { "key": "aliases", "label": "Aliases", "type": "text" },
+      { "key": "status", "label": "Status", "type": "text" },
+      { "key": "family", "label": "Language family", "type": "text" },
+      { "key": "writingSystem", "label": "Writing system", "type": "text" }
+    ]
+  }],
+  "templates": [{
+    "id": "language",
+    "name": "Language",
+    "entityType": "language",
+    "description": "Document a fictional language and build its lexicon.",
+    "icon": "Aa",
+    "fields": { "nativeName": "", "aliases": "", "status": "", "family": "", "writingSystem": "" },
+    "document": ""
+  }],
+  "records": [{
+    "id": "lexemes",
+    "ownerEntityTypes": ["language"],
+    "schema": {
+      "type": "object",
+      "properties": {
+        "lemma": { "type": "string" },
+        "partOfSpeech": { "type": "string" },
+        "meanings": { "type": "array" },
+        "pronunciation": { "type": "string" },
+        "notes": { "type": "string" },
+        "example": { "type": "object" }
+      },
+      "required": ["lemma", "meanings"],
+      "additionalProperties": false
+    }
+  }],
+  "views": [],
+  "commands": [],
+  "services": { "provides": [], "consumes": [] },
+  "events": { "publishes": [], "subscribes": [] },
+  "migrations": [{ "id": "language-v1", "from": 0, "to": 1, "recovery": "backup", "operations": [{ "kind": "create-namespace", "namespace": "language" }] }]
+}

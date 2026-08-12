@@ -322,6 +322,7 @@ export function validatePluginManifest(manifest) {
         "namespaces",
         "schemas",
         "templates",
+        "records",
         "views",
         "commands",
         "services",
@@ -333,7 +334,7 @@ export function validatePluginManifest(manifest) {
         if (!knownManifestKeys.has(key))
             errors.push(`unknown manifest key: ${key}`);
     for (const key of knownManifestKeys)
-        if (key !== "enabledByDefault" && key !== "stability" && !(key in value))
+        if (key !== "enabledByDefault" && key !== "stability" && key !== "records" && !(key in value))
             errors.push(`missing manifest key: ${key}`);
     if (value.manifestVersion !== 1)
         errors.push("manifestVersion must be 1");
@@ -372,6 +373,7 @@ export function validatePluginManifest(manifest) {
     const namespaces = value.namespaces;
     const schemas = value.schemas;
     const templates = value.templates;
+    const records = value.records;
     const views = value.views;
     const commands = value.commands;
     const services = value.services;
@@ -387,6 +389,8 @@ export function validatePluginManifest(manifest) {
         errors.push("schemas must be an array");
     if (!Array.isArray(templates))
         errors.push("templates must be an array");
+    if (records !== undefined && !Array.isArray(records))
+        errors.push("records must be an array");
     if (!Array.isArray(views))
         errors.push("views must be an array");
     if (!Array.isArray(commands))
@@ -579,6 +583,27 @@ export function validatePluginManifest(manifest) {
         if (!owned.has(schema.namespace))
             errors.push(`unowned schema namespace: ${schema.namespace}`);
     const entityTypes = new Set(schemas.flatMap((schema) => schema.entityTypes));
+    if (Array.isArray(records)) {
+        const recordIds = new Set();
+        for (const record of records) {
+            if (!isRecord(record)) {
+                errors.push("record collections must be objects");
+                continue;
+            }
+            checkKeys(record, "record collection", ["id", "ownerEntityTypes", "schema"], errors);
+            if (typeof record.id !== "string" || !isPluginIdentifier(record.id))
+                errors.push("record collection id is invalid");
+            else if (recordIds.has(record.id))
+                errors.push(`duplicate record collection: ${record.id}`);
+            else
+                recordIds.add(record.id);
+            if (!Array.isArray(record.ownerEntityTypes) ||
+                record.ownerEntityTypes.length === 0 ||
+                record.ownerEntityTypes.some((type) => typeof type !== "string" || !entityTypes.has(type)))
+                errors.push(`record collection ${String(record.id)} has invalid owner entity types`);
+            validateCommandSchema(record.schema, `record collection ${String(record.id)} schema`, errors);
+        }
+    }
     const fields = new Map();
     for (const schema of schemas)
         for (const field of schema.fields) {

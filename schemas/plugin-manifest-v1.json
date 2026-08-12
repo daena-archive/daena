@@ -548,6 +548,13 @@
         "publisher": {
           "type": "string"
         },
+        "records": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RecordCollection"
+          },
+          "type": "array"
+        },
         "schemas": {
           "items": {
             "$ref": "#/$defs/SchemaContribution"
@@ -612,6 +619,29 @@
         "experimental"
       ],
       "type": "string"
+    },
+    "RecordCollection": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "ownerEntityTypes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "schema": {
+          "$ref": "#/$defs/CommandSchema"
+        }
+      },
+      "required": [
+        "id",
+        "ownerEntityTypes",
+        "schema"
+      ],
+      "type": "object"
     },
     "SchemaContribution": {
       "additionalProperties": false,

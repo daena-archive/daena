@@ -41,6 +41,7 @@ import EntityHoverCard from "$lib/EntityHoverCard.svelte";
 import loreManifestJson from "../../packages/modules/lore/manifest.json";
 import timelineManifestJson from "../../packages/modules/timeline/manifest.json";
 import writingManifestJson from "../../packages/modules/writing/manifest.json";
+import languageManifestJson from "../../packages/modules/language/manifest.json";
 import { projectionModule } from "$lib/modules/projections";
 import RichTextEditor from "$lib/editor/RichTextEditor.svelte";
 import AiProposalPreview from "$lib/ai/AiProposalPreview.svelte";
@@ -54,7 +55,7 @@ import {
 } from "$lib/date";
 
 type InstalledModule = ProjectModuleManifest;
-type WorkspaceSection = "lore" | "timeline" | "writing" | "maps";
+type WorkspaceSection = "lore" | "timeline" | "writing" | "language" | "maps";
 type SettingsSection = "general" | "ai" | "plugins" | "schema" | "git";
 type WritingView = "manuscripts" | "reference";
 type AiFieldSuggestion = { value: string | string[]; rationale: string; confidence: string };
@@ -258,7 +259,9 @@ const activeModuleId = () =>
       ? "daena.timeline"
       : section === "writing"
         ? "daena.writing"
-        : "daena.maps";
+        : section === "language"
+          ? "daena.language"
+          : "daena.maps";
 const activeManifest = () => {
   const fromProject = modules.find((module) => module.id === activeModuleId());
   if (fromProject) return fromProject as unknown as ModuleManifest;
@@ -268,9 +271,11 @@ const activeManifest = () => {
       ? timelineManifestJson
       : section === "writing"
         ? writingManifestJson
-        : null) as unknown as ModuleManifest | null;
+        : section === "language"
+          ? languageManifestJson
+          : null) as unknown as ModuleManifest | null;
 };
-const workspaceSectionOrder: WorkspaceSection[] = ["lore", "timeline", "writing", "maps"];
+const workspaceSectionOrder: WorkspaceSection[] = ["lore", "timeline", "writing", "language", "maps"];
 function workspaceModuleId(target: WorkspaceSection) {
   return target === "lore"
     ? "daena.lore"
@@ -278,7 +283,9 @@ function workspaceModuleId(target: WorkspaceSection) {
       ? "daena.timeline"
       : target === "writing"
         ? "daena.writing"
-        : "daena.maps";
+        : target === "language"
+          ? "daena.language"
+          : "daena.maps";
 }
 function manifestForWorkspaceSection(target: WorkspaceSection): ModuleManifest | null {
   const moduleId = workspaceModuleId(target);
@@ -287,6 +294,7 @@ function manifestForWorkspaceSection(target: WorkspaceSection): ModuleManifest |
   if (target === "lore") return loreManifestJson as unknown as ModuleManifest;
   if (target === "timeline") return timelineManifestJson as unknown as ModuleManifest;
   if (target === "writing") return writingManifestJson as unknown as ModuleManifest;
+  if (target === "language") return languageManifestJson as unknown as ModuleManifest;
   return null;
 }
 function enabledWorkspaceSections() {
@@ -295,7 +303,15 @@ function enabledWorkspaceSections() {
   );
 }
 function sectionIcon(target: WorkspaceSection) {
-  return target === "lore" ? "✦" : target === "timeline" ? "◷" : target === "writing" ? "✎" : "◇";
+  return target === "lore"
+    ? "✦"
+    : target === "timeline"
+      ? "◷"
+      : target === "writing"
+        ? "✎"
+        : target === "language"
+          ? "Aa"
+          : "◇";
 }
 function fieldAppliesToEntity(field: FieldDefinition, entityType?: string | null) {
   return !field.entityTypes || !entityType || field.entityTypes.includes(entityType);
@@ -522,14 +538,18 @@ function contextFor(currentSection = section): ModuleContext {
         ? "daena.timeline"
         : currentSection === "writing"
           ? "daena.writing"
-          : "daena.maps";
+          : currentSection === "language"
+            ? "daena.language"
+            : "daena.maps";
   const fromProject = modules.find((module) => module.id === moduleId);
   const fallback =
     currentSection === "lore"
       ? loreManifestJson
       : currentSection === "timeline"
         ? timelineManifestJson
-        : writingManifestJson;
+        : currentSection === "writing"
+          ? writingManifestJson
+          : languageManifestJson;
   return buildModuleContext((fromProject ?? fallback) as unknown as ModuleManifest, projectInfo.root);
 }
 
@@ -877,7 +897,9 @@ function sectionLabel() {
       ? "Timeline"
       : section === "writing"
         ? "Writing Studio"
-        : "Maps";
+        : section === "language"
+          ? "Languages"
+          : "Maps";
 }
 
 function collectionLabel() {
@@ -889,7 +911,9 @@ function collectionLabel() {
         ? writingView === "manuscripts"
           ? "manuscripts"
           : "reference pages"
-        : "maps";
+        : section === "language"
+          ? "languages"
+          : "maps";
 }
 
 function createLabel() {
@@ -901,7 +925,9 @@ function createLabel() {
         ? writingView === "manuscripts"
           ? "manuscript"
           : "reference page"
-        : "map";
+        : section === "language"
+          ? "language"
+          : "map";
 }
 
 function entityTypeLabel(entityType: string | null) {
@@ -913,7 +939,7 @@ function entityTypeLabel(entityType: string | null) {
 }
 
 function openProjection() {
-  const projection = projectionModule(section === "lore" ? "lore" : "timeline");
+  const projection = projectionModule(section === "lore" ? "lore" : section === "timeline" ? "timeline" : "language");
   hostView = null;
   sandboxView = null;
   projectionView = projection;
@@ -2905,7 +2931,9 @@ onMount(() => {
                     ? "Timeline"
                     : target === "writing"
                       ? "Writing Studio"
-                      : "Maps"}{#if target === "maps"}<em class="workspace-beta">Beta</em>{/if}</span
+                      : target === "language"
+                        ? "Languages"
+                        : "Maps"}{#if target === "maps"}<em class="workspace-beta">Beta</em>{/if}</span
               ></button>
           {/each}
         </nav>
@@ -3732,21 +3760,29 @@ onMount(() => {
       <div class="workspace-heading">
         <div>
           <span class="overline"
-            >{section === "lore" ? "WORLD BIBLE" : section === "timeline" ? "CHRONOLOGY" : "DRAFTING DESK"}</span>
+            >{section === "lore"
+              ? "WORLD BIBLE"
+              : section === "timeline"
+                ? "CHRONOLOGY"
+                : section === "language"
+                  ? "LANGUAGE WORKSHOP"
+                  : "DRAFTING DESK"}</span>
           <h1>{sectionLabel()}</h1>
           <p>
             {section === "lore"
               ? "A living reference for every person, place, and power."
               : section === "timeline"
                 ? "Events, eras, and the threads that connect them."
-                : writingView === "manuscripts"
-                  ? "Draft stories, essays, and other long-form work."
-                  : "Build the pages, notes, and references behind the story."}
+                : section === "language"
+                  ? "Document fictional languages and develop their vocabulary."
+                  : writingView === "manuscripts"
+                    ? "Draft stories, essays, and other long-form work."
+                    : "Build the pages, notes, and references behind the story."}
           </p>
         </div>
         <div class="heading-actions">
-          {#if section !== "writing"}<button class="quiet-button" onclick={openProjection}
-              >Open {section === "lore" ? "graph" : "timeline"} ↗</button
+          {#if section !== "writing" && section !== "maps"}<button class="quiet-button" onclick={openProjection}
+              >Open {section === "lore" ? "graph" : section === "timeline" ? "timeline" : "lexicon"} ↗</button
             >{/if}
         </div>
       </div>
@@ -3759,9 +3795,11 @@ onMount(() => {
                   ? "LORE LIBRARY"
                   : section === "timeline"
                     ? "TIMELINE"
-                    : writingView === "manuscripts"
-                      ? "MANUSCRIPTS"
-                      : "REFERENCE PAGES"}</span
+                    : section === "language"
+                      ? "LANGUAGES"
+                      : writingView === "manuscripts"
+                        ? "MANUSCRIPTS"
+                        : "REFERENCE PAGES"}</span
               ><strong>{visibleEntities().length} {collectionLabel()}</strong>
             </div>
           </div>

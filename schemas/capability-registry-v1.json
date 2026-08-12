@@ -77,6 +77,22 @@
       "resource": "plugin.namespace"
     },
     {
+      "id": "record.read:self",
+      "operations": [
+        "read"
+      ],
+      "resource": "plugin.records"
+    },
+    {
+      "id": "record.write:self",
+      "operations": [
+        "create",
+        "update",
+        "delete"
+      ],
+      "resource": "plugin.records"
+    },
+    {
       "id": "relationship.read",
       "operations": [
         "read"

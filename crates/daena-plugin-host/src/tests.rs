@@ -46,6 +46,7 @@ fn manifest(id: &str, namespace: &str) -> PluginManifest {
             }],
         }],
         templates: vec![],
+        records: vec![],
         views: vec![daena_plugin_api::View {
             id: "overview".into(),
             title: "Overview".into(),
@@ -512,6 +513,91 @@ fn undeclared_fields_and_relationship_types_fail_closed() {
     assert_eq!(
         host.rpc("plugin://one", &relationship).error.unwrap().code,
         "relationship.undeclared"
+    );
+}
+
+#[test]
+fn module_record_authorization_is_collection_and_schema_bound() {
+    let mut plugin = manifest("com.example.records", "records");
+    plugin.capabilities.extend([
+        "record.read:self".into(),
+        "record.write:self".into(),
+    ]);
+    plugin.records.push(daena_plugin_api::RecordCollection {
+        id: "lexemes".into(),
+        owner_entity_types: vec!["person".into()],
+        schema: daena_plugin_api::CommandSchema {
+            schema_type: daena_plugin_api::CommandValueType::Object,
+            properties: [
+                (
+                    "lemma".into(),
+                    daena_plugin_api::CommandProperty {
+                        value_type: daena_plugin_api::CommandValueType::String,
+                    },
+                ),
+                (
+                    "meanings".into(),
+                    daena_plugin_api::CommandProperty {
+                        value_type: daena_plugin_api::CommandValueType::Array,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            required: vec!["lemma".into(), "meanings".into()],
+            additional_properties: false,
+        },
+    });
+    let mut host = PluginHost::new();
+    let entry = CatalogEntry {
+        manifest: plugin.clone(),
+        package_root: PathBuf::new(),
+        digest: "c".repeat(64),
+        embedded_wasm: None,
+    };
+    host.catalog.insert_for_test(entry.clone()).unwrap();
+    host.namespaces.register_manifest(&entry.manifest).unwrap();
+    host.grants
+        .set(
+            "project",
+            &plugin.id,
+            &plugin.capabilities,
+            plugin.capabilities.iter().cloned().collect(),
+        )
+        .unwrap();
+    let session = host.sessions.issue(
+        &entry,
+        "project",
+        "plugin://records",
+        BTreeSet::new(),
+        Duration::from_secs(60),
+    );
+    let valid = RpcRequest {
+        rpc_version: RPC_VERSION,
+        session_id: session.id.clone(),
+        request_id: "record-valid".into(),
+        method: "record.create".into(),
+        payload: serde_json::json!({
+            "collection": "lexemes",
+            "ownerEntityId": "f4c4f6b9-7c1e-4b8a-9d2e-0a3b5c7d9e11",
+            "value": {"lemma": "sol", "meanings": ["sun"]}
+        }),
+    };
+    assert!(host.authorize_rpc("plugin://records", &valid).is_ok());
+    let invalid = RpcRequest {
+        request_id: "record-invalid".into(),
+        payload: serde_json::json!({
+            "collection": "lexemes",
+            "ownerEntityId": "f4c4f6b9-7c1e-4b8a-9d2e-0a3b5c7d9e11",
+            "value": {"meanings": ["sun"]}
+        }),
+        ..valid
+    };
+    assert_eq!(
+        host.authorize_rpc("plugin://records", &invalid)
+            .unwrap_err()
+            .code,
+        "record.invalid"
     );
 }
 

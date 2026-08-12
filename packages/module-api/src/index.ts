@@ -247,6 +247,8 @@ export type DeclarativeMigration = Migration;
 
 export interface ModuleContext {
   readonly module: ModuleManifest;
+  /** Host-selected entity to preserve when opening a module projection. */
+  readonly focusEntityId?: UUID;
   entities: {
     get(id: UUID): Promise<EntityRecord | null>;
     list(query?: EntityQuery): Promise<EntitySummary[]>;

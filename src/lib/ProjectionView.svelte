@@ -91,11 +91,17 @@ onMount(() => {
   font: 500 26px/1.05 var(--font-display);
 }
 .projection-view-container {
+  display: flex;
   min-height: 0;
   flex: 1;
+  flex-direction: column;
   overflow: auto;
   padding: 24px 40px 40px;
   background: var(--canvas);
+}
+.projection-view-container :global(.language-workspace) {
+  flex: 1;
+  min-height: 0;
 }
 .projection-view-error {
   color: #a14f42;

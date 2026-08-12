@@ -224,7 +224,11 @@ function createRelationships(manifest: ModuleManifest, relationships: Record<str
   });
 }
 
-export function buildModuleContext(manifest: ModuleManifest, projectId: string): ModuleContext {
+export function buildModuleContext(
+  manifest: ModuleManifest,
+  projectId: string,
+  options?: { focusEntityId?: UUID },
+): ModuleContext {
   void projectId;
   const rpc = createPluginRpcClient({
     call: (method, payload, requestId) =>
@@ -237,6 +241,7 @@ export function buildModuleContext(manifest: ModuleManifest, projectId: string):
   });
   return {
     module: manifest,
+    focusEntityId: options?.focusEntityId,
     entities: {
       get: async (id: UUID) => {
         checkCapability(manifest, "entity.read");

@@ -44,7 +44,10 @@ export function groupHead(title: string, add: () => void) {
 export function row(fields: HTMLElement[], remove: () => void) {
   const wrap = document.createElement("div");
   wrap.className = "language-inline";
-  wrap.append(...fields, button("Remove", "language-button secondary language-danger", remove));
+  const cluster = document.createElement("div");
+  cluster.className = "language-inline-fields";
+  cluster.append(...fields);
+  wrap.append(cluster, button("Remove", "language-button secondary language-danger", remove));
   return wrap;
 }
 
@@ -64,6 +67,15 @@ export function alertMessage(text: string) {
 export function emptyMessage(text: string) {
   const message = document.createElement("p");
   message.className = "language-empty";
+  message.setAttribute("role", "status");
   message.textContent = text;
   return message;
+}
+
+export function emptyState(text: string, action?: HTMLElement) {
+  const wrap = document.createElement("div");
+  wrap.className = "language-empty-card";
+  wrap.append(emptyMessage(text));
+  if (action) wrap.append(action);
+  return wrap;
 }

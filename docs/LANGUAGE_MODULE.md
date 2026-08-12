@@ -46,7 +46,11 @@ Daena entity graph
 └── Language entity
     ├── common identity, document, fields, links, assets
     └── Language module workspace
-        └── lexeme records
+        ├── lexeme records
+        ├── phoneme, phonology, and orthography records
+        ├── grammar topics
+        ├── paradigm records
+        └── sample records
 ```
 
 Do not model lexemes as global entities. Large lexicons would overwhelm global search, entity lists, and relationship views. Do not store the entire lexicon as one JSON array in an entity field either; that would create whole-lexicon conflicts, expensive rewrites, and unstable item identity.
@@ -124,14 +128,14 @@ Iteration 1 does not include:
 
 Language appears as a normal enabled module. Its manifest and effective project configuration determine visibility and creation options.
 
-Use the existing entity workspace for the Language overview and a focused module projection for the lexicon:
+Use the existing entity workspace for the Language overview and a focused module projection for the language workshop:
 
 ```text
 Language workspace
 ├── language list/search + Create Language
 └── selected Language
     ├── overview: name, fields, document, save state
-    └── Open lexicon → focused lexicon projection
+    └── Open language → focused projection (lexicon, sounds, writing, grammar, forms, samples)
 ```
 
 On narrow windows, the list may become a back-navigation level instead of a permanent column. Preserve the selected Language when opening and closing the lexicon projection.

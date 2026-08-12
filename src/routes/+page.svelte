@@ -935,7 +935,9 @@ function entityTypeLabel(entityType: string | null) {
     ? "Reference page"
     : entityType === "manuscript"
       ? "Manuscript"
-      : (entityType ?? "Uncategorized");
+      : entityType === "language"
+        ? "Language"
+        : (entityType ?? "Uncategorized");
 }
 
 function openProjection() {
@@ -1755,26 +1757,30 @@ async function loadSelectedState(entity: Entity) {
       return [key, Array.isArray(value) ? value.map(String) : String(value ?? "")];
     }),
   );
-  relationships = (await context.relationships.list(entity.id as UUID)).map((relationship) => ({
-    id: relationship.id,
-    source_id: relationship.sourceId,
-    target_id: relationship.targetId,
-    relationship_type: relationship.type,
-    metadata: JSON.stringify(relationship.metadata),
-    revision: relationship.revision,
-  }));
-  assets = (await context.assets.list(entity.id as UUID)).map((asset) => ({
-    id: asset.id,
-    entity_id: asset.entityId,
-    namespace: asset.namespace,
-    filename: asset.filename,
-    content_hash: asset.contentHash,
-    size: asset.size,
-    mime_type: asset.mimeType,
-    path: asset.path,
-    created_at: asset.createdAt,
-    revision: "",
-  }));
+  relationships = context.module.capabilities.includes("relationship.read")
+    ? (await context.relationships.list(entity.id as UUID)).map((relationship) => ({
+        id: relationship.id,
+        source_id: relationship.sourceId,
+        target_id: relationship.targetId,
+        relationship_type: relationship.type,
+        metadata: JSON.stringify(relationship.metadata),
+        revision: relationship.revision,
+      }))
+    : [];
+  assets = context.module.capabilities.includes("asset.read:self")
+    ? (await context.assets.list(entity.id as UUID)).map((asset) => ({
+        id: asset.id,
+        entity_id: asset.entityId,
+        namespace: asset.namespace,
+        filename: asset.filename,
+        content_hash: asset.contentHash,
+        size: asset.size,
+        mime_type: asset.mimeType,
+        path: asset.path,
+        created_at: asset.createdAt,
+        revision: "",
+      }))
+    : [];
   mapLocations = await project.listMapLocations(entity.id);
   savedAt = "";
 }
@@ -3640,7 +3646,9 @@ onMount(() => {
         <ProjectionView
           title={projectionView.title}
           view={projectionView.module.views[0]}
-          context={buildModuleContext(projectionView.module.manifest, projectInfo?.root ?? "")}
+          context={buildModuleContext(projectionView.module.manifest, projectInfo?.root ?? "", {
+            focusEntityId: selected?.id,
+          })}
           onClose={() => (projectionView = null)} />
       {/key}
     {:else if hostView}
@@ -3853,9 +3861,11 @@ onMount(() => {
                     ? "LORE ENTRY"
                     : section === "timeline"
                       ? "TIMELINE EVENT"
-                      : writingView === "manuscripts"
-                        ? "MANUSCRIPT"
-                        : "REFERENCE PAGE"}</span>
+                      : section === "language"
+                        ? "LANGUAGE"
+                        : writingView === "manuscripts"
+                          ? "MANUSCRIPT"
+                          : "REFERENCE PAGE"}</span>
               <h2>{selected?.name ?? "Choose an entry"}</h2>
             </div>
             {#if selected}

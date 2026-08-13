@@ -86,7 +86,7 @@ export function normalizeSample(value: unknown): Sample {
   const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const tokens = Array.isArray(record.tokens)
     ? record.tokens
-        .map((item) => {
+        .map((item): SampleToken | null => {
           const entry = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
           const tokenText = text(entry.text, TOKEN);
           return tokenText

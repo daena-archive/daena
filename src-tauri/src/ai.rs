@@ -24,6 +24,7 @@ pub type SharedAiRuntime = Arc<Mutex<AiRuntime>>;
 const MAX_BUFFERED_REQUESTS: usize = 32;
 const MAX_BUFFERED_EVENTS: usize = 64;
 const AI_CHUNKER_VERSION: &str = "chunker.v1";
+type RetrievalSourceIds = BTreeMap<String, (Option<String>, Option<String>)>;
 
 #[derive(Default)]
 pub struct AiRuntime {
@@ -1053,7 +1054,7 @@ fn build_retrieval_context_with_semantic(
 fn retrieval_source_ids(
     project: &ProjectStore,
     payload: &AiRetrievalPolicyPayload,
-) -> Result<std::collections::BTreeMap<String, (Option<String>, Option<String>)>, String> {
+) -> Result<RetrievalSourceIds, String> {
     let mode = match payload.mode {
         AiRetrievalMode::Related => RetrievalMode::Related,
         AiRetrievalMode::Project => RetrievalMode::Project,
@@ -1066,7 +1067,7 @@ fn retrieval_source_ids(
         &payload.seed_ids,
         payload.relationship_depth,
     )?;
-    let mut source_ids = std::collections::BTreeMap::new();
+    let mut source_ids = RetrievalSourceIds::new();
     for entity_id in &entity_ids {
         for document in project
             .list_documents(entity_id.clone())
@@ -1120,7 +1121,7 @@ async fn semantic_retrieval_passages(
     runtime: SharedAiRuntime,
     provider: ResolvedAiProvider,
     query: String,
-    allowed_source_ids: std::collections::BTreeMap<String, (Option<String>, Option<String>)>,
+    allowed_source_ids: RetrievalSourceIds,
     allowed_source_kinds: Vec<String>,
     limit: usize,
 ) -> Result<Vec<RetrievedPassage>, String> {
@@ -1157,11 +1158,8 @@ async fn semantic_retrieval_passages(
             .enumerate()
             .filter_map(|(rank, matched)| {
                 let record = records.iter().find(|record| record.chunk.id == matched.chunk_id)?;
-                let Some((entity_id, canonical_path)) =
-                    allowed_source_ids.get(&record.chunk.source.source_id)
-                else {
-                    return None;
-                };
+                let (entity_id, canonical_path) =
+                    allowed_source_ids.get(&record.chunk.source.source_id)?;
                 if !allowed_kind(&record.chunk.source.source_kind)
                 {
                     return None;

@@ -5060,7 +5060,7 @@ impl ProjectStore {
                             markdown.push_str(")\n");
                         } else {
                             markdown.push_str(&markdown_escape_label(&target_name));
-                            markdown.push_str("\n");
+                            markdown.push('\n');
                         }
                     }
                     markdown.push('\n');
@@ -5965,6 +5965,7 @@ impl ProjectStore {
         Ok(records)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_module_record(
         &self,
         module_id: &str,

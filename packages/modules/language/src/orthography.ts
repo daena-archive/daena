@@ -43,7 +43,7 @@ export function normalizeOrthography(value: unknown): OrthographyValue {
   const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const mappings = Array.isArray(record.mappings)
     ? record.mappings
-        .map((item) => {
+        .map((item): OrthographyMapping | null => {
           const entry = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
           const grapheme = text(entry.grapheme);
           const mapped = sounds(entry.sounds);

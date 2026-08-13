@@ -346,22 +346,17 @@ pub struct Migration {
     pub operations: Vec<MigrationOperation>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ViewRenderer {
+    #[default]
     Declarative,
     Sandboxed,
     HostSurface {
         id: String,
         major: u32,
     },
-}
-
-impl Default for ViewRenderer {
-    fn default() -> Self {
-        Self::Declarative
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -879,7 +874,7 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                 .schema
                 .properties
                 .iter()
-                .filter_map(|(key, property)| {
+                .map(|(key, property)| {
                     let value = match property.value_type {
                         CommandValueType::Object => serde_json::json!({}),
                         CommandValueType::String => serde_json::json!("value"),
@@ -888,7 +883,7 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                         CommandValueType::Array => serde_json::json!([]),
                         CommandValueType::Null => serde_json::Value::Null,
                     };
-                    Some((key.clone(), value))
+                    (key.clone(), value)
                 })
                 .collect(),
         ))?;
@@ -1255,7 +1250,7 @@ pub fn is_semver(value: &str) -> bool {
 /// A hostApi range is a space-separated list of semver constraints, each
 /// optionally prefixed with `^`, `~`, `>=`, `<=`, `>`, `<`, or `=`.
 pub fn is_host_api_range(value: &str) -> bool {
-    let parts: Vec<&str> = value.trim().split_whitespace().collect();
+    let parts: Vec<&str> = value.split_whitespace().collect();
     if parts.is_empty() {
         return false;
     }

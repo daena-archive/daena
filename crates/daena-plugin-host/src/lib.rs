@@ -425,9 +425,8 @@ impl GrantStore {
     pub fn plugin_ids_for(&self, project_id: &str) -> Vec<String> {
         self.grants
             .keys()
-            .filter_map(|(entry_project, plugin_id)| {
-                (entry_project == project_id).then(|| plugin_id.clone())
-            })
+            .filter(|(entry_project, _)| entry_project == project_id)
+            .map(|(_, plugin_id)| plugin_id.clone())
             .collect()
     }
 }
@@ -2676,10 +2675,10 @@ impl PluginHost {
     pub fn ai_request_ids_for(&self, project_id: &str, plugin_id: Option<&str>) -> Vec<String> {
         self.ai_requests
             .iter()
-            .filter_map(|(id, (project, plugin, ..))| {
-                (project == project_id && plugin_id.is_none_or(|expected| expected == plugin))
-                    .then(|| id.clone())
+            .filter(|(_, (project, plugin, ..))| {
+                project == project_id && plugin_id.is_none_or(|expected| expected == plugin)
             })
+            .map(|(id, _)| id.clone())
             .collect()
     }
 

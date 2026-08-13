@@ -340,14 +340,14 @@ function enabledWorkspaceSections() {
 }
 function sectionIcon(target: WorkspaceSection) {
   return target === "lore"
-    ? "✦"
+    ? "◈"
     : target === "timeline"
       ? "◷"
       : target === "writing"
         ? "✎"
         : target === "language"
           ? "Aa"
-          : "◇";
+          : "▧";
 }
 function workspaceSectionLabel(target: WorkspaceSection) {
   return target === "lore"
@@ -399,8 +399,19 @@ function workspaceNavigationItems(): WorkspaceNavigationItem[] {
     ];
   });
 }
+function enabledEntityTypes() {
+  return new Set(
+    modules
+      .filter((module) => module.enabled)
+      .flatMap((module) => module.schemas.flatMap((schema) => schema.entityTypes)),
+  );
+}
 function fieldAppliesToEntity(field: FieldDefinition, entityType?: string | null) {
-  return !field.entityTypes || !entityType || field.entityTypes.includes(entityType);
+  const appliesToSource = !field.entityTypes || !entityType || field.entityTypes.includes(entityType);
+  if (!appliesToSource || field.type !== "relationship" || !field.targetEntityTypes?.length) return appliesToSource;
+  if (modules.length === 0) return true;
+  const availableTypes = enabledEntityTypes();
+  return field.targetEntityTypes.some((targetType) => availableTypes.has(targetType));
 }
 const definitions = () => {
   const entityType =
@@ -427,7 +438,7 @@ function isEmptyFieldValue(value: unknown) {
     (Array.isArray(value) && value.length === 0)
   );
 }
-function fieldDisplayValue(value: unknown) {
+function fieldDisplayValue(value: unknown): string {
   if (Array.isArray(value)) return value.map((item) => fieldDisplayValue(item)).join(", ");
   if (typeof value === "object" && value !== null) {
     try {
@@ -3847,7 +3858,7 @@ onMount(() => {
                 : section === "maps"
                   ? "Keep every map beside its notes, links, and provider source."
                   : section === "language"
-                    ? "Document fictional languages, their sounds, writing, grammar, forms, samples, and vocabulary."
+                    ? "Build languages, from sounds to grammar and vocabulary."
                     : writingView === "manuscripts"
                       ? "Draft stories, essays, and other long-form work."
                       : "Build the pages, notes, and references behind the story."}

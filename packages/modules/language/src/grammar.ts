@@ -66,7 +66,7 @@ export function normalizeGrammarTopic(value: unknown): GrammarTopic {
   const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const links = Array.isArray(record.links)
     ? record.links
-        .map((item) => {
+        .map((item): GrammarLink | null => {
           const entry = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
           const lexemeId = text(entry.lexemeId);
           if (!lexemeId) return null;

@@ -275,11 +275,12 @@ fn capability_grants_survive_in_project_local_file() {
         .bind_project_grants(&project_root, "project")
         .unwrap();
     assert_eq!(restarted.grants.get("project", "com.example.one"), expected);
-    assert!(!state_path
-        .exists()
-        .then(|| fs::read_to_string(&state_path).unwrap_or_default())
-        .unwrap_or_default()
-        .contains("entity.read"));
+    let state_contents = if state_path.exists() {
+        fs::read_to_string(&state_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    assert!(!state_contents.contains("entity.read"));
 }
 
 #[test]

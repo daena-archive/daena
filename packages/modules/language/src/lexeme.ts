@@ -86,7 +86,7 @@ function strings(value: unknown, limit = MAX_TAGS) {
 function examples(value: unknown): LexemeExample[] {
   const items = Array.isArray(value) ? value : [];
   return items
-    .map((item) => {
+    .map((item): LexemeExample | null => {
       const record = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
       const exampleText = text(record.text, LONG);
       return exampleText
@@ -117,7 +117,7 @@ export function normalizeLexeme(value: unknown): LexemeValue {
   const legacyExample = record.example && typeof record.example === "object" ? examples([record.example]) : [];
   const pronunciations = Array.isArray(record.pronunciations)
     ? record.pronunciations
-        .map((item) => {
+        .map((item): LexemePronunciation | null => {
           const entry = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
           const spoken = text(entry.value);
           return spoken ? { id: text(entry.id) || id(), value: spoken, note: optional(entry.note) } : null;
@@ -129,7 +129,7 @@ export function normalizeLexeme(value: unknown): LexemeValue {
       : [];
   const forms = Array.isArray(record.forms)
     ? record.forms
-        .map((item) => {
+        .map((item): LexemeForm | null => {
           const entry = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
           const form = text(entry.form);
           const provenance =
@@ -149,9 +149,9 @@ export function normalizeLexeme(value: unknown): LexemeValue {
         .filter((item): item is LexemeForm => item !== null)
         .slice(0, MAX_FORMS)
     : [];
-  const senses = Array.isArray(record.senses)
+  const senses: LexemeSense[] = Array.isArray(record.senses)
     ? record.senses
-        .map((item) => {
+        .map((item): LexemeSense => {
           const entry = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
           return {
             id: text(entry.id) || id(),
@@ -167,7 +167,7 @@ export function normalizeLexeme(value: unknown): LexemeValue {
         gloss,
         examples: index === 0 ? legacyExample : [],
       }));
-  const normalizedSenses = senses.length ? senses : [{ id: id(), examples: legacyExample }];
+  const normalizedSenses: LexemeSense[] = senses.length ? senses : [{ id: id(), examples: legacyExample }];
   const meanings = normalizedSenses.map((sense) => sense.gloss).filter((item): item is string => Boolean(item));
   return {
     lemma: text(record.lemma),

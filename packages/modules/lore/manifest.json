@@ -17,6 +17,7 @@
       { "key": "summary", "label": "Summary", "type": "text" },
       { "key": "aliases", "label": "Aliases", "type": "text" },
       { "key": "occupation", "label": "Occupation", "type": "text", "entityTypes": ["person"] },
+      { "key": "languages", "label": "Languages", "type": "relationship", "relationshipType": "speaks", "targetEntityTypes": ["language"], "entityTypes": ["person"] },
       { "key": "origin", "label": "Origin", "type": "relationship", "relationshipType": "originates_from", "targetEntityTypes": ["place"], "entityTypes": ["person"] },
       { "key": "affiliation", "label": "Affiliation", "type": "relationship", "relationshipType": "affiliated_with", "targetEntityTypes": ["faction"], "entityTypes": ["person"] },
       { "key": "region", "label": "Region", "type": "text", "entityTypes": ["place"] },
@@ -34,7 +35,7 @@
     ]
   }],
   "templates": [
-    { "id": "person", "name": "Person", "entityType": "person", "description": "A character with a history, voice, and place in the world.", "icon": "P", "requiredFields": ["occupation"], "fields": { "summary": "", "aliases": "", "occupation": "", "origin": [], "affiliation": [] } },
+    { "id": "person", "name": "Person", "entityType": "person", "description": "A character with a history, voice, and place in the world.", "icon": "P", "requiredFields": ["occupation"], "fields": { "summary": "", "aliases": "", "occupation": "", "languages": [], "origin": [], "affiliation": [] } },
     { "id": "place", "name": "Place", "entityType": "place", "description": "A location, landmark, or region worth remembering.", "icon": "L", "requiredFields": ["region"], "fields": { "summary": "", "aliases": "", "region": "", "climate": "", "population": "" } },
     { "id": "artifact", "name": "Artifact", "entityType": "artifact", "description": "An object with meaning, history, or a story of its own.", "icon": "A", "requiredFields": ["material"], "fields": { "summary": "", "aliases": "", "material": "", "creator": [], "currentOwner": [] } },
     { "id": "faction", "name": "Faction", "entityType": "faction", "description": "A group, institution, or power with shared interests.", "icon": "F", "requiredFields": ["goal"], "fields": { "summary": "", "aliases": "", "goal": "", "leader": [], "headquarters": [] } },

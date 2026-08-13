@@ -106,9 +106,9 @@ export function emptyOperation(slotId = ""): MorphOperation {
 
 export function normalizeParadigm(value: unknown): Paradigm {
   const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-  const slots = Array.isArray(record.slots)
+  const slots: ParadigmSlot[] = Array.isArray(record.slots)
     ? record.slots
-        .map((item) => {
+        .map((item): ParadigmSlot | null => {
           const entry = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
           const label = text(entry.label);
           return label ? { id: text(entry.id) || id(), label, features: optional(entry.features) } : null;
@@ -117,13 +117,13 @@ export function normalizeParadigm(value: unknown): Paradigm {
         .slice(0, MAX_SLOTS)
     : [];
   const slotIds = new Set(slots.map((item) => item.id));
-  const rules = Array.isArray(record.rules)
+  const rules: MorphRule[] = Array.isArray(record.rules)
     ? record.rules
-        .map((item) => {
+        .map((item): MorphRule => {
           const entry = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
           const operations = Array.isArray(entry.operations)
             ? entry.operations
-                .map((operation) => {
+                .map((operation): MorphOperation | null => {
                   const op = operation && typeof operation === "object" ? (operation as Record<string, unknown>) : {};
                   const slotId = text(op.slotId);
                   if (!slotId || !slotIds.has(slotId)) return null;

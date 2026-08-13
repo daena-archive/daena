@@ -5,7 +5,7 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf
 const require = createRequire(import.meta.url);
 
 function fail(message) {
-  throw new Error(`native vector Phase 0 check failed: ${message}`);
+  throw new Error(`native vector maps check failed: ${message}`);
 }
 
 const pkg = JSON.parse(read("package.json"));
@@ -44,6 +44,10 @@ const requiredFiles = [
   "docs/maps/native-vector-licenses/terra-draw-maplibre-gl-adapter-LICENSE.txt",
   "docs/maps/native-vector-licenses/d3-contour-LICENSE.txt",
   "docs/adr/0013-native-vector-maps.md",
+  "src/lib/maps/native-vector/generator.ts",
+  "src/lib/maps/native-vector/generator.worker.js",
+  "src/lib/maps/native-vector/NativeVectorGenerator.svelte",
+  "docs/maps/native-vector-fixtures/phase2-generator.json",
   "docs/maps/phase-0-native-vector-spike.md",
 ];
 for (const path of requiredFiles) {
@@ -78,14 +82,38 @@ if (style.includes("glyphs") || style.includes("sprite") || style.includes("tile
   fail("offline style must omit glyphs, sprites, and tiles");
 }
 
+const generator = read("src/lib/maps/native-vector/generator.ts");
+for (const forbidden of ["Math.random", "fetch(", "invoke(", "localStorage", "indexedDB"]) {
+  if (generator.includes(forbidden)) fail(`generator.ts must not use ${forbidden}`);
+}
+for (const required of ["mix32", "next(", "contours()", "viewBox=\"0 0 340 150\"", "daena-landmass"]) {
+  if (!generator.includes(required)) fail(`generator.ts missing ${required}`);
+}
+const worker = read("src/lib/maps/native-vector/generator.worker.js");
+if (!worker.includes("generateCandidates") || worker.includes("invoke(")) {
+  fail("generator worker must stay offline and mutation-free");
+}
+const dialog = read("src/lib/maps/native-vector/NativeVectorGenerator.svelte");
+for (const required of ["Copy", "Paste", "Regenerate", "Cancel", "Accept candidate", "radiogroup"]) {
+  if (!dialog.includes(required)) fail(`NativeVectorGenerator missing ${required}`);
+}
+if (!dialog.includes("acceptVectorMap") || !dialog.includes("generationProvenance")) {
+  fail("generator dialog must accept through the Phase 1 vector create path");
+}
+
 const editor = read("src/lib/maps/native-vector/NativeVectorMapEditor.svelte");
-for (const required of ["switchLayer", "Freehand", "Select", "created.dispose()", "PHASE0_VECTOR_LAYERS"]) {
+for (const required of ["switchLayer", "Freehand", "Select", "created.dispose()", "PHASE0_VECTOR_LAYERS", "NativeVectorGenerator"]) {
   if (!editor.includes(required)) fail(`NativeVectorMapEditor missing ${required}`);
 }
 
 const host = read("src/routes/+page.svelte");
 if (!host.includes("NativeVectorMapEditor") || !host.includes('createMap("vector")')) {
   fail("host surface must dispatch the native vector editor");
+}
+
+const vite = read("vite.config.js");
+if (!vite.includes("export default ${code}") || !vite.includes(".geojson")) {
+  fail("vite must wrap .geojson imports as JSON modules");
 }
 
 const mapsCore = read("crates/daena-core/src/maps.rs");
@@ -107,4 +135,4 @@ for (const required of ["One GeoJSON", "longitude", "trusted host", "worker-src"
   if (!adr.toLowerCase().includes(required.toLowerCase())) fail(`ADR 0013 missing ${required}`);
 }
 
-console.log("native vector Phase 0 dependency, CSP, fixture, and host-surface checks passed");
+console.log("native vector dependency, CSP, generator, fixture, and host-surface checks passed");

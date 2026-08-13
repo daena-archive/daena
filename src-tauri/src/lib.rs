@@ -6555,6 +6555,26 @@ async fn project_import_image_map_file(
 }
 
 #[tauri::command]
+async fn project_accept_vector_map(
+    state: tauri::State<'_, SharedCore>,
+    name: String,
+    candidate_json: String,
+    generation: serde_json::Value,
+    request_id: Option<String>,
+) -> Result<daena_core::AcceptedVectorMap, String> {
+    let bytes = candidate_json.into_bytes();
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.accept_vector_map(
+            name,
+            bytes,
+            generation,
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
 async fn project_read_asset_bytes(
     state: tauri::State<'_, SharedCore>,
     asset_id: String,
@@ -7043,6 +7063,7 @@ pub fn run() {
             project_register_asset_file,
             project_list_assets,
             project_import_image_map_file,
+            project_accept_vector_map,
             project_read_asset_bytes,
             project_create_raster_layer,
             project_create_semantic_layer,

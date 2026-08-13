@@ -2,6 +2,7 @@
 import { onMount } from "svelte";
 import type { Entity } from "$lib/project/client";
 import type { MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
+import NativeVectorGenerator from "./NativeVectorGenerator.svelte";
 import { PHASE0_VECTOR_LAYERS, phase0Fixture } from "./fixture";
 import {
   createNativeVectorEditor,
@@ -15,12 +16,15 @@ import type { VectorDrawMode, VectorFeatureCollection } from "./types";
 let {
   mapId,
   picking = false,
+  oncreated,
+  oncancel,
   onstate,
 }: {
   mapId?: string;
   picking?: boolean;
   focusLinkId?: string;
   oncreated?: (map: Entity) => void;
+  oncancel?: () => void;
   onpick?: (anchor: MapAnchor) => void;
   onopen?: (entityId: string) => void;
   onstate?: (status: string, detail: unknown) => void;
@@ -72,6 +76,7 @@ function switchLayer(layerId: string) {
 }
 
 onMount(() => {
+  if (!mapId) return;
   registerNativeVectorSession({ save, isDirty, teardown: () => editor?.dispose() });
   if (!host) return;
   const created = createNativeVectorEditor(host, {
@@ -112,6 +117,9 @@ onMount(() => {
 });
 </script>
 
+{#if !mapId}
+  <NativeVectorGenerator {oncreated} {oncancel} />
+{:else}
 <section class="native-vector-editor" aria-label="Native vector map editor">
   <header>
     <div>
@@ -149,6 +157,7 @@ onMount(() => {
     <div class="canvas" class:picking bind:this={host}></div>
   </div>
 </section>
+{/if}
 
 <style>
 .native-vector-editor {

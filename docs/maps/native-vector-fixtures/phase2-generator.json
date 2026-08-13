@@ -1,0 +1,49 @@
+{
+  "generatorVersion": 1,
+  "settings": {
+    "generatorVersion": 1,
+    "seed": 831429,
+    "landPercent": 40,
+    "continentCount": 3,
+    "coastlineRoughness": "medium",
+    "islandFrequency": "medium"
+  },
+  "candidates": [
+    {
+      "index": 0,
+      "seed": 2517126580,
+      "geometryHash": "sha256:d17c3607147a7206e7cfebe67a5cc5b6a4d48483bcd6f3dbc549ece2caee6e75",
+      "thumbnailHash": "sha256:15470edac04178377aafff9f64f99488926905202c51758300c15dd9b795389e"
+    },
+    {
+      "index": 1,
+      "seed": 3030160315,
+      "geometryHash": "sha256:31d44db6402eba276a2e7d4e6275d62c8e1255ab716eb98d2c0e32310238547b",
+      "thumbnailHash": "sha256:09122f83c3661334de4927f41dd6b222ce172b9e1b9300d4486eeb76b30b5c58"
+    },
+    {
+      "index": 2,
+      "seed": 3504005328,
+      "geometryHash": "sha256:b1ab542cc475a6ce5a7db9688dcfad1591bcb5a85b2aa9d4455c87e441c62890",
+      "thumbnailHash": "sha256:e4a537ad8aa7d6921f19e49f2d16d694c359125af3c5b294d73ac02f97393c47"
+    },
+    {
+      "index": 3,
+      "seed": 2788536200,
+      "geometryHash": "sha256:08dba47723296d1717d570f462d6562d3f3f7373e3711678a3e8c541caec8450",
+      "thumbnailHash": "sha256:8ab577c84401bd0ec90c84fc3d2aa2dd48f68e3cbc8bf0ccecab1b790e259075"
+    },
+    {
+      "index": 4,
+      "seed": 826760873,
+      "geometryHash": "sha256:662bd89e614835349dd894fb38b187236c20d028bc423c82552bca10169a7c4e",
+      "thumbnailHash": "sha256:73af591d2ebc4b43a202ef2508a0a4bec01666ea57894afa9321a35e48fb2ce0"
+    },
+    {
+      "index": 5,
+      "seed": 3537569982,
+      "geometryHash": "sha256:3b967e173cce1a0e9387a7f203a4cb61fb62da1dec172a050892869156d74fbc",
+      "thumbnailHash": "sha256:c98f160042bc2ad0e462391a9997d246846e9070182fe990bbab97957c7c839b"
+    }
+  ]
+}

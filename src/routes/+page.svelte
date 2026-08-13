@@ -4076,6 +4076,17 @@ onMount(() => {
                       onstate={(status, detail) => {
                         if (!mapId) return;
                         mapSaveStates[mapId] = { status, detail };
+                      }}
+                      oncreated={async (map) => {
+                        entities = await project.listEntities();
+                        savedMapsCache = null;
+                        selected = map;
+                        mapsEditorKey = map.id;
+                        mapsEditorMode = "vector";
+                        await loadSelectedState(map);
+                      }}
+                      oncancel={() => {
+                        sandboxView = null;
                       }} />
                   {/key}
                 {:else if mapsEditorMode === "image"}

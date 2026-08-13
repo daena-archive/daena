@@ -9,6 +9,20 @@ function sha256(value) {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
+function isoperimetric(ring) {
+  let area = 0;
+  let peri = 0;
+  for (let index = 0; index < ring.length - 1; index += 1) {
+    const [x1, y1] = ring[index];
+    const [x2, y2] = ring[index + 1];
+    area += x1 * y2 - x2 * y1;
+    peri += Math.hypot(x2 - x1, y2 - y1);
+  }
+  area = Math.abs(area) / 2;
+  if (peri === 0) return 1;
+  return (4 * Math.PI * area) / (peri * peri);
+}
+
 const first = generateCandidates(DEFAULT_GENERATOR_SETTINGS);
 const second = generateCandidates(DEFAULT_GENERATOR_SETTINGS);
 assert.equal(first.length, 6);
@@ -22,10 +36,24 @@ for (const candidate of first) {
   assert.equal(candidate.svg.startsWith('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 150"><path fill="#c9a96e" fill-rule="evenodd" d="'), true);
   assert.equal(candidate.svg.endsWith("</svg>"), true);
   assert.equal(candidate.svg.includes("http://") && candidate.svg.replace('xmlns="http://www.w3.org/2000/svg"', "").includes("http://"), false);
+  const collection = JSON.parse(candidate.collection);
+  assert.ok(collection.features.length > 0, "candidate must produce land");
+  const largest = collection.features.reduce((best, feature) => {
+    const ring = feature.geometry.coordinates[0];
+    const score = Math.abs(
+      ring.reduce((sum, point, index, all) => {
+        if (index === all.length - 1) return sum;
+        return sum + point[0] * all[index + 1][1] - all[index + 1][0] * point[1];
+      }, 0),
+    );
+    return score > best.score ? { score, ring } : best;
+  }, { score: 0, ring: null });
+  const roundness = isoperimetric(largest.ring);
+  assert.ok(roundness < 0.72, `largest landmass is too round (${roundness})`);
 }
 
 const actual = {
-  generatorVersion: 1,
+  generatorVersion: 2,
   settings: DEFAULT_GENERATOR_SETTINGS,
   candidates: first.map((candidate) => ({
     index: candidate.index,

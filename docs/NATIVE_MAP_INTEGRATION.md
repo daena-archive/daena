@@ -336,11 +336,11 @@ limit or geometry rule requires an adapter-version compatibility decision.
 Generation runs in a bundled Web Worker so six candidates cannot block the
 Svelte UI. It performs no network, filesystem, Tauri, or project mutation.
 
-Version 1 has these inputs:
+Version 2 has these inputs:
 
 ```ts
 type NativeGeneratorSettings = {
-  generatorVersion: 1;
+  generatorVersion: 2;
   seed: number; // uint32
   landPercent: number; // integer 15..70
   continentCount: number; // integer 1..8
@@ -378,29 +378,39 @@ The algorithm is fixed for reproducibility:
 3. Evaluate a `512 x 256` row-major scalar field. Cell `(column, row)` samples
    normalized coordinates `x = (column + .5) / 512` and
    `y = (row + .5) / 256`; `cellIndex = row * 512 + column`.
-4. Place `continentCount` axis-aligned compact elliptical kernels from
-   sequential PRNG values. Centers are in normalized
-   `[0.1, 0.9] x [0.15, 0.85]`. Base x radii for counts 1 through 8 are
-   `[.38, .34, .30, .27, .24, .22, .20, .18]`, multiplied by `[.8, 1.2]`
-   from the next PRNG value; y/x aspect is `[.55, .9]` from the following
-   value. For normalized offsets, `q = (dx/rx)^2 + (dy/ry)^2` and the kernel is
-   `q < 1 ? (1 - q)^2 : 0`. The continent field is the maximum kernel value at
-   each cell. This intentionally avoids transcendental math.
-5. Add five octaves of lattice value noise at frequencies `1, 2, 4, 8, 16`.
-   For each frequency, use domain coordinates `(x * frequency, y * frequency)`
-   and the four surrounding integer lattice points. A lattice value is
+4. Place `continentCount` continent bodies. Each body is the maximum of one
+   sheared compact kernel plus five offset lobe kernels, so landmasses form
+   peninsulas and bays instead of ovals. Sequential PRNG values: core centers
+   in normalized `[0.1, 0.9] x [0.15, 0.85]`; base x radii for counts 1
+   through 8 are `[.38, .34, .30, .27, .24, .22, .20, .18]`, multiplied by
+   `[.72, 1.08]`; core y/x aspect is `[.34, .72]`; core shear is
+   `(2u-1)*.85`. Each lobe consumes six PRNG values: direction x/y in
+   `[-1, 1]`, reach `[.72, 1.3]`, lobe rx `coreRx*[.22, .54]`, lobe aspect
+   `[.32, 1.27]`, lobe shear `(2u-1)*1.1`. Kernel evaluation shears first:
+   `wx = dx + shear*dy`, then `q = (wx/rx)^2 + (dy/ry)^2`, and the kernel is
+   `q < 1 ? (1 - q)^2 : 0`. Before sampling kernels at `(x, y)`, domain-warp
+   the point:
+   `warpX = valueNoise(seed^0x51ed, x, y, 2)*.24 + valueNoise(seed^0x51ed, x, y, 4)*.08`
+   and `warpY` with `0xa31c` and amplitudes `.18` / `.07`. Multiply the
+   continent field by `0.48 + 0.52 * valueNoise(seed^0xc0a5, sx, sy, 3)`.
+   This intentionally avoids transcendental math.
+5. Add five octaves of lattice value noise at frequencies `1, 2, 4, 8, 16`,
+   sampled at the warped coordinates. For each frequency, use domain
+   coordinates `(sx * frequency, sy * frequency)` and the four surrounding
+   integer lattice points. A lattice value is
    `2 * mix32(candidateSeed ^ Math.imul(ix, 0x1f123bb5) ^
    Math.imul(iy, 0x5f356495)) / 2^32 - 1`. Interpolate x and then y with
    `t * t * (3 - 2 * t)`. Multiply each octave by its selected amplitude, sum,
    and divide by the exact sum of amplitudes:
    low `[1, .35, .12, .04, .01]`, medium `[1, .5, .25, .125, .0625]`, or high
-   `[1, .65, .42, .27, .18]`. Multiply the normalized result by `0.38`.
+   `[1, .65, .42, .27, .18]`. Multiply the normalized result by `0.7`.
 6. Add compact elliptical island kernels with counts `0, 4, 10, 20` for
    none/low/medium/high. Sequential PRNG values produce center x in
    `[.05, .95]`, center y in `[.1, .9]`, x radius as `.015 + value * .035`,
-   and y/x aspect as `.6 + value * .8`; y radius is their product. Multiply
-   the compact-kernel formula by `.55` and take the maximum across islands.
-   The scalar field is `max(continentField, islandField) + noise`.
+   and y/x aspect as `.6 + value * .8`; y radius is their product; shear is
+   `0`. Multiply the compact-kernel formula by `.55` and take the maximum
+   across islands, sampling at the same domain-warped coordinates as the
+   continents. The scalar field is `max(continentField, islandField) + noise`.
 7. Add `cellIndex * 2^-40` to break exact scalar ties. Sort a
    copy of the values numerically and choose the midpoint between the adjacent
    values around rank `floor((1 - landPercent / 100) * valueCount)`. This is
@@ -409,8 +419,8 @@ The algorithm is fixed for reproducibility:
    coordinates linearly to the generation extent. Rotate each unclosed grid
    ring to its lexicographically smallest point, then simplify cyclically:
    repeatedly remove the vertex with the smallest squared perpendicular
-   distance to its two neighbors while that distance is below `2.25`, `1`, or
-   `.25` grid cells squared for low, medium, or high roughness. Equal-distance
+   distance to its two neighbors while that distance is below `.81`, `.2`, or
+   `.06` grid cells squared for low, medium, or high roughness. Equal-distance
    ties remove the lowest original vertex index; never remove below three
    vertices; then close the ring.
 9. Run the canonical ring cleanup and winding rules, drop polygons below four
@@ -442,7 +452,7 @@ The committed descriptor records generator provenance in a new optional
 ```json
 {
   "id": "daena-landmass",
-  "version": 1,
+  "version": 2,
   "seed": 831429,
   "settings": {
     "landPercent": 40,

@@ -1,6 +1,6 @@
 import { contours } from "d3-contour";
 
-export const GENERATOR_VERSION = 1 as const;
+export const GENERATOR_VERSION = 2 as const;
 export const CANDIDATE_COUNT = 6;
 const GRID_WIDTH = 512;
 const GRID_HEIGHT = 256;
@@ -18,14 +18,19 @@ const NOISE_AMPLITUDE = {
   medium: [1, 0.5, 0.25, 0.125, 0.0625],
   high: [1, 0.65, 0.42, 0.27, 0.18],
 } as const;
-const SIMPLIFY_THRESHOLD = { low: 2.25, medium: 1, high: 0.25 } as const;
+const SIMPLIFY_THRESHOLD = { low: 0.81, medium: 0.2, high: 0.06 } as const;
 const ISLAND_COUNT = { none: 0, low: 4, medium: 10, high: 20 } as const;
+const CONTINENT_LOBES = 5;
+const NOISE_STRENGTH = 0.7;
+const WARP_X = 0x51ed;
+const WARP_Y = 0xa31c;
+const MASS_MASK = 0xc0a5;
 
 export type CoastlineRoughness = "low" | "medium" | "high";
 export type IslandFrequency = "none" | "low" | "medium" | "high";
 
 export type NativeGeneratorSettings = {
-  generatorVersion: 1;
+  generatorVersion: 2;
   seed: number;
   landPercent: number;
   continentCount: number;
@@ -71,7 +76,7 @@ export function candidateSeed(seed: number, index: number) {
 }
 
 export function validateGeneratorSettings(settings: NativeGeneratorSettings): string | null {
-  if (settings.generatorVersion !== 1) return "vector.source.unsupported-version";
+  if (settings.generatorVersion !== GENERATOR_VERSION) return "vector.source.unsupported-version";
   if (!Number.isInteger(settings.seed) || settings.seed < 0 || settings.seed > 0xffff_ffff) {
     return "vector.generator.invalid-settings";
   }
@@ -91,7 +96,7 @@ export function validateGeneratorSettings(settings: NativeGeneratorSettings): st
 export function generationProvenance(settings: NativeGeneratorSettings) {
   return {
     id: "daena-landmass",
-    version: 1,
+    version: GENERATOR_VERSION,
     seed: settings.seed >>> 0,
     settings: {
       landPercent: settings.landPercent,
@@ -106,9 +111,26 @@ type Micro = { lon: number; lat: number };
 type Ring = Micro[];
 type Polygon = { exterior: Ring; holes: Ring[]; area: bigint };
 
-function compactKernel(dx: number, dy: number, rx: number, ry: number) {
-  const q = (dx / rx) * (dx / rx) + (dy / ry) * (dy / ry);
+type Kernel = { cx: number; cy: number; rx: number; ry: number; shear: number };
+
+function compactKernel(dx: number, dy: number, rx: number, ry: number, shear: number) {
+  const wx = dx + shear * dy;
+  const q = (wx / rx) * (wx / rx) + (dy / ry) * (dy / ry);
   return q < 1 ? (1 - q) * (1 - q) : 0;
+}
+
+function maxKernel(kernels: readonly Kernel[], x: number, y: number, scale = 1) {
+  let field = 0;
+  for (const kernel of kernels) {
+    field = Math.max(field, compactKernel(x - kernel.cx, y - kernel.cy, kernel.rx, kernel.ry, kernel.shear) * scale);
+  }
+  return field;
+}
+
+function domainWarp(candidate: number, x: number, y: number): [number, number] {
+  const warpX = valueNoise(candidate ^ WARP_X, x, y, 2) * 0.24 + valueNoise(candidate ^ WARP_X, x, y, 4) * 0.08;
+  const warpY = valueNoise(candidate ^ WARP_Y, x, y, 2) * 0.18 + valueNoise(candidate ^ WARP_Y, x, y, 4) * 0.07;
+  return [x + warpX, y + warpY];
 }
 
 function lattice(candidate: number, ix: number, iy: number) {
@@ -380,7 +402,7 @@ function generateOne(settings: NativeGeneratorSettings, index: number): NativeGe
   const seed = candidateSeed(settings.seed, index);
   let state = seed;
   const values = new Float64Array(VALUE_COUNT);
-  const continents: { cx: number; cy: number; rx: number; ry: number }[] = [];
+  const continents: Kernel[] = [];
   const baseRx = BASE_RX[settings.continentCount - 1];
   for (let count = 0; count < settings.continentCount; count += 1) {
     let value: number;
@@ -389,12 +411,36 @@ function generateOne(settings: NativeGeneratorSettings, index: number): NativeGe
     [value, state] = next(state);
     const cy = 0.15 + value * 0.7;
     [value, state] = next(state);
-    const rx = baseRx * (0.8 + value * 0.4);
+    const rx = baseRx * (0.72 + value * 0.36);
     [value, state] = next(state);
-    const aspect = 0.55 + value * 0.35;
-    continents.push({ cx, cy, rx, ry: rx * aspect });
+    const aspect = 0.34 + value * 0.38;
+    const ry = rx * aspect;
+    [value, state] = next(state);
+    const shear = (value * 2 - 1) * 0.85;
+    continents.push({ cx, cy, rx, ry, shear });
+    for (let lobe = 0; lobe < CONTINENT_LOBES; lobe += 1) {
+      [value, state] = next(state);
+      const dirX = value * 2 - 1;
+      [value, state] = next(state);
+      const dirY = value * 2 - 1;
+      [value, state] = next(state);
+      const reach = 0.72 + value * 0.58;
+      [value, state] = next(state);
+      const lobeRx = rx * (0.22 + value * 0.32);
+      [value, state] = next(state);
+      const lobeAspect = 0.32 + value * 0.95;
+      [value, state] = next(state);
+      const lobeShear = (value * 2 - 1) * 1.1;
+      continents.push({
+        cx: cx + dirX * rx * reach,
+        cy: cy + dirY * ry * reach,
+        rx: lobeRx,
+        ry: lobeRx * lobeAspect,
+        shear: lobeShear,
+      });
+    }
   }
-  const islands: { cx: number; cy: number; rx: number; ry: number }[] = [];
+  const islands: Kernel[] = [];
   const islandCount = ISLAND_COUNT[settings.islandFrequency];
   for (let count = 0; count < islandCount; count += 1) {
     let value: number;
@@ -406,7 +452,7 @@ function generateOne(settings: NativeGeneratorSettings, index: number): NativeGe
     const rx = 0.015 + value * 0.035;
     [value, state] = next(state);
     const aspect = 0.6 + value * 0.8;
-    islands.push({ cx, cy, rx, ry: rx * aspect });
+    islands.push({ cx, cy, rx, ry: rx * aspect, shear: 0 });
   }
   const amplitudes = NOISE_AMPLITUDE[settings.coastlineRoughness];
   const amplitudeSum = amplitudes.reduce((sum, value) => sum + value, 0);
@@ -415,19 +461,15 @@ function generateOne(settings: NativeGeneratorSettings, index: number): NativeGe
       const cellIndex = row * GRID_WIDTH + column;
       const x = (column + 0.5) / GRID_WIDTH;
       const y = (row + 0.5) / GRID_HEIGHT;
-      let continentField = 0;
-      for (const continent of continents) {
-        continentField = Math.max(continentField, compactKernel(x - continent.cx, y - continent.cy, continent.rx, continent.ry));
-      }
-      let islandField = 0;
-      for (const island of islands) {
-        islandField = Math.max(islandField, compactKernel(x - island.cx, y - island.cy, island.rx, island.ry) * 0.55);
-      }
+      const [sx, sy] = domainWarp(seed, x, y);
+      let continentField = maxKernel(continents, sx, sy);
+      continentField *= 0.48 + 0.52 * valueNoise(seed ^ MASS_MASK, sx, sy, 3);
+      const islandField = maxKernel(islands, sx, sy, 0.55);
       let noise = 0;
       for (let octave = 0; octave < amplitudes.length; octave += 1) {
-        noise += valueNoise(seed, x, y, 2 ** octave) * amplitudes[octave];
+        noise += valueNoise(seed, sx, sy, 2 ** octave) * amplitudes[octave];
       }
-      noise = (noise / amplitudeSum) * 0.38;
+      noise = (noise / amplitudeSum) * NOISE_STRENGTH;
       values[cellIndex] = Math.max(continentField, islandField) + noise + cellIndex * 2 ** -40;
     }
   }

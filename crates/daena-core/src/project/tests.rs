@@ -4172,7 +4172,7 @@ fn image_map_import_layer_mutations_and_checkpoint_rebuild() {
 fn vector_generation() -> serde_json::Value {
     serde_json::json!({
         "id": "daena-landmass",
-        "version": 1,
+        "version": 2,
         "seed": 831429,
         "settings": {
             "landPercent": 40,

@@ -87,7 +87,16 @@ const generator = read("src/lib/maps/native-vector/generator.ts");
 for (const forbidden of ["Math.random", "fetch(", "invoke(", "localStorage", "indexedDB"]) {
   if (generator.includes(forbidden)) fail(`generator.ts must not use ${forbidden}`);
 }
-for (const required of ["mix32", "next(", "contours()", "viewBox=\"0 0 340 150\"", "daena-landmass"]) {
+for (const required of [
+  "mix32",
+  "next(",
+  "contours()",
+  'viewBox="0 0 340 150"',
+  "daena-landmass",
+  "GENERATOR_VERSION = 2",
+  "CONTINENT_LOBES",
+  "NOISE_STRENGTH",
+]) {
   if (!generator.includes(required)) fail(`generator.ts missing ${required}`);
 }
 const worker = read("src/lib/maps/native-vector/generator.worker.js");

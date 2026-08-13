@@ -86,7 +86,7 @@ export type MapDescriptor = {
     };
     generation?: {
         id: "daena-landmass";
-        version: 1;
+        version: 2;
         seed: number;
         settings: {
             landPercent: number;

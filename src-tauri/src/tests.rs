@@ -1910,7 +1910,7 @@ fn maps_vector_create_rpc_round_trips_and_cancel_leaves_no_entity() {
     .unwrap();
     let generation = serde_json::json!({
         "id": "daena-landmass",
-        "version": 1,
+        "version": 2,
         "seed": 831429,
         "settings": {
             "landPercent": 40,

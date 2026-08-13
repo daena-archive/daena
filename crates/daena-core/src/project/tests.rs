@@ -4369,6 +4369,34 @@ fn vector_map_accept_replace_layer_delete_and_checkpoint_rebuild() {
         replaced.source.revision
     );
 
+    FAIL_NEXT_RUNTIME_ASSET_INSTALL.with(|flag| flag.set(true));
+    let crashed = store.delete_vector_layer(
+        accepted.entity.id.clone(),
+        created.layer_id.clone(),
+        &created.layers.revision,
+        &replaced.source.revision,
+        1,
+        None,
+    );
+    assert!(crashed.unwrap_err().to_string().contains("install runtime asset"));
+    assert_eq!(
+        store.asset(accepted.source.id.clone()).unwrap().revision,
+        replaced.source.revision
+    );
+    assert_eq!(
+        store
+            .list_fields(accepted.entity.id.clone())
+            .unwrap()
+            .into_iter()
+            .find(|field| field.key == "layers")
+            .unwrap()
+            .value["layers"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
     let deleted = store
         .delete_vector_layer(
             accepted.entity.id.clone(),

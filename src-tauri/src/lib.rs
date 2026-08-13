@@ -6575,6 +6575,85 @@ async fn project_accept_vector_map(
 }
 
 #[tauri::command]
+async fn project_replace_vector_source(
+    state: tauri::State<'_, SharedCore>,
+    asset_id: String,
+    bytes: Vec<u8>,
+    upload_content_hash: String,
+    expected_revision: String,
+    request_id: Option<String>,
+) -> Result<daena_core::VectorSourceReplace, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.replace_vector_source(
+            asset_id,
+            bytes,
+            upload_content_hash,
+            &expected_revision,
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_create_vector_layer(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    name: String,
+    expected_revision: String,
+    style: Option<serde_json::Value>,
+    request_id: Option<String>,
+) -> Result<daena_core::RasterLayerChange, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.create_vector_layer(
+            map_entity_id,
+            name,
+            &expected_revision,
+            request_id.as_deref(),
+            style,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn project_delete_vector_layer(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    layer_id: String,
+    expected_revision: String,
+    expected_source_revision: String,
+    expected_feature_count: i64,
+    request_id: Option<String>,
+) -> Result<daena_core::VectorLayerDelete, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.delete_vector_layer(
+            map_entity_id,
+            layer_id,
+            &expected_revision,
+            &expected_source_revision,
+            expected_feature_count,
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn maps_recovery_export(
+    state: tauri::State<'_, SharedCore>,
+    entity_id: String,
+    bytes: Vec<u8>,
+) -> Result<String, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .save_map_recovery_copy(&entity_id, &bytes)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn project_read_asset_bytes(
     state: tauri::State<'_, SharedCore>,
     asset_id: String,
@@ -7064,6 +7143,10 @@ pub fn run() {
             project_list_assets,
             project_import_image_map_file,
             project_accept_vector_map,
+            project_replace_vector_source,
+            project_create_vector_layer,
+            project_delete_vector_layer,
+            maps_recovery_export,
             project_read_asset_bytes,
             project_create_raster_layer,
             project_create_semantic_layer,

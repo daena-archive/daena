@@ -2,6 +2,7 @@ export const VECTOR_PROVIDER = "daena-vector" as const;
 export const BASE_LAYER_ID = "base" as const;
 export const FREEHAND_RAW_POSITION_LIMIT = 8192;
 export const FREEHAND_SIMPLIFIED_POSITION_LIMIT = 2048;
+export const UNDO_STACK_SIZE = 50;
 
 export type VectorKind = "land" | "lake" | "region" | "route" | "marker" | "custom";
 export type VectorDrawMode = "static" | "select" | "point" | "linestring" | "polygon" | "freehand";
@@ -45,4 +46,12 @@ export type VectorLayerDefinition = {
   locked: boolean;
   selector: Record<string, never>;
   style: VectorLayerStyle;
+};
+
+export const DEFAULT_VECTOR_LAYER_STYLE: VectorLayerStyle = {
+  fill: "#8f6fd1",
+  fillOpacity: 0.35,
+  stroke: "#5e4893",
+  strokeWidth: 1.5,
+  pointRadius: 5,
 };

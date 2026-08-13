@@ -98,6 +98,14 @@ export interface RasterLayerChange {
   asset: Asset | null;
   layers: FieldValue;
 }
+export interface VectorSourceReplace {
+  source: Asset;
+}
+export interface VectorLayerDelete {
+  layers: FieldValue;
+  source: Asset;
+  deletedFeatureCount: number;
+}
 export interface MapRecoveryCopy {
   fileName: string;
   path: string;
@@ -497,6 +505,51 @@ export const project = {
       generation,
       requestId: requestId(options),
     }),
+  replaceVectorSource: (
+    assetId: string,
+    bytes: Uint8Array,
+    uploadContentHash: string,
+    expectedRevision: string,
+    options?: MutationOptions,
+  ) =>
+    invoke<VectorSourceReplace>("project_replace_vector_source", {
+      assetId,
+      bytes: Array.from(bytes),
+      uploadContentHash,
+      expectedRevision,
+      requestId: requestId(options),
+    }),
+  createVectorLayer: (
+    mapEntityId: string,
+    name: string,
+    expectedRevision: string,
+    options?: MutationOptions & { style?: unknown },
+  ) =>
+    invoke<RasterLayerChange>("project_create_vector_layer", {
+      mapEntityId,
+      name,
+      expectedRevision,
+      style: options?.style ?? null,
+      requestId: requestId(options),
+    }),
+  deleteVectorLayer: (
+    mapEntityId: string,
+    layerId: string,
+    expectedRevision: string,
+    expectedSourceRevision: string,
+    expectedFeatureCount: number,
+    options?: MutationOptions,
+  ) =>
+    invoke<VectorLayerDelete>("project_delete_vector_layer", {
+      mapEntityId,
+      layerId,
+      expectedRevision,
+      expectedSourceRevision,
+      expectedFeatureCount,
+      requestId: requestId(options),
+    }),
+  mapsRecoveryExport: (entityId: string, bytes: Uint8Array) =>
+    invoke<string>("maps_recovery_export", { entityId, bytes: Array.from(bytes) }),
   readAssetBytes: (assetId: string) => invoke<number[]>("project_read_asset_bytes", { assetId }),
   createRasterLayer: (mapEntityId: string, name: string, expectedRevision: string, options?: MutationOptions) =>
     invoke<RasterLayerChange>("project_create_raster_layer", {

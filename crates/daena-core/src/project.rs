@@ -565,6 +565,11 @@ fn project_database_path(root: &Path) -> PathBuf {
     root.join(".daena/index.sqlite")
 }
 
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_RUNTIME_ASSET_INSTALL: Cell<bool> = const { Cell::new(false) };
+}
+
 fn runtime_asset_path(root: &Path, content_hash: &str) -> Result<PathBuf, CoreError> {
     let digest = content_hash
         .strip_prefix("sha256:")
@@ -582,6 +587,13 @@ fn store_runtime_asset<R: Read>(
     mut input: R,
     expected_hash: Option<&str>,
 ) -> Result<(String, i64), CoreError> {
+    #[cfg(test)]
+    if FAIL_NEXT_RUNTIME_ASSET_INSTALL.with(|flag| flag.replace(false)) {
+        return Err(CoreError::Io {
+            operation: "install runtime asset",
+            source: std::io::Error::other("injected asset install failure"),
+        });
+    }
     let directory = root.join(".daena/assets");
     std::fs::create_dir_all(&directory).map_err(|source| CoreError::Io {
         operation: "create runtime asset directory",

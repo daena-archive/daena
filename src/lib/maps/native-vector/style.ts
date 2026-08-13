@@ -87,6 +87,49 @@ export function nativeVectorStyle(layers: readonly VectorLayerDefinition[]): Sty
     );
   }
 
+  style.layers.push(
+    {
+      id: "daena-hover-fill",
+      type: "fill",
+      source: AUTHORED_SOURCE_ID,
+      filter: ["==", ["feature-state", "hover"], true],
+      paint: { "fill-color": "#f3d39a", "fill-opacity": 0.18 },
+    },
+    {
+      id: "daena-hover-line",
+      type: "line",
+      source: AUTHORED_SOURCE_ID,
+      filter: ["==", ["feature-state", "hover"], true],
+      paint: { "line-color": "#f3d39a", "line-width": 2 },
+    },
+    {
+      id: "daena-selection-fill",
+      type: "fill",
+      source: AUTHORED_SOURCE_ID,
+      filter: ["==", ["feature-state", "selected"], true],
+      paint: { "fill-color": "#d5ab6c", "fill-opacity": 0.22 },
+    },
+    {
+      id: "daena-selection-line",
+      type: "line",
+      source: AUTHORED_SOURCE_ID,
+      filter: ["==", ["feature-state", "selected"], true],
+      paint: { "line-color": "#d5ab6c", "line-width": 2.5 },
+    },
+    {
+      id: "daena-selection-point",
+      type: "circle",
+      source: AUTHORED_SOURCE_ID,
+      filter: ["==", ["feature-state", "selected"], true],
+      paint: {
+        "circle-color": "#d5ab6c",
+        "circle-radius": 7,
+        "circle-stroke-color": "#f3d39a",
+        "circle-stroke-width": 2,
+      },
+    },
+  );
+
   return style;
 }
 

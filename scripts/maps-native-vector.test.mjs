@@ -47,6 +47,7 @@ const requiredFiles = [
   "src/lib/maps/native-vector/generator.ts",
   "src/lib/maps/native-vector/generator.worker.js",
   "src/lib/maps/native-vector/NativeVectorGenerator.svelte",
+  "src/lib/maps/native-vector/source.ts",
   "docs/maps/native-vector-fixtures/phase2-generator.json",
   "docs/maps/phase-0-native-vector-spike.md",
 ];
@@ -102,8 +103,47 @@ if (!dialog.includes("acceptVectorMap") || !dialog.includes("generationProvenanc
 }
 
 const editor = read("src/lib/maps/native-vector/NativeVectorMapEditor.svelte");
-for (const required of ["switchLayer", "Freehand", "Select", "created.dispose()", "PHASE0_VECTOR_LAYERS", "NativeVectorGenerator"]) {
+for (const required of [
+  "switchLayer",
+  "Freehand",
+  "Select",
+  "editor?.dispose()",
+  "NativeVectorGenerator",
+  "replaceVectorSource",
+  "createVectorLayer",
+  "deleteVectorLayer",
+  "Reload canonical source",
+  "Export draft",
+  "Keep editing",
+  "Add layer",
+  "Selected feature",
+  "reduceVectorEditor",
+]) {
   if (!editor.includes(required)) fail(`NativeVectorMapEditor missing ${required}`);
+}
+if (editor.includes("PHASE0_VECTOR_LAYERS") || editor.includes("phase0Fixture")) {
+  fail("Phase 3 editor must load the canonical source, not the Phase 0 fixture");
+}
+if (runtime.includes("PHASE0_VECTOR_LAYERS") || runtime.includes("./fixture")) {
+  fail("runtime must style from persisted vector layers, not the Phase 0 fixture");
+}
+if (!runtime.includes("UNDO_STACK_SIZE") || !runtime.includes("syncLayers") || !runtime.includes("deleteSelection")) {
+  fail("runtime.ts missing layer sync, undo budget, or selection delete");
+}
+
+const client = read("src/lib/project/client.ts");
+for (const required of ["replaceVectorSource", "createVectorLayer", "deleteVectorLayer", "mapsRecoveryExport"]) {
+  if (!client.includes(required)) fail(`project client missing ${required}`);
+}
+
+const tauriLib = read("src-tauri/src/lib.rs");
+for (const required of [
+  "project_replace_vector_source",
+  "project_create_vector_layer",
+  "project_delete_vector_layer",
+  "maps_recovery_export",
+]) {
+  if (!tauriLib.includes(required)) fail(`src-tauri/src/lib.rs missing ${required}`);
 }
 
 const host = read("src/routes/+page.svelte");

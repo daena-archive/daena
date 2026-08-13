@@ -9,12 +9,11 @@ import {
   type GeoJSONStoreFeatures,
 } from "terra-draw";
 import { TerraDrawMapLibreGLAdapter } from "terra-draw-maplibre-gl-adapter";
-import type { GeoJSONSource, Map as MapLibreMap } from "maplibre-gl";
+import type { GeoJSONSource, Map as MapLibreMap, MapLayerMouseEvent } from "maplibre-gl";
 import maplibregl from "maplibre-gl/dist/maplibre-gl-csp.js";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-csp-worker.js?url";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { BASE_LAYER_ID, type VectorDrawMode, type VectorFeature, type VectorFeatureCollection } from "./types";
-import { PHASE0_VECTOR_LAYERS } from "./fixture";
+import { UNDO_STACK_SIZE, type VectorDrawMode, type VectorFeature, type VectorFeatureCollection, type VectorLayerDefinition } from "./types";
 import {
   AUTHORED_SOURCE_ID,
   BASE_SOURCE_ID,
@@ -28,7 +27,7 @@ import { normalizedToLonLat } from "./coordinates";
 if (typeof maplibregl.setWorkerUrl === "function") maplibregl.setWorkerUrl(workerUrl);
 
 export const RENDERER_UNAVAILABLE = "vector.renderer.unavailable";
-export { workerUrl, PHASE0_VECTOR_LAYERS };
+export { workerUrl };
 
 const liveEditors = new Set<NativeVectorEditor>();
 
@@ -41,6 +40,11 @@ export type NativeVectorEditor = {
   objectUrls: string[];
   setMode: (mode: VectorDrawMode) => void;
   switchLayer: (layerId: string) => void;
+  syncLayers: (layers: readonly VectorLayerDefinition[]) => void;
+  applyView: (center: [number, number], zoom: number) => void;
+  flush: () => void;
+  deleteSelection: () => void;
+  updateSelectedName: (name: string | null) => void;
   undo: () => void;
   redo: () => void;
   dispose: () => void;
@@ -109,11 +113,15 @@ export function createNativeVectorEditor(
   container: HTMLElement,
   session: {
     draft: VectorFeatureCollection;
-    activeLayerId: string;
+    layers: readonly VectorLayerDefinition[];
+    activeLayerId: string | null;
+    center: [number, number];
+    zoom: number;
     setDraft: (next: VectorFeatureCollection) => void;
     setActiveLayerId: (id: string) => void;
     onDirty?: () => void;
     onDiagnostic?: (code: string, detail: string) => void;
+    onSelect?: (feature: VectorFeature | null) => void;
   },
 ): NativeVectorEditor | { error: typeof RENDERER_UNAVAILABLE; detail: string } {
   if (!webgl2Available()) {
@@ -123,19 +131,19 @@ export function createNativeVectorEditor(
     };
   }
 
-  const style = nativeVectorStyle(PHASE0_VECTOR_LAYERS);
+  const style = nativeVectorStyle(session.layers);
   if (styleContainsRemoteUrl(style)) {
     return { error: RENDERER_UNAVAILABLE, detail: "Native vector style must not request remote URLs." };
   }
 
-  const [longitude, latitude] = normalizedToLonLat(0.5, 0.5);
+  const [longitude, latitude] = normalizedToLonLat(session.center[0], session.center[1]);
   let map: MapLibreMap;
   try {
     map = new maplibregl.Map({
       container,
       style,
       center: [longitude, latitude],
-      zoom: 1.6,
+      zoom: session.zoom,
       attributionControl: false,
       maxPitch: 0,
       pitchWithRotate: false,
@@ -157,33 +165,66 @@ export function createNativeVectorEditor(
   let draw: TerraDraw | null = null;
   let disposed = false;
   const objectUrls: string[] = [];
+  let hoveredId: string | number | null = null;
+  let mapSelectedId: string | number | null = null;
+  let terraSelectedId: string | number | null = null;
 
-  const applySources = (activeLayerId: string) => {
-    const split = splitVectorSources(session.draft, activeLayerId);
+  const clearFeatureState = (id: string | number | null, key: "hover" | "selected") => {
+    if (id === null) return;
+    try {
+      map.removeFeatureState({ source: AUTHORED_SOURCE_ID, id }, key);
+    } catch {
+      // Source may already have been removed during teardown.
+    }
+  };
+
+  const setMapSelection = (id: string | number | null) => {
+    clearFeatureState(mapSelectedId, "selected");
+    mapSelectedId = id;
+    if (id !== null) {
+      try {
+        map.setFeatureState({ source: AUTHORED_SOURCE_ID, id }, { selected: true });
+      } catch {
+        // Feature may live only in Terra Draw for the active layer.
+      }
+    }
+  };
+
+  const emitSelect = (feature: VectorFeature | null) => {
+    session.onSelect?.(feature);
+  };
+
+  const terraLayerId = () => {
+    const layer = session.layers.find((item) => item.id === session.activeLayerId);
+    if (!layer || layer.locked) return null;
+    return layer.id;
+  };
+
+  const applySources = (activeLayerId: string | null) => {
+    const editing = terraLayerId() === activeLayerId ? activeLayerId : null;
+    const split = splitVectorSources(session.draft, editing);
     (map.getSource(BASE_SOURCE_ID) as GeoJSONSource | undefined)?.setData(split.base);
     (map.getSource(AUTHORED_SOURCE_ID) as GeoJSONSource | undefined)?.setData(split.authored);
   };
 
   const mergeDrawIntoDraft = () => {
-    if (!draw) return;
-    const kept = session.draft.features.filter((feature) => feature.properties.daenaLayerId !== session.activeLayerId);
+    const layerId = terraLayerId();
+    if (!draw || !layerId) return;
+    const kept = session.draft.features.filter((feature) => feature.properties.daenaLayerId !== layerId);
     const drawn: VectorFeature[] = [];
     for (const feature of draw.getSnapshot()) {
-      const converted = asVectorFeature(feature, session.activeLayerId);
+      const converted = asVectorFeature(feature, layerId);
       if (converted) drawn.push(converted);
     }
     session.setDraft({ type: "FeatureCollection", features: [...kept, ...drawn] });
-    applySources(session.activeLayerId);
+    applySources(layerId);
   };
 
   const loadActiveLayer = () => {
-    if (!draw) return;
+    const layerId = terraLayerId();
+    if (!draw || !layerId) return;
     const features = session.draft.features
-      .filter(
-        (feature) =>
-          feature.properties.daenaLayerId === session.activeLayerId &&
-          feature.properties.daenaLayerId !== BASE_LAYER_ID,
-      )
+      .filter((feature) => feature.properties.daenaLayerId === layerId)
       .map(toStoreFeature);
     if (features.length) draw.addFeatures(features);
   };
@@ -214,6 +255,19 @@ export function createNativeVectorEditor(
     }
   };
 
+  const onSelect = (id: string | number) => {
+    terraSelectedId = id;
+    setMapSelection(null);
+    const snapshot = draw?.getSnapshotFeature(id);
+    const converted = snapshot ? asVectorFeature(snapshot, session.activeLayerId ?? "") : null;
+    emitSelect(converted);
+  };
+
+  const onDeselect = () => {
+    terraSelectedId = null;
+    emitSelect(null);
+  };
+
   const onFinish = (id: string | number, context: { mode?: string }) => {
     if (!draw) return;
     const snapshot = draw.getSnapshotFeature(id);
@@ -231,9 +285,11 @@ export function createNativeVectorEditor(
       if (geometry.type !== "Point" && geometry.type !== "LineString" && geometry.type !== "Polygon") return;
       draw.updateFeatureGeometry(id, geometry);
     }
+    const layerId = terraLayerId();
+    if (!layerId) return;
     const existingKind = snapshot.properties?.kind;
     draw.updateFeatureProperties(id, {
-      daenaLayerId: session.activeLayerId,
+      daenaLayerId: layerId,
       kind:
         typeof existingKind === "string"
           ? existingKind
@@ -252,9 +308,10 @@ export function createNativeVectorEditor(
         isValidId: (candidate) => typeof candidate === "string",
         getId: () => crypto.randomUUID(),
       },
-      undoRedo: { sessionLevel: new TerraDrawSessionUndoRedo({ maxStackSize: 50 }) },
+      undoRedo: { sessionLevel: new TerraDrawSessionUndoRedo({ maxStackSize: UNDO_STACK_SIZE }) },
       modes: [
         new TerraDrawSelectMode({
+          keyEvents: { deselect: "Escape", delete: "Delete", rotate: null, scale: null },
           flags: {
             point: { feature: { draggable: true } },
             linestring: {
@@ -277,12 +334,51 @@ export function createNativeVectorEditor(
     applySources(session.activeLayerId);
     draw.start();
     loadActiveLayer();
-    draw.setMode("select");
+    draw.setMode(terraLayerId() ? "select" : "static");
     draw.on("change", onChange);
     draw.on("finish", onFinish);
+    draw.on("select", onSelect);
+    draw.on("deselect", onDeselect);
+  };
+
+  const onHover = (event: MapLayerMouseEvent) => {
+    if (disposed) return;
+    const layerIds = (map.getStyle()?.layers ?? [])
+      .map((layer) => layer.id)
+      .filter((id) => id.startsWith("daena-vector-"));
+    const hit = layerIds.length ? map.queryRenderedFeatures(event.point, { layers: layerIds }) : [];
+    const id = hit[0]?.id ?? null;
+    if (hoveredId !== null && hoveredId !== id) clearFeatureState(hoveredId, "hover");
+    hoveredId = id;
+    if (id !== null) {
+      try {
+        map.setFeatureState({ source: AUTHORED_SOURCE_ID, id }, { hover: true });
+      } catch {
+        hoveredId = null;
+      }
+    }
+  };
+
+  const onMapClick = (event: MapLayerMouseEvent) => {
+    if (disposed || terraLayerId()) return;
+    const layerIds = (map.getStyle()?.layers ?? [])
+      .map((layer) => layer.id)
+      .filter((id) => id.startsWith("daena-vector-"));
+    const hit = layerIds.length ? map.queryRenderedFeatures(event.point, { layers: layerIds }) : [];
+    const id = hit[0]?.id;
+    if (id === undefined) {
+      setMapSelection(null);
+      emitSelect(null);
+      return;
+    }
+    setMapSelection(id);
+    const feature = session.draft.features.find((item) => item.id === String(id)) ?? null;
+    emitSelect(feature);
   };
 
   map.once("style.load", startDraw);
+  map.on("mousemove", onHover);
+  map.on("click", onMapClick);
   map.on("error", (event) => {
     const message = event.error?.message ?? "MapLibre renderer error";
     if (/webgl/i.test(message) || /context/i.test(message)) {
@@ -294,6 +390,10 @@ export function createNativeVectorEditor(
     workerUrl,
     objectUrls,
     setMode(mode) {
+      if (!terraLayerId() && mode !== "static" && mode !== "select") {
+        draw?.setMode("static");
+        return;
+      }
       draw?.setMode(mode === "static" ? "static" : mode);
     },
     switchLayer(layerId) {
@@ -301,28 +401,93 @@ export function createNativeVectorEditor(
         mergeDrawIntoDraft();
         draw.off("change", onChange);
         draw.off("finish", onFinish);
+        draw.off("select", onSelect);
+        draw.off("deselect", onDeselect);
         draw.stop();
         draw = null;
       }
+      terraSelectedId = null;
+      setMapSelection(null);
+      emitSelect(null);
       session.setActiveLayerId(layerId);
       applySources(layerId);
       startDraw();
     },
-    undo() {
-      draw?.undo();
+    syncLayers(layers) {
+      const apply = () => {
+        const generated = nativeVectorStyle(layers);
+        if (styleContainsRemoteUrl(generated)) {
+          session.onDiagnostic?.(RENDERER_UNAVAILABLE, "Native vector style must not request remote URLs.");
+          return;
+        }
+        const existing = map.getStyle()?.layers ?? [];
+        for (const layer of existing) {
+          if (layer.id.startsWith("daena-vector-") && map.getLayer(layer.id)) map.removeLayer(layer.id);
+        }
+        for (const layer of generated.layers) {
+          if (layer.id.startsWith("daena-vector-") && !map.getLayer(layer.id)) {
+            if (map.getLayer("daena-hover-fill")) map.addLayer(layer, "daena-hover-fill");
+            else map.addLayer(layer);
+          }
+        }
+        applySources(session.activeLayerId);
+      };
+      if (!map.isStyleLoaded()) {
+        map.once("style.load", apply);
+        return;
+      }
+      apply();
+    },
+    applyView(center, zoom) {
+      const [lon, lat] = normalizedToLonLat(center[0], center[1]);
+      map.jumpTo({ center: [lon, lat], zoom });
+    },
+    flush() {
       mergeDrawIntoDraft();
     },
+    deleteSelection() {
+      const id = terraSelectedId;
+      if (!draw || id === null) return;
+      draw.removeFeatures([id]);
+      terraSelectedId = null;
+      mergeDrawIntoDraft();
+      session.onDirty?.();
+      emitSelect(null);
+    },
+    updateSelectedName(name) {
+      const id = terraSelectedId;
+      if (!draw || id === null) return;
+      draw.updateFeatureProperties(id, { name });
+      mergeDrawIntoDraft();
+      session.onDirty?.();
+      const snapshot = draw.getSnapshotFeature(id);
+      emitSelect(snapshot ? asVectorFeature(snapshot, session.activeLayerId ?? "") : null);
+    },
+    undo() {
+      const before = JSON.stringify(session.draft);
+      draw?.undo();
+      mergeDrawIntoDraft();
+      if (JSON.stringify(session.draft) !== before) session.onDirty?.();
+    },
     redo() {
+      const before = JSON.stringify(session.draft);
       draw?.redo();
       mergeDrawIntoDraft();
+      if (JSON.stringify(session.draft) !== before) session.onDirty?.();
     },
     dispose() {
       if (disposed) return;
       disposed = true;
       map.off("style.load", startDraw);
+      map.off("mousemove", onHover);
+      map.off("click", onMapClick);
+      clearFeatureState(hoveredId, "hover");
+      clearFeatureState(mapSelectedId, "selected");
       try {
         draw?.off("change", onChange);
         draw?.off("finish", onFinish);
+        draw?.off("select", onSelect);
+        draw?.off("deselect", onDeselect);
         draw?.stop();
       } catch {
         // Terra Draw may already have been stopped during a layer switch.

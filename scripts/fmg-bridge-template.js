@@ -28,6 +28,7 @@ window.DAENA_HOST = true;
   let lastSavedHash = null;
   let dirty = false;
   let savingNow = false;
+  let fullscreen = false;
   async function post(body) {
     const response = await fetch("/__rpc", {
       method: "POST",
@@ -65,6 +66,12 @@ window.DAENA_HOST = true;
     void rpc("event.publish", { type: "daena.maps/state@1", payload: { mapEntityId: mapId, status, detail } }).catch(
       () => undefined,
     );
+  }
+  function publishUiState(status, detail = null) {
+    void rpc("event.publish", {
+      type: "daena.maps/state@1",
+      payload: { mapEntityId: mapId, status, detail },
+    }).catch(() => undefined);
   }
   function setDirty(value) {
     if (dirty === value) {
@@ -222,32 +229,62 @@ window.DAENA_HOST = true;
     const button = saveChrome.querySelector("[data-daena-save-button]");
     if (!status || !button) return;
     if (savingNow) {
-      status.textContent = "Saving…";
+      status.textContent = "";
+      status.setAttribute("aria-label", "Saving");
+      status.title = "Saving";
+      status.style.background = "#7aa2d5";
       button.disabled = true;
       updateLinkOpenButton();
       return;
     }
     if (dirty || asset.assetId === null) {
-      status.textContent = asset.assetId === null ? "Unsaved map" : "Unsaved changes";
+      const label = asset.assetId === null ? "Unsaved map" : "Unsaved changes";
+      status.textContent = "";
+      status.setAttribute("aria-label", label);
+      status.title = label;
+      status.style.background = "#d5ab6c";
       button.disabled = false;
       updateLinkOpenButton();
       return;
     }
-    status.textContent = "Saved";
+    status.textContent = "";
+    status.setAttribute("aria-label", "Saved");
+    status.title = "Saved";
+    status.style.background = "#8fc79b";
     button.disabled = true;
     updateLinkOpenButton();
+  }
+  function hideBackConfirmation() {
+    const confirmation = saveChrome?.querySelector("[data-daena-back-confirm]");
+    if (confirmation) confirmation.style.display = "none";
+  }
+  function showBackConfirmation() {
+    const confirmation = saveChrome?.querySelector("[data-daena-back-confirm]");
+    if (!confirmation) return;
+    confirmation.style.display = "flex";
+    confirmation.querySelector("[data-daena-back-stay]")?.focus();
+  }
+  function requestBack() {
+    if (savingNow) return;
+    if (dirty || asset.assetId === null) {
+      showBackConfirmation();
+      return;
+    }
+    fullscreen = false;
+    publishUiState("back");
   }
   function ensureSaveChrome() {
     if (saveChrome && saveChrome.isConnected) return saveChrome;
     saveChrome = document.createElement("div");
     saveChrome.id = "daena-save-chrome";
     saveChrome.style.cssText =
-      "position:fixed;z-index:2147483000;top:14px;right:14px;display:flex;flex-direction:column;align-items:stretch;gap:8px;padding:8px 10px;border:1px solid rgba(255,255,255,.18);border-radius:10px;background:rgba(32,40,36,.92);color:#f4f1ea;font:12px system-ui,sans-serif;box-shadow:0 8px 24px #0005;pointer-events:auto;min-width:240px";
+      "position:fixed;z-index:2147483000;top:14px;right:14px;display:flex;flex-direction:column;align-items:stretch;gap:8px;padding:8px 10px;border:1px solid rgba(255,255,255,.18);border-radius:10px;background:rgba(32,40,36,.92);color:#f4f1ea;font:12px system-ui,sans-serif;box-shadow:0 8px 24px #0005;pointer-events:auto;min-width:0";
     saveChrome.innerHTML = `
       <div data-daena-save-row style="display:flex;align-items:center;gap:8px">
-        <span data-daena-save-status style="opacity:.9;flex:1">Unsaved map</span>
-        <button data-daena-link-open type="button" style="appearance:none;border:1px solid rgba(255,255,255,.22);border-radius:7px;padding:7px 11px;background:transparent;color:#f4f1ea;font:700 12px system-ui,sans-serif;cursor:pointer">Link</button>
-        <button data-daena-save-button type="button" style="appearance:none;border:0;border-radius:7px;padding:7px 11px;background:#d5ab6c;color:#2c4032;font:700 12px system-ui,sans-serif;cursor:pointer">Save</button>
+        <button data-daena-back type="button" aria-label="Back to map details" title="Back to map details" style="display:grid;place-items:center;width:32px;height:32px;appearance:none;border:1px solid rgba(255,255,255,.22);border-radius:7px;padding:0;background:transparent;color:#f4f1ea;cursor:pointer"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg></button>
+        <button data-daena-link-open type="button" aria-label="Link location" title="Link location" style="display:grid;place-items:center;width:32px;height:32px;appearance:none;border:1px solid rgba(255,255,255,.22);border-radius:7px;padding:0;background:transparent;color:#f4f1ea;cursor:pointer"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></button>
+        <button data-daena-save-button type="button" aria-label="Save map" title="Save map" style="display:grid;place-items:center;width:32px;height:32px;appearance:none;border:0;border-radius:7px;padding:0;background:#d5ab6c;color:#2c4032;cursor:pointer"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h12l2 2v16H5z"/><path d="M8 3v6h8V3"/><path d="M8 21v-6h8v6"/></svg></button>
+        <span data-daena-save-status role="status" aria-live="polite" aria-label="Unsaved map" title="Unsaved map" style="display:block;width:8px;height:8px;flex:0 0 8px;margin-left:auto;border-radius:999px;background:#d5ab6c;box-shadow:0 0 0 2px rgba(255,255,255,.08)"></span>
       </div>
       <form data-daena-name-form style="display:none;gap:8px;margin:0">
         <label style="display:grid;gap:4px">
@@ -258,9 +295,19 @@ window.DAENA_HOST = true;
           <button data-daena-name-cancel type="button" style="appearance:none;border:1px solid rgba(255,255,255,.2);border-radius:7px;padding:6px 10px;background:transparent;color:#d7ddd6;font:12px system-ui,sans-serif;cursor:pointer">Cancel</button>
           <button data-daena-name-confirm type="submit" style="appearance:none;border:0;border-radius:7px;padding:6px 10px;background:#d5ab6c;color:#2c4032;font:700 12px system-ui,sans-serif;cursor:pointer">Save map</button>
         </div>
-      </form>`;
+      </form>
+      <div data-daena-back-confirm role="alertdialog" aria-label="Unsaved map changes" style="display:none;align-items:center;gap:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.14)">
+        <span style="flex:1;line-height:1.3">Leave?</span>
+        <button data-daena-back-leave type="button" aria-label="Leave without saving" title="Leave without saving" style="display:grid;place-items:center;width:28px;height:28px;appearance:none;border:0;border-radius:7px;padding:0;background:#d5ab6c;color:#2c4032;font:700 16px/1 system-ui,sans-serif;cursor:pointer">✓</button>
+        <button data-daena-back-stay type="button" aria-label="Stay and keep editing" title="Stay and keep editing" style="display:grid;place-items:center;width:28px;height:28px;appearance:none;border:1px solid rgba(255,255,255,.2);border-radius:7px;padding:0;background:transparent;color:#d7ddd6;font:700 16px/1 system-ui,sans-serif;cursor:pointer">✕</button>
+      </div>
+      <button data-daena-fullscreen type="button" aria-label="Full screen" aria-pressed="false" title="Full screen" style="position:fixed;left:14px;bottom:14px;z-index:1;display:grid;place-items:center;width:32px;height:32px;appearance:none;border:1px solid rgba(255,255,255,.28);border-radius:8px;padding:0;background:rgba(32,40,36,.92);color:#f4f1ea;font:700 18px/1 system-ui,sans-serif;cursor:pointer;box-shadow:0 4px 14px #0005">⛶</button>`;
     const button = saveChrome.querySelector("[data-daena-save-button]");
+    const backButton = saveChrome.querySelector("[data-daena-back]");
+    const backStay = saveChrome.querySelector("[data-daena-back-stay]");
+    const backLeave = saveChrome.querySelector("[data-daena-back-leave]");
     const linkOpen = saveChrome.querySelector("[data-daena-link-open]");
+    const fullscreenButton = saveChrome.querySelector("[data-daena-fullscreen]");
     const form = saveChrome.querySelector("[data-daena-name-form]");
     const input = saveChrome.querySelector("[data-daena-name-input]");
     const cancel = saveChrome.querySelector("[data-daena-name-cancel]");
@@ -269,8 +316,25 @@ window.DAENA_HOST = true;
         showDiagnostic(error);
       });
     });
+    backButton.addEventListener("click", () => {
+      requestBack();
+    });
+    backStay.addEventListener("click", hideBackConfirmation);
+    backLeave.addEventListener("click", () => {
+      hideBackConfirmation();
+      fullscreen = false;
+      publishUiState("back");
+    });
     linkOpen.addEventListener("click", () => {
       void requestLinkFromToolbar().catch(showDiagnostic);
+    });
+    fullscreenButton.addEventListener("click", () => {
+      fullscreen = !fullscreen;
+      fullscreenButton.textContent = "⛶";
+      fullscreenButton.setAttribute("aria-label", fullscreen ? "Exit full screen" : "Full screen");
+      fullscreenButton.title = fullscreen ? "Exit full screen" : "Full screen";
+      fullscreenButton.setAttribute("aria-pressed", String(fullscreen));
+      publishUiState("fullscreen", { enabled: fullscreen });
     });
     cancel.addEventListener("click", () => {
       hideNameForm();
@@ -398,7 +462,9 @@ window.DAENA_HOST = true;
     button.disabled = !mapId;
     button.style.opacity = mapId ? "1" : ".45";
     button.style.cursor = mapId ? "pointer" : "not-allowed";
-    button.textContent = linkArming ? "Click map…" : "Link";
+    button.setAttribute("aria-label", linkArming ? "Click map to choose a location" : "Link location");
+    button.title = linkArming ? "Click map to choose a location" : "Link location";
+    button.style.background = linkArming ? "rgba(213,171,108,.22)" : "transparent";
   }
   function hideLinkChrome() {
     if (!linkChrome) return;

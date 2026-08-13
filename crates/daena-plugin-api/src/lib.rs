@@ -36,6 +36,7 @@ pub const KNOWN_CAPABILITIES: &[&str] = &[
     "schema.overlay",
     "event.publish:<type>",
     "event.subscribe:<type>",
+    "host.surface:<name>@<major>",
     "service.provide:<name>",
     "service.call:<name>",
 ];
@@ -175,6 +176,12 @@ pub const CAPABILITY_REGISTRY: &[CapabilityEntry] = &[
         id: "event.subscribe:<type>",
         resource: "declared.event",
         operations: &["subscribe"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "host.surface:<name>@<major>",
+        resource: "host.surface",
+        operations: &["use"],
         confirmation: None,
     },
     CapabilityEntry {
@@ -341,12 +348,32 @@ pub struct Migration {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ViewRenderer {
+    Declarative,
+    Sandboxed,
+    HostSurface {
+        id: String,
+        major: u32,
+    },
+}
+
+impl Default for ViewRenderer {
+    fn default() -> Self {
+        Self::Declarative
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct View {
     pub id: String,
     pub title: String,
     #[serde(default)]
     pub components: Vec<ViewComponent>,
+    #[serde(default)]
+    pub renderer: ViewRenderer,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -665,6 +692,7 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
         if !KNOWN_CAPABILITIES.contains(&capability.as_str())
             && !capability.starts_with("event.publish:")
             && !capability.starts_with("event.subscribe:")
+            && !capability.starts_with("host.surface:")
             && !capability.starts_with("service.provide:")
             && !capability.starts_with("service.call:")
         {
@@ -927,6 +955,21 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
         if !view_ids.insert(&view.id) {
             return Err(ContractError(format!("duplicate view id: {}", view.id)));
         }
+        if let ViewRenderer::HostSurface { id, major } = &view.renderer {
+            if !is_host_surface_id(id) || *major == 0 {
+                return Err(ContractError(format!(
+                    "view {} declares an invalid host surface",
+                    view.id
+                )));
+            }
+            let capability = format!("host.surface:{id}@{major}");
+            if !manifest.capabilities.iter().any(|candidate| candidate == &capability) {
+                return Err(ContractError(format!(
+                    "view {} requires undeclared capability: {capability}",
+                    view.id
+                )));
+            }
+        }
         let mut component_ids = BTreeSet::new();
         let mut list_entity_types = BTreeMap::new();
         for component in &view.components {
@@ -1163,6 +1206,21 @@ pub fn is_identifier(value: &str) -> bool {
                     .next()
                     .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
         })
+}
+
+pub fn is_host_surface_id(value: &str) -> bool {
+    let Some((namespace, surface)) = value.split_once('/') else {
+        return false;
+    };
+    is_identifier(namespace)
+        && !surface.is_empty()
+        && surface
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_' || c == '.')
+        && surface
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
 }
 
 pub fn is_semver(value: &str) -> bool {

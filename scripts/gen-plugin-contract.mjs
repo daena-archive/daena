@@ -169,6 +169,7 @@ const MANIFEST_DEF_ORDER = [
   "MigrationOperation",
   "Migration",
   "ViewComponent",
+  "ViewRenderer",
   "View",
   "CommandAction",
   "CommandExposure",

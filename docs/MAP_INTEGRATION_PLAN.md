@@ -376,8 +376,16 @@ highlights only the subset with resolvable locations on the active map.
 
 ### Map workspace
 
-The Maps workspace contains host-owned navigation chrome and one sandboxed map
-surface. The map surface provides:
+The Maps workspace uses the same three-pane module layout as Lore and Timeline:
+the left collection lists saved `daena.maps:map` entities, the center is the
+map's ordinary Daena document editor, and the right inspector exposes fields,
+relationships, assets, and Maps contributions. The provider surface is opened
+in the center when creating a map or explicitly editing its source. Creation is
+integration-driven rather than template-driven: the current chooser contains
+FMG, and future native integrations such as image-backed PNG maps add another
+provider option without changing the collection or inspector layout.
+
+The active provider surface provides:
 
 - map switcher and hierarchy breadcrumbs;
 - FMG edit/view mode;

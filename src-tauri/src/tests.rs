@@ -951,6 +951,7 @@ fn maps_webview_url_overrides_hidden_bootstrap_dimensions() {
         &policy,
         "project",
         None,
+        Some(("daena.maps/editor", 1)),
         None,
         None,
         PluginWebviewBounds {
@@ -975,6 +976,7 @@ fn maps_webview_url_overrides_hidden_bootstrap_dimensions() {
         &policy,
         "project",
         Some("map-workspace"),
+        Some(("daena.maps/editor", 1)),
         Some("018f89df-b93e-7ad0-a07f-08b1441d1550"),
         Some("f4c4f6b9-7c1e-4b8a-9d2e-0a3b5c7d9e11"),
         PluginWebviewBounds {
@@ -1324,6 +1326,12 @@ fn bundled_maps_shell_is_deterministic_and_provider_fail_closed() {
     assert!(bridge_body.contains("daena-save-chrome"));
     assert!(bridge_body.contains("commitFirstSave"));
     assert!(bridge_body.contains("data-daena-link-open"));
+    assert!(bridge_body.contains("data-daena-fullscreen"));
+    assert!(bridge_body.contains("publishUiState(\"fullscreen\""));
+    assert!(bridge_body.contains("data-daena-back"));
+    assert!(bridge_body.contains("publishUiState(\"back\""));
+    assert!(bridge_body.contains("data-daena-back-confirm"));
+    assert!(bridge_body.contains("Leave?"));
     assert!(bridge_body.contains("linkArming"));
     assert!(bridge_body.contains("data-daena-link-x"));
     assert!(bridge_body.contains("daena-link-chrome"));

@@ -4,8 +4,34 @@ use super::*;
 fn canonical_bundled_manifests_validate() {
     let lore = include_str!("../../../packages/modules/lore/manifest.json");
     let timeline = include_str!("../../../packages/modules/timeline/manifest.json");
+    let maps = include_str!("../../../packages/modules/maps/manifest.json");
     assert_eq!(parse_manifest(lore).unwrap().id, "daena.lore");
     assert_eq!(parse_manifest(timeline).unwrap().id, "daena.timeline");
+    let maps = parse_manifest(maps).unwrap();
+    assert_eq!(
+        maps.views[0].renderer,
+        ViewRenderer::HostSurface {
+            id: "daena.maps/editor".into(),
+            major: 1,
+        }
+    );
+}
+
+#[test]
+fn host_surface_renderer_requires_a_valid_versioned_id() {
+    let json = include_str!("../../../packages/modules/maps/manifest.json");
+    let mut manifest = parse_manifest(json).unwrap();
+    manifest.views[0].renderer = ViewRenderer::HostSurface {
+        id: "not-a-surface".into(),
+        major: 1,
+    };
+    assert!(validate_manifest(&manifest).is_err());
+
+    manifest.views[0].renderer = ViewRenderer::HostSurface {
+        id: "daena.maps/editor".into(),
+        major: 0,
+    };
+    assert!(validate_manifest(&manifest).is_err());
 }
 
 #[test]

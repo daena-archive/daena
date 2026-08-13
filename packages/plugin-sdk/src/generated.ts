@@ -16,7 +16,8 @@ export interface EntityTemplate { description?: string | null; document?: string
 export type MigrationOperation = { kind: "create-namespace"; namespace: string } | { field: FieldDefinition; kind: "add-field"; namespace: string } | { from: string; kind: "rename-field"; namespace: string; to: string } | { key: string; kind: "drop-field"; namespace: string };
 export interface Migration { from: number; id: string; operations: MigrationOperation[]; recovery: "backup" | "preserve-data"; to: number }
 export type ViewComponent = { id: string; text: string; type: "heading" } | { id: string; text: string; type: "text" } | { entityType: string; id: string; limit: number; title: string; type: "entity-list" } | { id: string; source: string; title: string; type: "entity-detail" } | { editable: boolean; fields: string[]; id: string; namespace: string; source: string; title: string; type: "field-form" } | { command: string; id: string; label: string; type: "button" };
-export interface View { components?: ViewComponent[]; id: string; title: string }
+export type ViewRenderer = { type: "declarative" } | { type: "sandboxed" } | { id: string; major: number; type: "host-surface" };
+export interface View { components?: ViewComponent[]; id: string; renderer?: ViewRenderer; title: string }
 export type CommandAction = { type: "refresh-view" };
 export type CommandExposure = "view" | "broker";
 export type CommandValueType = "object" | "string" | "number" | "boolean" | "array" | "null";

@@ -156,6 +156,13 @@
       "resource": "declared.event"
     },
     {
+      "id": "host.surface:<name>@<major>",
+      "operations": [
+        "use"
+      ],
+      "resource": "host.surface"
+    },
+    {
       "id": "service.provide:<name>",
       "operations": [
         "provide"

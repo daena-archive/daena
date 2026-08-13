@@ -249,11 +249,20 @@ const knownCapabilities = new Set([
     "schema.overlay",
     "event.publish:<type>",
     "event.subscribe:<type>",
+    "host.surface:<name>@<major>",
     "service.provide:<name>",
     "service.call:<name>",
 ]);
 export function isPluginIdentifier(value) {
     return value.length > 0 && value.split(".").every((part) => /^[a-z0-9][a-z0-9_-]*$/.test(part));
+}
+export function isHostSurfaceId(value) {
+    const [namespace, surface, ...extra] = value.split("/");
+    return (extra.length === 0 &&
+        typeof namespace === "string" &&
+        isPluginIdentifier(namespace) &&
+        typeof surface === "string" &&
+        /^[a-z0-9][a-z0-9_.-]*$/.test(surface));
 }
 export function isSemanticVersion(value) {
     return /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value);
@@ -452,8 +461,28 @@ export function validatePluginManifest(manifest) {
                     continue;
                 }
                 checkKeys(item, label.slice(0, -1), label === "views"
-                    ? ["id", "title", "components"]
+                    ? ["id", "title", "renderer", "components"]
                     : ["id", "title", "action", "input", "output", "capabilities", "exposure"], errors);
+                if (label === "views" && item.renderer !== undefined) {
+                    if (!isRecord(item.renderer) || typeof item.renderer.type !== "string") {
+                        errors.push(`view ${String(item.id)} renderer must be a typed object`);
+                    }
+                    else {
+                        checkKeys(item.renderer, "view renderer", ["type", "id", "major"], errors);
+                        if (item.renderer.type === "host-surface") {
+                            if (typeof item.renderer.id !== "string" || !isHostSurfaceId(item.renderer.id))
+                                errors.push(`view ${String(item.id)} host surface id is invalid`);
+                            if (typeof item.renderer.major !== "number" || !Number.isInteger(item.renderer.major) || item.renderer.major < 1)
+                                errors.push(`view ${String(item.id)} host surface major is invalid`);
+                        }
+                        else if (item.renderer.type !== "declarative" && item.renderer.type !== "sandboxed") {
+                            errors.push(`view ${String(item.id)} renderer type is invalid`);
+                        }
+                        else if (item.renderer.id !== undefined || item.renderer.major !== undefined) {
+                            errors.push(`view ${String(item.id)} renderer has unexpected host surface fields`);
+                        }
+                    }
+                }
                 if (label === "commands") {
                     if (item.input !== undefined)
                         validateCommandSchema(item.input, `command ${String(item.id)} input`, errors);
@@ -571,7 +600,8 @@ export function validatePluginManifest(manifest) {
             continue;
         }
         if (!knownCapabilities.has(capability) &&
-            !/^(event\.(publish|subscribe)|service\.(provide|call)):.+$/.test(capability))
+            !/^(event\.(publish|subscribe)|service\.(provide|call)):.+$/.test(capability) &&
+            !/^host\.surface:[^@]+@\d+$/.test(capability))
             errors.push(`unknown capability: ${capability}`);
     }
     if (new Set(capabilityList).size !== capabilityList.length)

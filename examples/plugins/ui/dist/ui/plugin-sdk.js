@@ -17,7 +17,7 @@ function qualified(name, version) {
 }
 async function callTransport(transport, method, payload, requestId) {
     try {
-        return await transport.call(method, payload, requestId);
+        return (await transport.call(method, payload, requestId));
     }
     catch (error) {
         if (isRpcError(error))
@@ -26,10 +26,11 @@ async function callTransport(transport, method, payload, requestId) {
     }
 }
 function isRpcError(value) {
-    return typeof value === "object" && value !== null &&
+    return (typeof value === "object" &&
+        value !== null &&
         typeof value.code === "string" &&
         typeof value.message === "string" &&
-        typeof value.retryable === "boolean";
+        typeof value.retryable === "boolean");
 }
 function rpcFailure(code, message, retryable = false, details) {
     return { code, message, retryable, details };
@@ -109,9 +110,16 @@ export function createBrowserPluginRpcTransport(options = {}) {
     }
     async function bootstrap() {
         const value = await post({ op: "bootstrap", pluginId, projectId });
-        if (!isRecord(value) || value.rpcVersion !== 1 || value.pluginId !== pluginId || value.projectId !== projectId ||
-            typeof value.sessionId !== "string" || !value.sessionId || typeof value.version !== "string" ||
-            typeof value.hostApi !== "string" || !Array.isArray(value.grantedCapabilities) || !Array.isArray(value.optionalFeatures)) {
+        if (!isRecord(value) ||
+            value.rpcVersion !== 1 ||
+            value.pluginId !== pluginId ||
+            value.projectId !== projectId ||
+            typeof value.sessionId !== "string" ||
+            !value.sessionId ||
+            typeof value.version !== "string" ||
+            typeof value.hostApi !== "string" ||
+            !Array.isArray(value.grantedCapabilities) ||
+            !Array.isArray(value.optionalFeatures)) {
             throw rpcFailure("transport.protocol", "plugin bootstrap response is invalid");
         }
         sessionId = value.sessionId;
@@ -120,14 +128,16 @@ export function createBrowserPluginRpcTransport(options = {}) {
     async function ensureSession() {
         if (sessionId)
             return;
-        handshake ??= bootstrap().finally(() => { handshake = undefined; });
+        handshake ??= bootstrap().finally(() => {
+            handshake = undefined;
+        });
         await handshake;
     }
     async function call(method, payload, suppliedRequestId) {
         if (method === "plugin.bootstrap")
             return bootstrap();
         await ensureSession();
-        const requestId = suppliedRequestId ?? (globalThis.crypto?.randomUUID?.() ?? `${pluginId}-${++sequence}`);
+        const requestId = suppliedRequestId ?? globalThis.crypto?.randomUUID?.() ?? `${pluginId}-${++sequence}`;
         const value = await post({
             op: "rpc",
             request: { rpcVersion: 1, sessionId, requestId, method, payload },
@@ -150,14 +160,19 @@ function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function normalizeEntity(value) {
-    if (!isRecord(value) || typeof value.id !== "string" || typeof value.name !== "string" ||
-        typeof value.deleted !== "boolean" || typeof value.revision !== "string") {
+    if (!isRecord(value) ||
+        typeof value.id !== "string" ||
+        typeof value.name !== "string" ||
+        typeof value.deleted !== "boolean" ||
+        typeof value.revision !== "string") {
         throw rpcFailure("transport.protocol", "broker returned an invalid entity record");
     }
     const entityType = value.entityType ?? value.entity_type;
     const createdAt = value.createdAt ?? value.created_at;
     const updatedAt = value.updatedAt ?? value.updated_at;
-    if ((entityType !== null && typeof entityType !== "string") || typeof createdAt !== "string" || typeof updatedAt !== "string") {
+    if ((entityType !== null && typeof entityType !== "string") ||
+        typeof createdAt !== "string" ||
+        typeof updatedAt !== "string") {
         throw rpcFailure("transport.protocol", "broker returned an invalid entity record");
     }
     return {
@@ -193,13 +208,21 @@ export function createPluginRpcClient(transport) {
         beginAssetReplace: (input, options) => callTransport(transport, "asset.replace.begin", input, options?.requestId),
         commitAssetReplace: (handle, contentHash, options) => callTransport(transport, "asset.replace.commit", { handle, contentHash }, options?.requestId),
         cancelAssetTransfer: (handle) => callTransport(transport, "asset.transfer.cancel", { handle }),
+        startAiRequest: (request) => callTransport(transport, "ai.request.start", request),
+        pollAiRequest: (requestId) => callTransport(transport, "ai.request.poll", { requestId }),
+        cancelAiRequest: (requestId) => callTransport(transport, "ai.request.cancel", { requestId }),
+        getAiResult: (requestId) => callTransport(transport, "ai.request.result", { requestId }),
+        getAiCitations: (requestId) => callTransport(transport, "ai.request.citations", { requestId }),
     };
 }
 export async function uploadAssetChunks(transfer, bytes, fetcher = globalThis.fetch) {
     if (bytes.length > 64 * 1024 * 1024)
         throw new Error("asset exceeds SDK transfer limit");
     for (let offset = 0, chunk = 0; offset < bytes.length || (bytes.length === 0 && chunk === 0); offset += transfer.maxChunkBytes, chunk += 1) {
-        const response = await fetcher(`${transfer.url.replace(/\/0\?/, `/${chunk}?`)}`, { method: "PUT", body: bytes.slice(offset, offset + transfer.maxChunkBytes) });
+        const response = await fetcher(`${transfer.url.replace(/\/0\?/, `/${chunk}?`)}`, {
+            method: "PUT",
+            body: bytes.slice(offset, offset + transfer.maxChunkBytes),
+        });
         if (!response.ok)
             throw new Error(`asset upload failed: ${response.status}`);
         if (bytes.length === 0)
@@ -207,22 +230,55 @@ export async function uploadAssetChunks(transfer, bytes, fetcher = globalThis.fe
     }
 }
 const knownCapabilities = new Set([
-    "entity.read", "entity.write", "entity.delete", "document.read", "document.write",
-    "field.read:self", "field.read:shared", "field.write:self", "relationship.read",
-    "relationship.write", "asset.read:self", "asset.write:self", "asset.register", "search.query",
-    "event.publish:<type>", "event.subscribe:<type>", "service.provide:<name>", "service.call:<name>",
+    "ai.text.generate",
+    "ai.text.generate-structured",
+    "entity.read",
+    "entity.write",
+    "entity.delete",
+    "document.read",
+    "document.write",
+    "field.read:self",
+    "field.read:shared",
+    "field.write:self",
+    "relationship.read",
+    "relationship.write",
+    "asset.read:self",
+    "asset.write:self",
+    "asset.register",
+    "search.query",
+    "schema.overlay",
+    "event.publish:<type>",
+    "event.subscribe:<type>",
+    "host.surface:<name>@<major>",
+    "service.provide:<name>",
+    "service.call:<name>",
 ]);
 export function isPluginIdentifier(value) {
     return value.length > 0 && value.split(".").every((part) => /^[a-z0-9][a-z0-9_-]*$/.test(part));
+}
+export function isHostSurfaceId(value) {
+    const [namespace, surface, ...extra] = value.split("/");
+    return (extra.length === 0 &&
+        typeof namespace === "string" &&
+        isPluginIdentifier(namespace) &&
+        typeof surface === "string" &&
+        /^[a-z0-9][a-z0-9_.-]*$/.test(surface));
 }
 export function isSemanticVersion(value) {
     return /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value);
 }
 export function isHostApiRange(value) {
-    return value.trim().split(/\s+/).length > 0 && value.trim().split(/\s+/).every((part) => /^(?:\^|~|>=|<=|>|<|=)?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(part));
+    return (value.trim().split(/\s+/).length > 0 &&
+        value
+            .trim()
+            .split(/\s+/)
+            .every((part) => /^(?:\^|~|>=|<=|>|<|=)?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(part)));
 }
 export function isPackagePath(value) {
-    return value.length > 0 && !value.startsWith("/") && !value.includes("\\") && !value.split("/").some((part) => !part || part === ".." || part === ".");
+    return (value.length > 0 &&
+        !value.startsWith("/") &&
+        !value.includes("\\") &&
+        !value.split("/").some((part) => !part || part === ".." || part === "."));
 }
 function validateCommandSchema(value, label, errors) {
     if (!isRecord(value)) {
@@ -259,13 +315,35 @@ function validateCommandSchema(value, label, errors) {
 }
 export function validatePluginManifest(manifest) {
     const errors = [];
-    const knownManifestKeys = new Set(["manifestVersion", "id", "name", "version", "publisher", "hostApi", "kind", "entrypoints", "capabilities", "dependencies", "namespaces", "schemas", "templates", "views", "commands", "services", "events", "migrations"]);
+    const knownManifestKeys = new Set([
+        "manifestVersion",
+        "id",
+        "name",
+        "version",
+        "publisher",
+        "enabledByDefault",
+        "stability",
+        "hostApi",
+        "kind",
+        "entrypoints",
+        "capabilities",
+        "dependencies",
+        "namespaces",
+        "schemas",
+        "templates",
+        "records",
+        "views",
+        "commands",
+        "services",
+        "events",
+        "migrations",
+    ]);
     const value = manifest;
     for (const key of Object.keys(value))
         if (!knownManifestKeys.has(key))
             errors.push(`unknown manifest key: ${key}`);
     for (const key of knownManifestKeys)
-        if (!(key in value))
+        if (key !== "enabledByDefault" && key !== "stability" && key !== "records" && !(key in value))
             errors.push(`missing manifest key: ${key}`);
     if (value.manifestVersion !== 1)
         errors.push("manifestVersion must be 1");
@@ -279,6 +357,10 @@ export function validatePluginManifest(manifest) {
         errors.push("version is invalid");
     if (typeof value.hostApi !== "string" || !isHostApiRange(value.hostApi))
         errors.push("hostApi is invalid");
+    if (value.enabledByDefault !== undefined && typeof value.enabledByDefault !== "boolean")
+        errors.push("enabledByDefault must be a boolean");
+    if (value.stability !== undefined && !["stable", "beta", "experimental"].includes(value.stability))
+        errors.push("stability is invalid");
     if (value.kind !== "declarative" && value.kind !== "sandboxed")
         errors.push("kind is invalid");
     const entrypoints = value.entrypoints;
@@ -300,6 +382,7 @@ export function validatePluginManifest(manifest) {
     const namespaces = value.namespaces;
     const schemas = value.schemas;
     const templates = value.templates;
+    const records = value.records;
     const views = value.views;
     const commands = value.commands;
     const services = value.services;
@@ -315,6 +398,8 @@ export function validatePluginManifest(manifest) {
         errors.push("schemas must be an array");
     if (!Array.isArray(templates))
         errors.push("templates must be an array");
+    if (records !== undefined && !Array.isArray(records))
+        errors.push("records must be an array");
     if (!Array.isArray(views))
         errors.push("views must be an array");
     if (!Array.isArray(commands))
@@ -340,7 +425,17 @@ export function validatePluginManifest(manifest) {
                         errors.push("schema fields must contain objects");
                         continue;
                     }
-                    checkKeys(field, "field", ["key", "label", "type", "required", "options", "entityTypes", "relationshipType", "targetEntityTypes", "shared"], errors);
+                    checkKeys(field, "field", [
+                        "key",
+                        "label",
+                        "type",
+                        "required",
+                        "options",
+                        "entityTypes",
+                        "relationshipType",
+                        "targetEntityTypes",
+                        "shared",
+                    ], errors);
                     if (field.shared !== undefined && typeof field.shared !== "boolean")
                         errors.push(`field ${String(field.key)} shared must be boolean`);
                 }
@@ -355,14 +450,39 @@ export function validatePluginManifest(manifest) {
             if (!isRecord(template.fields))
                 errors.push("template fields must be an object");
         }
-    for (const [label, list] of [["views", views], ["commands", commands]])
+    for (const [label, list] of [
+        ["views", views],
+        ["commands", commands],
+    ])
         if (Array.isArray(list))
             for (const item of list) {
                 if (!isRecord(item)) {
                     errors.push(`${label} must contain objects`);
                     continue;
                 }
-                checkKeys(item, label.slice(0, -1), label === "views" ? ["id", "title", "components"] : ["id", "title", "action", "input", "output", "capabilities", "exposure"], errors);
+                checkKeys(item, label.slice(0, -1), label === "views"
+                    ? ["id", "title", "renderer", "components"]
+                    : ["id", "title", "action", "input", "output", "capabilities", "exposure"], errors);
+                if (label === "views" && item.renderer !== undefined) {
+                    if (!isRecord(item.renderer) || typeof item.renderer.type !== "string") {
+                        errors.push(`view ${String(item.id)} renderer must be a typed object`);
+                    }
+                    else {
+                        checkKeys(item.renderer, "view renderer", ["type", "id", "major"], errors);
+                        if (item.renderer.type === "host-surface") {
+                            if (typeof item.renderer.id !== "string" || !isHostSurfaceId(item.renderer.id))
+                                errors.push(`view ${String(item.id)} host surface id is invalid`);
+                            if (typeof item.renderer.major !== "number" || !Number.isInteger(item.renderer.major) || item.renderer.major < 1)
+                                errors.push(`view ${String(item.id)} host surface major is invalid`);
+                        }
+                        else if (item.renderer.type !== "declarative" && item.renderer.type !== "sandboxed") {
+                            errors.push(`view ${String(item.id)} renderer type is invalid`);
+                        }
+                        else if (item.renderer.id !== undefined || item.renderer.major !== undefined) {
+                            errors.push(`view ${String(item.id)} renderer has unexpected host surface fields`);
+                        }
+                    }
+                }
                 if (label === "commands") {
                     if (item.input !== undefined)
                         validateCommandSchema(item.input, `command ${String(item.id)} input`, errors);
@@ -373,7 +493,9 @@ export function validatePluginManifest(manifest) {
                             errors.push(`command ${String(item.id)} capabilities must be an array`);
                         else
                             for (const capability of item.capabilities) {
-                                if (typeof capability !== "string" || !Array.isArray(capabilities) || !capabilities.includes(capability))
+                                if (typeof capability !== "string" ||
+                                    !Array.isArray(capabilities) ||
+                                    !capabilities.includes(capability))
                                     errors.push(`command ${String(item.id)} requires an undeclared capability`);
                             }
                     }
@@ -477,7 +599,9 @@ export function validatePluginManifest(manifest) {
             errors.push("capabilities must contain strings");
             continue;
         }
-        if (!knownCapabilities.has(capability) && !/^(event\.(publish|subscribe)|service\.(provide|call)):.+$/.test(capability))
+        if (!knownCapabilities.has(capability) &&
+            !/^(event\.(publish|subscribe)|service\.(provide|call)):.+$/.test(capability) &&
+            !/^host\.surface:[^@]+@\d+$/.test(capability))
             errors.push(`unknown capability: ${capability}`);
     }
     if (new Set(capabilityList).size !== capabilityList.length)
@@ -489,6 +613,27 @@ export function validatePluginManifest(manifest) {
         if (!owned.has(schema.namespace))
             errors.push(`unowned schema namespace: ${schema.namespace}`);
     const entityTypes = new Set(schemas.flatMap((schema) => schema.entityTypes));
+    if (Array.isArray(records)) {
+        const recordIds = new Set();
+        for (const record of records) {
+            if (!isRecord(record)) {
+                errors.push("record collections must be objects");
+                continue;
+            }
+            checkKeys(record, "record collection", ["id", "ownerEntityTypes", "schema"], errors);
+            if (typeof record.id !== "string" || !isPluginIdentifier(record.id))
+                errors.push("record collection id is invalid");
+            else if (recordIds.has(record.id))
+                errors.push(`duplicate record collection: ${record.id}`);
+            else
+                recordIds.add(record.id);
+            if (!Array.isArray(record.ownerEntityTypes) ||
+                record.ownerEntityTypes.length === 0 ||
+                record.ownerEntityTypes.some((type) => typeof type !== "string" || !entityTypes.has(type)))
+                errors.push(`record collection ${String(record.id)} has invalid owner entity types`);
+            validateCommandSchema(record.schema, `record collection ${String(record.id)} schema`, errors);
+        }
+    }
     const fields = new Map();
     for (const schema of schemas)
         for (const field of schema.fields) {
@@ -497,12 +642,15 @@ export function validatePluginManifest(manifest) {
             fields.set(field.key, field);
             if (field.entityTypes?.some((type) => !entityTypes.has(type)))
                 errors.push(`field ${field.key} uses an unknown entity type`);
-            if (field.entityTypes && (field.entityTypes.length === 0 || new Set(field.entityTypes).size !== field.entityTypes.length))
+            if (field.entityTypes &&
+                (field.entityTypes.length === 0 || new Set(field.entityTypes).size !== field.entityTypes.length))
                 errors.push(`field ${field.key} has empty or duplicate entity types`);
             if (field.type === "relationship" && (!field.relationshipType || !field.targetEntityTypes?.length))
                 errors.push(`relationship field ${field.key} is incomplete`);
-            if (field.type === "relationship" && field.targetEntityTypes && (field.targetEntityTypes.some((type) => !entityTypes.has(type)) || new Set(field.targetEntityTypes).size !== field.targetEntityTypes.length))
-                errors.push(`relationship field ${field.key} has unknown or duplicate target entity types`);
+            if (field.type === "relationship" &&
+                field.targetEntityTypes &&
+                new Set(field.targetEntityTypes).size !== field.targetEntityTypes.length)
+                errors.push(`relationship field ${field.key} has duplicate target entity types`);
             if (field.type !== "relationship" && (field.relationshipType || field.targetEntityTypes))
                 errors.push(`non-relationship field ${field.key} has relationship metadata`);
         }
@@ -541,7 +689,10 @@ export function validatePluginManifest(manifest) {
                             valid = typeof preset === "string" || isRecord(preset);
                             break;
                         case "enum":
-                            valid = typeof preset === "string" && (field.options?.includes(preset) ?? false);
+                            valid = field.multiple
+                                ? Array.isArray(preset) &&
+                                    preset.every((value) => typeof value === "string" && (field.options?.includes(value) ?? false))
+                                : typeof preset === "string" && (field.options?.includes(preset) ?? false);
                             break;
                     }
                     if (!valid)
@@ -603,14 +754,18 @@ export function validatePluginManifest(manifest) {
                     errors.push(`view ${view.id} field form source must not be empty`);
                 if (typeof component.namespace !== "string" || !component.namespace.trim())
                     errors.push(`view ${view.id} field form namespace must not be empty`);
-                if (!Array.isArray(component.fields) || component.fields.length === 0 || component.fields.some((key) => typeof key !== "string" || !key.trim()))
+                if (!Array.isArray(component.fields) ||
+                    component.fields.length === 0 ||
+                    component.fields.some((key) => typeof key !== "string" || !key.trim()))
                     errors.push(`view ${view.id} field form must list at least one non-empty field`);
                 if (!owned.has(component.namespace))
                     errors.push(`view ${view.id} form uses an unowned namespace`);
-                for (const key of component.fields) {
-                    const field = fields.get(key);
-                    if (!field || field.entityTypes?.length && source && !field.entityTypes.includes(source.entityType))
-                        errors.push(`view ${view.id} form uses an invalid field: ${key}`);
+                if (Array.isArray(component.fields)) {
+                    for (const key of component.fields) {
+                        const field = fields.get(key);
+                        if (!field || (field.entityTypes?.length && source && !field.entityTypes.includes(source.entityType)))
+                            errors.push(`view ${view.id} form uses an invalid field: ${key}`);
+                    }
                 }
                 if (!capabilityList.includes("field.read:self"))
                     errors.push(`view ${view.id} field form requires field.read:self`);
@@ -643,7 +798,11 @@ export function canonicalize(value) {
     if (Array.isArray(value))
         return `[${value.map(canonicalize).join(",")}]`;
     if (value && typeof value === "object") {
-        return `{${Object.entries(value).filter(([, item]) => item !== undefined).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${canonicalize(item)}`).join(",")}}`;
+        return `{${Object.entries(value)
+            .filter(([, item]) => item !== undefined)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([key, item]) => `${JSON.stringify(key)}:${canonicalize(item)}`)
+            .join(",")}}`;
     }
     return value === undefined ? "null" : JSON.stringify(value);
 }
@@ -652,7 +811,13 @@ export function canonicalManifestJson(manifest) {
     return `${canonicalize(manifest)}\n`;
 }
 export function migration(options) {
-    const result = { id: options.id, from: options.from, to: options.to, recovery: options.recovery ?? "backup", operations: options.operations };
+    const result = {
+        id: options.id,
+        from: options.from,
+        to: options.to,
+        recovery: options.recovery ?? "backup",
+        operations: options.operations,
+    };
     if (result.from < 0 || result.to <= result.from || !result.id.trim())
         throw new Error("migration must have a non-empty ID and increasing versions");
     return result;
@@ -677,6 +842,10 @@ export function validateMigrationChain(migrations, namespaces = []) {
 export function createMigrationOperation(kind, namespace, value = {}) {
     return { kind, namespace, ...value };
 }
-export function service(name, major) { return { name, major }; }
-export function event(name, version) { return { name, version }; }
+export function service(name, major) {
+    return { name, major };
+}
+export function event(name, version) {
+    return { name, version };
+}
 //# sourceMappingURL=index.js.map

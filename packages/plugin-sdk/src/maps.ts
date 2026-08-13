@@ -87,6 +87,35 @@ export interface MapNavigationService {
   listLocations(input: { entityId: string }): Promise<readonly MapLocationReference[]>;
 }
 
+/** Browser-side bridge implemented by a plugin that declares
+ * `daena.maps/editor@1`. The host invokes these methods for shell actions;
+ * all project reads, writes, and event publication remain brokered through the
+ * plugin SDK. Every method is optional so a surface can support only the
+ * interactions it understands. */
+export interface MapsHostSurfaceProvider {
+  save?: () => void | Promise<void>;
+  captureSelection?: () => void | Promise<void>;
+  startPick?: () => void | Promise<void>;
+  setSemanticOverlay?: (frame: unknown) => void | Promise<void>;
+  setDate?: (date: MapDate | null) => void | Promise<void>;
+  focusByLink?: (linkId: string) => void | Promise<void>;
+}
+
+declare global {
+  interface Window {
+    daenaMapProvider?: MapsHostSurfaceProvider;
+  }
+}
+
+/** Register the browser bridge used by the Maps host surface. */
+export function registerMapsHostSurfaceProvider(provider: MapsHostSurfaceProvider): () => void {
+  if (typeof window === "undefined") throw new Error("Maps host surface requires a browser runtime");
+  window.daenaMapProvider = provider;
+  return () => {
+    if (window.daenaMapProvider === provider) delete window.daenaMapProvider;
+  };
+}
+
 /** Shell-side location mutations available to module contexts (not part of
  * the public navigation service contract; both are revision-aware). */
 export interface MapLocationsMutations {

@@ -51,6 +51,7 @@ fn manifest(id: &str, namespace: &str) -> PluginManifest {
             id: "overview".into(),
             title: "Overview".into(),
             components: vec![],
+            renderer: daena_plugin_api::ViewRenderer::default(),
         }],
         commands: vec![daena_plugin_api::Command {
             id: "refresh".into(),
@@ -1606,6 +1607,7 @@ fn activation_registers_and_deactivation_removes_manifest_declarations() {
             id: "overview".into(),
             title: "Overview".into(),
             components: vec![],
+            renderer: daena_plugin_api::ViewRenderer::default(),
         }]
     );
     assert_eq!(

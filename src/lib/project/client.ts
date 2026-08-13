@@ -194,6 +194,11 @@ export interface DependencyState {
   order: string[];
   error: string | null;
 }
+export interface PluginDistribution {
+  origin: "bundled" | "installed";
+  management: "app" | "user";
+  canUninstall: boolean;
+}
 export interface PluginAdminEntry extends ProjectModuleManifest {
   enabled: boolean;
   selectedVersion: string | null;
@@ -203,6 +208,7 @@ export interface PluginAdminEntry extends ProjectModuleManifest {
   grantedCapabilities: string[];
   installedVersions: InstalledVersionInfo[];
   dependencyState: DependencyState;
+  distribution: PluginDistribution;
 }
 export interface PluginAdminView {
   plugins: PluginAdminEntry[];
@@ -420,12 +426,16 @@ export const project = {
       date: input.date ?? null,
       entityIds: input.entityIds ?? null,
     }),
-  mapsEditorSave: () => invoke<void>("maps_editor_save"),
-  mapsEditorCaptureAnchor: () => invoke<void>("maps_editor_capture_anchor"),
-  mapsEditorStartPick: () => invoke<void>("maps_editor_start_pick"),
-  mapsEditorSetOverlay: (frame: unknown) => invoke<void>("maps_editor_set_overlay", { frame }),
-  mapsEditorSetDate: (date: unknown) => invoke<void>("maps_editor_set_date", { date }),
-  mapsEditorFocusLink: (linkId: string) => invoke<void>("maps_editor_focus_link", { linkId }),
+  mapsEditorSave: (pluginId?: string) => invoke<void>("maps_editor_save", { pluginId: pluginId ?? null }),
+  mapsEditorCaptureAnchor: (pluginId?: string) =>
+    invoke<void>("maps_editor_capture_anchor", { pluginId: pluginId ?? null }),
+  mapsEditorStartPick: (pluginId?: string) => invoke<void>("maps_editor_start_pick", { pluginId: pluginId ?? null }),
+  mapsEditorSetOverlay: (frame: unknown, pluginId?: string) =>
+    invoke<void>("maps_editor_set_overlay", { pluginId: pluginId ?? null, frame }),
+  mapsEditorSetDate: (date: unknown, pluginId?: string) =>
+    invoke<void>("maps_editor_set_date", { pluginId: pluginId ?? null, date }),
+  mapsEditorFocusLink: (linkId: string, pluginId?: string) =>
+    invoke<void>("maps_editor_focus_link", { pluginId: pluginId ?? null, linkId }),
   mapsRecoveryList: (entityId: string) => invoke<MapRecoveryCopy[]>("maps_recovery_list", { entityId }),
   mapsRecoveryRestore: (entityId: string, fileName: string) =>
     invoke<Asset>("maps_recovery_restore", { entityId, fileName }),

@@ -63,12 +63,26 @@ type RecentProject = { name: string; root: string };
 type CreateOption = { key: string; module: InstalledModule; template: EntityTemplate };
 type CreateGroup = { module: InstalledModule; options: CreateOption[] };
 type CreateField = { namespace: string; field: FieldDefinition; required: boolean };
+type NavigationRenderer = "workspace" | "maps" | "host" | "webview";
+type WorkspaceNavigationItem = {
+  kind: "workspace";
+  plugin: PluginAdminEntry;
+  key: string;
+  section: WorkspaceSection;
+  title: string;
+  icon: string;
+  beta: boolean;
+  renderer: "workspace" | "maps";
+  view?: PluginAdminEntry["views"][number];
+};
 type PluginNavigationItem = {
+  kind: "plugin";
   plugin: PluginAdminEntry;
   view: PluginAdminEntry["views"][number];
   key: string;
-  mode: "host" | "webview";
+  renderer: Exclude<NavigationRenderer, "workspace">;
 };
+type NavigationItem = WorkspaceNavigationItem | PluginNavigationItem;
 
 const recentProjectsKey = "daena.recent-projects";
 let settingsMigrated = false;
@@ -135,6 +149,24 @@ let schemaEditorDirty = $state(false);
 let schemaOverlayLoadToken = 0;
 
 const SCHEMA_OVERLAY_CAPABILITY = "schema.overlay";
+const MAP_NAVIGATION_SERVICE = "daena.maps/navigation";
+const MAP_HOST_SURFACE = "daena.maps/editor";
+
+function enabledServices() {
+  return new Set(
+    modules
+      .filter((module) => module.enabled)
+      .flatMap((module) => module.services.provides.map((service) => `${service.name}@${service.major}`)),
+  );
+}
+
+function serviceAvailable(name: string, major: number) {
+  return enabledServices().has(`${name}@${major}`);
+}
+
+function mapsEnabled() {
+  return serviceAvailable(MAP_NAVIGATION_SERVICE, 1);
+}
 
 function schemaOverlayCandidates() {
   return modules
@@ -199,7 +231,11 @@ let aiFieldSuggestions = $state<Record<string, AiFieldSuggestion>>({});
 let aiFieldUnlisten: (() => void) | null = null;
 let adminPlugins = $state<PluginAdminEntry[] | null>(null);
 let hostView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] } | null>(null);
-let sandboxView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] | null } | null>(null);
+let sandboxView = $state<{
+  plugin: PluginAdminEntry;
+  view: PluginAdminEntry["views"][number] | null;
+  renderer: "maps" | "webview";
+} | null>(null);
 let projectionView = $state<{ title: string; module: DaenaModule } | null>(null);
 let adminBusy = $state(false);
 let pluginActionId = $state<string | null>(null);
@@ -313,6 +349,56 @@ function sectionIcon(target: WorkspaceSection) {
           ? "Aa"
           : "◇";
 }
+function workspaceSectionLabel(target: WorkspaceSection) {
+  return target === "lore"
+    ? "Lore library"
+    : target === "timeline"
+      ? "Timeline"
+      : target === "writing"
+        ? "Writing Studio"
+        : target === "language"
+          ? "Languages"
+          : "Maps";
+}
+function viewRenderer(
+  plugin: PluginAdminEntry,
+  view: PluginAdminEntry["views"][number],
+): Exclude<NavigationRenderer, "workspace"> {
+  if (view.renderer?.type === "host-surface") {
+    return view.renderer.id === MAP_HOST_SURFACE && view.renderer.major === 1 ? "maps" : "webview";
+  }
+  if (view.renderer?.type === "sandboxed") return "webview";
+  if (view.renderer?.type === "declarative") return "host";
+  return plugin.kind === "sandboxed" ? "webview" : "host";
+}
+function workspaceNavigationItems(): WorkspaceNavigationItem[] {
+  return workspaceSectionOrder.flatMap((target) => {
+    const plugin = (adminPlugins ?? []).find(
+      (candidate) =>
+        candidate.id === workspaceModuleId(target) && candidate.enabled && candidate.lifecycle.state === "active",
+    );
+    if (!plugin) return [];
+    const view =
+      target === "maps"
+        ? plugin.views.find(
+            (candidate) => viewRenderer(plugin, candidate) === "maps" && candidate.renderer?.type === "host-surface",
+          )
+        : undefined;
+    return [
+      {
+        kind: "workspace",
+        plugin,
+        key: `workspace:${plugin.id}`,
+        section: target,
+        title: workspaceSectionLabel(target),
+        icon: sectionIcon(target),
+        beta: target === "maps",
+        renderer: target === "maps" && view ? "maps" : "workspace",
+        ...(view ? { view } : {}),
+      },
+    ];
+  });
+}
 function fieldAppliesToEntity(field: FieldDefinition, entityType?: string | null) {
   return !field.entityTypes || !entityType || field.entityTypes.includes(entityType);
 }
@@ -342,7 +428,15 @@ function isEmptyFieldValue(value: unknown) {
   );
 }
 function fieldDisplayValue(value: unknown) {
-  return Array.isArray(value) ? value.join(", ") : String(value ?? "");
+  if (Array.isArray(value)) return value.map((item) => fieldDisplayValue(item)).join(", ");
+  if (typeof value === "object" && value !== null) {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "";
+    }
+  }
+  return String(value ?? "");
 }
 function suggestionDisplayValue(key: string, suggestion: AiFieldSuggestion) {
   const definition = definitions().find((candidate) => candidate.key === key);
@@ -550,7 +644,9 @@ function contextFor(currentSection = section): ModuleContext {
         : currentSection === "writing"
           ? writingManifestJson
           : languageManifestJson;
-  return buildModuleContext((fromProject ?? fallback) as unknown as ModuleManifest, projectInfo.root);
+  return buildModuleContext((fromProject ?? fallback) as unknown as ModuleManifest, projectInfo.root, {
+    availableServices: enabledServices(),
+  });
 }
 
 function sectionEnabled() {
@@ -579,18 +675,24 @@ function pluginViewLabel(item: PluginNavigationItem) {
 function workspaceNavigationActive(target: WorkspaceSection) {
   if (target === "maps") {
     return (
-      section === "maps" && !hostView && !projectionView && (!sandboxView || sandboxView.plugin.id === "daena.maps")
+      section === "maps" &&
+      !hostView &&
+      !projectionView &&
+      (!sandboxView || sandboxView.plugin.id === workspaceModuleId(target))
     );
   }
   return !hostView && !sandboxView && !projectionView && section === target;
 }
 
 function pluginNavigationActive(item: PluginNavigationItem) {
-  if (item.plugin.id === "daena.maps") return sandboxView?.plugin.id === "daena.maps";
-  if (item.mode === "host") {
+  if (item.renderer === "host") {
     return hostView?.plugin.id === item.plugin.id && hostView.view.id === item.view.id;
   }
   return sandboxView?.plugin.id === item.plugin.id && sandboxView.view?.id === item.view.id;
+}
+
+function navigationActive(item: NavigationItem) {
+  return item.kind === "workspace" ? workspaceNavigationActive(item.section) : pluginNavigationActive(item);
 }
 
 async function openHostView(plugin: PluginAdminEntry, view: PluginAdminEntry["views"][number]) {
@@ -600,54 +702,91 @@ async function openHostView(plugin: PluginAdminEntry, view: PluginAdminEntry["vi
   sandboxView = null;
 }
 
-function pluginViews() {
+function pluginViews(): PluginNavigationItem[] {
+  const workspaceViewKeys = new Set(
+    workspaceNavigationItems()
+      .filter((item): item is WorkspaceNavigationItem & { view: PluginAdminEntry["views"][number] } =>
+        Boolean(item.view),
+      )
+      .map((item) => `${item.plugin.id}:${item.view.id}`),
+  );
   return (adminPlugins ?? [])
     .filter((plugin) => plugin.enabled && plugin.lifecycle.state === "active")
     .flatMap((plugin) =>
       plugin.views
+        .filter((view) => !workspaceViewKeys.has(`${plugin.id}:${view.id}`))
         .filter((view) => plugin.kind === "sandboxed" || (view.components?.length ?? 0) > 0)
         .map(
           (view) =>
             ({
+              kind: "plugin",
               plugin,
               view,
               key: `${plugin.id}:${view.id}`,
-              mode: plugin.kind === "sandboxed" ? "webview" : "host",
+              renderer: viewRenderer(plugin, view),
             }) satisfies PluginNavigationItem,
         ),
     )
     .sort((left, right) => left.view.title.localeCompare(right.view.title));
 }
 
+function mapsNavigationItem(): PluginNavigationItem | null {
+  const workspace = workspaceNavigationItems().find((item) => item.renderer === "maps");
+  if (workspace?.view) {
+    return {
+      kind: "plugin",
+      plugin: workspace.plugin,
+      view: workspace.view,
+      key: `${workspace.plugin.id}:${workspace.view.id}`,
+      renderer: "maps",
+    };
+  }
+  return pluginViews().find((item) => item.renderer === "maps") ?? null;
+}
+
+function activeMapsPluginId() {
+  return sandboxView?.renderer === "maps" ? sandboxView.plugin.id : mapsNavigationItem()?.plugin.id;
+}
+
+async function openNavigationItem(item: NavigationItem) {
+  if (item.kind === "workspace") {
+    await switchSection(item.section);
+    return;
+  }
+  await openPluginView(item);
+}
+
 async function openPluginView(item: PluginNavigationItem) {
-  if (item.plugin.id === "daena.maps") {
+  if (item.renderer === "maps") {
     if (!(await dismissSettings())) return;
     const mapId = currentMapId();
-    if (sandboxView?.plugin.id === "daena.maps") {
+    if (sandboxView?.renderer === "maps") {
       const mapsWelcome = sandboxView.view === null;
       if ((mapId === null && mapsWelcome) || (mapId !== null && !mapsWelcome)) return;
     }
     mapFocusLinkId = null;
     await leavePluginView();
-    sandboxView = mapId ? { plugin: item.plugin, view: item.view } : { plugin: item.plugin, view: null };
+    sandboxView = mapId
+      ? { plugin: item.plugin, view: item.view, renderer: "maps" }
+      : { plugin: item.plugin, view: null, renderer: "maps" };
     if (mapId) mapsEditorKey = mapId;
     else if (!sandboxView.view) mapsEditorKey = "welcome";
     return;
   }
-  if (item.mode === "host") {
+  if (item.renderer === "host") {
     await openHostView(item.plugin, item.view);
     return;
   }
   if (!(await dismissSettings())) return;
   await closeNativePluginWebviews();
   hostView = null;
-  sandboxView = { plugin: item.plugin, view: item.view };
+  sandboxView = { plugin: item.plugin, view: item.view, renderer: "webview" };
 }
 
 async function createMap() {
   if (projectDiagnostics.length > 0) return;
   try {
-    const mapView = pluginViews().find((item) => item.plugin.id === "daena.maps");
+    const mapView = mapsNavigationItem();
     if (!mapView) throw new Error("The Maps plugin view is not available");
     selected = null;
     fields = {};
@@ -659,7 +798,7 @@ async function createMap() {
     await leavePluginView();
     // Draft editor: no map entity until the in-FMG Save overlay commits one.
     mapsEditorKey = `draft-${Date.now()}`;
-    sandboxView = { plugin: mapView.plugin, view: mapView.view };
+    sandboxView = { plugin: mapView.plugin, view: mapView.view, renderer: "maps" };
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -673,9 +812,9 @@ type SavedMapEntry = Entity & { size: number };
 let savedMapsCache = $state<SavedMapEntry[] | null>(null);
 let savedMapsRequest = 0;
 $effect(() => {
-  const mapsWelcomeOpen = sandboxView?.plugin.id === "daena.maps" && sandboxView.view == null;
+  const mapsWorkspaceOpen = section === "maps";
   void entities;
-  if (!ready || !mapsWelcomeOpen) {
+  if (!ready || !mapsWorkspaceOpen) {
     savedMapsCache = null;
     return;
   }
@@ -745,7 +884,7 @@ function savedMaps() {
 
 async function saveCurrentMap() {
   try {
-    await project.mapsEditorSave();
+    await project.mapsEditorSave(activeMapsPluginId());
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -779,38 +918,15 @@ function dismissMapConflict() {
   mapSaveStates[mapId] = { status: "clean", detail: null };
 }
 
-function mapSaveLabel(state: { status: string; detail: unknown } | null) {
-  switch (state?.status) {
-    case "loading":
-      return "Loading map…";
-    case "generating":
-      return "Generating map…";
-    case "dirty":
-      return "Unsaved changes";
-    case "saving":
-      return "Saving…";
-    case "saved":
-      return "Saved";
-    case "conflict":
-      return "Save blocked by changes on disk";
-    case "reconcile":
-      return "Links re-checked";
-    case "error":
-      return "Save failed";
-    case "restoring":
-      return "Restoring draft…";
-    default:
-      return "Up to date";
-  }
-}
-
 function mapConflictDetail(detail: unknown): { path?: string } {
   return typeof detail === "object" && detail !== null ? (detail as { path?: string }) : {};
 }
 
 function visibleEntities() {
   const term = query.trim().toLowerCase();
-  if (section === "maps") return [];
+  if (section === "maps") {
+    return savedMaps().filter((map) => !term || map.name.toLowerCase().includes(term));
+  }
   const entityTypes = new Set(
     manifestForWorkspaceSection(section)?.schemas.flatMap((schema) => schema.entityTypes) ?? [],
   );
@@ -821,6 +937,7 @@ function visibleEntities() {
 }
 
 function entityGlyph(entity: Pick<Entity, "entity_type">) {
+  if (entity.entity_type === "daena.maps:map") return "▧";
   if (!entity.entity_type) return "?";
   for (const target of workspaceSectionOrder) {
     const template = manifestForWorkspaceSection(target)?.templates.find(
@@ -854,16 +971,12 @@ async function selectSearchResult(entity: Entity) {
 
 async function switchSection(next: WorkspaceSection) {
   if (!(await flushAutoSave())) return;
-  if (section === next && (next !== "maps" || sandboxView?.plugin.id === "daena.maps") && !showSettings) return;
+  if (section === next && (next !== "maps" || sandboxView?.renderer === "maps") && !showSettings) return;
   if (!(await dismissSettings())) return;
   await leavePluginView();
   section = next;
   clearSelection();
   query = "";
-  if (next === "maps") {
-    const mapView = pluginViews().find((item) => item.plugin.id === "daena.maps");
-    if (mapView) await openPluginView(mapView);
-  }
 }
 
 async function reconcileWorkspaceSection() {
@@ -931,13 +1044,15 @@ function createLabel() {
 }
 
 function entityTypeLabel(entityType: string | null) {
-  return entityType === "reference-page"
-    ? "Reference page"
-    : entityType === "manuscript"
-      ? "Manuscript"
-      : entityType === "language"
-        ? "Language"
-        : (entityType ?? "Uncategorized");
+  return entityType === "daena.maps:map"
+    ? "Map"
+    : entityType === "reference-page"
+      ? "Reference page"
+      : entityType === "manuscript"
+        ? "Manuscript"
+        : entityType === "language"
+          ? "Language"
+          : (entityType ?? "Uncategorized");
 }
 
 function openProjection() {
@@ -1754,7 +1869,7 @@ async function loadSelectedState(entity: Entity) {
         if (normalized === "1" || normalized === "1-1" || normalized === "1-1-1") return [key, ""];
         return [key, date ? serializeCalendarDate(date) : String(value ?? "")];
       }
-      return [key, Array.isArray(value) ? value.map(String) : String(value ?? "")];
+      return [key, fieldDisplayValue(value)];
     }),
   );
   relationships = context.module.capabilities.includes("relationship.read")
@@ -1781,8 +1896,12 @@ async function loadSelectedState(entity: Entity) {
         revision: "",
       }))
     : [];
-  mapLocations = await project.listMapLocations(entity.id);
+  await refreshSelectedMapLocations(entity.id);
   savedAt = "";
+}
+
+async function refreshSelectedMapLocations(entityId = selected?.id) {
+  mapLocations = entityId && mapsEnabled() ? await project.listMapLocations(entityId) : [];
 }
 
 async function openMapLocation(location: MapLocation) {
@@ -1805,7 +1924,7 @@ async function ensureMapEditorOpen(mapEntityId: string) {
     entities.find((entity) => entity.id === mapEntityId) ??
     (await project.listEntities()).find((entity) => entity.id === mapEntityId);
   if (!map) throw new Error("map-unavailable: choose a saved map first");
-  const mapsView = pluginViews().find((item) => item.plugin.id === "daena.maps");
+  const mapsView = mapsNavigationItem();
   selected = map;
   mapsEditorKey = map.id;
   await loadSelectedState(map);
@@ -1819,7 +1938,7 @@ async function beginMapPick(pending: NonNullable<typeof mapPickPending>) {
   await ensureMapEditorOpen(pending.mapEntityId);
   // Webview remounts when the map key changes; give the bridge a moment to boot.
   window.setTimeout(() => {
-    void project.mapsEditorStartPick().catch((cause) => {
+    void project.mapsEditorStartPick(activeMapsPluginId()).catch((cause) => {
       error = friendlyError(cause);
     });
   }, 450);
@@ -1845,14 +1964,14 @@ async function applyMapPick(anchor: unknown) {
         validity: { from: null, to: null },
       };
       await project.upsertMapLocation(entity.id, location);
-      await project.mapsEditorFocusLink(location.id).catch(() => {});
+      await project.mapsEditorFocusLink(location.id, activeMapsPluginId()).catch(() => {});
       section = entity.entity_type === "event" || entity.entity_type === "era" ? "timeline" : "lore";
       sandboxView = null;
       await selectEntity(entity);
       mapLocations = await project.listMapLocations(entity.id);
     } else {
       await project.upsertMapLocation(pending.entityId, { ...pending.location, anchor });
-      await project.mapsEditorFocusLink(pending.location.id).catch(() => {});
+      await project.mapsEditorFocusLink(pending.location.id, activeMapsPluginId()).catch(() => {});
       const entity =
         entities.find((candidate) => candidate.id === pending.entityId) ??
         (await project.listEntities()).find((candidate) => candidate.id === pending.entityId);
@@ -1942,6 +2061,7 @@ async function linkEntityToMap() {
 async function selectEntity(entity: Entity) {
   if (selected?.id === entity.id) return;
   if (!(await flushAutoSave())) return;
+  if (section === "maps" && sandboxView?.renderer === "maps") await leavePluginView();
   editorFullscreen = false;
   selected = entity;
   hasUnsavedChanges = false;
@@ -1950,6 +2070,22 @@ async function selectEntity(entity: Entity) {
   error = "";
   try {
     await loadSelectedState(entity);
+  } catch (cause) {
+    error = friendlyError(cause);
+  }
+}
+
+async function openSelectedMapEditor() {
+  if (!selected || selected.entity_type !== "daena.maps:map") return;
+  const mapsView = mapsNavigationItem();
+  if (!mapsView) {
+    error = "The Maps integration is not available.";
+    return;
+  }
+  try {
+    mapsEditorKey = selected.id;
+    mapFocusLinkId = null;
+    await openPluginView(mapsView);
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -2039,7 +2175,9 @@ async function createEntity(event: SubmitEvent) {
         fieldsForCreate[field.key] = value;
       }
     }
-    const context = buildModuleContext(option.module, projectInfo?.root ?? "");
+    const context = buildModuleContext(option.module, projectInfo?.root ?? "", {
+      availableServices: enabledServices(),
+    });
     const created = await context.entities.create({
       name: name.trim(),
       type: option.template.entityType,
@@ -2245,6 +2383,7 @@ async function toggleModule(id: ModuleId) {
       async () => {
         await project.enableModule(id, installed.capabilities);
         modules = await project.listModuleManifests();
+        await refreshSelectedMapLocations();
         await reconcileWorkspaceSection();
         await refreshAdmin();
       },
@@ -2255,6 +2394,7 @@ async function toggleModule(id: ModuleId) {
   try {
     await project.disableModule(id);
     modules = await project.listModuleManifests();
+    await refreshSelectedMapLocations();
     await reconcileWorkspaceSection();
     await refreshAdmin();
     if (!selectedCreateOption()) selectedCreateKey = "";
@@ -2480,7 +2620,8 @@ function askConfirm(
   confirmAction = { title, message, confirmLabel, run, capabilities };
 }
 function selectedUninstallableVersion(plugin: PluginAdminEntry) {
-  return plugin.installedVersions.find((version) => version.isSelected && !version.bundled) ?? null;
+  if (!plugin.distribution.canUninstall) return null;
+  return plugin.installedVersions.find((version) => version.isSelected) ?? null;
 }
 async function runConfirm() {
   const action = confirmAction;
@@ -2564,6 +2705,7 @@ async function togglePluginEnabled(plugin: PluginAdminEntry) {
         try {
           await project.enableModule(plugin.id, plugin.capabilities);
           modules = await project.listModuleManifests();
+          await refreshSelectedMapLocations();
           await reconcileWorkspaceSection();
           await refreshAdmin();
         } finally {
@@ -2578,6 +2720,7 @@ async function togglePluginEnabled(plugin: PluginAdminEntry) {
   try {
     await project.disableModule(plugin.id);
     modules = await project.listModuleManifests();
+    await refreshSelectedMapLocations();
     await reconcileWorkspaceSection();
     setAdminPluginEnabled(plugin.id, false);
     await refreshAdmin();
@@ -2746,7 +2889,7 @@ onMount(() => {
     try {
       if (!entities.length) await loadEntities();
       const map = entities.find((entity) => entity.id === event.payload.mapEntityId);
-      const item = pluginViews().find((candidate) => candidate.plugin.id === "daena.maps");
+      const item = mapsNavigationItem();
       if (!map || !item) throw new Error("map-unavailable: enable the Maps module to open this location");
       selected = map;
       mapsEditorKey = map.id;
@@ -2754,9 +2897,9 @@ onMount(() => {
       await openPluginView(item);
       const linkId = event.payload.linkId ?? null;
       mapFocusLinkId = linkId;
-      if (linkId && sandboxView?.plugin.id === "daena.maps") {
+      if (linkId && sandboxView?.renderer === "maps") {
         setTimeout(() => {
-          void project.mapsEditorFocusLink(linkId).catch(() => {});
+          void project.mapsEditorFocusLink(linkId, activeMapsPluginId()).catch(() => {});
         }, 400);
       }
     } catch (cause) {
@@ -2770,6 +2913,16 @@ onMount(() => {
   let unlistenMapsState: (() => void) | undefined;
   void listen<{ mapEntityId: string; status: string; detail: unknown }>("maps-state", (event) => {
     const { mapEntityId, status, detail } = event.payload;
+    if (status === "fullscreen") {
+      const enabled = typeof detail === "object" && detail !== null && "enabled" in detail && detail.enabled === true;
+      editorFullscreen = enabled;
+      return;
+    }
+    if (status === "back") {
+      editorFullscreen = false;
+      void leavePluginView();
+      return;
+    }
     if (mapEntityId) mapSaveStates[mapEntityId] = { status, detail };
     if (status === "saved" && mapEntityId) {
       void project
@@ -2920,42 +3073,34 @@ onMount(() => {
           class="rail-create-button"
           onclick={toggleCreateForm}><span class="rail-icon">＋</span><span>New entry</span></button
         >{/if}
-      {#if enabledWorkspaceSections().length > 0}
+      {#if workspaceNavigationItems().length > 0}
         <div class="rail-label">WORKSPACE</div>
         <nav class="workspace-nav" aria-label="Workspace sections">
-          {#each enabledWorkspaceSections() as target (target)}
+          {#each workspaceNavigationItems() as item (item.key)}
             <button
-              title={target === "maps" ? "Maps · Beta plugin — may be unstable" : undefined}
-              aria-current={workspaceNavigationActive(target) ? "page" : undefined}
-              class:active={workspaceNavigationActive(target)}
+              title={item.beta ? `${item.title} · Beta plugin — may be unstable` : undefined}
+              aria-current={navigationActive(item) ? "page" : undefined}
+              class:active={navigationActive(item)}
               class="rail-button"
-              onclick={() => void switchSection(target)}
-              ><span class="rail-icon">{sectionIcon(target)}</span><span
-                >{target === "lore"
-                  ? "Lore library"
-                  : target === "timeline"
-                    ? "Timeline"
-                    : target === "writing"
-                      ? "Writing Studio"
-                      : target === "language"
-                        ? "Languages"
-                        : "Maps"}{#if target === "maps"}<em class="workspace-beta">Beta</em>{/if}</span
+              onclick={() => void openNavigationItem(item)}
+              ><span class="rail-icon">{item.icon}</span><span
+                >{item.title}{#if item.beta}<em class="workspace-beta">Beta</em>{/if}</span
               ></button>
           {/each}
         </nav>
       {/if}
-      {#if pluginViews().some((item) => item.plugin.id !== "daena.maps")}
+      {#if pluginViews().length > 0}
         <div class="rail-label plugin-views-label">PLUGIN VIEWS</div>
         <nav class="workspace-nav" aria-label="Plugin views">
-          {#each pluginViews().filter((item) => item.plugin.id !== "daena.maps") as item (item.key)}
+          {#each pluginViews() as item (item.key)}
             <div class="plugin-nav-row">
               <button
-                class:active={pluginNavigationActive(item)}
+                class:active={navigationActive(item)}
                 class="rail-button"
                 title={pluginViewLabel(item)}
-                aria-current={pluginNavigationActive(item) ? "page" : undefined}
+                aria-current={navigationActive(item) ? "page" : undefined}
                 aria-label={`Open ${item.plugin.name}: ${item.view.title}`}
-                onclick={() => void openPluginView(item)}
+                onclick={() => void openNavigationItem(item)}
                 ><span class="rail-icon">◇</span><span class="plugin-nav-title">{pluginViewLabel(item)}</span></button>
             </div>
           {/each}
@@ -3427,6 +3572,12 @@ onMount(() => {
                     <div class="plugin-badges">
                       <span class:badge-off={!plugin.enabled} class="plugin-badge"
                         >{plugin.enabled ? "Enabled" : "Disabled"}</span>
+                      <span
+                        class="plugin-badge"
+                        title={plugin.distribution.management === "app"
+                          ? "This plugin is included with Daena and managed by the application."
+                          : "This plugin was installed separately from the application."}
+                        >{plugin.distribution.origin === "bundled" ? "Included with Daena" : "Installed"}</span>
                       {#if plugin.stability === "beta"}<span
                           class="plugin-badge beta"
                           title="Beta release: this plugin is useful but may be unstable">Beta · unstable</span
@@ -3510,7 +3661,7 @@ onMount(() => {
                                 : ""}{version.digest ? ` · ${shortDigest(version.digest)}` : ""}</span>
                           </div>
                           <div class="version-actions">
-                            {#if version.isActiveCandidate && !version.isSelected && !version.bundled}
+                            {#if version.isActiveCandidate && !version.isSelected}
                               <button
                                 class="quiet-button"
                                 onclick={() => previewUpgrade(plugin, version.version)}
@@ -3522,7 +3673,7 @@ onMount(() => {
                                 onclick={() => confirmRollback(plugin, version.version)}
                                 disabled={adminBusy}>Rollback</button>
                             {/if}
-                            {#if !version.isSelected && !version.bundled}
+                            {#if !version.isSelected && plugin.distribution.canUninstall}
                               <button
                                 class="quiet-button"
                                 onclick={() => confirmUninstall(plugin, version.version)}
@@ -3647,7 +3798,8 @@ onMount(() => {
           title={projectionView.title}
           view={projectionView.module.views[0]}
           context={buildModuleContext(projectionView.module.manifest, projectInfo?.root ?? "", {
-            focusEntityId: selected?.id,
+            focusEntityId: selected?.id as UUID | undefined,
+            availableServices: enabledServices(),
           })}
           onClose={() => (projectionView = null)} />
       {/key}
@@ -3656,100 +3808,9 @@ onMount(() => {
         <button class="quiet-button host-view-back" onclick={() => (hostView = null)}>Back to workspace</button
         ><HostView plugin={hostView.plugin} view={hostView.view} />
       </div>
-    {:else if sandboxView}
-      {#key `${sandboxView.plugin.id}:${sandboxView.view?.id ?? "default"}:${sandboxView.plugin.id === "daena.maps" ? mapsEditorKey : ""}:${sandboxView.plugin.id === "daena.maps" ? mapReloadCounter : 0}`}
-        {#if sandboxView.plugin.id === "daena.maps" && (selected?.entity_type === "daena.maps:map" || sandboxView.view != null)}
-          {@const mapId = selected?.entity_type === "daena.maps:map" ? selected.id : null}
-          {@const mapState = mapId ? (mapSaveStates[mapId] ?? null) : null}
-          {@const mapDetail = mapConflictDetail(mapState?.detail)}
-          <div class="map-editor-shell">
-            {#if mapId && !mapsEditorKey.startsWith("draft-")}
-              <div class="map-editor-toolbar">
-                <span
-                  class:map-state-warn={mapState?.status === "dirty" || mapState?.status === "error"}
-                  class:map-state-error={mapState?.status === "conflict"}
-                  class="map-save-chip"><span class="map-save-dot"></span>{mapSaveLabel(mapState)}</span>
-                {#if mapState?.status === "conflict"}<span class="map-conflict-path"
-                    >{mapDetail.path ?? "Draft exported as a recovery copy."}</span
-                  >{/if}
-                {#if mapReconcileNotice}<span class="map-reconcile-notice">{mapReconcileNotice}</span>{/if}
-                {#if mapPickNotice}<span class="map-reconcile-notice">{mapPickNotice}</span>{/if}
-              </div>
-              {#if mapState?.status === "conflict"}
-                <div class="map-conflict-banner" role="alert">
-                  <div class="map-conflict-copy">
-                    <strong>This map changed on disk while you were editing</strong>
-                    <p>Your draft was not saved over it. A recovery copy was exported so nothing is lost.</p>
-                    {#if mapDetail.path}<code>{mapDetail.path}</code>{/if}
-                  </div>
-                  <div class="map-conflict-actions">
-                    <button class="primary-button" type="button" disabled={mapRecoveryBusy} onclick={restoreMapDraft}
-                      >{mapRecoveryBusy ? "Restoring…" : "Restore draft"}</button
-                    ><button class="quiet-button" type="button" onclick={reloadMapOriginal}>Reload original</button
-                    ><button class="quiet-button" type="button" onclick={dismissMapConflict}>Keep editing</button>
-                  </div>
-                </div>
-              {/if}
-            {/if}
-            <SandboxView
-              pluginId={sandboxView.plugin.id}
-              viewId={sandboxView.view?.id}
-              title={sandboxView.plugin.name}
-              mapEntityId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
-              linkId={mapFocusLinkId ?? undefined} />
-          </div>
-        {:else if sandboxView.plugin.id === "daena.maps" && sandboxView.view == null}
-          {@const mapsView = pluginViews().find((item) => item.plugin.id === "daena.maps")}
-          <section class="welcome maps-welcome">
-            <div class="welcome-copy">
-              <span class="overline">MAPS</span>
-              <h1>Draw the world<br /><em>behind the story.</em></h1>
-              <p>
-                Shape continents, kingdoms, and borders in the built-in generator. Create a new map or open one you have
-                saved.
-              </p>
-              <div class="maps-welcome-actions">
-                <button class="primary-button" type="button" onclick={() => void createMap()}>Create Map</button>
-              </div>
-            </div>
-            <div class="maps-welcome-list panel-surface">
-              <div class="panel-heading">
-                <div><span class="panel-kicker">SAVED MAPS</span><strong>{savedMaps().length} saved</strong></div>
-              </div>
-              {#if savedMaps().length === 0}
-                <div class="list-empty" role="status">
-                  <span class="empty-mark" aria-hidden="true">◇</span><strong>No saved maps yet.</strong>
-                  <p>Create a map, then use Save in the map to name and keep your first world.</p>
-                </div>
-              {:else}
-                <div class="collection-list">
-                  {#each savedMaps() as map (map.id)}
-                    <button
-                      class="collection-item"
-                      type="button"
-                      onclick={async () => {
-                        selected = map;
-                        mapsEditorKey = map.id;
-                        await loadSelectedState(map);
-                        if (mapsView) await openPluginView(mapsView);
-                      }}
-                      ><span class="item-copy"
-                        ><strong>{map.name}</strong><small>Updated {runtimeTimestampLabel(map.updated_at)}</small></span
-                      ><span class="item-arrow" aria-hidden="true">›</span></button>
-                  {/each}
-                </div>
-              {/if}
-            </div>
-          </section>
-        {:else}
-          <SandboxView
-            pluginId={sandboxView.plugin.id}
-            viewId={sandboxView.view?.id}
-            title={sandboxView.plugin.name}
-            mapEntityId={sandboxView.plugin.id === "daena.maps" && selected?.entity_type === "daena.maps:map"
-              ? selected.id
-              : undefined} />
-        {/if}
+    {:else if sandboxView && sandboxView.renderer !== "maps"}
+      {#key `${sandboxView.plugin.id}:${sandboxView.view?.id ?? "default"}`}
+        <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={sandboxView.plugin.name} />
       {/key}
     {:else if enabledWorkspaceSections().length === 0}
       <section class="empty-workspace-state">
@@ -3772,29 +3833,36 @@ onMount(() => {
               ? "WORLD BIBLE"
               : section === "timeline"
                 ? "CHRONOLOGY"
-                : section === "language"
-                  ? "LANGUAGE WORKSHOP"
-                  : "DRAFTING DESK"}</span>
+                : section === "maps"
+                  ? "MAP ATLAS"
+                  : section === "language"
+                    ? "LANGUAGE WORKSHOP"
+                    : "DRAFTING DESK"}</span>
           <h1>{sectionLabel()}</h1>
           <p>
             {section === "lore"
               ? "A living reference for every person, place, and power."
               : section === "timeline"
                 ? "Events, eras, and the threads that connect them."
-                : section === "language"
-                  ? "Document fictional languages, their sounds, writing, grammar, forms, samples, and vocabulary."
-                  : writingView === "manuscripts"
-                    ? "Draft stories, essays, and other long-form work."
-                    : "Build the pages, notes, and references behind the story."}
+                : section === "maps"
+                  ? "Keep every map beside its notes, links, and provider source."
+                  : section === "language"
+                    ? "Document fictional languages, their sounds, writing, grammar, forms, samples, and vocabulary."
+                    : writingView === "manuscripts"
+                      ? "Draft stories, essays, and other long-form work."
+                      : "Build the pages, notes, and references behind the story."}
           </p>
         </div>
         <div class="heading-actions">
+          {#if section === "maps"}<button class="primary-button" type="button" onclick={() => void createMap()}
+              >Create with FMG</button
+            >{/if}
           {#if section !== "writing" && section !== "maps"}<button class="quiet-button" onclick={openProjection}
               >Open {section === "lore" ? "graph" : section === "timeline" ? "timeline" : "language"} ↗</button
             >{/if}
         </div>
       </div>
-      <section class="workspace-grid">
+      <section class:maps-workspace={section === "maps" && sandboxView?.renderer === "maps"} class="workspace-grid">
         <aside class="collection-panel panel-surface">
           <div class="panel-heading">
             <div>
@@ -3803,11 +3871,13 @@ onMount(() => {
                   ? "LORE LIBRARY"
                   : section === "timeline"
                     ? "TIMELINE"
-                    : section === "language"
-                      ? "LANGUAGES"
-                      : writingView === "manuscripts"
-                        ? "MANUSCRIPTS"
-                        : "REFERENCE PAGES"}</span
+                    : section === "maps"
+                      ? "MAPS"
+                      : section === "language"
+                        ? "LANGUAGES"
+                        : writingView === "manuscripts"
+                          ? "MANUSCRIPTS"
+                          : "REFERENCE PAGES"}</span
               ><strong>{visibleEntities().length} {collectionLabel()}</strong>
             </div>
           </div>
@@ -3836,9 +3906,15 @@ onMount(() => {
                 <p>
                   {query
                     ? "Try another filter or create something new."
-                    : `Create your first ${createLabel()} to begin building this collection.`}
+                    : section === "maps"
+                      ? "Create a map through an installed map integration."
+                      : `Create your first ${createLabel()} to begin building this collection.`}
                 </p>
-                <button class="empty-create" type="button" onclick={toggleCreateForm}>＋ Create {createLabel()}</button>
+                {#if section === "maps"}<button class="empty-create" type="button" onclick={() => void createMap()}
+                    >＋ Create with FMG</button
+                  >{:else}<button class="empty-create" type="button" onclick={toggleCreateForm}
+                    >＋ Create {createLabel()}</button
+                  >{/if}
               </div>{:else}{#each visibleEntities() as entity}<button
                   class:selected={selected?.id === entity.id}
                   class="collection-item"
@@ -3851,160 +3927,218 @@ onMount(() => {
           </div>
         </aside>
 
-        <article class:editor-fullscreen={editorFullscreen} class="editor-panel">
-          <div class="editor-header">
-            <div>
-              <span class="panel-kicker"
-                >{selected
-                  ? entityTypeLabel(selected.entity_type).toUpperCase()
-                  : section === "lore"
-                    ? "LORE ENTRY"
-                    : section === "timeline"
-                      ? "TIMELINE EVENT"
-                      : section === "language"
-                        ? "LANGUAGE"
-                        : writingView === "manuscripts"
-                          ? "MANUSCRIPT"
-                          : "REFERENCE PAGE"}</span>
-              <h2>{selected?.name ?? "Choose an entry"}</h2>
-            </div>
-            {#if selected}
-              <div class="editor-status">
-                {#if isSaving}<span class="saving-dot"></span> Saving…{:else if hasUnsavedChanges}<span
-                    class="unsaved-dot"></span> Unsaved changes{:else if savedAt}<span class="saved-dot">✓</span> Saved {savedAt}{/if}
-              </div>
-            {/if}
-          </div>
-          {#if selected}
-            {#if documentConflict}
-              <div class="document-conflict" role="alert">
-                <strong
-                  >{documentConflict.diagnostics.length
-                    ? "Canonical source needs attention"
-                    : "This draft changed on disk"}</strong>
-                <p>
-                  {documentConflict.diagnostics.length
-                    ? documentConflict.diagnostics[0]
-                    : "Your unsaved draft is preserved. Choose how to reconcile it before saving."}
-                </p>
-                {#if !documentConflict.diagnostics.length}<details class="conflict-compare">
-                    <summary>Compare with disk</summary>
-                    <pre>{conflictDiskBody}</pre>
-                  </details>{/if}
-                <div class="conflict-actions">
-                  <button class="quiet-button" type="button" onclick={reloadConflict}>Reload disk</button><button
-                    class="quiet-button"
-                    type="button"
-                    onclick={overwriteConflict}
-                    disabled={documentConflict.diagnostics.length > 0}>Overwrite as new revision</button
-                  ><button class="quiet-button" type="button" onclick={saveConflictRecoveryCopy}
-                    >Save recovery copy</button>
+        <article
+          class:editor-fullscreen={editorFullscreen}
+          class:map-editor-active={section === "maps" && sandboxView?.renderer === "maps" && Boolean(sandboxView.view)}
+          class="editor-panel">
+          {#if section === "maps" && sandboxView?.renderer === "maps" && sandboxView.view}
+            {@const mapId = selected?.entity_type === "daena.maps:map" ? selected.id : null}
+            {@const mapState = mapId ? (mapSaveStates[mapId] ?? null) : null}
+            {@const mapDetail = mapConflictDetail(mapState?.detail)}
+            <div class="map-editor-shell">
+              {#if mapReconcileNotice || mapPickNotice}
+                <div class="map-editor-notices">
+                  {#if mapReconcileNotice}<span class="map-reconcile-notice">{mapReconcileNotice}</span>{/if}
+                  {#if mapPickNotice}<span class="map-reconcile-notice">{mapPickNotice}</span>{/if}
                 </div>
-              </div>
-            {/if}
-            {#if aiRewriteOpen}
-              <div class="ai-rewrite-modal-backdrop">
-                <div
-                  class="ai-rewrite-panel"
-                  role="dialog"
-                  aria-modal="true"
-                  aria-labelledby="ai-rewrite-title"
-                  tabindex="-1"
-                  onkeydown={(event) => {
-                    if (event.key === "Escape" && !aiBusy) closeAiRewrite();
-                  }}>
-                  <div class="ai-rewrite-heading">
-                    <div>
-                      <span class="panel-kicker">{aiSettings.provider.name || "AI provider"}</span><strong
-                        id="ai-rewrite-title"
-                        >{aiBusy
-                          ? aiMode === "generate"
-                            ? "Generating text…"
-                            : "Rewriting selection…"
-                          : aiPreviewOutput
-                            ? aiMode === "generate"
-                              ? "Review generated text"
-                              : "Review rewrite"
-                            : aiMode === "generate"
-                              ? "Generate text"
-                              : "Rewrite selection"}</strong>
-                    </div>
+              {/if}
+              {#if mapState?.status === "conflict"}
+                <div class="map-conflict-banner" role="alert">
+                  <div class="map-conflict-copy">
+                    <strong>This map changed on disk while you were editing</strong>
+                    <p>Your draft was not saved over it. A recovery copy was exported so nothing is lost.</p>
+                    {#if mapDetail.path}<code>{mapDetail.path}</code>{/if}
                   </div>
-                  {#if !aiBusy}<label class="ai-instruction"
-                      >Instruction<textarea
-                        rows="2"
-                        bind:value={aiInstruction}
-                        disabled={aiBusy}
-                        placeholder={`Tell ${aiSettings.provider.name || "the AI provider"} how to rewrite the selection`}
-                      ></textarea
-                      ></label
-                    >{/if}
-                  <AiProposalPreview
-                    original={aiSourceSelectionPlain}
-                    bind:proposal={aiPreviewOutput}
-                    streamText={aiStreamText}
-                    busy={aiBusy}
-                    onCancel={() => (aiBusy && aiRequestId ? void project.aiCancelText(aiRequestId) : closeAiRewrite())}
-                    onDiscard={closeAiRewrite}
-                    onAccept={() => void acceptAiRewrite()} />
-                  {#if aiUsage}<p class="muted-note">
-                      Provider usage: {aiUsage.inputTokens} input + {aiUsage.outputTokens} output tokens.
-                    </p>{/if}
-                  {#if !aiBusy && aiPreviewOutput}<div class="ai-rewrite-actions">
-                      <button class="primary-button" type="button" onclick={() => void acceptAiRewrite()}
-                        >Accept proposal</button>
-                      <button class="quiet-button ai-retry-button" type="button" onclick={() => void startAiRewrite()}
-                        >Retry</button>
-                      <button class="quiet-button ai-discard-button" type="button" onclick={closeAiRewrite}
-                        >Discard</button>
-                    </div>
-                  {:else if !aiBusy}<div class="ai-rewrite-actions">
-                      <button
-                        class="primary-button"
-                        type="button"
-                        disabled={(aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim()}
-                        onclick={() => void startAiRewrite()}
-                        >{aiMode === "generate" ? "Generate text" : "Generate rewrite"}</button>
-                      <button class="quiet-button" type="button" onclick={closeAiRewrite}>Cancel</button>
-                    </div>{/if}
+                  <div class="map-conflict-actions">
+                    <button class="primary-button" type="button" disabled={mapRecoveryBusy} onclick={restoreMapDraft}
+                      >{mapRecoveryBusy ? "Restoring…" : "Restore draft"}</button
+                    ><button class="quiet-button" type="button" onclick={reloadMapOriginal}>Reload original</button
+                    ><button class="quiet-button" type="button" onclick={dismissMapConflict}>Keep editing</button>
+                  </div>
                 </div>
+              {/if}
+              <div class="map-surface">
+                <SandboxView
+                  pluginId={sandboxView.plugin.id}
+                  viewId={sandboxView.view.id}
+                  title={sandboxView.plugin.name}
+                  mapEntityId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
+                  linkId={mapFocusLinkId ?? undefined} />
               </div>
-            {/if}
-            <RichTextEditor
-              bind:this={editorRef}
-              value={documentBody}
-              {entities}
-              editable={projectDiagnostics.length === 0 && !aiBusy && !aiRewriteOpen}
-              fullscreen={editorFullscreen}
-              onChange={updateDocumentBody}
-              onSelectionChange={setAiSelection}
-              onAiRequest={openAiAction}
-              onFullscreenChange={setEditorFullscreen}
-              placeholder={section === "writing"
-                ? writingView === "manuscripts"
-                  ? "Write your manuscript…"
-                  : "Write this reference page…"
-                : "Write the canonical story of this entry…"} />
-            <div class="editor-footer">
-              <span>{wordCount()} words</span>
-              <div><button class="quiet-button" onclick={archiveSelected}>Archive</button></div>
             </div>
           {:else}
-            <div class="editor-empty">
-              <div class="empty-mark">✦</div>
-              <h3>
-                {section === "writing"
-                  ? writingView === "manuscripts"
-                    ? "Your draft is waiting."
-                    : "Your reference desk is waiting."
-                  : "Your canvas is waiting."}
-              </h3>
-              <p>Select an entry from the library, or create something new to begin writing.</p>
+            <div class="editor-header">
+              <div>
+                <span class="panel-kicker"
+                  >{selected
+                    ? entityTypeLabel(selected.entity_type).toUpperCase()
+                    : section === "lore"
+                      ? "LORE ENTRY"
+                      : section === "timeline"
+                        ? "TIMELINE EVENT"
+                        : section === "maps"
+                          ? "MAP"
+                          : section === "language"
+                            ? "LANGUAGE"
+                            : writingView === "manuscripts"
+                              ? "MANUSCRIPT"
+                              : "REFERENCE PAGE"}</span>
+                <h2>{selected?.name ?? (section === "maps" ? "Choose a map" : "Choose an entry")}</h2>
+              </div>
+              {#if selected}
+                <div class="editor-status">
+                  {#if isSaving}<span class="saving-dot"></span> Saving…{:else if hasUnsavedChanges}<span
+                      class="unsaved-dot"></span> Unsaved changes{:else if savedAt}<span class="saved-dot">✓</span>
+                    Saved {savedAt}{/if}
+                  {#if section === "maps"}<button
+                      class="quiet-button"
+                      type="button"
+                      onclick={() => void openSelectedMapEditor()}>Open map editor</button
+                    >{/if}
+                </div>
+              {/if}
             </div>
+            {#if selected}
+              {#if documentConflict}
+                <div class="document-conflict" role="alert">
+                  <strong
+                    >{documentConflict.diagnostics.length
+                      ? "Canonical source needs attention"
+                      : "This draft changed on disk"}</strong>
+                  <p>
+                    {documentConflict.diagnostics.length
+                      ? documentConflict.diagnostics[0]
+                      : "Your unsaved draft is preserved. Choose how to reconcile it before saving."}
+                  </p>
+                  {#if !documentConflict.diagnostics.length}<details class="conflict-compare">
+                      <summary>Compare with disk</summary>
+                      <pre>{conflictDiskBody}</pre>
+                    </details>{/if}
+                  <div class="conflict-actions">
+                    <button class="quiet-button" type="button" onclick={reloadConflict}>Reload disk</button><button
+                      class="quiet-button"
+                      type="button"
+                      onclick={overwriteConflict}
+                      disabled={documentConflict.diagnostics.length > 0}>Overwrite as new revision</button
+                    ><button class="quiet-button" type="button" onclick={saveConflictRecoveryCopy}
+                      >Save recovery copy</button>
+                  </div>
+                </div>
+              {/if}
+              {#if aiRewriteOpen}
+                <div class="ai-rewrite-modal-backdrop">
+                  <div
+                    class="ai-rewrite-panel"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="ai-rewrite-title"
+                    tabindex="-1"
+                    onkeydown={(event) => {
+                      if (event.key === "Escape" && !aiBusy) closeAiRewrite();
+                    }}>
+                    <div class="ai-rewrite-heading">
+                      <div>
+                        <span class="panel-kicker">{aiSettings.provider.name || "AI provider"}</span><strong
+                          id="ai-rewrite-title"
+                          >{aiBusy
+                            ? aiMode === "generate"
+                              ? "Generating text…"
+                              : "Rewriting selection…"
+                            : aiPreviewOutput
+                              ? aiMode === "generate"
+                                ? "Review generated text"
+                                : "Review rewrite"
+                              : aiMode === "generate"
+                                ? "Generate text"
+                                : "Rewrite selection"}</strong>
+                      </div>
+                    </div>
+                    {#if !aiBusy}<label class="ai-instruction"
+                        >Instruction<textarea
+                          rows="2"
+                          bind:value={aiInstruction}
+                          disabled={aiBusy}
+                          placeholder={`Tell ${aiSettings.provider.name || "the AI provider"} how to rewrite the selection`}
+                        ></textarea
+                        ></label
+                      >{/if}
+                    <AiProposalPreview
+                      original={aiSourceSelectionPlain}
+                      bind:proposal={aiPreviewOutput}
+                      streamText={aiStreamText}
+                      busy={aiBusy}
+                      onCancel={() =>
+                        aiBusy && aiRequestId ? void project.aiCancelText(aiRequestId) : closeAiRewrite()}
+                      onDiscard={closeAiRewrite}
+                      onAccept={() => void acceptAiRewrite()} />
+                    {#if aiUsage}<p class="muted-note">
+                        Provider usage: {aiUsage.inputTokens} input + {aiUsage.outputTokens} output tokens.
+                      </p>{/if}
+                    {#if !aiBusy && aiPreviewOutput}<div class="ai-rewrite-actions">
+                        <button class="primary-button" type="button" onclick={() => void acceptAiRewrite()}
+                          >Accept proposal</button>
+                        <button class="quiet-button ai-retry-button" type="button" onclick={() => void startAiRewrite()}
+                          >Retry</button>
+                        <button class="quiet-button ai-discard-button" type="button" onclick={closeAiRewrite}
+                          >Discard</button>
+                      </div>
+                    {:else if !aiBusy}<div class="ai-rewrite-actions">
+                        <button
+                          class="primary-button"
+                          type="button"
+                          disabled={(aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim()}
+                          onclick={() => void startAiRewrite()}
+                          >{aiMode === "generate" ? "Generate text" : "Generate rewrite"}</button>
+                        <button class="quiet-button" type="button" onclick={closeAiRewrite}>Cancel</button>
+                      </div>{/if}
+                  </div>
+                </div>
+              {/if}
+              <RichTextEditor
+                bind:this={editorRef}
+                value={documentBody}
+                {entities}
+                editable={projectDiagnostics.length === 0 && !aiBusy && !aiRewriteOpen}
+                fullscreen={editorFullscreen}
+                onChange={updateDocumentBody}
+                onSelectionChange={setAiSelection}
+                onAiRequest={openAiAction}
+                onFullscreenChange={setEditorFullscreen}
+                placeholder={section === "writing"
+                  ? writingView === "manuscripts"
+                    ? "Write your manuscript…"
+                    : "Write this reference page…"
+                  : section === "maps"
+                    ? "Describe this map and the world it contains…"
+                    : "Write the canonical story of this entry…"} />
+              <div class="editor-footer">
+                <span>{wordCount()} words</span>
+                <div><button class="quiet-button" onclick={archiveSelected}>Archive</button></div>
+              </div>
+            {:else}
+              <div class="editor-empty">
+                <div class="empty-mark">✦</div>
+                <h3>
+                  {section === "maps"
+                    ? "Your map notes are waiting."
+                    : section === "writing"
+                      ? writingView === "manuscripts"
+                        ? "Your draft is waiting."
+                        : "Your reference desk is waiting."
+                      : "Your canvas is waiting."}
+                </h3>
+                <p>
+                  {section === "maps"
+                    ? "Select a map from the atlas, or create one with a map integration."
+                    : "Select an entry from the library, or create something new to begin writing."}
+                </p>
+              </div>
+            {/if}
           {/if}
         </article>
 
-        {#if selected}<aside class="inspector-panel panel-surface">
+        {#if (section !== "maps" || sandboxView?.renderer !== "maps") && selected}<aside
+            class="inspector-panel panel-surface">
             <div class="inspector-heading">
               <div><span class="panel-kicker">INSPECTOR</span><strong>Details</strong></div>
               <div class="inspector-heading-actions">
@@ -4178,38 +4312,46 @@ onMount(() => {
                     ></span>
                 </div>{/each}
             </section>
-            <section class="inspector-section map-contribution" aria-label="Maps contribution">
-              <div class="section-title">
-                <h3>Maps</h3>
-                <span>{mapLocations.length}</span>
-              </div>
-              <p>Click the map to link a place, or use Link location here to pick on the map.</p>
-              <button class="quiet-button" type="button" onclick={() => void linkEntityToMap()}>＋ Link location</button
-              >{#if mapLocations.length === 0}<small>No map links yet.</small
-                >{:else}{#each mapLocations as location (location.id)}<div class="map-location-row">
-                    <div>
-                      <strong>{location.label || location.role}</strong><small
-                        >{location.role} · {location.mapEntityId.slice(0, 8)}{#if location.resolution === "unresolved"}
-                          · <span class="map-unresolved-badge">Unresolved</span>{/if}</small>
-                    </div>
-                    <div>
-                      {#if location.resolution === "unresolved"}<span
-                          class="map-unresolved-note"
-                          title="The map feature this link pointed to was removed or renumbered.">Feature missing</span
-                        >{:else}<button
+            {#if mapsEnabled()}<section class="inspector-section map-contribution" aria-label="Maps contribution">
+                <div class="section-title">
+                  <h3>Maps</h3>
+                  <span>{mapLocations.length}</span>
+                </div>
+                <p>Click the map to link a place, or use Link location here to pick on the map.</p>
+                <button class="quiet-button" type="button" onclick={() => void linkEntityToMap()}
+                  >＋ Link location</button
+                >{#if mapLocations.length === 0}<small>No map links yet.</small
+                  >{:else}{#each mapLocations as location (location.id)}<div class="map-location-row">
+                      <div>
+                        <strong>{location.label || location.role}</strong><small
+                          >{location.role} · {location.mapEntityId.slice(
+                            0,
+                            8,
+                          )}{#if location.resolution === "unresolved"}
+                            · <span class="map-unresolved-badge">Unresolved</span>{/if}</small>
+                      </div>
+                      <div>
+                        {#if location.resolution === "unresolved"}<span
+                            class="map-unresolved-note"
+                            title="The map feature this link pointed to was removed or renumbered."
+                            >Feature missing</span
+                          >{:else}<button
+                            class="quiet-button"
+                            type="button"
+                            onclick={() => void openMapLocation(location)}>Show on map</button
+                          >{/if}<button
                           class="quiet-button"
                           type="button"
-                          onclick={() => void openMapLocation(location)}>Show on map</button
-                        >{/if}<button class="quiet-button" type="button" onclick={() => void editMapLocation(location)}
-                        >Edit</button
-                      ><button class="quiet-button" type="button" onclick={() => void rebindMapLocation(location)}
-                        >Rebind</button
-                      ><button class="quiet-button" type="button" onclick={() => void unlinkMapLocation(location)}
-                        >Unlink</button>
-                    </div>
-                  </div>{/each}{/if}
-            </section>
-          </aside>{:else}<aside class="inspector-panel panel-surface inspector-empty">
+                          onclick={() => void editMapLocation(location)}>Edit</button
+                        ><button class="quiet-button" type="button" onclick={() => void rebindMapLocation(location)}
+                          >Rebind</button
+                        ><button class="quiet-button" type="button" onclick={() => void unlinkMapLocation(location)}
+                          >Unlink</button>
+                      </div>
+                    </div>{/each}{/if}
+              </section>{/if}
+          </aside>{:else if section !== "maps" || sandboxView?.renderer !== "maps"}<aside
+            class="inspector-panel panel-surface inspector-empty">
             <span>INSPECTOR</span>
             <p>Select an entry to see its properties, relationships, and attachments.</p>
           </aside>{/if}
@@ -4722,30 +4864,6 @@ onMount(() => {
   box-shadow: none;
   transform: none;
 }
-.maps-welcome {
-  align-items: stretch;
-}
-.maps-welcome-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 26px;
-}
-.maps-welcome-list {
-  flex: 0 0 380px;
-  display: flex;
-  width: 380px;
-  min-height: 380px;
-  max-height: calc(100vh - 220px);
-  flex-direction: column;
-}
-.maps-welcome-list .panel-heading {
-  flex: 0 0 auto;
-}
-.maps-welcome-list .collection-list {
-  max-height: none;
-  flex: 1 1 auto;
-  overflow-y: auto;
-}
 .workspace-heading {
   display: flex;
   align-items: flex-end;
@@ -4783,6 +4901,9 @@ onMount(() => {
   gap: 14px;
   padding: 0 40px 40px;
   align-items: start;
+}
+.maps-workspace {
+  grid-template-columns: 245px minmax(0, 1fr);
 }
 .panel-surface,
 .editor-panel {
@@ -4825,6 +4946,10 @@ onMount(() => {
 .editor-panel {
   min-height: 650px;
   padding: 24px 25px 18px;
+}
+.map-editor-active {
+  display: flex;
+  flex-direction: column;
 }
 .editor-header {
   display: flex;
@@ -4904,54 +5029,18 @@ onMount(() => {
   flex: 1 1 auto;
   flex-direction: column;
 }
-.map-editor-toolbar {
+.map-surface {
+  position: relative;
   display: flex;
-  align-items: center;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.map-editor-notices {
+  display: flex;
   gap: 12px;
-  min-height: 44px;
-  padding: 0 18px;
+  padding: 8px 18px;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
-}
-.map-save-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--ink-soft);
-  font-size: 11px;
-}
-.map-save-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #72a97a;
-}
-.map-state-warn {
-  color: #8a6a3b;
-}
-.map-state-warn .map-save-dot {
-  background: #d6a35f;
-}
-.map-state-error {
-  color: #a14f42;
-}
-.map-state-error .map-save-dot {
-  background: #c05a4b;
-}
-.map-conflict-path {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ink-faint);
-  font:
-    11px ui-monospace,
-    monospace;
-}
-.map-toolbar-actions {
-  margin-left: auto;
-  display: flex;
-  gap: 6px;
 }
 .map-conflict-banner {
   display: flex;
@@ -6381,6 +6470,10 @@ onMount(() => {
 .editor-fullscreen .editor-header h2 {
   font-size: 32px;
 }
+.editor-fullscreen .map-editor-shell {
+  width: min(1440px, 100%);
+  align-self: center;
+}
 .editor-fullscreen .editor-footer {
   padding-top: 12px;
 }
@@ -6479,13 +6572,6 @@ onMount(() => {
     margin-top: 22px;
     transform: scale(0.72);
     transform-origin: left top;
-  }
-  .maps-welcome-list {
-    flex: 0 0 300px;
-    width: 300px;
-    transform: scale(0.72);
-    transform-origin: left top;
-    margin-top: 22px;
   }
   .workspace-heading {
     padding: 28px 17px 18px;

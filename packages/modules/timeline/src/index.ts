@@ -234,12 +234,14 @@ function renderSelection(details: HTMLElement, event: TimelineEvent, context: Mo
   } else {
     details.append(name, range);
   }
-  const mapButton = document.createElement("button");
-  mapButton.type = "button";
-  mapButton.className = "timeline-map-button";
-  mapButton.textContent = "Show on map";
-  mapButton.onclick = () => void showOnMap(context, event.entity.id);
-  details.append(mapButton);
+  if (context.services.isAvailable("daena.maps/navigation", 1)) {
+    const mapButton = document.createElement("button");
+    mapButton.type = "button";
+    mapButton.className = "timeline-map-button";
+    mapButton.textContent = "Show on map";
+    mapButton.onclick = () => void showOnMap(context, event.entity.id);
+    details.append(mapButton);
+  }
 }
 
 function renderUndatedSelection(details: HTMLElement, event: UndatedEvent, context: ModuleContext) {
@@ -256,12 +258,14 @@ function renderUndatedSelection(details: HTMLElement, event: UndatedEvent, conte
   } else {
     details.append(name, status);
   }
-  const mapButton = document.createElement("button");
-  mapButton.type = "button";
-  mapButton.className = "timeline-map-button";
-  mapButton.textContent = "Show on map";
-  mapButton.onclick = () => void showOnMap(context, event.entity.id);
-  details.append(mapButton);
+  if (context.services.isAvailable("daena.maps/navigation", 1)) {
+    const mapButton = document.createElement("button");
+    mapButton.type = "button";
+    mapButton.className = "timeline-map-button";
+    mapButton.textContent = "Show on map";
+    mapButton.onclick = () => void showOnMap(context, event.entity.id);
+    details.append(mapButton);
+  }
 }
 
 function eventYear(event: TimelineEvent): number {

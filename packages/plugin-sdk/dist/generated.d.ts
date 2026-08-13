@@ -98,9 +98,19 @@ export type ViewComponent = {
     label: string;
     type: "button";
 };
+export type ViewRenderer = {
+    type: "declarative";
+} | {
+    type: "sandboxed";
+} | {
+    id: string;
+    major: number;
+    type: "host-surface";
+};
 export interface View {
     components?: ViewComponent[];
     id: string;
+    renderer?: ViewRenderer;
     title: string;
 }
 export type CommandAction = {

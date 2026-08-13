@@ -725,6 +725,12 @@
           "minLength": 1,
           "type": "string"
         },
+        "renderer": {
+          "$ref": "#/$defs/ViewRenderer",
+          "default": {
+            "type": "declarative"
+          }
+        },
         "title": {
           "minLength": 1,
           "type": "string"
@@ -911,6 +917,66 @@
             "command",
             "id",
             "label",
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ViewRenderer": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "declarative"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "sandboxed"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "pattern": "^[a-z0-9][a-z0-9_-]*(?:\\.[a-z0-9][a-z0-9_-]*)*/[a-z0-9][a-z0-9_.-]*$",
+              "type": "string"
+            },
+            "major": {
+              "format": "uint32",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "type": {
+              "enum": [
+                "host-surface"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "major",
             "type"
           ],
           "type": "object"

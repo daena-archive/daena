@@ -78,6 +78,7 @@ export declare function createBrowserPluginRpcTransport(options?: BrowserPluginR
 export declare function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcClient;
 export declare function uploadAssetChunks(transfer: AssetReplaceHandle, bytes: Uint8Array, fetcher?: typeof globalThis.fetch): Promise<void>;
 export declare function isPluginIdentifier(value: string): boolean;
+export declare function isHostSurfaceId(value: string): boolean;
 export declare function isSemanticVersion(value: string): boolean;
 export declare function isHostApiRange(value: string): boolean;
 export declare function isPackagePath(value: string): boolean;

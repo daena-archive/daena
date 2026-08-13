@@ -1630,20 +1630,14 @@ fn open_plugin_webview(
     let policy =
         webview_policy(&entry.manifest).ok_or_else(|| "plugin has no UI entrypoint".to_string())?;
     validate_plugin_view(&entry.manifest, view_id)?;
+    let host_surface = host_surface_for_view(&entry.manifest, view_id);
     if let Some(window) = app.get_webview_window(&policy.label) {
         window.show().map_err(|error| error.to_string())?;
         window.set_focus().map_err(|error| error.to_string())?;
         return Ok(());
     }
     let mut url = format!("{}?project={}", policy.url, percent_encode(project_id));
-    if policy.url.contains("daena.maps") {
-        // FMG uses this explicit host marker to disable browser-only
-        // integrations such as its ServiceWorker and OpenWidget import.
-        url.push_str("&daena=1");
-    }
-    if policy.url.starts_with("plugin://daena.maps/") {
-        url.push_str("&daena=1");
-    }
+    append_host_surface_query(&mut url, host_surface);
     if let Some(view_id) = view_id {
         url.push_str("&view=");
         url.push_str(&percent_encode(view_id));
@@ -1664,6 +1658,34 @@ fn open_plugin_webview(
     .build()
     .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn host_surface_for_view<'a>(
+    manifest: &'a PluginManifest,
+    view_id: Option<&str>,
+) -> Option<(&'a str, u32)> {
+    let view = view_id
+        .and_then(|id| manifest.views.iter().find(|view| view.id == id))
+        .or_else(|| manifest.views.first())?;
+    match &view.renderer {
+        daena_plugin_api::ViewRenderer::HostSurface { id, major } => Some((id.as_str(), *major)),
+        _ => None,
+    }
+}
+
+fn append_host_surface_query(url: &mut String, host_surface: Option<(&str, u32)>) {
+    let Some((id, major)) = host_surface else {
+        return;
+    };
+    url.push_str("&hostSurface=");
+    url.push_str(&percent_encode(id));
+    url.push_str("&hostSurfaceMajor=");
+    url.push_str(&major.to_string());
+    if id == "daena.maps/editor" && major == 1 {
+        // FMG uses this explicit host marker to disable browser-only
+        // integrations such as its ServiceWorker and OpenWidget import.
+        url.push_str("&daena=1");
+    }
 }
 
 fn close_plugin_webview(app: &tauri::AppHandle, plugin_id: &str) {
@@ -1768,6 +1790,7 @@ fn plugin_webview_url(
     policy: &daena_plugin_host::PluginWebviewPolicy,
     project_id: &str,
     view_id: Option<&str>,
+    host_surface: Option<(&str, u32)>,
     map_entity_id: Option<&str>,
     link_id: Option<&str>,
     bounds: PluginWebviewBounds,
@@ -1779,9 +1802,7 @@ fn plugin_webview_url(
         bounds.width,
         bounds.height
     );
-    if policy.url.contains("daena.maps") {
-        url.push_str("&daena=1");
-    }
+    append_host_surface_query(&mut url, host_surface);
     if let Some(view_id) = view_id {
         url.push_str("&view=");
         url.push_str(&percent_encode(view_id));
@@ -1834,10 +1855,12 @@ async fn plugin_mount_webview(
         let policy = webview_policy(&entry.manifest)
             .ok_or_else(|| "plugin has no UI entrypoint".to_string())?;
         validate_plugin_view(&entry.manifest, view_id.as_deref())?;
+        let host_surface = host_surface_for_view(&entry.manifest, view_id.as_deref());
         let url = plugin_webview_url(
             &policy,
             &project_id,
             view_id.as_deref(),
+            host_surface,
             map_entity_id.as_deref(),
             link_id.as_deref(),
             bounds,
@@ -3942,6 +3965,15 @@ async fn plugin_admin_view(
             );
             object.insert("installedVersions".into(), serde_json::Value::Array(versions));
             object.insert("dependencyState".into(), dependency_state);
+            let bundled = entry.package_root.as_os_str().is_empty();
+            object.insert(
+                "distribution".into(),
+                serde_json::json!({
+                    "origin": if bundled { "bundled" } else { "installed" },
+                    "management": if bundled { "app" } else { "user" },
+                    "canUninstall": !bundled,
+                }),
+            );
             plugins_view.push(view);
         }
         Ok(serde_json::json!({ "plugins": plugins_view }))
@@ -5694,12 +5726,15 @@ fn maps_navigation_service_handler(core: SharedCore) -> daena_plugin_host::Servi
     })
 }
 
-/// Asks the open Maps child webview to save. There is no shell-to-webview
+/// Asks the open Maps-compatible host-surface webview to save. There is no shell-to-webview
 /// RPC channel; the child exposes its save path on `window.daenaMapProvider`
 /// and the host evaluates a fixed literal to trigger it.
 #[tauri::command]
-async fn maps_editor_save(app: tauri::AppHandle) -> Result<(), String> {
-    let label = plugin_window_label("daena.maps");
+async fn maps_editor_save(
+    app: tauri::AppHandle,
+    plugin_id: Option<String>,
+) -> Result<(), String> {
+    let label = plugin_window_label(plugin_id.as_deref().unwrap_or("daena.maps"));
     let webview = app
         .get_webview(&label)
         .ok_or_else(|| "the map editor is not open".to_string())?;
@@ -5708,12 +5743,15 @@ async fn maps_editor_save(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|error| format!("request map editor save: {error}"))
 }
 
-/// Asks the open Maps child webview to capture the current selection. The
+/// Asks the open Maps-compatible host-surface webview to capture the current selection. The
 /// capture itself is asynchronous in the child; the anchor is delivered back
 /// on `daena.maps/selection@1`, forwarded to the shell as `maps-selection`.
 #[tauri::command]
-async fn maps_editor_capture_anchor(app: tauri::AppHandle) -> Result<(), String> {
-    let label = plugin_window_label("daena.maps");
+async fn maps_editor_capture_anchor(
+    app: tauri::AppHandle,
+    plugin_id: Option<String>,
+) -> Result<(), String> {
+    let label = plugin_window_label(plugin_id.as_deref().unwrap_or("daena.maps"));
     let webview = app
         .get_webview(&label)
         .ok_or_else(|| "the map editor is not open".to_string())?;
@@ -5722,11 +5760,14 @@ async fn maps_editor_capture_anchor(app: tauri::AppHandle) -> Result<(), String>
         .map_err(|error| format!("request map editor capture: {error}"))
 }
 
-/// Puts the open Maps child into one-shot pick mode. The next map click publishes
+/// Puts the open Maps-compatible host surface into one-shot pick mode. The next map click publishes
 /// `daena.maps/state@1` with status `pick-complete` (and the anchor in detail).
 #[tauri::command]
-async fn maps_editor_start_pick(app: tauri::AppHandle) -> Result<(), String> {
-    let label = plugin_window_label("daena.maps");
+async fn maps_editor_start_pick(
+    app: tauri::AppHandle,
+    plugin_id: Option<String>,
+) -> Result<(), String> {
+    let label = plugin_window_label(plugin_id.as_deref().unwrap_or("daena.maps"));
     let webview = app
         .get_webview(&label)
         .ok_or_else(|| "the map editor is not open".to_string())?;
@@ -5735,14 +5776,15 @@ async fn maps_editor_start_pick(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|error| format!("request map editor pick: {error}"))
 }
 
-/// Pushes a semantic overlay frame into the open Maps child webview. The
+/// Pushes a semantic overlay frame into the open Maps-compatible host surface. The
 /// frame is derived state (projection rows); the child never persists it.
 #[tauri::command]
 async fn maps_editor_set_overlay(
     app: tauri::AppHandle,
+    plugin_id: Option<String>,
     frame: serde_json::Value,
 ) -> Result<(), String> {
-    let label = plugin_window_label("daena.maps");
+    let label = plugin_window_label(plugin_id.as_deref().unwrap_or("daena.maps"));
     let webview = app
         .get_webview(&label)
         .ok_or_else(|| "the map editor is not open".to_string())?;
@@ -5755,14 +5797,15 @@ async fn maps_editor_set_overlay(
         .map_err(|error| format!("request map editor overlay: {error}"))
 }
 
-/// Pushes a display date into the open Maps child webview so the overlay
+/// Pushes a display date into the open Maps-compatible host surface so the overlay
 /// filters locations by validity. `null` clears the temporal filter.
 #[tauri::command]
 async fn maps_editor_set_date(
     app: tauri::AppHandle,
+    plugin_id: Option<String>,
     date: Option<serde_json::Value>,
 ) -> Result<(), String> {
-    let label = plugin_window_label("daena.maps");
+    let label = plugin_window_label(plugin_id.as_deref().unwrap_or("daena.maps"));
     let webview = app
         .get_webview(&label)
         .ok_or_else(|| "the map editor is not open".to_string())?;
@@ -5775,10 +5818,14 @@ async fn maps_editor_set_date(
         .map_err(|error| format!("request map editor date: {error}"))
 }
 
-/// Asks the open Maps child webview to focus a linked location by ID.
+/// Asks the open Maps-compatible host surface to focus a linked location by ID.
 #[tauri::command]
-async fn maps_editor_focus_link(app: tauri::AppHandle, link_id: String) -> Result<(), String> {
-    let label = plugin_window_label("daena.maps");
+async fn maps_editor_focus_link(
+    app: tauri::AppHandle,
+    plugin_id: Option<String>,
+    link_id: String,
+) -> Result<(), String> {
+    let label = plugin_window_label(plugin_id.as_deref().unwrap_or("daena.maps"));
     let webview = app
         .get_webview(&label)
         .ok_or_else(|| "the map editor is not open".to_string())?;

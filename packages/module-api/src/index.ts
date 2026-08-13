@@ -249,6 +249,9 @@ export interface ModuleContext {
   readonly module: ModuleManifest;
   /** Host-selected entity to preserve when opening a module projection. */
   readonly focusEntityId?: UUID;
+  readonly services: {
+    isAvailable(name: string, major: number): boolean;
+  };
   entities: {
     get(id: UUID): Promise<EntityRecord | null>;
     list(query?: EntityQuery): Promise<EntitySummary[]>;

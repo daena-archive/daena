@@ -214,12 +214,14 @@ function renderSelection(
   type.textContent = `${displayType(entity.type)} · ${connected.length} connection${connected.length === 1 ? "" : "s"}`;
   const actionRow = document.createElement("div");
   actionRow.className = "lore-graph-toolbar-actions";
-  const mapButton = document.createElement("button");
-  mapButton.type = "button";
-  mapButton.className = "lore-graph-map-button";
-  mapButton.textContent = "Show on map";
-  mapButton.onclick = () => void showOnMap(context, entity.id);
-  actionRow.append(mapButton);
+  if (context.services.isAvailable("daena.maps/navigation", 1)) {
+    const mapButton = document.createElement("button");
+    mapButton.type = "button";
+    mapButton.className = "lore-graph-map-button";
+    mapButton.textContent = "Show on map";
+    mapButton.onclick = () => void showOnMap(context, entity.id);
+    actionRow.append(mapButton);
+  }
   details.append(name, type, actionRow);
   if (connected.length === 0) return;
   const list = document.createElement("ul");

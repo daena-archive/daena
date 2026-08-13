@@ -136,6 +136,7 @@ The initial capability vocabulary is:
 | `search.query`                       | Query the core search service.                                                         |
 | `event.publish:<type>`               | Publish a declared event type.                                                         |
 | `event.subscribe:<type>`             | Subscribe to a declared event type.                                                    |
+| `host.surface:<name>@<major>`         | Use a versioned host-rendered surface declared by the plugin view.                      |
 | `service.provide:<name>`             | Register a declared service implementation.                                            |
 | `service.call:<name>`                | Call a declared service.                                                               |
 | `network:<origin>`                   | Make brokered requests to an approved HTTPS origin. Not in the first release.          |
@@ -201,6 +202,15 @@ Rules:
 - Unknown manifest keys are rejected for manifest version 1. Future optional
   features arrive through a new manifest version or explicitly versioned
   extension blocks.
+- A view may declare `renderer` as `declarative`, `sandboxed`, or a versioned
+  `host-surface` such as `{ "type": "host-surface", "id": "daena.maps/editor", "major": 1 }`.
+  Host surfaces require the matching `host.surface:<id>@<major>` capability;
+  the host owns the implementation and plugins receive only its brokered
+  protocol. For `daena.maps/editor@1`, the plugin SDK exports
+  `registerMapsHostSurfaceProvider`; the host invokes that browser-side bridge
+  for save, pick, overlay, date, and focus actions and routes them to the
+  active plugin's webview, not to a bundled-plugin ID. A plugin still cannot
+  register arbitrary native commands or create an unregistered host surface.
 - A package digest covers the manifest and every packaged file. The manifest's
   migration checksums are part of that digest.
 - Enabled state and granted capabilities are not stored in the package

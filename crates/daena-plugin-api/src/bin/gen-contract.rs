@@ -314,6 +314,36 @@ fn manifest_schema() -> Value {
     for prop in ["id", "title"] {
         rule_on_prop(&mut root, "View", prop, "minLength", 1);
     }
+    {
+        let variants = defs_entry(&mut root, "ViewRenderer")
+            .get_mut("oneOf")
+            .and_then(|value| value.as_array_mut())
+            .expect("ViewRenderer variants");
+        let host_surface = variants
+            .iter_mut()
+            .find(|variant| {
+                variant["properties"]["type"]["enum"]
+                    .as_array()
+                    .is_some_and(|values| values.iter().any(|value| value == "host-surface"))
+            })
+            .expect("host-surface renderer variant");
+        let properties = host_surface["properties"]
+            .as_object_mut()
+            .expect("host-surface renderer properties");
+        properties
+            .get_mut("id")
+            .and_then(|value| value.as_object_mut())
+            .expect("host-surface renderer id")
+            .insert(
+                "pattern".to_owned(),
+                json!(r"^[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9][a-z0-9_-]*)*/[a-z0-9][a-z0-9_.-]*$"),
+            );
+        properties
+            .get_mut("major")
+            .and_then(|value| value.as_object_mut())
+            .expect("host-surface renderer major")
+            .insert("minimum".to_owned(), json!(1));
+    }
 
     // Service + Event.
     for kind in ["Service", "Event"] {

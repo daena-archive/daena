@@ -7,4 +7,14 @@ export const MAP_RELATIONSHIP = {
     OVERVIEW_MAP: "daena.maps:overview-map",
     RELATED_MAP: "daena.maps:related-map",
 };
+/** Register the browser bridge used by the Maps host surface. */
+export function registerMapsHostSurfaceProvider(provider) {
+    if (typeof window === "undefined")
+        throw new Error("Maps host surface requires a browser runtime");
+    window.daenaMapProvider = provider;
+    return () => {
+        if (window.daenaMapProvider === provider)
+            delete window.daenaMapProvider;
+    };
+}
 //# sourceMappingURL=maps.js.map

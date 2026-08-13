@@ -232,6 +232,96 @@ fn image_descriptors_and_raster_layers_round_trip() {
 }
 
 #[test]
+fn vector_descriptors_layers_and_feature_anchors_round_trip() {
+    let connection = maps_tables();
+    let map_id = Uuid::new_v4().to_string();
+    insert_entity(&connection, &map_id, MAP_ENTITY_TYPE);
+    let asset_id = Uuid::new_v4().to_string();
+    insert_asset(&connection, &asset_id, &map_id, VECTOR_MIME);
+
+    let descriptor = serde_json::json!({
+        "schemaVersion": 1,
+        "provider": {"id": VECTOR_PROVIDER, "adapterVersion": 1, "sourceFormat": VECTOR_SOURCE_FORMAT},
+        "sourceAssetId": asset_id,
+        "previewAssetId": null,
+        "defaultView": {"center": [0.5, 0.5], "zoom": 1},
+        "generation": {
+            "id": "daena-landmass",
+            "version": 1,
+            "seed": 831429,
+            "settings": {
+                "landPercent": 40,
+                "continentCount": 3,
+                "coastlineRoughness": "medium",
+                "islandFrequency": "medium"
+            }
+        }
+    });
+    validate_field(&connection, &map_id, "map", &descriptor).unwrap();
+    let parsed: MapDescriptor = serde_json::from_value(descriptor.clone()).unwrap();
+    assert_eq!(
+        serde_json::from_value::<MapDescriptor>(serde_json::to_value(&parsed).unwrap()).unwrap(),
+        parsed
+    );
+
+    let polar = serde_json::json!({
+        "schemaVersion": 1,
+        "provider": {"id": VECTOR_PROVIDER, "adapterVersion": 1, "sourceFormat": VECTOR_SOURCE_FORMAT},
+        "sourceAssetId": asset_id,
+        "previewAssetId": null,
+        "defaultView": {"center": [0.5, 0.01], "zoom": 1}
+    });
+    assert!(validate_field(&connection, &map_id, "map", &polar)
+        .unwrap_err()
+        .to_string()
+        .contains("center"));
+
+    let layer = serde_json::json!({
+        "id": "018f89ec-25fc-7816-8b47-6f80905f2868",
+        "name": "Countries",
+        "order": 10,
+        "defaultVisible": true,
+        "locked": false,
+        "selector": {},
+        "style": {
+            "fill": "#8f6fd1",
+            "fillOpacity": 0.35,
+            "stroke": "#5e4893",
+            "strokeWidth": 1.5,
+            "pointRadius": 5
+        },
+        "kind": "vector"
+    });
+    let parsed_layer: LayerDefinition = serde_json::from_value(layer.clone()).unwrap();
+    assert!(matches!(parsed_layer, LayerDefinition::Vector(_)));
+    validate_field(
+        &connection,
+        &map_id,
+        "layers",
+        &serde_json::json!({"schemaVersion": 1, "layers": [layer]}),
+    )
+    .unwrap();
+
+    let feature_id = "018f89ec-25fc-7816-8b47-6f80905f2801";
+    assert!(anchor(&serde_json::json!({
+        "kind": "provider-feature",
+        "provider": VECTOR_PROVIDER,
+        "featureKind": "geojson-feature",
+        "featureId": feature_id,
+        "fallbackPoint": [0.5, 0.5]
+    }))
+    .is_ok());
+    assert!(anchor(&serde_json::json!({
+        "kind": "provider-feature",
+        "provider": VECTOR_PROVIDER,
+        "featureKind": "burg",
+        "featureId": feature_id,
+        "fallbackPoint": [0.5, 0.5]
+    }))
+    .is_err());
+}
+
+#[test]
 fn rejects_invalid_semantic_style_and_selector() {
     let connection = maps_tables();
     let map_id = Uuid::new_v4().to_string();

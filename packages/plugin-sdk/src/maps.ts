@@ -5,6 +5,7 @@ export const MAP_ENTITY_TYPE = "daena.maps:map" as const;
 export const MAP_NAMESPACE = "maps" as const;
 export const FMG_PROVIDER = "azgaar-fmg" as const;
 export const IMAGE_PROVIDER = "daena-image" as const;
+export const VECTOR_PROVIDER = "daena-vector" as const;
 export const IMAGE_SOURCE_FORMATS = ["png", "jpeg", "svg"] as const;
 
 /** Recorded Image Map resource budgets. Mirrored from `daena-core` maps::image. */
@@ -16,6 +17,13 @@ export const IMAGE_MAX_UNDO_BYTES = 64 * 1024 * 1024;
 export const IMAGE_MAX_PATH_POINTS = 256;
 export const IMAGE_MAX_AREA_RINGS = 8;
 export const IMAGE_MAX_SEMANTIC_LAYERS = 32;
+
+/** Recorded Native Vector Map resource budgets. Mirrored from `daena-core` maps::vector. */
+export const VECTOR_MAX_BYTES = 16 * 1024 * 1024;
+export const VECTOR_MAX_FEATURES = 20_000;
+export const VECTOR_MAX_POSITIONS = 200_000;
+export const VECTOR_MAX_FEATURE_POSITIONS = 20_000;
+export const VECTOR_MAX_LAYERS = 64;
 
 /** Hierarchy relationship types owned by `daena.maps`. */
 export const MAP_RELATIONSHIP = {
@@ -54,6 +62,24 @@ export type MapDescriptor =
       sourceAssetId: string;
       previewAssetId: string | null;
       defaultView: { center: NormalizedPoint; zoom: number };
+    }
+  | {
+      schemaVersion: 1;
+      provider: { id: typeof VECTOR_PROVIDER; adapterVersion: 1; sourceFormat: "geojson" };
+      sourceAssetId: string;
+      previewAssetId: string | null;
+      defaultView: { center: NormalizedPoint; zoom: number };
+      generation?: {
+        id: "daena-landmass";
+        version: 1;
+        seed: number;
+        settings: {
+          landPercent: number;
+          continentCount: number;
+          coastlineRoughness: "low" | "medium" | "high";
+          islandFrequency: "none" | "low" | "medium" | "high";
+        };
+      };
     };
 
 export interface MapDate {
@@ -100,6 +126,22 @@ export type MapLayerDefinition =
       rasterAssetId: string;
       opacity: number;
       locked: boolean;
+    }
+  | {
+      id: string;
+      name: string;
+      order: number;
+      defaultVisible: boolean;
+      locked: boolean;
+      selector: Readonly<Record<string, never>>;
+      style: {
+        fill: string;
+        fillOpacity: number;
+        stroke: string;
+        strokeWidth: number;
+        pointRadius: number;
+      };
+      kind: "vector";
     };
 
 export interface MapLayersField {

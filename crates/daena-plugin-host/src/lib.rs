@@ -3058,7 +3058,11 @@ fn validate_declared_resource(
                 .get("collection")
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| {
-                    rpc_error("payload.invalid", "record operations require collection", false)
+                    rpc_error(
+                        "payload.invalid",
+                        "record operations require collection",
+                        false,
+                    )
                 })?;
             let collection = manifest
                 .records
@@ -3075,9 +3079,8 @@ fn validate_declared_resource(
                 let value = payload.get("value").ok_or_else(|| {
                     rpc_error("payload.invalid", "record value is required", false)
                 })?;
-                daena_plugin_api::validate_command_value(&collection.schema, value).map_err(
-                    |error| rpc_error("record.invalid", error.to_string(), false),
-                )?;
+                daena_plugin_api::validate_command_value(&collection.schema, value)
+                    .map_err(|error| rpc_error("record.invalid", error.to_string(), false))?;
             }
         }
         "event.publish" | "event.subscribe" | "event.poll" => {

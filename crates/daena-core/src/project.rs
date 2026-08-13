@@ -172,6 +172,25 @@ pub struct ImportedImageMap {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcceptedVectorMap {
+    pub entity: Entity,
+    pub source: Asset,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VectorSourceReplace {
+    pub source: Asset,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VectorLayerDelete {
+    pub layers: FieldValue,
+    pub source: Asset,
+    #[serde(rename = "deletedFeatureCount")]
+    pub deleted_feature_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RasterLayerChange {
     pub layer_id: String,
     pub asset: Option<Asset>,
@@ -3382,6 +3401,7 @@ impl ProjectStore {
              CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, filename TEXT NOT NULL, content_hash TEXT NOT NULL, size INTEGER NOT NULL, mime_type TEXT NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS map_projection (map_entity_id TEXT PRIMARY KEY, provider TEXT NOT NULL, source_asset_id TEXT NOT NULL, source_path TEXT, source_hash TEXT);
              CREATE TABLE IF NOT EXISTS map_location_projection (location_id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, map_entity_id TEXT NOT NULL, label TEXT, role TEXT NOT NULL, anchor_kind TEXT NOT NULL, provider TEXT, feature_kind TEXT, feature_id TEXT, min_x REAL, min_y REAL, max_x REAL, max_y REAL, valid_from TEXT, valid_to TEXT, resolution TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS map_feature_projection (map_entity_id TEXT NOT NULL, feature_id TEXT NOT NULL, layer_id TEXT NOT NULL, kind TEXT NOT NULL, min_x REAL NOT NULL, min_y REAL NOT NULL, max_x REAL NOT NULL, max_y REAL NOT NULL, PRIMARY KEY (map_entity_id, feature_id));
              CREATE INDEX IF NOT EXISTS map_location_entity_idx ON map_location_projection(entity_id);
              CREATE INDEX IF NOT EXISTS map_location_map_idx ON map_location_projection(map_entity_id);
              CREATE INDEX IF NOT EXISTS assets_entity_created_idx ON assets(entity_id,created_at);")?;
@@ -3934,6 +3954,223 @@ impl ProjectStore {
         self.committed_mutation(request_id)
     }
 
+    pub fn accept_vector_map(
+        &self,
+        name: String,
+        bytes: Vec<u8>,
+        generation: serde_json::Value,
+        request_id: Option<&str>,
+    ) -> Result<AcceptedVectorMap, CoreError> {
+        crate::maps::vector::validate_generation(&generation)?;
+        let upload_hash = format!("sha256:{:x}", Sha256::digest(&bytes));
+        let input_fingerprint = digest_bytes(
+            &serde_json::to_vec(&serde_json::json!({
+                "name": name,
+                "generation": generation,
+                "uploadHash": upload_hash,
+            }))
+            .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if let Some(accepted) = self
+            .committed_mutation_with_fingerprint::<AcceptedVectorMap>(
+                request_id,
+                Some(&input_fingerprint),
+            )?
+        {
+            return Ok(accepted);
+        }
+        if bytes.len() > crate::maps::VECTOR_MAX_BYTES {
+            return Err(crate::maps::vector::fail(
+                crate::maps::vector::CODE_LIMIT,
+                "$",
+                "source asset exceeds 16 MiB",
+            ));
+        }
+        let canonical = crate::maps::vector::canonicalize_candidate(&bytes)?;
+        let content_hash = format!("sha256:{:x}", Sha256::digest(&canonical));
+        let size = canonical.len() as i64;
+        if let Some(root) = self.root.as_deref() {
+            store_runtime_asset(root, canonical.as_slice(), Some(&content_hash))?;
+        }
+        let entity_id = Uuid::new_v4().to_string();
+        let asset_id = Uuid::new_v4().to_string();
+        let now = chrono_like_now();
+        let relative_path = format!("assets/maps/{}-map.geojson", Uuid::new_v4());
+        let descriptor = serde_json::json!({
+            "schemaVersion": 1,
+            "provider": {
+                "id": crate::maps::VECTOR_PROVIDER,
+                "adapterVersion": 1,
+                "sourceFormat": crate::maps::VECTOR_SOURCE_FORMAT
+            },
+            "sourceAssetId": asset_id,
+            "previewAssetId": null,
+            "defaultView": {"center": [0.5, 0.5], "zoom": 1},
+            "generation": generation
+        });
+        let layers = serde_json::json!({"schemaVersion": 1, "layers": []});
+        let entity = Entity {
+            id: entity_id.clone(),
+            name: name.trim().into(),
+            entity_type: Some(crate::maps::MAP_ENTITY_TYPE.into()),
+            deleted: false,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            revision: String::new(),
+        };
+        let asset = Asset {
+            id: asset_id.clone(),
+            entity_id: entity_id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            filename: crate::maps::VECTOR_FILENAME.into(),
+            content_hash: content_hash.clone(),
+            size,
+            mime_type: crate::maps::VECTOR_MIME.into(),
+            path: relative_path.clone(),
+            created_at: now.clone(),
+            revision: String::new(),
+        };
+        let accepted = AcceptedVectorMap {
+            entity: entity.clone(),
+            source: asset.clone(),
+        };
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&accepted)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&result),
+            &[format!("entities/{entity_id}/"), relative_path.clone()],
+            &input_fingerprint,
+        )?;
+        transaction.execute(
+            "INSERT INTO entities(id,name,entity_type,created_at,updated_at) VALUES (?1,?2,?3,?4,?4)",
+            params![entity_id, entity.name, crate::maps::MAP_ENTITY_TYPE, now],
+        )?;
+        transaction.execute(
+            "INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![asset_id, entity_id, crate::maps::MAP_NAMESPACE, crate::maps::VECTOR_FILENAME, content_hash, size, crate::maps::VECTOR_MIME, relative_path, now],
+        )?;
+        crate::maps::validate_field(&transaction, &entity_id, "map", &descriptor)?;
+        crate::maps::validate_field(&transaction, &entity_id, "layers", &layers)?;
+        transaction.execute(
+            "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
+            params![entity_id, crate::maps::MAP_NAMESPACE, "map", encode_field_value(&descriptor)?],
+        )?;
+        transaction.execute(
+            "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
+            params![entity_id, crate::maps::MAP_NAMESPACE, "layers", encode_field_value(&layers)?],
+        )?;
+        transaction.commit()?;
+        self.refresh_maps_projection_for_entities(std::slice::from_ref(&accepted.entity.id))?;
+        self.notify_export_worker()?;
+        let mut accepted = accepted;
+        accepted.entity.revision = self.revision_for_entity(&accepted.entity.id)?;
+        accepted.source.revision = self.revision_for_asset(&accepted.source.id)?;
+        self.write_mutation_result(
+            &request_id,
+            &serde_json::to_value(&accepted)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        )?;
+        Ok(accepted)
+    }
+
+    pub fn replay_accepted_vector_map(
+        &self,
+        request_id: Option<&str>,
+    ) -> Result<Option<AcceptedVectorMap>, CoreError> {
+        self.committed_mutation(request_id)
+    }
+
+    pub fn replace_vector_source(
+        &self,
+        asset_id: String,
+        upload_bytes: Vec<u8>,
+        upload_content_hash: String,
+        expected_revision: &str,
+        request_id: Option<&str>,
+    ) -> Result<VectorSourceReplace, CoreError> {
+        let input_fingerprint = digest_bytes(
+            &serde_json::to_vec(&serde_json::json!({
+                "assetId": asset_id,
+                "uploadContentHash": upload_content_hash,
+                "expectedRevision": expected_revision,
+            }))
+            .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if let Some(replaced) = self
+            .committed_mutation_with_fingerprint::<VectorSourceReplace>(
+                request_id,
+                Some(&input_fingerprint),
+            )?
+        {
+            return Ok(replaced);
+        }
+        let digest = format!("sha256:{:x}", Sha256::digest(&upload_bytes));
+        if digest != upload_content_hash {
+            return Err(CoreError::Validation(
+                "transfer.invalid: upload content hash does not match bytes".into(),
+            ));
+        }
+        let mut asset = self.asset_unchecked(&asset_id)?;
+        Self::ensure_expected_revision(Some(expected_revision), asset.revision.clone(), "asset")?;
+        if asset.namespace != crate::maps::MAP_NAMESPACE || asset.mime_type != crate::maps::VECTOR_MIME {
+            return Err(crate::maps::vector::fail(
+                crate::maps::vector::CODE_SOURCE_INVALID,
+                "$",
+                "replacement target is not a daena-vector source asset",
+            ));
+        }
+        let layers = self.layers_field(&asset.entity_id)?;
+        let known = crate::maps::vector::layer_ids_from_layers_field(&layers.value);
+        let canonical = crate::maps::vector::canonicalize_committed(&upload_bytes, &known)?;
+        let content_hash = format!("sha256:{:x}", Sha256::digest(&canonical));
+        let size = canonical.len() as i64;
+        if let Some(root) = self.root.as_deref() {
+            store_runtime_asset(root, canonical.as_slice(), Some(&content_hash))?;
+        }
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&VectorSourceReplace {
+            source: Asset {
+                revision: String::new(),
+                content_hash: content_hash.clone(),
+                size,
+                ..asset.clone()
+            },
+        })
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&result),
+            &[format!("entities/{}/", asset.entity_id), asset.path.clone()],
+            &input_fingerprint,
+        )?;
+        transaction.execute(
+            "UPDATE assets SET content_hash=?1,size=?2,mime_type=?3 WHERE id=?4",
+            params![content_hash, size, crate::maps::VECTOR_MIME, asset_id],
+        )?;
+        transaction.commit()?;
+        self.refresh_maps_projection_for_entities(std::slice::from_ref(&asset.entity_id))?;
+        self.notify_export_worker()?;
+        asset.content_hash = content_hash;
+        asset.size = size;
+        asset.revision = self.revision_for_asset(&asset.id)?;
+        let replaced = VectorSourceReplace { source: asset };
+        self.write_mutation_result(
+            &request_id,
+            &serde_json::to_value(&replaced)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        )?;
+        Ok(replaced)
+    }
+
+    pub fn replay_replaced_vector_source(
+        &self,
+        request_id: Option<&str>,
+    ) -> Result<Option<VectorSourceReplace>, CoreError> {
+        self.committed_mutation(request_id)
+    }
+
     pub fn create_raster_layer(
         &self,
         map_entity_id: String,
@@ -4177,6 +4414,307 @@ impl ProjectStore {
         Ok(change)
     }
 
+    pub fn create_vector_layer(
+        &self,
+        map_entity_id: String,
+        name: String,
+        expected_revision: &str,
+        request_id: Option<&str>,
+        style: Option<serde_json::Value>,
+    ) -> Result<RasterLayerChange, CoreError> {
+        let input_fingerprint = self.layer_mutation_fingerprint(
+            "create-vector",
+            &map_entity_id,
+            None,
+            Some(&name),
+            expected_revision,
+            None,
+        )?;
+        if let Some(change) = self.committed_mutation_with_fingerprint::<RasterLayerChange>(
+            request_id,
+            Some(&input_fingerprint),
+        )? {
+            return Ok(change);
+        }
+        let mut layers_field = self.layers_field(&map_entity_id)?;
+        Self::ensure_expected_revision(
+            Some(expected_revision),
+            layers_field.revision.clone(),
+            "field",
+        )?;
+        let layers = layers_field
+            .value
+            .get("layers")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let vector_count = layers
+            .iter()
+            .filter(|layer| layer.get("kind").and_then(serde_json::Value::as_str) == Some("vector"))
+            .count();
+        if vector_count >= crate::maps::VECTOR_MAX_LAYERS {
+            return Err(crate::maps::vector::fail(
+                crate::maps::vector::CODE_LIMIT,
+                "layers",
+                format!("vector layer count exceeds {}", crate::maps::VECTOR_MAX_LAYERS),
+            ));
+        }
+        let layer_id = Uuid::new_v4().to_string();
+        let next_order = layers
+            .iter()
+            .filter_map(|layer| layer.get("order").and_then(serde_json::Value::as_i64))
+            .max()
+            .map(|order| order + 1)
+            .unwrap_or(0);
+        let style = style.unwrap_or_else(|| serde_json::json!({
+            "fill": "#8f6fd1",
+            "fillOpacity": 0.35,
+            "stroke": "#5e4893",
+            "strokeWidth": 1.5,
+            "pointRadius": 5
+        }));
+        crate::maps::vector::validate_vector_style(&style)?;
+        let mut layers = layers;
+        layers.push(serde_json::json!({
+            "id": layer_id,
+            "name": name,
+            "order": next_order,
+            "defaultVisible": true,
+            "locked": false,
+            "selector": {},
+            "style": style,
+            "kind": "vector"
+        }));
+        let layers_value = serde_json::json!({"schemaVersion": 1, "layers": layers});
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&RasterLayerChange {
+            layer_id: layer_id.clone(),
+            asset: None,
+            layers: FieldValue {
+                entity_id: map_entity_id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "layers".into(),
+                value: layers_value.clone(),
+                revision: String::new(),
+            },
+        })
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&result),
+            &[format!("entities/{map_entity_id}/")],
+            &input_fingerprint,
+        )?;
+        crate::maps::validate_field(&transaction, &map_entity_id, "layers", &layers_value)?;
+        transaction.execute(
+            "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value",
+            params![map_entity_id, crate::maps::MAP_NAMESPACE, "layers", encode_field_value(&layers_value)?],
+        )?;
+        transaction.commit()?;
+        self.refresh_maps_projection_for_entities(std::slice::from_ref(&map_entity_id))?;
+        self.notify_export_worker()?;
+        layers_field.value = layers_value;
+        layers_field.revision = self.revision_for_field(&layers_field)?;
+        let change = RasterLayerChange {
+            layer_id,
+            asset: None,
+            layers: layers_field,
+        };
+        self.write_mutation_result(
+            &request_id,
+            &serde_json::to_value(&change)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        )?;
+        Ok(change)
+    }
+
+    pub fn delete_vector_layer(
+        &self,
+        map_entity_id: String,
+        layer_id: String,
+        expected_revision: &str,
+        expected_source_revision: &str,
+        expected_feature_count: i64,
+        request_id: Option<&str>,
+    ) -> Result<VectorLayerDelete, CoreError> {
+        let input_fingerprint = digest_bytes(
+            &serde_json::to_vec(&serde_json::json!({
+                "op": "delete-vector",
+                "mapEntityId": map_entity_id,
+                "layerId": layer_id,
+                "expectedRevision": expected_revision,
+                "expectedSourceRevision": expected_source_revision,
+                "expectedFeatureCount": expected_feature_count,
+            }))
+            .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if let Some(change) = self.committed_mutation_with_fingerprint::<VectorLayerDelete>(
+            request_id,
+            Some(&input_fingerprint),
+        )? {
+            return Ok(change);
+        }
+        if expected_feature_count < 0 {
+            return Err(crate::maps::vector::fail(
+                crate::maps::vector::CODE_SOURCE_INVALID,
+                "expectedFeatureCount",
+                "must be a non-negative integer",
+            ));
+        }
+        let mut layers_field = self.layers_field(&map_entity_id)?;
+        Self::ensure_expected_revision(
+            Some(expected_revision),
+            layers_field.revision.clone(),
+            "field",
+        )?;
+        let descriptor = self
+            .list_fields_unchecked(map_entity_id.clone())?
+            .into_iter()
+            .find(|field| field.namespace == crate::maps::MAP_NAMESPACE && field.key == "map")
+            .ok_or_else(|| CoreError::NotFound("map descriptor not found".into()))?;
+        let source_id = descriptor
+            .value
+            .get("sourceAssetId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| CoreError::NotFound("vector source asset not found".into()))?
+            .to_owned();
+        let mut source = self.asset_unchecked(&source_id)?;
+        Self::ensure_expected_revision(
+            Some(expected_source_revision),
+            source.revision.clone(),
+            "asset",
+        )?;
+        let layers = layers_field
+            .value
+            .get("layers")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let Some(removed) = layers.iter().find(|layer| {
+            layer.get("id").and_then(serde_json::Value::as_str) == Some(layer_id.as_str())
+        }) else {
+            return Err(crate::maps::vector::fail(
+                crate::maps::vector::CODE_LAYER_MISSING,
+                "layerId",
+                "vector layer not found",
+            ));
+        };
+        if removed.get("kind").and_then(serde_json::Value::as_str) != Some("vector") {
+            return Err(CoreError::Validation(
+                "maps: only vector layers can be deleted by this operation".into(),
+            ));
+        }
+        let remaining: Vec<_> = layers
+            .into_iter()
+            .filter(|layer| layer.get("id").and_then(serde_json::Value::as_str) != Some(layer_id.as_str()))
+            .collect();
+        let layers_value = serde_json::json!({"schemaVersion": 1, "layers": remaining});
+        let known = crate::maps::vector::layer_ids_from_layers_field(&layers_value);
+        let bytes = self.read_asset_bytes(&source)?;
+        let (canonical, deleted) =
+            crate::maps::vector::remove_layer_features(&bytes, &layer_id, &known)?;
+        if deleted as i64 != expected_feature_count {
+            return Err(CoreError::Conflict(
+                "vector.layer.in-use: expectedFeatureCount does not match the source".into(),
+            ));
+        }
+        let content_hash = format!("sha256:{:x}", Sha256::digest(&canonical));
+        let size = canonical.len() as i64;
+        if let Some(root) = self.root.as_deref() {
+            store_runtime_asset(root, canonical.as_slice(), Some(&content_hash))?;
+        }
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&VectorLayerDelete {
+            layers: FieldValue {
+                entity_id: map_entity_id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "layers".into(),
+                value: layers_value.clone(),
+                revision: String::new(),
+            },
+            source: Asset {
+                content_hash: content_hash.clone(),
+                size,
+                revision: String::new(),
+                ..source.clone()
+            },
+            deleted_feature_count: deleted,
+        })
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&result),
+            &[format!("entities/{map_entity_id}/"), source.path.clone()],
+            &input_fingerprint,
+        )?;
+        crate::maps::validate_field(&transaction, &map_entity_id, "layers", &layers_value)?;
+        transaction.execute(
+            "UPDATE assets SET content_hash=?1,size=?2 WHERE id=?3",
+            params![content_hash, size, source.id],
+        )?;
+        transaction.execute(
+            "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value",
+            params![map_entity_id, crate::maps::MAP_NAMESPACE, "layers", encode_field_value(&layers_value)?],
+        )?;
+        transaction.commit()?;
+        self.refresh_maps_projection_for_entities(std::slice::from_ref(&map_entity_id))?;
+        self.notify_export_worker()?;
+        layers_field.value = layers_value;
+        layers_field.revision = self.revision_for_field(&layers_field)?;
+        source.content_hash = content_hash;
+        source.size = size;
+        source.revision = self.revision_for_asset(&source.id)?;
+        let change = VectorLayerDelete {
+            layers: layers_field,
+            source,
+            deleted_feature_count: deleted,
+        };
+        self.write_mutation_result(
+            &request_id,
+            &serde_json::to_value(&change)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        )?;
+        Ok(change)
+    }
+
+    pub fn map_provider_id(&self, map_entity_id: &str) -> Result<String, CoreError> {
+        let descriptor = self
+            .list_fields_unchecked(map_entity_id.to_owned())?
+            .into_iter()
+            .find(|field| field.namespace == crate::maps::MAP_NAMESPACE && field.key == "map")
+            .ok_or_else(|| CoreError::NotFound("map descriptor not found".into()))?;
+        descriptor
+            .value
+            .pointer("/provider/id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| CoreError::Validation("maps: provider id is required".into()))
+    }
+
+    pub fn map_layer_kind(
+        &self,
+        map_entity_id: &str,
+        layer_id: &str,
+    ) -> Result<Option<String>, CoreError> {
+        let layers = self.layers_field(map_entity_id)?;
+        Ok(layers
+            .value
+            .get("layers")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|layers| {
+                layers.iter().find(|layer| {
+                    layer.get("id").and_then(serde_json::Value::as_str) == Some(layer_id)
+                })
+            })
+            .map(|layer| {
+                layer
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("semantic")
+                    .to_owned()
+            }))
+    }
+
     pub fn delete_semantic_layer(
         &self,
         map_entity_id: String,
@@ -4218,6 +4756,11 @@ impl ProjectStore {
         if removed.get("kind").and_then(serde_json::Value::as_str) == Some("raster") {
             return Err(CoreError::Validation(
                 "maps: raster layers cannot be deleted by this operation".into(),
+            ));
+        }
+        if removed.get("kind").and_then(serde_json::Value::as_str) == Some("vector") {
+            return Err(CoreError::Validation(
+                "maps: vector layers cannot be deleted by this operation".into(),
             ));
         }
         let remaining = layers
@@ -4426,17 +4969,28 @@ impl ProjectStore {
             if let Some(locked) = update.locked {
                 object.insert("locked".into(), serde_json::Value::Bool(locked));
             }
-        } else if update.opacity.is_some() || update.locked.is_some() {
-            return Err(CoreError::Validation(
-                "maps: opacity and locked apply only to raster layers".into(),
-            ));
-        }
-        if object.get("kind").and_then(serde_json::Value::as_str) == Some("raster") {
             if update.style.is_some() || update.selector.is_some() {
                 return Err(CoreError::Validation(
                     "maps: raster layers must have empty style and selector objects".into(),
                 ));
             }
+        } else if object.get("kind").and_then(serde_json::Value::as_str) == Some("vector") {
+            if update.opacity.is_some() || update.selector.is_some() {
+                return Err(CoreError::Validation(
+                    "maps: opacity and selector do not apply to vector layers".into(),
+                ));
+            }
+            if let Some(locked) = update.locked {
+                object.insert("locked".into(), serde_json::Value::Bool(locked));
+            }
+            if let Some(style) = update.style {
+                crate::maps::vector::validate_vector_style(&style)?;
+                object.insert("style".into(), style);
+            }
+        } else if update.opacity.is_some() || update.locked.is_some() {
+            return Err(CoreError::Validation(
+                "maps: opacity and locked apply only to raster or vector layers".into(),
+            ));
         } else {
             if let Some(style) = update.style {
                 object.insert("style".into(), style);
@@ -4555,7 +5109,18 @@ impl ProjectStore {
             )?;
         }
         self.connection.execute_batch(
-            "CREATE INDEX IF NOT EXISTS map_location_bbox_idx ON map_location_projection(map_entity_id, min_x, max_x, min_y, max_y);",
+            "CREATE INDEX IF NOT EXISTS map_location_bbox_idx ON map_location_projection(map_entity_id, min_x, max_x, min_y, max_y);
+             CREATE TABLE IF NOT EXISTS map_feature_projection (
+                 map_entity_id TEXT NOT NULL,
+                 feature_id TEXT NOT NULL,
+                 layer_id TEXT NOT NULL,
+                 kind TEXT NOT NULL,
+                 min_x REAL NOT NULL,
+                 min_y REAL NOT NULL,
+                 max_x REAL NOT NULL,
+                 max_y REAL NOT NULL,
+                 PRIMARY KEY (map_entity_id, feature_id)
+             );",
         )?;
         Ok(())
     }
@@ -6289,6 +6854,13 @@ impl ProjectStore {
         let Ok(bytes) = std::fs::read(source_path) else {
             return "unresolved";
         };
+        if feature_kind == "geojson-feature" {
+            return if crate::maps::vector::contains_feature_id(&bytes, feature_id) {
+                "resolved"
+            } else {
+                "unresolved"
+            };
+        }
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
             return "resolved";
         };
@@ -6308,7 +6880,7 @@ impl ProjectStore {
     fn rebuild_maps_projection(&self) -> Result<(), CoreError> {
         let transaction = self.connection.unchecked_transaction()?;
         transaction
-            .execute_batch("DELETE FROM map_projection; DELETE FROM map_location_projection;")?;
+            .execute_batch("DELETE FROM map_projection; DELETE FROM map_location_projection; DELETE FROM map_feature_projection;")?;
         {
             let mut maps = transaction.prepare("SELECT e.id, json_extract(f.value, '$.provider.id'), json_extract(f.value, '$.sourceAssetId'), a.path, a.content_hash FROM entities e JOIN entity_fields f ON f.entity_id=e.id AND f.namespace=?1 AND f.key='map' LEFT JOIN assets a ON a.id=json_extract(f.value, '$.sourceAssetId') WHERE e.entity_type='daena.maps:map' AND e.deleted=0")?;
             let rows = maps.query_map([crate::maps::MAP_NAMESPACE], |row| {
@@ -6323,6 +6895,13 @@ impl ProjectStore {
             for row in rows {
                 let (id, provider, asset, path, hash) = row?;
                 transaction.execute("INSERT INTO map_projection(map_entity_id,provider,source_asset_id,source_path,source_hash) VALUES (?1,?2,?3,?4,?5)", rusqlite::params![id, provider, asset, path, hash])?;
+                write_vector_feature_projection(
+                    &transaction,
+                    self.root.as_deref(),
+                    &id,
+                    &provider,
+                    hash.as_deref(),
+                )?;
             }
         }
         {
@@ -6371,6 +6950,10 @@ impl ProjectStore {
                 "DELETE FROM map_location_projection WHERE entity_id=?1 OR map_entity_id=?1",
                 params![entity_id],
             )?;
+            self.connection.execute(
+                "DELETE FROM map_feature_projection WHERE map_entity_id=?1",
+                params![entity_id],
+            )?;
             let map = self.connection.query_row(
                 "SELECT e.id,json_extract(f.value,'$.provider.id'),json_extract(f.value,'$.sourceAssetId'),a.path,a.content_hash FROM entities e JOIN entity_fields f ON f.entity_id=e.id AND f.namespace=?1 AND f.key='map' LEFT JOIN assets a ON a.id=json_extract(f.value,'$.sourceAssetId') WHERE e.id=?2 AND e.entity_type='daena.maps:map' AND e.deleted=0",
                 params![crate::maps::MAP_NAMESPACE, entity_id],
@@ -6380,6 +6963,13 @@ impl ProjectStore {
                 self.connection.execute(
                     "INSERT INTO map_projection(map_entity_id,provider,source_asset_id,source_path,source_hash) VALUES (?1,?2,?3,?4,?5)",
                     params![id, provider, asset, path, hash],
+                )?;
+                write_vector_feature_projection(
+                    &self.connection,
+                    self.root.as_deref(),
+                    &id,
+                    &provider,
+                    hash.as_deref(),
                 )?;
             }
             let mut location_owners = BTreeSet::from([(*entity_id).clone()]);
@@ -7937,6 +8527,49 @@ fn location_projection_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_j
         "resolution": row.get::<_, String>(15)?,
         "anchor": anchor
     }))
+}
+
+fn write_vector_feature_projection(
+    connection: &rusqlite::Connection,
+    root: Option<&Path>,
+    map_entity_id: &str,
+    provider: &str,
+    source_hash: Option<&str>,
+) -> Result<(), CoreError> {
+    if provider != crate::maps::VECTOR_PROVIDER {
+        return Ok(());
+    }
+    let Some(hash) = source_hash.filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    let Some(root) = root else {
+        return Ok(());
+    };
+    let path = runtime_asset_path(root, hash)?;
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(()),
+    };
+    let layers: serde_json::Value = connection
+        .query_row(
+            "SELECT value FROM entity_fields WHERE entity_id=?1 AND namespace=?2 AND key='layers'",
+            rusqlite::params![map_entity_id, crate::maps::MAP_NAMESPACE],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|raw| serde_json::from_str(&raw))
+        .transpose()
+        .map_err(|error| CoreError::Serialization(error.to_string()))?
+        .unwrap_or_else(|| serde_json::json!({"schemaVersion": 1, "layers": []}));
+    let known = crate::maps::vector::layer_ids_from_layers_field(&layers);
+    let features = crate::maps::vector::feature_bounds(&bytes, &known)?;
+    for (feature_id, layer_id, kind, min_x, min_y, max_x, max_y) in features {
+        connection.execute(
+            "INSERT OR REPLACE INTO map_feature_projection(map_entity_id,feature_id,layer_id,kind,min_x,min_y,max_x,max_y) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            rusqlite::params![map_entity_id, feature_id, layer_id, kind, min_x, min_y, max_x, max_y],
+        )?;
+    }
+    Ok(())
 }
 
 fn write_location_projection(

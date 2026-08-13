@@ -4169,6 +4169,259 @@ fn image_map_import_layer_mutations_and_checkpoint_rebuild() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+fn vector_generation() -> serde_json::Value {
+    serde_json::json!({
+        "id": "daena-landmass",
+        "version": 1,
+        "seed": 831429,
+        "settings": {
+            "landPercent": 40,
+            "continentCount": 3,
+            "coastlineRoughness": "medium",
+            "islandFrequency": "medium"
+        }
+    })
+}
+
+fn vector_candidate() -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "properties": {},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0], [0.0, 0.0]]]
+            }
+        }]
+    }))
+    .unwrap()
+}
+
+#[test]
+fn vector_map_accept_replace_layer_delete_and_checkpoint_rebuild() {
+    let root = std::env::temp_dir().join(format!("daena-vector-map-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let candidate = vector_candidate();
+    let request_id = Uuid::new_v4().to_string();
+    let accepted = store
+        .accept_vector_map(
+            "World".into(),
+            candidate.clone(),
+            vector_generation(),
+            Some(&request_id),
+        )
+        .unwrap();
+    let retried = store
+        .accept_vector_map(
+            "World".into(),
+            candidate.clone(),
+            vector_generation(),
+            Some(&request_id),
+        )
+        .unwrap();
+    assert_eq!(accepted.entity.id, retried.entity.id);
+    assert_eq!(accepted.source.id, retried.source.id);
+    assert_eq!(
+        accepted.entity.entity_type.as_deref(),
+        Some(crate::maps::MAP_ENTITY_TYPE)
+    );
+    let descriptor = store
+        .list_fields(accepted.entity.id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "map")
+        .unwrap();
+    assert_eq!(
+        descriptor.value["provider"]["id"],
+        crate::maps::VECTOR_PROVIDER
+    );
+    let canonical = store.asset_bytes(accepted.source.id.clone()).unwrap();
+    crate::maps::vector::require_canonical_bytes(
+        std::path::Path::new("assets/maps/map.geojson"),
+        &canonical,
+        &std::collections::BTreeSet::new(),
+    )
+    .unwrap();
+    let stored: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
+    assert_eq!(stored["features"][0]["properties"]["daenaLayerId"], "base");
+    assert_eq!(stored["features"][0]["properties"]["kind"], "land");
+
+    let layers_revision = store
+        .list_fields(accepted.entity.id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "layers")
+        .unwrap()
+        .revision;
+    let created = store
+        .create_vector_layer(
+            accepted.entity.id.clone(),
+            "Countries".into(),
+            &layers_revision,
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(created.layers.value["layers"][0]["kind"], "vector");
+    assert!(created.asset.is_none());
+
+    let source = store.asset(accepted.source.id.clone()).unwrap();
+    let feature_id = Uuid::new_v4().to_string();
+    let layer_id = created.layer_id.clone();
+    let authored = serde_json::json!({
+        "type": "FeatureCollection",
+        "features": [
+            serde_json::from_slice::<serde_json::Value>(&canonical).unwrap()["features"][0],
+            {
+                "type": "Feature",
+                "id": feature_id,
+                "properties": {"daenaLayerId": layer_id, "kind": "region", "name": "West"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[4.0, 4.0], [6.0, 4.0], [6.0, 6.0], [4.0, 6.0], [4.0, 4.0]]]
+                }
+            }
+        ]
+    });
+    let authored_bytes = serde_json::to_vec(&authored).unwrap();
+    let upload_hash = format!("sha256:{:x}", Sha256::digest(&authored_bytes));
+    let replaced = store
+        .replace_vector_source(
+            accepted.source.id.clone(),
+            authored_bytes.clone(),
+            upload_hash.clone(),
+            &source.revision,
+            None,
+        )
+        .unwrap();
+    assert_ne!(replaced.source.content_hash, upload_hash);
+    assert_eq!(
+        replaced.source.content_hash,
+        format!(
+            "sha256:{:x}",
+            Sha256::digest(&crate::maps::vector::canonicalize_committed(
+                &authored_bytes,
+                &crate::maps::vector::layer_ids_from_layers_field(&created.layers.value)
+            )
+            .unwrap())
+        )
+    );
+    assert!(store
+        .replace_vector_source(
+            accepted.source.id.clone(),
+            authored_bytes.clone(),
+            upload_hash,
+            "stale-revision",
+            None,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("revision"));
+
+    let place = store
+        .create_entity(CreateEntity {
+            name: "West".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    store
+        .upsert_map_location(
+            place.id.clone(),
+            crate::maps::LocationReference {
+                id: Uuid::new_v4().to_string(),
+                map_entity_id: accepted.entity.id.clone(),
+                role: "region".into(),
+                label: "West".into(),
+                anchor: crate::maps::Anchor::ProviderFeature {
+                    provider: crate::maps::VECTOR_PROVIDER.into(),
+                    feature_kind: "geojson-feature".into(),
+                    feature_id: feature_id.clone(),
+                    fallback_point: crate::maps::Point(0.5, 0.5),
+                },
+                validity: crate::maps::Validity {
+                    from: None,
+                    to: None,
+                },
+            },
+            None,
+        )
+        .unwrap();
+    let linked = store
+        .map_location_projection(accepted.entity.id.clone())
+        .unwrap();
+    assert_eq!(linked[0]["resolution"], "resolved");
+
+    let count_mismatch = store.delete_vector_layer(
+        accepted.entity.id.clone(),
+        created.layer_id.clone(),
+        &created.layers.revision,
+        &replaced.source.revision,
+        99,
+        None,
+    );
+    assert!(count_mismatch
+        .unwrap_err()
+        .to_string()
+        .contains("expectedFeatureCount"));
+    assert_eq!(
+        store.asset(accepted.source.id.clone()).unwrap().revision,
+        replaced.source.revision
+    );
+
+    let deleted = store
+        .delete_vector_layer(
+            accepted.entity.id.clone(),
+            created.layer_id.clone(),
+            &created.layers.revision,
+            &replaced.source.revision,
+            1,
+            None,
+        )
+        .unwrap();
+    assert_eq!(deleted.deleted_feature_count, 1);
+    assert_eq!(deleted.layers.value["layers"].as_array().unwrap().len(), 0);
+
+    store.flush_checkpoint("vector map export").unwrap();
+    let checkpoint = crate::storage::read_json::<crate::storage::CheckpointManifest>(
+        &root.join(crate::storage::CHECKPOINT_MANIFEST_FILE),
+    )
+    .unwrap();
+    crate::storage::validate_checkpoint(&root, &checkpoint).unwrap();
+    let before = canonical_files(&root);
+    let source_hash = store.asset(accepted.source.id.clone()).unwrap().content_hash;
+    drop(store);
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(canonical_files(&root), before);
+    assert_eq!(
+        rebuilt.asset(accepted.source.id.clone()).unwrap().content_hash,
+        source_hash
+    );
+    let layers = rebuilt
+        .list_fields(accepted.entity.id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "layers")
+        .unwrap();
+    assert_eq!(layers.value["layers"].as_array().unwrap().len(), 0);
+    let rebuilt_links = rebuilt
+        .map_location_projection(accepted.entity.id.clone())
+        .unwrap();
+    assert_eq!(rebuilt_links[0]["resolution"], "unresolved");
+    let feature_count: i64 = rusqlite::Connection::open(root.join(".daena/index.sqlite"))
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM map_feature_projection WHERE map_entity_id=?1",
+            rusqlite::params![accepted.entity.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(feature_count, 1);
+    drop(rebuilt);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn image_map_runtime_bytes_survive_an_interrupted_export() {
     let root = std::env::temp_dir().join(format!("daena-image-map-interrupt-{}", Uuid::new_v4()));

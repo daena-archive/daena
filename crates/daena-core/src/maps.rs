@@ -3,21 +3,29 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
+use std::path::Path;
 use uuid::Uuid;
 
 pub const MAP_ENTITY_TYPE: &str = "daena.maps:map";
 pub const MAP_NAMESPACE: &str = "maps";
 pub const FMG_PROVIDER: &str = "azgaar-fmg";
 pub const IMAGE_PROVIDER: &str = "daena-image";
+pub const VECTOR_PROVIDER: &str = "daena-vector";
 pub const DETAIL_MAP_RELATIONSHIP: &str = "daena.maps:detail-map";
 pub const OVERVIEW_MAP_RELATIONSHIP: &str = "daena.maps:overview-map";
 pub const RELATED_MAP_RELATIONSHIP: &str = "daena.maps:related-map";
 
 pub mod image;
+pub mod vector;
 pub use image::{
     encode_transparent_png, mime_for_source_format, source_format_for_mime, validate_image_source,
     validate_raster_png, ImageSource, IMAGE_MAX_DECODED_BYTES, IMAGE_MAX_ENCODED_BYTES,
     IMAGE_MAX_PIXELS, IMAGE_MAX_RASTER_LAYERS, IMAGE_MAX_UNDO_BYTES,
+};
+pub use vector::{
+    VECTOR_CENTER_Y_MAX, VECTOR_CENTER_Y_MIN, VECTOR_FILENAME, VECTOR_MAX_BYTES, VECTOR_MAX_FEATURES,
+    VECTOR_MAX_FEATURE_POSITIONS, VECTOR_MAX_LAYERS, VECTOR_MAX_POSITIONS, VECTOR_MAX_PROPERTY_BYTES,
+    VECTOR_MIME, VECTOR_SOURCE_FORMAT,
 };
 
 /// Upper bound on vertices in a path or one area ring.
@@ -104,6 +112,28 @@ pub const MAP_RECOVERY_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+pub struct MapGenerationSettings {
+    #[serde(rename = "landPercent")]
+    pub land_percent: u32,
+    #[serde(rename = "continentCount")]
+    pub continent_count: u32,
+    #[serde(rename = "coastlineRoughness")]
+    pub coastline_roughness: String,
+    #[serde(rename = "islandFrequency")]
+    pub island_frequency: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MapGeneration {
+    pub id: String,
+    pub version: u32,
+    pub seed: u32,
+    pub settings: MapGenerationSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct MapDescriptor {
     #[serde(rename = "schemaVersion")]
     pub schema_version: u32,
@@ -114,12 +144,20 @@ pub struct MapDescriptor {
     pub preview_asset_id: Option<String>,
     #[serde(rename = "defaultView")]
     pub default_view: DefaultView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<MapGeneration>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum RasterLayerKind {
     #[serde(rename = "raster")]
     Raster,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum VectorLayerKind {
+    #[serde(rename = "vector")]
+    Vector,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -160,9 +198,24 @@ pub struct RasterLayerDefinition {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct VectorLayerDefinition {
+    pub id: String,
+    pub name: String,
+    pub order: i64,
+    #[serde(rename = "defaultVisible")]
+    pub default_visible: bool,
+    pub locked: bool,
+    pub selector: Value,
+    pub style: Value,
+    pub kind: VectorLayerKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum LayerDefinition {
     Raster(RasterLayerDefinition),
+    Vector(VectorLayerDefinition),
     Semantic(SemanticLayerDefinition),
 }
 
@@ -170,6 +223,7 @@ impl LayerDefinition {
     fn id(&self) -> &str {
         match self {
             Self::Raster(layer) => layer.id.as_str(),
+            Self::Vector(layer) => layer.id.as_str(),
             Self::Semantic(layer) => layer.id.as_str(),
         }
     }
@@ -177,6 +231,7 @@ impl LayerDefinition {
     fn name(&self) -> &str {
         match self {
             Self::Raster(layer) => layer.name.as_str(),
+            Self::Vector(layer) => layer.name.as_str(),
             Self::Semantic(layer) => layer.name.as_str(),
         }
     }
@@ -184,6 +239,7 @@ impl LayerDefinition {
     fn style(&self) -> &Value {
         match self {
             Self::Raster(layer) => &layer.style,
+            Self::Vector(layer) => &layer.style,
             Self::Semantic(layer) => &layer.style,
         }
     }
@@ -191,6 +247,7 @@ impl LayerDefinition {
     fn selector(&self) -> &Value {
         match self {
             Self::Raster(layer) => &layer.selector,
+            Self::Vector(layer) => &layer.selector,
             Self::Semantic(layer) => &layer.selector,
         }
     }
@@ -198,6 +255,7 @@ impl LayerDefinition {
     fn sort_key(&self) -> (i64, &str) {
         match self {
             Self::Raster(layer) => (layer.order, layer.id.as_str()),
+            Self::Vector(layer) => (layer.order, layer.id.as_str()),
             Self::Semantic(layer) => (layer.order, layer.id.as_str()),
         }
     }
@@ -305,6 +363,7 @@ fn validate_provider(provider: &ProviderDescriptor) -> Result<(), CoreError> {
         && match provider.id.as_str() {
             FMG_PROVIDER => provider.source_format == "fmg-map",
             IMAGE_PROVIDER => matches!(provider.source_format.as_str(), "png" | "jpeg" | "svg"),
+            VECTOR_PROVIDER => provider.source_format == VECTOR_SOURCE_FORMAT,
             _ => false,
         };
     if supported {
@@ -467,13 +526,22 @@ fn anchor(value: &Value) -> Result<Anchor, CoreError> {
             feature_id,
             fallback_point,
         } => {
-            if provider != FMG_PROVIDER
-                || !matches!(
-                    feature_kind.as_str(),
-                    "burg" | "state" | "province" | "river" | "marker"
-                )
-                || feature_id.is_empty()
-            {
+            let supported = match provider.as_str() {
+                FMG_PROVIDER => {
+                    matches!(
+                        feature_kind.as_str(),
+                        "burg" | "state" | "province" | "river" | "marker"
+                    ) && !feature_id.is_empty()
+                }
+                VECTOR_PROVIDER => {
+                    feature_kind == "geojson-feature"
+                        && Uuid::parse_str(feature_id)
+                            .ok()
+                            .is_some_and(|uuid| uuid.to_string() == *feature_id)
+                }
+                _ => false,
+            };
+            if !supported {
                 return Err(invalid("unsupported provider feature selector"));
             }
             point(fallback_point)?;
@@ -548,6 +616,15 @@ pub fn validate_field(
         if descriptor.provider.id == IMAGE_PROVIDER && descriptor.source_asset_id.is_none() {
             return Err(invalid("daena-image maps require sourceAssetId"));
         }
+        if descriptor.provider.id == VECTOR_PROVIDER && descriptor.source_asset_id.is_none() {
+            return Err(invalid("daena-vector maps require sourceAssetId"));
+        }
+        if descriptor.generation.is_some() && descriptor.provider.id != VECTOR_PROVIDER {
+            return Err(invalid("generation is only valid on daena-vector maps"));
+        }
+        if let Some(generation) = &descriptor.generation {
+            vector::validate_generation(&serde_json::to_value(generation).map_err(|e| invalid(e.to_string()))?)?;
+        }
         if let Some(source_asset_id) = &descriptor.source_asset_id {
             let (_, mime_type) =
                 owned_map_asset(connection, entity_id, source_asset_id, "sourceAssetId")?;
@@ -558,6 +635,9 @@ pub fn validate_field(
                     ));
                 }
             }
+            if descriptor.provider.id == VECTOR_PROVIDER && mime_type != VECTOR_MIME {
+                return Err(invalid("sourceAssetId MIME type must be application/geo+json"));
+            }
         }
         if let Some(preview) = &descriptor.preview_asset_id {
             owned_map_asset(connection, entity_id, preview, "previewAssetId")?;
@@ -565,7 +645,15 @@ pub fn validate_field(
         if descriptor.default_view.zoom <= 0.0 || !descriptor.default_view.zoom.is_finite() {
             return Err(invalid("defaultView.zoom must be finite and positive"));
         }
-        point(&descriptor.default_view.center)
+        point(&descriptor.default_view.center)?;
+        if descriptor.provider.id == VECTOR_PROVIDER
+            && !(VECTOR_CENTER_Y_MIN..=VECTOR_CENTER_Y_MAX).contains(&descriptor.default_view.center.1)
+        {
+            return Err(invalid(
+                "defaultView.center y is outside the Web Mercator latitude limit",
+            ));
+        }
+        Ok(())
     } else if key == "locations" {
         let object = value
             .as_object()
@@ -636,6 +724,7 @@ pub fn validate_field(
         let mut sort_keys = BTreeSet::new();
         let mut raster_count = 0usize;
         let mut semantic_count = 0usize;
+        let mut vector_count = 0usize;
         for layer in layers {
             let layer: LayerDefinition = serde_json::from_value(layer.clone())
                 .map_err(|_| invalid("layer definition is invalid"))?;
@@ -680,6 +769,17 @@ pub fn validate_field(
                         "raster layer count exceeds the budget of {IMAGE_MAX_RASTER_LAYERS}"
                     )));
                 }
+            } else if let LayerDefinition::Vector(vector_layer) = &layer {
+                if vector_layer.selector != serde_json::json!({}) {
+                    return Err(invalid("vector layers must have an empty selector"));
+                }
+                vector::validate_vector_style(&vector_layer.style)?;
+                vector_count += 1;
+                if vector_count > VECTOR_MAX_LAYERS {
+                    return Err(invalid(format!(
+                        "vector layer count exceeds the budget of {VECTOR_MAX_LAYERS}"
+                    )));
+                }
             } else if let LayerDefinition::Semantic(semantic) = &layer {
                 validate_semantic_style(&semantic.style)?;
                 validate_semantic_selector(&semantic.selector)?;
@@ -715,17 +815,37 @@ pub fn validate_image_map_content(
         validate_field(connection, &entity_id, "map", &value)?;
         let descriptor: MapDescriptor = serde_json::from_value(value)
             .map_err(|error| invalid(format!("invalid map descriptor: {error}")))?;
-        if descriptor.provider.id != IMAGE_PROVIDER {
-            continue;
+        if descriptor.provider.id == IMAGE_PROVIDER {
+            let source_id = descriptor
+                .source_asset_id
+                .as_deref()
+                .ok_or_else(|| invalid("daena-image maps require sourceAssetId"))?;
+            let bytes = load_asset(source_id)?;
+            let mime = mime_for_source_format(&descriptor.provider.source_format)?;
+            let source = validate_image_source(&bytes, mime)?;
+            source_dimensions.insert(entity_id, (source.width, source.height));
+        } else if descriptor.provider.id == VECTOR_PROVIDER {
+            let source_id = descriptor
+                .source_asset_id
+                .as_deref()
+                .ok_or_else(|| invalid("daena-vector maps require sourceAssetId"))?;
+            let bytes = load_asset(source_id)?;
+            let layers_value: Option<Value> = connection
+                .query_row(
+                    "SELECT value FROM entity_fields WHERE entity_id=?1 AND namespace=?2 AND key='layers'",
+                    [&entity_id, MAP_NAMESPACE],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .map(|raw: String| serde_json::from_str(&raw))
+                .transpose()
+                .map_err(|error| invalid(error.to_string()))?;
+            let known = layers_value
+                .as_ref()
+                .map(vector::layer_ids_from_layers_field)
+                .unwrap_or_default();
+            vector::require_canonical_bytes(Path::new("assets/maps/map.geojson"), &bytes, &known)?;
         }
-        let source_id = descriptor
-            .source_asset_id
-            .as_deref()
-            .ok_or_else(|| invalid("daena-image maps require sourceAssetId"))?;
-        let bytes = load_asset(source_id)?;
-        let mime = mime_for_source_format(&descriptor.provider.source_format)?;
-        let source = validate_image_source(&bytes, mime)?;
-        source_dimensions.insert(entity_id, (source.width, source.height));
     }
     let mut layers = connection.prepare(
         "SELECT entity_id, value FROM entity_fields WHERE namespace=?1 AND key='layers'",

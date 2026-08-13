@@ -5,11 +5,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 pub mod catalog;
-pub mod schema_overlay;
 pub mod rpc;
+pub mod schema_overlay;
 pub use catalog::*;
-pub use schema_overlay::*;
 pub use rpc::*;
+pub use schema_overlay::*;
 
 pub const MANIFEST_VERSION: u32 = 1;
 pub const RPC_VERSION: u32 = 1;
@@ -743,7 +743,9 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                     ))
                 })?;
                 let declared_target_types = target_entity_types.iter().collect::<BTreeSet<_>>();
-                if target_entity_types.is_empty() || declared_target_types.len() != target_entity_types.len() {
+                if target_entity_types.is_empty()
+                    || declared_target_types.len() != target_entity_types.len()
+                {
                     return Err(ContractError(format!(
                         "relationship field {} declares duplicate target entity types",
                         field.key
@@ -869,24 +871,27 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                 collection.id
             )));
         }
-        validate_command_value(&collection.schema, &serde_json::Value::Object(
-            collection
-                .schema
-                .properties
-                .iter()
-                .map(|(key, property)| {
-                    let value = match property.value_type {
-                        CommandValueType::Object => serde_json::json!({}),
-                        CommandValueType::String => serde_json::json!("value"),
-                        CommandValueType::Number => serde_json::json!(1),
-                        CommandValueType::Boolean => serde_json::json!(true),
-                        CommandValueType::Array => serde_json::json!([]),
-                        CommandValueType::Null => serde_json::Value::Null,
-                    };
-                    (key.clone(), value)
-                })
-                .collect(),
-        ))?;
+        validate_command_value(
+            &collection.schema,
+            &serde_json::Value::Object(
+                collection
+                    .schema
+                    .properties
+                    .iter()
+                    .map(|(key, property)| {
+                        let value = match property.value_type {
+                            CommandValueType::Object => serde_json::json!({}),
+                            CommandValueType::String => serde_json::json!("value"),
+                            CommandValueType::Number => serde_json::json!(1),
+                            CommandValueType::Boolean => serde_json::json!(true),
+                            CommandValueType::Array => serde_json::json!([]),
+                            CommandValueType::Null => serde_json::Value::Null,
+                        };
+                        (key.clone(), value)
+                    })
+                    .collect(),
+            ),
+        )?;
     }
     let mut command_ids = BTreeSet::new();
     for command in &manifest.commands {
@@ -958,7 +963,11 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                 )));
             }
             let capability = format!("host.surface:{id}@{major}");
-            if !manifest.capabilities.iter().any(|candidate| candidate == &capability) {
+            if !manifest
+                .capabilities
+                .iter()
+                .any(|candidate| candidate == &capability)
+            {
                 return Err(ContractError(format!(
                     "view {} requires undeclared capability: {capability}",
                     view.id
@@ -1209,9 +1218,9 @@ pub fn is_host_surface_id(value: &str) -> bool {
     };
     is_identifier(namespace)
         && !surface.is_empty()
-        && surface
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_' || c == '.')
+        && surface.chars().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_' || c == '.'
+        })
         && surface
             .chars()
             .next()

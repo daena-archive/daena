@@ -411,6 +411,44 @@ pub struct MapsImageImportCommitPayload {
     pub content_hash: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsVectorCreateBeginPayload {
+    pub name: String,
+    pub size: i64,
+    pub generation: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsVectorCreateCommitPayload {
+    pub handle: String,
+    #[serde(rename = "contentHash")]
+    pub content_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsVectorReplaceBeginPayload {
+    #[serde(rename = "assetId")]
+    pub asset_id: String,
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: String,
+    pub size: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsVectorReplaceCommitPayload {
+    pub handle: String,
+    #[serde(rename = "contentHash")]
+    pub content_hash: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -420,6 +458,7 @@ pub struct MapsLayerCreatePayload {
     pub name: String,
     #[serde(rename = "expectedRevision")]
     pub expected_revision: String,
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -432,6 +471,10 @@ pub struct MapsLayerDeletePayload {
     pub layer_id: String,
     #[serde(rename = "expectedRevision")]
     pub expected_revision: String,
+    #[serde(rename = "expectedSourceRevision")]
+    pub expected_source_revision: Option<String>,
+    #[serde(rename = "expectedFeatureCount")]
+    pub expected_feature_count: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -450,6 +493,7 @@ pub struct MapsLayerUpdatePayload {
     pub default_visible: Option<bool>,
     pub opacity: Option<f64>,
     pub locked: Option<bool>,
+    pub style: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

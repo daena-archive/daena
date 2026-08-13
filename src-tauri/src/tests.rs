@@ -1869,3 +1869,192 @@ fn maps_image_import_rpc_round_trips_and_cancel_leaves_no_entity() {
 
     std::fs::remove_dir_all(root).ok();
 }
+
+#[test]
+fn maps_vector_create_rpc_round_trips_and_cancel_leaves_no_entity() {
+    let root =
+        std::env::temp_dir().join(format!("daena-vector-create-rpc-{}", uuid::Uuid::new_v4()));
+    let core: SharedCore = new_shared_core();
+    current_session(&core)
+        .unwrap()
+        .core
+        .lock()
+        .unwrap()
+        .open_directory(trusted_shell(), &root)
+        .unwrap();
+    let transfers: SharedBinaryTransfers = Arc::new(Mutex::new(BinaryTransferManager::default()));
+    let session = Session {
+        id: "session".into(),
+        plugin_id: "daena.maps".into(),
+        package_digest: "digest".into(),
+        plugin_version: "0.1.0".into(),
+        host_api: ">=1.0.0 <2.0.0".into(),
+        project_id: "project".into(),
+        origin: "plugin:daena.maps".into(),
+        grants: std::collections::BTreeSet::new(),
+        generation: 1,
+        expires_at: std::time::SystemTime::now() + ASSET_TRANSFER_TTL,
+        revoked: false,
+    };
+    let candidate = serde_json::to_vec(&serde_json::json!({
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "properties": {},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0], [0.0, 0.0]]]
+            }
+        }]
+    }))
+    .unwrap();
+    let generation = serde_json::json!({
+        "id": "daena-landmass",
+        "version": 1,
+        "seed": 831429,
+        "settings": {
+            "landPercent": 40,
+            "continentCount": 3,
+            "coastlineRoughness": "medium",
+            "islandFrequency": "medium"
+        }
+    });
+    let begin = dispatch_binary_asset_rpc(
+        &core,
+        &transfers,
+        &session,
+        "maps.vector.create.begin",
+        serde_json::json!({
+            "name": "World",
+            "size": candidate.len(),
+            "generation": generation
+        }),
+        None,
+    )
+    .unwrap();
+    let cancelled = begin["handle"].as_str().unwrap().to_string();
+    {
+        let mut manager = transfers.lock().unwrap();
+        assert_eq!(
+            manager
+                .append_upload(&cancelled, "daena.maps", "session", 0, &candidate)
+                .unwrap(),
+            candidate.len()
+        );
+    }
+    dispatch_binary_asset_rpc(
+        &core,
+        &transfers,
+        &session,
+        "asset.transfer.cancel",
+        serde_json::json!({"handle": cancelled}),
+        None,
+    )
+    .unwrap();
+    assert!(dispatch_binary_asset_rpc(
+        &core,
+        &transfers,
+        &session,
+        "maps.vector.create.commit",
+        serde_json::json!({
+            "handle": cancelled,
+            "contentHash": format!("sha256:{:x}", Sha256::digest(&candidate))
+        }),
+        None,
+    )
+    .is_err());
+    {
+        let core = current_session(&core).unwrap();
+        let core = core.core.lock().unwrap();
+        let project = core.project(trusted_shell()).unwrap();
+        assert!(
+            project.list_entities().unwrap().is_empty(),
+            "cancelled vector create must not create a map entity"
+        );
+    }
+
+    let begin = dispatch_binary_asset_rpc(
+        &core,
+        &transfers,
+        &session,
+        "maps.vector.create.begin",
+        serde_json::json!({
+            "name": "World",
+            "size": candidate.len(),
+            "generation": generation
+        }),
+        None,
+    )
+    .unwrap();
+    let handle = begin["handle"].as_str().unwrap().to_string();
+    {
+        let mut manager = transfers.lock().unwrap();
+        assert_eq!(
+            manager
+                .append_upload(&handle, "daena.maps", "session", 0, &candidate)
+                .unwrap(),
+            candidate.len()
+        );
+    }
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let accepted = dispatch_binary_asset_rpc(
+        &core,
+        &transfers,
+        &session,
+        "maps.vector.create.commit",
+        serde_json::json!({
+            "handle": handle,
+            "contentHash": format!("sha256:{:x}", Sha256::digest(&candidate))
+        }),
+        Some(&request_id),
+    )
+    .unwrap();
+    let retried = dispatch_binary_asset_rpc(
+        &core,
+        &transfers,
+        &session,
+        "maps.vector.create.commit",
+        serde_json::json!({
+            "handle": handle,
+            "contentHash": format!("sha256:{:x}", Sha256::digest(&candidate))
+        }),
+        Some(&request_id),
+    )
+    .unwrap();
+    assert_eq!(accepted["entity"]["id"], retried["entity"]["id"]);
+    flush_checkpoint_for_shared_core(&core, "maps vector create").unwrap();
+    let map_id = accepted["entity"]["id"].as_str().unwrap().to_string();
+    let layers_revision = {
+        let core = current_session(&core).unwrap();
+        let core = core.core.lock().unwrap();
+        let project = core.project(trusted_shell()).unwrap();
+        project
+            .list_fields(map_id.clone())
+            .unwrap()
+            .into_iter()
+            .find(|field| field.key == "layers")
+            .unwrap()
+            .revision
+    };
+    let created = {
+        let session = current_session(&core).unwrap();
+        let mut core = session.core.lock().unwrap();
+        dispatch_module_rpc(
+            &mut core,
+            Some("daena.maps"),
+            None,
+            "maps.layer.create",
+            serde_json::json!({
+                "mapEntityId": map_id,
+                "name": "Countries",
+                "expectedRevision": layers_revision
+            }),
+            None,
+        )
+        .unwrap()
+    };
+    assert_eq!(created["layers"]["value"]["layers"][0]["kind"], "vector");
+    assert!(created["asset"].is_null());
+
+    std::fs::remove_dir_all(root).ok();
+}

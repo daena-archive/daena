@@ -382,6 +382,38 @@ pub const RPC_METHOD_CATALOG: &[RpcMethodDef] = &[
         ]),
     },
     RpcMethodDef {
+        name: "maps.vector.create.begin",
+        payload_schema: "MapsVectorCreateBeginPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&[
+            "entity.write",
+            "asset.write:self",
+            "field.write:self",
+        ]),
+    },
+    RpcMethodDef {
+        name: "maps.vector.create.commit",
+        payload_schema: "MapsVectorCreateCommitPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&[
+            "entity.write",
+            "asset.write:self",
+            "field.write:self",
+        ]),
+    },
+    RpcMethodDef {
+        name: "maps.vector.replace.begin",
+        payload_schema: "MapsVectorReplaceBeginPayload",
+        requires_revision: true,
+        capability: RpcCapability::Static(&["asset.write:self"]),
+    },
+    RpcMethodDef {
+        name: "maps.vector.replace.commit",
+        payload_schema: "MapsVectorReplaceCommitPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["asset.write:self"]),
+    },
+    RpcMethodDef {
         name: "maps.layer.create",
         payload_schema: "MapsLayerCreatePayload",
         requires_revision: false,
@@ -525,7 +557,7 @@ mod tests {
             assert!(!entry.payload_schema.is_empty());
             assert!(!entry.name.is_empty());
         }
-        assert_eq!(RPC_METHOD_CATALOG.len(), 49);
+        assert_eq!(RPC_METHOD_CATALOG.len(), 53);
         let revision_methods = RPC_METHOD_CATALOG
             .iter()
             .filter(|entry| entry.requires_revision)
@@ -544,6 +576,7 @@ mod tests {
                 "relationship.delete",
                 "asset.register",
                 "asset.replace.begin",
+                "maps.vector.replace.begin",
             ]
         );
     }

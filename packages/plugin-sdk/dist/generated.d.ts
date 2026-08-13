@@ -399,11 +399,14 @@ export interface MapsImageImportCommitPayload {
 }
 export interface MapsLayerCreatePayload {
     expectedRevision: string;
+    kind?: string | null;
     mapEntityId: string;
     name: string;
 }
 export interface MapsLayerDeletePayload {
+    expectedFeatureCount?: number | null;
     expectedRevision: string;
+    expectedSourceRevision?: string | null;
     layerId: string;
     mapEntityId: string;
 }
@@ -416,6 +419,7 @@ export interface MapsLayerUpdatePayload {
     name?: string | null;
     opacity?: number | null;
     order?: number | null;
+    style?: unknown;
 }
 export interface MapsLocationsCreateAndLinkPayload {
     entityType: string;
@@ -450,6 +454,24 @@ export interface MapsRecoveryListPayload {
 export interface MapsRecoveryRestorePayload {
     fileName: string;
     mapEntityId: string;
+}
+export interface MapsVectorCreateBeginPayload {
+    generation: unknown;
+    name: string;
+    size: number;
+}
+export interface MapsVectorCreateCommitPayload {
+    contentHash: string;
+    handle: string;
+}
+export interface MapsVectorReplaceBeginPayload {
+    assetId: string;
+    expectedRevision: string;
+    size: number;
+}
+export interface MapsVectorReplaceCommitPayload {
+    contentHash: string;
+    handle: string;
 }
 export interface RecordCreatePayload {
     collection: string;
@@ -545,6 +567,10 @@ export interface BrokerMethodPayloads {
     "maps.recovery.export.commit": MapsRecoveryExportCommitPayload;
     "maps.recovery.list": MapsRecoveryListPayload;
     "maps.recovery.restore": MapsRecoveryRestorePayload;
+    "maps.vector.create.begin": MapsVectorCreateBeginPayload;
+    "maps.vector.create.commit": MapsVectorCreateCommitPayload;
+    "maps.vector.replace.begin": MapsVectorReplaceBeginPayload;
+    "maps.vector.replace.commit": MapsVectorReplaceCommitPayload;
     "record.create": RecordCreatePayload;
     "record.delete": RecordDeletePayload;
     "record.list": RecordListPayload;

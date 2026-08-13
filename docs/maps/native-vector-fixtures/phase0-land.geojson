@@ -1,0 +1,99 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "id": "018f89ec-25fc-7816-8b47-6f80905f2801",
+      "properties": {
+        "daenaLayerId": "base",
+        "kind": "land",
+        "name": null
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-48.0, -18.0],
+            [46.0, -18.0],
+            [46.0, 22.0],
+            [-48.0, 22.0],
+            [-48.0, -18.0]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "018f89ec-25fc-7816-8b47-6f80905f2802",
+      "properties": {
+        "daenaLayerId": "base",
+        "kind": "lake",
+        "name": "Inland sea"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-8.0, -4.0],
+            [6.0, -4.0],
+            [6.0, 6.0],
+            [-8.0, 6.0],
+            [-8.0, -4.0]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "018f89ec-25fc-7816-8b47-6f80905f2803",
+      "properties": {
+        "daenaLayerId": "018f89ec-25fc-7816-8b47-6f80905f2869",
+        "kind": "region",
+        "name": "Highlands"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-32.0, 4.0],
+            [-18.0, 4.0],
+            [-18.0, 16.0],
+            [-32.0, 16.0],
+            [-32.0, 4.0]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "018f89ec-25fc-7816-8b47-6f80905f2804",
+      "properties": {
+        "daenaLayerId": "018f89ec-25fc-7816-8b47-6f80905f2869",
+        "kind": "route",
+        "name": "Coast road"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-40.0, -10.0],
+          [-12.0, -8.0],
+          [10.0, -6.0],
+          [38.0, -10.0]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "018f89ec-25fc-7816-8b47-6f80905f2805",
+      "properties": {
+        "daenaLayerId": "018f89ec-25fc-7816-8b47-6f80905f286a",
+        "kind": "marker",
+        "name": "Harbor"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [12.5, 8.25]
+      }
+    }
+  ]
+}

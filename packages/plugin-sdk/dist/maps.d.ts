@@ -4,13 +4,23 @@ export declare const MAP_ENTITY_TYPE: "daena.maps:map";
 export declare const MAP_NAMESPACE: "maps";
 export declare const FMG_PROVIDER: "azgaar-fmg";
 export declare const IMAGE_PROVIDER: "daena-image";
+export declare const VECTOR_PROVIDER: "daena-vector";
 export declare const IMAGE_SOURCE_FORMATS: readonly ["png", "jpeg", "svg"];
 /** Recorded Image Map resource budgets. Mirrored from `daena-core` maps::image. */
-export declare const IMAGE_MAX_ENCODED_BYTES = 33554432;
+export declare const IMAGE_MAX_ENCODED_BYTES: number;
 export declare const IMAGE_MAX_PIXELS = 16777216;
 export declare const IMAGE_MAX_DECODED_BYTES: number;
 export declare const IMAGE_MAX_RASTER_LAYERS = 16;
-export declare const IMAGE_MAX_UNDO_BYTES = 67108864;
+export declare const IMAGE_MAX_UNDO_BYTES: number;
+export declare const IMAGE_MAX_PATH_POINTS = 256;
+export declare const IMAGE_MAX_AREA_RINGS = 8;
+export declare const IMAGE_MAX_SEMANTIC_LAYERS = 32;
+/** Recorded Native Vector Map resource budgets. Mirrored from `daena-core` maps::vector. */
+export declare const VECTOR_MAX_BYTES: number;
+export declare const VECTOR_MAX_FEATURES = 20000;
+export declare const VECTOR_MAX_POSITIONS = 200000;
+export declare const VECTOR_MAX_FEATURE_POSITIONS = 20000;
+export declare const VECTOR_MAX_LAYERS = 64;
 /** Hierarchy relationship types owned by `daena.maps`. */
 export declare const MAP_RELATIONSHIP: {
     readonly DETAIL_MAP: "daena.maps:detail-map";
@@ -61,6 +71,30 @@ export type MapDescriptor = {
         center: NormalizedPoint;
         zoom: number;
     };
+} | {
+    schemaVersion: 1;
+    provider: {
+        id: typeof VECTOR_PROVIDER;
+        adapterVersion: 1;
+        sourceFormat: "geojson";
+    };
+    sourceAssetId: string;
+    previewAssetId: string | null;
+    defaultView: {
+        center: NormalizedPoint;
+        zoom: number;
+    };
+    generation?: {
+        id: "daena-landmass";
+        version: 1;
+        seed: number;
+        settings: {
+            landPercent: number;
+            continentCount: number;
+            coastlineRoughness: "low" | "medium" | "high";
+            islandFrequency: "none" | "low" | "medium" | "high";
+        };
+    };
 };
 export interface MapDate {
     calendar: "gregorian";
@@ -92,7 +126,7 @@ export type MapLayerDefinition = {
     defaultVisible: boolean;
     style: Readonly<Record<string, unknown>>;
     selector: Readonly<Record<string, unknown>>;
-    kind?: never;
+    kind?: "semantic";
 } | {
     id: string;
     name: string;
@@ -104,6 +138,21 @@ export type MapLayerDefinition = {
     rasterAssetId: string;
     opacity: number;
     locked: boolean;
+} | {
+    id: string;
+    name: string;
+    order: number;
+    defaultVisible: boolean;
+    locked: boolean;
+    selector: Readonly<Record<string, never>>;
+    style: {
+        fill: string;
+        fillOpacity: number;
+        stroke: string;
+        strokeWidth: number;
+        pointRadius: number;
+    };
+    kind: "vector";
 };
 export interface MapLayersField {
     schemaVersion: 1;

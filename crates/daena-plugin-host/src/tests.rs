@@ -521,10 +521,9 @@ fn undeclared_fields_and_relationship_types_fail_closed() {
 #[test]
 fn module_record_authorization_is_collection_and_schema_bound() {
     let mut plugin = manifest("com.example.records", "records");
-    plugin.capabilities.extend([
-        "record.read:self".into(),
-        "record.write:self".into(),
-    ]);
+    plugin
+        .capabilities
+        .extend(["record.read:self".into(), "record.write:self".into()]);
     plugin.records.push(daena_plugin_api::RecordCollection {
         id: "lexemes".into(),
         owner_entity_types: vec!["person".into()],
@@ -1876,6 +1875,18 @@ fn capability_mappings_are_stable_for_static_methods() {
             &empty,
             &["entity.write", "asset.write:self", "field.write:self"],
         ),
+        (
+            "maps.vector.create.begin",
+            &empty,
+            &["entity.write", "asset.write:self", "field.write:self"],
+        ),
+        (
+            "maps.vector.create.commit",
+            &empty,
+            &["entity.write", "asset.write:self", "field.write:self"],
+        ),
+        ("maps.vector.replace.begin", &empty, &["asset.write:self"]),
+        ("maps.vector.replace.commit", &empty, &["asset.write:self"]),
         (
             "maps.layer.create",
             &empty,

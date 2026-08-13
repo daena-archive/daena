@@ -186,6 +186,28 @@ enum BinaryTransfer {
         bytes: Vec<u8>,
         expires_at: Instant,
     },
+    VectorCreate {
+        plugin_id: String,
+        session_id: String,
+        project_id: String,
+        name: String,
+        generation: serde_json::Value,
+        declared_size: usize,
+        next_chunk: u64,
+        bytes: Vec<u8>,
+        expires_at: Instant,
+    },
+    VectorReplace {
+        plugin_id: String,
+        session_id: String,
+        project_id: String,
+        asset_id: String,
+        expected_revision: String,
+        declared_size: usize,
+        next_chunk: u64,
+        bytes: Vec<u8>,
+        expires_at: Instant,
+    },
 }
 
 impl BinaryTransferManager {
@@ -196,7 +218,9 @@ impl BinaryTransferManager {
             | BinaryTransfer::Upload { expires_at, .. }
             | BinaryTransfer::RecoveryUpload { expires_at, .. }
             | BinaryTransfer::Create { expires_at, .. }
-            | BinaryTransfer::ImageImport { expires_at, .. } => *expires_at > now,
+            | BinaryTransfer::ImageImport { expires_at, .. }
+            | BinaryTransfer::VectorCreate { expires_at, .. }
+            | BinaryTransfer::VectorReplace { expires_at, .. } => *expires_at > now,
         });
     }
 
@@ -271,6 +295,22 @@ impl BinaryTransferManager {
                 ..
             }
             | BinaryTransfer::ImageImport {
+                plugin_id,
+                session_id,
+                next_chunk,
+                declared_size,
+                bytes,
+                ..
+            }
+            | BinaryTransfer::VectorCreate {
+                plugin_id,
+                session_id,
+                next_chunk,
+                declared_size,
+                bytes,
+                ..
+            }
+            | BinaryTransfer::VectorReplace {
                 plugin_id,
                 session_id,
                 next_chunk,
@@ -467,6 +507,86 @@ impl BinaryTransferManager {
         }
     }
 
+    fn prepare_vector_create(
+        &mut self,
+        token: &str,
+        plugin_id: &str,
+        session_id: &str,
+        project_id: &str,
+        content_hash: &str,
+    ) -> Result<(String, serde_json::Value, Vec<u8>), String> {
+        self.cleanup();
+        let transfer = self
+            .transfers
+            .get(token)
+            .ok_or_else(|| "asset upload handle is invalid or expired".to_string())?;
+        match transfer {
+            BinaryTransfer::VectorCreate {
+                plugin_id: owner,
+                session_id: expected_session,
+                project_id: expected_project,
+                name,
+                generation,
+                declared_size,
+                bytes,
+                ..
+            } if owner == plugin_id
+                && expected_session == session_id
+                && expected_project == project_id =>
+            {
+                if bytes.len() != *declared_size {
+                    return Err("asset upload is incomplete".into());
+                }
+                let digest = format!("sha256:{:x}", Sha256::digest(bytes));
+                if digest != content_hash {
+                    return Err("asset upload content hash does not match bytes".into());
+                }
+                Ok((name.clone(), generation.clone(), bytes.clone()))
+            }
+            _ => Err("asset upload handle is not valid for this session or project".into()),
+        }
+    }
+
+    fn prepare_vector_replace(
+        &mut self,
+        token: &str,
+        plugin_id: &str,
+        session_id: &str,
+        project_id: &str,
+        content_hash: &str,
+    ) -> Result<(String, String, Vec<u8>), String> {
+        self.cleanup();
+        let transfer = self
+            .transfers
+            .get(token)
+            .ok_or_else(|| "asset upload handle is invalid or expired".to_string())?;
+        match transfer {
+            BinaryTransfer::VectorReplace {
+                plugin_id: owner,
+                session_id: expected_session,
+                project_id: expected_project,
+                asset_id,
+                expected_revision,
+                declared_size,
+                bytes,
+                ..
+            } if owner == plugin_id
+                && expected_session == session_id
+                && expected_project == project_id =>
+            {
+                if bytes.len() != *declared_size {
+                    return Err("asset upload is incomplete".into());
+                }
+                let digest = format!("sha256:{:x}", Sha256::digest(bytes));
+                if digest != content_hash {
+                    return Err("asset upload content hash does not match bytes".into());
+                }
+                Ok((asset_id.clone(), expected_revision.clone(), bytes.clone()))
+            }
+            _ => Err("asset upload handle is not valid for this session or project".into()),
+        }
+    }
+
     fn complete_upload(
         &mut self,
         token: &str,
@@ -496,6 +616,16 @@ impl BinaryTransferManager {
                 plugin_id: owner,
                 session_id: expected_session,
                 ..
+            }
+            | BinaryTransfer::VectorCreate {
+                plugin_id: owner,
+                session_id: expected_session,
+                ..
+            }
+            | BinaryTransfer::VectorReplace {
+                plugin_id: owner,
+                session_id: expected_session,
+                ..
             } if owner == plugin_id && expected_session == session_id => Ok(()),
             other => {
                 self.transfers.insert(token.into(), other);
@@ -514,7 +644,9 @@ impl BinaryTransferManager {
             | BinaryTransfer::Upload { plugin_id, .. }
             | BinaryTransfer::RecoveryUpload { plugin_id, .. }
             | BinaryTransfer::Create { plugin_id, .. }
-            | BinaryTransfer::ImageImport { plugin_id, .. } => plugin_id,
+            | BinaryTransfer::ImageImport { plugin_id, .. }
+            | BinaryTransfer::VectorCreate { plugin_id, .. }
+            | BinaryTransfer::VectorReplace { plugin_id, .. } => plugin_id,
         };
         if owner != plugin_id {
             return Err("asset handle is not valid for this plugin".into());
@@ -1235,6 +1367,10 @@ fn plugin_protocol_response(
                         | "maps.asset.create.commit"
                         | "maps.image.import.begin"
                         | "maps.image.import.commit"
+                        | "maps.vector.create.begin"
+                        | "maps.vector.create.commit"
+                        | "maps.vector.replace.begin"
+                        | "maps.vector.replace.commit"
                         | "maps.recovery.export.begin"
                         | "maps.recovery.export.commit"
                 ) {
@@ -1255,6 +1391,12 @@ fn plugin_protocol_response(
                         }
                         "maps.image.import.commit" => {
                             flush_checkpoint_for_shared_core(core, "maps image import")?;
+                        }
+                        "maps.vector.create.commit" => {
+                            flush_checkpoint_for_shared_core(core, "maps vector create")?;
+                        }
+                        "maps.vector.replace.commit" => {
+                            flush_checkpoint_for_shared_core(core, "maps vector replace")?;
                         }
                         _ => {}
                     }
@@ -1697,6 +1839,161 @@ fn dispatch_binary_asset_rpc(
                     .ok_or(error)?,
             };
             serde_json::to_value(imported).map_err(|e| e.to_string())
+        }
+        "maps.vector.create.begin" => {
+            let name = payload
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "name is required".to_string())?;
+            let generation = payload
+                .get("generation")
+                .cloned()
+                .ok_or_else(|| "generation is required".to_string())?;
+            daena_core::maps::vector::validate_generation(&generation)
+                .map_err(|e| e.to_string())?;
+            let size_value = payload
+                .get("size")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "size is required".to_string())?;
+            if size_value > MAX_ASSET_TRANSFER_BYTES as u64
+                || size_value > daena_core::maps::VECTOR_MAX_BYTES as u64
+            {
+                return Err("asset exceeds host transfer limit".into());
+            }
+            let size = size_value as usize;
+            let token = manager.token(BinaryTransfer::VectorCreate {
+                plugin_id: session.plugin_id.clone(),
+                session_id: session.id.clone(),
+                project_id: session.project_id.clone(),
+                name: name.into(),
+                generation,
+                declared_size: size,
+                next_chunk: 0,
+                bytes: Vec::with_capacity(size.min(MAX_ASSET_TRANSFER_BYTES)),
+                expires_at: Instant::now() + ASSET_TRANSFER_TTL,
+            });
+            Ok(
+                serde_json::json!({"handle":token,"url":format!("plugin://{}/__asset/{}/0?sessionId={}", session.plugin_id, token, session.id),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
+            )
+        }
+        "maps.vector.create.commit" => {
+            let token = payload
+                .get("handle")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "handle is required".to_string())?;
+            let content_hash = payload
+                .get("contentHash")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "contentHash is required".to_string())?;
+            let prepared = manager.prepare_vector_create(
+                token,
+                &session.plugin_id,
+                &session.id,
+                &session.project_id,
+                content_hash,
+            );
+            drop(manager);
+            let accepted = match prepared {
+                Ok((name, generation, bytes)) => {
+                    let accepted = project
+                        .accept_vector_map(name, bytes, generation, request_id)
+                        .map_err(|e| e.to_string())?;
+                    let mut manager = transfers
+                        .lock()
+                        .map_err(|_| "asset transfer state is unavailable".to_string())?;
+                    let _ = manager.complete_upload(token, &session.plugin_id, &session.id);
+                    accepted
+                }
+                Err(error) => project
+                    .replay_accepted_vector_map(request_id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or(error)?,
+            };
+            serde_json::to_value(accepted).map_err(|e| e.to_string())
+        }
+        "maps.vector.replace.begin" => {
+            let asset_id = payload
+                .get("assetId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "assetId is required".to_string())?;
+            let asset = project.asset(asset_id.into()).map_err(|e| e.to_string())?;
+            if asset.namespace != daena_core::maps::MAP_NAMESPACE
+                || asset.mime_type != daena_core::maps::VECTOR_MIME
+            {
+                return Err("replacement target is not a daena-vector source asset".into());
+            }
+            let size_value = payload
+                .get("size")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "size is required".to_string())?;
+            if size_value > MAX_ASSET_TRANSFER_BYTES as u64
+                || size_value > daena_core::maps::VECTOR_MAX_BYTES as u64
+            {
+                return Err("asset exceeds host transfer limit".into());
+            }
+            let expected_revision = payload
+                .get("expectedRevision")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "expectedRevision is required".to_string())?;
+            if expected_revision != asset.revision {
+                return Err("asset revision conflict".into());
+            }
+            let size = size_value as usize;
+            let token = manager.token(BinaryTransfer::VectorReplace {
+                plugin_id: session.plugin_id.clone(),
+                session_id: session.id.clone(),
+                project_id: session.project_id.clone(),
+                asset_id: asset.id,
+                expected_revision: expected_revision.into(),
+                declared_size: size,
+                next_chunk: 0,
+                bytes: Vec::with_capacity(size.min(MAX_ASSET_TRANSFER_BYTES)),
+                expires_at: Instant::now() + ASSET_TRANSFER_TTL,
+            });
+            Ok(
+                serde_json::json!({"handle":token,"url":format!("plugin://{}/__asset/{}/0?sessionId={}", session.plugin_id, token, session.id),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
+            )
+        }
+        "maps.vector.replace.commit" => {
+            let token = payload
+                .get("handle")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "handle is required".to_string())?;
+            let content_hash = payload
+                .get("contentHash")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "contentHash is required".to_string())?;
+            let prepared = manager.prepare_vector_replace(
+                token,
+                &session.plugin_id,
+                &session.id,
+                &session.project_id,
+                content_hash,
+            );
+            drop(manager);
+            let replaced = match prepared {
+                Ok((asset_id, expected_revision, bytes)) => {
+                    let replaced = project
+                        .replace_vector_source(
+                            asset_id,
+                            bytes,
+                            content_hash.into(),
+                            &expected_revision,
+                            request_id,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    let mut manager = transfers
+                        .lock()
+                        .map_err(|_| "asset transfer state is unavailable".to_string())?;
+                    let _ = manager.complete_upload(token, &session.plugin_id, &session.id);
+                    replaced
+                }
+                Err(error) => project
+                    .replay_replaced_vector_source(request_id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or(error)?,
+            };
+            serde_json::to_value(replaced).map_err(|e| e.to_string())
         }
         "maps.recovery.export.begin" => {
             let entity_id = payload
@@ -4353,11 +4650,25 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
         "maps.asset.create.commit" => (&["handle", "contentHash"], &[]),
         "maps.image.import.begin" => (&["name", "size", "mimeType", "filename"], &[]),
         "maps.image.import.commit" => (&["handle", "contentHash"], &[]),
-        "maps.layer.create" => (&["mapEntityId", "name", "expectedRevision"], &[]),
-        "maps.layer.delete" => (&["mapEntityId", "layerId", "expectedRevision"], &[]),
+        "maps.vector.create.begin" => (&["name", "size", "generation"], &[]),
+        "maps.vector.create.commit" => (&["handle", "contentHash"], &[]),
+        "maps.vector.replace.begin" => (&["assetId", "expectedRevision", "size"], &[]),
+        "maps.vector.replace.commit" => (&["handle", "contentHash"], &[]),
+        "maps.layer.create" => (&["mapEntityId", "name", "expectedRevision"], &["kind"]),
+        "maps.layer.delete" => (
+            &["mapEntityId", "layerId", "expectedRevision"],
+            &["expectedSourceRevision", "expectedFeatureCount"],
+        ),
         "maps.layer.update" => (
             &["mapEntityId", "layerId", "expectedRevision"],
-            &["name", "order", "defaultVisible", "opacity", "locked"],
+            &[
+                "name",
+                "order",
+                "defaultVisible",
+                "opacity",
+                "locked",
+                "style",
+            ],
         ),
         "maps.recovery.export.begin" => (&["mapEntityId", "size"], &[]),
         "maps.recovery.export.commit" => (&["handle", "contentHash"], &[]),
@@ -4804,25 +5115,73 @@ fn dispatch_module_rpc(
             let map_entity_id = payload_string(&payload, "mapEntityId")?;
             let name = payload_string(&payload, "name")?;
             let expected_revision = payload_string(&payload, "expectedRevision")?;
-            serde_json::to_value(project.create_raster_layer(
-                map_entity_id,
-                name,
-                &expected_revision,
-                request_id,
-            )?)
-            .map_err(|error| CoreError::Validation(error.to_string()))
+            let kind = payload
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            let provider = project.map_provider_id(&map_entity_id)?;
+            let create_vector = match kind.as_deref() {
+                Some("vector") => true,
+                Some("raster") => false,
+                Some(other) => {
+                    return Err(CoreError::Validation(format!(
+                        "maps: unsupported layer kind {other}"
+                    )));
+                }
+                None => provider == daena_core::maps::VECTOR_PROVIDER,
+            };
+            if create_vector {
+                serde_json::to_value(project.create_vector_layer(
+                    map_entity_id,
+                    name,
+                    &expected_revision,
+                    request_id,
+                    None,
+                )?)
+                .map_err(|error| CoreError::Validation(error.to_string()))
+            } else {
+                serde_json::to_value(project.create_raster_layer(
+                    map_entity_id,
+                    name,
+                    &expected_revision,
+                    request_id,
+                )?)
+                .map_err(|error| CoreError::Validation(error.to_string()))
+            }
         }
         "maps.layer.delete" => {
             let map_entity_id = payload_string(&payload, "mapEntityId")?;
             let layer_id = payload_string(&payload, "layerId")?;
             let expected_revision = payload_string(&payload, "expectedRevision")?;
-            serde_json::to_value(project.delete_raster_layer(
-                map_entity_id,
-                layer_id,
-                &expected_revision,
-                request_id,
-            )?)
-            .map_err(|error| CoreError::Validation(error.to_string()))
+            let kind = project
+                .map_layer_kind(&map_entity_id, &layer_id)?
+                .ok_or_else(|| CoreError::NotFound("layer not found".into()))?;
+            if kind == "vector" {
+                let expected_source_revision = payload_string(&payload, "expectedSourceRevision")?;
+                let expected_feature_count = payload
+                    .get("expectedFeatureCount")
+                    .and_then(serde_json::Value::as_i64)
+                    .ok_or_else(|| {
+                        CoreError::Validation("expectedFeatureCount is required".into())
+                    })?;
+                serde_json::to_value(project.delete_vector_layer(
+                    map_entity_id,
+                    layer_id,
+                    &expected_revision,
+                    &expected_source_revision,
+                    expected_feature_count,
+                    request_id,
+                )?)
+                .map_err(|error| CoreError::Validation(error.to_string()))
+            } else {
+                serde_json::to_value(project.delete_raster_layer(
+                    map_entity_id,
+                    layer_id,
+                    &expected_revision,
+                    request_id,
+                )?)
+                .map_err(|error| CoreError::Validation(error.to_string()))
+            }
         }
         "maps.layer.update" => {
             let map_entity_id = payload_string(&payload, "mapEntityId")?;
@@ -6265,6 +6624,7 @@ async fn project_delete_semantic_layer(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn project_update_map_layer(
     state: tauri::State<'_, SharedCore>,
     map_entity_id: String,

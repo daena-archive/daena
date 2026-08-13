@@ -1,0 +1,110 @@
+import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+
+const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+const require = createRequire(import.meta.url);
+
+function fail(message) {
+  throw new Error(`native vector Phase 0 check failed: ${message}`);
+}
+
+const pkg = JSON.parse(read("package.json"));
+for (const [name, major] of [
+  ["maplibre-gl", "5"],
+  ["terra-draw", "1"],
+  ["terra-draw-maplibre-gl-adapter", "1"],
+  ["d3-contour", "4"],
+]) {
+  const spec = pkg.dependencies?.[name];
+  if (!spec) fail(`package.json missing ${name}`);
+  if (!spec.includes(`^${major}.`) && !spec.startsWith(major + "."))
+    fail(`${name} must stay on major ${major}, got ${spec}`);
+}
+
+const lock = read("deno.lock");
+if (!lock.includes("npm:maplibre-gl@^5.24.0") || lock.includes("npm:maplibre-gl@^6")) {
+  fail("deno.lock must pin MapLibre 5, not 6");
+}
+
+const tauri = JSON.parse(read("src-tauri/tauri.conf.json"));
+const csp = tauri.app?.security?.csp ?? "";
+if (!csp.includes("worker-src 'self'")) fail("tauri CSP must set worker-src 'self'");
+if (csp.includes("worker-src") && csp.includes("blob:") && /worker-src[^;]*blob:/.test(csp)) {
+  fail("MapLibre worker must not rely on blob: worker-src");
+}
+
+const requiredFiles = [
+  "src/lib/maps/native-vector/NativeVectorMapEditor.svelte",
+  "src/lib/maps/native-vector/runtime.ts",
+  "src/lib/maps/native-vector/style.ts",
+  "docs/maps/native-vector-fixtures/phase0-land.geojson",
+  "docs/maps/native-vector-licenses.md",
+  "docs/maps/native-vector-licenses/maplibre-gl-LICENSE.txt",
+  "docs/maps/native-vector-licenses/terra-draw-LICENSE.txt",
+  "docs/maps/native-vector-licenses/terra-draw-maplibre-gl-adapter-LICENSE.txt",
+  "docs/maps/native-vector-licenses/d3-contour-LICENSE.txt",
+  "docs/adr/0013-native-vector-maps.md",
+  "docs/maps/phase-0-native-vector-spike.md",
+];
+for (const path of requiredFiles) {
+  if (!existsSync(new URL(`../${path}`, import.meta.url))) fail(`missing ${path}`);
+}
+
+const runtime = read("src/lib/maps/native-vector/runtime.ts");
+for (const required of [
+  "maplibre-gl/dist/maplibre-gl-csp.js",
+  "maplibre-gl/dist/maplibre-gl-csp-worker.js?url",
+  "setWorkerUrl",
+  "style.load",
+  "TerraDrawPointMode",
+  "TerraDrawLineStringMode",
+  "TerraDrawPolygonMode",
+  "TerraDrawFreehandMode",
+  "TerraDrawSelectMode",
+  ".stop()",
+  "map.remove()",
+  "revokeObjectURL",
+  "vector.renderer.unavailable",
+  "webgl2",
+]) {
+  if (!runtime.toLowerCase().includes(required.toLowerCase())) fail(`runtime.ts missing ${required}`);
+}
+
+const style = read("src/lib/maps/native-vector/style.ts");
+if (/https?:\/\//i.test(style)) fail("style.ts must not embed remote URLs");
+if (!style.includes("daena-base") || !style.includes("daena-authored"))
+  fail("style.ts must define base and authored sources");
+if (style.includes("glyphs") || style.includes("sprite") || style.includes("tiles")) {
+  fail("offline style must omit glyphs, sprites, and tiles");
+}
+
+const editor = read("src/lib/maps/native-vector/NativeVectorMapEditor.svelte");
+for (const required of ["switchLayer", "Freehand", "Select", "created.dispose()", "PHASE0_VECTOR_LAYERS"]) {
+  if (!editor.includes(required)) fail(`NativeVectorMapEditor missing ${required}`);
+}
+
+const host = read("src/routes/+page.svelte");
+if (!host.includes("NativeVectorMapEditor") || !host.includes('createMap("vector")')) {
+  fail("host surface must dispatch the native vector editor");
+}
+
+const mapsCore = read("crates/daena-core/src/maps.rs");
+if (!mapsCore.includes("daena-vector") || !mapsCore.includes("VECTOR_PROVIDER")) {
+  fail("Phase 1 must register the daena-vector provider in maps.rs");
+}
+
+const fixture = JSON.parse(read("docs/maps/native-vector-fixtures/phase0-land.geojson"));
+if (fixture.type !== "FeatureCollection" || fixture.features.length < 3) fail("phase0 fixture is incomplete");
+if (JSON.stringify(fixture).search(/https?:\/\//i) >= 0) fail("fixture must not contain remote URLs");
+
+const maplibrePkg = require("maplibre-gl/package.json");
+if (!String(maplibrePkg.version).startsWith("5.")) fail(`resolved maplibre-gl must be 5.x, got ${maplibrePkg.version}`);
+if (!existsSync(require.resolve("maplibre-gl/dist/maplibre-gl-csp.js"))) fail("MapLibre CSP bundle is missing");
+if (!existsSync(require.resolve("maplibre-gl/dist/maplibre-gl-csp-worker.js"))) fail("MapLibre CSP worker is missing");
+
+const adr = read("docs/adr/0013-native-vector-maps.md");
+for (const required of ["One GeoJSON", "longitude", "trusted host", "worker-src"]) {
+  if (!adr.toLowerCase().includes(required.toLowerCase())) fail(`ADR 0013 missing ${required}`);
+}
+
+console.log("native vector Phase 0 dependency, CSP, fixture, and host-surface checks passed");

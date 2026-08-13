@@ -777,14 +777,22 @@ fn merge_hybrid_passages(
     if semantic.is_empty() {
         return lexical;
     }
-    let lexical_ranks = lexical.iter().enumerate().fold(HashMap::new(), |mut ranks, (rank, passage)| {
-        ranks.entry(passage_key(passage)).or_insert(rank);
-        ranks
-    });
-    let semantic_ranks = semantic.iter().enumerate().fold(HashMap::new(), |mut ranks, (rank, passage)| {
-        ranks.entry(passage_key(passage)).or_insert(rank);
-        ranks
-    });
+    let lexical_ranks =
+        lexical
+            .iter()
+            .enumerate()
+            .fold(HashMap::new(), |mut ranks, (rank, passage)| {
+                ranks.entry(passage_key(passage)).or_insert(rank);
+                ranks
+            });
+    let semantic_ranks =
+        semantic
+            .iter()
+            .enumerate()
+            .fold(HashMap::new(), |mut ranks, (rank, passage)| {
+                ranks.entry(passage_key(passage)).or_insert(rank);
+                ranks
+            });
     lexical.extend(semantic.iter().cloned());
     lexical.sort_by(|left, right| {
         let score = |passage: &RetrievedPassage| {
@@ -1061,12 +1069,8 @@ fn retrieval_source_ids(
         AiRetrievalMode::ExplicitOnly => RetrievalMode::ExplicitOnly,
         AiRetrievalMode::None => RetrievalMode::None,
     };
-    let entity_ids = retrieval_entity_ids(
-        project,
-        mode,
-        &payload.seed_ids,
-        payload.relationship_depth,
-    )?;
+    let entity_ids =
+        retrieval_entity_ids(project, mode, &payload.seed_ids, payload.relationship_depth)?;
     let mut source_ids = RetrievalSourceIds::new();
     for entity_id in &entity_ids {
         for document in project
@@ -1157,11 +1161,12 @@ async fn semantic_retrieval_passages(
             .into_iter()
             .enumerate()
             .filter_map(|(rank, matched)| {
-                let record = records.iter().find(|record| record.chunk.id == matched.chunk_id)?;
+                let record = records
+                    .iter()
+                    .find(|record| record.chunk.id == matched.chunk_id)?;
                 let (entity_id, canonical_path) =
                     allowed_source_ids.get(&record.chunk.source.source_id)?;
-                if !allowed_kind(&record.chunk.source.source_kind)
-                {
+                if !allowed_kind(&record.chunk.source.source_kind) {
                     return None;
                 }
                 let source = SourceRef {
@@ -1229,16 +1234,9 @@ async fn direct_retrieval_context(
     })
     .await?;
     let semantic = if let Some(query) = query_for_semantic {
-        semantic_retrieval_passages(
-            runtime,
-            provider,
-            query,
-            allowed_source_ids,
-            Vec::new(),
-            4,
-        )
-        .await
-        .unwrap_or_default()
+        semantic_retrieval_passages(runtime, provider, query, allowed_source_ids, Vec::new(), 4)
+            .await
+            .unwrap_or_default()
     } else {
         Vec::new()
     };

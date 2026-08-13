@@ -138,8 +138,7 @@ fn primary_schema_namespace(package: &PluginManifest) -> Result<&str, String> {
 
 fn is_field_key(value: &str) -> bool {
     let mut chars = value.chars();
-    matches!(chars.next(), Some('a'..='z'))
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    matches!(chars.next(), Some('a'..='z')) && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn is_entity_type_id(value: &str) -> bool {
@@ -200,7 +199,9 @@ pub fn validate_module_overlay(
 
     for name in &overlay.disabled_entity_types {
         if !package_types.contains(name.as_str()) {
-            return Err(format!("cannot disable unknown builtin entity type: {name}"));
+            return Err(format!(
+                "cannot disable unknown builtin entity type: {name}"
+            ));
         }
     }
     if unique_len(&overlay.disabled_entity_types) != overlay.disabled_entity_types.len() {
@@ -242,7 +243,12 @@ pub fn validate_module_overlay(
     let effective_types: BTreeSet<&str> = package_types
         .iter()
         .copied()
-        .filter(|name| !overlay.disabled_entity_types.iter().any(|disabled| disabled == name))
+        .filter(|name| {
+            !overlay
+                .disabled_entity_types
+                .iter()
+                .any(|disabled| disabled == name)
+        })
         .chain(overlay.custom_entity_types.iter().map(String::as_str))
         .collect();
 
@@ -370,9 +376,10 @@ pub fn validate_module_overlay(
             }
         }
         if field.field_type == "enum" {
-            let options = field.options.as_ref().ok_or_else(|| {
-                format!("custom enum field requires options: {}", field.key)
-            })?;
+            let options = field
+                .options
+                .as_ref()
+                .ok_or_else(|| format!("custom enum field requires options: {}", field.key))?;
             if options.is_empty() {
                 return Err(format!(
                     "custom enum field options must be non-empty: {}",
@@ -385,7 +392,12 @@ pub fn validate_module_overlay(
     let effective_fields: BTreeSet<&str> = package_fields
         .iter()
         .copied()
-        .filter(|key| !overlay.disabled_fields.iter().any(|disabled| disabled == key))
+        .filter(|key| {
+            !overlay
+                .disabled_fields
+                .iter()
+                .any(|disabled| disabled == key)
+        })
         .chain(custom_field_keys.iter().copied())
         .collect();
 
@@ -395,7 +407,10 @@ pub fn validate_module_overlay(
             .iter()
             .find(|scope| scope.field_key == key)
         {
-            return scope.entity_types.iter().any(|candidate| candidate == entity_type);
+            return scope
+                .entity_types
+                .iter()
+                .any(|candidate| candidate == entity_type);
         }
         package_schema
             .fields
@@ -604,10 +619,9 @@ pub fn merge_module_manifest(
                     .iter()
                     .find(|field| field.key == *key)
                     .is_some_and(|field| {
-                        field
-                            .entity_types
-                            .as_ref()
-                            .is_none_or(|types| types.iter().any(|type_id| type_id == &template.entity_type))
+                        field.entity_types.as_ref().is_none_or(|types| {
+                            types.iter().any(|type_id| type_id == &template.entity_type)
+                        })
                     })
             });
             if let Some(required) = &mut template.required_fields {
@@ -623,9 +637,7 @@ pub fn merge_module_manifest(
             template.required_fields = override_template.required_fields.clone();
         }
     }
-    merged
-        .templates
-        .extend(overlay.custom_templates.clone());
+    merged.templates.extend(overlay.custom_templates.clone());
 
     Ok(merged)
 }
@@ -656,10 +668,8 @@ mod tests {
     use crate::parse_manifest;
 
     fn lore_manifest() -> PluginManifest {
-        parse_manifest(include_str!(
-            "../../../packages/modules/lore/manifest.json"
-        ))
-        .expect("lore manifest")
+        parse_manifest(include_str!("../../../packages/modules/lore/manifest.json"))
+            .expect("lore manifest")
     }
 
     fn timeline_manifest() -> PluginManifest {
@@ -762,10 +772,8 @@ mod tests {
 
     #[test]
     fn rejects_maps_without_schema_overlay_capability() {
-        let package = parse_manifest(include_str!(
-            "../../../packages/modules/maps/manifest.json"
-        ))
-        .expect("maps manifest");
+        let package = parse_manifest(include_str!("../../../packages/modules/maps/manifest.json"))
+            .expect("maps manifest");
         assert!(!supports_schema_overlay(&package));
         let overlay = ModuleSchemaOverlay::default();
         assert!(validate_module_overlay(&package, &overlay)
@@ -812,8 +820,14 @@ mod tests {
             .unwrap();
         assert!(schema.entity_types.iter().any(|name| name == "species"));
         assert!(schema.fields.iter().any(|field| field.key == "lifespan"));
-        assert!(!merged.templates.iter().any(|template| template.id == "concept"));
-        assert!(merged.templates.iter().any(|template| template.id == "species"));
+        assert!(!merged
+            .templates
+            .iter()
+            .any(|template| template.id == "concept"));
+        assert!(merged
+            .templates
+            .iter()
+            .any(|template| template.id == "species"));
     }
 
     #[test]
@@ -864,7 +878,11 @@ mod tests {
         };
 
         let merged = merge_module_manifest(&package, &overlay).expect("merge");
-        let schema = merged.schemas.iter().find(|schema| schema.namespace == "lore").unwrap();
+        let schema = merged
+            .schemas
+            .iter()
+            .find(|schema| schema.namespace == "lore")
+            .unwrap();
         assert_eq!(
             schema
                 .fields
@@ -873,8 +891,15 @@ mod tests {
                 .and_then(|field| field.entity_types.clone()),
             Some(vec!["person".into(), "faction".into()])
         );
-        let person = merged.templates.iter().find(|template| template.id == "person").unwrap();
-        assert_eq!(person.fields, serde_json::json!({ "summary": "", "aliases": "", "occupation": "" }));
+        let person = merged
+            .templates
+            .iter()
+            .find(|template| template.id == "person")
+            .unwrap();
+        assert_eq!(
+            person.fields,
+            serde_json::json!({ "summary": "", "aliases": "", "occupation": "" })
+        );
         assert_eq!(person.required_fields, Some(vec!["occupation".into()]));
     }
 
@@ -936,6 +961,9 @@ mod tests {
             .find(|schema| schema.namespace == "writing")
             .unwrap();
         assert!(schema.entity_types.iter().any(|name| name == "chapter"));
-        assert!(merged.templates.iter().any(|template| template.id == "chapter"));
+        assert!(merged
+            .templates
+            .iter()
+            .any(|template| template.id == "chapter"));
     }
 }

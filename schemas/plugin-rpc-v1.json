@@ -659,6 +659,12 @@
         "expectedRevision": {
           "type": "string"
         },
+        "kind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "mapEntityId": {
           "type": "string"
         },
@@ -676,8 +682,21 @@
     "MapsLayerDeletePayload": {
       "additionalProperties": false,
       "properties": {
+        "expectedFeatureCount": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "expectedRevision": {
           "type": "string"
+        },
+        "expectedSourceRevision": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "layerId": {
           "type": "string"
@@ -736,7 +755,8 @@
             "integer",
             "null"
           ]
-        }
+        },
+        "style": true
       },
       "required": [
         "expectedRevision",
@@ -879,6 +899,78 @@
       "required": [
         "fileName",
         "mapEntityId"
+      ],
+      "type": "object"
+    },
+    "MapsVectorCreateBeginPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "generation": true,
+        "name": {
+          "type": "string"
+        },
+        "size": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "generation",
+        "name",
+        "size"
+      ],
+      "type": "object"
+    },
+    "MapsVectorCreateCommitPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "contentHash": {
+          "type": "string"
+        },
+        "handle": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "contentHash",
+        "handle"
+      ],
+      "type": "object"
+    },
+    "MapsVectorReplaceBeginPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "assetId": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "string"
+        },
+        "size": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "assetId",
+        "expectedRevision",
+        "size"
+      ],
+      "type": "object"
+    },
+    "MapsVectorReplaceCommitPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "contentHash": {
+          "type": "string"
+        },
+        "handle": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "contentHash",
+        "handle"
       ],
       "type": "object"
     },
@@ -1644,6 +1736,70 @@
           "if": {
             "properties": {
               "method": {
+                "const": "maps.vector.create.begin"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/MapsVectorCreateBeginPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "maps.vector.create.commit"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/MapsVectorCreateCommitPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "maps.vector.replace.begin"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/MapsVectorReplaceBeginPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "maps.vector.replace.commit"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/MapsVectorReplaceCommitPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
                 "const": "maps.layer.create"
               }
             }
@@ -2008,6 +2164,10 @@
             "maps.asset.create.commit",
             "maps.image.import.begin",
             "maps.image.import.commit",
+            "maps.vector.create.begin",
+            "maps.vector.create.commit",
+            "maps.vector.replace.begin",
+            "maps.vector.replace.commit",
             "maps.layer.create",
             "maps.layer.delete",
             "maps.layer.update",
@@ -2330,6 +2490,27 @@
     },
     "maps.recovery.restore": {
       "payload": "MapsRecoveryRestorePayload",
+      "requestId": "envelope"
+    },
+    "maps.vector.create.begin": {
+      "payload": "MapsVectorCreateBeginPayload",
+      "requestId": "envelope"
+    },
+    "maps.vector.create.commit": {
+      "payload": "MapsVectorCreateCommitPayload",
+      "requestId": "envelope"
+    },
+    "maps.vector.replace.begin": {
+      "payload": "MapsVectorReplaceBeginPayload",
+      "requestId": "envelope",
+      "requiredPayload": [
+        "assetId",
+        "expectedRevision",
+        "size"
+      ]
+    },
+    "maps.vector.replace.commit": {
+      "payload": "MapsVectorReplaceCommitPayload",
       "requestId": "envelope"
     },
     "record.create": {

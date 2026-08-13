@@ -74,9 +74,9 @@ export interface MapsAssetCreateBeginPayload { mapEntityId: string; mimeType?: s
 export interface MapsAssetCreateCommitPayload { contentHash: string; handle: string }
 export interface MapsImageImportBeginPayload { filename: string; mimeType: string; name: string; size: number }
 export interface MapsImageImportCommitPayload { contentHash: string; handle: string }
-export interface MapsLayerCreatePayload { expectedRevision: string; mapEntityId: string; name: string }
-export interface MapsLayerDeletePayload { expectedRevision: string; layerId: string; mapEntityId: string }
-export interface MapsLayerUpdatePayload { defaultVisible?: boolean | null; expectedRevision: string; layerId: string; locked?: boolean | null; mapEntityId: string; name?: string | null; opacity?: number | null; order?: number | null }
+export interface MapsLayerCreatePayload { expectedRevision: string; kind?: string | null; mapEntityId: string; name: string }
+export interface MapsLayerDeletePayload { expectedFeatureCount?: number | null; expectedRevision: string; expectedSourceRevision?: string | null; layerId: string; mapEntityId: string }
+export interface MapsLayerUpdatePayload { defaultVisible?: boolean | null; expectedRevision: string; layerId: string; locked?: boolean | null; mapEntityId: string; name?: string | null; opacity?: number | null; order?: number | null; style?: unknown }
 export interface MapsLocationsCreateAndLinkPayload { entityType: string; location: unknown; name: string }
 export interface MapsLocationsListPayload { mapEntityId: string }
 export interface MapsLocationsUnlinkPayload { entityId: string; locationId: string }
@@ -86,6 +86,10 @@ export interface MapsRecoveryExportBeginPayload { mapEntityId: string; size: num
 export interface MapsRecoveryExportCommitPayload { contentHash: string; handle: string }
 export interface MapsRecoveryListPayload { mapEntityId: string }
 export interface MapsRecoveryRestorePayload { fileName: string; mapEntityId: string }
+export interface MapsVectorCreateBeginPayload { generation: unknown; name: string; size: number }
+export interface MapsVectorCreateCommitPayload { contentHash: string; handle: string }
+export interface MapsVectorReplaceBeginPayload { assetId: string; expectedRevision: string; size: number }
+export interface MapsVectorReplaceCommitPayload { contentHash: string; handle: string }
 export interface RecordCreatePayload { collection: string; ownerEntityId: string; value: unknown }
 export interface RecordDeletePayload { collection: string; expectedRevision: string; id: string; ownerEntityId: string }
 export interface RecordListPayload { collection: string; homonymsOnly?: boolean | null; limit?: number | null; offset?: number | null; ownerEntityId: string; query?: string | null; sort?: string | null; status?: string | null; tag?: string | null }
@@ -136,6 +140,10 @@ export interface BrokerMethodPayloads {
   "maps.recovery.export.commit": MapsRecoveryExportCommitPayload;
   "maps.recovery.list": MapsRecoveryListPayload;
   "maps.recovery.restore": MapsRecoveryRestorePayload;
+  "maps.vector.create.begin": MapsVectorCreateBeginPayload;
+  "maps.vector.create.commit": MapsVectorCreateCommitPayload;
+  "maps.vector.replace.begin": MapsVectorReplaceBeginPayload;
+  "maps.vector.replace.commit": MapsVectorReplaceCommitPayload;
   "record.create": RecordCreatePayload;
   "record.delete": RecordDeletePayload;
   "record.list": RecordListPayload;

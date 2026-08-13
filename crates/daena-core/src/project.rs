@@ -5948,6 +5948,9 @@ impl ProjectStore {
         tx.execute("DELETE FROM entity_fields", [])?;
         tx.execute("DELETE FROM documents", [])?;
         tx.execute("DELETE FROM relationships", [])?;
+        tx.execute("DELETE FROM module_records", [])?;
+        tx.execute("DELETE FROM map_projection", [])?;
+        tx.execute("DELETE FROM map_location_projection", [])?;
         tx.execute("DELETE FROM entities", [])?;
         let now = chrono_like_now();
         let eldermere_id = Uuid::new_v4().to_string();

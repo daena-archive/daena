@@ -4,7 +4,7 @@
   "name": "Maps",
   "version": "0.1.0",
   "publisher": "daena-archive",
-  "enabledByDefault": false,
+  "enabledByDefault": true,
   "stability": "beta",
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "sandboxed",

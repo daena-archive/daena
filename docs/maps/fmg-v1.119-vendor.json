@@ -10,8 +10,8 @@
   },
   "archive": {
     "path": "src-tauri/plugin-assets/maps/fmg-v1.119.zip",
-    "sha256": "2128be1382a876034038025c83f19bd3bbff922522b22c953ef6cd5d94d2ffc7",
-    "uncompressedBytes": 24512663
+    "sha256": "d8b96a5885666d49e771f36b9adb27f6447d229fbec60cc5d4cf18748aadbdbb",
+    "uncompressedBytes": 24512862
   },
   "build": {
     "node": "26.6.0",

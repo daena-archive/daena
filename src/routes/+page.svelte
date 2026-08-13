@@ -6446,6 +6446,10 @@ onMount(() => {
   background: var(--canvas);
   box-shadow: 0 24px 80px rgba(37, 37, 31, 0.18);
 }
+.editor-fullscreen.map-editor-active {
+  inset: 0;
+  padding: 0;
+}
 .editor-fullscreen .editor-header {
   width: min(1120px, 100%);
   flex: 0 0 auto;
@@ -6471,7 +6475,7 @@ onMount(() => {
   font-size: 32px;
 }
 .editor-fullscreen .map-editor-shell {
-  width: min(1440px, 100%);
+  width: 100%;
   align-self: center;
 }
 .editor-fullscreen .editor-footer {

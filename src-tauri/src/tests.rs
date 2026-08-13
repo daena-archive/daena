@@ -898,7 +898,7 @@ fn bundled_workspace_manifests_do_not_declare_duplicate_sidebar_views() {
 }
 
 #[test]
-fn fresh_directory_sync_disables_maps_by_default() {
+fn fresh_directory_sync_enables_maps_by_default() {
     let root = std::env::temp_dir().join(format!("daena-maps-startup-{}", uuid::Uuid::new_v4()));
     let project = ProjectStore::open_directory(&root).unwrap();
     let mut host = bundled_plugin_host(new_shared_core()).unwrap();
@@ -906,17 +906,17 @@ fn fresh_directory_sync_disables_maps_by_default() {
     sync_project_usage(&project, &mut host).unwrap();
 
     let project_id = root.to_string_lossy().to_string();
-    assert!(host
+    assert!(!host
         .declarations
         .views(&project_id, "daena.maps")
         .is_empty());
-    assert!(!project.is_module_enabled("daena.maps").unwrap());
+    assert!(project.is_module_enabled("daena.maps").unwrap());
 
     project
-        .set_module_enabled("daena.maps".into(), true)
+        .set_module_enabled("daena.maps".into(), false)
         .unwrap();
     sync_project_usage(&project, &mut host).unwrap();
-    assert!(!host
+    assert!(host
         .declarations
         .views(&project_id, "daena.maps")
         .is_empty());
@@ -1331,7 +1331,9 @@ fn bundled_maps_shell_is_deterministic_and_provider_fail_closed() {
     assert!(bridge_body.contains("data-daena-back"));
     assert!(bridge_body.contains("publishUiState(\"back\""));
     assert!(bridge_body.contains("data-daena-back-confirm"));
-    assert!(bridge_body.contains("Leave?"));
+    assert!(bridge_body.contains("Discard unsaved progress?"));
+    assert!(bridge_body.contains(">Discard</button>"));
+    assert!(bridge_body.contains(">Cancel</button>"));
     assert!(bridge_body.contains("linkArming"));
     assert!(bridge_body.contains("data-daena-link-x"));
     assert!(bridge_body.contains("daena-link-chrome"));

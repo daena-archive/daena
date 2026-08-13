@@ -2271,6 +2271,21 @@ fn seed_example_is_repeatable_after_modules_are_initialized() {
     store
         .set_module_enabled("daena.timeline".into(), true)
         .unwrap();
+    let record_owner = store
+        .create_entity(CreateEntity {
+            name: "Record owner before seed".into(),
+            entity_type: Some("language".into()),
+        })
+        .unwrap();
+    store
+        .create_module_record(
+            "daena.language",
+            "lexemes",
+            &record_owner.id,
+            serde_json::json!({"lemma": "seed"}),
+            None,
+        )
+        .unwrap();
 
     assert_eq!(store.seed_example().unwrap(), 25);
     assert_eq!(store.seed_example().unwrap(), 25);

@@ -257,11 +257,15 @@ window.DAENA_HOST = true;
   function hideBackConfirmation() {
     const confirmation = saveChrome?.querySelector("[data-daena-back-confirm]");
     if (confirmation) confirmation.style.display = "none";
+    const row = saveChrome?.querySelector("[data-daena-save-row]");
+    if (row) row.style.display = "flex";
   }
   function showBackConfirmation() {
     const confirmation = saveChrome?.querySelector("[data-daena-back-confirm]");
     if (!confirmation) return;
-    confirmation.style.display = "flex";
+    const row = saveChrome.querySelector("[data-daena-save-row]");
+    if (row) row.style.display = "none";
+    confirmation.style.display = "grid";
     confirmation.querySelector("[data-daena-back-stay]")?.focus();
   }
   function requestBack() {
@@ -296,10 +300,12 @@ window.DAENA_HOST = true;
           <button data-daena-name-confirm type="submit" style="appearance:none;border:0;border-radius:7px;padding:6px 10px;background:#d5ab6c;color:#2c4032;font:700 12px system-ui,sans-serif;cursor:pointer">Save map</button>
         </div>
       </form>
-      <div data-daena-back-confirm role="alertdialog" aria-label="Unsaved map changes" style="display:none;align-items:center;gap:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.14)">
-        <span style="flex:1;line-height:1.3">Leave?</span>
-        <button data-daena-back-leave type="button" aria-label="Leave without saving" title="Leave without saving" style="display:grid;place-items:center;width:28px;height:28px;appearance:none;border:0;border-radius:7px;padding:0;background:#d5ab6c;color:#2c4032;font:700 16px/1 system-ui,sans-serif;cursor:pointer">✓</button>
-        <button data-daena-back-stay type="button" aria-label="Stay and keep editing" title="Stay and keep editing" style="display:grid;place-items:center;width:28px;height:28px;appearance:none;border:1px solid rgba(255,255,255,.2);border-radius:7px;padding:0;background:transparent;color:#d7ddd6;font:700 16px/1 system-ui,sans-serif;cursor:pointer">✕</button>
+      <div data-daena-back-confirm role="alertdialog" aria-label="Unsaved map changes" style="display:none;gap:8px;margin:0;padding-top:8px;border-top:1px solid rgba(255,255,255,.14)">
+        <strong>Discard unsaved progress?</strong>
+        <div style="display:flex;justify-content:flex-end;gap:6px">
+          <button data-daena-back-leave type="button" aria-label="Discard unsaved progress" title="Discard unsaved progress" style="appearance:none;border:0;border-radius:7px;padding:6px 9px;background:#d5ab6c;color:#2c4032;font:700 12px system-ui,sans-serif;cursor:pointer">Discard</button>
+          <button data-daena-back-stay type="button" aria-label="Cancel and keep editing" title="Cancel and keep editing" style="appearance:none;border:1px solid rgba(255,255,255,.2);border-radius:7px;padding:6px 9px;background:transparent;color:#d7ddd6;font:12px system-ui,sans-serif;cursor:pointer">Cancel</button>
+        </div>
       </div>
       <button data-daena-fullscreen type="button" aria-label="Full screen" aria-pressed="false" title="Full screen" style="position:fixed;left:14px;bottom:14px;z-index:1;display:grid;place-items:center;width:32px;height:32px;appearance:none;border:1px solid rgba(255,255,255,.28);border-radius:8px;padding:0;background:rgba(32,40,36,.92);color:#f4f1ea;font:700 18px/1 system-ui,sans-serif;cursor:pointer;box-shadow:0 4px 14px #0005">⛶</button>`;
     const button = saveChrome.querySelector("[data-daena-save-button]");

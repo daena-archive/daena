@@ -16,8 +16,8 @@ pub const RELATED_MAP_RELATIONSHIP: &str = "daena.maps:related-map";
 pub mod image;
 pub use image::{
     encode_transparent_png, mime_for_source_format, source_format_for_mime, validate_image_source,
-    validate_raster_png, ImageSource, IMAGE_MAX_ENCODED_BYTES, IMAGE_MAX_PIXELS,
-    IMAGE_MAX_RASTER_LAYERS,
+    validate_raster_png, ImageSource, IMAGE_MAX_DECODED_BYTES, IMAGE_MAX_ENCODED_BYTES,
+    IMAGE_MAX_PIXELS, IMAGE_MAX_RASTER_LAYERS, IMAGE_MAX_UNDO_BYTES,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -561,7 +561,9 @@ pub fn validate_field(
                 }
                 raster_count += 1;
                 if raster_count > IMAGE_MAX_RASTER_LAYERS {
-                    return Err(invalid("raster layer count exceeds the budget"));
+                    return Err(invalid(format!(
+                        "raster layer count exceeds the budget of {IMAGE_MAX_RASTER_LAYERS}"
+                    )));
                 }
             }
         }

@@ -223,6 +223,29 @@ export class ImageMapStage {
     this.stage.batchDraw();
   }
 
+  panBy(dx: number, dy: number) {
+    this.world.position({ x: this.world.x() + dx, y: this.world.y() + dy });
+    this.syncPinsToWorld();
+    this.stage.batchDraw();
+  }
+
+  zoomAtCenter(factor: number) {
+    const pointer = { x: this.stage.width() / 2, y: this.stage.height() / 2 };
+    const oldScale = this.world.scaleX();
+    const mouse = {
+      x: (pointer.x - this.world.x()) / oldScale,
+      y: (pointer.y - this.world.y()) / oldScale,
+    };
+    const next = clamp(oldScale * factor, MIN_ZOOM * 0.25, MAX_ZOOM * 4);
+    this.world.scale({ x: next, y: next });
+    this.world.position({
+      x: pointer.x - mouse.x * next,
+      y: pointer.y - mouse.y * next,
+    });
+    this.syncPinsToWorld();
+    this.stage.batchDraw();
+  }
+
   private canPan() {
     return this.tool === "pan" || this.spacePan || this.picking;
   }
@@ -281,11 +304,11 @@ export class ImageMapStage {
   }
 
   private onKeyDown = (event: KeyboardEvent) => {
-    if (event.code === "Space" && !this.spacePan) {
-      this.spacePan = true;
-      this.world.draggable(this.canPan());
-      this.syncCursor();
-    }
+    if (isEditableTarget(event.target) || event.code !== "Space" || this.spacePan) return;
+    event.preventDefault();
+    this.spacePan = true;
+    this.world.draggable(this.canPan());
+    this.syncCursor();
   };
 
   private onKeyUp = (event: KeyboardEvent) => {
@@ -363,4 +386,10 @@ export class ImageMapStage {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function isEditableTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return Boolean(target.closest("input, textarea, select, [contenteditable=true]"));
 }

@@ -1,11 +1,12 @@
 <script lang="ts">
 import { onMount, tick } from "svelte";
-import { project, type Asset, type Entity, type FieldValue, type MapPin } from "$lib/project/client";
-import { ImageMapStage, type ImageMapTool } from "./engine";
-import { registerImageMapSession } from "./session";
-
-const MAX_RASTER_LAYERS = 16;
-const MAX_UNDO_BYTES = 64 * 1024 * 1024;
+  import { project, type Asset, type Entity, type FieldValue, type MapPin } from "$lib/project/client";
+  import {
+    IMAGE_MAX_RASTER_LAYERS,
+    IMAGE_MAX_UNDO_BYTES,
+  } from "../../../../packages/plugin-sdk/src/maps";
+  import { ImageMapStage, type ImageMapTool } from "./engine";
+  import { registerImageMapSession } from "./session";
 
 type RasterLayer = {
   id: string;
@@ -14,11 +15,13 @@ type RasterLayer = {
   visible: boolean;
   opacity: number;
   locked: boolean;
-  rasterAssetId: string;
-  assetRevision: string;
-  canvas: HTMLCanvasElement;
-  painted: boolean;
-};
+    rasterAssetId: string;
+    assetRevision: string;
+    canvas: HTMLCanvasElement | null;
+    painted: boolean;
+    mapWidth: number;
+    mapHeight: number;
+  };
 
 type UndoEntry = { layerId: string; pixels: ImageData };
 
@@ -65,9 +68,14 @@ const listedLayers = $derived(
   [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id)),
 );
 const activeLayer = $derived(layers.find((layer) => layer.id === activeLayerId) ?? null);
-const canPaint = $derived(
-  mode === "edit" && !picking && Boolean(activeLayer) && !activeLayer?.locked && activeLayer?.visible !== false,
-);
+  const canPaint = $derived(
+    mode === "edit" &&
+      !picking &&
+      Boolean(activeLayer?.canvas) &&
+      !activeLayer?.locked &&
+      activeLayer?.visible !== false,
+  );
+  let mapSize = $state({ width: 1, height: 1 });
 
 function publish(status: string, detail: unknown = null) {
   if (mapId) onstate?.(status, detail);
@@ -108,16 +116,17 @@ async function canvasFromPng(bytes: number[], width: number, height: number) {
   }
 }
 
-function snapshot(layer: RasterLayer): UndoEntry | null {
-  const ctx = layer.canvas.getContext("2d");
-  if (!ctx) return null;
-  return { layerId: layer.id, pixels: ctx.getImageData(0, 0, layer.canvas.width, layer.canvas.height) };
-}
+  function snapshot(layer: RasterLayer): UndoEntry | null {
+    if (!layer.canvas) return null;
+    const ctx = layer.canvas.getContext("2d");
+    if (!ctx) return null;
+    return { layerId: layer.id, pixels: ctx.getImageData(0, 0, layer.canvas.width, layer.canvas.height) };
+  }
 
-function restore(entry: UndoEntry) {
-  const layer = layers.find((item) => item.id === entry.layerId);
-  if (!layer) return;
-  layer.canvas.getContext("2d")?.putImageData(entry.pixels, 0, 0);
+  function restore(entry: UndoEntry) {
+    const layer = layers.find((item) => item.id === entry.layerId);
+    if (!layer?.canvas) return;
+    layer.canvas.getContext("2d")?.putImageData(entry.pixels, 0, 0);
   layer.painted = true;
   stage?.refreshLayer(layer.id);
 }
@@ -126,7 +135,7 @@ function pushUndo(entry: UndoEntry) {
   const size = entry.pixels.data.byteLength;
   const next = [...undo];
   let bytes = undoBytes;
-  while (next.length && bytes + size > MAX_UNDO_BYTES) {
+    while (next.length && bytes + size > IMAGE_MAX_UNDO_BYTES) {
     const dropped = next.shift();
     if (dropped) bytes -= dropped.pixels.data.byteLength;
   }
@@ -187,16 +196,35 @@ function syncPins() {
   );
 }
 
-function attachLayerNodes() {
-  if (!stage) return;
-  for (const [index, layer] of [...layers].sort((left, right) => left.order - right.order).entries()) {
-    stage.setRasterLayer(layer.id, layer.canvas, {
-      visible: layer.visible,
-      opacity: layer.opacity,
-      order: index + 1,
-    });
+  function attachLayerNodes() {
+    if (!stage) return;
+    for (const [index, layer] of [...layers].sort((left, right) => left.order - right.order).entries()) {
+      if (!layer.canvas) {
+        stage.removeRasterLayer(layer.id);
+        continue;
+      }
+      stage.setRasterLayer(layer.id, layer.canvas, {
+        visible: layer.visible,
+        opacity: layer.opacity,
+        order: index + 1,
+      });
+    }
   }
-}
+
+  async function ensureLayerCanvas(layer: RasterLayer) {
+    if (layer.canvas) return layer.canvas;
+    const bytes = await project.readAssetBytes(layer.rasterAssetId);
+    const canvas = await canvasFromPng(bytes, layer.mapWidth, layer.mapHeight);
+    layer.canvas = canvas;
+    layers = layers.map((item) => (item.id === layer.id ? layer : item));
+    return canvas;
+  }
+
+  function releaseHiddenLayer(layer: RasterLayer) {
+    if (layer.visible || layer.painted || !layer.canvas) return;
+    stage?.removeRasterLayer(layer.id);
+    layer.canvas = null;
+  }
 
 function syncTool() {
   const next = picking || mode === "view" ? "pan" : tool;
@@ -258,13 +286,13 @@ async function load() {
     const sourceBytes = await project.readAssetBytes(source.id);
     baseUrl = objectUrl(sourceBytes, source.mime_type);
     const image = await loadHtmlImage(baseUrl);
+    mapSize = { width: image.naturalWidth, height: image.naturalHeight };
     const nextLayers: RasterLayer[] = [];
     for (const layer of rawLayers) {
       if (layer.kind !== "raster" || typeof layer.id !== "string" || typeof layer.rasterAssetId !== "string") continue;
       const asset = assets.find((item) => item.id === layer.rasterAssetId);
       if (!asset) throw new Error(`Raster layer ${String(layer.name)} is missing its asset`);
-      const bytes = await project.readAssetBytes(asset.id);
-      nextLayers.push({
+      const next: RasterLayer = {
         id: layer.id,
         name: String(layer.name ?? "Layer"),
         order: Number(layer.order ?? 0),
@@ -273,9 +301,13 @@ async function load() {
         locked: layer.locked === true,
         rasterAssetId: layer.rasterAssetId,
         assetRevision: asset.revision,
-        canvas: await canvasFromPng(bytes, image.naturalWidth, image.naturalHeight),
+        canvas: null,
         painted: false,
-      });
+        mapWidth: image.naturalWidth,
+        mapHeight: image.naturalHeight,
+      };
+      if (next.visible) await ensureLayerCanvas(next);
+      nextLayers.push(next);
     }
     layers = nextLayers;
     activeLayerId = nextLayers.some((layer) => layer.id === activeLayerId)
@@ -323,7 +355,7 @@ function applyLayerField(change: { layers: FieldValue; asset?: Asset | null; lay
 }
 
 async function addLayer() {
-  if (!mapId || !layersField || layers.length >= MAX_RASTER_LAYERS) return;
+  if (!mapId || !layersField || layers.length >= IMAGE_MAX_RASTER_LAYERS) return;
   busy = true;
   try {
     const change = await project.createRasterLayer(mapId, `Layer ${layers.length + 1}`, layersField.revision);
@@ -335,18 +367,20 @@ async function addLayer() {
     );
     const bytes = await project.readAssetBytes(asset.id);
     const base = await loadHtmlImage(baseUrl ?? "");
-    const layer: RasterLayer = {
-      id: change.layer_id,
-      name: String(created?.name ?? `Layer ${layers.length + 1}`),
-      order: Number(created?.order ?? layers.reduce((max, item) => Math.max(max, item.order), -1) + 1),
-      visible: created?.defaultVisible !== false,
-      opacity: typeof created?.opacity === "number" ? created.opacity : 1,
-      locked: created?.locked === true,
-      rasterAssetId: asset.id,
-      assetRevision: asset.revision,
-      canvas: await canvasFromPng(bytes, base.naturalWidth, base.naturalHeight),
-      painted: false,
-    };
+      const layer: RasterLayer = {
+        id: change.layer_id,
+        name: String(created?.name ?? `Layer ${layers.length + 1}`),
+        order: Number(created?.order ?? layers.reduce((max, item) => Math.max(max, item.order), -1) + 1),
+        visible: created?.defaultVisible !== false,
+        opacity: typeof created?.opacity === "number" ? created.opacity : 1,
+        locked: created?.locked === true,
+        rasterAssetId: asset.id,
+        assetRevision: asset.revision,
+        canvas: await canvasFromPng(bytes, base.naturalWidth, base.naturalHeight),
+        painted: false,
+        mapWidth: base.naturalWidth,
+        mapHeight: base.naturalHeight,
+      };
     layers = [...layers, layer];
     activeLayerId = layer.id;
     mode = "edit";
@@ -371,13 +405,15 @@ async function mutateLayer(layer: RasterLayer, update: Parameters<typeof project
   }
 }
 
-async function toggleVisible(layer: RasterLayer) {
-  layer.visible = !layer.visible;
-  layers = [...layers];
-  attachLayerNodes();
-  syncTool();
-  await mutateLayer(layer, { defaultVisible: layer.visible });
-}
+  async function toggleVisible(layer: RasterLayer) {
+    layer.visible = !layer.visible;
+    if (layer.visible) await ensureLayerCanvas(layer);
+    else releaseHiddenLayer(layer);
+    layers = [...layers];
+    attachLayerNodes();
+    syncTool();
+    await mutateLayer(layer, { defaultVisible: layer.visible });
+  }
 
 async function setOpacity(layer: RasterLayer, opacity: number) {
   layer.opacity = opacity;
@@ -480,6 +516,7 @@ async function save() {
   publish("saving");
   try {
     for (const layer of dirtyLayers) {
+      if (!layer.canvas) continue;
       const bytes = await encodePng(layer.canvas);
       const hash = await sha256(bytes);
       const asset = await project.replaceAssetBytes(layer.rasterAssetId, bytes, hash, "image/png", layer.assetRevision);
@@ -523,24 +560,53 @@ function selectLayer(layer: RasterLayer) {
   syncTool();
 }
 
-function onKey(event: KeyboardEvent) {
-  const meta = event.metaKey || event.ctrlKey;
-  if (meta && event.key.toLowerCase() === "s") {
-    event.preventDefault();
-    void save();
-  } else if (meta && event.key.toLowerCase() === "z") {
-    event.preventDefault();
-    if (event.shiftKey) redoStroke();
-    else undoStroke();
-  } else if (!meta && mode === "edit" && !renamingId) {
-    if (event.key === "b") tool = "brush";
-    if (event.key === "e") tool = "eraser";
-    if (event.key === "h" || event.key === "v") tool = "pan";
-    if (event.key === "[") brushSize = Math.max(1, brushSize - 2);
-    if (event.key === "]") brushSize = Math.min(128, brushSize + 2);
-    syncTool();
+  function onKey(event: KeyboardEvent) {
+    if (event.target instanceof HTMLElement && event.target.closest("input, textarea, select, [contenteditable=true]")) {
+      return;
+    }
+    const meta = event.metaKey || event.ctrlKey;
+    if (meta && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      void save();
+    } else if (meta && event.key.toLowerCase() === "z") {
+      event.preventDefault();
+      if (event.shiftKey) redoStroke();
+      else undoStroke();
+    } else if (!meta && mode === "edit" && !renamingId) {
+      if (event.key === "b") tool = "brush";
+      if (event.key === "e") tool = "eraser";
+      if (event.key === "h" || event.key === "v") tool = "pan";
+      if (event.key === "[") brushSize = Math.max(1, brushSize - 2);
+      if (event.key === "]") brushSize = Math.min(128, brushSize + 2);
+      syncTool();
+    }
   }
-}
+
+  function onCanvasKey(event: KeyboardEvent) {
+    const step = event.shiftKey ? 80 : 32;
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      stage?.panBy(step, 0);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      stage?.panBy(-step, 0);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      stage?.panBy(0, step);
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      stage?.panBy(0, -step);
+    } else if (event.key === "+" || event.key === "=") {
+      event.preventDefault();
+      stage?.zoomAtCenter(1.1);
+    } else if (event.key === "-" || event.key === "_") {
+      event.preventDefault();
+      stage?.zoomAtCenter(0.9);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      fit();
+    }
+  }
 
 function beforeUnload(event: BeforeUnloadEvent) {
   if (!dirty) return;
@@ -600,15 +666,17 @@ onMount(() => {
       <strong>{mapId ? (mode === "edit" ? "Edit annotations" : "Map view") : "New image map"}</strong>
     </div>
     {#if mapId}
-      <div class="header-actions">
-        <button type="button" class:active={mode === "view"} onclick={() => (mode = "view")}>View</button>
-        <button type="button" class:active={mode === "edit"} onclick={() => (mode = "edit")}>Edit</button>
-        <button type="button" onclick={fit}>Fit</button>
-        <button type="button" class="quiet" onclick={resetView}>Reset</button>
+      <div class="header-actions" role="toolbar" aria-label="Map view controls">
+        <button type="button" class:active={mode === "view"} aria-pressed={mode === "view"} onclick={() => (mode = "view")}
+          >View</button>
+        <button type="button" class:active={mode === "edit"} aria-pressed={mode === "edit"} onclick={() => (mode = "edit")}
+          >Edit</button>
+        <button type="button" onclick={fit}>Fit map</button>
+        <button type="button" class="quiet" onclick={resetView}>Reset view</button>
         {#if mode === "edit"}
           <button
             type="button"
-            disabled={busy || !layersField || layers.length >= MAX_RASTER_LAYERS}
+            disabled={busy || !layersField || layers.length >= IMAGE_MAX_RASTER_LAYERS}
             onclick={() => void addLayer()}>Add layer</button>
           <button type="button" class="save" disabled={busy || !dirty} onclick={() => void save()}
             >{busy ? "Saving…" : dirty ? "Save" : "Saved"}</button>
@@ -625,66 +693,84 @@ onMount(() => {
     </div>
   {:else}
     <div class="editor-body">
-      <aside>
-        <strong>Layers</strong>
+      <aside aria-label="Map layers">
+        <strong id="image-map-layers-heading">Layers</strong>
         {#if listedLayers.length === 0}<p class="hint">Add a raster layer to paint annotations.</p>{/if}
-        {#each listedLayers as layer (layer.id)}
-          <div class="layer" class:active={layer.id === activeLayerId}>
-            <button class="layer-name" type="button" onclick={() => selectLayer(layer)}>
-              {#if renamingId === layer.id}
-                <input
-                  value={layer.name}
-                  aria-label="Layer name"
-                  onblur={(event) => void renameLayer(layer, event.currentTarget.value)}
-                  onkeydown={(event) => {
-                    if (event.key === "Enter") void renameLayer(layer, event.currentTarget.value);
-                    if (event.key === "Escape") renamingId = null;
-                  }} />
-              {:else}{layer.name}{/if}
-            </button>
-            <div class="layer-row">
+        <div class="layer-list" role="list" aria-labelledby="image-map-layers-heading">
+          {#each listedLayers as layer (layer.id)}
+            <div class="layer" class:active={layer.id === activeLayerId} role="listitem">
               <button
+                class="layer-name"
                 type="button"
-                title={layer.visible ? "Hide layer" : "Show layer"}
-                onclick={() => void toggleVisible(layer)}>{layer.visible ? "👁" : "🙈"}</button>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value={layer.opacity}
-                aria-label={`${layer.name} opacity`}
-                oninput={(event) => void setOpacity(layer, Number(event.currentTarget.value))} />
-              {#if mode === "edit"}
-                <button type="button" title={layer.locked ? "Unlock" : "Lock"} onclick={() => void toggleLock(layer)}
-                  >{layer.locked ? "🔒" : "🔓"}</button>
-                <button type="button" title="Rename" onclick={() => (renamingId = layer.id)}>✎</button>
-                <button type="button" title="Move up" onclick={() => void moveLayer(layer, 1)}>↑</button>
-                <button type="button" title="Move down" onclick={() => void moveLayer(layer, -1)}>↓</button>
-                <button type="button" title="Delete" onclick={() => void removeLayer(layer)}>✕</button>
-              {/if}
+                aria-pressed={layer.id === activeLayerId}
+                onclick={() => selectLayer(layer)}>
+                {#if renamingId === layer.id}
+                  <input
+                    value={layer.name}
+                    aria-label="Layer name"
+                    onblur={(event) => void renameLayer(layer, event.currentTarget.value)}
+                    onkeydown={(event) => {
+                      if (event.key === "Enter") void renameLayer(layer, event.currentTarget.value);
+                      if (event.key === "Escape") renamingId = null;
+                    }} />
+                {:else}{layer.name}{/if}
+              </button>
+              <div class="layer-row">
+                <button
+                  type="button"
+                  aria-pressed={layer.visible}
+                  aria-label={layer.visible ? `Hide ${layer.name}` : `Show ${layer.name}`}
+                  onclick={() => void toggleVisible(layer)}>{layer.visible ? "Show" : "Hide"}</button>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={layer.opacity}
+                  aria-label={`${layer.name} opacity`}
+                  oninput={(event) => void setOpacity(layer, Number(event.currentTarget.value))} />
+                {#if mode === "edit"}
+                  <button
+                    type="button"
+                    aria-pressed={layer.locked}
+                    aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
+                    onclick={() => void toggleLock(layer)}>{layer.locked ? "Locked" : "Unlocked"}</button>
+                  <button type="button" aria-label={`Rename ${layer.name}`} onclick={() => (renamingId = layer.id)}
+                    >Rename</button>
+                  <button type="button" aria-label={`Move ${layer.name} up`} onclick={() => void moveLayer(layer, 1)}
+                    >Up</button>
+                  <button type="button" aria-label={`Move ${layer.name} down`} onclick={() => void moveLayer(layer, -1)}
+                    >Down</button>
+                  <button type="button" aria-label={`Delete ${layer.name}`} onclick={() => void removeLayer(layer)}
+                    >Delete</button>
+                {/if}
+              </div>
             </div>
-          </div>
-        {/each}
+          {/each}
+        </div>
         {#if mode === "edit"}
           <div class="tools">
-            <strong>Tools</strong>
-            <div class="tool-row">
-              <button type="button" class:active={tool === "pan"} onclick={() => (tool = "pan")}>Pan</button>
+            <strong id="image-map-tools-heading">Tools</strong>
+            <div class="tool-row" role="toolbar" aria-labelledby="image-map-tools-heading">
+              <button type="button" class:active={tool === "pan"} aria-pressed={tool === "pan"} onclick={() => (tool = "pan")}
+                >Pan</button>
               <button
                 type="button"
                 class:active={tool === "brush"}
+                aria-pressed={tool === "brush"}
                 disabled={!activeLayer || activeLayer.locked}
                 onclick={() => (tool = "brush")}>Brush</button>
               <button
                 type="button"
                 class:active={tool === "eraser"}
+                aria-pressed={tool === "eraser"}
                 disabled={!activeLayer || activeLayer.locked}
                 onclick={() => (tool = "eraser")}>Eraser</button>
             </div>
-            <label>Color <input type="color" bind:value={brushColor} disabled={!canPaint} /></label>
+            <label>Color <input type="color" bind:value={brushColor} disabled={!canPaint} aria-label="Brush color" /></label>
             <label
-              >Size <input type="range" min="1" max="64" bind:value={brushSize} disabled={!canPaint} />
+              >Size
+              <input type="range" min="1" max="64" bind:value={brushSize} disabled={!canPaint} aria-label="Brush size" />
               {brushSize}px</label>
             <div class="tool-row">
               <button type="button" disabled={!undo.length} onclick={undoStroke}>Undo</button>
@@ -697,15 +783,22 @@ onMount(() => {
         class:picking
         class="canvas"
         bind:this={stageHost}
-        aria-label={picking ? "Click the map to place the location" : "Map canvas"}>
+        tabindex="0"
+        role="application"
+        aria-label={picking ? "Click the map to place the location" : "Map canvas"}
+        aria-describedby="image-map-canvas-help"
+        onkeydown={onCanvasKey}>
       </div>
     </div>
   {/if}
+  <p id="image-map-canvas-help" class="visually-hidden">
+    Arrow keys pan the {mapSize.width} by {mapSize.height} map. Plus and minus zoom. Home fits the map.
+  </p>
   {#if conflict}<p class="error" role="alert">
       {conflict} <button type="button" onclick={() => void load()}>Reload</button>
     </p>{/if}
   {#if message}<p class="error" role="alert">{message}</p>{/if}
-  {#if busy && mapId && !message}<p class="status">Working…</p>{/if}
+  {#if busy && mapId && !message}<p class="status" aria-live="polite">Working…</p>{/if}
 </section>
 
 <style>
@@ -828,5 +921,30 @@ aside {
 .error {
   margin: 12px;
   color: #f5a49c;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+button:focus-visible,
+input:focus-visible,
+.canvas:focus-visible {
+  outline: 2px solid #f3d39a;
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .image-map-editor,
+  .image-map-editor * {
+    transition: none !important;
+    animation: none !important;
+    scroll-behavior: auto !important;
+  }
 }
 </style>

@@ -158,6 +158,28 @@ dimension, decoded-memory, and layer-count budgets before allocation. Existing
 64 MiB transfer limits are a transport ceiling, not a sufficient image-memory
 policy.
 
+### Recorded resource budgets (Phase 4)
+
+These limits were chosen against representative 4096×4096 sources and up to 16
+raster layers. They fail in the trusted core **before** a decoded RGBA buffer
+or extra zlib/PNG working set is allocated. Diagnostics name the numeric cap.
+
+| Budget | Limit | Why |
+| --- | --- | --- |
+| Encoded bytes (base or layer) | 32 MiB (`IMAGE_MAX_ENCODED_BYTES`) | Stricter than the 64 MiB transfer ceiling so import cannot spend a full decode on a transport-sized blob |
+| Pixel count | 16,777,216 (`IMAGE_MAX_PIXELS`, e.g. 4096×4096) | IHDR / JPEG SOF / SVG size is checked before inflate |
+| Decoded RGBA | ~64 MiB per image (`IMAGE_MAX_DECODED_BYTES`) | `pixels × 4 + 1 KiB`; PNG decoder limits and JPEG decode are gated on this |
+| Raster layers | 16 (`IMAGE_MAX_RASTER_LAYERS`) | Domain validation, create, and checkpoint import |
+| Undo session | 64 MiB (`IMAGE_MAX_UNDO_BYTES`) | Local ImageData snapshots only; not persisted |
+
+Worst-case decoded memory if every layer is visible is `16 × ~64 MiB` plus the
+base. Hidden layers keep only their asset id until shown, so a map with one
+visible annotation layer stays near two decoded images. Hiding a clean layer
+releases its canvas without changing SQLite or portable bytes.
+
+Supported inputs inside these caps stay on a single whole-layer PNG pipeline.
+Larger maps wait for Phase 10 tiling/mipmaps after new measurements.
+
 ### Locations and entity links
 
 Image Maps use the existing location model. A pin is not a second durable

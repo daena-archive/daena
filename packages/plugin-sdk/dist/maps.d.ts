@@ -5,6 +5,12 @@ export declare const MAP_NAMESPACE: "maps";
 export declare const FMG_PROVIDER: "azgaar-fmg";
 export declare const IMAGE_PROVIDER: "daena-image";
 export declare const IMAGE_SOURCE_FORMATS: readonly ["png", "jpeg", "svg"];
+/** Recorded Image Map resource budgets. Mirrored from `daena-core` maps::image. */
+export declare const IMAGE_MAX_ENCODED_BYTES = 33554432;
+export declare const IMAGE_MAX_PIXELS = 16777216;
+export declare const IMAGE_MAX_DECODED_BYTES: number;
+export declare const IMAGE_MAX_RASTER_LAYERS = 16;
+export declare const IMAGE_MAX_UNDO_BYTES = 67108864;
 /** Hierarchy relationship types owned by `daena.maps`. */
 export declare const MAP_RELATIONSHIP: {
     readonly DETAIL_MAP: "daena.maps:detail-map";

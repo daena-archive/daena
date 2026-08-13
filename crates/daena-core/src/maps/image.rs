@@ -6,9 +6,16 @@ use std::io::Cursor;
 /// 64 MiB host transfer ceiling so decode and layer allocation stay bounded.
 pub const IMAGE_MAX_ENCODED_BYTES: usize = 32 * 1024 * 1024;
 /// Pixel-count budget applied before a decoded buffer is allocated.
+/// 4096×4096 = 16,777,216; a 5000×5000 header is rejected before IDAT inflate.
 pub const IMAGE_MAX_PIXELS: u64 = 16_777_216;
+/// RGBA decoded-memory budget for one image or layer (`pixels * 4 + 1 KiB`).
+pub const IMAGE_MAX_DECODED_BYTES: usize = (IMAGE_MAX_PIXELS as usize)
+    .saturating_mul(4)
+    .saturating_add(1024);
 /// Upper bound on raster layers on one map.
 pub const IMAGE_MAX_RASTER_LAYERS: usize = 16;
+/// In-memory undo/redo budget for one Image Map editing session.
+pub const IMAGE_MAX_UNDO_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageSource {
@@ -46,20 +53,39 @@ fn check_dimensions(width: u32, height: u32) -> Result<(), CoreError> {
     }
     let pixels = u64::from(width).saturating_mul(u64::from(height));
     if pixels > IMAGE_MAX_PIXELS {
-        return Err(invalid("image exceeds the pixel budget"));
+        return Err(pixel_budget_error());
     }
     Ok(())
 }
 
-fn decoded_byte_budget() -> usize {
-    (IMAGE_MAX_PIXELS as usize)
-        .saturating_mul(4)
-        .saturating_add(1024)
+fn encoded_budget_error() -> CoreError {
+    invalid(format!(
+        "image exceeds the encoded-byte budget of {} bytes ({} MiB); choose a smaller PNG, JPEG, or SVG",
+        IMAGE_MAX_ENCODED_BYTES,
+        IMAGE_MAX_ENCODED_BYTES / (1024 * 1024)
+    ))
+}
+
+fn pixel_budget_error() -> CoreError {
+    invalid(format!(
+        "image exceeds the pixel budget of {IMAGE_MAX_PIXELS} pixels (for example 4096×4096); choose a smaller image"
+    ))
+}
+
+fn decoded_budget_error() -> CoreError {
+    invalid(format!(
+        "image exceeds the decoded-memory budget of {} bytes (~{} MiB RGBA); choose a smaller image",
+        IMAGE_MAX_DECODED_BYTES,
+        IMAGE_MAX_DECODED_BYTES / (1024 * 1024)
+    ))
 }
 
 pub fn validate_image_source(bytes: &[u8], declared_mime: &str) -> Result<ImageSource, CoreError> {
-    if bytes.is_empty() || bytes.len() > IMAGE_MAX_ENCODED_BYTES {
-        return Err(invalid("image exceeds the encoded-byte budget"));
+    if bytes.is_empty() {
+        return Err(invalid("image is empty"));
+    }
+    if bytes.len() > IMAGE_MAX_ENCODED_BYTES {
+        return Err(encoded_budget_error());
     }
     let source_format = source_format_for_mime(declared_mime)?;
     let (width, height) = match source_format {
@@ -96,9 +122,9 @@ pub fn encode_transparent_png(width: u32, height: u32) -> Result<Vec<u8>, CoreEr
     let pixel_bytes = (width as usize)
         .checked_mul(height as usize)
         .and_then(|pixels| pixels.checked_mul(4))
-        .ok_or_else(|| invalid("image exceeds the decoded-memory budget"))?;
-    if pixel_bytes > decoded_byte_budget() {
-        return Err(invalid("image exceeds the decoded-memory budget"));
+        .ok_or_else(decoded_budget_error)?;
+    if pixel_bytes > IMAGE_MAX_DECODED_BYTES {
+        return Err(decoded_budget_error());
     }
     let data = vec![0_u8; pixel_bytes];
     let mut png = Vec::new();
@@ -119,7 +145,7 @@ pub fn encode_transparent_png(width: u32, height: u32) -> Result<Vec<u8>, CoreEr
             .map_err(|error| invalid(format!("failed to encode PNG: {error}")))?;
     }
     if png.len() > IMAGE_MAX_ENCODED_BYTES {
-        return Err(invalid("image exceeds the encoded-byte budget"));
+        return Err(encoded_budget_error());
     }
     Ok(png)
 }
@@ -132,14 +158,14 @@ fn decode_png(bytes: &[u8]) -> Result<(u32, u32), CoreError> {
     let mut decoder = png::Decoder::new_with_limits(
         Cursor::new(bytes),
         png::Limits {
-            bytes: decoded_byte_budget(),
+            bytes: IMAGE_MAX_DECODED_BYTES,
         },
     );
     decoder.set_transformations(png::Transformations::IDENTITY);
     let mut reader = decoder
         .read_info()
         .map_err(|error| match error {
-            png::DecodingError::LimitsExceeded => invalid("image exceeds the pixel budget"),
+            png::DecodingError::LimitsExceeded => pixel_budget_error(),
             other => invalid(format!("PNG content does not match image/png: {other}")),
         })?;
     let (width, height) = {
@@ -148,8 +174,8 @@ fn decode_png(bytes: &[u8]) -> Result<(u32, u32), CoreError> {
     };
     check_dimensions(width, height)?;
     let buffer_size = reader.output_buffer_size();
-    if buffer_size > decoded_byte_budget() {
-        return Err(invalid("image exceeds the decoded-memory budget"));
+    if buffer_size > IMAGE_MAX_DECODED_BYTES {
+        return Err(decoded_budget_error());
     }
     let mut buffer = vec![0_u8; buffer_size];
     reader
@@ -167,6 +193,12 @@ fn decode_jpeg(bytes: &[u8]) -> Result<(u32, u32), CoreError> {
         .info()
         .ok_or_else(|| invalid("JPEG is missing frame dimensions"))?;
     check_dimensions(info.width.into(), info.height.into())?;
+    let decoded_bytes = usize::from(info.width)
+        .saturating_mul(usize::from(info.height))
+        .saturating_mul(4);
+    if decoded_bytes > IMAGE_MAX_DECODED_BYTES {
+        return Err(decoded_budget_error());
+    }
     decoder
         .decode()
         .map_err(|error| invalid(format!("JPEG scan data could not be decoded: {error}")))?;
@@ -328,7 +360,7 @@ fn parse_svg_length(value: &str) -> Result<u32, CoreError> {
         return Err(invalid("SVG dimensions must be positive and finite"));
     }
     if parsed > IMAGE_MAX_PIXELS as f64 {
-        return Err(invalid("image exceeds the pixel budget"));
+        return Err(pixel_budget_error());
     }
     Ok(parsed.round() as u32)
 }
@@ -421,6 +453,21 @@ mod tests {
         let css_url =
             br#"<svg viewBox="0 0 10 10"><rect style="fill:url(https://example.test/x.png)"/></svg>"#;
         assert!(validate_image_source(css_url, "image/svg+xml").is_err());
+    }
+
+    #[test]
+    fn budget_errors_name_the_recorded_limits_before_allocation() {
+        let empty = validate_image_source(&[], "image/png").unwrap_err().to_string();
+        assert!(empty.contains("empty"), "{empty}");
+        let oversized = vec![0_u8; IMAGE_MAX_ENCODED_BYTES + 1];
+        let encoded = validate_image_source(&oversized, "image/png")
+            .unwrap_err()
+            .to_string();
+        assert!(encoded.contains(&IMAGE_MAX_ENCODED_BYTES.to_string()), "{encoded}");
+        assert!(encoded.contains("32 MiB"), "{encoded}");
+        assert_eq!(IMAGE_MAX_DECODED_BYTES, 16_777_216 * 4 + 1024);
+        assert_eq!(IMAGE_MAX_UNDO_BYTES, 64 * 1024 * 1024);
+        assert_eq!(IMAGE_MAX_RASTER_LAYERS, 16);
     }
 
     #[test]

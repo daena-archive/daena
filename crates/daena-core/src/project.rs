@@ -3968,9 +3968,10 @@ impl ProjectStore {
             .filter(|layer| layer.get("kind").and_then(serde_json::Value::as_str) == Some("raster"))
             .count();
         if raster_count >= crate::maps::IMAGE_MAX_RASTER_LAYERS {
-            return Err(CoreError::Validation(
-                "maps: raster layer count exceeds the budget".into(),
-            ));
+            return Err(CoreError::Validation(format!(
+                "maps: raster layer count exceeds the budget of {}",
+                crate::maps::IMAGE_MAX_RASTER_LAYERS
+            )));
         }
         let png = crate::maps::encode_transparent_png(width, height)?;
         let content_hash = crate::maps::image::content_hash(&png);

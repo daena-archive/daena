@@ -45,11 +45,3 @@ for (const forbidden of ["image-map-bridge.js", "daena-image", "mapMode"]) {
 await stat("src/lib/maps/image-map/ImageMapEditor.svelte");
 
 console.log("maps phase-3 native Image Map checks passed");
-
-for (const forbidden of ["image-map-bridge.js", "daena-image", "mapMode"]) {
-  if (bridge.includes(forbidden)) throw new Error(`FMG bridge must not route Image Maps: ${forbidden}`);
-}
-
-await stat("src/lib/maps/image-map/ImageMapEditor.svelte");
-
-console.log("maps phase-3 native Image Map checks passed");

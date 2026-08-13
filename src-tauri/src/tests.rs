@@ -506,10 +506,7 @@ fn related_retrieval_supports_two_hops_and_preserves_relationship_context() {
     let caller = daena_ai::AiCaller::authorized_plugin(
         "daena.lore",
         "project",
-        vec![
-            "document.read".into(),
-            "relationship.read".into(),
-        ],
+        vec!["document.read".into(), "relationship.read".into()],
         vec!["project:project".into()],
         1,
         "two-hop-query",
@@ -527,7 +524,9 @@ fn related_retrieval_supports_two_hops_and_preserves_relationship_context() {
     assert!(context.contains("John --lives_in--> City A"));
     assert!(context.contains("City A --located_in--> Country B"));
     assert!(context.contains("English is commonly spoken here."));
-    assert!(citations.iter().any(|citation| citation.source_kind == "relationship"));
+    assert!(citations
+        .iter()
+        .any(|citation| citation.source_kind == "relationship"));
 }
 
 #[test]
@@ -996,6 +995,7 @@ fn maps_webview_url_overrides_hidden_bootstrap_dimensions() {
     assert!(map_query.contains("view=map-workspace"));
     assert!(map_query.contains("mapEntityId=018f89df-b93e-7ad0-a07f-08b1441d1550"));
     assert!(map_query.contains("linkId=f4c4f6b9-7c1e-4b8a-9d2e-0a3b5c7d9e11"));
+    assert!(!map_query.contains("mapMode="));
 }
 
 #[test]
@@ -1012,16 +1012,15 @@ fn broker_dispatch_uses_plugin_project_authority() {
     )
     .unwrap();
     assert_eq!(created["name"], "Broker Entity");
-    let entities =
-        dispatch_module_rpc(
-            &mut core,
-            None,
-            None,
-            "entity.list",
-            serde_json::json!({}),
-            None,
-        )
-        .unwrap();
+    let entities = dispatch_module_rpc(
+        &mut core,
+        None,
+        None,
+        "entity.list",
+        serde_json::json!({}),
+        None,
+    )
+    .unwrap();
     assert_eq!(entities.as_array().unwrap().len(), 1);
     let missing_revision = dispatch_module_rpc(
         &mut core,
@@ -1692,7 +1691,8 @@ fn maps_asset_create_rpc_round_trips_source_asset() {
 
 #[test]
 fn maps_image_import_rpc_round_trips_and_cancel_leaves_no_entity() {
-    let root = std::env::temp_dir().join(format!("daena-image-import-rpc-{}", uuid::Uuid::new_v4()));
+    let root =
+        std::env::temp_dir().join(format!("daena-image-import-rpc-{}", uuid::Uuid::new_v4()));
     let core: SharedCore = new_shared_core();
     current_session(&core)
         .unwrap()

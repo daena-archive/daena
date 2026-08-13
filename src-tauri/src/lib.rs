@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Cursor, Read};
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -800,6 +800,14 @@ fn bundled_maps_asset(path: &str) -> Option<(Vec<u8>, &'static str)> {
     {
         return None;
     }
+    // FMG's bridge lives in Daena source rather than the pinned archive.
+    // Native Image Maps are rendered by Svelte and never pass through this server.
+    if relative == "daena-bridge.js" {
+        return Some((
+            include_bytes!("../../scripts/fmg-bridge-template.js").to_vec(),
+            "text/javascript",
+        ));
+    }
     let mut archive = zip::ZipArchive::new(Cursor::new(BUNDLED_FMG_ARCHIVE)).ok()?;
     let mut file = archive.by_name(relative).ok()?;
     if file.is_dir() {
@@ -1208,14 +1216,11 @@ fn plugin_protocol_response(
                             .payload
                             .get("collection")
                             .and_then(serde_json::Value::as_str)?;
-                        plugins
-                            .lock()
-                            .ok()?
-                            .record_owner_entity_types(
-                                &session.project_id,
-                                &session.plugin_id,
-                                collection,
-                            )
+                        plugins.lock().ok()?.record_owner_entity_types(
+                            &session.project_id,
+                            &session.plugin_id,
+                            collection,
+                        )
                     })
                     .flatten();
                 let publish_payload =
@@ -1393,13 +1398,9 @@ fn dispatch_binary_asset_rpc(
             if namespace != Some(asset.namespace.as_str()) {
                 return Err("asset namespace does not match the owned asset".into());
             }
-            let root = project
-                .info()
-                .ok_or_else(|| "directory-backed project is required".to_string())?
-                .root;
-            let path = daena_core::normalized_project_path(Path::new(&root), &asset.path)
+            let bytes = project
+                .asset_bytes(asset.id.clone())
                 .map_err(|e| e.to_string())?;
-            let bytes = fs::read(path).map_err(|e| format!("read asset: {e}"))?;
             if bytes.len() > MAX_ASSET_TRANSFER_BYTES {
                 return Err("asset exceeds host transfer limit".into());
             }
@@ -2537,9 +2538,7 @@ where
                 .read_pool
                 .lock()
                 .map_err(|_| CoreError::Conflict("read connection pool poisoned".into()))?;
-            pool.retain(|project| {
-                project.database_epoch() == database_epoch
-            });
+            pool.retain(|project| project.database_epoch() == database_epoch);
             pool.pop()
         }
         .map(Ok)
@@ -2726,10 +2725,11 @@ async fn plugin_rpc(
                 let collection = payload
                     .get("collection")
                     .and_then(serde_json::Value::as_str)?;
-                state
-                    .lock()
-                    .ok()?
-                    .record_owner_entity_types(&project_id, &session.plugin_id, collection)
+                state.lock().ok()?.record_owner_entity_types(
+                    &project_id,
+                    &session.plugin_id,
+                    collection,
+                )
             })
             .flatten();
         with_core(core, move |core| {
@@ -4286,7 +4286,15 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
         ),
         "record.list" => (
             &["collection", "ownerEntityId"],
-            &["query", "limit", "offset", "sort", "status", "tag", "homonymsOnly"],
+            &[
+                "query",
+                "limit",
+                "offset",
+                "sort",
+                "status",
+                "tag",
+                "homonymsOnly",
+            ],
         ),
         "record.create" => (&["collection", "ownerEntityId", "value"], &[]),
         "record.update" => (
@@ -4399,10 +4407,8 @@ fn validate_record_owner_entity_type(
     owner_entity_id: &str,
     allowed: Option<&[String]>,
 ) -> Result<(), CoreError> {
-    let allowed = allowed.ok_or_else(|| {
-        CoreError::Unauthorized {
-            operation: "access undeclared module record collection",
-        }
+    let allowed = allowed.ok_or_else(|| CoreError::Unauthorized {
+        operation: "access undeclared module record collection",
     })?;
     let owner = project
         .list_entities()?
@@ -4601,10 +4607,8 @@ fn dispatch_module_rpc(
             Ok(serde_json::Value::Null)
         }
         "record.list" => {
-            let module_id = plugin_id.ok_or_else(|| {
-                CoreError::Unauthorized {
-                    operation: "access module records without plugin identity",
-                }
+            let module_id = plugin_id.ok_or_else(|| CoreError::Unauthorized {
+                operation: "access module records without plugin identity",
             })?;
             validate_record_owner_entity_type(
                 project,
@@ -4619,23 +4623,25 @@ fn dispatch_module_rpc(
                 .get("offset")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or_default() as usize;
-            serde_json::to_value(project.list_module_records_with(
-                module_id,
-                &payload_string(&payload, "collection")?,
-                &payload_string(&payload, "ownerEntityId")?,
-                daena_core::ModuleRecordListParams {
-                    query: payload.get("query").and_then(serde_json::Value::as_str),
-                    limit,
-                    offset,
-                    sort: payload.get("sort").and_then(serde_json::Value::as_str),
-                    status: payload.get("status").and_then(serde_json::Value::as_str),
-                    tag: payload.get("tag").and_then(serde_json::Value::as_str),
-                    homonyms_only: payload
-                        .get("homonymsOnly")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false),
-                },
-            )?)
+            serde_json::to_value(
+                project.list_module_records_with(
+                    module_id,
+                    &payload_string(&payload, "collection")?,
+                    &payload_string(&payload, "ownerEntityId")?,
+                    daena_core::ModuleRecordListParams {
+                        query: payload.get("query").and_then(serde_json::Value::as_str),
+                        limit,
+                        offset,
+                        sort: payload.get("sort").and_then(serde_json::Value::as_str),
+                        status: payload.get("status").and_then(serde_json::Value::as_str),
+                        tag: payload.get("tag").and_then(serde_json::Value::as_str),
+                        homonyms_only: payload
+                            .get("homonymsOnly")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false),
+                    },
+                )?,
+            )
             .map_err(|error| CoreError::Validation(error.to_string()))
         }
         "record.create" => {
@@ -4647,16 +4653,18 @@ fn dispatch_module_rpc(
                 &payload_string(&payload, "ownerEntityId")?,
                 record_owner_entity_types.as_deref(),
             )?;
-            serde_json::to_value(project.create_module_record(
-                module_id,
-                &payload_string(&payload, "collection")?,
-                &payload_string(&payload, "ownerEntityId")?,
-                payload
-                    .get("value")
-                    .cloned()
-                    .ok_or_else(|| CoreError::Validation("record value is required".into()))?,
-                request_id,
-            )?)
+            serde_json::to_value(
+                project.create_module_record(
+                    module_id,
+                    &payload_string(&payload, "collection")?,
+                    &payload_string(&payload, "ownerEntityId")?,
+                    payload
+                        .get("value")
+                        .cloned()
+                        .ok_or_else(|| CoreError::Validation("record value is required".into()))?,
+                    request_id,
+                )?,
+            )
             .map_err(|error| CoreError::Validation(error.to_string()))
         }
         "record.update" => {
@@ -4668,22 +4676,24 @@ fn dispatch_module_rpc(
                 &payload_string(&payload, "ownerEntityId")?,
                 record_owner_entity_types.as_deref(),
             )?;
-            serde_json::to_value(project.update_module_record(
-                module_id,
-                &payload_string(&payload, "collection")?,
-                &payload_string(&payload, "id")?,
-                &payload_string(&payload, "ownerEntityId")?,
-                payload
-                    .get("value")
-                    .cloned()
-                    .ok_or_else(|| CoreError::Validation("record value is required".into()))?,
-                &required_payload_string(
-                    &payload,
-                    &["expectedRevision", "expected_revision", "revision"],
-                    "expectedRevision",
+            serde_json::to_value(
+                project.update_module_record(
+                    module_id,
+                    &payload_string(&payload, "collection")?,
+                    &payload_string(&payload, "id")?,
+                    &payload_string(&payload, "ownerEntityId")?,
+                    payload
+                        .get("value")
+                        .cloned()
+                        .ok_or_else(|| CoreError::Validation("record value is required".into()))?,
+                    &required_payload_string(
+                        &payload,
+                        &["expectedRevision", "expected_revision", "revision"],
+                        "expectedRevision",
+                    )?,
+                    request_id,
                 )?,
-                request_id,
-            )?)
+            )
             .map_err(|error| CoreError::Validation(error.to_string()))
         }
         "record.delete" => {
@@ -4818,24 +4828,26 @@ fn dispatch_module_rpc(
             let map_entity_id = payload_string(&payload, "mapEntityId")?;
             let layer_id = payload_string(&payload, "layerId")?;
             let expected_revision = payload_string(&payload, "expectedRevision")?;
-            serde_json::to_value(project.update_map_layer(
-                map_entity_id,
-                layer_id,
-                daena_core::RasterLayerUpdate {
-                    name: payload
-                        .get("name")
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_owned),
-                    order: payload.get("order").and_then(serde_json::Value::as_i64),
-                    default_visible: payload
-                        .get("defaultVisible")
-                        .and_then(serde_json::Value::as_bool),
-                    opacity: payload.get("opacity").and_then(serde_json::Value::as_f64),
-                    locked: payload.get("locked").and_then(serde_json::Value::as_bool),
-                },
-                &expected_revision,
-                request_id,
-            )?)
+            serde_json::to_value(
+                project.update_map_layer(
+                    map_entity_id,
+                    layer_id,
+                    daena_core::RasterLayerUpdate {
+                        name: payload
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned),
+                        order: payload.get("order").and_then(serde_json::Value::as_i64),
+                        default_visible: payload
+                            .get("defaultVisible")
+                            .and_then(serde_json::Value::as_bool),
+                        opacity: payload.get("opacity").and_then(serde_json::Value::as_f64),
+                        locked: payload.get("locked").and_then(serde_json::Value::as_bool),
+                    },
+                    &expected_revision,
+                    request_id,
+                )?,
+            )
             .map_err(|error| CoreError::Validation(error.to_string()))
         }
         "maps.locations.unlink" => {
@@ -5263,7 +5275,10 @@ async fn project_git_super_squash(
     message: String,
 ) -> Result<GitStatus, String> {
     flush_project_checkpoint(state.clone(), "git super squash").await?;
-    with_read_project(state, move |project| project.git_super_squash_after_checkpoint(&message)).await
+    with_read_project(state, move |project| {
+        project.git_super_squash_after_checkpoint(&message)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -5965,10 +5980,7 @@ fn maps_navigation_service_handler(core: SharedCore) -> daena_plugin_host::Servi
 /// RPC channel; the child exposes its save path on `window.daenaMapProvider`
 /// and the host evaluates a fixed literal to trigger it.
 #[tauri::command]
-async fn maps_editor_save(
-    app: tauri::AppHandle,
-    plugin_id: Option<String>,
-) -> Result<(), String> {
+async fn maps_editor_save(app: tauri::AppHandle, plugin_id: Option<String>) -> Result<(), String> {
     let label = plugin_window_label(plugin_id.as_deref().unwrap_or("daena.maps"));
     let webview = app
         .get_webview(&label)
@@ -6146,6 +6158,158 @@ async fn project_list_assets(
 }
 
 #[tauri::command]
+async fn project_import_image_map_file(
+    state: tauri::State<'_, SharedCore>,
+    source_path: String,
+) -> Result<daena_core::ImportedImageMap, String> {
+    let path = PathBuf::from(&source_path);
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("image filename is invalid")?
+        .to_string();
+    let name = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Image map")
+        .to_string();
+    let mime = match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("svg") => "image/svg+xml",
+        _ => return Err("Choose a PNG, JPEG, or SVG image".into()),
+    }
+    .to_string();
+    let bytes = std::fs::read(&path).map_err(|error| format!("read image: {error}"))?;
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .import_image_map(name, bytes, mime, filename, None)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_read_asset_bytes(
+    state: tauri::State<'_, SharedCore>,
+    asset_id: String,
+) -> Result<Vec<u8>, String> {
+    with_read_project(state, move |project| project.asset_bytes(asset_id)).await
+}
+
+#[tauri::command]
+async fn project_create_raster_layer(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    name: String,
+    expected_revision: String,
+    request_id: Option<String>,
+) -> Result<daena_core::RasterLayerChange, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.create_raster_layer(
+            map_entity_id,
+            name,
+            &expected_revision,
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_update_map_layer(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    layer_id: String,
+    expected_revision: String,
+    name: Option<String>,
+    order: Option<i64>,
+    default_visible: Option<bool>,
+    opacity: Option<f64>,
+    locked: Option<bool>,
+    request_id: Option<String>,
+) -> Result<daena_core::RasterLayerChange, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.update_map_layer(
+            map_entity_id,
+            layer_id,
+            daena_core::RasterLayerUpdate {
+                name,
+                order,
+                default_visible,
+                opacity,
+                locked,
+            },
+            &expected_revision,
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_delete_raster_layer(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    layer_id: String,
+    expected_revision: String,
+    request_id: Option<String>,
+) -> Result<daena_core::RasterLayerChange, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.delete_raster_layer(
+            map_entity_id,
+            layer_id,
+            &expected_revision,
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_replace_asset_bytes(
+    state: tauri::State<'_, SharedCore>,
+    asset_id: String,
+    bytes: Vec<u8>,
+    content_hash: String,
+    mime_type: String,
+    expected_revision: String,
+    request_id: Option<String>,
+) -> Result<Asset, String> {
+    let size = bytes.len() as i64;
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .replace_asset_bytes_with_request(
+                AssetReplaceInput {
+                    asset_id,
+                    content_hash,
+                    size,
+                    mime_type,
+                },
+                bytes,
+                &expected_revision,
+                request_id.as_deref(),
+            )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_map_location_projection(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    with_read_project(state, move |project| {
+        project.map_location_projection(map_entity_id)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn project_backup(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
@@ -6166,7 +6330,10 @@ async fn project_export_markdown(
     state: tauri::State<'_, SharedCore>,
     destination: String,
 ) -> Result<String, String> {
-    with_read_project(state, move |project| project.export_markdown_to(destination)).await
+    with_read_project(state, move |project| {
+        project.export_markdown_to(destination)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -6452,6 +6619,13 @@ pub fn run() {
             project_register_asset,
             project_register_asset_file,
             project_list_assets,
+            project_import_image_map_file,
+            project_read_asset_bytes,
+            project_create_raster_layer,
+            project_update_map_layer,
+            project_delete_raster_layer,
+            project_replace_asset_bytes,
+            project_map_location_projection,
             project_backup,
             project_export_markdown,
             project_recovery_backup,

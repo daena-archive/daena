@@ -15,18 +15,41 @@ function render(entities, relationships) {
   if (!entities.length) return;
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 900 350");
-  const positions = new Map(entities.map((entity, index) => [entity.id, { x: 90 + (index % 6) * 145, y: 100 + Math.floor(index / 6) * 100 }]));
+  const positions = new Map(
+    entities.map((entity, index) => [entity.id, { x: 90 + (index % 6) * 145, y: 100 + Math.floor(index / 6) * 100 }]),
+  );
   for (const relationship of relationships) {
-    const source = positions.get(relationship.source_id), target = positions.get(relationship.target_id);
+    const source = positions.get(relationship.source_id),
+      target = positions.get(relationship.target_id);
     if (!source || !target) continue;
     const edge = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    edge.classList.add("edge"); edge.setAttribute("x1", source.x); edge.setAttribute("y1", source.y); edge.setAttribute("x2", target.x); edge.setAttribute("y2", target.y); svg.append(edge);
+    edge.classList.add("edge");
+    edge.setAttribute("x1", source.x);
+    edge.setAttribute("y1", source.y);
+    edge.setAttribute("x2", target.x);
+    edge.setAttribute("y2", target.y);
+    svg.append(edge);
   }
   for (const entity of entities) {
     const position = positions.get(entity.id);
-    const node = document.createElementNS("http://www.w3.org/2000/svg", "circle"); node.classList.add("node"); node.setAttribute("cx", position.x); node.setAttribute("cy", position.y); node.setAttribute("r", "23"); svg.append(node);
-    const label = document.createElementNS("http://www.w3.org/2000/svg", "text"); label.classList.add("label"); label.setAttribute("x", position.x); label.setAttribute("y", position.y + 42); label.textContent = entity.name.slice(0, 20); svg.append(label);
-    const type = document.createElementNS("http://www.w3.org/2000/svg", "text"); type.classList.add("type"); type.setAttribute("x", position.x); type.setAttribute("y", position.y + 57); type.textContent = entity.entity_type ?? "entry"; svg.append(type);
+    const node = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    node.classList.add("node");
+    node.setAttribute("cx", position.x);
+    node.setAttribute("cy", position.y);
+    node.setAttribute("r", "23");
+    svg.append(node);
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.classList.add("label");
+    label.setAttribute("x", position.x);
+    label.setAttribute("y", position.y + 42);
+    label.textContent = entity.name.slice(0, 20);
+    svg.append(label);
+    const type = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    type.classList.add("type");
+    type.setAttribute("x", position.x);
+    type.setAttribute("y", position.y + 57);
+    type.textContent = entity.entity_type ?? "entry";
+    svg.append(type);
   }
   projection.append(svg);
 }
@@ -82,20 +105,30 @@ async function start() {
   if (!projectId) throw new Error("Plugin project is missing");
   const bootstrap = await client.bootstrap();
   const entities = await client.call("entity.list", {});
-  const relationships = (await Promise.all(entities.map((entity) => client.call("relationship.list", { entityId: entity.id })))).flat();
+  const relationships = (
+    await Promise.all(entities.map((entity) => client.call("relationship.list", { entityId: entity.id })))
+  ).flat();
   status.textContent = "Ready to explore.";
   if (pluginId === "daena.timeline") {
-    const events = await Promise.all(entities
-      .filter((entity) => entity.entity_type === "event")
-      .map(async (entity) => {
-        const fields = await client.call("field.list", { entityId: entity.id, namespace: "timeline" });
-        const values = Object.fromEntries(fields.map((field) => [field.key, field.value]));
-        return { ...entity, startsAt: values.startsAt, endsAt: values.endsAt };
-      }));
+    const events = await Promise.all(
+      entities
+        .filter((entity) => entity.entity_type === "event")
+        .map(async (entity) => {
+          const fields = await client.call("field.list", { entityId: entity.id, namespace: "timeline" });
+          const values = Object.fromEntries(fields.map((field) => [field.key, field.value]));
+          return { ...entity, startsAt: values.startsAt, endsAt: values.endsAt };
+        }),
+    );
     renderTimeline(events);
   } else {
-    render(entities.filter((entity) => entity.entity_type !== "event"), relationships);
+    render(
+      entities.filter((entity) => entity.entity_type !== "event"),
+      relationships,
+    );
   }
 }
 
-start().catch((error) => { status.className = "error"; status.textContent = error instanceof Error ? error.message : String(error); });
+start().catch((error) => {
+  status.className = "error";
+  status.textContent = error instanceof Error ? error.message : String(error);
+});

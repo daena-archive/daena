@@ -81,6 +81,20 @@ export interface MapLocation {
   anchorKind?: string;
   resolution?: string;
 }
+export interface MapPin {
+  id: string;
+  entityId: string;
+  label: string | null;
+  role: string;
+  anchorKind: string;
+  bounds: [number | null, number | null, number | null, number | null];
+  resolution: string;
+}
+export interface RasterLayerChange {
+  layer_id: string;
+  asset: Asset | null;
+  layers: FieldValue;
+}
 export interface MapRecoveryCopy {
   fileName: string;
   path: string;
@@ -466,6 +480,64 @@ export const project = {
       request_id: requestId(options),
     }),
   listAssets: (entityId: string) => invoke<Asset[]>("project_list_assets", { entityId }),
+  importImageMapFile: (sourcePath: string) =>
+    invoke<{ entity: Entity; source: Asset }>("project_import_image_map_file", { sourcePath }),
+  readAssetBytes: (assetId: string) => invoke<number[]>("project_read_asset_bytes", { assetId }),
+  createRasterLayer: (mapEntityId: string, name: string, expectedRevision: string, options?: MutationOptions) =>
+    invoke<RasterLayerChange>("project_create_raster_layer", {
+      mapEntityId,
+      name,
+      expectedRevision,
+      requestId: requestId(options),
+    }),
+  updateMapLayer: (
+    mapEntityId: string,
+    layerId: string,
+    expectedRevision: string,
+    update: {
+      name?: string;
+      order?: number;
+      defaultVisible?: boolean;
+      opacity?: number;
+      locked?: boolean;
+    },
+    options?: MutationOptions,
+  ) =>
+    invoke<RasterLayerChange>("project_update_map_layer", {
+      mapEntityId,
+      layerId,
+      expectedRevision,
+      name: update.name ?? null,
+      order: update.order ?? null,
+      defaultVisible: update.defaultVisible ?? null,
+      opacity: update.opacity ?? null,
+      locked: update.locked ?? null,
+      requestId: requestId(options),
+    }),
+  deleteRasterLayer: (mapEntityId: string, layerId: string, expectedRevision: string, options?: MutationOptions) =>
+    invoke<RasterLayerChange>("project_delete_raster_layer", {
+      mapEntityId,
+      layerId,
+      expectedRevision,
+      requestId: requestId(options),
+    }),
+  replaceAssetBytes: (
+    assetId: string,
+    bytes: Uint8Array,
+    contentHash: string,
+    mimeType: string,
+    expectedRevision: string,
+    options?: MutationOptions,
+  ) =>
+    invoke<Asset>("project_replace_asset_bytes", {
+      assetId,
+      bytes: Array.from(bytes),
+      contentHash,
+      mimeType,
+      expectedRevision,
+      requestId: requestId(options),
+    }),
+  listMapPins: (mapEntityId: string) => invoke<MapPin[]>("project_map_location_projection", { mapEntityId }),
   backup: () => invoke<string>("project_backup"),
   exportMarkdown: (destination: string) => invoke<string>("project_export_markdown", { destination }),
   recoveryBackup: () => invoke<string>("project_recovery_backup"),

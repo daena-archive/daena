@@ -31,6 +31,8 @@ import type {
 import { buildModuleContext } from "$lib/modules/context";
 import HostView from "$lib/plugins/HostView.svelte";
 import SandboxView from "$lib/plugins/SandboxView.svelte";
+import ImageMapEditor from "$lib/maps/image-map/ImageMapEditor.svelte";
+import { imageMapSession } from "$lib/maps/image-map/session";
 import ProjectionView from "$lib/ProjectionView.svelte";
 import SettingsView from "$lib/SettingsView.svelte";
 import SchemaSettingsPanel from "$lib/SchemaSettingsPanel.svelte";
@@ -672,11 +674,39 @@ async function closeNativePluginWebviews() {
   }
 }
 
-async function leavePluginView() {
+async function resolveDirtyMapSession(): Promise<boolean> {
+  const mapId = currentMapId();
+  if (!mapId || sandboxView?.renderer !== "maps" || mapSaveStates[mapId]?.status !== "dirty") return true;
+  if (confirm("Save changes to this map before leaving?")) {
+    try {
+      if (mapsEditorMode === "image") {
+        await imageMapSession()?.save();
+        return imageMapSession()?.isDirty() !== true && mapSaveStates[mapId]?.status !== "dirty";
+      }
+      await project.mapsEditorSave(activeMapsPluginId());
+      for (let waited = 0; waited < 100; waited += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+        const status: string | undefined = mapSaveStates[mapId]?.status;
+        if (status === "saved" || status === "clean") return true;
+        if (status === "error" || status === "conflict") return false;
+      }
+      error = "Map save did not finish. The editor remains open.";
+      return false;
+    } catch (cause) {
+      error = friendlyError(cause);
+      return false;
+    }
+  }
+  return confirm("Discard unsaved map edits? Choose Cancel to remain in the editor.");
+}
+
+async function leavePluginView(): Promise<boolean> {
+  if (!(await resolveDirtyMapSession())) return false;
   hostView = null;
   sandboxView = null;
   projectionView = null;
   await closeNativePluginWebviews();
+  return true;
 }
 
 function pluginViewLabel(item: PluginNavigationItem) {
@@ -775,8 +805,15 @@ async function openPluginView(item: PluginNavigationItem) {
       const mapsWelcome = sandboxView.view === null;
       if ((mapId === null && mapsWelcome) || (mapId !== null && !mapsWelcome)) return;
     }
+    if (mapId) {
+      const mapField = (await project.listFields(mapId)).find(
+        (field) => field.namespace === "maps" && field.key === "map",
+      );
+      const descriptor = mapField?.value as { provider?: { id?: string } } | undefined;
+      mapsEditorMode = descriptor?.provider?.id === "daena-image" ? "image" : "fmg";
+    }
     mapFocusLinkId = null;
-    await leavePluginView();
+    if (!(await leavePluginView())) return;
     sandboxView = mapId
       ? { plugin: item.plugin, view: item.view, renderer: "maps" }
       : { plugin: item.plugin, view: null, renderer: "maps" };
@@ -794,9 +831,12 @@ async function openPluginView(item: PluginNavigationItem) {
   sandboxView = { plugin: item.plugin, view: item.view, renderer: "webview" };
 }
 
-async function createMap() {
+let mapsEditorMode = $state<"fmg" | "image">("fmg");
+let mapProviderMenuOpen = $state<"header" | "empty" | null>(null);
+async function createMap(provider: "fmg" | "image" = "fmg") {
   if (projectDiagnostics.length > 0) return;
   try {
+    mapProviderMenuOpen = null;
     const mapView = mapsNavigationItem();
     if (!mapView) throw new Error("The Maps plugin view is not available");
     selected = null;
@@ -806,8 +846,9 @@ async function createMap() {
     mapLocations = [];
     mapFocusLinkId = null;
     if (!(await dismissSettings())) return;
-    await leavePluginView();
+    if (!(await leavePluginView())) return;
     // Draft editor: no map entity until the in-FMG Save overlay commits one.
+    mapsEditorMode = provider;
     mapsEditorKey = `draft-${Date.now()}`;
     sandboxView = { plugin: mapView.plugin, view: mapView.view, renderer: "maps" };
   } catch (cause) {
@@ -895,6 +936,10 @@ function savedMaps() {
 
 async function saveCurrentMap() {
   try {
+    if (mapsEditorMode === "image") {
+      await imageMapSession()?.save();
+      return;
+    }
     await project.mapsEditorSave(activeMapsPluginId());
   } catch (cause) {
     error = friendlyError(cause);
@@ -984,7 +1029,7 @@ async function switchSection(next: WorkspaceSection) {
   if (!(await flushAutoSave())) return;
   if (section === next && (next !== "maps" || sandboxView?.renderer === "maps") && !showSettings) return;
   if (!(await dismissSettings())) return;
-  await leavePluginView();
+  if (!(await leavePluginView())) return;
   section = next;
   clearSelection();
   query = "";
@@ -992,7 +1037,7 @@ async function switchSection(next: WorkspaceSection) {
 
 async function reconcileWorkspaceSection() {
   if (enabledWorkspaceSections().includes(section)) return;
-  await leavePluginView();
+  if (!(await leavePluginView())) return;
   section = enabledWorkspaceSections()[0] ?? "lore";
   clearSelection();
   query = "";
@@ -1001,7 +1046,7 @@ async function reconcileWorkspaceSection() {
 
 async function switchWritingView(next: WritingView) {
   if (!(await flushAutoSave())) return;
-  await leavePluginView();
+  if (!(await leavePluginView())) return;
   if (writingView === next) return;
   writingView = next;
   clearSelection();
@@ -1844,7 +1889,7 @@ async function closeProject() {
   showProjectMenu = false;
   await runProjectTransition("Closing project…", async () => {
     if (!(await flushAutoSave())) return;
-    await leavePluginView();
+    if (!(await leavePluginView())) return;
     await project.close();
     clearSelection();
     projectInfo = null;
@@ -1947,6 +1992,7 @@ async function beginMapPick(pending: NonNullable<typeof mapPickPending>) {
   mapPickNotice =
     pending.kind === "rebind" ? "Click the map to rebind this location." : "Click the map to place this link.";
   await ensureMapEditorOpen(pending.mapEntityId);
+  if (mapsEditorMode === "image") return;
   // Webview remounts when the map key changes; give the bridge a moment to boot.
   window.setTimeout(() => {
     void project.mapsEditorStartPick(activeMapsPluginId()).catch((cause) => {
@@ -1975,14 +2021,16 @@ async function applyMapPick(anchor: unknown) {
         validity: { from: null, to: null },
       };
       await project.upsertMapLocation(entity.id, location);
-      await project.mapsEditorFocusLink(location.id, activeMapsPluginId()).catch(() => {});
+      if (mapsEditorMode === "fmg")
+        await project.mapsEditorFocusLink(location.id, activeMapsPluginId()).catch(() => {});
       section = entity.entity_type === "event" || entity.entity_type === "era" ? "timeline" : "lore";
       sandboxView = null;
       await selectEntity(entity);
       mapLocations = await project.listMapLocations(entity.id);
     } else {
       await project.upsertMapLocation(pending.entityId, { ...pending.location, anchor });
-      await project.mapsEditorFocusLink(pending.location.id, activeMapsPluginId()).catch(() => {});
+      if (mapsEditorMode === "fmg")
+        await project.mapsEditorFocusLink(pending.location.id, activeMapsPluginId()).catch(() => {});
       const entity =
         entities.find((candidate) => candidate.id === pending.entityId) ??
         (await project.listEntities()).find((candidate) => candidate.id === pending.entityId);
@@ -2072,7 +2120,7 @@ async function linkEntityToMap() {
 async function selectEntity(entity: Entity) {
   if (selected?.id === entity.id) return;
   if (!(await flushAutoSave())) return;
-  if (section === "maps" && sandboxView?.renderer === "maps") await leavePluginView();
+  if (section === "maps" && sandboxView?.renderer === "maps" && !(await leavePluginView())) return;
   editorFullscreen = false;
   selected = entity;
   hasUnsavedChanges = false;
@@ -2403,6 +2451,7 @@ async function toggleModule(id: ModuleId) {
     return;
   }
   try {
+    if (id === "daena.maps" && !(await resolveDirtyMapSession())) return;
     await project.disableModule(id);
     modules = await project.listModuleManifests();
     await refreshSelectedMapLocations();
@@ -2436,9 +2485,9 @@ async function openSettings(section: SettingsSection = "general") {
   if (showSettings) {
     if (!(await beforeSettingsNavigate(section))) return;
   }
+  if (!(await leavePluginView())) return;
   showSettings = true;
   settingsSection = section;
-  await leavePluginView();
   projectionView = null;
   installSummary = null;
   deleteBackupPath = "";
@@ -2729,6 +2778,7 @@ async function togglePluginEnabled(plugin: PluginAdminEntry) {
   }
   pluginActionId = plugin.id;
   try {
+    if (plugin.id === "daena.maps" && !(await resolveDirtyMapSession())) return;
     await project.disableModule(plugin.id);
     modules = await project.listModuleManifests();
     await refreshSelectedMapLocations();
@@ -2908,7 +2958,7 @@ onMount(() => {
       await openPluginView(item);
       const linkId = event.payload.linkId ?? null;
       mapFocusLinkId = linkId;
-      if (linkId && sandboxView?.renderer === "maps") {
+      if (linkId && sandboxView?.renderer === "maps" && mapsEditorMode === "fmg") {
         setTimeout(() => {
           void project.mapsEditorFocusLink(linkId, activeMapsPluginId()).catch(() => {});
         }, 400);
@@ -3865,9 +3915,20 @@ onMount(() => {
           </p>
         </div>
         <div class="heading-actions">
-          {#if section === "maps"}<button class="primary-button" type="button" onclick={() => void createMap()}
-              >Create with FMG</button
-            >{/if}
+          {#if section === "maps"}<div class="map-provider-create">
+              <button
+                class="primary-button"
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded={mapProviderMenuOpen === "header"}
+                onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "header" ? null : "header")}
+                >Create map</button>
+              {#if mapProviderMenuOpen === "header"}<div class="map-provider-menu" role="menu">
+                  <button type="button" role="menuitem" onclick={() => void createMap("fmg")}>Create with FMG</button>
+                  <button type="button" role="menuitem" onclick={() => void createMap("image")}
+                    >Import image map</button>
+                </div>{/if}
+            </div>{/if}
           {#if section !== "writing" && section !== "maps"}<button class="quiet-button" onclick={openProjection}
               >Open {section === "lore" ? "graph" : section === "timeline" ? "timeline" : "language"} ↗</button
             >{/if}
@@ -3921,8 +3982,23 @@ onMount(() => {
                       ? "Create a map through an installed map integration."
                       : `Create your first ${createLabel()} to begin building this collection.`}
                 </p>
-                {#if section === "maps"}<button class="empty-create" type="button" onclick={() => void createMap()}
-                    >＋ Create with FMG</button
+                {#if section === "maps"}<div class="empty-create-actions">
+                    <button
+                      class="empty-create"
+                      type="button"
+                      aria-haspopup="menu"
+                      aria-expanded={mapProviderMenuOpen === "empty"}
+                      onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "empty" ? null : "empty")}
+                      >＋ Create map</button>
+                    {#if mapProviderMenuOpen === "empty"}<div
+                        class="map-provider-menu empty-map-provider-menu"
+                        role="menu">
+                        <button type="button" role="menuitem" onclick={() => void createMap("fmg")}
+                          >Create with FMG</button>
+                        <button type="button" role="menuitem" onclick={() => void createMap("image")}
+                          >Import image map</button>
+                      </div>{/if}
+                  </div>
                   >{:else}<button class="empty-create" type="button" onclick={toggleCreateForm}
                     >＋ Create {createLabel()}</button
                   >{/if}
@@ -3969,12 +4045,35 @@ onMount(() => {
                 </div>
               {/if}
               <div class="map-surface">
-                <SandboxView
-                  pluginId={sandboxView.plugin.id}
-                  viewId={sandboxView.view.id}
-                  title={sandboxView.plugin.name}
-                  mapEntityId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
-                  linkId={mapFocusLinkId ?? undefined} />
+                {#if mapsEditorMode === "image"}
+                  {#key mapsEditorKey}
+                    <ImageMapEditor
+                      mapId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
+                      picking={Boolean(mapPickPending)}
+                      focusLinkId={mapFocusLinkId ?? undefined}
+                      onpick={(anchor) => void applyMapPick(anchor)}
+                      onopen={(entityId) => void openMapEntityFromLink(entityId)}
+                      onstate={(status, detail) => {
+                        if (!mapId) return;
+                        mapSaveStates[mapId] = { status, detail };
+                      }}
+                      oncreated={async (map) => {
+                        entities = await project.listEntities();
+                        savedMapsCache = null;
+                        selected = map;
+                        mapsEditorKey = map.id;
+                        mapsEditorMode = "image";
+                        await loadSelectedState(map);
+                      }} />
+                  {/key}
+                {:else}
+                  <SandboxView
+                    pluginId={sandboxView.plugin.id}
+                    viewId={sandboxView.view.id}
+                    title={sandboxView.plugin.name}
+                    mapEntityId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
+                    linkId={mapFocusLinkId ?? undefined} />
+                {/if}
               </div>
             </div>
           {:else}
@@ -7172,6 +7271,50 @@ onMount(() => {
   font-size: 11px;
   font-weight: 700;
   cursor: pointer;
+}
+.empty-create-actions {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  width: min(220px, 100%);
+}
+.empty-create-actions .empty-create {
+  width: 100%;
+}
+.map-provider-create {
+  position: relative;
+}
+.map-provider-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  right: 0;
+  display: grid;
+  min-width: 180px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+.map-provider-menu button {
+  border: 0;
+  border-radius: 5px;
+  padding: 8px 9px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.map-provider-menu button:hover,
+.map-provider-menu button:focus-visible {
+  background: var(--surface-muted);
+}
+.empty-map-provider-menu {
+  top: calc(100% + 6px);
+  right: auto;
+  left: 0;
 }
 .empty-create:hover {
   background: #ead7bc;

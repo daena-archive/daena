@@ -5473,6 +5473,14 @@ impl ProjectStore {
         self.asset_unchecked(&asset_id)
     }
 
+    /// Reads the live content-addressed bytes for a registered asset. Portable
+    /// paths are checkpoint output and may not exist yet immediately after a
+    /// runtime mutation.
+    pub fn asset_bytes(&self, asset_id: String) -> Result<Vec<u8>, CoreError> {
+        let asset = self.asset_unchecked(&asset_id)?;
+        self.read_asset_bytes(&asset)
+    }
+
     fn asset_unchecked(&self, asset_id: &str) -> Result<Asset, CoreError> {
         let mut asset = self
             .connection

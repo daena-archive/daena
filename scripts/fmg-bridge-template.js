@@ -112,8 +112,8 @@ window.DAENA_HOST = true;
           });
         }
       }
-      if (requestedMapEntityId) return { mapId: map.id, assetId };
-      if (assetId) return { mapId: map.id, assetId };
+      if (requestedMapEntityId) return { mapId: map.id, assetId, descriptor };
+      if (assetId) return { mapId: map.id, assetId, descriptor };
     }
     if (requestedMapEntityId) throw new Error(`requested map is unavailable: ${requestedMapEntityId}`);
     return null;
@@ -850,10 +850,10 @@ window.DAENA_HOST = true;
           : setTimeout(poll, 25);
       poll();
     });
+  const mapAsset = requestedMapEntityId ? await firstMapAsset() : null;
   await waitForProvider();
   // No mapEntityId means a disposable draft: generate in memory and create the
   // entity only when the in-FMG Save overlay commits a name.
-  const mapAsset = requestedMapEntityId ? await firstMapAsset() : null;
   let source = null;
   if (mapAsset) {
     asset = { mapId: mapAsset.mapId, assetId: mapAsset.assetId, revision: null, contentHash: null };

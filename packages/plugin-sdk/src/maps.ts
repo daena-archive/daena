@@ -13,6 +13,9 @@ export const IMAGE_MAX_PIXELS = 16_777_216;
 export const IMAGE_MAX_DECODED_BYTES = IMAGE_MAX_PIXELS * 4 + 1024;
 export const IMAGE_MAX_RASTER_LAYERS = 16;
 export const IMAGE_MAX_UNDO_BYTES = 64 * 1024 * 1024;
+export const IMAGE_MAX_PATH_POINTS = 256;
+export const IMAGE_MAX_AREA_RINGS = 8;
+export const IMAGE_MAX_SEMANTIC_LAYERS = 32;
 
 /** Hierarchy relationship types owned by `daena.maps`. */
 export const MAP_RELATIONSHIP = {
@@ -84,7 +87,7 @@ export type MapLayerDefinition =
       defaultVisible: boolean;
       style: Readonly<Record<string, unknown>>;
       selector: Readonly<Record<string, unknown>>;
-      kind?: never;
+      kind?: "semantic";
     }
   | {
       id: string;

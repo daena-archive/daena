@@ -1,6 +1,6 @@
 import Konva from "konva";
 
-export type ImageMapTool = "pan" | "brush" | "eraser";
+export type ImageMapTool = "pan" | "brush" | "eraser" | "path" | "area";
 
 export type ImageMapPin = {
   id: string;
@@ -11,8 +11,23 @@ export type ImageMapPin = {
   focused?: boolean;
 };
 
+export type ImageMapAnchor =
+  | { kind: "point"; point: [number, number] }
+  | { kind: "path"; points: [number, number][] }
+  | { kind: "area"; rings: [number, number][][] };
+
+export type ImageMapFeature = {
+  id: string;
+  entityId: string;
+  label: string;
+  style: { stroke: string; fill: string; strokeWidth: number };
+  anchor: ImageMapAnchor;
+  selected?: boolean;
+};
+
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 16;
+const MAX_DRAFT_POINTS = 256;
 
 export class ImageMapStage {
   private readonly stage: Konva.Stage;
@@ -20,6 +35,8 @@ export class ImageMapStage {
   private readonly mapLayer: Konva.Layer;
   private readonly overlayLayer: Konva.Layer;
   private readonly pinsGroup: Konva.Group;
+  private readonly featuresGroup: Konva.Group;
+  private readonly handlesGroup: Konva.Group;
   private baseNode: Konva.Image | null = null;
   private layerNodes = new Map<string, Konva.Image>();
   private mapWidth = 1;
@@ -33,11 +50,17 @@ export class ImageMapStage {
   private picking = false;
   private spacePan = false;
   private dragged = false;
+  private draft: [number, number][] = [];
+  private selectedId: string | null = null;
+  private features: ImageMapFeature[] = [];
 
   onPaint: (() => void) | null = null;
-  onPick: ((point: [number, number]) => void) | null = null;
+  onPick: ((anchor: ImageMapAnchor) => void) | null = null;
   onOpenPin: ((entityId: string) => void) | null = null;
   onStrokeStart: (() => void) | null = null;
+  onSelectFeature: ((id: string | null) => void) | null = null;
+  onFeatureChange: ((id: string, anchor: ImageMapAnchor) => void) | null = null;
+  onDraftChange: ((points: [number, number][]) => void) | null = null;
 
   constructor(host: HTMLDivElement) {
     const bounds = host.getBoundingClientRect();
@@ -50,8 +73,12 @@ export class ImageMapStage {
     this.overlayLayer = new Konva.Layer();
     this.world = new Konva.Group({ draggable: true });
     this.pinsGroup = new Konva.Group();
+    this.featuresGroup = new Konva.Group();
+    this.handlesGroup = new Konva.Group();
     this.mapLayer.add(this.world);
+    this.overlayLayer.add(this.featuresGroup);
     this.overlayLayer.add(this.pinsGroup);
+    this.overlayLayer.add(this.handlesGroup);
     this.stage.add(this.mapLayer);
     this.stage.add(this.overlayLayer);
     this.bind();
@@ -77,8 +104,10 @@ export class ImageMapStage {
 
   setTool(tool: ImageMapTool) {
     this.tool = tool;
+    if (tool !== "path" && tool !== "area") this.draft = [];
     this.world.draggable(this.canPan());
     this.syncCursor();
+    this.renderDraft();
   }
 
   setBrush(color: string, size: number) {
@@ -167,13 +196,34 @@ export class ImageMapStage {
       group.add(label);
       group.on("click tap", (event) => {
         event.cancelBubble = true;
-        if (this.picking) return;
+        if (this.picking || this.isDrawing()) return;
         this.onOpenPin?.(pin.entityId);
       });
       this.pinsGroup.add(group);
     }
-    this.syncPinsToWorld();
+    this.syncOverlayToWorld();
     this.overlayLayer.batchDraw();
+  }
+
+  setFeatures(features: ImageMapFeature[]) {
+    this.features = features;
+    this.renderFeatures();
+  }
+
+  setSelected(id: string | null) {
+    this.selectedId = id;
+    this.renderFeatures();
+  }
+
+  finishDraft() {
+    const anchor = this.takeDraft();
+    if (anchor) this.onPick?.(anchor);
+  }
+
+  cancelDraft() {
+    this.draft = [];
+    this.onDraftChange?.([]);
+    this.renderDraft();
   }
 
   fit() {
@@ -184,7 +234,7 @@ export class ImageMapStage {
       x: (this.stage.width() - this.mapWidth * next) / 2,
       y: (this.stage.height() - this.mapHeight * next) / 2,
     });
-    this.syncPinsToWorld();
+    this.syncOverlayToWorld();
     this.stage.batchDraw();
   }
 
@@ -197,7 +247,7 @@ export class ImageMapStage {
       x: this.stage.width() / 2 - center[0] * this.mapWidth * scale,
       y: this.stage.height() / 2 - center[1] * this.mapHeight * scale,
     });
-    this.syncPinsToWorld();
+    this.syncOverlayToWorld();
     this.stage.batchDraw();
   }
 
@@ -219,13 +269,13 @@ export class ImageMapStage {
       x: this.stage.width() / 2 - point[0] * this.mapWidth * scale,
       y: this.stage.height() / 2 - point[1] * this.mapHeight * scale,
     });
-    this.syncPinsToWorld();
+    this.syncOverlayToWorld();
     this.stage.batchDraw();
   }
 
   panBy(dx: number, dy: number) {
     this.world.position({ x: this.world.x() + dx, y: this.world.y() + dy });
-    this.syncPinsToWorld();
+    this.syncOverlayToWorld();
     this.stage.batchDraw();
   }
 
@@ -242,24 +292,28 @@ export class ImageMapStage {
       x: pointer.x - mouse.x * next,
       y: pointer.y - mouse.y * next,
     });
-    this.syncPinsToWorld();
+    this.syncOverlayToWorld();
     this.stage.batchDraw();
   }
 
+  private isDrawing() {
+    return this.tool === "path" || this.tool === "area";
+  }
+
   private canPan() {
-    return this.tool === "pan" || this.spacePan || this.picking;
+    return (this.tool === "pan" || this.spacePan || (this.picking && !this.isDrawing())) && !this.isDrawing();
   }
 
   private syncCursor() {
     const container = this.stage.container();
-    if (this.picking) container.style.cursor = "crosshair";
+    if (this.picking || this.isDrawing()) container.style.cursor = "crosshair";
     else if (this.canPan()) container.style.cursor = "grab";
     else container.style.cursor = "crosshair";
   }
 
   private bind() {
     this.world.dragBoundFunc((pos) => pos);
-    this.world.on("dragmove", () => this.syncPinsToWorld());
+    this.world.on("dragmove", () => this.syncOverlayToWorld());
     this.world.on("dragstart", () => {
       this.dragged = true;
     });
@@ -279,32 +333,53 @@ export class ImageMapStage {
         x: pointer.x - mouse.x * next,
         y: pointer.y - mouse.y * next,
       });
-      this.syncPinsToWorld();
+      this.syncOverlayToWorld();
       this.stage.batchDraw();
     });
     this.stage.on("mousedown touchstart", (event) => {
-      if (this.picking) return;
+      if (this.picking || this.isDrawing() || event.target !== this.stage) return;
       if (this.canPan() || event.evt.button === 1) return;
       this.beginStroke();
     });
     this.stage.on("mousemove touchmove", () => this.continueStroke());
     this.stage.on("mouseup mouseleave touchend", () => this.endStroke());
     this.stage.on("click tap", () => {
-      if (!this.picking) return;
       if (this.dragged) {
         this.dragged = false;
         return;
       }
+      if (this.isDrawing()) {
+        this.appendDraft();
+        return;
+      }
+      if (!this.picking) return;
       const local = this.pointerOnMap();
       if (!local) return;
-      this.onPick?.([clamp(local.x / this.mapWidth, 0, 1), clamp(local.y / this.mapHeight, 0, 1)]);
+      this.onPick?.({
+        kind: "point",
+        point: [clamp(local.x / this.mapWidth, 0, 1), clamp(local.y / this.mapHeight, 0, 1)],
+      });
+    });
+    this.stage.on("dblclick dbltap", () => {
+      if (this.isDrawing()) this.finishDraft();
     });
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
   }
 
   private onKeyDown = (event: KeyboardEvent) => {
-    if (isEditableTarget(event.target) || event.code !== "Space" || this.spacePan) return;
+    if (isEditableTarget(event.target)) return;
+    if (event.key === "Enter" && this.isDrawing()) {
+      event.preventDefault();
+      this.finishDraft();
+      return;
+    }
+    if (event.key === "Escape" && this.draft.length) {
+      event.preventDefault();
+      this.cancelDraft();
+      return;
+    }
+    if (event.code !== "Space" || this.spacePan) return;
     event.preventDefault();
     this.spacePan = true;
     this.world.draggable(this.canPan());
@@ -328,8 +403,165 @@ export class ImageMapStage {
     return local;
   }
 
+  private appendDraft() {
+    const local = this.pointerOnMap();
+    if (!local || this.draft.length >= MAX_DRAFT_POINTS) return;
+    this.draft = [...this.draft, [clamp(local.x / this.mapWidth, 0, 1), clamp(local.y / this.mapHeight, 0, 1)]];
+    this.onDraftChange?.(this.draft);
+    this.renderDraft();
+  }
+
+  private takeDraft(): ImageMapAnchor | null {
+    if (this.tool === "path" && this.draft.length >= 2) {
+      const points = this.draft;
+      this.draft = [];
+      this.onDraftChange?.([]);
+      this.renderDraft();
+      return { kind: "path", points };
+    }
+    if (this.tool === "area" && this.draft.length >= 3) {
+      const ring = [...this.draft, this.draft[0]];
+      this.draft = [];
+      this.onDraftChange?.([]);
+      this.renderDraft();
+      return { kind: "area", rings: [ring] };
+    }
+    return null;
+  }
+
+  private renderDraft() {
+    const existing = this.featuresGroup.findOne(".draft");
+    existing?.destroy();
+    if (!this.draft.length) {
+      this.overlayLayer.batchDraw();
+      return;
+    }
+    const points = this.flatPoints(this.draft);
+    this.featuresGroup.add(
+      new Konva.Line({
+        name: "draft",
+        points,
+        stroke: "#f3d39a",
+        strokeWidth: 2,
+        dash: [8, 4],
+        closed: this.tool === "area" && this.draft.length >= 3,
+        fill: this.tool === "area" ? "rgba(243,211,154,0.2)" : undefined,
+        listening: false,
+      }),
+    );
+    this.overlayLayer.batchDraw();
+  }
+
+  private renderFeatures() {
+    this.featuresGroup.destroyChildren();
+    this.handlesGroup.destroyChildren();
+    for (const feature of this.features) {
+      const selected = feature.selected || feature.id === this.selectedId;
+      const node = this.nodeForFeature(feature, selected);
+      if (!(node instanceof Konva.Line)) continue;
+      const openFeature = (event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
+        event.cancelBubble = true;
+        if (this.picking || this.isDrawing()) return;
+        this.selectedId = feature.id;
+        this.onSelectFeature?.(feature.id);
+        this.onOpenPin?.(feature.entityId);
+        this.renderFeatures();
+      };
+      node.on("click", openFeature);
+      node.on("tap", openFeature);
+      this.featuresGroup.add(node);
+      if (selected) this.renderHandles(feature);
+    }
+    this.renderDraft();
+    this.syncOverlayToWorld();
+    this.overlayLayer.batchDraw();
+  }
+
+  private nodeForFeature(feature: ImageMapFeature, selected: boolean): Konva.Line | null {
+    const stroke = selected ? "#f3d39a" : feature.style.stroke;
+    if (feature.anchor.kind === "path") {
+      return new Konva.Line({
+        name: `feature-${feature.id}`,
+        points: this.flatPoints(feature.anchor.points),
+        stroke,
+        strokeWidth: feature.style.strokeWidth,
+        hitStrokeWidth: 16,
+        lineCap: "round",
+        lineJoin: "round",
+      });
+    }
+    if (feature.anchor.kind === "area") {
+      const outer = feature.anchor.rings[0] ?? [];
+      return new Konva.Line({
+        name: `feature-${feature.id}`,
+        points: this.flatPoints(outer),
+        stroke,
+        strokeWidth: feature.style.strokeWidth,
+        fill: feature.style.fill,
+        closed: true,
+        listening: true,
+      });
+    }
+    return null;
+  }
+
+  private renderHandles(feature: ImageMapFeature) {
+    const vertices =
+      feature.anchor.kind === "path"
+        ? feature.anchor.points
+        : feature.anchor.kind === "area"
+          ? (feature.anchor.rings[0] ?? []).slice(0, -1)
+          : [];
+    vertices.forEach((point, index) => {
+      const handle = new Konva.Circle({
+        x: point[0] * this.mapWidth,
+        y: point[1] * this.mapHeight,
+        radius: 6,
+        fill: "#f3d39a",
+        stroke: "#17211d",
+        strokeWidth: 1,
+        draggable: true,
+      });
+      handle.on("dragmove", () => {
+        const x = clamp(handle.x() / this.mapWidth, 0, 1);
+        const y = clamp(handle.y() / this.mapHeight, 0, 1);
+        const next = this.moveVertex(feature.anchor, index, [x, y]);
+        feature.anchor = next;
+        const line = this.featuresGroup.findOne(`.feature-${feature.id}`);
+        if (line instanceof Konva.Line) {
+          const points = next.kind === "path" ? next.points : next.kind === "area" ? (next.rings[0] ?? []) : [];
+          line.points(this.flatPoints(points));
+        }
+        this.overlayLayer.batchDraw();
+      });
+      handle.on("dragend", () => {
+        this.onFeatureChange?.(feature.id, feature.anchor);
+      });
+      this.handlesGroup.add(handle);
+    });
+  }
+
+  private moveVertex(anchor: ImageMapAnchor, index: number, point: [number, number]): ImageMapAnchor {
+    if (anchor.kind === "path") {
+      const points = [...anchor.points];
+      points[index] = point;
+      return { kind: "path", points };
+    }
+    if (anchor.kind === "area") {
+      const ring = [...(anchor.rings[0] ?? [])];
+      ring[index] = point;
+      if (index === 0) ring[ring.length - 1] = point;
+      return { kind: "area", rings: [ring, ...anchor.rings.slice(1)] };
+    }
+    return anchor;
+  }
+
+  private flatPoints(points: readonly (readonly [number, number])[]) {
+    return points.flatMap(([x, y]) => [x * this.mapWidth, y * this.mapHeight]);
+  }
+
   private beginStroke() {
-    if (this.tool === "pan" || !this.activeCanvas) return;
+    if (this.tool === "pan" || this.isDrawing() || !this.activeCanvas) return;
     const local = this.pointerOnMap();
     if (!local) return;
     this.painting = true;
@@ -373,9 +605,15 @@ export class ImageMapStage {
     this.mapLayer.batchDraw();
   }
 
-  private syncPinsToWorld() {
-    this.pinsGroup.position(this.world.position());
-    this.pinsGroup.scale(this.world.scale());
+  private syncOverlayToWorld() {
+    const position = this.world.position();
+    const scale = this.world.scale();
+    this.pinsGroup.position(position);
+    this.pinsGroup.scale(scale);
+    this.featuresGroup.position(position);
+    this.featuresGroup.scale(scale);
+    this.handlesGroup.position(position);
+    this.handlesGroup.scale(scale);
   }
 
   disposeListeners() {

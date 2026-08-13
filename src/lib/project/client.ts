@@ -84,11 +84,14 @@ export interface MapLocation {
 export interface MapPin {
   id: string;
   entityId: string;
+  mapEntityId?: string;
   label: string | null;
   role: string;
   anchorKind: string;
   bounds: [number | null, number | null, number | null, number | null];
   resolution: string;
+  validity?: { from: unknown | null; to: unknown | null };
+  anchor?: unknown;
 }
 export interface RasterLayerChange {
   layer_id: string;
@@ -500,6 +503,8 @@ export const project = {
       defaultVisible?: boolean;
       opacity?: number;
       locked?: boolean;
+      style?: unknown;
+      selector?: unknown;
     },
     options?: MutationOptions,
   ) =>
@@ -512,6 +517,29 @@ export const project = {
       defaultVisible: update.defaultVisible ?? null,
       opacity: update.opacity ?? null,
       locked: update.locked ?? null,
+      style: update.style ?? null,
+      selector: update.selector ?? null,
+      requestId: requestId(options),
+    }),
+  createSemanticLayer: (
+    mapEntityId: string,
+    name: string,
+    expectedRevision: string,
+    options?: MutationOptions & { style?: unknown; selector?: unknown },
+  ) =>
+    invoke<RasterLayerChange>("project_create_semantic_layer", {
+      mapEntityId,
+      name,
+      expectedRevision,
+      style: options?.style ?? null,
+      selector: options?.selector ?? null,
+      requestId: requestId(options),
+    }),
+  deleteSemanticLayer: (mapEntityId: string, layerId: string, expectedRevision: string, options?: MutationOptions) =>
+    invoke<RasterLayerChange>("project_delete_semantic_layer", {
+      mapEntityId,
+      layerId,
+      expectedRevision,
       requestId: requestId(options),
     }),
   deleteRasterLayer: (mapEntityId: string, layerId: string, expectedRevision: string, options?: MutationOptions) =>
@@ -538,6 +566,8 @@ export const project = {
       requestId: requestId(options),
     }),
   listMapPins: (mapEntityId: string) => invoke<MapPin[]>("project_map_location_projection", { mapEntityId }),
+  queryMapLocations: (mapEntityId: string, minX: number, minY: number, maxX: number, maxY: number) =>
+    invoke<MapPin[]>("project_query_map_locations", { mapEntityId, minX, minY, maxX, maxY }),
   backup: () => invoke<string>("project_backup"),
   exportMarkdown: (destination: string) => invoke<string>("project_export_markdown", { destination }),
   recoveryBackup: () => invoke<string>("project_recovery_backup"),

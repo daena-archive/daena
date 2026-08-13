@@ -185,6 +185,10 @@ pub struct RasterLayerUpdate {
     pub default_visible: Option<bool>,
     pub opacity: Option<f64>,
     pub locked: Option<bool>,
+    #[serde(default)]
+    pub style: Option<serde_json::Value>,
+    #[serde(default)]
+    pub selector: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3381,6 +3385,7 @@ impl ProjectStore {
              CREATE INDEX IF NOT EXISTS map_location_entity_idx ON map_location_projection(entity_id);
              CREATE INDEX IF NOT EXISTS map_location_map_idx ON map_location_projection(map_entity_id);
              CREATE INDEX IF NOT EXISTS assets_entity_created_idx ON assets(entity_id,created_at);")?;
+        self.ensure_map_location_projection_schema()?;
         self.connection.execute_batch("CREATE TABLE IF NOT EXISTS migration_history(module_id TEXT NOT NULL, migration_id TEXT NOT NULL, from_version INTEGER NOT NULL, to_version INTEGER NOT NULL, checksum TEXT NOT NULL, package_digest TEXT NOT NULL DEFAULT '', applied_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(module_id, migration_id)); CREATE TABLE IF NOT EXISTS plugin_backups(id TEXT PRIMARY KEY, module_id TEXT NOT NULL, from_package_version TEXT, to_package_version TEXT, data_version INTEGER NOT NULL, path TEXT NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS module_schema_overlays(module_id TEXT PRIMARY KEY, overlay_json TEXT NOT NULL);")?;
         for table in [
             "project_meta",
@@ -4063,6 +4068,205 @@ impl ProjectStore {
         Ok(change)
     }
 
+    pub fn create_semantic_layer(
+        &self,
+        map_entity_id: String,
+        name: String,
+        expected_revision: &str,
+        request_id: Option<&str>,
+        style: Option<serde_json::Value>,
+        selector: Option<serde_json::Value>,
+    ) -> Result<RasterLayerChange, CoreError> {
+        let input_fingerprint = self.layer_mutation_fingerprint(
+            "create-semantic",
+            &map_entity_id,
+            None,
+            Some(&name),
+            expected_revision,
+            None,
+        )?;
+        if let Some(change) = self.committed_mutation_with_fingerprint::<RasterLayerChange>(
+            request_id,
+            Some(&input_fingerprint),
+        )? {
+            return Ok(change);
+        }
+        let mut layers_field = self.layers_field(&map_entity_id)?;
+        Self::ensure_expected_revision(
+            Some(expected_revision),
+            layers_field.revision.clone(),
+            "field",
+        )?;
+        let layers = layers_field
+            .value
+            .get("layers")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let semantic_count = layers
+            .iter()
+            .filter(|layer| layer.get("kind").and_then(serde_json::Value::as_str) != Some("raster"))
+            .count();
+        if semantic_count >= crate::maps::IMAGE_MAX_SEMANTIC_LAYERS {
+            return Err(CoreError::Validation(format!(
+                "maps: semantic layer count exceeds the budget of {}",
+                crate::maps::IMAGE_MAX_SEMANTIC_LAYERS
+            )));
+        }
+        let layer_id = Uuid::new_v4().to_string();
+        let next_order = layers
+            .iter()
+            .filter_map(|layer| layer.get("order").and_then(serde_json::Value::as_i64))
+            .max()
+            .map(|order| order + 1)
+            .unwrap_or(0);
+        let mut layers = layers;
+        layers.push(serde_json::json!({
+            "id": layer_id,
+            "name": name,
+            "order": next_order,
+            "defaultVisible": true,
+            "style": style.unwrap_or_else(|| serde_json::json!({
+                "stroke": "#d5ab6c",
+                "fill": "rgba(213,171,108,0.25)",
+                "strokeWidth": 2
+            })),
+            "selector": selector.unwrap_or_else(|| serde_json::json!({})),
+            "kind": "semantic"
+        }));
+        let layers_value = serde_json::json!({"schemaVersion": 1, "layers": layers});
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&RasterLayerChange {
+            layer_id: layer_id.clone(),
+            asset: None,
+            layers: FieldValue {
+                entity_id: map_entity_id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "layers".into(),
+                value: layers_value.clone(),
+                revision: String::new(),
+            },
+        })
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&result),
+            &[format!("entities/{map_entity_id}/")],
+            &input_fingerprint,
+        )?;
+        crate::maps::validate_field(&transaction, &map_entity_id, "layers", &layers_value)?;
+        transaction.execute(
+            "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value",
+            params![map_entity_id, crate::maps::MAP_NAMESPACE, "layers", encode_field_value(&layers_value)?],
+        )?;
+        transaction.commit()?;
+        self.refresh_maps_projection_for_entities(std::slice::from_ref(&map_entity_id))?;
+        self.notify_export_worker()?;
+        layers_field.value = layers_value;
+        layers_field.revision = self.revision_for_field(&layers_field)?;
+        let change = RasterLayerChange {
+            layer_id,
+            asset: None,
+            layers: layers_field,
+        };
+        self.write_mutation_result(
+            &request_id,
+            &serde_json::to_value(&change)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        )?;
+        Ok(change)
+    }
+
+    pub fn delete_semantic_layer(
+        &self,
+        map_entity_id: String,
+        layer_id: String,
+        expected_revision: &str,
+        request_id: Option<&str>,
+    ) -> Result<RasterLayerChange, CoreError> {
+        let input_fingerprint = self.layer_mutation_fingerprint(
+            "delete-semantic",
+            &map_entity_id,
+            Some(&layer_id),
+            None,
+            expected_revision,
+            None,
+        )?;
+        if let Some(change) = self.committed_mutation_with_fingerprint::<RasterLayerChange>(
+            request_id,
+            Some(&input_fingerprint),
+        )? {
+            return Ok(change);
+        }
+        let mut layers_field = self.layers_field(&map_entity_id)?;
+        Self::ensure_expected_revision(
+            Some(expected_revision),
+            layers_field.revision.clone(),
+            "field",
+        )?;
+        let layers = layers_field
+            .value
+            .get("layers")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let Some(removed) = layers.iter().find(|layer| {
+            layer.get("id").and_then(serde_json::Value::as_str) == Some(layer_id.as_str())
+        }) else {
+            return Err(CoreError::NotFound("semantic layer not found".into()));
+        };
+        if removed.get("kind").and_then(serde_json::Value::as_str) == Some("raster") {
+            return Err(CoreError::Validation(
+                "maps: raster layers cannot be deleted by this operation".into(),
+            ));
+        }
+        let remaining = layers
+            .into_iter()
+            .filter(|layer| layer.get("id").and_then(serde_json::Value::as_str) != Some(layer_id.as_str()))
+            .collect::<Vec<_>>();
+        let layers_value = serde_json::json!({"schemaVersion": 1, "layers": remaining});
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&RasterLayerChange {
+            layer_id: layer_id.clone(),
+            asset: None,
+            layers: FieldValue {
+                entity_id: map_entity_id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "layers".into(),
+                value: layers_value.clone(),
+                revision: String::new(),
+            },
+        })
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&result),
+            &[format!("entities/{map_entity_id}/")],
+            &input_fingerprint,
+        )?;
+        crate::maps::validate_field(&transaction, &map_entity_id, "layers", &layers_value)?;
+        transaction.execute(
+            "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value",
+            params![map_entity_id, crate::maps::MAP_NAMESPACE, "layers", encode_field_value(&layers_value)?],
+        )?;
+        transaction.commit()?;
+        self.refresh_maps_projection_for_entities(std::slice::from_ref(&map_entity_id))?;
+        self.notify_export_worker()?;
+        layers_field.value = layers_value;
+        layers_field.revision = self.revision_for_field(&layers_field)?;
+        let change = RasterLayerChange {
+            layer_id,
+            asset: None,
+            layers: layers_field,
+        };
+        self.write_mutation_result(
+            &request_id,
+            &serde_json::to_value(&change)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        )?;
+        Ok(change)
+    }
+
     pub fn delete_raster_layer(
         &self,
         map_entity_id: String,
@@ -4227,6 +4431,20 @@ impl ProjectStore {
                 "maps: opacity and locked apply only to raster layers".into(),
             ));
         }
+        if object.get("kind").and_then(serde_json::Value::as_str) == Some("raster") {
+            if update.style.is_some() || update.selector.is_some() {
+                return Err(CoreError::Validation(
+                    "maps: raster layers must have empty style and selector objects".into(),
+                ));
+            }
+        } else {
+            if let Some(style) = update.style {
+                object.insert("style".into(), style);
+            }
+            if let Some(selector) = update.selector {
+                object.insert("selector".into(), selector);
+            }
+        }
         let layers_value = serde_json::json!({"schemaVersion": 1, "layers": layers});
         let request_id = self.request_id(request_id)?;
         let result = serde_json::to_value(&RasterLayerChange {
@@ -4321,6 +4539,25 @@ impl ProjectStore {
         };
         let revision = self.revision_for_field(&field)?;
         Ok(FieldValue { revision, ..field })
+    }
+
+    fn ensure_map_location_projection_schema(&self) -> Result<(), CoreError> {
+        let mut statement = self
+            .connection
+            .prepare("PRAGMA table_info(map_location_projection)")?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        if !columns.iter().any(|name| name == "geometry") {
+            self.connection.execute(
+                "ALTER TABLE map_location_projection ADD COLUMN geometry TEXT",
+                [],
+            )?;
+        }
+        self.connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS map_location_bbox_idx ON map_location_projection(map_entity_id, min_x, max_x, min_y, max_y);",
+        )?;
+        Ok(())
     }
 
     fn map_source_dimensions(&self, map_entity_id: &str) -> Result<(u32, u32), CoreError> {
@@ -6102,34 +6339,6 @@ impl ProjectStore {
                     .get("kind")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("unknown");
-                let bounds = match kind {
-                    "point" => {
-                        bounds_for_points(anchor.get("point").and_then(serde_json::Value::as_array))
-                    }
-                    "provider-feature" => bounds_for_points(
-                        anchor
-                            .get("fallbackPoint")
-                            .and_then(serde_json::Value::as_array),
-                    ),
-                    "path" => bounds_for_points(
-                        anchor.get("points").and_then(serde_json::Value::as_array),
-                    ),
-                    "area" => anchor
-                        .get("rings")
-                        .and_then(serde_json::Value::as_array)
-                        .map(|rings| {
-                            bounds_for_points(Some(
-                                &rings
-                                    .iter()
-                                    .filter_map(serde_json::Value::as_array)
-                                    .flatten()
-                                    .cloned()
-                                    .collect::<Vec<_>>(),
-                            ))
-                        })
-                        .unwrap_or((None, None, None, None)),
-                    _ => (None, None, None, None),
-                };
                 let resolution = if kind == "provider-feature" {
                     self.provider_feature_resolution(
                         location
@@ -6144,7 +6353,7 @@ impl ProjectStore {
                 } else {
                     "resolved"
                 };
-                transaction.execute("INSERT INTO map_location_projection(location_id,entity_id,map_entity_id,label,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)", rusqlite::params![location.get("id").and_then(serde_json::Value::as_str).unwrap_or_default(), entity_id, location.get("mapEntityId").and_then(serde_json::Value::as_str).unwrap_or_default(), location.get("label").and_then(serde_json::Value::as_str), location.get("role").and_then(serde_json::Value::as_str).unwrap_or_default(), kind, anchor.get("provider").and_then(serde_json::Value::as_str), anchor.get("featureKind").and_then(serde_json::Value::as_str), anchor.get("featureId").and_then(serde_json::Value::as_str), bounds.0, bounds.1, bounds.2, bounds.3, location.pointer("/validity/from").filter(|v| !v.is_null()).map(ToString::to_string), location.pointer("/validity/to").filter(|v| !v.is_null()).map(ToString::to_string), resolution])?;
+                write_location_projection(&transaction, &entity_id, &location, resolution)?;
             }
         }
         transaction.commit()?;
@@ -6207,30 +6416,6 @@ impl ProjectStore {
             .get("kind")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("unknown");
-        let bounds = match kind {
-            "point" => bounds_for_points(anchor.get("point").and_then(serde_json::Value::as_array)),
-            "provider-feature" => bounds_for_points(
-                anchor
-                    .get("fallbackPoint")
-                    .and_then(serde_json::Value::as_array),
-            ),
-            "path" => bounds_for_points(anchor.get("points").and_then(serde_json::Value::as_array)),
-            "area" => anchor
-                .get("rings")
-                .and_then(serde_json::Value::as_array)
-                .map(|rings| {
-                    bounds_for_points(Some(
-                        &rings
-                            .iter()
-                            .filter_map(serde_json::Value::as_array)
-                            .flatten()
-                            .cloned()
-                            .collect::<Vec<_>>(),
-                    ))
-                })
-                .unwrap_or((None, None, None, None)),
-            _ => (None, None, None, None),
-        };
         let resolution = if kind == "provider-feature" {
             self.provider_feature_resolution(
                 location
@@ -6245,32 +6430,64 @@ impl ProjectStore {
         } else {
             "resolved"
         };
-        self.connection.execute(
-            "INSERT OR REPLACE INTO map_location_projection(location_id,entity_id,map_entity_id,label,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
-            params![location.get("id").and_then(serde_json::Value::as_str).unwrap_or_default(), entity_id, location.get("mapEntityId").and_then(serde_json::Value::as_str).unwrap_or_default(), location.get("label").and_then(serde_json::Value::as_str), location.get("role").and_then(serde_json::Value::as_str).unwrap_or_default(), kind, anchor.get("provider").and_then(serde_json::Value::as_str), anchor.get("featureKind").and_then(serde_json::Value::as_str), anchor.get("featureId").and_then(serde_json::Value::as_str), bounds.0, bounds.1, bounds.2, bounds.3, location.pointer("/validity/from").filter(|value| !value.is_null()).map(ToString::to_string), location.pointer("/validity/to").filter(|value| !value.is_null()).map(ToString::to_string), resolution],
-        )?;
-        Ok(())
+        write_location_projection(&self.connection, entity_id, &location, resolution)
     }
 
     pub fn map_locations_for_entity(
         &self,
         entity_id: String,
     ) -> Result<Vec<serde_json::Value>, CoreError> {
-        let mut statement = self.connection.prepare("SELECT location_id,map_entity_id,label,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution FROM map_location_projection WHERE entity_id=?1 ORDER BY location_id")?;
-        let rows = statement.query_map(rusqlite::params![entity_id], |row| Ok(serde_json::json!({"id":row.get::<_,String>(0)?,"mapEntityId":row.get::<_,String>(1)?,"label":row.get::<_,Option<String>>(2)?,"role":row.get::<_,String>(3)?,"anchorKind":row.get::<_,String>(4)?,"provider":row.get::<_,Option<String>>(5)?,"featureKind":row.get::<_,Option<String>>(6)?,"featureId":row.get::<_,Option<String>>(7)?,"bounds":[row.get::<_,Option<f64>>(8)?,row.get::<_,Option<f64>>(9)?,row.get::<_,Option<f64>>(10)?,row.get::<_,Option<f64>>(11)?],"validity":{"from":row.get::<_,Option<String>>(12)?,"to":row.get::<_,Option<String>>(13)?},"resolution":row.get::<_,String>(14)?})))?;
+        let mut statement = self.connection.prepare(&format!(
+            "{LOCATION_PROJECTION_SELECT} WHERE entity_id=?1 ORDER BY location_id"
+        ))?;
+        let rows = statement.query_map(rusqlite::params![entity_id], location_projection_json)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
     }
 
     /// Returns the disposable projection rows for all locations on a map.
-    /// The projection carries provider selectors, bounds, validity, and
-    /// resolution state; it is rebuilt from the canonical `locations` fields
+    /// The projection carries provider selectors, bounds, validity, geometry,
+    /// and resolution state; it is rebuilt from the canonical `locations` fields
     /// and the source asset bytes and is never treated as durable state.
     pub fn map_location_projection(
         &self,
         map_entity_id: String,
     ) -> Result<Vec<serde_json::Value>, CoreError> {
-        let mut statement = self.connection.prepare("SELECT location_id,entity_id,label,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution FROM map_location_projection WHERE map_entity_id=?1 ORDER BY location_id")?;
-        let rows = statement.query_map(rusqlite::params![map_entity_id], |row| Ok(serde_json::json!({"id":row.get::<_,String>(0)?,"entityId":row.get::<_,String>(1)?,"label":row.get::<_,Option<String>>(2)?,"role":row.get::<_,String>(3)?,"anchorKind":row.get::<_,String>(4)?,"provider":row.get::<_,Option<String>>(5)?,"featureKind":row.get::<_,Option<String>>(6)?,"featureId":row.get::<_,Option<String>>(7)?,"bounds":[row.get::<_,Option<f64>>(8)?,row.get::<_,Option<f64>>(9)?,row.get::<_,Option<f64>>(10)?,row.get::<_,Option<f64>>(11)?],"validity":{"from":row.get::<_,Option<String>>(12)?,"to":row.get::<_,Option<String>>(13)?},"resolution":row.get::<_,String>(14)?})))?;
+        let mut statement = self.connection.prepare(&format!(
+            "{LOCATION_PROJECTION_SELECT} WHERE map_entity_id=?1 ORDER BY location_id"
+        ))?;
+        let rows =
+            statement.query_map(rusqlite::params![map_entity_id], location_projection_json)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
+    }
+
+    /// Returns locations whose stored bounding boxes overlap the query rectangle.
+    /// Coordinates are normalized to `[0, 1]`. This reads disposable projection
+    /// rows only; canonical geometry remains on entity `locations` fields.
+    pub fn query_map_locations(
+        &self,
+        map_entity_id: String,
+        min_x: f64,
+        min_y: f64,
+        max_x: f64,
+        max_y: f64,
+    ) -> Result<Vec<serde_json::Value>, CoreError> {
+        if ![min_x, min_y, max_x, max_y]
+            .into_iter()
+            .all(|value| value.is_finite())
+            || min_x > max_x
+            || min_y > max_y
+        {
+            return Err(CoreError::Validation(
+                "maps: spatial query bounds must be finite with min ≤ max".into(),
+            ));
+        }
+        let mut statement = self.connection.prepare(&format!(
+            "{LOCATION_PROJECTION_SELECT} WHERE map_entity_id=?1 AND min_x IS NOT NULL AND max_x IS NOT NULL AND min_y IS NOT NULL AND max_y IS NOT NULL AND min_x <= ?4 AND max_x >= ?2 AND min_y <= ?5 AND max_y >= ?3 ORDER BY location_id"
+        ))?;
+        let rows = statement.query_map(
+            rusqlite::params![map_entity_id, min_x, min_y, max_x, max_y],
+            location_projection_json,
+        )?;
         rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
     }
 
@@ -7687,6 +7904,101 @@ fn revision_digest<T: Serialize>(value: &T) -> Result<String, CoreError> {
     let bytes =
         serde_json::to_vec(value).map_err(|error| CoreError::Serialization(error.to_string()))?;
     Ok(format!("sha256:{}", digest_bytes(&bytes)))
+}
+
+const LOCATION_PROJECTION_SELECT: &str = "SELECT location_id,entity_id,map_entity_id,label,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution,geometry FROM map_location_projection";
+
+fn location_projection_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value> {
+    let geometry: Option<String> = row.get(16)?;
+    let anchor = geometry
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .unwrap_or(serde_json::Value::Null);
+    Ok(serde_json::json!({
+        "id": row.get::<_, String>(0)?,
+        "entityId": row.get::<_, String>(1)?,
+        "mapEntityId": row.get::<_, String>(2)?,
+        "label": row.get::<_, Option<String>>(3)?,
+        "role": row.get::<_, String>(4)?,
+        "anchorKind": row.get::<_, String>(5)?,
+        "provider": row.get::<_, Option<String>>(6)?,
+        "featureKind": row.get::<_, Option<String>>(7)?,
+        "featureId": row.get::<_, Option<String>>(8)?,
+        "bounds": [
+            row.get::<_, Option<f64>>(9)?,
+            row.get::<_, Option<f64>>(10)?,
+            row.get::<_, Option<f64>>(11)?,
+            row.get::<_, Option<f64>>(12)?
+        ],
+        "validity": {
+            "from": row.get::<_, Option<String>>(13)?,
+            "to": row.get::<_, Option<String>>(14)?
+        },
+        "resolution": row.get::<_, String>(15)?,
+        "anchor": anchor
+    }))
+}
+
+fn write_location_projection(
+    connection: &rusqlite::Connection,
+    entity_id: &str,
+    location: &serde_json::Value,
+    resolution: &str,
+) -> Result<(), CoreError> {
+    let anchor = location.get("anchor").cloned().unwrap_or_default();
+    let kind = anchor
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let bounds = match kind {
+        "point" => bounds_for_points(anchor.get("point").and_then(serde_json::Value::as_array)),
+        "provider-feature" => bounds_for_points(
+            anchor
+                .get("fallbackPoint")
+                .and_then(serde_json::Value::as_array),
+        ),
+        "path" => bounds_for_points(anchor.get("points").and_then(serde_json::Value::as_array)),
+        "area" => anchor
+            .get("rings")
+            .and_then(serde_json::Value::as_array)
+            .map(|rings| {
+                bounds_for_points(Some(
+                    &rings
+                        .iter()
+                        .filter_map(serde_json::Value::as_array)
+                        .flatten()
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                ))
+            })
+            .unwrap_or((None, None, None, None)),
+        _ => (None, None, None, None),
+    };
+    let geometry = serde_json::to_string(&anchor)
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+    connection.execute(
+        "INSERT OR REPLACE INTO map_location_projection(location_id,entity_id,map_entity_id,label,role,anchor_kind,provider,feature_kind,feature_id,min_x,min_y,max_x,max_y,valid_from,valid_to,resolution,geometry) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+        rusqlite::params![
+            location.get("id").and_then(serde_json::Value::as_str).unwrap_or_default(),
+            entity_id,
+            location.get("mapEntityId").and_then(serde_json::Value::as_str).unwrap_or_default(),
+            location.get("label").and_then(serde_json::Value::as_str),
+            location.get("role").and_then(serde_json::Value::as_str).unwrap_or_default(),
+            kind,
+            anchor.get("provider").and_then(serde_json::Value::as_str),
+            anchor.get("featureKind").and_then(serde_json::Value::as_str),
+            anchor.get("featureId").and_then(serde_json::Value::as_str),
+            bounds.0,
+            bounds.1,
+            bounds.2,
+            bounds.3,
+            location.pointer("/validity/from").filter(|value| !value.is_null()).map(ToString::to_string),
+            location.pointer("/validity/to").filter(|value| !value.is_null()).map(ToString::to_string),
+            resolution,
+            geometry
+        ],
+    )?;
+    Ok(())
 }
 
 fn bounds_for_points(

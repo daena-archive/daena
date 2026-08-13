@@ -70,6 +70,13 @@ fn rejects_out_of_range_and_open_geometry() {
     )
     .is_err());
     assert!(anchor(&serde_json::json!({"kind":"path","points":[[0.1,0.1],[0.2,0.2]]})).is_ok());
+    let too_long = (0..=crate::maps::IMAGE_MAX_PATH_POINTS)
+        .map(|index| serde_json::json!([0.0, index as f64 / 1000.0]))
+        .collect::<Vec<_>>();
+    assert!(anchor(&serde_json::json!({"kind":"path","points": too_long}))
+        .unwrap_err()
+        .to_string()
+        .contains("budget of"));
     assert!(point(&Point(1.1, 0.2))
         .unwrap_err()
         .to_string()
@@ -210,6 +217,55 @@ fn image_descriptors_and_raster_layers_round_trip() {
         serde_json::from_value::<LayerDefinition>(serde_json::to_value(&layer).unwrap()).unwrap(),
         layer
     );
+
+    let tagged = serde_json::json!({
+        "id": "018f8a01-9c20-ae05-b442-46dd3de2446c",
+        "name": "Routes",
+        "order": 1,
+        "defaultVisible": true,
+        "style": {"stroke": "#d5ab6c", "strokeWidth": 2},
+        "selector": {"anchorKind": "path", "roles": ["route"]},
+        "kind": "semantic"
+    });
+    let layer: LayerDefinition = serde_json::from_value(tagged).unwrap();
+    assert!(matches!(layer, LayerDefinition::Semantic(_)));
+}
+
+#[test]
+fn rejects_invalid_semantic_style_and_selector() {
+    let connection = maps_tables();
+    let map_id = Uuid::new_v4().to_string();
+    insert_entity(&connection, &map_id, MAP_ENTITY_TYPE);
+    let invalid_style = serde_json::json!({
+        "schemaVersion": 1,
+        "layers": [{
+            "id": Uuid::new_v4(),
+            "name": "Routes",
+            "order": 0,
+            "defaultVisible": true,
+            "style": {"unknown": true},
+            "selector": {}
+        }]
+    });
+    assert!(validate_field(&connection, &map_id, "layers", &invalid_style)
+        .unwrap_err()
+        .to_string()
+        .contains("unsupported property"));
+    let invalid_kind = serde_json::json!({
+        "schemaVersion": 1,
+        "layers": [{
+            "id": Uuid::new_v4(),
+            "name": "Routes",
+            "order": 0,
+            "defaultVisible": true,
+            "style": {},
+            "selector": {"anchorKind": "river"}
+        }]
+    });
+    assert!(validate_field(&connection, &map_id, "layers", &invalid_kind)
+        .unwrap_err()
+        .to_string()
+        .contains("anchorKind"));
 }
 
 #[test]

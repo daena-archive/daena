@@ -4080,6 +4080,8 @@ fn image_map_import_layer_mutations_and_checkpoint_rebuild() {
                 default_visible: Some(false),
                 opacity: Some(0.25),
                 locked: Some(true),
+                style: None,
+                selector: None,
             },
             &layers_revision,
             None,
@@ -4198,5 +4200,139 @@ fn image_map_runtime_bytes_survive_an_interrupted_export() {
     assert_eq!(std::fs::read(root.join(&imported.source.path)).unwrap(), png);
     assert_eq!(reopened.sync_summary().unwrap().state, "clean");
     drop(reopened);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn image_map_semantic_features_survive_checkpoint_rebuild_and_spatial_query() {
+    let root = std::env::temp_dir().join(format!("daena-image-map-semantic-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let png = crate::maps::encode_transparent_png(8, 6).unwrap();
+    let imported = store
+        .import_image_map(
+            "Atlas".into(),
+            png,
+            "image/png".into(),
+            "atlas.png".into(),
+            None,
+        )
+        .unwrap();
+    let layers_revision = store
+        .list_fields(imported.entity.id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "layers")
+        .unwrap()
+        .revision;
+    let overlay = store
+        .create_semantic_layer(
+            imported.entity.id.clone(),
+            "Routes".into(),
+            &layers_revision,
+            None,
+            Some(serde_json::json!({"stroke": "#d5ab6c", "strokeWidth": 2})),
+            Some(serde_json::json!({"roles": ["route"], "anchorKind": "path"})),
+        )
+        .unwrap();
+    assert_eq!(overlay.layers.value["layers"][0]["kind"], "semantic");
+    assert!(overlay.asset.is_none());
+
+    let place = store
+        .create_entity(CreateEntity {
+            name: "Coast road".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    let location_id = Uuid::new_v4().to_string();
+    store
+        .upsert_map_location(
+            place.id.clone(),
+            crate::maps::LocationReference {
+                id: location_id.clone(),
+                map_entity_id: imported.entity.id.clone(),
+                role: "route".into(),
+                label: "Coast road".into(),
+                anchor: crate::maps::Anchor::Path {
+                    points: vec![
+                        crate::maps::Point(0.1, 0.1),
+                        crate::maps::Point(0.4, 0.2),
+                        crate::maps::Point(0.7, 0.3),
+                    ],
+                },
+                validity: crate::maps::Validity {
+                    from: None,
+                    to: None,
+                },
+            },
+            None,
+        )
+        .unwrap();
+    let open_area = store.upsert_map_location(
+        place.id.clone(),
+        crate::maps::LocationReference {
+            id: Uuid::new_v4().to_string(),
+            map_entity_id: imported.entity.id.clone(),
+            role: "region".into(),
+            label: "Broken ring".into(),
+            anchor: crate::maps::Anchor::Area {
+                rings: vec![vec![
+                    crate::maps::Point(0.1, 0.1),
+                    crate::maps::Point(0.2, 0.1),
+                    crate::maps::Point(0.2, 0.2),
+                ]],
+            },
+            validity: crate::maps::Validity {
+                from: None,
+                to: None,
+            },
+        },
+        None,
+    );
+    assert!(open_area
+        .unwrap_err()
+        .to_string()
+        .contains("invalid geometry"));
+
+    let hits = store
+        .query_map_locations(imported.entity.id.clone(), 0.35, 0.15, 0.45, 0.25)
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0]["id"], location_id);
+    assert_eq!(hits[0]["anchor"]["kind"], "path");
+    assert_eq!(hits[0]["entityId"], place.id);
+    let miss = store
+        .query_map_locations(imported.entity.id.clone(), 0.9, 0.9, 1.0, 1.0)
+        .unwrap();
+    assert!(miss.is_empty());
+
+    store.flush_checkpoint("semantic features").unwrap();
+    let before = canonical_files(&root);
+    let map_id = imported.entity.id.clone();
+    drop(store);
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(canonical_files(&root), before);
+    let projection = rebuilt.map_location_projection(map_id.clone()).unwrap();
+    assert_eq!(projection[0]["anchor"]["kind"], "path");
+    assert_eq!(projection[0]["anchor"]["points"].as_array().unwrap().len(), 3);
+    let layers = rebuilt
+        .list_fields(map_id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "layers")
+        .unwrap();
+    assert_eq!(layers.value["layers"][0]["kind"], "semantic");
+    rebuilt
+        .delete_semantic_layer(map_id.clone(), overlay.layer_id.clone(), &layers.revision, None)
+        .unwrap();
+    let leftover = rebuilt
+        .list_fields(map_id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "layers")
+        .unwrap();
+    assert_eq!(leftover.value["layers"].as_array().unwrap().len(), 0);
+    assert_eq!(rebuilt.map_location_projection(map_id).unwrap().len(), 1);
+    drop(rebuilt);
     std::fs::remove_dir_all(root).unwrap();
 }

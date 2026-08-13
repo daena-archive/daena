@@ -1990,7 +1990,9 @@ async function ensureMapEditorOpen(mapEntityId: string) {
 async function beginMapPick(pending: NonNullable<typeof mapPickPending>) {
   mapPickPending = pending;
   mapPickNotice =
-    pending.kind === "rebind" ? "Click the map to rebind this location." : "Click the map to place this link.";
+    pending.kind === "rebind"
+      ? "Click the map to rebind this location."
+      : "Click for a point, or use Path/Area to draw a route or region.";
   await ensureMapEditorOpen(pending.mapEntityId);
   if (mapsEditorMode === "image") return;
   // Webview remounts when the map key changes; give the bridge a moment to boot.

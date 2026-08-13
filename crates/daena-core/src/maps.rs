@@ -20,6 +20,13 @@ pub use image::{
     IMAGE_MAX_PIXELS, IMAGE_MAX_RASTER_LAYERS, IMAGE_MAX_UNDO_BYTES,
 };
 
+/// Upper bound on vertices in a path or one area ring.
+pub const IMAGE_MAX_PATH_POINTS: usize = 256;
+/// Upper bound on rings in an area geometry.
+pub const IMAGE_MAX_AREA_RINGS: usize = 8;
+/// Upper bound on semantic overlay layers on one map.
+pub const IMAGE_MAX_SEMANTIC_LAYERS: usize = 32;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Point(pub f64, pub f64);
@@ -116,6 +123,12 @@ pub enum RasterLayerKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum SemanticLayerKind {
+    #[serde(rename = "semantic")]
+    Semantic,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticLayerDefinition {
     pub id: String,
@@ -125,6 +138,8 @@ pub struct SemanticLayerDefinition {
     pub default_visible: bool,
     pub style: Value,
     pub selector: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<SemanticLayerKind>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -186,6 +201,90 @@ impl LayerDefinition {
             Self::Semantic(layer) => (layer.order, layer.id.as_str()),
         }
     }
+}
+
+fn validate_semantic_style(style: &Value) -> Result<(), CoreError> {
+    let object = style
+        .as_object()
+        .ok_or_else(|| invalid("layer definition is invalid"))?;
+    for (key, value) in object {
+        match key.as_str() {
+            "color" | "stroke" | "fill" => {
+                let color = value
+                    .as_str()
+                    .ok_or_else(|| invalid("semantic style color values must be strings"))?;
+                if color.is_empty() || color.len() > 64 {
+                    return Err(invalid("semantic style color has invalid length"));
+                }
+            }
+            "strokeWidth" => {
+                let width = value.as_f64().ok_or_else(|| {
+                    invalid("semantic style.strokeWidth must be a finite number")
+                })?;
+                if !width.is_finite() || !(0.0..=32.0).contains(&width) {
+                    return Err(invalid(
+                        "semantic style.strokeWidth must be finite in [0, 32]",
+                    ));
+                }
+            }
+            "opacity" => {
+                let opacity = value
+                    .as_f64()
+                    .ok_or_else(|| invalid("semantic style.opacity must be a finite number"))?;
+                if !opacity.is_finite() || !(0.0..=1.0).contains(&opacity) {
+                    return Err(invalid("semantic style.opacity must be finite in [0, 1]"));
+                }
+            }
+            _ => {
+                return Err(invalid(
+                    "semantic style contains an unsupported property",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_semantic_selector(selector: &Value) -> Result<(), CoreError> {
+    let object = selector
+        .as_object()
+        .ok_or_else(|| invalid("layer definition is invalid"))?;
+    for (key, value) in object {
+        match key.as_str() {
+            "roles" => {
+                let roles = value
+                    .as_array()
+                    .ok_or_else(|| invalid("semantic selector.roles must be an array"))?;
+                if roles.len() > 32 {
+                    return Err(invalid("semantic selector.roles exceeds 32 entries"));
+                }
+                for role in roles {
+                    let role = role
+                        .as_str()
+                        .ok_or_else(|| invalid("semantic selector.roles must be strings"))?;
+                    if role.trim().is_empty() || role.len() > 128 {
+                        return Err(invalid("semantic selector role has invalid length"));
+                    }
+                }
+            }
+            "anchorKind" => {
+                let kind = value
+                    .as_str()
+                    .ok_or_else(|| invalid("semantic selector.anchorKind must be a string"))?;
+                if !matches!(kind, "point" | "path" | "area") {
+                    return Err(invalid(
+                        "semantic selector.anchorKind must be point, path, or area",
+                    ));
+                }
+            }
+            _ => {
+                return Err(invalid(
+                    "semantic selector contains an unsupported property",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn invalid(message: impl Into<String>) -> CoreError {
@@ -385,6 +484,11 @@ fn anchor(value: &Value) -> Result<Anchor, CoreError> {
                     "invalid geometry: path requires at least two points",
                 ));
             }
+            if points.len() > IMAGE_MAX_PATH_POINTS {
+                return Err(invalid(format!(
+                    "invalid geometry: path exceeds the budget of {IMAGE_MAX_PATH_POINTS} points"
+                )));
+            }
             for p in points {
                 point(p)?;
             }
@@ -393,11 +497,21 @@ fn anchor(value: &Value) -> Result<Anchor, CoreError> {
             if rings.is_empty() {
                 return Err(invalid("invalid geometry: area requires at least one ring"));
             }
+            if rings.len() > IMAGE_MAX_AREA_RINGS {
+                return Err(invalid(format!(
+                    "invalid geometry: area exceeds the budget of {IMAGE_MAX_AREA_RINGS} rings"
+                )));
+            }
             for ring in rings {
                 if ring.len() < 4 || ring.first() != ring.last() {
                     return Err(invalid(
                         "invalid geometry: area rings must be closed and contain at least four points",
                     ));
+                }
+                if ring.len() > IMAGE_MAX_PATH_POINTS {
+                    return Err(invalid(format!(
+                        "invalid geometry: area ring exceeds the budget of {IMAGE_MAX_PATH_POINTS} points"
+                    )));
                 }
                 for p in ring {
                     point(p)?;
@@ -521,6 +635,7 @@ pub fn validate_field(
         let mut raster_assets = BTreeSet::new();
         let mut sort_keys = BTreeSet::new();
         let mut raster_count = 0usize;
+        let mut semantic_count = 0usize;
         for layer in layers {
             let layer: LayerDefinition = serde_json::from_value(layer.clone())
                 .map_err(|_| invalid("layer definition is invalid"))?;
@@ -563,6 +678,15 @@ pub fn validate_field(
                 if raster_count > IMAGE_MAX_RASTER_LAYERS {
                     return Err(invalid(format!(
                         "raster layer count exceeds the budget of {IMAGE_MAX_RASTER_LAYERS}"
+                    )));
+                }
+            } else if let LayerDefinition::Semantic(semantic) = &layer {
+                validate_semantic_style(&semantic.style)?;
+                validate_semantic_selector(&semantic.selector)?;
+                semantic_count += 1;
+                if semantic_count > IMAGE_MAX_SEMANTIC_LAYERS {
+                    return Err(invalid(format!(
+                        "semantic layer count exceeds the budget of {IMAGE_MAX_SEMANTIC_LAYERS}"
                     )));
                 }
             }

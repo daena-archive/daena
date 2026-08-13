@@ -498,8 +498,11 @@ packaged desktop build.
   and area geometry, with entity links and optional validity.
 - Add selection, drawing, editing, styling, and hit testing without changing
   raster-layer assets.
-- Extend disposable projections for bounding boxes, reverse links, and spatial
-  queries.
+- Semantic features are the existing location records (`point`, `path`, `area`)
+  on linked entities. Semantic layers are overlay definitions with `style` and
+  `selector` (`roles`, `anchorKind`); optional `kind: "semantic"` is allowed.
+- Extend disposable projections for bounding boxes, reverse links, stored
+  geometry, and spatial queries (`query_map_locations`).
 
 **Exit gate:** Linked regions and routes survive rename, restart, checkpoint
 rebuild, and renderer-cache deletion; raster and semantic layers compose in one

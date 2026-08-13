@@ -4843,6 +4843,8 @@ fn dispatch_module_rpc(
                             .and_then(serde_json::Value::as_bool),
                         opacity: payload.get("opacity").and_then(serde_json::Value::as_f64),
                         locked: payload.get("locked").and_then(serde_json::Value::as_bool),
+                        style: payload.get("style").cloned(),
+                        selector: payload.get("selector").cloned(),
                     },
                     &expected_revision,
                     request_id,
@@ -6221,6 +6223,48 @@ async fn project_create_raster_layer(
 }
 
 #[tauri::command]
+async fn project_create_semantic_layer(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    name: String,
+    expected_revision: String,
+    style: Option<serde_json::Value>,
+    selector: Option<serde_json::Value>,
+    request_id: Option<String>,
+) -> Result<daena_core::RasterLayerChange, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.create_semantic_layer(
+            map_entity_id,
+            name,
+            &expected_revision,
+            request_id.as_deref(),
+            style,
+            selector,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_delete_semantic_layer(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    layer_id: String,
+    expected_revision: String,
+    request_id: Option<String>,
+) -> Result<daena_core::RasterLayerChange, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.delete_semantic_layer(
+            map_entity_id,
+            layer_id,
+            &expected_revision,
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
 async fn project_update_map_layer(
     state: tauri::State<'_, SharedCore>,
     map_entity_id: String,
@@ -6231,6 +6275,8 @@ async fn project_update_map_layer(
     default_visible: Option<bool>,
     opacity: Option<f64>,
     locked: Option<bool>,
+    style: Option<serde_json::Value>,
+    selector: Option<serde_json::Value>,
     request_id: Option<String>,
 ) -> Result<daena_core::RasterLayerChange, String> {
     with_core(state, move |core| {
@@ -6243,6 +6289,8 @@ async fn project_update_map_layer(
                 default_visible,
                 opacity,
                 locked,
+                style,
+                selector,
             },
             &expected_revision,
             request_id.as_deref(),
@@ -6305,6 +6353,21 @@ async fn project_map_location_projection(
 ) -> Result<Vec<serde_json::Value>, String> {
     with_read_project(state, move |project| {
         project.map_location_projection(map_entity_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_query_map_locations(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    min_x: f64,
+    min_y: f64,
+    max_x: f64,
+    max_y: f64,
+) -> Result<Vec<serde_json::Value>, String> {
+    with_read_project(state, move |project| {
+        project.query_map_locations(map_entity_id, min_x, min_y, max_x, max_y)
     })
     .await
 }
@@ -6622,10 +6685,13 @@ pub fn run() {
             project_import_image_map_file,
             project_read_asset_bytes,
             project_create_raster_layer,
+            project_create_semantic_layer,
             project_update_map_layer,
             project_delete_raster_layer,
+            project_delete_semantic_layer,
             project_replace_asset_bytes,
             project_map_location_projection,
+            project_query_map_locations,
             project_backup,
             project_export_markdown,
             project_recovery_backup,

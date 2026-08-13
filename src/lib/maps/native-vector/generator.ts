@@ -1,6 +1,6 @@
 import { contours } from "d3-contour";
 
-export const GENERATOR_VERSION = 2 as const;
+export const GENERATOR_VERSION = 3 as const;
 export const CANDIDATE_COUNT = 6;
 const GRID_WIDTH = 512;
 const GRID_HEIGHT = 256;
@@ -12,16 +12,17 @@ const LAT_SPAN = 150;
 const SCALE = 1_000_000;
 const ANTIMERIDIAN = 180_000_000;
 const MIN_GRID_AREA = 4;
-const BASE_RX = [0.38, 0.34, 0.3, 0.27, 0.24, 0.22, 0.2, 0.18];
+const BASE_RX = [0.27, 0.235, 0.2, 0.185, 0.17, 0.16, 0.15, 0.14];
 const NOISE_AMPLITUDE = {
   low: [1, 0.35, 0.12, 0.04, 0.01],
   medium: [1, 0.5, 0.25, 0.125, 0.0625],
   high: [1, 0.65, 0.42, 0.27, 0.18],
 } as const;
-const SIMPLIFY_THRESHOLD = { low: 0.81, medium: 0.2, high: 0.06 } as const;
-const ISLAND_COUNT = { none: 0, low: 4, medium: 10, high: 20 } as const;
-const CONTINENT_LOBES = 5;
-const NOISE_STRENGTH = 0.7;
+const SIMPLIFY_THRESHOLD = { low: 0.35, medium: 0.06, high: 0.015 } as const;
+const ARCHIPELAGO_COUNT = { none: 0, low: 2, medium: 4, high: 7 } as const;
+const CONTINENT_LOBES = 8;
+const BAY_COUNT = 4;
+const NOISE_STRENGTH = { low: 0.18, medium: 0.28, high: 0.38 } as const;
 const WARP_X = 0x51ed;
 const WARP_Y = 0xa31c;
 const MASS_MASK = 0xc0a5;
@@ -30,7 +31,7 @@ export type CoastlineRoughness = "low" | "medium" | "high";
 export type IslandFrequency = "none" | "low" | "medium" | "high";
 
 export type NativeGeneratorSettings = {
-  generatorVersion: 2;
+  generatorVersion: 3;
   seed: number;
   landPercent: number;
   continentCount: number;
@@ -48,7 +49,7 @@ export type NativeGeneratorCandidate = {
 export const DEFAULT_GENERATOR_SETTINGS: NativeGeneratorSettings = {
   generatorVersion: GENERATOR_VERSION,
   seed: 831429,
-  landPercent: 40,
+  landPercent: 30,
   continentCount: 3,
   coastlineRoughness: "medium",
   islandFrequency: "medium",
@@ -111,7 +112,8 @@ type Micro = { lon: number; lat: number };
 type Ring = Micro[];
 type Polygon = { exterior: Ring; holes: Ring[]; area: bigint };
 
-type Kernel = { cx: number; cy: number; rx: number; ry: number; shear: number };
+type Kernel = { cx: number; cy: number; rx: number; ry: number; ux: number; uy: number; shear: number };
+type ContinentAnchor = Kernel;
 
 function compactKernel(dx: number, dy: number, rx: number, ry: number, shear: number) {
   const wx = dx + shear * dy;
@@ -119,17 +121,47 @@ function compactKernel(dx: number, dy: number, rx: number, ry: number, shear: nu
   return q < 1 ? (1 - q) * (1 - q) : 0;
 }
 
-function maxKernel(kernels: readonly Kernel[], x: number, y: number, scale = 1) {
+function kernelCoordinates(kernel: Kernel, x: number, y: number): [number, number] {
+  const dx = x - kernel.cx;
+  const dy = y - kernel.cy;
+  const along = dx * kernel.ux + dy * kernel.uy;
+  const across = -dx * kernel.uy + dy * kernel.ux;
+  return [along + kernel.shear * across, across];
+}
+
+function compactOrientedKernel(kernel: Kernel, x: number, y: number) {
+  const [along, across] = kernelCoordinates(kernel, x, y);
+  return compactKernel(along, across, kernel.rx, kernel.ry, 0);
+}
+
+function signedOrientedKernel(kernel: Kernel, x: number, y: number) {
+  const [along, across] = kernelCoordinates(kernel, x, y);
+  const q = (along / kernel.rx) * (along / kernel.rx) + (across / kernel.ry) * (across / kernel.ry);
+  return 1 - q;
+}
+
+function maxCompactKernel(kernels: readonly Kernel[], x: number, y: number, scale = 1) {
   let field = 0;
   for (const kernel of kernels) {
-    field = Math.max(field, compactKernel(x - kernel.cx, y - kernel.cy, kernel.rx, kernel.ry, kernel.shear) * scale);
+    field = Math.max(field, compactOrientedKernel(kernel, x, y) * scale);
   }
   return field;
 }
 
+function maxSignedKernel(kernels: readonly Kernel[], x: number, y: number) {
+  let field = -Infinity;
+  for (const kernel of kernels) field = Math.max(field, signedOrientedKernel(kernel, x, y));
+  return field;
+}
+
+function unitVector(x: number, y: number): [number, number] {
+  const length = Math.hypot(x, y);
+  return length < 1e-9 ? [1, 0] : [x / length, y / length];
+}
+
 function domainWarp(candidate: number, x: number, y: number): [number, number] {
-  const warpX = valueNoise(candidate ^ WARP_X, x, y, 2) * 0.24 + valueNoise(candidate ^ WARP_X, x, y, 4) * 0.08;
-  const warpY = valueNoise(candidate ^ WARP_Y, x, y, 2) * 0.18 + valueNoise(candidate ^ WARP_Y, x, y, 4) * 0.07;
+  const warpX = valueNoise(candidate ^ WARP_X, x, y, 2) * 0.09 + valueNoise(candidate ^ WARP_X, x, y, 5) * 0.035;
+  const warpY = valueNoise(candidate ^ WARP_Y, x, y, 2) * 0.07 + valueNoise(candidate ^ WARP_Y, x, y, 5) * 0.03;
   return [x + warpX, y + warpY];
 }
 
@@ -206,7 +238,9 @@ function rotateLexGrid(ring: number[][]) {
       bestSeq = seq;
     }
   }
-  return best === 0 ? ring.slice() : Array.from({ length: ring.length }, (_, offset) => ring[(best + offset) % ring.length]);
+  return best === 0
+    ? ring.slice()
+    : Array.from({ length: ring.length }, (_, offset) => ring[(best + offset) % ring.length]);
 }
 
 function perpendicularDistanceSquared(point: number[], start: number[], end: number[]) {
@@ -224,7 +258,10 @@ function perpendicularDistanceSquared(point: number[], start: number[], end: num
 }
 
 function simplifyGridRing(ring: number[][], threshold: number) {
-  const open = ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? ring.slice(0, -1) : ring.slice();
+  const open =
+    ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+      ? ring.slice(0, -1)
+      : ring.slice();
   if (open.length < 3) return null;
   const rotated = rotateLexGrid(open).map((point, original) => ({ point, original }));
   while (rotated.length > 3) {
@@ -275,15 +312,28 @@ function signedArea(ring: Ring) {
 }
 
 function orient(a: Micro, b: Micro, c: Micro) {
-  return (BigInt(b.lon) - BigInt(a.lon)) * (BigInt(c.lat) - BigInt(a.lat)) - (BigInt(b.lat) - BigInt(a.lat)) * (BigInt(c.lon) - BigInt(a.lon));
+  return (
+    (BigInt(b.lon) - BigInt(a.lon)) * (BigInt(c.lat) - BigInt(a.lat)) -
+    (BigInt(b.lat) - BigInt(a.lat)) * (BigInt(c.lon) - BigInt(a.lon))
+  );
 }
 
 function onSegment(a: Micro, b: Micro, c: Micro) {
-  return c.lon >= Math.min(a.lon, b.lon) && c.lon <= Math.max(a.lon, b.lon) && c.lat >= Math.min(a.lat, b.lat) && c.lat <= Math.max(a.lat, b.lat);
+  return (
+    c.lon >= Math.min(a.lon, b.lon) &&
+    c.lon <= Math.max(a.lon, b.lon) &&
+    c.lat >= Math.min(a.lat, b.lat) &&
+    c.lat <= Math.max(a.lat, b.lat)
+  );
 }
 
 function segmentsIntersect(a: Micro, b: Micro, c: Micro, d: Micro) {
-  if ((a.lon === c.lon && a.lat === c.lat) || (a.lon === d.lon && a.lat === d.lat) || (b.lon === c.lon && b.lat === c.lat) || (b.lon === d.lon && b.lat === d.lat)) {
+  if (
+    (a.lon === c.lon && a.lat === c.lat) ||
+    (a.lon === d.lon && a.lat === d.lat) ||
+    (b.lon === c.lon && b.lat === c.lat) ||
+    (b.lon === d.lon && b.lat === d.lat)
+  ) {
     return false;
   }
   const o1 = Number(orient(a, b, c) === 0n ? 0n : orient(a, b, c) > 0n ? 1n : -1n);
@@ -291,7 +341,12 @@ function segmentsIntersect(a: Micro, b: Micro, c: Micro, d: Micro) {
   const o3 = Number(orient(c, d, a) === 0n ? 0n : orient(c, d, a) > 0n ? 1n : -1n);
   const o4 = Number(orient(c, d, b) === 0n ? 0n : orient(c, d, b) > 0n ? 1n : -1n);
   if (o1 !== o2 && o3 !== o4) return true;
-  return (o1 === 0 && onSegment(a, b, c)) || (o2 === 0 && onSegment(a, b, d)) || (o3 === 0 && onSegment(c, d, a)) || (o4 === 0 && onSegment(c, d, b));
+  return (
+    (o1 === 0 && onSegment(a, b, c)) ||
+    (o2 === 0 && onSegment(a, b, d)) ||
+    (o3 === 0 && onSegment(c, d, a)) ||
+    (o4 === 0 && onSegment(c, d, b))
+  );
 }
 
 function crossesAntimeridian(a: Micro, b: Micro) {
@@ -304,7 +359,10 @@ function dedupClose(positions: Micro[]) {
     const previous = unique[unique.length - 1];
     if (!previous || previous.lon !== position.lon || previous.lat !== position.lat) unique.push(position);
   }
-  if (unique.length && (unique[0].lon !== unique[unique.length - 1].lon || unique[0].lat !== unique[unique.length - 1].lat)) {
+  if (
+    unique.length &&
+    (unique[0].lon !== unique[unique.length - 1].lon || unique[0].lat !== unique[unique.length - 1].lat)
+  ) {
     unique.push({ ...unique[0] });
   }
   return unique;
@@ -318,9 +376,6 @@ function canonicalRing(positions: Micro[], hole: boolean): Ring | null {
   for (let index = 0; index < ring.length - 1; index += 1) {
     if (crossesAntimeridian(ring[index], ring[index + 1])) return null;
   }
-  const minLon = Math.min(...open.map((coord) => coord.lon));
-  const maxLon = Math.max(...open.map((coord) => coord.lon));
-  if (maxLon - minLon > ANTIMERIDIAN) return null;
   const n = open.length;
   for (let i = 0; i < n; i += 1) {
     const a = open[i];
@@ -401,76 +456,219 @@ function prepareRing(ring: number[][], threshold: number, hole: boolean) {
 function generateOne(settings: NativeGeneratorSettings, index: number): NativeGeneratorCandidate {
   const seed = candidateSeed(settings.seed, index);
   let state = seed;
-  const values = new Float64Array(VALUE_COUNT);
-  const continents: Kernel[] = [];
-  const baseRx = BASE_RX[settings.continentCount - 1];
-  for (let count = 0; count < settings.continentCount; count += 1) {
+  const take = () => {
     let value: number;
     [value, state] = next(state);
-    const cx = 0.1 + value * 0.8;
-    [value, state] = next(state);
-    const cy = 0.15 + value * 0.7;
-    [value, state] = next(state);
-    const rx = baseRx * (0.72 + value * 0.36);
-    [value, state] = next(state);
-    const aspect = 0.34 + value * 0.38;
+    return value;
+  };
+  const values = new Float64Array(VALUE_COUNT);
+  const continentGroups: Kernel[][] = [];
+  const continentAnchors: ContinentAnchor[] = [];
+  const bayGroups: Kernel[][] = [];
+  const baseRx = BASE_RX[settings.continentCount - 1];
+  for (let count = 0; count < settings.continentCount; count += 1) {
+    let cx = 0.5;
+    let cy = 0.5;
+    let bestScore = -Infinity;
+    // Best-candidate placement keeps the requested bodies distinct instead of
+    // allowing several random cores to collapse into one central supercontinent.
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const candidateX = 0.1 + take() * 0.8;
+      const candidateY = 0.14 + take() * 0.72;
+      const edgeScore = Math.min(candidateX - 0.06, 0.94 - candidateX, candidateY - 0.08, 0.92 - candidateY) * 3;
+      let separation = Infinity;
+      for (const anchor of continentAnchors) {
+        separation = Math.min(
+          separation,
+          Math.hypot((candidateX - anchor.cx) / (baseRx + anchor.rx), (candidateY - anchor.cy) / (baseRx + anchor.ry)),
+        );
+      }
+      const score = Math.min(edgeScore, separation);
+      if (score > bestScore) {
+        bestScore = score;
+        cx = candidateX;
+        cy = candidateY;
+      }
+    }
+    const rx = baseRx * (0.78 + take() * 0.34);
+    const aspect = 0.7 + take() * 0.4;
     const ry = rx * aspect;
-    [value, state] = next(state);
-    const shear = (value * 2 - 1) * 0.85;
-    continents.push({ cx, cy, rx, ry, shear });
+    // Longitude covers more than twice the preview distance of latitude, so
+    // temper the normalized x component to avoid implausibly wide continents.
+    const [ux, uy] = unitVector((take() * 2 - 1) * 0.42, take() * 2 - 1);
+    const shear = (take() * 2 - 1) * 0.32;
+    const anchor = { cx, cy, rx, ry, ux, uy, shear };
+    continentAnchors.push(anchor);
+    const continentGroup = [anchor];
+    continentGroups.push(continentGroup);
+    const bayGroup: Kernel[] = [];
+    bayGroups.push(bayGroup);
+
+    // A tapered, gently wandering spine gives each mass a geological axis.
+    // Overlapping side lobes become capes and peninsulas rather than radial bumps.
     for (let lobe = 0; lobe < CONTINENT_LOBES; lobe += 1) {
-      [value, state] = next(state);
-      const dirX = value * 2 - 1;
-      [value, state] = next(state);
-      const dirY = value * 2 - 1;
-      [value, state] = next(state);
-      const reach = 0.72 + value * 0.58;
-      [value, state] = next(state);
-      const lobeRx = rx * (0.22 + value * 0.32);
-      [value, state] = next(state);
-      const lobeAspect = 0.32 + value * 0.95;
-      [value, state] = next(state);
-      const lobeShear = (value * 2 - 1) * 1.1;
-      continents.push({
-        cx: cx + dirX * rx * reach,
-        cy: cy + dirY * ry * reach,
+      const along = ((lobe + 0.5) / CONTINENT_LOBES) * 2 - 1 + (take() * 2 - 1) * 0.16;
+      const side = (take() * 2 - 1) * (0.38 + 0.24 * Math.abs(along));
+      const taper = 1 - Math.abs(along) * 0.38;
+      const lobeRx = rx * (0.34 + take() * 0.24) * taper;
+      const lobeRy = ry * (0.46 + take() * 0.45) * taper;
+      const [lobeUx, lobeUy] = unitVector(ux - uy * side * 0.35, uy + ux * side * 0.35);
+      const component = {
+        cx: cx + ux * along * rx * 0.88 - uy * side * ry,
+        cy: cy + uy * along * rx * 0.88 + ux * side * ry,
         rx: lobeRx,
-        ry: lobeRx * lobeAspect,
-        shear: lobeShear,
+        ry: lobeRy,
+        ux: lobeUx,
+        uy: lobeUy,
+        shear: (take() * 2 - 1) * 0.42,
+      };
+      continentGroup.push(component);
+    }
+
+    // Subtractive kernels bite into alternating sides of the continental shelf.
+    // They create gulfs, straits, and inland seas without scattering ocean noise.
+    for (let bay = 0; bay < BAY_COUNT; bay += 1) {
+      const along = -0.7 + ((bay + take()) / BAY_COUNT) * 1.4;
+      const side = (bay + count) % 2 === 0 ? 1 : -1;
+      const bayRx = rx * (0.16 + take() * 0.12);
+      const bayRy = ry * (0.34 + take() * 0.24);
+      const bayKernel = {
+        cx: cx + ux * along * rx - uy * side * ry * (0.82 + take() * 0.2),
+        cy: cy + uy * along * rx + ux * side * ry * (0.82 + take() * 0.2),
+        rx: bayRx,
+        ry: bayRy,
+        ux,
+        uy,
+        shear: (take() * 2 - 1) * 0.25,
+      };
+      bayGroup.push(bayKernel);
+    }
+  }
+
+  const separators: Kernel[] = [];
+  for (let left = 0; left < continentAnchors.length; left += 1) {
+    for (let right = left + 1; right < continentAnchors.length; right += 1) {
+      const a = continentAnchors[left];
+      const b = continentAnchors[right];
+      const [towardX, towardY] = unitVector(b.cx - a.cx, b.cy - a.cy);
+      const alongX = -towardY;
+      const alongY = towardX;
+      const distance = Math.hypot(b.cx - a.cx, b.cy - a.cy);
+      const extent = Math.min(0.38, 0.24 + distance * 0.24);
+      for (let segment = -5; segment <= 5; segment += 1) {
+        const offset = segment / 5;
+        const wobble =
+          valueNoise(seed ^ Math.imul(left + 1, 0x45d9) ^ Math.imul(right + 1, 0x119d), offset, distance, 3) * 0.045;
+        const radius = 0.052 + valueNoise(seed ^ Math.imul(segment + 7, 0x27d4), distance, offset, 4) * 0.008;
+        separators.push({
+          cx: (a.cx + b.cx) / 2 + alongX * offset * extent + towardX * wobble,
+          cy: (a.cy + b.cy) / 2 + alongY * offset * extent + towardY * wobble,
+          rx: radius * 1.25,
+          ry: radius,
+          ux: alongX,
+          uy: alongY,
+          shear: valueNoise(seed ^ 0x7f4a, offset, distance, 5) * 0.25,
+        });
+      }
+    }
+  }
+  // Adapter v1 cannot persist a ring wider than 180 degrees. A narrow,
+  // seed-warped pole-to-pole ocean passage keeps every generated ring on one
+  // side of that boundary without clipping otherwise valid land.
+  for (let segment = -1; segment <= 17; segment += 1) {
+    const y = segment / 16;
+    separators.push({
+      cx: 0.5 + valueNoise(seed ^ 0x6a09, y, 0.5, 3) * 0.035,
+      cy: y,
+      rx: 0.075,
+      ry: 0.035,
+      ux: 0,
+      uy: 1,
+      shear: valueNoise(seed ^ 0xbb67, y, 0.5, 4) * 0.2,
+    });
+  }
+
+  const islands: Kernel[] = [];
+  const archipelagoCount = ARCHIPELAGO_COUNT[settings.islandFrequency];
+  for (let cluster = 0; cluster < archipelagoCount; cluster += 1) {
+    const anchor =
+      continentAnchors[Math.min(continentAnchors.length - 1, Math.floor(take() * continentAnchors.length))];
+    const [outX, outY] = unitVector(take() * 2 - 1, take() * 2 - 1);
+    const tangentX = -outY;
+    const tangentY = outX;
+    const localX = anchor.ux * outX * anchor.rx - anchor.uy * outY * anchor.ry;
+    const localY = anchor.uy * outX * anchor.rx + anchor.ux * outY * anchor.ry;
+    const centerX = Math.max(0.05, Math.min(0.95, anchor.cx + localX * (1.08 + take() * 0.24)));
+    const centerY = Math.max(0.07, Math.min(0.93, anchor.cy + localY * (1.08 + take() * 0.24)));
+    const memberCount = 4 + Math.floor(take() * 5);
+    const spacing = 0.02 + take() * 0.012;
+    for (let member = 0; member < memberCount; member += 1) {
+      const offset = member - (memberCount - 1) / 2;
+      const curve = offset * offset * 0.002;
+      const islandRx = 0.006 + take() * 0.007;
+      const aspect = 0.55 + take() * 0.9;
+      const [islandUx, islandUy] = unitVector(
+        tangentX + outX * (take() * 0.5 - 0.25),
+        tangentY + outY * (take() * 0.5 - 0.25),
+      );
+      islands.push({
+        cx: centerX + tangentX * offset * spacing + outX * curve + (take() * 2 - 1) * 0.006,
+        cy: centerY + tangentY * offset * spacing + outY * curve + (take() * 2 - 1) * 0.006,
+        rx: islandRx,
+        ry: islandRx * aspect,
+        ux: islandUx,
+        uy: islandUy,
+        shear: (take() * 2 - 1) * 0.28,
       });
     }
   }
-  const islands: Kernel[] = [];
-  const islandCount = ISLAND_COUNT[settings.islandFrequency];
-  for (let count = 0; count < islandCount; count += 1) {
-    let value: number;
-    [value, state] = next(state);
-    const cx = 0.05 + value * 0.9;
-    [value, state] = next(state);
-    const cy = 0.1 + value * 0.8;
-    [value, state] = next(state);
-    const rx = 0.015 + value * 0.035;
-    [value, state] = next(state);
-    const aspect = 0.6 + value * 0.8;
-    islands.push({ cx, cy, rx, ry: rx * aspect, shear: 0 });
-  }
   const amplitudes = NOISE_AMPLITUDE[settings.coastlineRoughness];
   const amplitudeSum = amplitudes.reduce((sum, value) => sum + value, 0);
+  const targetPerContinent = Math.min(0.7, (settings.landPercent / 100 / continentGroups.length) * 1.08);
+  const groupThresholds = continentGroups.map((group, groupIndex) => {
+    const sampleWidth = 128;
+    const sampleHeight = 64;
+    const samples = new Float64Array(sampleWidth * sampleHeight);
+    for (let row = 0; row < sampleHeight; row += 1) {
+      for (let column = 0; column < sampleWidth; column += 1) {
+        const x = (column + 0.5) / sampleWidth;
+        const y = (row + 0.5) / sampleHeight;
+        const [sx, sy] = domainWarp(seed, x, y);
+        samples[row * sampleWidth + column] =
+          maxSignedKernel(group, sx, sy) +
+          valueNoise(seed ^ MASS_MASK ^ Math.imul(groupIndex + 1, 0x9e37), sx, sy, 3) * 0.2 -
+          maxCompactKernel(bayGroups[groupIndex], sx, sy, 4);
+      }
+    }
+    samples.sort();
+    const rank = Math.max(0, Math.min(samples.length - 1, Math.floor((1 - targetPerContinent) * samples.length)));
+    return samples[rank];
+  });
   for (let row = 0; row < GRID_HEIGHT; row += 1) {
     for (let column = 0; column < GRID_WIDTH; column += 1) {
       const cellIndex = row * GRID_WIDTH + column;
       const x = (column + 0.5) / GRID_WIDTH;
       const y = (row + 0.5) / GRID_HEIGHT;
       const [sx, sy] = domainWarp(seed, x, y);
-      let continentField = maxKernel(continents, sx, sy);
-      continentField *= 0.48 + 0.52 * valueNoise(seed ^ MASS_MASK, sx, sy, 3);
-      const islandField = maxKernel(islands, sx, sy, 0.55);
+      let continentField = -Infinity;
+      for (let groupIndex = 0; groupIndex < continentGroups.length; groupIndex += 1) {
+        const groupField =
+          maxSignedKernel(continentGroups[groupIndex], sx, sy) +
+          valueNoise(seed ^ MASS_MASK ^ Math.imul(groupIndex + 1, 0x9e37), sx, sy, 3) * 0.2 -
+          maxCompactKernel(bayGroups[groupIndex], sx, sy, 4) -
+          groupThresholds[groupIndex];
+        continentField = Math.max(continentField, groupField);
+      }
+      continentField -= maxCompactKernel(separators, sx, sy, 80);
+      const islandField = islands.length === 0 ? -Infinity : maxSignedKernel(islands, sx, sy) * 0.9 + 0.25;
       let noise = 0;
       for (let octave = 0; octave < amplitudes.length; octave += 1) {
         noise += valueNoise(seed, sx, sy, 2 ** octave) * amplitudes[octave];
       }
-      noise = (noise / amplitudeSum) * NOISE_STRENGTH;
-      values[cellIndex] = Math.max(continentField, islandField) + noise + cellIndex * 2 ** -40;
+      noise = (noise / amplitudeSum) * NOISE_STRENGTH[settings.coastlineRoughness];
+      const edgeDistance = Math.min(x, 1 - x, y, 1 - y);
+      const edgePenalty = edgeDistance < 0.04 ? ((0.04 - edgeDistance) / 0.04) * 24 : 0;
+      values[cellIndex] = Math.max(continentField, islandField) + noise - edgePenalty + cellIndex * 2 ** -40;
     }
   }
   const sorted = Float64Array.from(values);
@@ -500,7 +698,10 @@ function generateOne(settings: NativeGeneratorSettings, index: number): NativeGe
   }
   polygons.sort(comparePolygons);
   const collection = `{"type":"FeatureCollection","features":[${polygons
-    .map((polygon) => `{"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":${serializePolygon(polygon)}}}`)
+    .map(
+      (polygon) =>
+        `{"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":${serializePolygon(polygon)}}}`,
+    )
     .join(",")}]}`;
   return { index, seed, collection, svg: svgPath(polygons) };
 }

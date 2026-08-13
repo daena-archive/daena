@@ -93,7 +93,7 @@ for (const required of [
   "contours()",
   'viewBox="0 0 340 150"',
   "daena-landmass",
-  "GENERATOR_VERSION = 2",
+  "GENERATOR_VERSION = 3",
   "CONTINENT_LOBES",
   "NOISE_STRENGTH",
 ]) {

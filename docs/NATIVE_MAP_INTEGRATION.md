@@ -336,11 +336,11 @@ limit or geometry rule requires an adapter-version compatibility decision.
 Generation runs in a bundled Web Worker so six candidates cannot block the
 Svelte UI. It performs no network, filesystem, Tauri, or project mutation.
 
-Version 2 has these inputs:
+Version 3 has these inputs:
 
 ```ts
 type NativeGeneratorSettings = {
-  generatorVersion: 2;
+  generatorVersion: 3;
   seed: number; // uint32
   landPercent: number; // integer 15..70
   continentCount: number; // integer 1..8
@@ -352,7 +352,7 @@ type NativeGeneratorSettings = {
 The algorithm is fixed for reproducibility:
 
 1. Derive each of six candidate seeds with `mix32(seed ^
-   Math.imul(index + 1, 0x9e3779b9))`.
+Math.imul(index + 1, 0x9e3779b9))`.
 2. Use these reference integer functions verbatim. Mulberry32 is the only PRNG;
    never use `Math.random`.
 
@@ -378,56 +378,50 @@ The algorithm is fixed for reproducibility:
 3. Evaluate a `512 x 256` row-major scalar field. Cell `(column, row)` samples
    normalized coordinates `x = (column + .5) / 512` and
    `y = (row + .5) / 256`; `cellIndex = row * 512 + column`.
-4. Place `continentCount` continent bodies. Each body is the maximum of one
-   sheared compact kernel plus five offset lobe kernels, so landmasses form
-   peninsulas and bays instead of ovals. Sequential PRNG values: core centers
-   in normalized `[0.1, 0.9] x [0.15, 0.85]`; base x radii for counts 1
-   through 8 are `[.38, .34, .30, .27, .24, .22, .20, .18]`, multiplied by
-   `[.72, 1.08]`; core y/x aspect is `[.34, .72]`; core shear is
-   `(2u-1)*.85`. Each lobe consumes six PRNG values: direction x/y in
-   `[-1, 1]`, reach `[.72, 1.3]`, lobe rx `coreRx*[.22, .54]`, lobe aspect
-   `[.32, 1.27]`, lobe shear `(2u-1)*1.1`. Kernel evaluation shears first:
-   `wx = dx + shear*dy`, then `q = (wx/rx)^2 + (dy/ry)^2`, and the kernel is
-   `q < 1 ? (1 - q)^2 : 0`. Before sampling kernels at `(x, y)`, domain-warp
-   the point:
-   `warpX = valueNoise(seed^0x51ed, x, y, 2)*.24 + valueNoise(seed^0x51ed, x, y, 4)*.08`
-   and `warpY` with `0xa31c` and amplitudes `.18` / `.07`. Multiply the
-   continent field by `0.48 + 0.52 * valueNoise(seed^0xc0a5, sx, sy, 3)`.
-   This intentionally avoids transcendental math.
-5. Add five octaves of lattice value noise at frequencies `1, 2, 4, 8, 16`,
-   sampled at the warped coordinates. For each frequency, use domain
-   coordinates `(sx * frequency, sy * frequency)` and the four surrounding
-   integer lattice points. A lattice value is
-   `2 * mix32(candidateSeed ^ Math.imul(ix, 0x1f123bb5) ^
-   Math.imul(iy, 0x5f356495)) / 2^32 - 1`. Interpolate x and then y with
-   `t * t * (3 - 2 * t)`. Multiply each octave by its selected amplitude, sum,
-   and divide by the exact sum of amplitudes:
-   low `[1, .35, .12, .04, .01]`, medium `[1, .5, .25, .125, .0625]`, or high
-   `[1, .65, .42, .27, .18]`. Multiply the normalized result by `0.7`.
-6. Add compact elliptical island kernels with counts `0, 4, 10, 20` for
-   none/low/medium/high. Sequential PRNG values produce center x in
-   `[.05, .95]`, center y in `[.1, .9]`, x radius as `.015 + value * .035`,
-   and y/x aspect as `.6 + value * .8`; y radius is their product; shear is
-   `0`. Multiply the compact-kernel formula by `.55` and take the maximum
-   across islands, sampling at the same domain-warped coordinates as the
-   continents. The scalar field is `max(continentField, islandField) + noise`.
-7. Add `cellIndex * 2^-40` to break exact scalar ties. Sort a
+4. Place `continentCount` continent cores with a deterministic 12-sample
+   best-candidate pass. The pass favors ocean margins and distance from the
+   previously accepted cores, preventing several requested continents from
+   collapsing onto the same center. Each core has an arbitrary normalized
+   axis, a count-adjusted radius, and an elliptical aspect.
+5. Build each continent independently from the core plus eight tapered lobes
+   along a gently wandering spine. Four subtractive shelf kernels alternate
+   sides to form connected bays and gulfs. Evaluate the oriented kernels as
+   signed elliptical distance fields. Sample each continent on a deterministic
+   `128 x 64` grid and subtract its own land-rank threshold before combining
+   the groups. This normalization prevents one broad core from consuming the
+   complete global land budget. Pairwise chains of small, overlapping water
+   kernels maintain meandering ocean passages between otherwise touching
+   continent groups. A narrow seed-warped pole-to-pole passage also keeps every
+   generated adapter-v1 ring within the 180-degree longitude-span contract.
+6. Domain-warp every sample with two low-frequency value-noise octaves. The x
+   amplitudes are `.09` and `.035`; the y amplitudes are `.07` and `.03`.
+   Add five coastline octaves at frequencies `1, 2, 4, 8, 16`. The octave
+   weights remain low `[1, .35, .12, .04, .01]`, medium
+   `[1, .5, .25, .125, .0625]`, and high `[1, .65, .42, .27, .18]`; normalized
+   strengths are `.18`, `.28`, and `.38`. Lattice values and smoothstep
+   interpolation continue to use the fixed `mix32` contract.
+7. Generate `0`, `2`, `4`, or `7` archipelagos for none, low, medium, or high.
+   Every archipelago is anchored just beyond a selected continental shelf and
+   contains four to eight small oriented kernels along a curved, jittered arc.
+   This produces island chains and offshore islets instead of uniformly
+   scattering unrelated ellipses through the ocean.
+8. Add `cellIndex * 2^-40` to break exact scalar ties. Sort a
    copy of the values numerically and choose the midpoint between the adjacent
    values around rank `floor((1 - landPercent / 100) * valueCount)`. This is
    the single contour threshold.
-8. Extract polygons using `d3-contour` with smoothing enabled. Convert contour
+9. Extract polygons using `d3-contour` with smoothing enabled. Convert contour
    coordinates linearly to the generation extent. Rotate each unclosed grid
    ring to its lexicographically smallest point, then simplify cyclically:
    repeatedly remove the vertex with the smallest squared perpendicular
-   distance to its two neighbors while that distance is below `.81`, `.2`, or
-   `.06` grid cells squared for low, medium, or high roughness. Equal-distance
+   distance to its two neighbors while that distance is below `.35`, `.06`, or
+   `.015` grid cells squared for low, medium, or high roughness. Equal-distance
    ties remove the lowest original vertex index; never remove below three
    vertices; then close the ring.
-9. Run the canonical ring cleanup and winding rules, drop polygons below four
-   grid cells of absolute area, and sort polygons by descending absolute area,
-   breaking ties by canonical coordinate sequence. Emit one candidate
-   `Feature` with `Polygon` geometry per surviving exterior and its contained
-   holes; do not emit `MultiPolygon` candidates.
+10. Run the canonical ring cleanup and winding rules, drop polygons below four
+    grid cells of absolute area, and sort polygons by descending absolute area,
+    breaking ties by canonical coordinate sequence. Emit one candidate
+    `Feature` with `Polygon` geometry per surviving exterior and its contained
+    holes; do not emit `MultiPolygon` candidates.
 
 Candidate previews use one deterministic SVG string per candidate, not
 MapLibre or Canvas. Serialize compact SVG with
@@ -452,10 +446,10 @@ The committed descriptor records generator provenance in a new optional
 ```json
 {
   "id": "daena-landmass",
-  "version": 2,
+  "version": 3,
   "seed": 831429,
   "settings": {
-    "landPercent": 40,
+    "landPercent": 30,
     "continentCount": 3,
     "coastlineRoughness": "medium",
     "islandFrequency": "medium"

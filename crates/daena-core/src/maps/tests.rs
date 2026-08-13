@@ -247,7 +247,7 @@ fn vector_descriptors_layers_and_feature_anchors_round_trip() {
         "defaultView": {"center": [0.5, 0.5], "zoom": 1},
         "generation": {
             "id": "daena-landmass",
-            "version": 2,
+            "version": 3,
             "seed": 831429,
             "settings": {
                 "landPercent": 40,

@@ -3764,3 +3764,180 @@ fn asset_replacement_rejects_wrong_hash_size_and_revision() {
         )
         .is_err());
 }
+#[test]
+fn repeated_checkpoint_skips_unchanged_portable_files() {
+    let root = std::env::temp_dir().join(format!("daena-checkpoint-skip-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    store
+        .create_entity(CreateEntity {
+            name: "Stable checkpoint".into(),
+            entity_type: Some("note".into()),
+        })
+        .unwrap();
+    let generation = store.flush_checkpoint("initial checkpoint").unwrap();
+    let snapshot = store.export_snapshot().unwrap();
+
+    assert_eq!(
+        store
+            .export_complete_snapshot(&root, &snapshot, generation)
+            .unwrap(),
+        0
+    );
+
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn entity_revision_batch_matches_point_revision() {
+    let store = ProjectStore::in_memory().unwrap();
+    let source = store
+        .create_entity(CreateEntity {
+            name: "Revision source".into(),
+            entity_type: Some("note".into()),
+        })
+        .unwrap();
+    let target = store
+        .create_entity(CreateEntity {
+            name: "Revision target".into(),
+            entity_type: Some("note".into()),
+        })
+        .unwrap();
+    store
+        .save_document(SaveDocument {
+            entity_id: source.id.clone(),
+            body: "Revision body".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    store
+        .set_field(FieldValue {
+            entity_id: source.id.clone(),
+            namespace: "test".into(),
+            key: "value".into(),
+            value: serde_json::json!("revision field"),
+            revision: String::new(),
+        })
+        .unwrap();
+    store
+        .create_relationship(RelationshipInput {
+            source_id: source.id.clone(),
+            target_id: target.id,
+            relationship_type: "references".into(),
+            metadata: None,
+        })
+        .unwrap();
+
+    let listed = store
+        .list_entities()
+        .unwrap()
+        .into_iter()
+        .find(|entity| entity.id == source.id)
+        .unwrap();
+    assert_eq!(listed.revision, store.revision_for_entity(&source.id).unwrap());
+}
+
+#[test]
+fn search_updates_only_the_changed_source_row() {
+    let store = ProjectStore::in_memory().unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Granular search".into(),
+            entity_type: Some("note".into()),
+        })
+        .unwrap();
+    store
+        .save_document(SaveDocument {
+            entity_id: entity.id.clone(),
+            body: "First document".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    for (key, value) in [("first", "alpha"), ("second", "beta")] {
+        store
+            .set_field(FieldValue {
+                entity_id: entity.id.clone(),
+                namespace: "test".into(),
+                key: key.into(),
+                value: serde_json::json!(value),
+                revision: String::new(),
+            })
+            .unwrap();
+    }
+    let rowids = |store: &ProjectStore| {
+        store
+            .connection
+            .prepare("SELECT source_key,rowid FROM world_search WHERE entity_id=?1")
+            .unwrap()
+            .query_map(params![entity.id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<BTreeMap<_, _>, _>>()
+            .unwrap()
+    };
+    let before_document = rowids(&store);
+    store
+        .save_document(SaveDocument {
+            entity_id: entity.id.clone(),
+            body: "Second document".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    let after_document = rowids(&store);
+    assert_eq!(before_document["entity"], after_document["entity"]);
+    assert_eq!(
+        before_document["field:test/first"],
+        after_document["field:test/first"]
+    );
+    assert_eq!(
+        before_document["field:test/second"],
+        after_document["field:test/second"]
+    );
+    let document_key = before_document
+        .keys()
+        .find(|key| key.starts_with("document:"))
+        .unwrap();
+    assert_ne!(
+        before_document[document_key],
+        after_document[document_key]
+    );
+
+    store
+        .set_field(FieldValue {
+            entity_id: entity.id.clone(),
+            namespace: "test".into(),
+            key: "first".into(),
+            value: serde_json::json!("updated"),
+            revision: String::new(),
+        })
+        .unwrap();
+    let after_field = rowids(&store);
+    assert_ne!(
+        after_document["field:test/first"],
+        after_field["field:test/first"]
+    );
+    assert_eq!(
+        after_document["field:test/second"],
+        after_field["field:test/second"]
+    );
+}
+
+#[test]
+fn entity_scoped_reads_use_covering_indexes() {
+    let store = ProjectStore::in_memory().unwrap();
+    let query_plan = |sql: &str| {
+        store
+            .connection
+            .prepare(sql)
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n")
+    };
+
+    assert!(query_plan("EXPLAIN QUERY PLAN SELECT id,entity_id,format,body,updated_at FROM documents WHERE entity_id='entity' ORDER BY updated_at DESC").contains("documents_entity_updated_idx"));
+    assert!(query_plan("EXPLAIN QUERY PLAN SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets WHERE entity_id='entity' ORDER BY created_at").contains("assets_entity_created_idx"));
+}

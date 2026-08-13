@@ -36,16 +36,19 @@ use settings::{AppSettings, AppSettingsUpdate, SettingsStore};
 
 struct ProjectSession {
     core: Mutex<CoreService>,
+    read_pool: Mutex<Vec<ProjectStore>>,
 }
 
 type SharedCore = Arc<Mutex<Arc<ProjectSession>>>;
 type SharedPluginHost = Arc<Mutex<PluginHost>>;
 type SharedBinaryTransfers = Arc<Mutex<BinaryTransferManager>>;
 type SharedSettings = Arc<Mutex<SettingsStore>>;
+const READ_CONNECTION_POOL_CAPACITY: usize = 4;
 
 fn new_shared_core() -> SharedCore {
     Arc::new(Mutex::new(Arc::new(ProjectSession {
         core: Mutex::new(CoreService::new()),
+        read_pool: Mutex::new(Vec::new()),
     })))
 }
 
@@ -2365,15 +2368,38 @@ where
             .lock()
             .map_err(|_| CoreError::Conflict("project lifecycle lock poisoned".into()))?
             .clone();
-        let root = {
+        let (root, database_epoch) = {
             let core = session
                 .core
                 .lock()
                 .map_err(|_| CoreError::Conflict("core lock poisoned".into()))?;
-            core.info().ok_or(CoreError::ProjectNotOpen)?.root
+            let project = core.project(trusted_shell())?;
+            (
+                project.info().ok_or(CoreError::ProjectNotOpen)?.root,
+                project.database_epoch().to_string(),
+            )
         };
-        let project = ProjectStore::open_read_only(root)?;
-        operation(&project)
+        let project = {
+            let mut pool = session
+                .read_pool
+                .lock()
+                .map_err(|_| CoreError::Conflict("read connection pool poisoned".into()))?;
+            pool.retain(|project| {
+                project.database_epoch() == database_epoch
+            });
+            pool.pop()
+        }
+        .map(Ok)
+        .unwrap_or_else(|| ProjectStore::open_read_only(&root))?;
+        let result = operation(&project);
+        let mut pool = session
+            .read_pool
+            .lock()
+            .map_err(|_| CoreError::Conflict("read connection pool poisoned".into()))?;
+        if pool.len() < READ_CONNECTION_POOL_CAPACITY {
+            pool.push(project);
+        }
+        result
     })
     .await
     .map_err(|error| format!("read worker failed: {error}"))?

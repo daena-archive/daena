@@ -646,6 +646,8 @@ fn ensure_runtime_asset(
 const RUNTIME_STORAGE_ROLE: &str = "daena.runtime";
 const RUNTIME_SCHEMA_VERSION: i64 = 5;
 const EXPORTER_CONTRACT_VERSION: &str = "2";
+const BACKGROUND_EXPORT_IDLE_DELAY: Duration = Duration::from_secs(2);
+const BACKGROUND_EXPORT_MAX_DELAY: Duration = Duration::from_secs(30);
 
 fn reset_required_error() -> CoreError {
     CoreError::ResetRequired(
@@ -655,6 +657,7 @@ fn reset_required_error() -> CoreError {
 
 pub struct ProjectStore {
     connection: Connection,
+    database_epoch: String,
     root: Option<PathBuf>,
     suppress_sync: Cell<bool>,
     _session_lock: Option<crate::sync::ProjectSessionLock>,
@@ -704,11 +707,18 @@ impl ExportWorker {
                     };
                     match command {
                         ExportWorkerCommand::Wake => {
-                            let deadline = Instant::now() + Duration::from_millis(40);
+                            let started_at = Instant::now();
+                            let max_deadline = started_at + BACKGROUND_EXPORT_MAX_DELAY;
+                            let mut idle_deadline = started_at + BACKGROUND_EXPORT_IDLE_DELAY;
                             loop {
+                                let deadline = idle_deadline.min(max_deadline);
                                 let remaining = deadline.saturating_duration_since(Instant::now());
                                 match receiver.recv_timeout(remaining) {
-                                    Ok(ExportWorkerCommand::Wake) => continue,
+                                    Ok(ExportWorkerCommand::Wake) => {
+                                        idle_deadline =
+                                            (Instant::now() + BACKGROUND_EXPORT_IDLE_DELAY)
+                                                .min(max_deadline);
+                                    }
                                     Ok(ExportWorkerCommand::Flush(reason, reply)) => {
                                         let _ = reply.send(export(&reason, true));
                                         break;
@@ -853,8 +863,14 @@ impl ProjectStore {
         connection.busy_timeout(Duration::from_secs(2))?;
         connection.pragma_update(None, "foreign_keys", true)?;
         Self::validate_runtime_metadata(&connection, Some(&root))?;
+        let database_epoch = connection.query_row(
+            "SELECT database_epoch FROM runtime_meta WHERE key='runtime'",
+            [],
+            |row| row.get(0),
+        )?;
         Ok(Self {
             connection,
+            database_epoch,
             root: Some(root),
             suppress_sync: Cell::new(true),
             _session_lock: None,
@@ -1061,6 +1077,7 @@ impl ProjectStore {
         };
         let mut store = Self {
             connection,
+            database_epoch: String::new(),
             root,
             suppress_sync: Cell::new(false),
             _session_lock: session_lock,
@@ -1069,8 +1086,14 @@ impl ProjectStore {
         if !existing_database {
             store.initialize(true)?;
         } else if start_worker {
+            store.ensure_query_indexes()?;
             store.ensure_search_projection()?;
         }
+        store.database_epoch = store.connection.query_row(
+            "SELECT database_epoch FROM runtime_meta WHERE key='runtime'",
+            [],
+            |row| row.get(0),
+        )?;
         if start_worker {
             if let Some(root) = store.root.as_deref() {
                 let worker = ExportWorker::start(root, path)?;
@@ -1378,6 +1401,11 @@ impl ProjectStore {
         self.connection = Connection::open(&index_path)?;
         self.connection.busy_timeout(Duration::from_secs(2))?;
         self.connection.pragma_update(None, "foreign_keys", true)?;
+        self.database_epoch = self.connection.query_row(
+            "SELECT database_epoch FROM runtime_meta WHERE key='runtime'",
+            [],
+            |row| row.get(0),
+        )?;
         self.restart_export_worker()?;
         Ok(ExternalChangeReport {
             changed: true,
@@ -1648,6 +1676,165 @@ impl ProjectStore {
         Ok(revision)
     }
 
+    fn populate_entity_revisions(&self, entities: &mut [Entity]) -> Result<(), CoreError> {
+        if entities.is_empty() {
+            return Ok(());
+        }
+
+        let ids = entities
+            .iter()
+            .map(|entity| entity.id.clone())
+            .collect::<Vec<_>>();
+        // Search returns at most 100 entities. Restrict those supporting reads;
+        // full entity lists are cheaper as four sequential table scans than as
+        // hundreds of indexed point queries.
+        let restricted = ids.len() <= 100;
+        let placeholders = std::iter::repeat_n("?", ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let mut documents: BTreeMap<String, Vec<(String, String, String, String)>> =
+            BTreeMap::new();
+        let sql = if restricted {
+            format!("SELECT entity_id,id,format,body,updated_at FROM documents WHERE entity_id IN ({placeholders}) ORDER BY entity_id,id")
+        } else {
+            "SELECT entity_id,id,format,body,updated_at FROM documents ORDER BY entity_id,id".into()
+        };
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(ids.iter().take(if restricted {
+            ids.len()
+        } else {
+            0
+        })), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ),
+            ))
+        })?;
+        for row in rows {
+            let (entity_id, document) = row?;
+            documents.entry(entity_id).or_default().push(document);
+        }
+
+        let mut fields: BTreeMap<String, Vec<(String, String, String)>> = BTreeMap::new();
+        let sql = if restricted {
+            format!("SELECT entity_id,namespace,key,value FROM entity_fields WHERE entity_id IN ({placeholders}) ORDER BY entity_id,namespace,key")
+        } else {
+            "SELECT entity_id,namespace,key,value FROM entity_fields ORDER BY entity_id,namespace,key".into()
+        };
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(ids.iter().take(if restricted {
+            ids.len()
+        } else {
+            0
+        })), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ),
+            ))
+        })?;
+        for row in rows {
+            let (entity_id, field) = row?;
+            fields.entry(entity_id).or_default().push(field);
+        }
+
+        type RelationshipRevision = (String, String, String, String, String);
+        let mut relationships: BTreeMap<String, Vec<RelationshipRevision>> = BTreeMap::new();
+        let sql = if restricted {
+            format!("SELECT id,source_id,target_id,relationship_type,metadata FROM relationships WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders}) ORDER BY id")
+        } else {
+            "SELECT id,source_id,target_id,relationship_type,metadata FROM relationships ORDER BY id".into()
+        };
+        let relationship_params = ids.iter().chain(ids.iter()).take(if restricted {
+            ids.len() * 2
+        } else {
+            0
+        });
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(relationship_params), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        for row in rows {
+            let relationship = row?;
+            relationships
+                .entry(relationship.1.clone())
+                .or_default()
+                .push(relationship.clone());
+            if relationship.2 != relationship.1 {
+                relationships
+                    .entry(relationship.2.clone())
+                    .or_default()
+                    .push(relationship);
+            }
+        }
+
+        type AssetRevision = (String, String, String, String, i64, String, String, String);
+        let mut assets: BTreeMap<String, Vec<AssetRevision>> = BTreeMap::new();
+        let sql = if restricted {
+            format!("SELECT entity_id,id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets WHERE entity_id IN ({placeholders}) ORDER BY entity_id,id")
+        } else {
+            "SELECT entity_id,id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets ORDER BY entity_id,id".into()
+        };
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(ids.iter().take(if restricted {
+            ids.len()
+        } else {
+            0
+        })), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                ),
+            ))
+        })?;
+        for row in rows {
+            let (entity_id, asset) = row?;
+            assets.entry(entity_id).or_default().push(asset);
+        }
+
+        for entity in entities {
+            let entity_value = (
+                &entity.id,
+                &entity.name,
+                &entity.entity_type,
+                i64::from(entity.deleted),
+                &entity.created_at,
+                &entity.updated_at,
+            );
+            entity.revision = self.revision_digest(&(
+                entity_value,
+                documents.remove(&entity.id).unwrap_or_default(),
+                fields.remove(&entity.id).unwrap_or_default(),
+                relationships.remove(&entity.id).unwrap_or_default(),
+                assets.remove(&entity.id).unwrap_or_default(),
+            ))?;
+        }
+        Ok(())
+    }
+
     fn revision_for_document(&self, id: &str) -> Result<String, CoreError> {
         let value = self.connection.query_row(
             "SELECT id,entity_id,format,body FROM documents WHERE id=?1",
@@ -1662,6 +1849,15 @@ impl ProjectStore {
             },
         )?;
         self.revision_digest(&value)
+    }
+
+    fn revision_for_document_value(&self, document: &Document) -> Result<String, CoreError> {
+        self.revision_digest(&(
+            &document.id,
+            &document.entity_id,
+            &document.format,
+            &document.body,
+        ))
     }
 
     fn revision_for_field(&self, field: &FieldValue) -> Result<String, CoreError> {
@@ -1690,6 +1886,19 @@ impl ProjectStore {
         self.revision_digest(&value)
     }
 
+    fn revision_for_relationship_value(
+        &self,
+        relationship: &Relationship,
+    ) -> Result<String, CoreError> {
+        self.revision_digest(&(
+            &relationship.id,
+            &relationship.source_id,
+            &relationship.target_id,
+            &relationship.relationship_type,
+            &relationship.metadata,
+        ))
+    }
+
     fn revision_for_asset(&self, id: &str) -> Result<String, CoreError> {
         let value = self.connection.query_row(
             "SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets WHERE id=?1",
@@ -1711,6 +1920,20 @@ impl ProjectStore {
         self.revision_digest(&value)
     }
 
+    fn revision_for_asset_value(&self, asset: &Asset) -> Result<String, CoreError> {
+        self.revision_digest(&(
+            &asset.id,
+            &asset.entity_id,
+            &asset.namespace,
+            &asset.filename,
+            &asset.content_hash,
+            asset.size,
+            &asset.mime_type,
+            &asset.path,
+            &asset.created_at,
+        ))
+    }
+
     fn revision_for_module_record(&self, id: &str) -> Result<String, CoreError> {
         let value = self.connection.query_row(
             "SELECT module_id,collection,id,owner_entity_id,value,created_at,updated_at FROM module_records WHERE id=?1",
@@ -1730,13 +1953,23 @@ impl ProjectStore {
         self.revision_digest(&value)
     }
 
+    fn revision_for_module_record_value(
+        &self,
+        record: &ModuleRecord,
+    ) -> Result<String, CoreError> {
+        self.revision_digest(&(
+            &record.module_id,
+            &record.collection,
+            &record.id,
+            &record.owner_entity_id,
+            encode_field_value(&record.value)?,
+            &record.created_at,
+            &record.updated_at,
+        ))
+    }
+
     fn revision_digest<T: Serialize>(&self, value: &T) -> Result<String, CoreError> {
-        let epoch: String = self.connection.query_row(
-            "SELECT database_epoch FROM runtime_meta WHERE key='runtime'",
-            [],
-            |row| row.get(0),
-        )?;
-        revision_digest(&(epoch, value))
+        revision_digest(&(&self.database_epoch, value))
     }
 
     fn notify_export_worker(&self) -> Result<(), CoreError> {
@@ -1803,7 +2036,7 @@ impl ProjectStore {
         root: &Path,
         snapshot: &ProjectSnapshot,
         target_generation: Generation,
-    ) -> Result<(), CoreError> {
+    ) -> Result<usize, CoreError> {
         let manifest_path = root.join("project.json");
         let manifest: crate::storage::ProjectManifest = crate::storage::read_json(&manifest_path)?;
         manifest.validate(&manifest_path)?;
@@ -1815,8 +2048,53 @@ impl ProjectStore {
             operation: "create checkpoint staging root",
             source: error,
         })?;
+        let mut documents_by_entity = BTreeMap::new();
+        for document in &snapshot.documents {
+            documents_by_entity
+                .entry(document.entity_id.as_str())
+                .or_insert(document);
+        }
+        let mut fields_by_entity = BTreeMap::<&str, Vec<&FieldValue>>::new();
+        for field in &snapshot.fields {
+            fields_by_entity
+                .entry(field.entity_id.as_str())
+                .or_default()
+                .push(field);
+        }
+        let mut relationships_by_entity = BTreeMap::<&str, Vec<&Relationship>>::new();
+        for relationship in &snapshot.relationships {
+            relationships_by_entity
+                .entry(relationship.source_id.as_str())
+                .or_default()
+                .push(relationship);
+        }
+        let mut assets_by_entity = BTreeMap::<&str, Vec<&Asset>>::new();
+        for asset in &snapshot.assets {
+            assets_by_entity
+                .entry(asset.entity_id.as_str())
+                .or_default()
+                .push(asset);
+        }
+        let namespace_owners = crate::storage::namespace_owners(snapshot)?;
         for entity in &snapshot.entities {
-            crate::storage::write_canonical_entity(&staging_root, &manifest, snapshot, &entity.id)?;
+            crate::storage::write_canonical_entity(
+                &staging_root,
+                entity,
+                documents_by_entity.get(entity.id.as_str()).copied(),
+                fields_by_entity
+                    .get(entity.id.as_str())
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+                relationships_by_entity
+                    .get(entity.id.as_str())
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+                assets_by_entity
+                    .get(entity.id.as_str())
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+                &namespace_owners,
+            )?;
         }
         let plugin_ids = snapshot
             .modules
@@ -1856,8 +2134,10 @@ impl ProjectStore {
                 )));
             }
             let portable_hash = crate::sync::hash_path(root, &asset.path)?;
-            transaction.stage_file_with_expected(&asset.path, &source, portable_hash)?;
-            transaction_staged_paths.insert(asset.path.clone());
+            if portable_hash.as_deref() != Some(asset.content_hash.as_str()) {
+                transaction.stage_file_with_expected(&asset.path, &source, portable_hash)?;
+                transaction_staged_paths.insert(asset.path.clone());
+            }
             current_path_set.insert(asset.path.clone());
             current_sources.push(crate::storage::CanonicalSource {
                 path: asset.path.clone(),
@@ -1882,6 +2162,10 @@ impl ProjectStore {
             if source.path == "project.json" || transaction_staged_paths.contains(&source.path) {
                 continue;
             }
+            let portable_hash = crate::sync::hash_path(root, &source.path)?;
+            if portable_hash.as_deref() == Some(source.content_hash.as_str()) {
+                continue;
+            }
             let staged = crate::storage::normalized_project_path(&staging_root, &source.path)?;
             let bytes = std::fs::read(&staged).map_err(|error| {
                 CoreError::Validation(format!(
@@ -1889,16 +2173,16 @@ impl ProjectStore {
                     staged.display()
                 ))
             })?;
-            transaction.stage_bytes(&source.path, &bytes)?;
+            transaction.stage_bytes_with_expected(&source.path, &bytes, portable_hash)?;
         }
         for source in &previous_sources {
             if source.path != "project.json" && !current_paths.contains(source.path.as_str()) {
                 transaction.stage_remove(&source.path)?;
             }
         }
-        transaction.commit(None::<&serde_json::Value>)?;
+        let applied = transaction.commit(None::<&serde_json::Value>)?;
         self.install_checkpoint_manifest(root, target_generation)?;
-        Ok(())
+        Ok(applied.len())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1952,6 +2236,10 @@ impl ProjectStore {
             assets: root.join("assets").to_string_lossy().to_string(),
             sync,
         })
+    }
+
+    pub fn database_epoch(&self) -> &str {
+        &self.database_epoch
     }
 
     pub fn sync_summary(&self) -> Result<SyncSummary, CoreError> {
@@ -3041,6 +3329,7 @@ impl ProjectStore {
                metadata TEXT NOT NULL DEFAULT '{}'
              );
              CREATE INDEX IF NOT EXISTS entities_name_idx ON entities(name);
+             CREATE INDEX IF NOT EXISTS documents_entity_updated_idx ON documents(entity_id,updated_at DESC);
              CREATE INDEX IF NOT EXISTS relationships_source_idx ON relationships(source_id);
              CREATE INDEX IF NOT EXISTS relationships_target_idx ON relationships(target_id);"
         )?;
@@ -3056,7 +3345,8 @@ impl ProjectStore {
              CREATE TABLE IF NOT EXISTS map_projection (map_entity_id TEXT PRIMARY KEY, provider TEXT NOT NULL, source_asset_id TEXT NOT NULL, source_path TEXT, source_hash TEXT);
              CREATE TABLE IF NOT EXISTS map_location_projection (location_id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, map_entity_id TEXT NOT NULL, label TEXT, role TEXT NOT NULL, anchor_kind TEXT NOT NULL, provider TEXT, feature_kind TEXT, feature_id TEXT, min_x REAL, min_y REAL, max_x REAL, max_y REAL, valid_from TEXT, valid_to TEXT, resolution TEXT NOT NULL);
              CREATE INDEX IF NOT EXISTS map_location_entity_idx ON map_location_projection(entity_id);
-             CREATE INDEX IF NOT EXISTS map_location_map_idx ON map_location_projection(map_entity_id);")?;
+             CREATE INDEX IF NOT EXISTS map_location_map_idx ON map_location_projection(map_entity_id);
+             CREATE INDEX IF NOT EXISTS assets_entity_created_idx ON assets(entity_id,created_at);")?;
         self.connection.execute_batch("CREATE TABLE IF NOT EXISTS migration_history(module_id TEXT NOT NULL, migration_id TEXT NOT NULL, from_version INTEGER NOT NULL, to_version INTEGER NOT NULL, checksum TEXT NOT NULL, package_digest TEXT NOT NULL DEFAULT '', applied_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(module_id, migration_id)); CREATE TABLE IF NOT EXISTS plugin_backups(id TEXT PRIMARY KEY, module_id TEXT NOT NULL, from_package_version TEXT, to_package_version TEXT, data_version INTEGER NOT NULL, path TEXT NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS module_schema_overlays(module_id TEXT PRIMARY KEY, overlay_json TEXT NOT NULL);")?;
         for table in [
             "project_meta",
@@ -3119,13 +3409,26 @@ impl ProjectStore {
         Ok(())
     }
 
+    fn ensure_query_indexes(&self) -> Result<(), CoreError> {
+        self.connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS documents_entity_updated_idx ON documents(entity_id,updated_at DESC);
+             CREATE INDEX IF NOT EXISTS assets_entity_created_idx ON assets(entity_id,created_at);",
+        )?;
+        Ok(())
+    }
+
     fn ensure_search_projection(&self) -> Result<(), CoreError> {
         let search_table_exists: bool = self.connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='world_search')",
             [],
             |row| row.get(0),
         )?;
-        let search_missing = !search_table_exists
+        let search_shape_current = search_table_exists
+            && self
+                .connection
+                .prepare("SELECT source_key FROM world_search LIMIT 0")
+                .is_ok();
+        let search_missing = !search_shape_current
             || self.connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM entities WHERE deleted=0) AND NOT EXISTS(SELECT 1 FROM world_search)",
                 [],
@@ -3353,9 +3656,7 @@ impl ProjectStore {
             })
         })?;
         let mut entities = rows.collect::<Result<Vec<_>, _>>()?;
-        for entity in &mut entities {
-            entity.revision = self.revision_for_entity(&entity.id)?;
-        }
+        self.populate_entity_revisions(&mut entities)?;
         Ok(entities)
     }
 
@@ -3684,7 +3985,7 @@ impl ProjectStore {
         })?;
         let mut documents = rows.collect::<Result<Vec<_>, _>>()?;
         for document in &mut documents {
-            document.revision = self.revision_for_document(&document.id)?;
+            document.revision = self.revision_for_document_value(document)?;
         }
         Ok(documents)
     }
@@ -3812,7 +4113,7 @@ impl ProjectStore {
     ) -> Result<Relationship, CoreError> {
         if let Some(relationship) = self.committed_mutation::<Relationship>(request_id)? {
             let mut relationship = relationship;
-            relationship.revision = self.revision_for_relationship(&relationship.id)?;
+            relationship.revision = self.revision_for_relationship_value(&relationship)?;
             return Ok(relationship);
         }
         for entity_id in [&input.source_id, &input.target_id] {
@@ -3934,7 +4235,7 @@ impl ProjectStore {
             .optional()?
             .ok_or_else(|| CoreError::NotFound("relationship not found".into()))
             .and_then(|mut relationship| {
-                relationship.revision = self.revision_for_relationship(&relationship.id)?;
+                relationship.revision = self.revision_for_relationship_value(&relationship)?;
                 Ok(relationship)
             })
     }
@@ -3960,7 +4261,7 @@ impl ProjectStore {
         })?;
         let mut relationships = rows.collect::<Result<Vec<_>, _>>()?;
         for relationship in &mut relationships {
-            relationship.revision = self.revision_for_relationship(&relationship.id)?;
+            relationship.revision = self.revision_for_relationship_value(relationship)?;
         }
         Ok(relationships)
     }
@@ -3987,9 +4288,7 @@ impl ProjectStore {
             })
         })?;
         let mut entities = rows.collect::<Result<Vec<_>, _>>()?;
-        for entity in &mut entities {
-            entity.revision = self.revision_for_entity(&entity.id)?;
-        }
+        self.populate_entity_revisions(&mut entities)?;
         Ok(entities)
     }
 
@@ -4385,7 +4684,7 @@ impl ProjectStore {
         request_id: Option<&str>,
     ) -> Result<Asset, CoreError> {
         if let Some(mut asset) = self.committed_mutation::<Asset>(request_id)? {
-            asset.revision = self.revision_for_asset(&asset.id)?;
+            asset.revision = self.revision_for_asset_value(&asset)?;
             return Ok(asset);
         }
         let exists: Option<String> = self
@@ -4649,7 +4948,7 @@ impl ProjectStore {
         })?;
         let mut assets = rows.collect::<Result<Vec<_>, _>>()?;
         for asset in &mut assets {
-            asset.revision = self.revision_for_asset(&asset.id)?;
+            asset.revision = self.revision_for_asset_value(asset)?;
         }
         Ok(assets)
     }
@@ -5516,7 +5815,7 @@ impl ProjectStore {
             request_id,
             Some(&fingerprint),
         )? {
-            record.revision = self.revision_for_module_record(&record.id)?;
+            record.revision = self.revision_for_module_record_value(&record)?;
             return Ok(record);
         }
         self.ensure_live_module_record_owner(owner_entity_id)?;
@@ -5661,7 +5960,7 @@ impl ProjectStore {
         };
         let mut records = rows.collect::<Result<Vec<_>, _>>()?;
         for record in &mut records {
-            record.revision = self.revision_for_module_record(&record.id)?;
+            record.revision = self.revision_for_module_record_value(record)?;
         }
         Ok(records)
     }
@@ -5694,7 +5993,7 @@ impl ProjectStore {
             request_id,
             Some(&fingerprint),
         )? {
-            record.revision = self.revision_for_module_record(&record.id)?;
+            record.revision = self.revision_for_module_record_value(&record)?;
             return Ok(record);
         }
         let current = self.module_record(module_id, collection, id, owner_entity_id)?;
@@ -5905,18 +6204,18 @@ impl ProjectStore {
              DROP TRIGGER IF EXISTS module_records_search_delete;
              DROP TABLE IF EXISTS world_search;
              DROP TABLE IF EXISTS module_record_search;
-             CREATE VIRTUAL TABLE world_search USING fts5(entity_id UNINDEXED, source_path UNINDEXED, source_hash UNINDEXED, content);
-             INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT e.id, 'entities/' || e.id || '/entity.json', '', e.name || ' ' || COALESCE(e.entity_type, '') FROM entities e WHERE e.deleted=0;
-             INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT d.entity_id, 'entities/' || d.entity_id || '/document.md', '', d.body FROM documents d JOIN entities e ON e.id = d.entity_id WHERE e.deleted=0;
-             INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT f.entity_id, 'entities/' || f.entity_id || '/fields', '', f.namespace || ' ' || f.key || ' ' || f.value FROM entity_fields f JOIN entities e ON e.id = f.entity_id WHERE e.deleted=0;
-             CREATE TRIGGER entities_search_insert AFTER INSERT ON entities BEGIN INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT new.id, 'entities/' || new.id || '/entity.json', '', new.name || ' ' || COALESCE(new.entity_type, '') WHERE new.deleted=0; END;
-             CREATE TRIGGER entities_search_update AFTER UPDATE OF name, entity_type, deleted ON entities BEGIN DELETE FROM world_search WHERE entity_id = old.id; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT new.id, 'entities/' || new.id || '/entity.json', '', new.name || ' ' || COALESCE(new.entity_type, '') WHERE new.deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT documents.entity_id, 'entities/' || documents.entity_id || '/document.md', '', documents.body FROM documents WHERE documents.entity_id = new.id AND new.deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT entity_fields.entity_id, 'entities/' || entity_fields.entity_id || '/fields', '', entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields WHERE entity_fields.entity_id = new.id AND new.deleted=0; END;
-             CREATE TRIGGER documents_search_insert AFTER INSERT ON documents BEGIN INSERT INTO world_search(entity_id, source_path, source_hash, content) VALUES (new.entity_id, 'entities/' || new.entity_id || '/document.md', '', new.body); END;
-             CREATE TRIGGER documents_search_update AFTER UPDATE OF body ON documents BEGIN DELETE FROM world_search WHERE entity_id = old.entity_id; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT id, 'entities/' || id || '/entity.json', '', name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = new.entity_id AND deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT documents.entity_id, 'entities/' || documents.entity_id || '/document.md', '', documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE documents.entity_id = new.entity_id AND entities.deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT entity_fields.entity_id, 'entities/' || entity_fields.entity_id || '/fields', '', entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entity_fields.entity_id = new.entity_id AND entities.deleted=0; END;
-             CREATE TRIGGER documents_search_delete AFTER DELETE ON documents BEGIN DELETE FROM world_search WHERE entity_id = old.entity_id AND source_path = 'entities/' || old.entity_id || '/document.md'; END;
-             CREATE TRIGGER entity_fields_search_insert AFTER INSERT ON entity_fields BEGIN DELETE FROM world_search WHERE entity_id = new.entity_id; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT id, 'entities/' || id || '/entity.json', '', name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = new.entity_id AND deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT documents.entity_id, 'entities/' || documents.entity_id || '/document.md', '', documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE documents.entity_id = new.entity_id AND entities.deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT entity_fields.entity_id, 'entities/' || entity_fields.entity_id || '/fields', '', entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entity_fields.entity_id = new.entity_id AND entities.deleted=0; END;
-             CREATE TRIGGER entity_fields_search_update AFTER UPDATE OF namespace, key, value ON entity_fields BEGIN DELETE FROM world_search WHERE entity_id = new.entity_id; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT id, 'entities/' || id || '/entity.json', '', name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = new.entity_id AND deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT documents.entity_id, 'entities/' || documents.entity_id || '/document.md', '', documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE documents.entity_id = new.entity_id AND entities.deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT entity_fields.entity_id, 'entities/' || entity_fields.entity_id || '/fields', '', entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entity_fields.entity_id = new.entity_id AND entities.deleted=0; END;
-             CREATE TRIGGER entity_fields_search_delete AFTER DELETE ON entity_fields BEGIN DELETE FROM world_search WHERE entity_id = old.entity_id; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT id, 'entities/' || id || '/entity.json', '', name || ' ' || COALESCE(entity_type, '') FROM entities WHERE id = old.entity_id AND deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT documents.entity_id, 'entities/' || documents.entity_id || '/document.md', '', documents.body FROM documents JOIN entities ON entities.id = documents.entity_id WHERE documents.entity_id = old.entity_id AND entities.deleted=0; INSERT INTO world_search(entity_id, source_path, source_hash, content) SELECT entity_fields.entity_id, 'entities/' || entity_fields.entity_id || '/fields', '', entity_fields.namespace || ' ' || entity_fields.key || ' ' || entity_fields.value FROM entity_fields JOIN entities ON entities.id = entity_fields.entity_id WHERE entity_fields.entity_id = old.entity_id AND entities.deleted=0; END;"
+             CREATE VIRTUAL TABLE world_search USING fts5(entity_id UNINDEXED, source_path UNINDEXED, source_hash UNINDEXED, content, source_key UNINDEXED);
+             INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT e.id,'entities/' || e.id || '/entity.json','',e.name || ' ' || COALESCE(e.entity_type,''),'entity' FROM entities e WHERE e.deleted=0;
+             INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT d.entity_id,'entities/' || d.entity_id || '/document.md','',d.body,'document:' || d.id FROM documents d JOIN entities e ON e.id=d.entity_id WHERE e.deleted=0;
+             INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT f.entity_id,'entities/' || f.entity_id || '/fields','',f.namespace || ' ' || f.key || ' ' || f.value,'field:' || f.namespace || '/' || f.key FROM entity_fields f JOIN entities e ON e.id=f.entity_id WHERE e.deleted=0;
+             CREATE TRIGGER entities_search_insert AFTER INSERT ON entities BEGIN INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT new.id,'entities/' || new.id || '/entity.json','',new.name || ' ' || COALESCE(new.entity_type,''),'entity' WHERE new.deleted=0; END;
+             CREATE TRIGGER entities_search_update AFTER UPDATE OF name,entity_type,deleted ON entities BEGIN DELETE FROM world_search WHERE entity_id=old.id; INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT new.id,'entities/' || new.id || '/entity.json','',new.name || ' ' || COALESCE(new.entity_type,''),'entity' WHERE new.deleted=0; INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT d.entity_id,'entities/' || d.entity_id || '/document.md','',d.body,'document:' || d.id FROM documents d WHERE d.entity_id=new.id AND new.deleted=0; INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT f.entity_id,'entities/' || f.entity_id || '/fields','',f.namespace || ' ' || f.key || ' ' || f.value,'field:' || f.namespace || '/' || f.key FROM entity_fields f WHERE f.entity_id=new.id AND new.deleted=0; END;
+             CREATE TRIGGER documents_search_insert AFTER INSERT ON documents BEGIN INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT new.entity_id,'entities/' || new.entity_id || '/document.md','',new.body,'document:' || new.id FROM entities WHERE id=new.entity_id AND deleted=0; END;
+             CREATE TRIGGER documents_search_update AFTER UPDATE OF body ON documents BEGIN DELETE FROM world_search WHERE entity_id=old.entity_id AND source_key='document:' || old.id; INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT new.entity_id,'entities/' || new.entity_id || '/document.md','',new.body,'document:' || new.id FROM entities WHERE id=new.entity_id AND deleted=0; END;
+             CREATE TRIGGER documents_search_delete AFTER DELETE ON documents BEGIN DELETE FROM world_search WHERE entity_id=old.entity_id AND source_key='document:' || old.id; END;
+             CREATE TRIGGER entity_fields_search_insert AFTER INSERT ON entity_fields BEGIN INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT new.entity_id,'entities/' || new.entity_id || '/fields','',new.namespace || ' ' || new.key || ' ' || new.value,'field:' || new.namespace || '/' || new.key FROM entities WHERE id=new.entity_id AND deleted=0; END;
+             CREATE TRIGGER entity_fields_search_update AFTER UPDATE OF namespace,key,value ON entity_fields BEGIN DELETE FROM world_search WHERE entity_id=old.entity_id AND source_key='field:' || old.namespace || '/' || old.key; INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT new.entity_id,'entities/' || new.entity_id || '/fields','',new.namespace || ' ' || new.key || ' ' || new.value,'field:' || new.namespace || '/' || new.key FROM entities WHERE id=new.entity_id AND deleted=0; END;
+             CREATE TRIGGER entity_fields_search_delete AFTER DELETE ON entity_fields BEGIN DELETE FROM world_search WHERE entity_id=old.entity_id AND source_key='field:' || old.namespace || '/' || old.key; END;"
         )?;
         self.connection.execute_batch(
             "CREATE VIRTUAL TABLE module_record_search USING fts5(module_id UNINDEXED, collection UNINDEXED, owner_entity_id UNINDEXED, record_id UNINDEXED, content);

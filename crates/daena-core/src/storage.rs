@@ -881,24 +881,18 @@ pub fn write_canonical_project(
 /// writer; the full-project writer above remains reserved for rebuild/import.
 pub(crate) fn write_canonical_entity(
     root: &Path,
-    manifest: &ProjectManifest,
-    snapshot: &ProjectSnapshot,
-    entity_id: &str,
+    entity: &Entity,
+    document: Option<&Document>,
+    fields: &[&FieldValue],
+    relationships: &[&Relationship],
+    assets: &[&Asset],
+    owners: &BTreeMap<String, String>,
 ) -> Result<(), CoreError> {
-    let manifest_path = root.join("project.json");
-    let entity = snapshot
-        .entities
-        .iter()
-        .find(|entity| entity.id == entity_id)
-        .ok_or_else(|| codec_error(&manifest_path, "entity.reference", "entity is missing"))?;
+    let entity_id = &entity.id;
     let entity_dir = normalized_project_path(root, &format!("entities/{entity_id}"))?;
     fs::create_dir_all(&entity_dir)
         .map_err(|error| codec_error(&entity_dir, "entity.mkdir", error))?;
-    let document = snapshot
-        .documents
-        .iter()
-        .find(|document| document.entity_id == entity_id)
-        .map(|document| EntityDocumentRef {
+    let document_ref = document.map(|document| EntityDocumentRef {
             id: document.id.clone(),
             path: "document.md".into(),
         });
@@ -911,16 +905,12 @@ pub(crate) fn write_canonical_entity(
             deleted: entity.deleted,
             created_at: entity.created_at.clone(),
             updated_at: entity.updated_at.clone(),
-            document,
+            document: document_ref,
         },
     )?;
 
     let document_path = entity_dir.join("document.md");
-    if let Some(document) = snapshot
-        .documents
-        .iter()
-        .find(|document| document.entity_id == entity_id)
-    {
+    if let Some(document) = document {
         fs::write(
             &document_path,
             canonical_markdown(&document.body).as_bytes(),
@@ -935,13 +925,8 @@ pub(crate) fn write_canonical_entity(
     fs::create_dir_all(&fields_dir)
         .map_err(|error| codec_error(&fields_dir, "fields.mkdir", error))?;
     clear_json_files(&fields_dir)?;
-    let owners = namespace_owners(snapshot)?;
     let mut grouped = BTreeMap::<(String, String), FieldsFile>::new();
-    for field in snapshot
-        .fields
-        .iter()
-        .filter(|field| field.entity_id == entity_id)
-    {
+    for field in fields {
         let owner = owners
             .get(&field.namespace)
             .cloned()
@@ -959,10 +944,8 @@ pub(crate) fn write_canonical_entity(
     }
 
     let relationships_path = entity_dir.join("relationships.json");
-    let mut relationships = snapshot
-        .relationships
+    let mut relationships = relationships
         .iter()
-        .filter(|relationship| relationship.source_id == entity_id)
         .map(|relationship| {
             Ok(CanonicalRelationship {
                 id: relationship.id.clone(),
@@ -985,10 +968,8 @@ pub(crate) fn write_canonical_entity(
     }
 
     let assets_path = entity_dir.join("assets.json");
-    let mut assets = snapshot
-        .assets
+    let mut assets = assets
         .iter()
-        .filter(|asset| asset.entity_id == entity_id)
         .map(|asset| CanonicalAsset {
             id: asset.id.clone(),
             namespace: asset.namespace.clone(),
@@ -1009,7 +990,6 @@ pub(crate) fn write_canonical_entity(
     } else {
         write_json(&assets_path, &AssetsFile { assets })?;
     }
-    let _ = manifest;
     Ok(())
 }
 
@@ -1842,7 +1822,9 @@ pub fn normalized_project_path(root: &Path, relative: &str) -> Result<PathBuf, C
     Ok(root.join(path))
 }
 
-fn namespace_owners(snapshot: &ProjectSnapshot) -> Result<BTreeMap<String, String>, CoreError> {
+pub(crate) fn namespace_owners(
+    snapshot: &ProjectSnapshot,
+) -> Result<BTreeMap<String, String>, CoreError> {
     let mut owners = BTreeMap::new();
     for namespace in &snapshot.module_namespaces {
         validate_component(

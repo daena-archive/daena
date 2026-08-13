@@ -612,6 +612,139 @@
       ],
       "type": "object"
     },
+    "MapsImageImportBeginPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "filename": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "size": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "filename",
+        "mimeType",
+        "name",
+        "size"
+      ],
+      "type": "object"
+    },
+    "MapsImageImportCommitPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "contentHash": {
+          "type": "string"
+        },
+        "handle": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "contentHash",
+        "handle"
+      ],
+      "type": "object"
+    },
+    "MapsLayerCreatePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "expectedRevision": {
+          "type": "string"
+        },
+        "mapEntityId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "expectedRevision",
+        "mapEntityId",
+        "name"
+      ],
+      "type": "object"
+    },
+    "MapsLayerDeletePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "expectedRevision": {
+          "type": "string"
+        },
+        "layerId": {
+          "type": "string"
+        },
+        "mapEntityId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "expectedRevision",
+        "layerId",
+        "mapEntityId"
+      ],
+      "type": "object"
+    },
+    "MapsLayerUpdatePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "defaultVisible": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "expectedRevision": {
+          "type": "string"
+        },
+        "layerId": {
+          "type": "string"
+        },
+        "locked": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "mapEntityId": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "opacity": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "order": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "expectedRevision",
+        "layerId",
+        "mapEntityId"
+      ],
+      "type": "object"
+    },
     "MapsLocationsCreateAndLinkPayload": {
       "additionalProperties": false,
       "properties": {
@@ -1479,6 +1612,86 @@
           "if": {
             "properties": {
               "method": {
+                "const": "maps.image.import.begin"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/MapsImageImportBeginPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "maps.image.import.commit"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/MapsImageImportCommitPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "maps.layer.create"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/MapsLayerCreatePayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "maps.layer.delete"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/MapsLayerDeletePayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "maps.layer.update"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/MapsLayerUpdatePayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
                 "const": "maps.recovery.export.begin"
               }
             }
@@ -1793,6 +2006,11 @@
             "search.query",
             "maps.asset.create.begin",
             "maps.asset.create.commit",
+            "maps.image.import.begin",
+            "maps.image.import.commit",
+            "maps.layer.create",
+            "maps.layer.delete",
+            "maps.layer.update",
             "maps.recovery.export.begin",
             "maps.recovery.export.commit",
             "maps.recovery.restore",
@@ -2056,6 +2274,26 @@
     },
     "maps.asset.create.commit": {
       "payload": "MapsAssetCreateCommitPayload",
+      "requestId": "envelope"
+    },
+    "maps.image.import.begin": {
+      "payload": "MapsImageImportBeginPayload",
+      "requestId": "envelope"
+    },
+    "maps.image.import.commit": {
+      "payload": "MapsImageImportCommitPayload",
+      "requestId": "envelope"
+    },
+    "maps.layer.create": {
+      "payload": "MapsLayerCreatePayload",
+      "requestId": "envelope"
+    },
+    "maps.layer.delete": {
+      "payload": "MapsLayerDeletePayload",
+      "requestId": "envelope"
+    },
+    "maps.layer.update": {
+      "payload": "MapsLayerUpdatePayload",
       "requestId": "envelope"
     },
     "maps.locations.create_and_link": {

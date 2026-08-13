@@ -3,6 +3,8 @@ export type NormalizedPoint = readonly [number, number];
 export declare const MAP_ENTITY_TYPE: "daena.maps:map";
 export declare const MAP_NAMESPACE: "maps";
 export declare const FMG_PROVIDER: "azgaar-fmg";
+export declare const IMAGE_PROVIDER: "daena-image";
+export declare const IMAGE_SOURCE_FORMATS: readonly ["png", "jpeg", "svg"];
 /** Hierarchy relationship types owned by `daena.maps`. */
 export declare const MAP_RELATIONSHIP: {
     readonly DETAIL_MAP: "daena.maps:detail-map";
@@ -26,12 +28,13 @@ export type MapAnchor = {
     kind: "area";
     rings: readonly (readonly NormalizedPoint[])[];
 };
-export interface MapDescriptor {
+export type ImageSourceFormat = (typeof IMAGE_SOURCE_FORMATS)[number];
+export type MapDescriptor = {
     schemaVersion: 1;
     provider: {
-        id: string;
-        adapterVersion: number;
-        sourceFormat: string;
+        id: typeof FMG_PROVIDER;
+        adapterVersion: 1;
+        sourceFormat: "fmg-map";
     };
     sourceAssetId: string | null;
     previewAssetId: string | null;
@@ -39,7 +42,20 @@ export interface MapDescriptor {
         center: NormalizedPoint;
         zoom: number;
     };
-}
+} | {
+    schemaVersion: 1;
+    provider: {
+        id: typeof IMAGE_PROVIDER;
+        adapterVersion: 1;
+        sourceFormat: ImageSourceFormat;
+    };
+    sourceAssetId: string;
+    previewAssetId: string | null;
+    defaultView: {
+        center: NormalizedPoint;
+        zoom: number;
+    };
+};
 export interface MapDate {
     calendar: "gregorian";
     era: "BCE" | "CE";
@@ -63,14 +79,26 @@ export interface MapLocationsField {
     schemaVersion: 1;
     locations: readonly MapLocationReference[];
 }
-export interface MapLayerDefinition {
+export type MapLayerDefinition = {
     id: string;
     name: string;
     order: number;
     defaultVisible: boolean;
     style: Readonly<Record<string, unknown>>;
     selector: Readonly<Record<string, unknown>>;
-}
+    kind?: never;
+} | {
+    id: string;
+    name: string;
+    order: number;
+    defaultVisible: boolean;
+    style: Readonly<Record<string, unknown>>;
+    selector: Readonly<Record<string, unknown>>;
+    kind: "raster";
+    rasterAssetId: string;
+    opacity: number;
+    locked: boolean;
+};
 export interface MapLayersField {
     schemaVersion: 1;
     layers: readonly MapLayerDefinition[];

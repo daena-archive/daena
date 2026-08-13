@@ -1,6 +1,8 @@
 export const MAP_ENTITY_TYPE = "daena.maps:map";
 export const MAP_NAMESPACE = "maps";
 export const FMG_PROVIDER = "azgaar-fmg";
+export const IMAGE_PROVIDER = "daena-image";
+export const IMAGE_SOURCE_FORMATS = ["png", "jpeg", "svg"];
 /** Hierarchy relationship types owned by `daena.maps`. */
 export const MAP_RELATIONSHIP = {
     DETAIL_MAP: "daena.maps:detail-map",

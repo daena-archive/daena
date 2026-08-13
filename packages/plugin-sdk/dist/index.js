@@ -472,7 +472,9 @@ export function validatePluginManifest(manifest) {
                         if (item.renderer.type === "host-surface") {
                             if (typeof item.renderer.id !== "string" || !isHostSurfaceId(item.renderer.id))
                                 errors.push(`view ${String(item.id)} host surface id is invalid`);
-                            if (typeof item.renderer.major !== "number" || !Number.isInteger(item.renderer.major) || item.renderer.major < 1)
+                            if (typeof item.renderer.major !== "number" ||
+                                !Number.isInteger(item.renderer.major) ||
+                                item.renderer.major < 1)
                                 errors.push(`view ${String(item.id)} host surface major is invalid`);
                         }
                         else if (item.renderer.type !== "declarative" && item.renderer.type !== "sandboxed") {

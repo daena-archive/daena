@@ -166,6 +166,28 @@ pub struct Asset {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportedImageMap {
+    pub entity: Entity,
+    pub source: Asset,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RasterLayerChange {
+    pub layer_id: String,
+    pub asset: Option<Asset>,
+    pub layers: FieldValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RasterLayerUpdate {
+    pub name: Option<String>,
+    pub order: Option<i64>,
+    pub default_visible: Option<bool>,
+    pub opacity: Option<f64>,
+    pub locked: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleState {
     pub module_id: String,
     pub enabled: bool,
@@ -2031,6 +2053,18 @@ impl ProjectStore {
         Ok(transaction)
     }
 
+    fn write_mutation_result(
+        &self,
+        request_id: &str,
+        result: &serde_json::Value,
+    ) -> Result<(), CoreError> {
+        self.connection.execute(
+            "UPDATE mutation_receipts SET result=?1 WHERE request_id=?2",
+            params![result.to_string(), request_id],
+        )?;
+        Ok(())
+    }
+
     fn export_complete_snapshot(
         &self,
         root: &Path,
@@ -3765,6 +3799,602 @@ impl ProjectStore {
         Ok(entity)
     }
 
+    pub fn import_image_map(
+        &self,
+        name: String,
+        bytes: Vec<u8>,
+        mime_type: String,
+        filename: String,
+        request_id: Option<&str>,
+    ) -> Result<ImportedImageMap, CoreError> {
+        let input_fingerprint = digest_bytes(
+            &serde_json::to_vec(&serde_json::json!({
+                "name": name,
+                "mimeType": mime_type,
+                "filename": filename,
+                "contentHash": crate::maps::image::content_hash(&bytes),
+            }))
+            .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if let Some(imported) = self
+            .committed_mutation_with_fingerprint::<ImportedImageMap>(
+                request_id,
+                Some(&input_fingerprint),
+            )?
+        {
+            return Ok(imported);
+        }
+        let source = crate::maps::validate_image_source(&bytes, &mime_type)?;
+        let filename = Path::new(&filename)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty() && *value != "." && *value != "..")
+            .unwrap_or(match source.source_format {
+                "jpeg" => "map.jpeg",
+                "svg" => "map.svg",
+                _ => "map.png",
+            })
+            .to_owned();
+        let content_hash = crate::maps::image::content_hash(&bytes);
+        let size = bytes.len() as i64;
+        if let Some(root) = self.root.as_deref() {
+            store_runtime_asset(root, bytes.as_slice(), Some(&content_hash))?;
+        }
+        let entity_id = Uuid::new_v4().to_string();
+        let asset_id = Uuid::new_v4().to_string();
+        let now = chrono_like_now();
+        let relative_path = format!("assets/maps/{}-{filename}", Uuid::new_v4());
+        let descriptor = serde_json::json!({
+            "schemaVersion": 1,
+            "provider": {
+                "id": crate::maps::IMAGE_PROVIDER,
+                "adapterVersion": 1,
+                "sourceFormat": source.source_format
+            },
+            "sourceAssetId": asset_id,
+            "previewAssetId": null,
+            "defaultView": {"center": [0.5, 0.5], "zoom": 1}
+        });
+        let layers = serde_json::json!({"schemaVersion": 1, "layers": []});
+        let entity = Entity {
+            id: entity_id.clone(),
+            name: name.trim().into(),
+            entity_type: Some(crate::maps::MAP_ENTITY_TYPE.into()),
+            deleted: false,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            revision: String::new(),
+        };
+        let asset = Asset {
+            id: asset_id.clone(),
+            entity_id: entity_id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            filename: filename.clone(),
+            content_hash: content_hash.clone(),
+            size,
+            mime_type: mime_type.clone(),
+            path: relative_path.clone(),
+            created_at: now.clone(),
+            revision: String::new(),
+        };
+        let imported = ImportedImageMap {
+            entity: entity.clone(),
+            source: asset.clone(),
+        };
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&imported)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&result),
+            &[format!("entities/{entity_id}/"), relative_path.clone()],
+            &input_fingerprint,
+        )?;
+        transaction.execute(
+            "INSERT INTO entities(id,name,entity_type,created_at,updated_at) VALUES (?1,?2,?3,?4,?4)",
+            params![entity_id, entity.name, crate::maps::MAP_ENTITY_TYPE, now],
+        )?;
+        transaction.execute(
+            "INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![asset_id, entity_id, crate::maps::MAP_NAMESPACE, filename, content_hash, size, mime_type, relative_path, now],
+        )?;
+        crate::maps::validate_field(&transaction, &entity_id, "map", &descriptor)?;
+        crate::maps::validate_field(&transaction, &entity_id, "layers", &layers)?;
+        transaction.execute(
+            "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
+            params![entity_id, crate::maps::MAP_NAMESPACE, "map", encode_field_value(&descriptor)?],
+        )?;
+        transaction.execute(
+            "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
+            params![entity_id, crate::maps::MAP_NAMESPACE, "layers", encode_field_value(&layers)?],
+        )?;
+        transaction.commit()?;
+        self.refresh_maps_projection_for_entities(std::slice::from_ref(&imported.entity.id))?;
+        self.notify_export_worker()?;
+        let mut imported = imported;
+        imported.entity.revision = self.revision_for_entity(&imported.entity.id)?;
+        imported.source.revision = self.revision_for_asset(&imported.source.id)?;
+        self.write_mutation_result(
+            &request_id,
+            &serde_json::to_value(&imported)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        )?;
+        Ok(imported)
+    }
+
+    pub fn replay_imported_image_map(
+        &self,
+        request_id: Option<&str>,
+    ) -> Result<Option<ImportedImageMap>, CoreError> {
+        self.committed_mutation(request_id)
+    }
+
+    pub fn create_raster_layer(
+        &self,
+        map_entity_id: String,
+        name: String,
+        expected_revision: &str,
+        request_id: Option<&str>,
+    ) -> Result<RasterLayerChange, CoreError> {
+        let input_fingerprint = self.layer_mutation_fingerprint(
+            "create",
+            &map_entity_id,
+            None,
+            Some(&name),
+            expected_revision,
+            None,
+        )?;
+        if let Some(change) = self.committed_mutation_with_fingerprint::<RasterLayerChange>(
+            request_id,
+            Some(&input_fingerprint),
+        )? {
+            return Ok(change);
+        }
+        let (width, height) = self.map_source_dimensions(&map_entity_id)?;
+        let mut layers_field = self.layers_field(&map_entity_id)?;
+        Self::ensure_expected_revision(
+            Some(expected_revision),
+            layers_field.revision.clone(),
+            "field",
+        )?;
+        let layers = layers_field
+            .value
+            .get("layers")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let raster_count = layers
+            .iter()
+            .filter(|layer| layer.get("kind").and_then(serde_json::Value::as_str) == Some("raster"))
+            .count();
+        if raster_count >= crate::maps::IMAGE_MAX_RASTER_LAYERS {
+            return Err(CoreError::Validation(
+                "maps: raster layer count exceeds the budget".into(),
+            ));
+        }
+        let png = crate::maps::encode_transparent_png(width, height)?;
+        let content_hash = crate::maps::image::content_hash(&png);
+        let size = png.len() as i64;
+        if let Some(root) = self.root.as_deref() {
+            store_runtime_asset(root, png.as_slice(), Some(&content_hash))?;
+        }
+        let layer_id = Uuid::new_v4().to_string();
+        let asset_id = Uuid::new_v4().to_string();
+        let now = chrono_like_now();
+        let relative_path = format!("assets/maps/{asset_id}-layer.png");
+        let next_order = layers
+            .iter()
+            .filter_map(|layer| layer.get("order").and_then(serde_json::Value::as_i64))
+            .max()
+            .map(|order| order + 1)
+            .unwrap_or(0);
+        let mut layers = layers;
+        layers.push(serde_json::json!({
+            "id": layer_id,
+            "name": name,
+            "order": next_order,
+            "defaultVisible": true,
+            "style": {},
+            "selector": {},
+            "kind": "raster",
+            "rasterAssetId": asset_id,
+            "opacity": 1.0,
+            "locked": false
+        }));
+        let layers_value = serde_json::json!({"schemaVersion": 1, "layers": layers});
+        let asset = Asset {
+            id: asset_id.clone(),
+            entity_id: map_entity_id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            filename: "layer.png".into(),
+            content_hash: content_hash.clone(),
+            size,
+            mime_type: "image/png".into(),
+            path: relative_path.clone(),
+            created_at: now.clone(),
+            revision: String::new(),
+        };
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&RasterLayerChange {
+            layer_id: layer_id.clone(),
+            asset: Some(asset.clone()),
+            layers: FieldValue {
+                entity_id: map_entity_id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "layers".into(),
+                value: layers_value.clone(),
+                revision: String::new(),
+            },
+        })
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&result),
+            &[format!("entities/{map_entity_id}/"), relative_path.clone()],
+            &input_fingerprint,
+        )?;
+        transaction.execute(
+            "INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![asset_id, map_entity_id, crate::maps::MAP_NAMESPACE, "layer.png", content_hash, size, "image/png", relative_path, now],
+        )?;
+        crate::maps::validate_field(&transaction, &map_entity_id, "layers", &layers_value)?;
+        transaction.execute(
+            "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value",
+            params![map_entity_id, crate::maps::MAP_NAMESPACE, "layers", encode_field_value(&layers_value)?],
+        )?;
+        transaction.commit()?;
+        self.refresh_maps_projection_for_entities(std::slice::from_ref(&map_entity_id))?;
+        self.notify_export_worker()?;
+        layers_field.value = layers_value;
+        layers_field.revision = self.revision_for_field(&layers_field)?;
+        let mut asset = asset;
+        asset.revision = self.revision_for_asset(&asset.id)?;
+        let change = RasterLayerChange {
+            layer_id,
+            asset: Some(asset),
+            layers: layers_field,
+        };
+        self.write_mutation_result(
+            &request_id,
+            &serde_json::to_value(&change)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        )?;
+        Ok(change)
+    }
+
+    pub fn delete_raster_layer(
+        &self,
+        map_entity_id: String,
+        layer_id: String,
+        expected_revision: &str,
+        request_id: Option<&str>,
+    ) -> Result<RasterLayerChange, CoreError> {
+        let input_fingerprint = self.layer_mutation_fingerprint(
+            "delete",
+            &map_entity_id,
+            Some(&layer_id),
+            None,
+            expected_revision,
+            None,
+        )?;
+        if let Some(change) = self.committed_mutation_with_fingerprint::<RasterLayerChange>(
+            request_id,
+            Some(&input_fingerprint),
+        )? {
+            return Ok(change);
+        }
+        let mut layers_field = self.layers_field(&map_entity_id)?;
+        Self::ensure_expected_revision(
+            Some(expected_revision),
+            layers_field.revision.clone(),
+            "field",
+        )?;
+        let layers = layers_field
+            .value
+            .get("layers")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let Some(removed) = layers.iter().find(|layer| {
+            layer.get("id").and_then(serde_json::Value::as_str) == Some(layer_id.as_str())
+        }) else {
+            return Err(CoreError::NotFound("raster layer not found".into()));
+        };
+        if removed.get("kind").and_then(serde_json::Value::as_str) != Some("raster") {
+            return Err(CoreError::Validation(
+                "maps: only raster layers can be deleted by this operation".into(),
+            ));
+        }
+        let raster_asset_id = removed
+            .get("rasterAssetId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                CoreError::Validation("maps: raster layer is missing rasterAssetId".into())
+            })?
+            .to_owned();
+        let remaining = layers
+            .into_iter()
+            .filter(|layer| layer.get("id").and_then(serde_json::Value::as_str) != Some(layer_id.as_str()))
+            .collect::<Vec<_>>();
+        let layers_value = serde_json::json!({"schemaVersion": 1, "layers": remaining});
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&RasterLayerChange {
+            layer_id: layer_id.clone(),
+            asset: None,
+            layers: FieldValue {
+                entity_id: map_entity_id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "layers".into(),
+                value: layers_value.clone(),
+                revision: String::new(),
+            },
+        })
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&result),
+            &[format!("entities/{map_entity_id}/")],
+            &input_fingerprint,
+        )?;
+        transaction.execute(
+            "DELETE FROM assets WHERE id=?1 AND entity_id=?2 AND namespace=?3",
+            params![raster_asset_id, map_entity_id, crate::maps::MAP_NAMESPACE],
+        )?;
+        crate::maps::validate_field(&transaction, &map_entity_id, "layers", &layers_value)?;
+        transaction.execute(
+            "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value",
+            params![map_entity_id, crate::maps::MAP_NAMESPACE, "layers", encode_field_value(&layers_value)?],
+        )?;
+        transaction.commit()?;
+        self.refresh_maps_projection_for_entities(std::slice::from_ref(&map_entity_id))?;
+        self.notify_export_worker()?;
+        layers_field.value = layers_value;
+        layers_field.revision = self.revision_for_field(&layers_field)?;
+        let change = RasterLayerChange {
+            layer_id,
+            asset: None,
+            layers: layers_field,
+        };
+        self.write_mutation_result(
+            &request_id,
+            &serde_json::to_value(&change)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        )?;
+        Ok(change)
+    }
+
+    pub fn update_map_layer(
+        &self,
+        map_entity_id: String,
+        layer_id: String,
+        update: RasterLayerUpdate,
+        expected_revision: &str,
+        request_id: Option<&str>,
+    ) -> Result<RasterLayerChange, CoreError> {
+        let input_fingerprint = self.layer_mutation_fingerprint(
+            "update",
+            &map_entity_id,
+            Some(&layer_id),
+            None,
+            expected_revision,
+            Some(&update),
+        )?;
+        if let Some(change) = self.committed_mutation_with_fingerprint::<RasterLayerChange>(
+            request_id,
+            Some(&input_fingerprint),
+        )? {
+            return Ok(change);
+        }
+        let mut layers_field = self.layers_field(&map_entity_id)?;
+        Self::ensure_expected_revision(
+            Some(expected_revision),
+            layers_field.revision.clone(),
+            "field",
+        )?;
+        let mut layers = layers_field
+            .value
+            .get("layers")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let Some(layer) = layers.iter_mut().find(|layer| {
+            layer.get("id").and_then(serde_json::Value::as_str) == Some(layer_id.as_str())
+        }) else {
+            return Err(CoreError::NotFound("layer not found".into()));
+        };
+        let object = layer.as_object_mut().ok_or_else(|| {
+            CoreError::Validation("maps: layer definition is invalid".into())
+        })?;
+        if let Some(name) = update.name {
+            object.insert("name".into(), serde_json::Value::String(name));
+        }
+        if let Some(order) = update.order {
+            object.insert("order".into(), serde_json::json!(order));
+        }
+        if let Some(default_visible) = update.default_visible {
+            object.insert("defaultVisible".into(), serde_json::Value::Bool(default_visible));
+        }
+        if object.get("kind").and_then(serde_json::Value::as_str) == Some("raster") {
+            if let Some(opacity) = update.opacity {
+                object.insert("opacity".into(), serde_json::json!(opacity));
+            }
+            if let Some(locked) = update.locked {
+                object.insert("locked".into(), serde_json::Value::Bool(locked));
+            }
+        } else if update.opacity.is_some() || update.locked.is_some() {
+            return Err(CoreError::Validation(
+                "maps: opacity and locked apply only to raster layers".into(),
+            ));
+        }
+        let layers_value = serde_json::json!({"schemaVersion": 1, "layers": layers});
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&RasterLayerChange {
+            layer_id: layer_id.clone(),
+            asset: None,
+            layers: FieldValue {
+                entity_id: map_entity_id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "layers".into(),
+                value: layers_value.clone(),
+                revision: String::new(),
+            },
+        })
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        crate::maps::validate_field(&self.connection, &map_entity_id, "layers", &layers_value)?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&result),
+            &[format!("entities/{map_entity_id}/")],
+            &input_fingerprint,
+        )?;
+        transaction.execute(
+            "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value",
+            params![map_entity_id, crate::maps::MAP_NAMESPACE, "layers", encode_field_value(&layers_value)?],
+        )?;
+        transaction.commit()?;
+        self.refresh_maps_projection_for_entities(std::slice::from_ref(&map_entity_id))?;
+        self.notify_export_worker()?;
+        layers_field.value = layers_value;
+        layers_field.revision = self.revision_for_field(&layers_field)?;
+        let change = RasterLayerChange {
+            layer_id,
+            asset: None,
+            layers: layers_field,
+        };
+        self.write_mutation_result(
+            &request_id,
+            &serde_json::to_value(&change)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        )?;
+        Ok(change)
+    }
+
+    fn layer_mutation_fingerprint(
+        &self,
+        op: &str,
+        map_entity_id: &str,
+        layer_id: Option<&str>,
+        name: Option<&str>,
+        expected_revision: &str,
+        update: Option<&RasterLayerUpdate>,
+    ) -> Result<String, CoreError> {
+        Ok(digest_bytes(
+            &serde_json::to_vec(&serde_json::json!({
+                "op": op,
+                "mapEntityId": map_entity_id,
+                "layerId": layer_id,
+                "name": name,
+                "expectedRevision": expected_revision,
+                "update": update,
+            }))
+            .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        ))
+    }
+
+    fn layers_field(&self, map_entity_id: &str) -> Result<FieldValue, CoreError> {
+        let entity_type: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT entity_type FROM entities WHERE id=?1 AND deleted=0",
+                params![map_entity_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if entity_type.as_deref() != Some(crate::maps::MAP_ENTITY_TYPE) {
+            return Err(CoreError::NotFound("map entity not found".into()));
+        }
+        if let Some(mut field) = self
+            .list_fields_unchecked(map_entity_id.to_owned())?
+            .into_iter()
+            .find(|field| field.namespace == crate::maps::MAP_NAMESPACE && field.key == "layers")
+        {
+            field.revision = self.revision_for_field(&field)?;
+            return Ok(field);
+        }
+        let field = FieldValue {
+            entity_id: map_entity_id.to_owned(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            key: "layers".into(),
+            value: serde_json::json!({"schemaVersion": 1, "layers": []}),
+            revision: String::new(),
+        };
+        let revision = self.revision_for_field(&field)?;
+        Ok(FieldValue { revision, ..field })
+    }
+
+    fn map_source_dimensions(&self, map_entity_id: &str) -> Result<(u32, u32), CoreError> {
+        let descriptor = self
+            .list_fields_unchecked(map_entity_id.to_owned())?
+            .into_iter()
+            .find(|field| field.namespace == crate::maps::MAP_NAMESPACE && field.key == "map")
+            .ok_or_else(|| CoreError::NotFound("map descriptor not found".into()))?;
+        let source_asset_id = descriptor
+            .value
+            .pointer("/sourceAssetId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| CoreError::Validation("maps: image maps require sourceAssetId".into()))?;
+        let asset = self.asset_unchecked(source_asset_id)?;
+        let bytes = self.read_asset_bytes(&asset)?;
+        let source = crate::maps::validate_image_source(&bytes, &asset.mime_type)?;
+        Ok((source.width, source.height))
+    }
+
+    fn read_asset_bytes(&self, asset: &Asset) -> Result<Vec<u8>, CoreError> {
+        let root = self.project_root()?;
+        let path = runtime_asset_path(root, &asset.content_hash)?;
+        std::fs::read(&path).map_err(|source| CoreError::Io {
+            operation: "read runtime asset",
+            source,
+        })
+    }
+
+    fn raster_layer_expected_size(&self, asset: &Asset) -> Result<Option<(u32, u32)>, CoreError> {
+        let Some(layers) = self
+            .list_fields_unchecked(asset.entity_id.clone())?
+            .into_iter()
+            .find(|field| field.namespace == crate::maps::MAP_NAMESPACE && field.key == "layers")
+        else {
+            return Ok(None);
+        };
+        let is_raster = layers
+            .value
+            .get("layers")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|layer| {
+                layer.get("kind").and_then(serde_json::Value::as_str) == Some("raster")
+                    && layer.get("rasterAssetId").and_then(serde_json::Value::as_str)
+                        == Some(asset.id.as_str())
+            });
+        if !is_raster {
+            return Ok(None);
+        }
+        Ok(Some(self.map_source_dimensions(&asset.entity_id)?))
+    }
+
+    fn is_immutable_image_source(&self, asset: &Asset) -> Result<bool, CoreError> {
+        if asset.namespace != crate::maps::MAP_NAMESPACE {
+            return Ok(false);
+        }
+        let Some(descriptor) = self
+            .list_fields_unchecked(asset.entity_id.clone())?
+            .into_iter()
+            .find(|field| field.namespace == crate::maps::MAP_NAMESPACE && field.key == "map")
+        else {
+            return Ok(false);
+        };
+        Ok(
+            descriptor.value.pointer("/provider/id").and_then(serde_json::Value::as_str)
+                == Some(crate::maps::IMAGE_PROVIDER)
+                && descriptor
+                    .value
+                    .pointer("/sourceAssetId")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(asset.id.as_str()),
+        )
+    }
+
     pub fn delete_entity(&self, id: String) -> Result<(), CoreError> {
         self.delete_entity_with_options(id, None, None)
     }
@@ -4655,6 +5285,20 @@ impl ProjectStore {
                 params![migration.module_id, migration.migration_id, migration.from_version, migration.to_version, migration.checksum, migration.package_digest, migration.applied_at],
             )?;
         }
+        if let Some(root) = self.root.as_deref() {
+            crate::maps::validate_image_map_content(&transaction, |asset_id| {
+                let hash: String = transaction.query_row(
+                    "SELECT content_hash FROM assets WHERE id=?1",
+                    params![asset_id],
+                    |row| row.get(0),
+                )?;
+                let path = runtime_asset_path(root, &hash)?;
+                std::fs::read(&path).map_err(|source| CoreError::Io {
+                    operation: "read image map asset",
+                    source,
+                })
+            })?;
+        }
         transaction.commit()?;
         if rebuild_search {
             self.rebuild_search()?;
@@ -4886,6 +5530,18 @@ impl ProjectStore {
         if input.mime_type.trim().is_empty() {
             return Err(CoreError::Validation(
                 "asset replacement MIME type is required".into(),
+            ));
+        }
+        if let Some((width, height)) = self.raster_layer_expected_size(&asset)? {
+            if input.mime_type != "image/png" {
+                return Err(CoreError::Validation(
+                    "maps: painted layers must remain PNG assets".into(),
+                ));
+            }
+            crate::maps::validate_raster_png(&bytes, width, height)?;
+        } else if self.is_immutable_image_source(&asset)? {
+            return Err(CoreError::Validation(
+                "maps: imported source assets cannot be replaced".into(),
             ));
         }
         let request_id = self.request_id(request_id)?;

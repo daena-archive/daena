@@ -72,6 +72,11 @@ export interface FieldReadPayload { entityId: string; key: string; namespace: st
 export interface FieldSetPayload { entityId: string; expectedRevision: string; key: string; namespace: string; value: unknown }
 export interface MapsAssetCreateBeginPayload { mapEntityId: string; mimeType?: string | null; size: number }
 export interface MapsAssetCreateCommitPayload { contentHash: string; handle: string }
+export interface MapsImageImportBeginPayload { filename: string; mimeType: string; name: string; size: number }
+export interface MapsImageImportCommitPayload { contentHash: string; handle: string }
+export interface MapsLayerCreatePayload { expectedRevision: string; mapEntityId: string; name: string }
+export interface MapsLayerDeletePayload { expectedRevision: string; layerId: string; mapEntityId: string }
+export interface MapsLayerUpdatePayload { defaultVisible?: boolean | null; expectedRevision: string; layerId: string; locked?: boolean | null; mapEntityId: string; name?: string | null; opacity?: number | null; order?: number | null }
 export interface MapsLocationsCreateAndLinkPayload { entityType: string; location: unknown; name: string }
 export interface MapsLocationsListPayload { mapEntityId: string }
 export interface MapsLocationsUnlinkPayload { entityId: string; locationId: string }
@@ -117,6 +122,11 @@ export interface BrokerMethodPayloads {
   "field.set": FieldSetPayload;
   "maps.asset.create.begin": MapsAssetCreateBeginPayload;
   "maps.asset.create.commit": MapsAssetCreateCommitPayload;
+  "maps.image.import.begin": MapsImageImportBeginPayload;
+  "maps.image.import.commit": MapsImageImportCommitPayload;
+  "maps.layer.create": MapsLayerCreatePayload;
+  "maps.layer.delete": MapsLayerDeletePayload;
+  "maps.layer.update": MapsLayerUpdatePayload;
   "maps.locations.create_and_link": MapsLocationsCreateAndLinkPayload;
   "maps.locations.list": MapsLocationsListPayload;
   "maps.locations.unlink": MapsLocationsUnlinkPayload;

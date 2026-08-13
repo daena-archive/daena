@@ -97,17 +97,38 @@
       }
     },
     "layer": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["id", "name", "order", "defaultVisible", "style", "selector"],
-      "properties": {
-        "id": { "$ref": "#/$defs/uuid" },
-        "name": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "order": { "type": "integer" },
-        "defaultVisible": { "type": "boolean" },
-        "style": { "type": "object" },
-        "selector": { "type": "object" }
-      }
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "name", "order", "defaultVisible", "style", "selector"],
+          "properties": {
+            "id": { "$ref": "#/$defs/uuid" },
+            "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "order": { "type": "integer" },
+            "defaultVisible": { "type": "boolean" },
+            "style": { "type": "object" },
+            "selector": { "type": "object" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "name", "order", "defaultVisible", "style", "selector", "kind", "rasterAssetId", "opacity", "locked"],
+          "properties": {
+            "id": { "$ref": "#/$defs/uuid" },
+            "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "order": { "type": "integer" },
+            "defaultVisible": { "type": "boolean" },
+            "style": { "type": "object", "additionalProperties": false, "properties": {} },
+            "selector": { "type": "object", "additionalProperties": false, "properties": {} },
+            "kind": { "const": "raster" },
+            "rasterAssetId": { "$ref": "#/$defs/uuid" },
+            "opacity": { "type": "number", "minimum": 0, "maximum": 1 },
+            "locked": { "type": "boolean" }
+          }
+        }
+      ]
     }
   },
   "oneOf": [
@@ -119,14 +140,28 @@
       "properties": {
         "schemaVersion": { "const": 1 },
         "provider": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["id", "adapterVersion", "sourceFormat"],
-          "properties": {
-            "id": { "const": "azgaar-fmg" },
-            "adapterVersion": { "const": 1 },
-            "sourceFormat": { "const": "fmg-map" }
-          }
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "adapterVersion", "sourceFormat"],
+              "properties": {
+                "id": { "const": "azgaar-fmg" },
+                "adapterVersion": { "const": 1 },
+                "sourceFormat": { "const": "fmg-map" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "adapterVersion", "sourceFormat"],
+              "properties": {
+                "id": { "const": "daena-image" },
+                "adapterVersion": { "const": 1 },
+                "sourceFormat": { "enum": ["png", "jpeg", "svg"] }
+              }
+            }
+          ]
         },
         "sourceAssetId": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/uuid" }] },
         "previewAssetId": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/uuid" }] },
@@ -138,6 +173,19 @@
             "center": { "$ref": "#/$defs/point" },
             "zoom": { "type": "number", "exclusiveMinimum": 0 }
           }
+        }
+      },
+      "if": {
+        "properties": {
+          "provider": {
+            "properties": { "id": { "const": "daena-image" } },
+            "required": ["id"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sourceAssetId": { "$ref": "#/$defs/uuid" }
         }
       }
     },

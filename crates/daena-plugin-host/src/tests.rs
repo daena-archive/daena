@@ -1866,6 +1866,27 @@ fn capability_mappings_are_stable_for_static_methods() {
         ("asset.transfer.cancel", &empty, &[]),
         ("maps.asset.create.begin", &empty, &["asset.write:self"]),
         ("maps.asset.create.commit", &empty, &["asset.write:self"]),
+        (
+            "maps.image.import.begin",
+            &empty,
+            &["entity.write", "asset.write:self", "field.write:self"],
+        ),
+        (
+            "maps.image.import.commit",
+            &empty,
+            &["entity.write", "asset.write:self", "field.write:self"],
+        ),
+        (
+            "maps.layer.create",
+            &empty,
+            &["asset.write:self", "field.write:self"],
+        ),
+        (
+            "maps.layer.delete",
+            &empty,
+            &["asset.write:self", "field.write:self"],
+        ),
+        ("maps.layer.update", &empty, &["field.write:self"]),
         ("maps.recovery.export.begin", &empty, &["asset.write:self"]),
         ("maps.recovery.export.commit", &empty, &["asset.write:self"]),
         ("maps.recovery.restore", &empty, &["asset.write:self"]),

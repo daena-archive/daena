@@ -3941,3 +3941,262 @@ fn entity_scoped_reads_use_covering_indexes() {
     assert!(query_plan("EXPLAIN QUERY PLAN SELECT id,entity_id,format,body,updated_at FROM documents WHERE entity_id='entity' ORDER BY updated_at DESC").contains("documents_entity_updated_idx"));
     assert!(query_plan("EXPLAIN QUERY PLAN SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets WHERE entity_id='entity' ORDER BY created_at").contains("assets_entity_created_idx"));
 }
+
+#[test]
+fn image_map_import_layer_mutations_and_checkpoint_rebuild() {
+    let root = std::env::temp_dir().join(format!("daena-image-map-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let png = crate::maps::encode_transparent_png(8, 6).unwrap();
+    let imported = store
+        .import_image_map(
+            "Atlas".into(),
+            png.clone(),
+            "image/png".into(),
+            "atlas.png".into(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        imported.entity.entity_type.as_deref(),
+        Some(crate::maps::MAP_ENTITY_TYPE)
+    );
+    let descriptor = store
+        .list_fields(imported.entity.id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "map")
+        .unwrap();
+    assert_eq!(descriptor.value["provider"]["id"], crate::maps::IMAGE_PROVIDER);
+    assert_eq!(descriptor.value["sourceAssetId"], imported.source.id);
+
+    let jpeg_map = store
+        .import_image_map(
+            "Photo".into(),
+            crate::maps::image::VALID_JPEG.to_vec(),
+            "image/jpeg".into(),
+            "photo.jpg".into(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .list_fields(jpeg_map.entity.id)
+            .unwrap()
+            .into_iter()
+            .find(|field| field.key == "map")
+            .unwrap()
+            .value["provider"]["sourceFormat"],
+        "jpeg"
+    );
+
+    let unsafe_svg = b"<svg viewBox=\"0 0 10 10\"><script>alert(1)</script></svg>".to_vec();
+    assert!(store
+        .import_image_map(
+            "Bad".into(),
+            unsafe_svg,
+            "image/svg+xml".into(),
+            "bad.svg".into(),
+            None
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("unsupported active"));
+
+    let request_id = Uuid::new_v4().to_string();
+    let layers_revision = store
+        .list_fields(imported.entity.id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "layers")
+        .unwrap()
+        .revision;
+    let created = store
+        .create_raster_layer(
+            imported.entity.id.clone(),
+            "Ink".into(),
+            &layers_revision,
+            Some(&request_id),
+        )
+        .unwrap();
+    assert!(!created.layers.revision.is_empty());
+    assert!(!created.asset.as_ref().unwrap().revision.is_empty());
+    let retried = store
+        .create_raster_layer(
+            imported.entity.id.clone(),
+            "Ink".into(),
+            &layers_revision,
+            Some(&request_id),
+        )
+        .unwrap();
+    assert_eq!(created.layer_id, retried.layer_id);
+    assert_eq!(
+        created.asset.as_ref().unwrap().id,
+        retried.asset.as_ref().unwrap().id
+    );
+    assert_eq!(created.layers.revision, retried.layers.revision);
+    assert!(store
+        .create_raster_layer(
+            imported.entity.id.clone(),
+            "Other".into(),
+            &layers_revision,
+            Some(&request_id),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("request ID"));
+
+    assert!(store
+        .replace_asset_bytes_with_request(
+            AssetReplaceInput {
+                asset_id: imported.source.id.clone(),
+                content_hash: crate::maps::image::content_hash(&png),
+                size: png.len() as i64,
+                mime_type: "image/png".into(),
+            },
+            png.clone(),
+            &store.asset(imported.source.id.clone()).unwrap().revision,
+            None,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("cannot be replaced"));
+
+    let stale = store.create_raster_layer(
+        imported.entity.id.clone(),
+        "Other".into(),
+        "not-a-revision",
+        None,
+    );
+    assert!(stale.unwrap_err().to_string().contains("revision"));
+
+    let layers_revision = created.layers.revision.clone();
+    let updated = store
+        .update_map_layer(
+            imported.entity.id.clone(),
+            created.layer_id.clone(),
+            RasterLayerUpdate {
+                name: Some("Coast".into()),
+                order: Some(3),
+                default_visible: Some(false),
+                opacity: Some(0.25),
+                locked: Some(true),
+            },
+            &layers_revision,
+            None,
+        )
+        .unwrap();
+    assert_eq!(updated.layers.value["layers"][0]["name"], "Coast");
+    assert_eq!(updated.layers.value["layers"][0]["opacity"], 0.25);
+
+    let painted = crate::maps::encode_transparent_png(8, 6).unwrap();
+    let raster_id = created.asset.as_ref().unwrap().id.clone();
+    store
+        .replace_asset_bytes_with_request(
+            AssetReplaceInput {
+                asset_id: raster_id.clone(),
+                content_hash: crate::maps::image::content_hash(&painted),
+                size: painted.len() as i64,
+                mime_type: "image/png".into(),
+            },
+            painted,
+            &store.asset(raster_id.clone()).unwrap().revision,
+            None,
+        )
+        .unwrap();
+    let wrong_size = crate::maps::encode_transparent_png(2, 2).unwrap();
+    assert!(store
+        .replace_asset_bytes_with_request(
+            AssetReplaceInput {
+                asset_id: raster_id.clone(),
+                content_hash: crate::maps::image::content_hash(&wrong_size),
+                size: wrong_size.len() as i64,
+                mime_type: "image/png".into(),
+            },
+            wrong_size,
+            &store.asset(raster_id.clone()).unwrap().revision,
+            None,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("dimensions"));
+
+    store.flush_checkpoint("image map export").unwrap();
+    let checkpoint = crate::storage::read_json::<crate::storage::CheckpointManifest>(
+        &root.join(crate::storage::CHECKPOINT_MANIFEST_FILE),
+    )
+    .unwrap();
+    crate::storage::validate_checkpoint(&root, &checkpoint).unwrap();
+    let before = canonical_files(&root);
+    let source_hash = store.asset(imported.source.id.clone()).unwrap().content_hash;
+    let layer_hash = store.asset(raster_id.clone()).unwrap().content_hash;
+    drop(store);
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(canonical_files(&root), before);
+    assert_eq!(
+        rebuilt.asset(imported.source.id.clone()).unwrap().content_hash,
+        source_hash
+    );
+    assert_eq!(rebuilt.asset(raster_id.clone()).unwrap().content_hash, layer_hash);
+    let layers = rebuilt
+        .list_fields(imported.entity.id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "layers")
+        .unwrap();
+    assert_eq!(layers.value["layers"].as_array().unwrap().len(), 1);
+    assert_eq!(layers.value["layers"][0]["rasterAssetId"], raster_id);
+
+    rebuilt
+        .delete_raster_layer(
+            imported.entity.id.clone(),
+            created.layer_id.clone(),
+            &layers.revision,
+            None,
+        )
+        .unwrap();
+    assert!(rebuilt.asset(raster_id).is_err());
+    let leftover = rebuilt
+        .list_fields(imported.entity.id)
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "layers")
+        .unwrap();
+    assert_eq!(leftover.value["layers"].as_array().unwrap().len(), 0);
+    drop(rebuilt);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn image_map_runtime_bytes_survive_an_interrupted_export() {
+    let root = std::env::temp_dir().join(format!("daena-image-map-interrupt-{}", Uuid::new_v4()));
+    let mut store = ProjectStore::open_directory(&root).unwrap();
+    store
+        .export_worker
+        .take()
+        .unwrap()
+        .stop_without_drain()
+        .unwrap();
+    store.suppress_sync.set(true);
+    let png = crate::maps::encode_transparent_png(4, 3).unwrap();
+    let imported = store
+        .import_image_map(
+            "Atlas".into(),
+            png.clone(),
+            "image/png".into(),
+            "atlas.png".into(),
+            None,
+        )
+        .unwrap();
+    assert!(!root.join(&imported.source.path).exists());
+    drop(store);
+
+    let reopened = ProjectStore::open_directory(&root).unwrap();
+    reopened
+        .flush_checkpoint("recover interrupted image map export")
+        .unwrap();
+    assert_eq!(std::fs::read(root.join(&imported.source.path)).unwrap(), png);
+    assert_eq!(reopened.sync_summary().unwrap().state, "clean");
+    drop(reopened);
+    std::fs::remove_dir_all(root).unwrap();
+}

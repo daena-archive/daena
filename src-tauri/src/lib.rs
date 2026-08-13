@@ -174,6 +174,18 @@ enum BinaryTransfer {
         bytes: Vec<u8>,
         expires_at: Instant,
     },
+    ImageImport {
+        plugin_id: String,
+        session_id: String,
+        project_id: String,
+        name: String,
+        filename: String,
+        mime_type: String,
+        declared_size: usize,
+        next_chunk: u64,
+        bytes: Vec<u8>,
+        expires_at: Instant,
+    },
 }
 
 impl BinaryTransferManager {
@@ -183,7 +195,8 @@ impl BinaryTransferManager {
             BinaryTransfer::Read { expires_at, .. }
             | BinaryTransfer::Upload { expires_at, .. }
             | BinaryTransfer::RecoveryUpload { expires_at, .. }
-            | BinaryTransfer::Create { expires_at, .. } => *expires_at > now,
+            | BinaryTransfer::Create { expires_at, .. }
+            | BinaryTransfer::ImageImport { expires_at, .. } => *expires_at > now,
         });
     }
 
@@ -250,6 +263,14 @@ impl BinaryTransferManager {
                 ..
             }
             | BinaryTransfer::Create {
+                plugin_id,
+                session_id,
+                next_chunk,
+                declared_size,
+                bytes,
+                ..
+            }
+            | BinaryTransfer::ImageImport {
                 plugin_id,
                 session_id,
                 next_chunk,
@@ -400,6 +421,52 @@ impl BinaryTransferManager {
         }
     }
 
+    fn prepare_image_import(
+        &mut self,
+        token: &str,
+        plugin_id: &str,
+        session_id: &str,
+        project_id: &str,
+        content_hash: &str,
+    ) -> Result<(String, String, String, Vec<u8>), String> {
+        self.cleanup();
+        let transfer = self
+            .transfers
+            .get(token)
+            .ok_or_else(|| "asset upload handle is invalid or expired".to_string())?;
+        match transfer {
+            BinaryTransfer::ImageImport {
+                plugin_id: owner,
+                session_id: expected_session,
+                project_id: expected_project,
+                name,
+                filename,
+                mime_type,
+                declared_size,
+                bytes,
+                ..
+            } if owner == plugin_id
+                && expected_session == session_id
+                && expected_project == project_id =>
+            {
+                if bytes.len() != *declared_size {
+                    return Err("asset upload is incomplete".into());
+                }
+                let digest = format!("sha256:{:x}", Sha256::digest(bytes));
+                if digest != content_hash {
+                    return Err("asset upload content hash does not match bytes".into());
+                }
+                Ok((
+                    name.clone(),
+                    filename.clone(),
+                    mime_type.clone(),
+                    bytes.clone(),
+                ))
+            }
+            _ => Err("asset upload handle is not valid for this session or project".into()),
+        }
+    }
+
     fn complete_upload(
         &mut self,
         token: &str,
@@ -424,6 +491,11 @@ impl BinaryTransferManager {
                 plugin_id: owner,
                 session_id: expected_session,
                 ..
+            }
+            | BinaryTransfer::ImageImport {
+                plugin_id: owner,
+                session_id: expected_session,
+                ..
             } if owner == plugin_id && expected_session == session_id => Ok(()),
             other => {
                 self.transfers.insert(token.into(), other);
@@ -441,7 +513,8 @@ impl BinaryTransferManager {
             BinaryTransfer::Read { plugin_id, .. }
             | BinaryTransfer::Upload { plugin_id, .. }
             | BinaryTransfer::RecoveryUpload { plugin_id, .. }
-            | BinaryTransfer::Create { plugin_id, .. } => plugin_id,
+            | BinaryTransfer::Create { plugin_id, .. }
+            | BinaryTransfer::ImageImport { plugin_id, .. } => plugin_id,
         };
         if owner != plugin_id {
             return Err("asset handle is not valid for this plugin".into());
@@ -1155,6 +1228,8 @@ fn plugin_protocol_response(
                         | "asset.transfer.cancel"
                         | "maps.asset.create.begin"
                         | "maps.asset.create.commit"
+                        | "maps.image.import.begin"
+                        | "maps.image.import.commit"
                         | "maps.recovery.export.begin"
                         | "maps.recovery.export.commit"
                 ) {
@@ -1172,6 +1247,9 @@ fn plugin_protocol_response(
                         }
                         "maps.asset.create.commit" => {
                             flush_checkpoint_for_shared_core(core, "maps asset create")?;
+                        }
+                        "maps.image.import.commit" => {
+                            flush_checkpoint_for_shared_core(core, "maps image import")?;
                         }
                         _ => {}
                     }
@@ -1543,6 +1621,81 @@ fn dispatch_binary_asset_rpc(
                 .map_err(|_| "asset transfer state is unavailable".to_string())?;
             manager.complete_upload(token, &session.plugin_id, &session.id)?;
             serde_json::to_value(asset).map_err(|e| e.to_string())
+        }
+        "maps.image.import.begin" => {
+            let name = payload
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "name is required".to_string())?;
+            let filename = payload
+                .get("filename")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "filename is required".to_string())?;
+            let mime_type = payload
+                .get("mimeType")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "mimeType is required".to_string())?;
+            daena_core::maps::source_format_for_mime(mime_type).map_err(|e| e.to_string())?;
+            let size_value = payload
+                .get("size")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "size is required".to_string())?;
+            if size_value > MAX_ASSET_TRANSFER_BYTES as u64
+                || size_value > daena_core::maps::IMAGE_MAX_ENCODED_BYTES as u64
+            {
+                return Err("asset exceeds host transfer limit".into());
+            }
+            let size = size_value as usize;
+            let token = manager.token(BinaryTransfer::ImageImport {
+                plugin_id: session.plugin_id.clone(),
+                session_id: session.id.clone(),
+                project_id: session.project_id.clone(),
+                name: name.into(),
+                filename: filename.into(),
+                mime_type: mime_type.into(),
+                declared_size: size,
+                next_chunk: 0,
+                bytes: Vec::with_capacity(size.min(MAX_ASSET_TRANSFER_BYTES)),
+                expires_at: Instant::now() + ASSET_TRANSFER_TTL,
+            });
+            Ok(
+                serde_json::json!({"handle":token,"url":format!("plugin://{}/__asset/{}/0?sessionId={}", session.plugin_id, token, session.id),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
+            )
+        }
+        "maps.image.import.commit" => {
+            let token = payload
+                .get("handle")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "handle is required".to_string())?;
+            let content_hash = payload
+                .get("contentHash")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "contentHash is required".to_string())?;
+            let prepared = manager.prepare_image_import(
+                token,
+                &session.plugin_id,
+                &session.id,
+                &session.project_id,
+                content_hash,
+            );
+            drop(manager);
+            let imported = match prepared {
+                Ok((name, filename, mime_type, bytes)) => {
+                    let imported = project
+                        .import_image_map(name, bytes, mime_type, filename, request_id)
+                        .map_err(|e| e.to_string())?;
+                    let mut manager = transfers
+                        .lock()
+                        .map_err(|_| "asset transfer state is unavailable".to_string())?;
+                    let _ = manager.complete_upload(token, &session.plugin_id, &session.id);
+                    imported
+                }
+                Err(error) => project
+                    .replay_imported_image_map(request_id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or(error)?,
+            };
+            serde_json::to_value(imported).map_err(|e| e.to_string())
         }
         "maps.recovery.export.begin" => {
             let entity_id = payload
@@ -4190,6 +4343,14 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
         "asset.transfer.cancel" => (&["handle"], &[]),
         "maps.asset.create.begin" => (&["mapEntityId", "size"], &["mimeType"]),
         "maps.asset.create.commit" => (&["handle", "contentHash"], &[]),
+        "maps.image.import.begin" => (&["name", "size", "mimeType", "filename"], &[]),
+        "maps.image.import.commit" => (&["handle", "contentHash"], &[]),
+        "maps.layer.create" => (&["mapEntityId", "name", "expectedRevision"], &[]),
+        "maps.layer.delete" => (&["mapEntityId", "layerId", "expectedRevision"], &[]),
+        "maps.layer.update" => (
+            &["mapEntityId", "layerId", "expectedRevision"],
+            &["name", "order", "defaultVisible", "opacity", "locked"],
+        ),
         "maps.recovery.export.begin" => (&["mapEntityId", "size"], &[]),
         "maps.recovery.export.commit" => (&["handle", "contentHash"], &[]),
         "maps.recovery.list" => (&["mapEntityId"], &[]),
@@ -4628,6 +4789,54 @@ fn dispatch_module_rpc(
                 .map_err(|error| CoreError::Validation(format!("invalid location: {error}")))?;
             project.upsert_map_location(entity_id, location, request_id)?;
             Ok(serde_json::Value::Null)
+        }
+        "maps.layer.create" => {
+            let map_entity_id = payload_string(&payload, "mapEntityId")?;
+            let name = payload_string(&payload, "name")?;
+            let expected_revision = payload_string(&payload, "expectedRevision")?;
+            serde_json::to_value(project.create_raster_layer(
+                map_entity_id,
+                name,
+                &expected_revision,
+                request_id,
+            )?)
+            .map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "maps.layer.delete" => {
+            let map_entity_id = payload_string(&payload, "mapEntityId")?;
+            let layer_id = payload_string(&payload, "layerId")?;
+            let expected_revision = payload_string(&payload, "expectedRevision")?;
+            serde_json::to_value(project.delete_raster_layer(
+                map_entity_id,
+                layer_id,
+                &expected_revision,
+                request_id,
+            )?)
+            .map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "maps.layer.update" => {
+            let map_entity_id = payload_string(&payload, "mapEntityId")?;
+            let layer_id = payload_string(&payload, "layerId")?;
+            let expected_revision = payload_string(&payload, "expectedRevision")?;
+            serde_json::to_value(project.update_map_layer(
+                map_entity_id,
+                layer_id,
+                daena_core::RasterLayerUpdate {
+                    name: payload
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                    order: payload.get("order").and_then(serde_json::Value::as_i64),
+                    default_visible: payload
+                        .get("defaultVisible")
+                        .and_then(serde_json::Value::as_bool),
+                    opacity: payload.get("opacity").and_then(serde_json::Value::as_f64),
+                    locked: payload.get("locked").and_then(serde_json::Value::as_bool),
+                },
+                &expected_revision,
+                request_id,
+            )?)
+            .map_err(|error| CoreError::Validation(error.to_string()))
         }
         "maps.locations.unlink" => {
             let entity_id = payload_string(&payload, "entityId")?;

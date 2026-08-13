@@ -394,6 +394,67 @@ pub struct MapsAssetCreateCommitPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
+pub struct MapsImageImportBeginPayload {
+    pub name: String,
+    pub size: i64,
+    #[serde(rename = "mimeType")]
+    pub mime_type: String,
+    pub filename: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsImageImportCommitPayload {
+    pub handle: String,
+    #[serde(rename = "contentHash")]
+    pub content_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsLayerCreatePayload {
+    #[serde(rename = "mapEntityId")]
+    pub map_entity_id: String,
+    pub name: String,
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsLayerDeletePayload {
+    #[serde(rename = "mapEntityId")]
+    pub map_entity_id: String,
+    #[serde(rename = "layerId")]
+    pub layer_id: String,
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsLayerUpdatePayload {
+    #[serde(rename = "mapEntityId")]
+    pub map_entity_id: String,
+    #[serde(rename = "layerId")]
+    pub layer_id: String,
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: String,
+    pub name: Option<String>,
+    pub order: Option<i64>,
+    #[serde(rename = "defaultVisible")]
+    pub default_visible: Option<bool>,
+    pub opacity: Option<f64>,
+    pub locked: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct MapsRecoveryExportBeginPayload {
     #[serde(rename = "mapEntityId")]
     pub map_entity_id: String,

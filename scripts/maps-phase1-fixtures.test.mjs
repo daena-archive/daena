@@ -58,8 +58,16 @@ function assertAnchor(anchor, id) {
 for (const fixture of fixtures.fixtures) {
   const value = fixture.value;
   if (fixture.shape === "map") {
-    if (value.provider?.id !== "azgaar-fmg" || value.defaultView?.zoom <= 0 || !pointOk(value.defaultView?.center)) {
+    const provider = value.provider;
+    const imageFormat = provider?.id === "daena-image" && ["png", "jpeg", "svg"].includes(provider.sourceFormat);
+    if ((provider?.id !== "azgaar-fmg" || provider?.sourceFormat !== "fmg-map") && !imageFormat) {
       throw new Error(`${fixture.id}: invalid map descriptor`);
+    }
+    if (value.defaultView?.zoom <= 0 || !pointOk(value.defaultView?.center)) {
+      throw new Error(`${fixture.id}: invalid map descriptor`);
+    }
+    if (provider?.id === "daena-image" && !uuid.test(value.sourceAssetId ?? "")) {
+      throw new Error(`${fixture.id}: image maps require sourceAssetId`);
     }
   } else if (fixture.shape === "locations") {
     if (!Array.isArray(value.locations) || value.locations.length < 2)
@@ -82,6 +90,19 @@ for (const fixture of fixtures.fixtures) {
       }
       if (!layer.style || typeof layer.style !== "object" || !layer.selector || typeof layer.selector !== "object") {
         throw new Error(`${fixture.id}: layer style/selector required`);
+      }
+      if (layer.kind === "raster") {
+        if (
+          !uuid.test(layer.rasterAssetId ?? "") ||
+          typeof layer.opacity !== "number" ||
+          layer.opacity < 0 ||
+          layer.opacity > 1 ||
+          typeof layer.locked !== "boolean"
+        ) {
+          throw new Error(`${fixture.id}: invalid raster layer`);
+        }
+      } else if (layer.kind != null) {
+        throw new Error(`${fixture.id}: unsupported layer kind`);
       }
     }
   } else {

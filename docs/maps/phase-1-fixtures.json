@@ -77,6 +77,46 @@
           }
         ]
       }
+    },
+    {
+      "id": "map-descriptor-image-png",
+      "shape": "map",
+      "value": {
+        "schemaVersion": 1,
+        "provider": { "id": "daena-image", "adapterVersion": 1, "sourceFormat": "png" },
+        "sourceAssetId": "018f89ec-25fc-7816-8b47-6f80905f2868",
+        "previewAssetId": null,
+        "defaultView": { "center": [0.5, 0.5], "zoom": 1 }
+      }
+    },
+    {
+      "id": "layers-raster",
+      "shape": "layers",
+      "value": {
+        "schemaVersion": 1,
+        "layers": [
+          {
+            "id": "018f8a01-9c20-ae05-b442-46dd3de2446c",
+            "name": "Settlements",
+            "order": 1,
+            "defaultVisible": true,
+            "style": { "color": "#334155" },
+            "selector": { "roles": ["birthplace", "capital"] }
+          },
+          {
+            "id": "018f89f7-69fd-7fa2-811f-13aa0abf1139",
+            "name": "Countries",
+            "order": 0,
+            "defaultVisible": true,
+            "style": {},
+            "selector": {},
+            "kind": "raster",
+            "rasterAssetId": "018f8a03-bc44-70e2-a910-f4d2ef8d93df",
+            "opacity": 1,
+            "locked": false
+          }
+        ]
+      }
     }
   ],
   "relationships": [

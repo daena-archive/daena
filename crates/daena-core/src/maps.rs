@@ -8,9 +8,17 @@ use uuid::Uuid;
 pub const MAP_ENTITY_TYPE: &str = "daena.maps:map";
 pub const MAP_NAMESPACE: &str = "maps";
 pub const FMG_PROVIDER: &str = "azgaar-fmg";
+pub const IMAGE_PROVIDER: &str = "daena-image";
 pub const DETAIL_MAP_RELATIONSHIP: &str = "daena.maps:detail-map";
 pub const OVERVIEW_MAP_RELATIONSHIP: &str = "daena.maps:overview-map";
 pub const RELATED_MAP_RELATIONSHIP: &str = "daena.maps:related-map";
+
+pub mod image;
+pub use image::{
+    encode_transparent_png, mime_for_source_format, source_format_for_mime, validate_image_source,
+    validate_raster_png, ImageSource, IMAGE_MAX_ENCODED_BYTES, IMAGE_MAX_PIXELS,
+    IMAGE_MAX_RASTER_LAYERS,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -101,8 +109,144 @@ pub struct MapDescriptor {
     pub default_view: DefaultView,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum RasterLayerKind {
+    #[serde(rename = "raster")]
+    Raster,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticLayerDefinition {
+    pub id: String,
+    pub name: String,
+    pub order: i64,
+    #[serde(rename = "defaultVisible")]
+    pub default_visible: bool,
+    pub style: Value,
+    pub selector: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RasterLayerDefinition {
+    pub id: String,
+    pub name: String,
+    pub order: i64,
+    #[serde(rename = "defaultVisible")]
+    pub default_visible: bool,
+    pub style: Value,
+    pub selector: Value,
+    pub kind: RasterLayerKind,
+    #[serde(rename = "rasterAssetId")]
+    pub raster_asset_id: String,
+    pub opacity: f64,
+    pub locked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum LayerDefinition {
+    Raster(RasterLayerDefinition),
+    Semantic(SemanticLayerDefinition),
+}
+
+impl LayerDefinition {
+    fn id(&self) -> &str {
+        match self {
+            Self::Raster(layer) => layer.id.as_str(),
+            Self::Semantic(layer) => layer.id.as_str(),
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::Raster(layer) => layer.name.as_str(),
+            Self::Semantic(layer) => layer.name.as_str(),
+        }
+    }
+
+    fn style(&self) -> &Value {
+        match self {
+            Self::Raster(layer) => &layer.style,
+            Self::Semantic(layer) => &layer.style,
+        }
+    }
+
+    fn selector(&self) -> &Value {
+        match self {
+            Self::Raster(layer) => &layer.selector,
+            Self::Semantic(layer) => &layer.selector,
+        }
+    }
+
+    fn sort_key(&self) -> (i64, &str) {
+        match self {
+            Self::Raster(layer) => (layer.order, layer.id.as_str()),
+            Self::Semantic(layer) => (layer.order, layer.id.as_str()),
+        }
+    }
+}
+
 fn invalid(message: impl Into<String>) -> CoreError {
     CoreError::Validation(format!("maps: {}", message.into()))
+}
+
+fn image_source_mime(source_format: &str) -> Option<&'static str> {
+    match source_format {
+        "png" => Some("image/png"),
+        "jpeg" => Some("image/jpeg"),
+        "svg" => Some("image/svg+xml"),
+        _ => None,
+    }
+}
+
+fn validate_provider(provider: &ProviderDescriptor) -> Result<(), CoreError> {
+    let supported = provider.adapter_version == 1
+        && match provider.id.as_str() {
+            FMG_PROVIDER => provider.source_format == "fmg-map",
+            IMAGE_PROVIDER => matches!(provider.source_format.as_str(), "png" | "jpeg" | "svg"),
+            _ => false,
+        };
+    if supported {
+        Ok(())
+    } else {
+        Err(invalid("unsupported map provider or descriptor version"))
+    }
+}
+
+fn map_asset(
+    connection: &Connection,
+    asset_id: &str,
+) -> Result<Option<(String, String)>, CoreError> {
+    connection
+        .query_row(
+            "SELECT entity_id, mime_type FROM assets WHERE id=?1 AND namespace=?2",
+            [asset_id, MAP_NAMESPACE],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(CoreError::from)
+}
+
+fn owned_map_asset(
+    connection: &Connection,
+    entity_id: &str,
+    asset_id: &str,
+    label: &str,
+) -> Result<(String, String), CoreError> {
+    uuid(asset_id, label)?;
+    let Some((owner, mime_type)) = map_asset(connection, asset_id)? else {
+        return Err(invalid(format!(
+            "{label} must name an asset owned by the map entity in daena.maps"
+        )));
+    };
+    if owner != entity_id {
+        return Err(invalid(format!(
+            "{label} must name an asset owned by the map entity in daena.maps"
+        )));
+    }
+    Ok((owner, mime_type))
 }
 
 fn uuid(value: &str, label: &str) -> Result<(), CoreError> {
@@ -138,7 +282,10 @@ fn date(value: &Value, label: &str) -> Result<(), CoreError> {
             Some("BCE") | Some("CE")
         )
         || object.get("year").and_then(Value::as_i64).is_none()
-        || !matches!(precision, "year" | "month" | "day" | "hour" | "minute" | "second")
+        || !matches!(
+            precision,
+            "year" | "month" | "day" | "hour" | "minute" | "second"
+        )
     {
         return Err(invalid(format!("{label} is not a valid Daena date")));
     }
@@ -152,8 +299,14 @@ fn date(value: &Value, label: &str) -> Result<(), CoreError> {
         || matches!(precision, "hour" | "minute" | "second") && !matches!(hour, Some(0..=23))
         || matches!(precision, "minute" | "second") && !matches!(minute, Some(0..=59))
         || precision == "second" && !matches!(second, Some(0..=59))
-        || precision == "year" && (month.is_some() || day.is_some() || hour.is_some() || minute.is_some() || second.is_some())
-        || precision == "month" && (day.is_some() || hour.is_some() || minute.is_some() || second.is_some())
+        || precision == "year"
+            && (month.is_some()
+                || day.is_some()
+                || hour.is_some()
+                || minute.is_some()
+                || second.is_some())
+        || precision == "month"
+            && (day.is_some() || hour.is_some() || minute.is_some() || second.is_some())
         || precision == "day" && (hour.is_some() || minute.is_some() || second.is_some())
         || precision == "hour" && (minute.is_some() || second.is_some())
         || precision == "minute" && second.is_some()
@@ -238,9 +391,7 @@ fn anchor(value: &Value) -> Result<Anchor, CoreError> {
         }
         Anchor::Area { rings } => {
             if rings.is_empty() {
-                return Err(invalid(
-                    "invalid geometry: area requires at least one ring",
-                ));
+                return Err(invalid("invalid geometry: area requires at least one ring"));
             }
             for ring in rings {
                 if ring.len() < 4 || ring.first() != ring.last() {
@@ -276,44 +427,26 @@ pub fn validate_field(
         }
         let descriptor: MapDescriptor = serde_json::from_value(value.clone())
             .map_err(|e| invalid(format!("invalid map descriptor: {e}")))?;
-        if descriptor.schema_version != 1
-            || descriptor.provider.id != FMG_PROVIDER
-            || descriptor.provider.adapter_version != 1
-            || descriptor.provider.source_format != "fmg-map"
-        {
+        if descriptor.schema_version != 1 {
             return Err(invalid("unsupported map provider or descriptor version"));
         }
+        validate_provider(&descriptor.provider)?;
+        if descriptor.provider.id == IMAGE_PROVIDER && descriptor.source_asset_id.is_none() {
+            return Err(invalid("daena-image maps require sourceAssetId"));
+        }
         if let Some(source_asset_id) = &descriptor.source_asset_id {
-            uuid(source_asset_id, "sourceAssetId")?;
-            let source_owner: Option<String> = connection
-                .query_row(
-                    "SELECT entity_id FROM assets WHERE id=?1 AND namespace=?2",
-                    [source_asset_id, MAP_NAMESPACE],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(CoreError::from)?;
-            if source_owner.as_deref() != Some(entity_id) {
-                return Err(invalid(
-                    "sourceAssetId must name an asset owned by the map entity in daena.maps",
-                ));
+            let (_, mime_type) =
+                owned_map_asset(connection, entity_id, source_asset_id, "sourceAssetId")?;
+            if let Some(expected_mime) = image_source_mime(&descriptor.provider.source_format) {
+                if mime_type != expected_mime {
+                    return Err(invalid(
+                        "sourceAssetId MIME type must match the image sourceFormat",
+                    ));
+                }
             }
         }
         if let Some(preview) = &descriptor.preview_asset_id {
-            uuid(preview, "previewAssetId")?;
-            let preview_owner: Option<String> = connection
-                .query_row(
-                    "SELECT entity_id FROM assets WHERE id=?1 AND namespace=?2",
-                    [preview, MAP_NAMESPACE],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(CoreError::from)?;
-            if preview_owner.as_deref() != Some(entity_id) {
-                return Err(invalid(
-                    "previewAssetId must name an asset owned by the map entity in daena.maps",
-                ));
-            }
+            owned_map_asset(connection, entity_id, preview, "previewAssetId")?;
         }
         if descriptor.default_view.zoom <= 0.0 || !descriptor.default_view.zoom.is_finite() {
             return Err(invalid("defaultView.zoom must be finite and positive"));
@@ -385,42 +518,121 @@ pub fn validate_field(
             .and_then(Value::as_array)
             .ok_or_else(|| invalid("layers.layers must be an array"))?;
         let mut ids = BTreeSet::new();
+        let mut raster_assets = BTreeSet::new();
+        let mut sort_keys = BTreeSet::new();
+        let mut raster_count = 0usize;
         for layer in layers {
-            let layer = layer
-                .as_object()
-                .ok_or_else(|| invalid("each layer must be an object"))?;
-            if layer.keys().any(|key| {
-                !matches!(
-                    key.as_str(),
-                    "id" | "name" | "order" | "defaultVisible" | "style" | "selector"
-                )
-            }) || !ids.insert(
-                layer
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-            ) || Uuid::parse_str(layer.get("id").and_then(Value::as_str).unwrap_or_default())
-                .is_err()
-                || layer
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .is_none_or(|name| name.trim().is_empty() || name.len() > 128)
-                || layer.get("order").and_then(Value::as_i64).is_none()
-                || layer
-                    .get("defaultVisible")
-                    .and_then(Value::as_bool)
-                    .is_none()
-                || !layer.get("style").is_some_and(Value::is_object)
-                || !layer.get("selector").is_some_and(Value::is_object)
-            {
+            let layer: LayerDefinition = serde_json::from_value(layer.clone())
+                .map_err(|_| invalid("layer definition is invalid"))?;
+            uuid(layer.id(), "layer.id")?;
+            if !ids.insert(layer.id().to_owned()) {
+                return Err(invalid("layer IDs must be unique"));
+            }
+            if !sort_keys.insert((layer.sort_key().0, layer.id().to_owned())) {
+                return Err(invalid("layer order is not deterministic"));
+            }
+            if layer.name().trim().is_empty() || layer.name().len() > 128 {
                 return Err(invalid("layer definition is invalid"));
+            }
+            if !layer.style().is_object() || !layer.selector().is_object() {
+                return Err(invalid("layer definition is invalid"));
+            }
+            if let LayerDefinition::Raster(raster) = &layer {
+                if raster.style != serde_json::json!({}) || raster.selector != serde_json::json!({})
+                {
+                    return Err(invalid(
+                        "raster layers must have empty style and selector objects",
+                    ));
+                }
+                if !raster.opacity.is_finite() || !(0.0..=1.0).contains(&raster.opacity) {
+                    return Err(invalid("raster layer opacity must be finite in [0, 1]"));
+                }
+                if !raster_assets.insert(raster.raster_asset_id.clone()) {
+                    return Err(invalid("rasterAssetId must be unique"));
+                }
+                let (_, mime_type) = owned_map_asset(
+                    connection,
+                    entity_id,
+                    &raster.raster_asset_id,
+                    "rasterAssetId",
+                )?;
+                if mime_type != "image/png" {
+                    return Err(invalid("rasterAssetId must name a PNG asset"));
+                }
+                raster_count += 1;
+                if raster_count > IMAGE_MAX_RASTER_LAYERS {
+                    return Err(invalid("raster layer count exceeds the budget"));
+                }
             }
         }
         Ok(())
     } else {
         Ok(())
     }
+}
+
+pub fn validate_image_map_content(
+    connection: &Connection,
+    mut load_asset: impl FnMut(&str) -> Result<Vec<u8>, CoreError>,
+) -> Result<(), CoreError> {
+    let mut source_dimensions = std::collections::BTreeMap::new();
+    let mut maps = connection.prepare(
+        "SELECT entity_id, value FROM entity_fields WHERE namespace=?1 AND key='map'",
+    )?;
+    let map_rows = maps.query_map([MAP_NAMESPACE], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in map_rows {
+        let (entity_id, raw) = row?;
+        let value: Value =
+            serde_json::from_str(&raw).map_err(|error| invalid(error.to_string()))?;
+        validate_field(connection, &entity_id, "map", &value)?;
+        let descriptor: MapDescriptor = serde_json::from_value(value)
+            .map_err(|error| invalid(format!("invalid map descriptor: {error}")))?;
+        if descriptor.provider.id != IMAGE_PROVIDER {
+            continue;
+        }
+        let source_id = descriptor
+            .source_asset_id
+            .as_deref()
+            .ok_or_else(|| invalid("daena-image maps require sourceAssetId"))?;
+        let bytes = load_asset(source_id)?;
+        let mime = mime_for_source_format(&descriptor.provider.source_format)?;
+        let source = validate_image_source(&bytes, mime)?;
+        source_dimensions.insert(entity_id, (source.width, source.height));
+    }
+    let mut layers = connection.prepare(
+        "SELECT entity_id, value FROM entity_fields WHERE namespace=?1 AND key='layers'",
+    )?;
+    let layer_rows = layers.query_map([MAP_NAMESPACE], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in layer_rows {
+        let (entity_id, raw) = row?;
+        let value: Value =
+            serde_json::from_str(&raw).map_err(|error| invalid(error.to_string()))?;
+        validate_field(connection, &entity_id, "layers", &value)?;
+        let Some((width, height)) = source_dimensions.get(&entity_id) else {
+            continue;
+        };
+        let layers = value
+            .get("layers")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for layer in layers {
+            if layer.get("kind").and_then(Value::as_str) != Some("raster") {
+                continue;
+            }
+            let raster_id = layer
+                .get("rasterAssetId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("rasterAssetId is required"))?;
+            let bytes = load_asset(raster_id)?;
+            validate_raster_png(&bytes, *width, *height)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -362,6 +362,44 @@ pub const RPC_METHOD_CATALOG: &[RpcMethodDef] = &[
         capability: RpcCapability::Static(&["asset.write:self"]),
     },
     RpcMethodDef {
+        name: "maps.image.import.begin",
+        payload_schema: "MapsImageImportBeginPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&[
+            "entity.write",
+            "asset.write:self",
+            "field.write:self",
+        ]),
+    },
+    RpcMethodDef {
+        name: "maps.image.import.commit",
+        payload_schema: "MapsImageImportCommitPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&[
+            "entity.write",
+            "asset.write:self",
+            "field.write:self",
+        ]),
+    },
+    RpcMethodDef {
+        name: "maps.layer.create",
+        payload_schema: "MapsLayerCreatePayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["asset.write:self", "field.write:self"]),
+    },
+    RpcMethodDef {
+        name: "maps.layer.delete",
+        payload_schema: "MapsLayerDeletePayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["asset.write:self", "field.write:self"]),
+    },
+    RpcMethodDef {
+        name: "maps.layer.update",
+        payload_schema: "MapsLayerUpdatePayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["field.write:self"]),
+    },
+    RpcMethodDef {
         name: "maps.recovery.export.begin",
         payload_schema: "MapsRecoveryExportBeginPayload",
         requires_revision: false,
@@ -487,7 +525,7 @@ mod tests {
             assert!(!entry.payload_schema.is_empty());
             assert!(!entry.name.is_empty());
         }
-        assert_eq!(RPC_METHOD_CATALOG.len(), 44);
+        assert_eq!(RPC_METHOD_CATALOG.len(), 49);
         let revision_methods = RPC_METHOD_CATALOG
             .iter()
             .filter(|entry| entry.requires_revision)

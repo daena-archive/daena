@@ -18,8 +18,28 @@
       { "type": "object", "additionalProperties": false, "required": ["kind", "points"], "properties": { "kind": { "const": "path" }, "points": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/point" } } } },
       { "type": "object", "additionalProperties": false, "required": ["kind", "rings"], "properties": { "kind": { "const": "area" }, "rings": { "type": "array", "minItems": 1, "items": { "type": "array", "minItems": 4, "items": { "$ref": "#/$defs/point" } } } } }
     ] },
-    "map": { "type": "object", "additionalProperties": false, "required": ["schemaVersion", "provider", "sourceAssetId", "previewAssetId", "defaultView"], "properties": { "schemaVersion": { "const": 1 }, "provider": { "type": "object", "additionalProperties": false, "required": ["id", "adapterVersion", "sourceFormat"], "properties": { "id": { "const": "azgaar-fmg" }, "adapterVersion": { "const": 1 }, "sourceFormat": { "const": "fmg-map" } } }, "sourceAssetId": { "$ref": "#/$defs/uuid" }, "previewAssetId": { "anyOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] }, "defaultView": { "type": "object", "additionalProperties": false, "required": ["center", "zoom"], "properties": { "center": { "$ref": "#/$defs/point" }, "zoom": { "type": "number", "exclusiveMinimum": 0 } } } } },
+    "map": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "provider", "sourceAssetId", "previewAssetId", "defaultView"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "provider": {
+          "oneOf": [
+            { "type": "object", "additionalProperties": false, "required": ["id", "adapterVersion", "sourceFormat"], "properties": { "id": { "const": "azgaar-fmg" }, "adapterVersion": { "const": 1 }, "sourceFormat": { "const": "fmg-map" } } },
+            { "type": "object", "additionalProperties": false, "required": ["id", "adapterVersion", "sourceFormat"], "properties": { "id": { "const": "daena-image" }, "adapterVersion": { "const": 1 }, "sourceFormat": { "enum": ["png", "jpeg", "svg"] } } }
+          ]
+        },
+        "sourceAssetId": { "anyOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] },
+        "previewAssetId": { "anyOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] },
+        "defaultView": { "type": "object", "additionalProperties": false, "required": ["center", "zoom"], "properties": { "center": { "$ref": "#/$defs/point" }, "zoom": { "type": "number", "exclusiveMinimum": 0 } } }
+      },
+      "if": { "properties": { "provider": { "properties": { "id": { "const": "daena-image" } }, "required": ["id"] } } },
+      "then": { "properties": { "sourceAssetId": { "$ref": "#/$defs/uuid" } } }
+    },
     "locations": { "type": "object", "additionalProperties": false, "required": ["schemaVersion", "locations"], "properties": { "schemaVersion": { "const": 1 }, "locations": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["id", "mapEntityId", "role", "label", "anchor", "validity"], "properties": { "id": { "$ref": "#/$defs/uuid" }, "mapEntityId": { "$ref": "#/$defs/uuid" }, "role": { "type": "string", "minLength": 1, "maxLength": 128 }, "label": { "type": "string", "maxLength": 256 }, "anchor": { "$ref": "#/$defs/anchor" }, "validity": { "type": "object", "additionalProperties": false, "required": ["from", "to"], "properties": { "from": { "$ref": "#/$defs/date" }, "to": { "$ref": "#/$defs/date" } } } } } } } },
-    "layers": { "type": "object", "additionalProperties": false, "required": ["schemaVersion", "layers"], "properties": { "schemaVersion": { "const": 1 }, "layers": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["id", "name", "order", "defaultVisible", "style", "selector"], "properties": { "id": { "$ref": "#/$defs/uuid" }, "name": { "type": "string", "minLength": 1, "maxLength": 128 }, "order": { "type": "integer" }, "defaultVisible": { "type": "boolean" }, "style": { "type": "object" }, "selector": { "type": "object" } } } } } }
+    "semanticLayer": { "type": "object", "additionalProperties": false, "required": ["id", "name", "order", "defaultVisible", "style", "selector"], "properties": { "id": { "$ref": "#/$defs/uuid" }, "name": { "type": "string", "minLength": 1, "maxLength": 128 }, "order": { "type": "integer" }, "defaultVisible": { "type": "boolean" }, "style": { "type": "object" }, "selector": { "type": "object" } } },
+    "rasterLayer": { "type": "object", "additionalProperties": false, "required": ["id", "name", "order", "defaultVisible", "style", "selector", "kind", "rasterAssetId", "opacity", "locked"], "properties": { "id": { "$ref": "#/$defs/uuid" }, "name": { "type": "string", "minLength": 1, "maxLength": 128 }, "order": { "type": "integer" }, "defaultVisible": { "type": "boolean" }, "style": { "type": "object", "additionalProperties": false, "properties": {} }, "selector": { "type": "object", "additionalProperties": false, "properties": {} }, "kind": { "const": "raster" }, "rasterAssetId": { "$ref": "#/$defs/uuid" }, "opacity": { "type": "number", "minimum": 0, "maximum": 1 }, "locked": { "type": "boolean" } } },
+    "layers": { "type": "object", "additionalProperties": false, "required": ["schemaVersion", "layers"], "properties": { "schemaVersion": { "const": 1 }, "layers": { "type": "array", "items": { "oneOf": [{ "$ref": "#/$defs/semanticLayer" }, { "$ref": "#/$defs/rasterLayer" }] } } } }
   }
 }

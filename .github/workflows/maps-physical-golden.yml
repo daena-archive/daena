@@ -1,0 +1,35 @@
+name: physical map golden determinism
+
+on:
+  push:
+    paths:
+      - "crates/daena-physical-spike/**"
+      - "crates/daena-core/src/maps/**"
+      - "scripts/maps-physical.test.mjs"
+      - "docs/maps/physical-map-golden-targets.md"
+      - ".github/workflows/maps-physical-golden.yml"
+  pull_request:
+    paths:
+      - "crates/daena-physical-spike/**"
+      - "crates/daena-core/src/maps/**"
+      - "scripts/maps-physical.test.mjs"
+      - "docs/maps/physical-map-golden-targets.md"
+      - ".github/workflows/maps-physical-golden.yml"
+
+jobs:
+  golden:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Fetch Rust dependencies
+        run: cargo fetch --locked --manifest-path crates/daena-physical-spike/Cargo.toml
+      - name: Compare canonical source and coastline hashes
+        run: npm run check:maps:physical

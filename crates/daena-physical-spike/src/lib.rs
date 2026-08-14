@@ -20,7 +20,7 @@ pub const MAX_HEIGHT: u32 = 64;
 pub const MAX_GEOJSON_FEATURES: usize = 32_768;
 pub const CANCELLATION_LATENCY_BUDGET_MS: u128 = 100;
 pub const GENERATOR_ID: &str = "daena-physical-world";
-pub const GENERATOR_VERSION: u32 = 4;
+pub const GENERATOR_VERSION: u32 = 5;
 
 pub const CODE_GENERATOR_INVALID_SETTINGS: &str = "physical.generator.invalid-settings";
 pub const CODE_GENERATOR_UNSUPPORTED_VERSION: &str = "physical.generator.unsupported-version";
@@ -379,7 +379,7 @@ fn splitmix64(mut value: u64) -> u64 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeedDomain {
     PlateSites,
-    ContinentalRanking,
+    ContinentalCratons,
     RotationAxes,
     ReliefDetail,
     Hotspots,
@@ -393,7 +393,7 @@ impl SeedDomain {
     const fn tag(self) -> u64 {
         match self {
             Self::PlateSites => 0x706c_6174_6573_0001,
-            Self::ContinentalRanking => 0x6372_7573_7400_0002,
+            Self::ContinentalCratons => 0x6372_6174_6f6e_0002,
             Self::RotationAxes => 0x726f_7461_7465_0003,
             Self::ReliefDetail => 0x7265_6c69_6566_0004,
             Self::Hotspots => 0x686f_7473_706f_0005,
@@ -803,7 +803,7 @@ mod tests {
     fn named_subsystem_seeds_are_distinct_and_retry_scoped() {
         let domains = [
             SeedDomain::PlateSites,
-            SeedDomain::ContinentalRanking,
+            SeedDomain::ContinentalCratons,
             SeedDomain::RotationAxes,
             SeedDomain::ReliefDetail,
             SeedDomain::Hotspots,

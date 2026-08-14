@@ -6,10 +6,10 @@ cross-platform claim.
 
 ## 2026-08-15 — macOS arm64
 
-| Preset | Grid | Wall time | Generator time | Peak RSS | Source | Derived GeoJSON |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Default | 64 × 32 | 380 ms | 30.6 ms | 6.17 MiB | 25,633 B | 204,226 B |
-| Maximum | 128 × 64 | 690 ms | 386.7 ms | 19.06 MiB | 79,918 B | 786,649 B |
+| Preset | Grid | Wall time | Generator time | Peak RSS | Source | Derived GeoJSON | Features |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Default | 64 × 32 | 720 ms | 44.0 ms | 6.05 MiB | 25,633 B | 156,857 B | 772 |
+| Maximum | 128 × 64 | 670 ms | 356.4 ms | 19.08 MiB | 79,918 B | 617,697 B | 2,984 |
 
 The measured maximum remains below the locked 2 s generation budget, 16 MiB
 source budget, and 16 MiB derived-output budget. Peak RSS is process-level and
@@ -20,7 +20,8 @@ The benchmark intentionally records `peakResidentBytes: null` when the host
 does not expose RSS through its time utility. Such runs do not pass the memory
 gate and must not be silently converted into an estimate.
 
-The source/derived golden fixture currently passes on `darwin/arm64`, the
-recorded reference target. Other targets must run the same fixture and add a
-recorded hash before they are treated as supported; the double-precision
-tectonic internals are not declared cross-target deterministic yet.
+Cross-target support is governed by
+`docs/maps/physical-map-golden-targets.md`: the locked CI matrix must pass the
+same exact source and derived hashes on every listed runner. The locally
+recorded reference target is `darwin/arm64`; other targets are not treated as
+supported until their exact matrix jobs pass.

@@ -16,7 +16,15 @@ const MAX_BOUNDARIES: usize = 2_000_000;
 pub const TECTONIC_SOURCE_VERSION: u16 = 2;
 pub const TECTONIC_SOURCE_HEADER_BYTES: usize = 68;
 pub const TECTONIC_MAX_SOURCE_BYTES: usize = 16 * 1024 * 1024;
-const RELATIVE_MOTION_THRESHOLD: f64 = 25_000.0;
+/// Versioned v2 physical classification parameter. Keep this value stable
+/// unless the generator version changes; it is intentionally not serialized
+/// because the v2 header and payload are locked.
+pub const RELATIVE_MOTION_THRESHOLD_NANORADIANS_PER_YEAR: f64 = 25_000.0;
+const CRATON_RADIUS_RADIANS: f64 = 0.55;
+const CRATON_SCORE_THRESHOLD: f64 = 0.10;
+const CRATON_VARIATION_AMPLITUDE: f64 = 0.12;
+const RIFT_SHOULDER_FRACTION: f64 = 0.18;
+const RIDGE_RELIEF_FRACTION: f64 = 0.55;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TectonicSettings {
@@ -116,6 +124,8 @@ pub struct TectonicMetrics {
     pub divergent_boundary_count: u32,
     pub transform_boundary_count: u32,
     pub continental_crust_area_ppm: u32,
+    pub exposed_land_area_ppm: u32,
+    pub continental_exposed_land_area_ppm: u32,
     pub continental_shelf_area_ppm: u32,
     pub elevation_p05_mm: i32,
     pub elevation_median_mm: i32,
@@ -163,6 +173,12 @@ struct Vec3 {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct CratonSeed {
+    center: Vec3,
+    variation_axis: Vec3,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct GenerationIdentity {
     seed: u32,
     retry_index: u32,
@@ -172,7 +188,6 @@ struct ReliefInputs<'a> {
     grid: Grid,
     identity: GenerationIdentity,
     settings: TectonicSettings,
-    plates: &'a [Plate],
     plate_by_cell: &'a [u16],
     crust_by_cell: &'a [CrustType],
     boundaries: &'a [BoundarySegment],
@@ -191,6 +206,10 @@ impl Vec3 {
 
     fn dot(self, other: Self) -> f64 {
         self.x * other.x + self.y * other.y + self.z * other.z
+    }
+
+    fn angular_distance(self, other: Self) -> f64 {
+        self.dot(other).clamp(-1.0, 1.0).acos()
     }
 
     fn cross(self, other: Self) -> Self {
@@ -259,24 +278,65 @@ fn cell_vector(grid: Grid, cell: usize) -> Vec3 {
     Vec3::from_lon_lat(longitude, latitude)
 }
 
-fn ranked_continental_plates(seed: u32, retry_index: u32, settings: TectonicSettings) -> Vec<bool> {
-    let stage_seed = derive_subsystem_seed(seed, retry_index, SeedDomain::ContinentalRanking);
-    let mut ranked = (0..settings.plate_count).collect::<Vec<_>>();
-    ranked.sort_by_key(|id| {
-        splitmix64(stage_seed ^ u64::from(*id).wrapping_mul(0xd6e8_feb8_6659_fd93))
-    });
-    let mut continental = vec![false; settings.plate_count as usize];
-    for id in ranked
-        .into_iter()
-        .take(settings.continental_plate_count as usize)
-    {
-        continental[id as usize] = true;
-    }
-    continental
+fn craton_seeds(seed: u32, retry_index: u32, settings: TectonicSettings) -> Vec<CratonSeed> {
+    let stage_seed = derive_subsystem_seed(seed, retry_index, SeedDomain::ContinentalCratons);
+    let count = usize::from(settings.continental_plate_count).max(2);
+    let golden_angle = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
+    (0..count)
+        .map(|id| {
+            let sequence = id as f64 + 0.5;
+            let z = 1.0 - 2.0 * sequence / count as f64;
+            let jitter = (splitmix64(stage_seed ^ (id as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15))
+                % 1_000_000) as f64
+                / 1_000_000.0
+                * 0.06
+                - 0.03;
+            let longitude = (id as f64 * golden_angle + jitter).rem_euclid(std::f64::consts::TAU)
+                - std::f64::consts::PI;
+            let center = Vec3::from_lon_lat(longitude, z.clamp(-1.0, 1.0).asin());
+            let variation_seed =
+                splitmix64(stage_seed ^ (id as u64).wrapping_mul(0xa076_1d64_78bd_642f));
+            let variation_longitude = (variation_seed as f64 / u64::MAX as f64)
+                * std::f64::consts::TAU
+                - std::f64::consts::PI;
+            let variation_latitude = (((variation_seed >> 32) as f64 / u32::MAX as f64) * 2.0
+                - 1.0)
+                .clamp(-1.0, 1.0)
+                .asin();
+            CratonSeed {
+                center,
+                variation_axis: Vec3::from_lon_lat(variation_longitude, variation_latitude),
+            }
+        })
+        .collect()
 }
 
-fn build_plates(grid: Grid, seed: u32, retry_index: u32, settings: TectonicSettings) -> Vec<Plate> {
-    let continental = ranked_continental_plates(seed, retry_index, settings);
+fn craton_score(vector: Vec3, craton: CratonSeed) -> f64 {
+    let growth = 1.0 - vector.angular_distance(craton.center) / CRATON_RADIUS_RADIANS;
+    growth + vector.dot(craton.variation_axis) * CRATON_VARIATION_AMPLITUDE
+}
+
+fn crust_for_vector(vector: Vec3, cratons: &[CratonSeed]) -> CrustType {
+    if cratons
+        .iter()
+        .copied()
+        .map(|craton| craton_score(vector, craton))
+        .fold(f64::NEG_INFINITY, f64::max)
+        >= CRATON_SCORE_THRESHOLD
+    {
+        CrustType::Continental
+    } else {
+        CrustType::Oceanic
+    }
+}
+
+fn build_plates(
+    grid: Grid,
+    seed: u32,
+    retry_index: u32,
+    settings: TectonicSettings,
+    cratons: &[CratonSeed],
+) -> Vec<Plate> {
     (0..settings.plate_count)
         .map(|id| {
             let site = plate_site(grid, seed, retry_index, id, settings.plate_count);
@@ -290,22 +350,34 @@ fn build_plates(grid: Grid, seed: u32, retry_index: u32, settings: TectonicSetti
                 .clamp(-1.0, 1.0)
                 .asin();
             let speed = 200_000 + (splitmix64(axis_seed) % 1_000_001) as i64;
+            let seed_cell = nearest_cell(grid, site);
             Plate {
                 id,
-                seed_cell: nearest_cell(grid, site),
+                seed_cell,
                 site_longitude_microdegrees: microdegrees(site.y.atan2(site.x).to_degrees()),
                 site_latitude_microdegrees: microdegrees(site.z.asin().to_degrees()),
                 rotation_axis_longitude_microdegrees: microdegrees(axis_longitude.to_degrees()),
                 rotation_axis_latitude_microdegrees: microdegrees(axis_latitude.to_degrees()),
                 angular_speed_nanoradians_per_year: speed,
-                crust_type: if continental[id as usize] {
-                    CrustType::Continental
-                } else {
-                    CrustType::Oceanic
-                },
+                crust_type: crust_for_vector(cell_vector(grid, seed_cell), cratons),
             }
         })
         .collect()
+}
+
+fn build_crust_by_cell(
+    grid: Grid,
+    cratons: &[CratonSeed],
+    progress: &mut dyn ProgressSink,
+) -> Result<Vec<CrustType>, PhysicalError> {
+    let mut crust = Vec::with_capacity(grid.sample_count());
+    for cell in 0..grid.sample_count() {
+        if cell % 256 == 0 {
+            progress.check_cancelled()?;
+        }
+        crust.push(crust_for_vector(cell_vector(grid, cell), cratons));
+    }
+    Ok(crust)
 }
 
 fn nearest_cell(grid: Grid, site: Vec3) -> usize {
@@ -383,9 +455,9 @@ fn classify_boundary(first: &Plate, second: &Plate) -> (BoundaryKind, u64) {
     let relative_velocity =
         plate_velocity(second, second_site).subtract(plate_velocity(first, first_site));
     let normal_speed = relative_velocity.dot(direction);
-    let kind = if normal_speed < -RELATIVE_MOTION_THRESHOLD {
+    let kind = if normal_speed < -RELATIVE_MOTION_THRESHOLD_NANORADIANS_PER_YEAR {
         BoundaryKind::Convergent
-    } else if normal_speed > RELATIVE_MOTION_THRESHOLD {
+    } else if normal_speed > RELATIVE_MOTION_THRESHOLD_NANORADIANS_PER_YEAR {
         BoundaryKind::Divergent
     } else {
         BoundaryKind::Transform
@@ -448,20 +520,61 @@ fn boundary_effect(
             (CrustType::Continental, CrustType::Continental) => {
                 (-strength * 0.55, -strength * 0.55)
             }
-            _ => (strength * 0.55, strength * 0.55),
+            _ => (0.0, 0.0),
         },
         BoundaryKind::Transform => (0.0, 0.0),
+    }
+}
+
+fn spreading_ridge_elevation(strength: f64, age_steps: u32) -> f64 {
+    strength * RIDGE_RELIEF_FRACTION / (1.0 + f64::from(age_steps))
+}
+
+fn rift_shoulder_elevation(strength: f64, age_steps: u32) -> f64 {
+    strength * RIFT_SHOULDER_FRACTION / (1.0 + f64::from(age_steps))
+}
+
+fn apply_divergent_relief(
+    grid: Grid,
+    boundary: BoundarySegment,
+    first_crust: CrustType,
+    second_crust: CrustType,
+    crust_by_cell: &[CrustType],
+    relief: &mut [f64],
+    strength: f64,
+) {
+    if first_crust == CrustType::Continental && second_crust == CrustType::Continental {
+        for origin in [boundary.first_cell, boundary.second_cell] {
+            for cell in grid.neighbors(origin) {
+                if cell != boundary.first_cell
+                    && cell != boundary.second_cell
+                    && crust_by_cell[cell] == CrustType::Continental
+                {
+                    relief[cell] += rift_shoulder_elevation(strength, 1);
+                }
+            }
+        }
+    } else if first_crust == CrustType::Oceanic && second_crust == CrustType::Oceanic {
+        for origin in [boundary.first_cell, boundary.second_cell] {
+            if crust_by_cell[origin] == CrustType::Oceanic {
+                relief[origin] += spreading_ridge_elevation(strength, 0);
+            }
+            for cell in grid.neighbors(origin) {
+                if crust_by_cell[cell] == CrustType::Oceanic {
+                    relief[cell] += spreading_ridge_elevation(strength, 1);
+                }
+            }
+        }
     }
 }
 
 fn subduction_arc_cell(
     grid: Grid,
     boundary: BoundarySegment,
-    plates: &[Plate],
     plate_by_cell: &[u16],
+    crust_by_cell: &[CrustType],
 ) -> usize {
-    let first_is_continental =
-        plates[boundary.first_plate as usize].crust_type == CrustType::Continental;
+    let first_is_continental = crust_by_cell[boundary.first_cell] == CrustType::Continental;
     let (anchor, other, target_plate) = if first_is_continental {
         (
             boundary.first_cell,
@@ -495,7 +608,6 @@ fn build_relief(
         grid,
         identity,
         settings,
-        plates,
         plate_by_cell,
         crust_by_cell,
         boundaries,
@@ -526,14 +638,26 @@ fn build_relief(
     }
     progress.check_cancelled()?;
     for boundary in boundaries {
-        let (first_effect, second_effect) = boundary_effect(
-            *boundary,
-            crust_by_cell[boundary.first_cell],
-            crust_by_cell[boundary.second_cell],
-            tectonic_activity,
-        );
+        let first_crust = crust_by_cell[boundary.first_cell];
+        let second_crust = crust_by_cell[boundary.second_cell];
+        let (first_effect, second_effect) =
+            boundary_effect(*boundary, first_crust, second_crust, tectonic_activity);
         relief[boundary.first_cell] += first_effect;
         relief[boundary.second_cell] += second_effect;
+        if boundary.kind == BoundaryKind::Divergent {
+            let strength = (boundary.relative_speed_nanoradians_per_year as f64 * 2.0)
+                .clamp(100_000.0, 1_800_000.0)
+                * tectonic_activity;
+            apply_divergent_relief(
+                grid,
+                *boundary,
+                first_crust,
+                second_crust,
+                crust_by_cell,
+                &mut relief,
+                strength,
+            );
+        }
     }
 
     let mut volcanic_centers = Vec::new();
@@ -560,7 +684,7 @@ fn build_relief(
             && index % 4 == 0
             && volcanic_centers.len() < MAX_VOLCANIC_CENTERS
         {
-            let cell = subduction_arc_cell(grid, *boundary, plates, plate_by_cell);
+            let cell = subduction_arc_cell(grid, *boundary, plate_by_cell, crust_by_cell);
             relief[cell] += 350_000.0 * tectonic_activity;
             volcanic_centers.push(VolcanicCenter {
                 cell,
@@ -614,15 +738,10 @@ impl TectonicWorld {
                 ));
             }
         }
-        for (cell, plate_id) in self.plate_by_cell.iter().enumerate() {
-            let plate = self.plates.get(*plate_id as usize).ok_or_else(|| {
+        for plate_id in &self.plate_by_cell {
+            self.plates.get(*plate_id as usize).ok_or_else(|| {
                 PhysicalError::Validation("cell references an unknown plate".into())
             })?;
-            if self.crust_by_cell[cell] != plate.crust_type {
-                return Err(PhysicalError::Validation(
-                    "cell crust type disagrees with its owning plate".into(),
-                ));
-            }
         }
         if self.boundaries.len() > MAX_BOUNDARIES
             || self.volcanic_centers.len() > MAX_VOLCANIC_CENTERS
@@ -640,6 +759,14 @@ impl TectonicWorld {
                 || usize::from(first.second_plate) >= self.plates.len()
                 || self.plate_by_cell[first.first_cell] != first.first_plate
                 || self.plate_by_cell[first.second_cell] != first.second_plate
+                || !self
+                    .grid
+                    .neighbors(first.first_cell)
+                    .contains(&first.second_cell)
+                || !self
+                    .grid
+                    .neighbors(first.second_cell)
+                    .contains(&first.first_cell)
             {
                 return Err(PhysicalError::Validation(
                     "tectonic boundary has invalid topology".into(),
@@ -681,6 +808,8 @@ impl TectonicWorld {
         let total_area = self.grid.total_area();
         let mut plate_areas = vec![0.0; self.plates.len()];
         let mut continental_area = 0.0;
+        let mut exposed_land_area = 0.0;
+        let mut continental_exposed_land_area = 0.0;
         let mut shelf_area = 0.0;
         let mut boundary_cells = vec![false; self.grid.sample_count()];
         let mut convergent_cells = vec![false; self.grid.sample_count()];
@@ -697,7 +826,12 @@ impl TectonicWorld {
                 continental_area += area;
                 if self.elevations_mm[cell] <= self.sea_level_mm {
                     shelf_area += area;
+                } else {
+                    continental_exposed_land_area += area;
                 }
+            }
+            if self.elevations_mm[cell] > self.sea_level_mm {
+                exposed_land_area += area;
             }
         }
         for boundary in &self.boundaries {
@@ -743,6 +877,11 @@ impl TectonicWorld {
             divergent_boundary_count,
             transform_boundary_count,
             continental_crust_area_ppm: area_fraction_ppm(continental_area, total_area),
+            exposed_land_area_ppm: area_fraction_ppm(exposed_land_area, total_area),
+            continental_exposed_land_area_ppm: area_fraction_ppm(
+                continental_exposed_land_area,
+                total_area,
+            ),
             continental_shelf_area_ppm: area_fraction_ppm(shelf_area, total_area),
             elevation_p05_mm: weighted_elevation_percentile(&elevations, 50_000),
             elevation_median_mm: weighted_elevation_percentile(&elevations, 500_000),
@@ -1435,12 +1574,10 @@ pub fn generate_tectonic_world(
     let sites = (0..settings.plate_count)
         .map(|id| plate_site(grid, seed, retry_index, id, settings.plate_count))
         .collect::<Vec<_>>();
-    let plates = build_plates(grid, seed, retry_index, settings);
+    let cratons = craton_seeds(seed, retry_index, settings);
+    let plates = build_plates(grid, seed, retry_index, settings, &cratons);
     let plate_by_cell = assign_plates(grid, &sites, progress)?;
-    let crust_by_cell = plate_by_cell
-        .iter()
-        .map(|plate| plates[*plate as usize].crust_type)
-        .collect::<Vec<_>>();
+    let crust_by_cell = build_crust_by_cell(grid, &cratons, progress)?;
     progress.report(ProgressPhase::BuildingTectonicStructure, 1, 3)?;
     let boundaries = build_boundaries(grid, &plates, &plate_by_cell, progress)?;
     progress.report(ProgressPhase::BuildingTectonicStructure, 2, 3)?;
@@ -1448,7 +1585,6 @@ pub fn generate_tectonic_world(
         grid,
         identity: GenerationIdentity { seed, retry_index },
         settings,
-        plates: &plates,
         plate_by_cell: &plate_by_cell,
         crust_by_cell: &crust_by_cell,
         boundaries: &boundaries,
@@ -1478,7 +1614,8 @@ pub fn generate_tectonic_world(
 mod tests {
     use super::*;
     use crate::{
-        solve_sea_level, Grid, NoopProgress, DEFAULT_HEIGHT, DEFAULT_RADIUS_METRES, DEFAULT_WIDTH,
+        coastline_segments, solve_sea_level, Grid, NoopProgress, DEFAULT_HEIGHT,
+        DEFAULT_RADIUS_METRES, DEFAULT_WIDTH,
     };
 
     fn fixture() -> TectonicWorld {
@@ -1518,6 +1655,20 @@ mod tests {
                 .iter()
                 .any(|assigned| *assigned == plate.id)
         }));
+        assert!((0..world.plates.len()).any(|plate_id| {
+            let mut has_continental = false;
+            let mut has_oceanic = false;
+            for (cell, assigned) in world.plate_by_cell.iter().enumerate() {
+                if usize::from(*assigned) != plate_id {
+                    continue;
+                }
+                match world.crust_by_cell[cell] {
+                    CrustType::Continental => has_continental = true,
+                    CrustType::Oceanic => has_oceanic = true,
+                }
+            }
+            has_continental && has_oceanic
+        }));
     }
 
     #[test]
@@ -1541,6 +1692,121 @@ mod tests {
             .boundaries
             .iter()
             .any(|boundary| { boundary.kind == BoundaryKind::Transform }));
+        for boundary in &world.boundaries {
+            assert!(world
+                .grid
+                .neighbors(boundary.first_cell)
+                .contains(&boundary.second_cell));
+            assert!(world
+                .grid
+                .neighbors(boundary.second_cell)
+                .contains(&boundary.first_cell));
+        }
+    }
+
+    #[test]
+    fn classification_is_reversal_invariant_at_the_versioned_threshold() {
+        let world = fixture();
+        let first = world.plates[0];
+        let second = world.plates[1];
+        assert_eq!(
+            classify_boundary(&first, &second),
+            classify_boundary(&second, &first)
+        );
+        assert_eq!(RELATIVE_MOTION_THRESHOLD_NANORADIANS_PER_YEAR, 25_000.0);
+    }
+
+    #[test]
+    fn seam_and_pole_fixtures_have_complete_ownership_and_closed_topology() {
+        let world = fixture();
+        assert_eq!(world.plate_by_cell.len(), world.grid.sample_count());
+        assert!(world
+            .plate_by_cell
+            .iter()
+            .all(|plate| usize::from(*plate) < world.plates.len()));
+
+        let seam_boundary = (0..world.grid.height).any(|row| {
+            let first = world.grid.index(row, 0);
+            let second = world.grid.index(row, world.grid.width - 1);
+            world.boundaries.iter().any(|boundary| {
+                (boundary.first_cell == first && boundary.second_cell == second)
+                    || (boundary.first_cell == second && boundary.second_cell == first)
+            })
+        });
+        assert!(
+            seam_boundary,
+            "fixture must contain a boundary across +/-180 degrees"
+        );
+
+        let polar_grid = Grid::new(DEFAULT_WIDTH, 2, DEFAULT_RADIUS_METRES).unwrap();
+        let mut progress = NoopProgress;
+        let polar_world = generate_tectonic_world(
+            polar_grid,
+            TectonicSettings::default_for(polar_grid),
+            300_000,
+            0,
+            0,
+            &mut progress,
+        )
+        .unwrap();
+        assert_eq!(
+            polar_world.plate_by_cell.len(),
+            polar_world.grid.sample_count()
+        );
+        assert!(polar_world
+            .plate_by_cell
+            .iter()
+            .all(|plate| usize::from(*plate) < polar_world.plates.len()));
+        let polar_boundary = (0..polar_world.grid.width).any(|column| {
+            let first = polar_world.grid.index(0, 0);
+            let second = polar_world.grid.index(0, column);
+            first != second
+                && polar_world.boundaries.iter().any(|boundary| {
+                    (boundary.first_cell == first && boundary.second_cell == second)
+                        || (boundary.first_cell == second && boundary.second_cell == first)
+                })
+        });
+        assert!(
+            polar_boundary,
+            "fixture must contain a boundary through the polar row"
+        );
+        for boundary in &polar_world.boundaries {
+            assert!(polar_world
+                .grid
+                .neighbors(boundary.first_cell)
+                .contains(&boundary.second_cell));
+            assert!(polar_world
+                .grid
+                .neighbors(boundary.second_cell)
+                .contains(&boundary.first_cell));
+        }
+
+        let mut solved = polar_world;
+        solved.sea_level_mm = solve_sea_level(
+            &solved.grid,
+            &solved.elevations_mm,
+            solved.target_land_fraction_ppm,
+        )
+        .unwrap();
+        let polar_land = (0..solved.grid.width)
+            .map(|column| solved.grid.index(0, column))
+            .map(|cell| solved.elevations_mm[cell] > solved.sea_level_mm)
+            .collect::<Vec<_>>();
+        let segments = coastline_segments(&solved.physical_field());
+        assert!(segments.iter().all(|segment| {
+            [segment.first, segment.second].iter().all(|point| {
+                (-180_000_000..=180_000_000).contains(&point[0])
+                    && (-90_000_000..=90_000_000).contains(&point[1])
+            })
+        }));
+        if polar_land.iter().any(|land| *land) && polar_land.iter().any(|land| !*land) {
+            assert!(segments.iter().any(|segment| {
+                segment.first == [0, -90_000_000]
+                    || segment.second == [0, -90_000_000]
+                    || segment.first == [0, 90_000_000]
+                    || segment.second == [0, 90_000_000]
+            }));
+        }
     }
 
     #[test]
@@ -1566,6 +1832,15 @@ mod tests {
             .sum::<i64>();
         assert!(continental > oceanic);
         assert!(!world.volcanic_centers.is_empty());
+    }
+
+    #[test]
+    fn divergent_relief_terms_have_bounded_causal_profiles() {
+        let strength = 1_000_000.0;
+        assert!(rift_shoulder_elevation(strength, 1) > 0.0);
+        assert!(spreading_ridge_elevation(strength, 0) > spreading_ridge_elevation(strength, 1));
+        assert!(spreading_ridge_elevation(strength, 1) > spreading_ridge_elevation(strength, 2));
+        assert!(spreading_ridge_elevation(strength, 0) <= strength);
     }
 
     #[test]
@@ -1635,6 +1910,9 @@ mod tests {
                 + metrics.transform_boundary_count,
             world.boundaries.len() as u32
         );
+        assert!(metrics.continental_crust_area_ppm > metrics.exposed_land_area_ppm);
+        assert!(metrics.continental_shelf_area_ppm > 0);
+        assert!(metrics.continental_exposed_land_area_ppm > 0);
         assert!(metrics.continental_crust_area_ppm > metrics.continental_shelf_area_ppm);
         assert!(metrics.elevation_p05_mm <= metrics.elevation_median_mm);
         assert!(metrics.elevation_median_mm <= metrics.elevation_p95_mm);

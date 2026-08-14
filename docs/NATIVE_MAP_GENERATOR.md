@@ -121,7 +121,7 @@ locked as:
   },
   "generation": {
     "id": "daena-physical-world",
-    "version": 4,
+    "version": 5,
     "seed": 831429,
     "retryIndex": 0,
     "settings": {}

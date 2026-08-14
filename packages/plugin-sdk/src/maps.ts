@@ -82,7 +82,7 @@ export type MapDescriptor =
       defaultView: { center: NormalizedPoint; zoom: number };
       generation: {
         id: "daena-physical-world";
-        version: 4;
+        version: 5;
         seed: number;
         retryIndex: number;
         settings: {

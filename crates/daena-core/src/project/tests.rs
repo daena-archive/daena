@@ -59,6 +59,77 @@ fn directory_session_lock_rejects_second_writer_and_reclaims_dead_owner() {
 }
 
 #[test]
+fn physical_map_acceptance_is_atomic_and_request_idempotent() {
+    let settings = daena_physical_spike::GenerationSettings {
+        width: 16,
+        height: 8,
+        radius_metres: daena_physical_spike::DEFAULT_RADIUS_METRES,
+        target_land_fraction_ppm: 300_000,
+    };
+    let mut progress = daena_physical_spike::NoopProgress;
+    let world = daena_physical_spike::generate_world(settings, 831_429, 0, &mut progress).unwrap();
+    let generation = serde_json::json!({
+        "id": crate::maps::PHYSICAL_GENERATOR_ID,
+        "version": crate::maps::PHYSICAL_GENERATOR_VERSION,
+        "seed": 831429,
+        "retryIndex": 0,
+        "settings": {
+            "width": settings.width,
+            "height": settings.height,
+            "radiusMetres": settings.radius_metres,
+            "targetLandFractionPpm": settings.target_land_fraction_ppm,
+            "referenceWaterInventoryM3": world.report.reference_water_inventory_m3
+        }
+    });
+    let root = std::env::temp_dir().join(format!("daena-physical-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let accepted = store
+        .accept_physical_map(
+            "Physical test".into(),
+            world.source.clone(),
+            generation.clone(),
+            Some("00000000-0000-4000-8000-000000000001"),
+        )
+        .unwrap();
+    let replayed = store
+        .accept_physical_map(
+            "Physical test".into(),
+            world.source.clone(),
+            generation.clone(),
+            Some("00000000-0000-4000-8000-000000000001"),
+        )
+        .unwrap();
+    assert_eq!(accepted.entity.id, replayed.entity.id);
+    assert_eq!(store.list_entities().unwrap().len(), 1);
+    assert_eq!(store.asset_bytes(accepted.source.id.clone()).unwrap(), world.source);
+    let descriptor = store
+        .list_fields(accepted.entity.id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "map")
+        .unwrap();
+    assert_eq!(descriptor.value["provider"]["id"], crate::maps::PHYSICAL_PROVIDER);
+    assert_eq!(descriptor.value["sourceAssetId"], accepted.source.id);
+    assert!(matches!(
+        store.accept_physical_map(
+            "Different name".into(),
+            daena_physical_spike::encode_source(&daena_physical_spike::decode_source(&store.asset_bytes(accepted.source.id.clone()).unwrap()).unwrap()).unwrap(),
+            generation,
+            Some("00000000-0000-4000-8000-000000000001"),
+        ),
+        Err(CoreError::Conflict(_))
+    ));
+    store.flush_checkpoint("physical acceptance test").unwrap();
+    drop(store);
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(rebuilt.list_entities().unwrap().len(), 1);
+    assert_eq!(rebuilt.asset_bytes(accepted.source.id.clone()).unwrap(), world.source);
+    drop(rebuilt);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn read_only_project_store_reads_while_writer_session_is_open() {
     let root = std::env::temp_dir().join(format!("daena-read-only-{}", Uuid::new_v4()));
     let writer = ProjectStore::open_directory(&root).unwrap();

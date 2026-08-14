@@ -179,6 +179,12 @@ pub struct AcceptedVectorMap {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcceptedPhysicalMap {
+    pub entity: Entity,
+    pub source: Asset,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VectorSourceReplace {
     pub source: Asset,
 }
@@ -4120,6 +4126,132 @@ impl ProjectStore {
         &self,
         request_id: Option<&str>,
     ) -> Result<Option<AcceptedVectorMap>, CoreError> {
+        self.committed_mutation(request_id)
+    }
+
+    pub fn accept_physical_map(
+        &self,
+        name: String,
+        bytes: Vec<u8>,
+        generation: serde_json::Value,
+        request_id: Option<&str>,
+    ) -> Result<AcceptedPhysicalMap, CoreError> {
+        crate::maps::physical::validate_generation(&generation)?;
+        let upload_hash = format!("sha256:{:x}", Sha256::digest(&bytes));
+        let input_fingerprint = digest_bytes(
+            &serde_json::to_vec(&serde_json::json!({
+                "name": name,
+                "generation": generation,
+                "uploadHash": upload_hash,
+            }))
+            .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if let Some(accepted) = self
+            .committed_mutation_with_fingerprint::<AcceptedPhysicalMap>(
+                request_id,
+                Some(&input_fingerprint),
+            )?
+        {
+            return Ok(accepted);
+        }
+        if bytes.len() > crate::maps::PHYSICAL_MAX_SOURCE_BYTES {
+            return Err(CoreError::Validation(
+                "maps.physical.invalid-source: source asset exceeds 16 MiB".into(),
+            ));
+        }
+        crate::maps::physical::validate_source(&bytes, &generation)?;
+        let content_hash = format!("sha256:{:x}", Sha256::digest(&bytes));
+        let size = bytes.len() as i64;
+        if let Some(root) = self.root.as_deref() {
+            store_runtime_asset(root, bytes.as_slice(), Some(&content_hash))?;
+        }
+        let entity_id = Uuid::new_v4().to_string();
+        let asset_id = Uuid::new_v4().to_string();
+        let now = chrono_like_now();
+        let relative_path = format!("assets/maps/{}-world.pworld", Uuid::new_v4());
+        let descriptor = serde_json::json!({
+            "schemaVersion": 1,
+            "provider": {
+                "id": crate::maps::PHYSICAL_PROVIDER,
+                "adapterVersion": 1,
+                "sourceFormat": crate::maps::PHYSICAL_SOURCE_FORMAT
+            },
+            "sourceAssetId": asset_id,
+            "previewAssetId": null,
+            "defaultView": {"center": [0.5, 0.5], "zoom": 1},
+            "generation": generation
+        });
+        let layers = serde_json::json!({"schemaVersion": 1, "layers": []});
+        let entity = Entity {
+            id: entity_id.clone(),
+            name: name.trim().into(),
+            entity_type: Some(crate::maps::MAP_ENTITY_TYPE.into()),
+            deleted: false,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            revision: String::new(),
+        };
+        let asset = Asset {
+            id: asset_id.clone(),
+            entity_id: entity_id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            filename: crate::maps::PHYSICAL_FILENAME.into(),
+            content_hash: content_hash.clone(),
+            size,
+            mime_type: crate::maps::PHYSICAL_MIME.into(),
+            path: relative_path.clone(),
+            created_at: now.clone(),
+            revision: String::new(),
+        };
+        let accepted = AcceptedPhysicalMap {
+            entity: entity.clone(),
+            source: asset.clone(),
+        };
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&accepted)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&result),
+            &[format!("entities/{entity_id}/"), relative_path.clone()],
+            &input_fingerprint,
+        )?;
+        transaction.execute(
+            "INSERT INTO entities(id,name,entity_type,created_at,updated_at) VALUES (?1,?2,?3,?4,?4)",
+            params![entity_id, entity.name, crate::maps::MAP_ENTITY_TYPE, now],
+        )?;
+        transaction.execute(
+            "INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![asset_id, entity_id, crate::maps::MAP_NAMESPACE, crate::maps::PHYSICAL_FILENAME, content_hash, size, crate::maps::PHYSICAL_MIME, relative_path, now],
+        )?;
+        crate::maps::validate_field(&transaction, &entity_id, "map", &descriptor)?;
+        crate::maps::validate_field(&transaction, &entity_id, "layers", &layers)?;
+        transaction.execute(
+            "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
+            params![entity_id, crate::maps::MAP_NAMESPACE, "map", encode_field_value(&descriptor)?],
+        )?;
+        transaction.execute(
+            "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
+            params![entity_id, crate::maps::MAP_NAMESPACE, "layers", encode_field_value(&layers)?],
+        )?;
+        transaction.commit()?;
+        self.refresh_maps_projection_for_entities(std::slice::from_ref(&accepted.entity.id))?;
+        self.notify_export_worker()?;
+        let mut accepted = accepted;
+        accepted.entity.revision = self.revision_for_entity(&accepted.entity.id)?;
+        accepted.source.revision = self.revision_for_asset(&accepted.source.id)?;
+        self.write_mutation_result(
+            &request_id,
+            &serde_json::to_value(&accepted)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        )?;
+        Ok(accepted)
+    }
+
+    pub fn replay_accepted_physical_map(
+        &self,
+        request_id: Option<&str>,
+    ) -> Result<Option<AcceptedPhysicalMap>, CoreError> {
         self.committed_mutation(request_id)
     }
 

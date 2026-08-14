@@ -5,7 +5,8 @@
 //! the parts that iteration 0 measures; the algorithms are not yet the
 //! production physical generator.
 
-use std::fmt::Write;
+use std::fmt::{Display, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const SOURCE_MAGIC: [u8; 8] = *b"DAENAPW1";
 pub const SOURCE_VERSION: u16 = 1;
@@ -16,6 +17,101 @@ pub const DEFAULT_RADIUS_METRES: u64 = 6_371_000;
 pub const MAX_WIDTH: u32 = 128;
 pub const MAX_HEIGHT: u32 = 64;
 pub const MAX_GEOJSON_FEATURES: usize = 32_768;
+pub const GENERATOR_ID: &str = "daena-physical-world";
+pub const GENERATOR_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PhysicalError {
+    InvalidSettings(String),
+    InvalidSource(String),
+    Validation(String),
+    Cancelled,
+}
+
+impl Display for PhysicalError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidSettings(message) => write!(formatter, "invalid settings: {message}"),
+            Self::InvalidSource(message) => write!(formatter, "invalid physical source: {message}"),
+            Self::Validation(message) => write!(formatter, "physical validation failed: {message}"),
+            Self::Cancelled => formatter.write_str("physical generation cancelled"),
+        }
+    }
+}
+
+impl std::error::Error for PhysicalError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GenerationSettings {
+    pub width: u32,
+    pub height: u32,
+    pub radius_metres: u64,
+    pub target_land_fraction_ppm: u32,
+}
+
+impl GenerationSettings {
+    pub fn grid(self) -> Result<Grid, PhysicalError> {
+        Grid::new(self.width, self.height, self.radius_metres)
+            .map_err(PhysicalError::InvalidSettings)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValidationReport {
+    pub actual_land_fraction_ppm: u32,
+    pub reference_water_inventory_m3: u64,
+    pub coastline_segments: usize,
+}
+
+pub trait ProgressSink {
+    fn report(
+        &mut self,
+        stage: &'static str,
+        completed: u32,
+        total: u32,
+    ) -> Result<(), PhysicalError>;
+}
+
+pub struct NoopProgress;
+
+impl ProgressSink for NoopProgress {
+    fn report(
+        &mut self,
+        _stage: &'static str,
+        _completed: u32,
+        _total: u32,
+    ) -> Result<(), PhysicalError> {
+        Ok(())
+    }
+}
+
+pub struct CancellationProgress<'a> {
+    pub cancelled: &'a AtomicBool,
+    pub on_progress: &'a mut dyn FnMut(&'static str, u32, u32),
+}
+
+impl ProgressSink for CancellationProgress<'_> {
+    fn report(
+        &mut self,
+        stage: &'static str,
+        completed: u32,
+        total: u32,
+    ) -> Result<(), PhysicalError> {
+        if self.cancelled.load(Ordering::Relaxed) {
+            return Err(PhysicalError::Cancelled);
+        }
+        (self.on_progress)(stage, completed, total);
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedWorld {
+    pub field: PhysicalField,
+    pub source: Vec<u8>,
+    pub derived_geojson: String,
+    pub report: ValidationReport,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Grid {
@@ -180,6 +276,101 @@ pub fn generate_field(
     };
     field.validate()?;
     Ok(field)
+}
+
+fn reference_water_inventory_m3(field: &PhysicalField) -> Result<u64, PhysicalError> {
+    let mut inventory = 0.0_f64;
+    for (index, elevation) in field.elevations_mm.iter().enumerate() {
+        let depth_mm = i64::from(field.sea_level_mm) - i64::from(*elevation);
+        if depth_mm <= 0 {
+            continue;
+        }
+        let row = field.grid.row_col(index).0;
+        inventory += field.grid.cell_area(row) * depth_mm as f64 / 1_000.0;
+    }
+    if !inventory.is_finite() || inventory < 0.0 || inventory > u64::MAX as f64 {
+        return Err(PhysicalError::Validation(
+            "reference water inventory is not finite or bounded".into(),
+        ));
+    }
+    Ok(inventory.round() as u64)
+}
+
+pub fn validate_field_report(field: &PhysicalField) -> Result<ValidationReport, PhysicalError> {
+    field.validate().map_err(PhysicalError::InvalidSource)?;
+    let actual = land_fraction(&field.grid, &field.elevations_mm, field.sea_level_mm);
+    if !actual.is_finite() {
+        return Err(PhysicalError::Validation(
+            "land fraction is not finite".into(),
+        ));
+    }
+    let target = f64::from(field.target_land_fraction_ppm) / 1_000_000.0;
+    if (actual - target).abs() > 0.08 {
+        return Err(PhysicalError::Validation(format!(
+            "land fraction is outside the target tolerance: actual={actual:.6} target={target:.6}"
+        )));
+    }
+    let segments = coastline_segments(field);
+    if segments.len() > MAX_GEOJSON_FEATURES {
+        return Err(PhysicalError::Validation(
+            "coastline exceeds the feature budget".into(),
+        ));
+    }
+    for segment in &segments {
+        for point in [segment.first, segment.second] {
+            if !(-180_000_000..=180_000_000).contains(&point[0])
+                || !(-90_000_000..=90_000_000).contains(&point[1])
+            {
+                return Err(PhysicalError::Validation(
+                    "coastline contains an out-of-range coordinate".into(),
+                ));
+            }
+        }
+    }
+    Ok(ValidationReport {
+        actual_land_fraction_ppm: (actual * 1_000_000.0).round() as u32,
+        reference_water_inventory_m3: reference_water_inventory_m3(field)?,
+        coastline_segments: segments.len(),
+    })
+}
+
+pub fn generate_world(
+    settings: GenerationSettings,
+    seed: u32,
+    retry_index: u32,
+    progress: &mut dyn ProgressSink,
+) -> Result<GeneratedWorld, PhysicalError> {
+    let grid = settings.grid()?;
+    progress.report("elevation", 0, grid.height)?;
+    let mut elevations_mm = Vec::with_capacity(grid.sample_count());
+    for row in 0..grid.height {
+        for col in 0..grid.width {
+            elevations_mm.push(elevation_for(seed, retry_index, grid.index(row, col)));
+        }
+        progress.report("elevation", row + 1, grid.height)?;
+    }
+    progress.report("sea-level", 0, 1)?;
+    let sea_level_mm = solve_sea_level(&grid, &elevations_mm, settings.target_land_fraction_ppm)
+        .map_err(PhysicalError::Validation)?;
+    let field = PhysicalField {
+        grid,
+        seed,
+        retry_index,
+        target_land_fraction_ppm: settings.target_land_fraction_ppm,
+        sea_level_mm,
+        elevations_mm,
+    };
+    let report = validate_field_report(&field)?;
+    progress.report("derived-coastline", 0, 1)?;
+    let derived_geojson = to_geojson(&field).map_err(PhysicalError::Validation)?;
+    let source = encode_source(&field).map_err(PhysicalError::InvalidSource)?;
+    progress.report("complete", 1, 1)?;
+    Ok(GeneratedWorld {
+        field,
+        source,
+        derived_geojson,
+        report,
+    })
 }
 
 pub fn land_fraction(grid: &Grid, elevations_mm: &[i32], sea_level_mm: i32) -> f64 {
@@ -541,5 +732,31 @@ mod tests {
         assert!(!geojson.contains("http://"));
         assert!(!geojson.contains("https://"));
         assert!(geojson.len() < 4 * 1024 * 1024);
+    }
+
+    #[test]
+    fn world_pipeline_reports_inventory_and_honors_cancellation() {
+        let settings = GenerationSettings {
+            width: 16,
+            height: 8,
+            radius_metres: DEFAULT_RADIUS_METRES,
+            target_land_fraction_ppm: 300_000,
+        };
+        let mut progress = NoopProgress;
+        let world = generate_world(settings, 831_429, 0, &mut progress).unwrap();
+        assert!(world.report.reference_water_inventory_m3 > 0);
+        assert!(world.report.coastline_segments > 0);
+        assert!(world.derived_geojson.contains("physical coastline"));
+
+        let cancelled = AtomicBool::new(true);
+        let mut updates = |_stage: &'static str, _completed: u32, _total: u32| {};
+        let mut progress = CancellationProgress {
+            cancelled: &cancelled,
+            on_progress: &mut updates,
+        };
+        assert_eq!(
+            generate_world(settings, 831_429, 0, &mut progress),
+            Err(PhysicalError::Cancelled)
+        );
     }
 }

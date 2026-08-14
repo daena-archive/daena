@@ -402,6 +402,26 @@ pub const RPC_METHOD_CATALOG: &[RpcMethodDef] = &[
         ]),
     },
     RpcMethodDef {
+        name: "maps.physical.create.begin",
+        payload_schema: "MapsPhysicalCreateBeginPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&[
+            "entity.write",
+            "asset.write:self",
+            "field.write:self",
+        ]),
+    },
+    RpcMethodDef {
+        name: "maps.physical.create.commit",
+        payload_schema: "MapsPhysicalCreateCommitPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&[
+            "entity.write",
+            "asset.write:self",
+            "field.write:self",
+        ]),
+    },
+    RpcMethodDef {
         name: "maps.vector.replace.begin",
         payload_schema: "MapsVectorReplaceBeginPayload",
         requires_revision: true,

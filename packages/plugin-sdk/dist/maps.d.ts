@@ -4,6 +4,7 @@ export declare const MAP_ENTITY_TYPE: "daena.maps:map";
 export declare const MAP_NAMESPACE: "maps";
 export declare const FMG_PROVIDER: "azgaar-fmg";
 export declare const VECTOR_PROVIDER: "daena-vector";
+export declare const PHYSICAL_PROVIDER: "daena-physical";
 export declare const IMAGE_SOURCE_FORMATS: readonly ["png", "jpeg", "svg"];
 /** Recorded imported-image resource budgets. Mirrored from `daena-core` maps::image. */
 export declare const IMAGE_MAX_ENCODED_BYTES: number;
@@ -79,6 +80,32 @@ export type MapDescriptor = {
             continentCount: number;
             coastlineRoughness: "low" | "medium" | "high";
             islandFrequency: "none" | "low" | "medium" | "high";
+        };
+    };
+} | {
+    schemaVersion: 1;
+    provider: {
+        id: typeof PHYSICAL_PROVIDER;
+        adapterVersion: 1;
+        sourceFormat: "physical-world-v1";
+    };
+    sourceAssetId: string;
+    previewAssetId: null;
+    defaultView: {
+        center: NormalizedPoint;
+        zoom: number;
+    };
+    generation: {
+        id: "daena-physical-world";
+        version: 1;
+        seed: number;
+        retryIndex: number;
+        settings: {
+            width: number;
+            height: number;
+            radiusMetres: number;
+            targetLandFractionPpm: number;
+            referenceWaterInventoryM3: number;
         };
     };
 };

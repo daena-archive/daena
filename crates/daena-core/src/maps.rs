@@ -10,11 +10,19 @@ pub const MAP_ENTITY_TYPE: &str = "daena.maps:map";
 pub const MAP_NAMESPACE: &str = "maps";
 pub const FMG_PROVIDER: &str = "azgaar-fmg";
 pub const VECTOR_PROVIDER: &str = "daena-vector";
+pub const PHYSICAL_PROVIDER: &str = "daena-physical";
+pub const PHYSICAL_SOURCE_FORMAT: &str = "physical-world-v1";
+pub const PHYSICAL_MIME: &str = "application/vnd.daena.physical-world";
+pub const PHYSICAL_FILENAME: &str = "world.pworld";
+pub const PHYSICAL_GENERATOR_ID: &str = "daena-physical-world";
+pub const PHYSICAL_GENERATOR_VERSION: u32 = 1;
+pub const PHYSICAL_MAX_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 pub const DETAIL_MAP_RELATIONSHIP: &str = "daena.maps:detail-map";
 pub const OVERVIEW_MAP_RELATIONSHIP: &str = "daena.maps:overview-map";
 pub const RELATED_MAP_RELATIONSHIP: &str = "daena.maps:related-map";
 
 pub mod image;
+pub mod physical;
 pub mod vector;
 pub use image::{
     encode_transparent_png, mime_for_source_format, source_format_for_mime, validate_image_source,
@@ -111,7 +119,7 @@ pub const MAP_RECOVERY_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct MapGenerationSettings {
+pub struct VectorMapGenerationSettings {
     #[serde(rename = "landPercent")]
     pub land_percent: u32,
     #[serde(rename = "continentCount")]
@@ -124,11 +132,33 @@ pub struct MapGenerationSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+pub struct PhysicalMapGenerationSettings {
+    pub width: u32,
+    pub height: u32,
+    #[serde(rename = "radiusMetres")]
+    pub radius_metres: u64,
+    #[serde(rename = "targetLandFractionPpm")]
+    pub target_land_fraction_ppm: u32,
+    #[serde(rename = "referenceWaterInventoryM3")]
+    pub reference_water_inventory_m3: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum MapGenerationSettings {
+    Vector(VectorMapGenerationSettings),
+    Physical(PhysicalMapGenerationSettings),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct MapGeneration {
     pub id: String,
     pub version: u32,
     pub seed: u32,
     pub settings: MapGenerationSettings,
+    #[serde(rename = "retryIndex", default, skip_serializing_if = "Option::is_none")]
+    pub retry_index: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -353,6 +383,7 @@ fn validate_provider(provider: &ProviderDescriptor) -> Result<(), CoreError> {
         && match provider.id.as_str() {
             FMG_PROVIDER => provider.source_format == "fmg-map",
             VECTOR_PROVIDER => provider.source_format == VECTOR_SOURCE_FORMAT,
+            PHYSICAL_PROVIDER => provider.source_format == PHYSICAL_SOURCE_FORMAT,
             _ => false,
         };
     if supported {
@@ -605,17 +636,27 @@ pub fn validate_field(
         if descriptor.provider.id == VECTOR_PROVIDER && descriptor.source_asset_id.is_none() {
             return Err(invalid("daena-vector maps require sourceAssetId"));
         }
-        if descriptor.generation.is_some() && descriptor.provider.id != VECTOR_PROVIDER {
-            return Err(invalid("generation is only valid on daena-vector maps"));
+        if descriptor.generation.is_some()
+            && !matches!(descriptor.provider.id.as_str(), VECTOR_PROVIDER | PHYSICAL_PROVIDER)
+        {
+            return Err(invalid("generation is only valid on generated map providers"));
         }
         if let Some(generation) = &descriptor.generation {
-            vector::validate_generation(&serde_json::to_value(generation).map_err(|e| invalid(e.to_string()))?)?;
+            let value = serde_json::to_value(generation).map_err(|e| invalid(e.to_string()))?;
+            if descriptor.provider.id == VECTOR_PROVIDER {
+                vector::validate_generation(&value)?;
+            } else {
+                physical::validate_generation(&value)?;
+            }
         }
         if let Some(source_asset_id) = &descriptor.source_asset_id {
             let (_, mime_type) =
                 owned_map_asset(connection, entity_id, source_asset_id, "sourceAssetId")?;
             if descriptor.provider.id == VECTOR_PROVIDER && mime_type != VECTOR_MIME {
                 return Err(invalid("sourceAssetId MIME type must be application/geo+json"));
+            }
+            if descriptor.provider.id == PHYSICAL_PROVIDER && mime_type != PHYSICAL_MIME {
+                return Err(invalid("sourceAssetId MIME type must be application/vnd.daena.physical-world"));
             }
         }
         if let Some(preview) = &descriptor.preview_asset_id {
@@ -797,7 +838,20 @@ pub fn validate_image_map_content(
         validate_field(connection, &entity_id, "map", &value)?;
         let descriptor: MapDescriptor = serde_json::from_value(value)
             .map_err(|error| invalid(format!("invalid map descriptor: {error}")))?;
-        if descriptor.provider.id == VECTOR_PROVIDER {
+        if descriptor.provider.id == PHYSICAL_PROVIDER {
+            let source_id = descriptor
+                .source_asset_id
+                .as_deref()
+                .ok_or_else(|| invalid("daena-physical maps require sourceAssetId"))?;
+            let generation = descriptor
+                .generation
+                .as_ref()
+                .ok_or_else(|| invalid("daena-physical maps require generation"))?;
+            let generation = serde_json::to_value(generation)
+                .map_err(|error| invalid(error.to_string()))?;
+            let bytes = load_asset(source_id)?;
+            physical::validate_source(&bytes, &generation)?;
+        } else if descriptor.provider.id == VECTOR_PROVIDER {
             let source_id = descriptor
                 .source_asset_id
                 .as_deref()

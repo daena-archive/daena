@@ -101,6 +101,25 @@ export interface RasterLayerChange {
 export interface VectorSourceReplace {
   source: Asset;
 }
+export interface PhysicalJobStatus {
+  jobId: string;
+  requestId: string;
+  state: string;
+  stage: string;
+  completed: number;
+  total: number;
+  error: string | null;
+}
+export interface PhysicalGenerationInput {
+  seed: number;
+  retryIndex: number;
+  settings: {
+    width: number;
+    height: number;
+    radiusMetres: number;
+    targetLandFractionPpm: number;
+  };
+}
 export interface VectorLayerDelete {
   layers: FieldValue;
   source: Asset;
@@ -500,6 +519,20 @@ export const project = {
       generation,
       requestId: requestId(options),
     }),
+  generatePhysicalMap: (input: PhysicalGenerationInput, requestId = crypto.randomUUID()) =>
+    invoke<PhysicalJobStatus>("project_physical_generate", { input, requestId }),
+  physicalMapStatus: (jobId: string) =>
+    invoke<PhysicalJobStatus>("project_physical_status", { jobId }),
+  physicalMapPreview: (jobId: string) =>
+    invoke<string>("project_physical_preview", { jobId }),
+  cancelPhysicalMap: (jobId: string) =>
+    invoke<PhysicalJobStatus>("project_physical_cancel", { jobId }),
+  acceptPhysicalMap: (jobId: string, name: string, options?: MutationOptions) =>
+    invoke<{ entity: Entity; source: Asset }>("project_physical_accept", {
+      jobId,
+      name,
+      requestId: requestId(options),
+    }),
   replaceVectorSource: (
     assetId: string,
     bytes: Uint8Array,
@@ -545,6 +578,8 @@ export const project = {
     }),
   mapsRecoveryExport: (entityId: string, bytes: Uint8Array) =>
     invoke<string>("maps_recovery_export", { entityId, bytes: Array.from(bytes) }),
+  physicalMapDerivedGeoJson: (mapEntityId: string) =>
+    invoke<string>("project_physical_derived_geojson", { mapEntityId }),
   readAssetBytes: (assetId: string) => invoke<number[]>("project_read_asset_bytes", { assetId }),
   createRasterLayer: (mapEntityId: string, name: string, expectedRevision: string, options?: MutationOptions) =>
     invoke<RasterLayerChange>("project_create_raster_layer", {

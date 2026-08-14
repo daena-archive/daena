@@ -13,7 +13,7 @@ pub use project::{
     Asset, AssetFileInput, AssetInput, AssetReplaceInput, CheckpointHandle, CreateEntity,
     CreateEntry, CreateEntryDocument, CreateEntryField, Document, Entity, ExternalChangeReport,
     FieldValue, Generation, GitChange, GitLogEntry, GitPreflight, GitRemote, GitResetResult, GitStatus,
-    GitToolInfo, GitUpstream, AcceptedVectorMap, ImportedImageMap, MigrationHistoryEntry, ModuleField, ModuleNamespace, ModuleRecordListParams,
+    GitToolInfo, GitUpstream, AcceptedPhysicalMap, AcceptedVectorMap, ImportedImageMap, MigrationHistoryEntry, ModuleField, ModuleNamespace, ModuleRecordListParams,
     ModuleState,
     PluginBackup, ProjectInfo, ProjectSnapshot, ProjectStore, RasterLayerChange, RasterLayerUpdate, Relationship, RelationshipInput,
     SaveDocument, SaveEntry, SearchPassage, SyncSummary, VectorLayerDelete, VectorSourceReplace,

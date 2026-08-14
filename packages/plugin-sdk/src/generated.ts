@@ -81,6 +81,8 @@ export interface MapsLocationsCreateAndLinkPayload { entityType: string; locatio
 export interface MapsLocationsListPayload { mapEntityId: string }
 export interface MapsLocationsUnlinkPayload { entityId: string; locationId: string }
 export interface MapsLocationsUpsertPayload { entityId: string; location: unknown }
+export interface MapsPhysicalCreateBeginPayload { generation: unknown; name: string; size: number }
+export interface MapsPhysicalCreateCommitPayload { contentHash: string; handle: string }
 export interface MapsReconcileLinksPayload { mapEntityId: string }
 export interface MapsRecoveryExportBeginPayload { mapEntityId: string; size: number }
 export interface MapsRecoveryExportCommitPayload { contentHash: string; handle: string }
@@ -135,6 +137,8 @@ export interface BrokerMethodPayloads {
   "maps.locations.list": MapsLocationsListPayload;
   "maps.locations.unlink": MapsLocationsUnlinkPayload;
   "maps.locations.upsert": MapsLocationsUpsertPayload;
+  "maps.physical.create.begin": MapsPhysicalCreateBeginPayload;
+  "maps.physical.create.commit": MapsPhysicalCreateCommitPayload;
   "maps.reconcile.links": MapsReconcileLinksPayload;
   "maps.recovery.export.begin": MapsRecoveryExportBeginPayload;
   "maps.recovery.export.commit": MapsRecoveryExportCommitPayload;

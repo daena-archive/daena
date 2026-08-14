@@ -20,6 +20,7 @@ export class FakePluginHost {
     aiResults = new Map();
     aiEvents = new Map();
     aiCapabilities = new Map();
+    physicalTransfers = new Map();
     nextEntity = 1;
     nextRevision = 1;
     revoked = false;
@@ -31,9 +32,15 @@ export class FakePluginHost {
         this.sessionId = options.sessionId ?? "test-session";
         this.grants = new Set(options.grants ?? options.manifest.capabilities);
     }
-    client() { return createPluginRpcClient(this); }
-    revoke() { this.revoked = true; }
-    seed(entity) { this.entities.set(entity.id, structuredClone(entity)); }
+    client() {
+        return createPluginRpcClient(this);
+    }
+    revoke() {
+        this.revoked = true;
+    }
+    seed(entity) {
+        this.entities.set(entity.id, structuredClone(entity));
+    }
     registerService(name, major, handler) {
         this.services.set(`${name}@${major}`, handler);
     }
@@ -81,7 +88,8 @@ export class FakePluginHost {
         try {
             const result = await (async () => {
                 switch (method) {
-                    case "plugin.bootstrap": return this.bootstrap();
+                    case "plugin.bootstrap":
+                        return this.bootstrap();
                     case "entity.list":
                         this.require("entity.read");
                         return this.list(payload);
@@ -106,11 +114,20 @@ export class FakePluginHost {
                     case "service.call":
                         this.requireDynamic("service.call", payload);
                         return await this.callService(payload);
-                    case "ai.request.start": return this.startAi(payload);
-                    case "ai.request.poll": return this.pollAi(payload);
-                    case "ai.request.cancel": return this.cancelAi(payload);
-                    case "ai.request.result": return this.resultAi(payload);
-                    default: throw failure("unknown-method", `unsupported plugin method: ${method}`);
+                    case "ai.request.start":
+                        return this.startAi(payload);
+                    case "ai.request.poll":
+                        return this.pollAi(payload);
+                    case "ai.request.cancel":
+                        return this.cancelAi(payload);
+                    case "ai.request.result":
+                        return this.resultAi(payload);
+                    case "maps.physical.create.begin":
+                        return this.beginPhysicalCreate(payload);
+                    case "maps.physical.create.commit":
+                        return this.commitPhysicalCreate(payload);
+                    default:
+                        throw failure("unknown-method", `unsupported plugin method: ${method}`);
                 }
             })();
             if (requestId && ["entity.create", "entity.update", "entity.delete"].includes(method)) {
@@ -140,12 +157,44 @@ export class FakePluginHost {
         if (!this.grants.has(capability))
             throw failure("capability-denied", `capability is not granted: ${capability}`);
     }
+    beginPhysicalCreate(payload) {
+        this.require("entity.write");
+        this.require("asset.write:self");
+        this.require("field.write:self");
+        const value = payload;
+        if (typeof value.name !== "string" || !value.name.trim() || typeof value.size !== "number" || value.size < 0)
+            throw failure("invalid-payload", "maps.physical.create.begin requires name and non-negative size");
+        if (!value.generation || typeof value.generation !== "object")
+            throw failure("invalid-payload", "maps.physical.create.begin requires generation");
+        const handle = `${this.manifest.id}:physical:${this.physicalTransfers.size + 1}`;
+        this.physicalTransfers.set(handle, {
+            name: value.name,
+            size: value.size,
+            generation: structuredClone(value.generation),
+        });
+        return { handle, url: `memory://${handle}/0`, maxChunkBytes: 1024 * 1024, expiresInMs: 60_000 };
+    }
+    commitPhysicalCreate(payload) {
+        this.require("entity.write");
+        this.require("asset.write:self");
+        this.require("field.write:self");
+        const value = payload;
+        if (typeof value.handle !== "string" || typeof value.contentHash !== "string")
+            throw failure("invalid-payload", "maps.physical.create.commit requires handle and contentHash");
+        const transfer = this.physicalTransfers.get(value.handle);
+        if (!transfer)
+            throw failure("not-found", "physical upload handle does not exist");
+        this.physicalTransfers.delete(value.handle);
+        return { accepted: true, name: transfer.name, size: transfer.size, generation: transfer.generation };
+    }
     startAi(payload) {
         const value = payload;
         const operation = value.operation;
         const capability = operation === "generate_structured" ? "ai.text.generate-structured" : "ai.text.generate";
         this.require(capability);
-        if (!(["generate_text", "generate_structured"].includes(String(operation))) || typeof value.userInstruction !== "string" || !value.userInstruction.trim()) {
+        if (!["generate_text", "generate_structured"].includes(String(operation)) ||
+            typeof value.userInstruction !== "string" ||
+            !value.userInstruction.trim()) {
             throw failure("invalid-payload", "ai.request.start requires a supported operation and instruction");
         }
         const requestId = `${this.manifest.id}:ai:${this.aiResults.size + 1}`;
@@ -156,7 +205,10 @@ export class FakePluginHost {
             validateFakeAiOutput(value.outputContract, output);
         this.aiResults.set(requestId, output);
         this.aiCapabilities.set(requestId, capability);
-        this.aiEvents.set(requestId, [{ sequence: 0, requestId, phase: "started" }, { sequence: 1, requestId, phase: "completed", output }]);
+        this.aiEvents.set(requestId, [
+            { sequence: 0, requestId, phase: "started" },
+            { sequence: 1, requestId, phase: "completed", output },
+        ]);
         return { requestId };
     }
     pollAi(payload) {
@@ -190,13 +242,18 @@ export class FakePluginHost {
     requireDynamic(prefix, payload) {
         const value = payload;
         const name = prefix.startsWith("event.") ? value.type : `${value.name}@${value.major}`;
-        if (typeof name !== "string" || !this.grants.has(`${prefix}:${name}`) && !this.grants.has(`${prefix}:<type>`) && !this.grants.has(`${prefix}:<name>`)) {
+        if (typeof name !== "string" ||
+            (!this.grants.has(`${prefix}:${name}`) &&
+                !this.grants.has(`${prefix}:<type>`) &&
+                !this.grants.has(`${prefix}:<name>`))) {
             throw failure("capability-denied", `capability is not granted: ${prefix}:${String(name)}`);
         }
     }
     list(payload) {
         const type = payload.entityType;
-        return [...this.entities.values()].filter((entity) => typeof type !== "string" || entity.entityType === type).map((entity) => structuredClone(entity));
+        return [...this.entities.values()]
+            .filter((entity) => typeof type !== "string" || entity.entityType === type)
+            .map((entity) => structuredClone(entity));
     }
     create(payload) {
         const value = payload;
@@ -275,7 +332,11 @@ export class FakePluginHost {
         const handler = this.services.get(`${value.name}@${value.major}`);
         if (!handler)
             throw failure("provider-unavailable", "service provider is unavailable", true);
-        return handler(value.payload, { pluginId: this.manifest.id, projectId: this.projectId, deadlineMs: typeof value.deadlineMs === "number" ? value.deadlineMs : 5000 });
+        return handler(value.payload, {
+            pluginId: this.manifest.id,
+            projectId: this.projectId,
+            deadlineMs: typeof value.deadlineMs === "number" ? value.deadlineMs : 5000,
+        });
     }
 }
 function validateFakeAiOutput(schema, value) {
@@ -286,7 +347,7 @@ function validateFakeAiOutput(schema, value) {
         case "object": {
             if (!value || typeof value !== "object" || Array.isArray(value))
                 throw failure("invalid-output", "structured output must be an object");
-            const properties = (node.properties && typeof node.properties === "object") ? node.properties : {};
+            const properties = node.properties && typeof node.properties === "object" ? node.properties : {};
             for (const required of Array.isArray(node.required) ? node.required : [])
                 if (typeof required === "string" && !(required in value))
                     throw failure("invalid-output", `missing structured field: ${required}`);
@@ -312,7 +373,8 @@ function validateFakeAiOutput(schema, value) {
             if (typeof value !== "number")
                 throw failure("invalid-output", "structured number is invalid");
             return;
-        default: throw failure("invalid-output", "unsupported structured output type");
+        default:
+            throw failure("invalid-output", "unsupported structured output type");
     }
 }
 function isPluginRpcError(value) {
@@ -399,7 +461,7 @@ export class FakePluginLifecycleHost {
 function compareVersions(left, right) {
     const a = left.split(".").map(Number);
     const b = right.split(".").map(Number);
-    return (a[0] - b[0]) || (a[1] - b[1]) || (a[2] - b[2]);
+    return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
 }
 export async function runConformance(host) {
     const client = host.client();
@@ -407,7 +469,11 @@ export async function runConformance(host) {
     const check = async (name, operation, expectedFailure) => {
         try {
             await operation();
-            results.push({ name, passed: !expectedFailure, detail: expectedFailure ? "operation unexpectedly succeeded" : undefined });
+            results.push({
+                name,
+                passed: !expectedFailure,
+                detail: expectedFailure ? "operation unexpectedly succeeded" : undefined,
+            });
         }
         catch (error) {
             const code = error instanceof Error && "code" in error ? String(error.code) : "unknown";
@@ -415,7 +481,10 @@ export async function runConformance(host) {
         }
     };
     const bootstrap = await client.bootstrap();
-    results.push({ name: "host assigns plugin identity", passed: bootstrap.pluginId === host.manifest.id && bootstrap.sessionId === host.sessionId });
+    results.push({
+        name: "host assigns plugin identity",
+        passed: bootstrap.pluginId === host.manifest.id && bootstrap.sessionId === host.sessionId,
+    });
     await check("entity read is granted", () => client.listEntities());
     await check("undeclared delete is denied", () => client.deleteEntity("missing"), "capability-denied");
     await check("undeclared event publish is denied", () => client.publishEvent("com.example.event", 1, {}), "capability-denied");

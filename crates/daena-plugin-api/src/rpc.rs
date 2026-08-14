@@ -429,6 +429,24 @@ pub struct MapsVectorCreateCommitPayload {
     pub content_hash: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsPhysicalCreateBeginPayload {
+    pub name: String,
+    pub size: i64,
+    pub generation: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MapsPhysicalCreateCommitPayload {
+    pub handle: String,
+    #[serde(rename = "contentHash")]
+    pub content_hash: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]

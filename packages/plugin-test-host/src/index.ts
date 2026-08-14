@@ -45,6 +45,7 @@ export class FakePluginHost implements PluginRpcTransport {
   private readonly aiResults = new Map<string, unknown>();
   private readonly aiEvents = new Map<string, unknown[]>();
   private readonly aiCapabilities = new Map<string, string>();
+  private readonly physicalTransfers = new Map<string, { name: string; size: number; generation: unknown }>();
   private nextEntity = 1;
   private nextRevision = 1;
   private revoked = false;
@@ -149,6 +150,10 @@ export class FakePluginHost implements PluginRpcTransport {
             return this.cancelAi(payload);
           case "ai.request.result":
             return this.resultAi(payload);
+          case "maps.physical.create.begin":
+            return this.beginPhysicalCreate(payload);
+          case "maps.physical.create.commit":
+            return this.commitPhysicalCreate(payload);
           default:
             throw failure("unknown-method", `unsupported plugin method: ${method}`);
         }
@@ -178,6 +183,37 @@ export class FakePluginHost implements PluginRpcTransport {
 
   private require(capability: string): void {
     if (!this.grants.has(capability)) throw failure("capability-denied", `capability is not granted: ${capability}`);
+  }
+
+  private beginPhysicalCreate(payload: unknown) {
+    this.require("entity.write");
+    this.require("asset.write:self");
+    this.require("field.write:self");
+    const value = payload as { name?: unknown; size?: unknown; generation?: unknown };
+    if (typeof value.name !== "string" || !value.name.trim() || typeof value.size !== "number" || value.size < 0)
+      throw failure("invalid-payload", "maps.physical.create.begin requires name and non-negative size");
+    if (!value.generation || typeof value.generation !== "object")
+      throw failure("invalid-payload", "maps.physical.create.begin requires generation");
+    const handle = `${this.manifest.id}:physical:${this.physicalTransfers.size + 1}`;
+    this.physicalTransfers.set(handle, {
+      name: value.name,
+      size: value.size,
+      generation: structuredClone(value.generation),
+    });
+    return { handle, url: `memory://${handle}/0`, maxChunkBytes: 1024 * 1024, expiresInMs: 60_000 };
+  }
+
+  private commitPhysicalCreate(payload: unknown) {
+    this.require("entity.write");
+    this.require("asset.write:self");
+    this.require("field.write:self");
+    const value = payload as { handle?: unknown; contentHash?: unknown };
+    if (typeof value.handle !== "string" || typeof value.contentHash !== "string")
+      throw failure("invalid-payload", "maps.physical.create.commit requires handle and contentHash");
+    const transfer = this.physicalTransfers.get(value.handle);
+    if (!transfer) throw failure("not-found", "physical upload handle does not exist");
+    this.physicalTransfers.delete(value.handle);
+    return { accepted: true, name: transfer.name, size: transfer.size, generation: transfer.generation };
   }
 
   private startAi(payload: unknown): { requestId: string } {

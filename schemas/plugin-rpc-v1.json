@@ -829,6 +829,41 @@
       ],
       "type": "object"
     },
+    "MapsPhysicalCreateBeginPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "generation": true,
+        "name": {
+          "type": "string"
+        },
+        "size": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "generation",
+        "name",
+        "size"
+      ],
+      "type": "object"
+    },
+    "MapsPhysicalCreateCommitPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "contentHash": {
+          "type": "string"
+        },
+        "handle": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "contentHash",
+        "handle"
+      ],
+      "type": "object"
+    },
     "MapsReconcileLinksPayload": {
       "additionalProperties": false,
       "properties": {
@@ -1768,6 +1803,38 @@
           "if": {
             "properties": {
               "method": {
+                "const": "maps.physical.create.begin"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/MapsPhysicalCreateBeginPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "maps.physical.create.commit"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/MapsPhysicalCreateCommitPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
                 "const": "maps.vector.replace.begin"
               }
             }
@@ -2166,6 +2233,8 @@
             "maps.image.import.commit",
             "maps.vector.create.begin",
             "maps.vector.create.commit",
+            "maps.physical.create.begin",
+            "maps.physical.create.commit",
             "maps.vector.replace.begin",
             "maps.vector.replace.commit",
             "maps.layer.create",
@@ -2470,6 +2539,14 @@
     },
     "maps.locations.upsert": {
       "payload": "MapsLocationsUpsertPayload",
+      "requestId": "envelope"
+    },
+    "maps.physical.create.begin": {
+      "payload": "MapsPhysicalCreateBeginPayload",
+      "requestId": "envelope"
+    },
+    "maps.physical.create.commit": {
+      "payload": "MapsPhysicalCreateCommitPayload",
       "requestId": "envelope"
     },
     "maps.reconcile.links": {

@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -25,7 +26,7 @@ use daena_plugin_host::{
     VerificationPolicy, BUNDLED_TIMELINE_SERVICE_WASM,
 };
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
 
@@ -42,6 +43,7 @@ struct ProjectSession {
 type SharedCore = Arc<Mutex<Arc<ProjectSession>>>;
 type SharedPluginHost = Arc<Mutex<PluginHost>>;
 type SharedBinaryTransfers = Arc<Mutex<BinaryTransferManager>>;
+type SharedPhysicalJobs = Arc<Mutex<PhysicalJobManager>>;
 type SharedSettings = Arc<Mutex<SettingsStore>>;
 const READ_CONNECTION_POOL_CAPACITY: usize = 4;
 
@@ -50,6 +52,83 @@ fn new_shared_core() -> SharedCore {
         core: Mutex::new(CoreService::new()),
         read_pool: Mutex::new(Vec::new()),
     })))
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PhysicalJobStatus {
+    job_id: String,
+    request_id: String,
+    state: String,
+    stage: String,
+    completed: u32,
+    total: u32,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PhysicalJobResult {
+    source: Vec<u8>,
+    generation: serde_json::Value,
+    derived_geojson: String,
+}
+
+struct PhysicalJob {
+    project_id: String,
+    cancel: Arc<AtomicBool>,
+    status: PhysicalJobStatus,
+    result: Option<PhysicalJobResult>,
+}
+
+#[derive(Default)]
+struct PhysicalJobManager {
+    jobs: BTreeMap<String, PhysicalJob>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PhysicalGenerationSettingsInput {
+    width: u32,
+    height: u32,
+    radius_metres: u64,
+    target_land_fraction_ppm: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PhysicalGenerationInput {
+    seed: u32,
+    retry_index: u32,
+    settings: PhysicalGenerationSettingsInput,
+}
+
+struct PhysicalProgress {
+    jobs: SharedPhysicalJobs,
+    job_id: String,
+    cancel: Arc<AtomicBool>,
+}
+
+impl daena_physical_spike::ProgressSink for PhysicalProgress {
+    fn report(
+        &mut self,
+        stage: &'static str,
+        completed: u32,
+        total: u32,
+    ) -> Result<(), daena_physical_spike::PhysicalError> {
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err(daena_physical_spike::PhysicalError::Cancelled);
+        }
+        let mut manager = self
+            .jobs
+            .lock()
+            .map_err(|_| daena_physical_spike::PhysicalError::Validation("job state is unavailable".into()))?;
+        if let Some(job) = manager.jobs.get_mut(&self.job_id) {
+            job.status.stage = stage.into();
+            job.status.completed = completed;
+            job.status.total = total;
+        }
+        Ok(())
+    }
 }
 
 fn current_session(core: &SharedCore) -> Result<Arc<ProjectSession>, String> {
@@ -197,6 +276,17 @@ enum BinaryTransfer {
         bytes: Vec<u8>,
         expires_at: Instant,
     },
+    PhysicalCreate {
+        plugin_id: String,
+        session_id: String,
+        project_id: String,
+        name: String,
+        generation: serde_json::Value,
+        declared_size: usize,
+        next_chunk: u64,
+        bytes: Vec<u8>,
+        expires_at: Instant,
+    },
     VectorReplace {
         plugin_id: String,
         session_id: String,
@@ -220,6 +310,7 @@ impl BinaryTransferManager {
             | BinaryTransfer::Create { expires_at, .. }
             | BinaryTransfer::ImageImport { expires_at, .. }
             | BinaryTransfer::VectorCreate { expires_at, .. }
+            | BinaryTransfer::PhysicalCreate { expires_at, .. }
             | BinaryTransfer::VectorReplace { expires_at, .. } => *expires_at > now,
         });
     }
@@ -303,6 +394,14 @@ impl BinaryTransferManager {
                 ..
             }
             | BinaryTransfer::VectorCreate {
+                plugin_id,
+                session_id,
+                next_chunk,
+                declared_size,
+                bytes,
+                ..
+            }
+            | BinaryTransfer::PhysicalCreate {
                 plugin_id,
                 session_id,
                 next_chunk,
@@ -547,6 +646,46 @@ impl BinaryTransferManager {
         }
     }
 
+    fn prepare_physical_create(
+        &mut self,
+        token: &str,
+        plugin_id: &str,
+        session_id: &str,
+        project_id: &str,
+        content_hash: &str,
+    ) -> Result<(String, serde_json::Value, Vec<u8>), String> {
+        self.cleanup();
+        let transfer = self
+            .transfers
+            .get(token)
+            .ok_or_else(|| "asset upload handle is invalid or expired".to_string())?;
+        match transfer {
+            BinaryTransfer::PhysicalCreate {
+                plugin_id: owner,
+                session_id: expected_session,
+                project_id: expected_project,
+                name,
+                generation,
+                declared_size,
+                bytes,
+                ..
+            } if owner == plugin_id
+                && expected_session == session_id
+                && expected_project == project_id =>
+            {
+                if bytes.len() != *declared_size {
+                    return Err("asset upload is incomplete".into());
+                }
+                let digest = format!("sha256:{:x}", Sha256::digest(bytes));
+                if digest != content_hash {
+                    return Err("asset upload content hash does not match bytes".into());
+                }
+                Ok((name.clone(), generation.clone(), bytes.clone()))
+            }
+            _ => Err("asset upload handle is not valid for this session or project".into()),
+        }
+    }
+
     fn prepare_vector_replace(
         &mut self,
         token: &str,
@@ -622,6 +761,11 @@ impl BinaryTransferManager {
                 session_id: expected_session,
                 ..
             }
+            | BinaryTransfer::PhysicalCreate {
+                plugin_id: owner,
+                session_id: expected_session,
+                ..
+            }
             | BinaryTransfer::VectorReplace {
                 plugin_id: owner,
                 session_id: expected_session,
@@ -646,6 +790,7 @@ impl BinaryTransferManager {
             | BinaryTransfer::Create { plugin_id, .. }
             | BinaryTransfer::ImageImport { plugin_id, .. }
             | BinaryTransfer::VectorCreate { plugin_id, .. }
+            | BinaryTransfer::PhysicalCreate { plugin_id, .. }
             | BinaryTransfer::VectorReplace { plugin_id, .. } => plugin_id,
         };
         if owner != plugin_id {
@@ -1369,6 +1514,8 @@ fn plugin_protocol_response(
                         | "maps.image.import.commit"
                         | "maps.vector.create.begin"
                         | "maps.vector.create.commit"
+                        | "maps.physical.create.begin"
+                        | "maps.physical.create.commit"
                         | "maps.vector.replace.begin"
                         | "maps.vector.replace.commit"
                         | "maps.recovery.export.begin"
@@ -1394,6 +1541,9 @@ fn plugin_protocol_response(
                         }
                         "maps.vector.create.commit" => {
                             flush_checkpoint_for_shared_core(core, "maps vector create")?;
+                        }
+                        "maps.physical.create.commit" => {
+                            flush_checkpoint_for_shared_core(core, "maps physical create")?;
                         }
                         "maps.vector.replace.commit" => {
                             flush_checkpoint_for_shared_core(core, "maps vector replace")?;
@@ -1906,6 +2056,77 @@ fn dispatch_binary_asset_rpc(
                 }
                 Err(error) => project
                     .replay_accepted_vector_map(request_id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or(error)?,
+            };
+            serde_json::to_value(accepted).map_err(|e| e.to_string())
+        }
+        "maps.physical.create.begin" => {
+            let name = payload
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "name is required".to_string())?;
+            let generation = payload
+                .get("generation")
+                .cloned()
+                .ok_or_else(|| "generation is required".to_string())?;
+            daena_core::maps::physical::validate_generation(&generation)
+                .map_err(|e| e.to_string())?;
+            let size_value = payload
+                .get("size")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "size is required".to_string())?;
+            if size_value > MAX_ASSET_TRANSFER_BYTES as u64
+                || size_value > daena_core::maps::PHYSICAL_MAX_SOURCE_BYTES as u64
+            {
+                return Err("asset exceeds host transfer limit".into());
+            }
+            let size = size_value as usize;
+            let token = manager.token(BinaryTransfer::PhysicalCreate {
+                plugin_id: session.plugin_id.clone(),
+                session_id: session.id.clone(),
+                project_id: session.project_id.clone(),
+                name: name.into(),
+                generation,
+                declared_size: size,
+                next_chunk: 0,
+                bytes: Vec::with_capacity(size.min(MAX_ASSET_TRANSFER_BYTES)),
+                expires_at: Instant::now() + ASSET_TRANSFER_TTL,
+            });
+            Ok(
+                serde_json::json!({"handle":token,"url":format!("plugin://{}/__asset/{}/0?sessionId={}", session.plugin_id, token, session.id),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
+            )
+        }
+        "maps.physical.create.commit" => {
+            let token = payload
+                .get("handle")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "handle is required".to_string())?;
+            let content_hash = payload
+                .get("contentHash")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "contentHash is required".to_string())?;
+            let prepared = manager.prepare_physical_create(
+                token,
+                &session.plugin_id,
+                &session.id,
+                &session.project_id,
+                content_hash,
+            );
+            drop(manager);
+            let accepted = match prepared {
+                Ok((name, generation, bytes)) => {
+                    let accepted = project
+                        .accept_physical_map(name, bytes, generation, request_id)
+                        .map_err(|e| e.to_string())?;
+                    let mut manager = transfers
+                        .lock()
+                        .map_err(|_| "asset transfer state is unavailable".to_string())?;
+                    let _ = manager.complete_upload(token, &session.plugin_id, &session.id);
+                    accepted
+                }
+                Err(error) => project
+                    .replay_accepted_physical_map(request_id)
                     .map_err(|e| e.to_string())?
                     .ok_or(error)?,
             };
@@ -4652,6 +4873,8 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
         "maps.image.import.commit" => (&["handle", "contentHash"], &[]),
         "maps.vector.create.begin" => (&["name", "size", "generation"], &[]),
         "maps.vector.create.commit" => (&["handle", "contentHash"], &[]),
+        "maps.physical.create.begin" => (&["name", "size", "generation"], &[]),
+        "maps.physical.create.commit" => (&["handle", "contentHash"], &[]),
         "maps.vector.replace.begin" => (&["assetId", "expectedRevision", "size"], &[]),
         "maps.vector.replace.commit" => (&["handle", "contentHash"], &[]),
         "maps.layer.create" => (&["mapEntityId", "name", "expectedRevision"], &["kind"]),
@@ -6575,6 +6798,201 @@ async fn project_accept_vector_map(
 }
 
 #[tauri::command]
+async fn project_physical_generate(
+    state: tauri::State<'_, SharedCore>,
+    jobs: tauri::State<'_, SharedPhysicalJobs>,
+    input: PhysicalGenerationInput,
+    request_id: Option<String>,
+) -> Result<PhysicalJobStatus, String> {
+    let project_id = current_info(state.inner())?
+        .ok_or_else(|| "open a project before generating a physical map".to_string())?
+        .root;
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    uuid::Uuid::parse_str(&request_id)
+        .map_err(|_| "physical generation request ID must be a UUID".to_string())?;
+    let cancel = Arc::new(AtomicBool::new(false));
+    let status = PhysicalJobStatus {
+        job_id: job_id.clone(),
+        request_id: request_id.clone(),
+        state: "running".into(),
+        stage: "queued".into(),
+        completed: 0,
+        total: 1,
+        error: None,
+    };
+    jobs.lock()
+        .map_err(|_| "physical job state is unavailable".to_string())?
+        .jobs
+        .insert(
+            job_id.clone(),
+            PhysicalJob {
+                project_id,
+                cancel: cancel.clone(),
+                status: status.clone(),
+                result: None,
+            },
+        );
+    let jobs_for_worker = jobs.inner().clone();
+    let worker_job_id = job_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut progress = PhysicalProgress {
+            jobs: jobs_for_worker.clone(),
+            job_id: worker_job_id.clone(),
+            cancel: cancel.clone(),
+        };
+        let settings = daena_physical_spike::GenerationSettings {
+            width: input.settings.width,
+            height: input.settings.height,
+            radius_metres: input.settings.radius_metres,
+            target_land_fraction_ppm: input.settings.target_land_fraction_ppm,
+        };
+        let outcome = daena_physical_spike::generate_world(
+            settings,
+            input.seed,
+            input.retry_index,
+            &mut progress,
+        );
+        let mut manager = match jobs_for_worker.lock() {
+            Ok(manager) => manager,
+            Err(_) => return,
+        };
+        let Some(job) = manager.jobs.get_mut(&worker_job_id) else {
+            return;
+        };
+        match outcome {
+            Ok(world) => {
+                let generation = serde_json::json!({
+                    "id": daena_core::maps::PHYSICAL_GENERATOR_ID,
+                    "version": daena_core::maps::PHYSICAL_GENERATOR_VERSION,
+                    "seed": input.seed,
+                    "retryIndex": input.retry_index,
+                    "settings": {
+                        "width": input.settings.width,
+                        "height": input.settings.height,
+                        "radiusMetres": input.settings.radius_metres,
+                        "targetLandFractionPpm": input.settings.target_land_fraction_ppm,
+                        "referenceWaterInventoryM3": world.report.reference_water_inventory_m3,
+                    }
+                });
+                job.status.state = "completed".into();
+                job.status.stage = "complete".into();
+                job.status.completed = 1;
+                job.status.total = 1;
+                job.result = Some(PhysicalJobResult {
+                    source: world.source,
+                    generation,
+                    derived_geojson: world.derived_geojson,
+                });
+            }
+            Err(daena_physical_spike::PhysicalError::Cancelled) => {
+                job.status.state = "cancelled".into();
+                job.status.stage = "cancelled".into();
+                job.status.error = None;
+            }
+            Err(error) => {
+                job.status.state = "failed".into();
+                job.status.stage = "failed".into();
+                job.status.error = Some(error.to_string());
+            }
+        }
+    });
+    Ok(status)
+}
+
+#[tauri::command]
+fn project_physical_status(
+    jobs: tauri::State<'_, SharedPhysicalJobs>,
+    job_id: String,
+) -> Result<PhysicalJobStatus, String> {
+    jobs.lock()
+        .map_err(|_| "physical job state is unavailable".to_string())?
+        .jobs
+        .get(&job_id)
+        .map(|job| job.status.clone())
+        .ok_or_else(|| "physical job was not found or has expired".to_string())
+}
+
+#[tauri::command]
+fn project_physical_cancel(
+    jobs: tauri::State<'_, SharedPhysicalJobs>,
+    job_id: String,
+) -> Result<PhysicalJobStatus, String> {
+    let mut manager = jobs
+        .lock()
+        .map_err(|_| "physical job state is unavailable".to_string())?;
+    let job = manager
+        .jobs
+        .get_mut(&job_id)
+        .ok_or_else(|| "physical job was not found or has expired".to_string())?;
+    if job.status.state == "running" {
+        job.cancel.store(true, Ordering::Relaxed);
+        job.status.state = "cancelling".into();
+        job.status.stage = "cancelling".into();
+    }
+    Ok(job.status.clone())
+}
+
+#[tauri::command]
+fn project_physical_preview(
+    jobs: tauri::State<'_, SharedPhysicalJobs>,
+    job_id: String,
+) -> Result<String, String> {
+    jobs.lock()
+        .map_err(|_| "physical job state is unavailable".to_string())?
+        .jobs
+        .get(&job_id)
+        .and_then(|job| job.result.as_ref())
+        .map(|result| result.derived_geojson.clone())
+        .ok_or_else(|| "physical job preview is not ready".to_string())
+}
+
+#[tauri::command]
+async fn project_physical_accept(
+    state: tauri::State<'_, SharedCore>,
+    jobs: tauri::State<'_, SharedPhysicalJobs>,
+    job_id: String,
+    name: String,
+    request_id: Option<String>,
+) -> Result<daena_core::AcceptedPhysicalMap, String> {
+    let project_id = current_info(state.inner())?
+        .ok_or_else(|| "open a project before accepting a physical map".to_string())?
+        .root;
+    let result = {
+        let manager = jobs
+            .lock()
+            .map_err(|_| "physical job state is unavailable".to_string())?;
+        let job = manager
+            .jobs
+            .get(&job_id)
+            .ok_or_else(|| "physical job was not found or has expired".to_string())?;
+        if job.project_id != project_id {
+            return Err("physical job belongs to a different project".into());
+        }
+        if job.status.state != "completed" {
+            return Err("physical job is not ready for acceptance".into());
+        }
+        job.result
+            .clone()
+            .ok_or_else(|| "physical job result is missing".to_string())?
+    };
+    let accepted = with_core(state, move |core| {
+        core.project(trusted_shell())?.accept_physical_map(
+            name,
+            result.source,
+            result.generation,
+            request_id.as_deref(),
+        )
+    })
+    .await?;
+    jobs.lock()
+        .map_err(|_| "physical job state is unavailable".to_string())?
+        .jobs
+        .remove(&job_id);
+    Ok(accepted)
+}
+
+#[tauri::command]
 async fn project_replace_vector_source(
     state: tauri::State<'_, SharedCore>,
     asset_id: String,
@@ -6649,6 +7067,35 @@ async fn maps_recovery_export(
     with_core(state, move |core| {
         core.project(trusted_shell())?
             .save_map_recovery_copy(&entity_id, &bytes)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_physical_derived_geojson(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+) -> Result<String, String> {
+    with_read_project(state, move |project| {
+        let descriptor = project
+            .list_fields(map_entity_id.clone())?
+            .into_iter()
+            .find(|field| field.namespace == daena_core::maps::MAP_NAMESPACE && field.key == "map")
+            .ok_or_else(|| CoreError::Validation("maps:map descriptor is missing".into()))?;
+        let source_id = descriptor
+            .value
+            .get("sourceAssetId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| CoreError::Validation("maps: sourceAssetId is missing".into()))?;
+        let generation = descriptor
+            .value
+            .get("generation")
+            .cloned()
+            .ok_or_else(|| CoreError::Validation("maps: physical generation is missing".into()))?;
+        let bytes = project.asset_bytes(source_id.to_string())?;
+        let (field, _) = daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        daena_physical_spike::to_geojson(&field)
+            .map_err(|error| CoreError::Validation(format!("maps.physical: {error}")))
     })
     .await
 }
@@ -6971,6 +7418,7 @@ pub fn run() {
     let protocol_plugins = plugins.clone();
     let transfers = Arc::new(Mutex::new(BinaryTransferManager::default()));
     let protocol_transfers = transfers.clone();
+    let physical_jobs = Arc::new(Mutex::new(PhysicalJobManager::default()));
     let protocol_ai_runtime = Arc::new(Mutex::new(ai::AiRuntime::default()));
     let startup_plugins = plugins.clone();
     let watcher = Arc::new(Mutex::new(ProjectWatcher::default()));
@@ -7037,6 +7485,7 @@ pub fn run() {
         .manage(core)
         .manage(plugins)
         .manage(transfers)
+        .manage(physical_jobs)
         .manage(watcher)
         .manage(ai_runtime)
         .invoke_handler(tauri::generate_handler![
@@ -7143,10 +7592,16 @@ pub fn run() {
             project_list_assets,
             project_import_image_map_file,
             project_accept_vector_map,
+            project_physical_generate,
+            project_physical_status,
+            project_physical_cancel,
+            project_physical_preview,
+            project_physical_accept,
             project_replace_vector_source,
             project_create_vector_layer,
             project_delete_vector_layer,
             maps_recovery_export,
+            project_physical_derived_geojson,
             project_read_asset_bytes,
             project_create_raster_layer,
             project_create_semantic_layer,

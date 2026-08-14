@@ -32,6 +32,7 @@ import { buildModuleContext } from "$lib/modules/context";
 import HostView from "$lib/plugins/HostView.svelte";
 import SandboxView from "$lib/plugins/SandboxView.svelte";
 import NativeVectorMapEditor from "$lib/maps/native-vector/NativeVectorMapEditor.svelte";
+import PhysicalMapEditor from "$lib/maps/physical/PhysicalMapEditor.svelte";
 import { nativeVectorSession } from "$lib/maps/native-vector/session";
 import ProjectionView from "$lib/ProjectionView.svelte";
 import SettingsView from "$lib/SettingsView.svelte";
@@ -677,6 +678,7 @@ async function closeNativePluginWebviews() {
 async function resolveDirtyMapSession(): Promise<boolean> {
   const mapId = currentMapId();
   if (!mapId || sandboxView?.renderer !== "maps" || mapSaveStates[mapId]?.status !== "dirty") return true;
+  if (mapsEditorMode === "physical") return true;
   if (confirm("Save changes to this map before leaving?")) {
     try {
       if (mapsEditorMode === "vector") {
@@ -811,7 +813,12 @@ async function openPluginView(item: PluginNavigationItem) {
         (field) => field.namespace === "maps" && field.key === "map",
       );
       const descriptor = mapField?.value as { provider?: { id?: string } } | undefined;
-      mapsEditorMode = descriptor?.provider?.id === "daena-vector" ? "vector" : "fmg";
+      mapsEditorMode =
+        descriptor?.provider?.id === "daena-physical"
+          ? "physical"
+          : descriptor?.provider?.id === "daena-vector"
+            ? "vector"
+            : "fmg";
     }
     mapFocusLinkId = null;
     if (!(await leavePluginView())) return;
@@ -832,10 +839,10 @@ async function openPluginView(item: PluginNavigationItem) {
   sandboxView = { plugin: item.plugin, view: item.view, renderer: "webview" };
 }
 
-let mapsEditorMode = $state<"fmg" | "vector">("fmg");
+let mapsEditorMode = $state<"fmg" | "vector" | "physical">("fmg");
 let mapsVectorStart = $state<"generate" | "import">("generate");
 let mapProviderMenuOpen = $state<"header" | "empty" | null>(null);
-async function createMap(provider: "fmg" | "image" | "vector" = "fmg") {
+async function createMap(provider: "fmg" | "image" | "vector" | "physical" = "physical") {
   if (projectDiagnostics.length > 0) return;
   try {
     mapProviderMenuOpen = null;
@@ -850,8 +857,8 @@ async function createMap(provider: "fmg" | "image" | "vector" = "fmg") {
     if (!(await dismissSettings())) return;
     if (!(await leavePluginView())) return;
     // Draft editor: no map entity until the in-FMG Save overlay commits one.
-    mapsEditorMode = provider === "fmg" ? "fmg" : "vector";
-    mapsVectorStart = provider === "image" ? "import" : "generate";
+    mapsEditorMode = provider === "fmg" ? "fmg" : provider === "physical" ? "physical" : "vector";
+    mapsVectorStart = provider === "image" || provider === "vector" ? "import" : "generate";
     mapsEditorKey = `draft-${Date.now()}`;
     sandboxView = { plugin: mapView.plugin, view: mapView.view, renderer: "maps" };
   } catch (cause) {
@@ -939,6 +946,7 @@ function savedMaps() {
 
 async function saveCurrentMap() {
   try {
+    if (mapsEditorMode === "physical") return;
     if (mapsEditorMode === "vector") {
       await nativeVectorSession()?.save();
       return;
@@ -3938,9 +3946,10 @@ onMount(() => {
                 onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "header" ? null : "header")}
                 >Create map</button>
               {#if mapProviderMenuOpen === "header"}<div class="map-provider-menu" role="menu">
+                  <button type="button" role="menuitem" onclick={() => void createMap("physical")}>Create physical world</button>
                   <button type="button" role="menuitem" onclick={() => void createMap("fmg")}>Create with FMG</button>
                   <button type="button" role="menuitem" onclick={() => void createMap("image")}>Import image</button>
-                  <button type="button" role="menuitem" onclick={() => void createMap("vector")}>New vector map</button>
+                  <button type="button" role="menuitem" onclick={() => void createMap("vector")}>Import vector map</button>
                 </div>{/if}
             </div>{/if}
           {#if section !== "writing" && section !== "maps"}<button class="quiet-button" onclick={openProjection}
@@ -4005,12 +4014,14 @@ onMount(() => {
                     {#if mapProviderMenuOpen === "empty"}<div
                         class="map-provider-menu empty-map-provider-menu"
                         role="menu">
+                        <button type="button" role="menuitem" onclick={() => void createMap("physical")}
+                          >Create physical world</button>
                         <button type="button" role="menuitem" onclick={() => void createMap("fmg")}
                           >Create with FMG</button>
                         <button type="button" role="menuitem" onclick={() => void createMap("image")}
                           >Import image</button>
                         <button type="button" role="menuitem" onclick={() => void createMap("vector")}
-                          >New vector map</button>
+                          >Import vector map</button>
                       </div>{/if}
                   </div>
                 {:else}<button class="empty-create" type="button" onclick={toggleCreateForm}
@@ -4059,7 +4070,27 @@ onMount(() => {
                 </div>
               {/if}
               <div class="map-surface">
-                {#if mapsEditorMode === "vector"}
+              {#if mapsEditorMode === "physical"}
+                {#key mapsEditorKey}
+                  <PhysicalMapEditor
+                    mapId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
+                    onstate={(status, detail) => {
+                      if (!mapId) return;
+                      mapSaveStates[mapId] = { status, detail };
+                    }}
+                    oncreated={async (map) => {
+                      entities = await project.listEntities();
+                      savedMapsCache = null;
+                      selected = map;
+                      mapsEditorKey = map.id;
+                      mapsEditorMode = "physical";
+                      await loadSelectedState(map);
+                    }}
+                    oncancel={() => {
+                      void leavePluginView();
+                    }} />
+                {/key}
+              {:else if mapsEditorMode === "vector"}
                   {#key mapsEditorKey}
                     <NativeVectorMapEditor
                       mapId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}

@@ -7,7 +7,7 @@
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "sandboxed",
   "entrypoints": { "ui": "dist/ui/index.html" },
-  "capabilities": ["entity.read", "entity.write", "document.read", "document.write", "field.read:self", "field.write:self", "record.read:self", "record.write:self"],
+  "capabilities": ["entity.read", "entity.write", "entity.delete", "document.read", "document.write", "field.read:self", "field.write:self", "record.read:self", "record.write:self"],
   "dependencies": {},
   "namespaces": ["language"],
   "schemas": [{

@@ -1,4 +1,4 @@
-import type { ModuleContext, ModuleRecord, ModuleRecordQuery } from "../../../../module-api/src/index";
+import type { ModuleContext, ModuleRecord, ModuleRecordQuery, UUID } from "../../../../module-api/src/index";
 import {
   indexGrammarRecords,
   serializeGrammarRecord,
@@ -17,7 +17,7 @@ export function isStaleRevisionError(error: unknown) {
 export async function paginateRecords<T>(
   records: GrammarRecordsApi,
   collection: string,
-  ownerEntityId: string,
+  ownerEntityId: UUID,
   sort: ModuleRecordQuery["sort"] = "updatedAt",
 ) {
   const collected: ModuleRecord<T>[] = [];
@@ -31,7 +31,7 @@ export async function paginateRecords<T>(
   return collected;
 }
 
-export async function loadGrammarIndex(records: GrammarRecordsApi, ownerEntityId: string) {
+export async function loadGrammarIndex(records: GrammarRecordsApi, ownerEntityId: UUID) {
   const collected = await paginateRecords<GrammarRecord>(records, "grammar", ownerEntityId);
   const index = indexGrammarRecords(collected);
   index.diagnostics.push(...brokenAgreementFeatures(index));
@@ -48,13 +48,13 @@ export type PersistStale = {
 export type PersistErr = { ok: false; stale?: false; error: string; issues?: { message: string; path?: string }[] };
 export type PersistResult = PersistOk | PersistStale | PersistErr;
 
-async function reload(records: GrammarRecordsApi, ownerEntityId: string) {
+async function reload(records: GrammarRecordsApi, ownerEntityId: UUID) {
   return loadGrammarIndex(records, ownerEntityId);
 }
 
 export async function persistGrammarRecord(
   api: GrammarRecordsApi,
-  ownerEntityId: string,
+  ownerEntityId: UUID,
   session: { recordId?: string; revision?: string; draft: GrammarRecord },
 ): Promise<PersistResult> {
   const issues = validateGrammarDraft(session.draft);
@@ -71,7 +71,7 @@ export async function persistGrammarRecord(
       return { ok: true, record: null, index: loaded.index };
     }
     if (shouldDelete && session.recordId) {
-      await api.delete("grammar", session.recordId, ownerEntityId, {
+      await api.delete("grammar", session.recordId as UUID, ownerEntityId, {
         expectedRevision: session.revision,
         requestId: crypto.randomUUID(),
       });
@@ -81,7 +81,7 @@ export async function persistGrammarRecord(
     const payload = serializeGrammarRecord(session.draft) as GrammarRecord;
     let saved: ModuleRecord<GrammarRecord>;
     if (session.recordId) {
-      saved = await api.update("grammar", session.recordId, ownerEntityId, payload, {
+      saved = await api.update("grammar", session.recordId as UUID, ownerEntityId, payload, {
         expectedRevision: session.revision,
         requestId: crypto.randomUUID(),
       });
@@ -92,7 +92,7 @@ export async function persistGrammarRecord(
       const afterSave = await reload(api, ownerEntityId);
       const unused = afterSave.index.sectionStates.get("agreement");
       if (unused) {
-        await api.delete("grammar", unused.id, ownerEntityId, {
+        await api.delete("grammar", unused.id as UUID, ownerEntityId, {
           expectedRevision: unused.revision,
           requestId: crypto.randomUUID(),
         });
@@ -117,11 +117,11 @@ export async function persistGrammarRecord(
 
 export async function deleteGrammarRecord(
   api: GrammarRecordsApi,
-  ownerEntityId: string,
+  ownerEntityId: UUID,
   session: { recordId: string; revision?: string },
 ): Promise<PersistResult> {
   try {
-    await api.delete("grammar", session.recordId, ownerEntityId, {
+    await api.delete("grammar", session.recordId as UUID, ownerEntityId, {
       expectedRevision: session.revision,
       requestId: crypto.randomUUID(),
     });

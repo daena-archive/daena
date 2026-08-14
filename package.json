@@ -11,7 +11,7 @@
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && npm run check:plugin-contract",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --config ./svelte.config.js && npm run check:plugin-contract",
     "check:plugin-contract": "node scripts/validate-plugin-contract.mjs && node scripts/check-plugin-contract-drift.mjs",
     "gen:plugin-contract": "node scripts/gen-plugin-contract.mjs",
     "gen:manifest-fixtures": "node scripts/gen-plugin-manifest-fixtures.mjs",

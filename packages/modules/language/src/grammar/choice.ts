@@ -112,11 +112,11 @@ export type BasicWordOrderPatch = {
 
 export function applyBasicWordOrder(draft: GrammarSystemRecord, patch: BasicWordOrderPatch): GrammarSystemRecord {
   if (draft.systemId !== "syntax.basic-word-order") return draft;
-  const current = isWordOrder(draft.config) ? draft.config : { influences: [] as WordOrderInfluence[] };
-  const order = patch.order ?? current.order;
+  const current = isWordOrder(draft.config) ? draft.config : undefined;
+  const order = patch.order ?? current?.order;
   if (!order) return { ...draft, status: "configured", config: {} };
 
-  let influences = current.influences ?? [];
+  let influences = current?.influences ?? [];
   if (patch.toggleInfluence) {
     influences = toggle(influences, patch.toggleInfluence);
   }
@@ -125,16 +125,16 @@ export function applyBasicWordOrder(draft: GrammarSystemRecord, patch: BasicWord
   const config: BasicWordOrderConfig = {
     order,
     customOrder:
-      order === "custom" ? (patch.customOrder !== undefined ? patch.customOrder : current.customOrder) : undefined,
-    strength: patch.strength === "" ? undefined : patch.strength !== undefined ? patch.strength : current.strength,
+      order === "custom" ? (patch.customOrder !== undefined ? patch.customOrder : current?.customOrder) : undefined,
+    strength: patch.strength === "" ? undefined : patch.strength !== undefined ? patch.strength : current?.strength,
     influences,
     customInfluence:
       order === "flexible" && influences.includes("custom")
         ? patch.customInfluence !== undefined
           ? patch.customInfluence
-          : current.customInfluence
+          : current?.customInfluence
         : undefined,
-    changeNotes: patch.changeNotes !== undefined ? patch.changeNotes || undefined : current.changeNotes,
+    changeNotes: patch.changeNotes !== undefined ? patch.changeNotes || undefined : current?.changeNotes,
   };
   return { ...draft, status: "configured", config };
 }
@@ -482,16 +482,15 @@ function toggle<T>(values: T[], item: T) {
 function applyPositionRecord<T extends string>(
   draft: GrammarSystemRecord,
   options: ChoiceOption<T>[],
-  guard: (
-    config: GrammarSystemRecord["config"],
-  ) => config is { position: T; alternatePositions: T[]; customPosition?: string; conditions?: string },
+  guard: (config: GrammarSystemRecord["config"]) => boolean,
   patch: PositionPatch<T>,
 ): GrammarSystemRecord {
   const allowed = new Set(options.map((option) => option.value));
-  const current = guard(draft.config) ? draft.config : { alternatePositions: [] as T[] };
-  const position = patch.position ?? current.position;
+  type PositionRecord = { position: T; alternatePositions: T[]; customPosition?: string; conditions?: string };
+  const current = guard(draft.config) ? (draft.config as PositionRecord) : undefined;
+  const position = patch.position ?? current?.position;
   if (!position || !allowed.has(position)) return { ...draft, status: "configured", config: {} };
-  let alternates = current.alternatePositions.filter((item) => item !== position && allowed.has(item));
+  let alternates = (current?.alternatePositions ?? []).filter((item) => item !== position && allowed.has(item));
   if (patch.toggleAlternate && patch.toggleAlternate !== position && allowed.has(patch.toggleAlternate)) {
     alternates = toggle(alternates, patch.toggleAlternate);
   }
@@ -501,12 +500,12 @@ function applyPositionRecord<T extends string>(
       position === "custom"
         ? patch.customPosition !== undefined
           ? patch.customPosition
-          : current.customPosition
+          : current?.customPosition
         : undefined,
     alternatePositions: alternates,
-    conditions: patch.conditions !== undefined ? patch.conditions || undefined : current.conditions,
+    conditions: patch.conditions !== undefined ? patch.conditions || undefined : current?.conditions,
   };
-  return { ...draft, status: "configured", config };
+  return { ...draft, status: "configured", config: config as GrammarSystemRecord["config"] };
 }
 
 function positionSummary(

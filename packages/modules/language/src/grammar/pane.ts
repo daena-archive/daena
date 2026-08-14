@@ -8,6 +8,7 @@ import {
   summarizeSystem,
   systemsForSection,
 } from "../grammar.ts";
+import type { UUID } from "../../../../module-api/src/index";
 import { alertMessage, button, emptyMessage, emptyState, field, input, textarea } from "../ui";
 import { persistGrammarRecord, deleteGrammarRecord, type GrammarRecordsApi } from "./repository.ts";
 import { configuredMinimum } from "./normalize.ts";
@@ -55,7 +56,7 @@ export type GrammarLinkChoices = {
 
 export type GrammarPaneContext = {
   languageName?: string;
-  ownerId?: string;
+  ownerId?: UUID;
   records: GrammarRecordsApi;
   confirm: (message: string) => boolean;
   render: () => void;
@@ -479,9 +480,9 @@ function renderEditor(panel: HTMLElement, state: GrammarUiState, ctx: GrammarPan
         session.draft,
         session.locked,
         {
-          agreements: state.index.agreements
-            .filter((item) => item.value.recordKind === "agreement")
-            .map((item) => ({ id: item.id, title: item.value.title })),
+          agreements: state.index.agreements.flatMap((item) =>
+            item.value.recordKind === "agreement" ? [{ id: item.id, title: item.value.title }] : [],
+          ),
         },
         (next, rerender) => {
           if (session.draft.recordKind !== "system") return;
@@ -500,9 +501,9 @@ function renderEditor(panel: HTMLElement, state: GrammarUiState, ctx: GrammarPan
           referencedIds: referencedCategoryIds(state.index, session.draft.systemId),
           pronounAxes:
             personalPronouns?.recordKind === "system" ? (personalPronouns.config as ParadigmConfig).axes : undefined,
-          agreements: state.index.agreements
-            .filter((item) => item.value.recordKind === "agreement")
-            .map((item) => ({ id: item.id, title: item.value.title })),
+          agreements: state.index.agreements.flatMap((item) =>
+            item.value.recordKind === "agreement" ? [{ id: item.id, title: item.value.title }] : [],
+          ),
         },
         (next, rerender) => {
           if (session.draft.recordKind !== "system") return;
@@ -546,7 +547,7 @@ function renderEditor(panel: HTMLElement, state: GrammarUiState, ctx: GrammarPan
       const notes = textarea("notes", session.draft.notes, 4);
       notes.disabled = session.locked;
       notes.oninput = () => {
-        if (session.draft.recordKind !== "section-state") session.draft.notes = notes.value;
+        if (session.draft.recordKind === "system") session.draft.notes = notes.value;
       };
       form.append(field("Notes", notes));
     }

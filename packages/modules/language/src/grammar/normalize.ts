@@ -16,6 +16,7 @@ import {
   type EmptyConfig,
   type GrammarAgreementRecord,
   type GrammarCustomRuleRecord,
+  type GrammarDiagnostic,
   type GrammarExample,
   type GrammarIssue,
   type GrammarLink,
@@ -335,7 +336,7 @@ export function validateGrammarDraft(value: GrammarRecord): GrammarIssue[] {
 function normalizeExamples(value: unknown): GrammarExample[] {
   if (!Array.isArray(value)) return [];
   return value
-    .map((item) => {
+    .map((item): GrammarExample | null => {
       const entry = obj(item);
       const exampleText = text(entry.text);
       if (!exampleText) return null;
@@ -354,7 +355,7 @@ function normalizeExamples(value: unknown): GrammarExample[] {
 function normalizeLinks(value: unknown): GrammarLink[] {
   if (!Array.isArray(value)) return [];
   return value
-    .map((item) => {
+    .map((item): GrammarLink | null => {
       const entry = obj(item);
       const targetId = text(entry.targetId);
       const kind = text(entry.kind);
@@ -374,12 +375,12 @@ function normalizeLinks(value: unknown): GrammarLink[] {
 function normalizeAxes(value: unknown): ParadigmAxis[] {
   if (!Array.isArray(value)) return [];
   return value
-    .map((item) => {
+    .map((item): ParadigmAxis | null => {
       const entry = obj(item);
       const label = text(entry.label);
       const values = Array.isArray(entry.values)
         ? entry.values
-            .map((raw) => {
+            .map((raw): ParadigmAxis["values"][number] | null => {
               const valueEntry = obj(raw);
               const valueLabel = text(valueEntry.label);
               if (!valueLabel) return null;
@@ -405,7 +406,7 @@ function normalizeCells(value: unknown, axes: ParadigmAxis[], examples: GrammarE
   const exampleIds = new Set(examples.map((item) => item.id));
   if (!Array.isArray(value)) return [];
   const cells = value
-    .map((item) => {
+    .map((item): ParadigmCell | null => {
       const entry = obj(item);
       const coordinates = obj(entry.coordinates);
       const next: Record<string, string> = {};
@@ -657,7 +658,7 @@ function normalizeSystemConfig(
         strategies: pickList(raw.strategies, DEF_STRATEGIES),
         articles: Array.isArray(raw.articles)
           ? raw.articles
-              .map((item) => {
+              .map((item): DefinitenessConfig["articles"][number] | null => {
                 const entry = obj(item);
                 const form = text(entry.form);
                 if (!form) return null;
@@ -739,7 +740,7 @@ function normalizeSystemConfig(
         strategies: pickList(raw.strategies, NEG_VERB),
         forms: Array.isArray(raw.forms)
           ? raw.forms
-              .map((item) => {
+              .map((item): NegativeVerbConfig["forms"][number] | null => {
                 const entry = obj(item);
                 const form = text(entry.form);
                 if (!form) return null;
@@ -795,7 +796,7 @@ function normalizeSystemConfig(
         customBehavior: behavior === "custom" ? optional(raw.customBehavior) : undefined,
         interrogatives: Array.isArray(raw.interrogatives)
           ? raw.interrogatives
-              .map((item) => {
+              .map((item): ContentQuestionsConfig["interrogatives"][number] | null => {
                 const entry = obj(item);
                 const meaning = text(entry.meaning);
                 if (!meaning) return null;
@@ -983,7 +984,7 @@ export function normalizeGrammarRecord(value: unknown): NormalizeResult {
     }
     const features = Array.isArray(record.features)
       ? record.features
-          .map((item) => {
+          .map((item): GrammarAgreementRecord["features"][number] | null => {
             const entry = obj(item);
             const label = text(entry.label);
             if (!label) return null;
@@ -1110,9 +1111,8 @@ export function indexGrammarRecords(records: { id: string; revision?: string; va
 
 export function systemStatus(index: IndexedGrammar, systemId: GrammarSystemId): GrammarStatus {
   if (index.duplicates.has(systemId)) return "unconfigured";
-  return index.systems.get(systemId)?.value.recordKind === "system"
-    ? index.systems.get(systemId)!.value.status
-    : "unconfigured";
+  const record = index.systems.get(systemId)?.value;
+  return record?.recordKind === "system" ? record.status : "unconfigured";
 }
 
 export function brokenAgreementFeatures(index: IndexedGrammar): GrammarDiagnostic[] {
@@ -1136,7 +1136,7 @@ export function brokenAgreementFeatures(index: IndexedGrammar): GrammarDiagnosti
         categories?: { id: string }[];
         cases?: { id: string }[];
         classes?: { id: string }[];
-        axes?: { values: { id: string }[] }[];
+        axes?: { id: string; values: { id: string }[] }[];
         cells?: { id: string }[];
       };
       const ids = new Set([

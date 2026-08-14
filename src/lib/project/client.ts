@@ -134,9 +134,51 @@ export interface PhysicalClimateProducts {
     transportIterations: number;
   };
 }
+export interface PhysicalEvolutionProducts {
+  derivationVersion: number;
+  preset: "young" | "mature" | "old";
+  width: number;
+  height: number;
+  beforeElevationsMm: number[];
+  elevationsMm: number[];
+  routingElevationMm: number[];
+  slopePpm: number[];
+  accumulationM3PerYear: number[];
+  outletCells: number[];
+  edges: Array<{
+    sourceCell: number;
+    destinationCell: number;
+    weightPpm: number;
+    distanceMetres: number;
+  }>;
+  drainageMetrics: {
+    directRunoffM3PerYear: number;
+    routedRunoffM3PerYear: number;
+    routedEdgeCount: number;
+    drainageDensityPpm: number;
+    gridAnisotropyPpm: number;
+    convergencePpm: number;
+    outletCount: number;
+    routingSurfaceRaiseMaxMm: number;
+  };
+  evolutionMetrics: {
+    initialReliefSpanMm: number;
+    finalReliefSpanMm: number;
+    reliefChangeMm: number;
+    meanAbsoluteElevationChangeMm: number;
+    erosionWorkM3: number;
+    upliftWorkM3: number;
+    maxStepReliefLossMm: number;
+    drainageDensityPpm: number;
+    gridAnisotropyPpm: number;
+    convergencePpm: number;
+    tectonicRangeOrientationPpm: number;
+  };
+}
 export interface PhysicalGenerationInput {
   seed: number;
   retryIndex: number;
+  evolutionPreset?: "young" | "mature" | "old";
   settings: {
     width: number;
     height: number;
@@ -547,8 +589,8 @@ export const project = {
     invoke<PhysicalJobStatus>("project_physical_generate", { input, requestId }),
   physicalMapStatus: (jobId: string) => invoke<PhysicalJobStatus>("project_physical_status", { jobId }),
   physicalMapPreview: (jobId: string) => invoke<string>("project_physical_preview", { jobId }),
-  physicalMapClimate: (jobId: string) =>
-    invoke<PhysicalClimateProducts>("project_physical_climate", { jobId }),
+  physicalMapClimate: (jobId: string) => invoke<PhysicalClimateProducts>("project_physical_climate", { jobId }),
+  physicalMapEvolution: (jobId: string) => invoke<PhysicalEvolutionProducts>("project_physical_evolution", { jobId }),
   cancelPhysicalMap: (jobId: string) => invoke<PhysicalJobStatus>("project_physical_cancel", { jobId }),
   acceptPhysicalMap: (jobId: string, name: string, options?: MutationOptions) =>
     invoke<{ entity: Entity; source: Asset }>("project_physical_accept", {
@@ -605,6 +647,8 @@ export const project = {
     invoke<string>("project_physical_derived_geojson", { mapEntityId }),
   physicalMapDerivedClimate: (mapEntityId: string) =>
     invoke<PhysicalClimateProducts>("project_physical_derived_climate", { mapEntityId }),
+  physicalMapDerivedEvolution: (mapEntityId: string) =>
+    invoke<PhysicalEvolutionProducts>("project_physical_derived_evolution", { mapEntityId }),
   readAssetBytes: (assetId: string) => invoke<number[]>("project_read_asset_bytes", { assetId }),
   createRasterLayer: (mapEntityId: string, name: string, expectedRevision: string, options?: MutationOptions) =>
     invoke<RasterLayerChange>("project_create_raster_layer", {

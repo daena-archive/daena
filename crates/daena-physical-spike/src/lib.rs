@@ -8,6 +8,7 @@ use std::fmt::{Display, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod climate;
+pub mod evolution;
 pub mod tectonics;
 
 pub const SOURCE_MAGIC: [u8; 8] = *b"DAENAPW1";
@@ -21,7 +22,7 @@ pub const MAX_HEIGHT: u32 = 64;
 pub const MAX_GEOJSON_FEATURES: usize = 32_768;
 pub const CANCELLATION_LATENCY_BUDGET_MS: u128 = 100;
 pub const GENERATOR_ID: &str = "daena-physical-world";
-pub const GENERATOR_VERSION: u32 = 5;
+pub const GENERATOR_VERSION: u32 = 6;
 
 pub const CODE_GENERATOR_INVALID_SETTINGS: &str = "physical.generator.invalid-settings";
 pub const CODE_GENERATOR_UNSUPPORTED_VERSION: &str = "physical.generator.unsupported-version";
@@ -33,6 +34,7 @@ pub const CODE_NUMERIC_NON_FINITE: &str = "physical.numeric.non-finite";
 pub const CODE_NUMERIC_NON_CONVERGENT: &str = "physical.numeric.non-convergent";
 pub const CODE_WATER_NON_CONVERGENT: &str = "physical.water.non-convergent";
 pub const CODE_HYDROLOGY_CYCLE: &str = "physical.hydrology.cycle";
+pub const CODE_HYDROLOGY_INVALID_SINK: &str = "physical.hydrology.invalid-sink";
 pub const CODE_GEOMETRY_INVALID: &str = "physical.geometry.invalid";
 pub const CODE_LIMIT_EXCEEDED: &str = "physical.limit.exceeded";
 pub const CODE_RENDERER_UNAVAILABLE: &str = "physical.renderer.unavailable";
@@ -49,6 +51,7 @@ pub enum PhysicalErrorCode {
     NumericNonConvergent,
     WaterNonConvergent,
     HydrologyCycle,
+    HydrologyInvalidSink,
     GeometryInvalid,
     LimitExceeded,
     RendererUnavailable,
@@ -67,6 +70,7 @@ impl PhysicalErrorCode {
             Self::NumericNonConvergent => CODE_NUMERIC_NON_CONVERGENT,
             Self::WaterNonConvergent => CODE_WATER_NON_CONVERGENT,
             Self::HydrologyCycle => CODE_HYDROLOGY_CYCLE,
+            Self::HydrologyInvalidSink => CODE_HYDROLOGY_INVALID_SINK,
             Self::GeometryInvalid => CODE_GEOMETRY_INVALID,
             Self::LimitExceeded => CODE_LIMIT_EXCEEDED,
             Self::RendererUnavailable => CODE_RENDERER_UNAVAILABLE,
@@ -243,6 +247,7 @@ pub struct GeneratedWorld {
     pub field: PhysicalField,
     pub tectonics: tectonics::TectonicWorld,
     pub climate: climate::ClimateField,
+    pub evolution: evolution::EvolutionField,
     pub source: Vec<u8>,
     pub derived_geojson: String,
     pub report: ValidationReport,
@@ -510,6 +515,22 @@ pub fn generate_world(
     retry_index: u32,
     progress: &mut dyn ProgressSink,
 ) -> Result<GeneratedWorld, PhysicalError> {
+    generate_world_with_evolution(
+        settings,
+        seed,
+        retry_index,
+        evolution::EvolutionSettings::default(),
+        progress,
+    )
+}
+
+pub fn generate_world_with_evolution(
+    settings: GenerationSettings,
+    seed: u32,
+    retry_index: u32,
+    evolution_settings: evolution::EvolutionSettings,
+    progress: &mut dyn ProgressSink,
+) -> Result<GeneratedWorld, PhysicalError> {
     let grid = settings.grid()?;
     let tectonic_settings = tectonics::TectonicSettings::default_for(grid);
     let mut tectonics = tectonics::generate_tectonic_world(
@@ -520,11 +541,41 @@ pub fn generate_world(
         retry_index,
         progress,
     )?;
-    let elevations_mm = tectonics.elevations_mm.clone();
+    let initial_elevations_mm = tectonics.elevations_mm.clone();
+    let initial_sea_level_mm = solve_sea_level(
+        &grid,
+        &initial_elevations_mm,
+        settings.target_land_fraction_ppm,
+    )
+    .map_err(|error| PhysicalError::coded(PhysicalErrorCode::WaterNonConvergent, error))?;
+    let initial_field = PhysicalField {
+        grid,
+        seed,
+        retry_index,
+        target_land_fraction_ppm: settings.target_land_fraction_ppm,
+        sea_level_mm: initial_sea_level_mm,
+        elevations_mm: initial_elevations_mm,
+    };
+    let initial_climate = climate::derive_current_climate(
+        &initial_field,
+        climate::ClimateSettings::default_for(grid),
+        seed,
+        retry_index,
+        progress,
+    )?;
+    let mut evolution = evolution::evolve_terrain(
+        &initial_field,
+        &initial_climate,
+        &tectonics,
+        evolution_settings,
+        progress,
+    )?;
+    let elevations_mm = evolution.elevations_mm.clone();
     let sea_level_mm = solve_sea_level(&grid, &elevations_mm, settings.target_land_fraction_ppm)
         .map_err(|error| PhysicalError::coded(PhysicalErrorCode::WaterNonConvergent, error))?;
     tectonics.target_land_fraction_ppm = settings.target_land_fraction_ppm;
     tectonics.sea_level_mm = sea_level_mm;
+    tectonics.elevations_mm = elevations_mm.clone();
     let field = PhysicalField {
         grid,
         seed,
@@ -540,6 +591,9 @@ pub fn generate_world(
         retry_index,
         progress,
     )?;
+    let final_drainage = evolution::derive_drainage(&field, &climate)?;
+    evolution.replace_drainage(final_drainage);
+    evolution.validate_against(&initial_field, &field, &climate)?;
     progress.report(ProgressPhase::CalculatingWater, 0, 1)?;
     progress.report(ProgressPhase::CalculatingWater, 1, 1)?;
     progress.report(ProgressPhase::PreparingGeography, 0, 1)?;
@@ -554,6 +608,7 @@ pub fn generate_world(
         field,
         tectonics,
         climate,
+        evolution,
         source,
         derived_geojson,
         report,
@@ -933,6 +988,16 @@ mod tests {
         assert!(world.climate.metrics.precipitation_volume_m3_per_year > 0);
         assert!(world.climate.metrics.runoff_volume_m3_per_year > 0);
         assert!(world.climate.metrics.transport_iterations > 0);
+        assert_eq!(world.evolution.elevations_mm, world.field.elevations_mm);
+        assert_eq!(world.tectonics.elevations_mm, world.field.elevations_mm);
+        assert_ne!(
+            world.evolution.before_elevations_mm,
+            world.evolution.elevations_mm
+        );
+        assert_eq!(
+            world.evolution.drainage.metrics.direct_runoff_m3_per_year,
+            world.evolution.drainage.metrics.routed_runoff_m3_per_year
+        );
         assert_eq!(encode_source(&world.tectonics).unwrap(), world.source);
         let source_before_derived_disposal = world.source.clone();
         let mut climate_progress = NoopProgress;

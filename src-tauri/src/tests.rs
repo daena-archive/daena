@@ -81,6 +81,35 @@ fn physical_climate_products_expose_derived_fields_without_source_data() {
 }
 
 #[test]
+fn physical_evolution_products_expose_routing_and_before_after_fields() {
+    let settings = daena_physical_spike::GenerationSettings {
+        width: 8,
+        height: 4,
+        radius_metres: daena_physical_spike::DEFAULT_RADIUS_METRES,
+        target_land_fraction_ppm: 300_000,
+    };
+    let mut progress = daena_physical_spike::NoopProgress;
+    let world = daena_physical_spike::generate_world(settings, 831_429, 0, &mut progress).unwrap();
+    let products = physical_evolution_products(&world.evolution);
+    assert_eq!(products["derivationVersion"], 1);
+    assert_eq!(products["preset"], "mature");
+    for key in [
+        "beforeElevationsMm",
+        "elevationsMm",
+        "routingElevationMm",
+        "slopePpm",
+        "accumulationM3PerYear",
+    ] {
+        assert_eq!(
+            products[key].as_array().unwrap().len(),
+            settings.width as usize * settings.height as usize
+        );
+    }
+    assert_eq!(products["drainageMetrics"]["convergencePpm"], 1_000_000);
+    assert!(!products["edges"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn stopping_project_watcher_releases_resources_without_joining() {
     let (stop, _receiver) = mpsc::channel();
     let watcher = Arc::new(Mutex::new(ProjectWatcher {

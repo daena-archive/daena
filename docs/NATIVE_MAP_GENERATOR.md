@@ -121,7 +121,7 @@ locked as:
   },
   "generation": {
     "id": "daena-physical-world",
-    "version": 5,
+  "version": 6,
     "seed": 831429,
     "retryIndex": 0,
     "settings": {}
@@ -861,9 +861,9 @@ hotspots, seamounts, and islands share one physical cause chain.
 
 Implementation status (2026-08-15): the pure-Rust current-climate/runoff slice
 is implemented in `daena-physical-spike` under ADR 0017. Climate remains a
-derived, disposable field; the locked physical-world-v2 source is unchanged.
-Native climate raster presentation and later terrain evolution remain deferred
-to the subsequent integration slices.
+derived, disposable field; the locked physical-world-v2 source is unchanged by
+climate derivation. Native climate raster presentation and final hydrology
+remain deferred to the subsequent integration slices.
 
 ### Goal
 
@@ -901,6 +901,19 @@ runoff and later terrain evolution.
   canonical source.
 
 ## Iteration 4: terrain evolution and drainage
+
+Implementation status (2026-08-15): the bounded terrain-evolution and drainage
+slice is implemented in `daena-physical-spike` under ADR 0018. Priority-Flood
+routing, normalized continuous-direction edges, conserved accumulation,
+stream-power incision, tectonic uplift, and hillslope relaxation are derived
+before the final sea-level solve. The evolved signed elevation field is the
+canonical v2 elevation payload; routing, accumulation, and before/after
+products remain disposable and are exposed by the trusted native host for both
+temporary and reopened accepted maps.
+
+The Iteration 4 gate is covered by 31 pure-Rust tests, 62 Tauri tests, the
+exact v6 source/coastline golden matrix workflow, and the release benchmark
+recorded in `docs/maps/physical-map-budgets.md`.
 
 ### Goal
 

@@ -74,6 +74,7 @@ struct PhysicalJobResult {
     generation: serde_json::Value,
     derived_geojson: String,
     climate: daena_physical_spike::climate::ClimateField,
+    evolution: daena_physical_spike::evolution::EvolutionField,
 }
 
 struct PhysicalJob {
@@ -158,6 +159,8 @@ struct PhysicalGenerationSettingsInput {
 struct PhysicalGenerationInput {
     seed: u32,
     retry_index: u32,
+    #[serde(default)]
+    evolution_preset: Option<String>,
     settings: PhysicalGenerationSettingsInput,
 }
 
@@ -6927,6 +6930,10 @@ async fn project_physical_generate(
     let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     uuid::Uuid::parse_str(&request_id)
         .map_err(|_| "physical generation request ID must be a UUID".to_string())?;
+    let evolution_preset = daena_physical_spike::evolution::EvolutionPreset::parse(
+        input.evolution_preset.as_deref().unwrap_or("mature"),
+    )
+    .map_err(|error| error.to_string())?;
     let cancel = Arc::new(AtomicBool::new(false));
     let status = PhysicalJobStatus {
         job_id: job_id.clone(),
@@ -6968,10 +6975,13 @@ async fn project_physical_generate(
             radius_metres: input.settings.radius_metres,
             target_land_fraction_ppm: input.settings.target_land_fraction_ppm,
         };
-        let outcome = daena_physical_spike::generate_world(
+        let outcome = daena_physical_spike::generate_world_with_evolution(
             settings,
             input.seed,
             input.retry_index,
+            daena_physical_spike::evolution::EvolutionSettings {
+                preset: evolution_preset,
+            },
             &mut progress,
         );
         let mut manager = match jobs_for_worker.lock() {
@@ -6998,6 +7008,7 @@ async fn project_physical_generate(
                         "continentalPlateCount": world.tectonics.settings.continental_plate_count,
                         "tectonicActivityPpm": world.tectonics.settings.tectonic_activity_ppm,
                         "islandActivityPpm": world.tectonics.settings.island_activity_ppm,
+                        "evolutionPreset": evolution_preset.as_str(),
                     }
                 });
                 job.status.state = "completed".into();
@@ -7013,6 +7024,7 @@ async fn project_physical_generate(
                     generation,
                     derived_geojson: world.derived_geojson,
                     climate: world.climate,
+                    evolution: world.evolution,
                 });
             }
             Err(daena_physical_spike::PhysicalError::Cancelled) => {
@@ -7141,6 +7153,52 @@ fn physical_climate_products(
     })
 }
 
+fn physical_evolution_products(
+    evolution: &daena_physical_spike::evolution::EvolutionField,
+) -> serde_json::Value {
+    serde_json::json!({
+        "derivationVersion": evolution.derivation_version,
+        "preset": evolution.preset.as_str(),
+        "width": evolution.grid.width,
+        "height": evolution.grid.height,
+        "beforeElevationsMm": evolution.before_elevations_mm,
+        "elevationsMm": evolution.elevations_mm,
+        "routingElevationMm": evolution.drainage.routing_elevation_mm,
+        "slopePpm": evolution.drainage.slope_ppm,
+        "accumulationM3PerYear": evolution.drainage.accumulation_m3_per_year,
+        "outletCells": evolution.drainage.outlet_cells,
+        "edges": evolution.drainage.edges.iter().map(|edge| serde_json::json!({
+            "sourceCell": edge.source_cell,
+            "destinationCell": edge.destination_cell,
+            "weightPpm": edge.weight_ppm,
+            "distanceMetres": edge.distance_metres,
+        })).collect::<Vec<_>>(),
+        "drainageMetrics": {
+            "directRunoffM3PerYear": evolution.drainage.metrics.direct_runoff_m3_per_year,
+            "routedRunoffM3PerYear": evolution.drainage.metrics.routed_runoff_m3_per_year,
+            "routedEdgeCount": evolution.drainage.metrics.routed_edge_count,
+            "drainageDensityPpm": evolution.drainage.metrics.drainage_density_ppm,
+            "gridAnisotropyPpm": evolution.drainage.metrics.grid_anisotropy_ppm,
+            "convergencePpm": evolution.drainage.metrics.convergence_ppm,
+            "outletCount": evolution.drainage.metrics.outlet_count,
+            "routingSurfaceRaiseMaxMm": evolution.drainage.metrics.routing_surface_raise_max_mm,
+        },
+        "evolutionMetrics": {
+            "initialReliefSpanMm": evolution.metrics.initial_relief_span_mm,
+            "finalReliefSpanMm": evolution.metrics.final_relief_span_mm,
+            "reliefChangeMm": evolution.metrics.relief_change_mm,
+            "meanAbsoluteElevationChangeMm": evolution.metrics.mean_absolute_elevation_change_mm,
+            "erosionWorkM3": evolution.metrics.erosion_work_m3,
+            "upliftWorkM3": evolution.metrics.uplift_work_m3,
+            "maxStepReliefLossMm": evolution.metrics.max_step_relief_loss_mm,
+            "drainageDensityPpm": evolution.metrics.drainage_density_ppm,
+            "gridAnisotropyPpm": evolution.metrics.grid_anisotropy_ppm,
+            "convergencePpm": evolution.metrics.convergence_ppm,
+            "tectonicRangeOrientationPpm": evolution.metrics.tectonic_range_orientation_ppm,
+        },
+    })
+}
+
 #[tauri::command]
 fn project_physical_climate(
     state: tauri::State<'_, SharedCore>,
@@ -7165,6 +7223,32 @@ fn project_physical_climate(
         .map(|result| &result.climate)
         .ok_or_else(|| "physical job climate is not ready".to_string())?;
     Ok(physical_climate_products(climate))
+}
+
+#[tauri::command]
+fn project_physical_evolution(
+    state: tauri::State<'_, SharedCore>,
+    jobs: tauri::State<'_, SharedPhysicalJobs>,
+    job_id: String,
+) -> Result<serde_json::Value, String> {
+    let project_id = current_info(state.inner())?
+        .ok_or_else(|| "open a project before reading physical evolution".to_string())?
+        .root;
+    let mut manager = jobs
+        .lock()
+        .map_err(|_| "physical job state is unavailable".to_string())?;
+    manager.reap_expired();
+    let job = manager
+        .jobs
+        .get(&job_id)
+        .filter(|job| manager.active_session_matches(&project_id, &job.session_id))
+        .ok_or("physical job was not found, expired, or belongs to another session")?;
+    let evolution = job
+        .result
+        .as_ref()
+        .map(|result| &result.evolution)
+        .ok_or_else(|| "physical job evolution is not ready".to_string())?;
+    Ok(physical_evolution_products(evolution))
 }
 
 #[tauri::command]
@@ -7356,6 +7440,67 @@ async fn project_physical_derived_climate(
         )
         .map_err(|error| CoreError::Validation(format!("maps.physical: {error}")))?;
         Ok(physical_climate_products(&climate))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_physical_derived_evolution(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+) -> Result<serde_json::Value, String> {
+    with_read_project(state, move |project| {
+        let descriptor = project
+            .list_fields(map_entity_id.clone())?
+            .into_iter()
+            .find(|field| field.namespace == daena_core::maps::MAP_NAMESPACE && field.key == "map")
+            .ok_or_else(|| CoreError::Validation("maps:map descriptor is missing".into()))?;
+        let source_id = descriptor
+            .value
+            .get("sourceAssetId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| CoreError::Validation("maps: sourceAssetId is missing".into()))?;
+        let generation =
+            descriptor.value.get("generation").cloned().ok_or_else(|| {
+                CoreError::Validation("maps: physical generation is missing".into())
+            })?;
+        let bytes = project.asset_bytes(source_id.to_string())?;
+        let (world, _) = daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        let field = world.physical_field();
+        let preset = generation
+            .get("settings")
+            .and_then(|settings| settings.get("evolutionPreset"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("mature");
+        let preset = daena_physical_spike::evolution::EvolutionPreset::parse(preset)
+            .map_err(|error| CoreError::Validation(error.to_string()))?;
+        let mut progress = daena_physical_spike::NoopProgress;
+        let climate = daena_physical_spike::climate::derive_current_climate(
+            &field,
+            daena_physical_spike::climate::ClimateSettings::default_for(field.grid),
+            world.seed,
+            world.retry_index,
+            &mut progress,
+        )
+        .map_err(|error| CoreError::Validation(format!("maps.physical: {error}")))?;
+        let mut initial_progress = daena_physical_spike::NoopProgress;
+        let initial_world = daena_physical_spike::tectonics::generate_tectonic_world(
+            world.grid,
+            world.settings,
+            world.target_land_fraction_ppm,
+            world.seed,
+            world.retry_index,
+            &mut initial_progress,
+        )
+        .map_err(|error| CoreError::Validation(format!("maps.physical: {error}")))?;
+        let evolution = daena_physical_spike::evolution::diagnostics_from_before_after(
+            initial_world.elevations_mm,
+            &field,
+            &climate,
+            preset,
+        )
+        .map_err(|error| CoreError::Validation(format!("maps.physical: {error}")))?;
+        Ok(physical_evolution_products(&evolution))
     })
     .await
 }
@@ -7859,6 +8004,7 @@ pub fn run() {
             project_physical_cancel,
             project_physical_preview,
             project_physical_climate,
+            project_physical_evolution,
             project_physical_accept,
             project_replace_vector_source,
             project_create_vector_layer,
@@ -7866,6 +8012,7 @@ pub fn run() {
             maps_recovery_export,
             project_physical_derived_geojson,
             project_physical_derived_climate,
+            project_physical_derived_evolution,
             project_read_asset_bytes,
             project_create_raster_layer,
             project_create_semantic_layer,

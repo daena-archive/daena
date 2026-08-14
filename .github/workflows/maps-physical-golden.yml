@@ -28,7 +28,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.1
       - name: Fetch Rust dependencies
         run: cargo fetch --locked --manifest-path crates/daena-physical-spike/Cargo.toml
       - name: Compare canonical source and coastline hashes

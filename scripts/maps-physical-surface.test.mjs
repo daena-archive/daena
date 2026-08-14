@@ -16,6 +16,8 @@ for (const required of [
   'id: "tectonic-boundaries"',
   'id: "bathymetry"',
   'id: "volcanic-centers"',
+  "evolutionPreset",
+  "Terrain age",
   "locked: true",
 ]) {
   assert.ok(source.includes(required), `physical surface contract is missing ${required}`);
@@ -27,10 +29,26 @@ assert.match(
   "surface teardown must cancel an active generation",
 );
 assert.equal(/https?:\/\//.test(source), false, "physical surface must not introduce remote resources");
-for (const required of ["PhysicalClimateProducts", "physicalMapClimate", "physicalMapDerivedClimate"]) {
+for (const required of [
+  "PhysicalClimateProducts",
+  "physicalMapClimate",
+  "physicalMapDerivedClimate",
+  "PhysicalEvolutionProducts",
+  "physicalMapEvolution",
+  "physicalMapDerivedEvolution",
+]) {
   assert.ok(client.includes(required), `physical client is missing ${required}`);
 }
-for (const required of ["project_physical_climate", "project_physical_derived_climate", "temperatureCentiC", "runoffVolumeM3PerYear"]) {
+for (const required of [
+  "project_physical_climate",
+  "project_physical_derived_climate",
+  "project_physical_evolution",
+  "project_physical_derived_evolution",
+  "temperatureCentiC",
+  "runoffVolumeM3PerYear",
+  "routingElevationMm",
+  "accumulationM3PerYear",
+]) {
   assert.ok(host.includes(required), `physical host is missing ${required}`);
 }
 

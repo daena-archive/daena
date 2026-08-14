@@ -44,8 +44,8 @@ try {
   const source = readFileSync(sourcePath);
   const geojsonBytes = readFileSync(geojsonPath);
   const geojson = JSON.parse(geojsonBytes);
-  assert.equal(sha256(source), "sha256:e2af69cfb346b35f813b11595e0c963ec7543033d13186836688ae12315a0fdf");
-  assert.equal(sha256(geojsonBytes), "sha256:2e558503d9530994b32421c0e8b1b17920f80f18179e24efd56661b05d24cfe5");
+  assert.equal(sha256(source), "sha256:f8ca89a55844e63719dcbfda4f8c23bb6877fe54b94e579ae188da5f08b9a5a3");
+  assert.equal(sha256(geojsonBytes), "sha256:0b7fdf82537aa50adc53bab4fb39059f720d099a1474b7c404cb5443b3e926ee");
   assert.equal(summary.width, 64);
   assert.equal(summary.height, 32);
   assert.equal(summary.sourceBytes, source.length);
@@ -84,13 +84,13 @@ try {
   assert.equal(maxSummary.width, 128);
   assert.equal(maxSummary.height, 64);
   assert.equal(maxSummary.sourceBytes, 79918);
-  assert.equal(maxSummary.geojsonBytes, 617697);
-  assert.equal(maxSummary.geojsonFeatures, 2984);
+  assert.equal(maxSummary.geojsonBytes, 587631);
+  assert.equal(maxSummary.geojsonFeatures, 2838);
   assert.ok(maxSummary.generationMs < 2000, `maximum generation exceeded budget: ${maxSummary.generationMs}ms`);
-  assert.equal(sha256(maxSource), "sha256:fc8b03a23ac4d5299ed07e970f04eba28dc79cf4f4fd9f25c57eb62786f873a8");
-  assert.equal(sha256(maxGeojson), "sha256:e88583e6d5fd9f42273553d2348f9a07049a04fa0ca4e0b1fc2ec18a0c99d252");
+  assert.equal(sha256(maxSource), "sha256:4552626373917f8d07a1508d91f8ad4828946b79c91a53851575c20cb00bd7b2");
+  assert.equal(sha256(maxGeojson), "sha256:807b44a66788a39e0bc4a2876aa275ba9cfb8612eae3ddf0a95f3adff4193485");
   console.log(
-    `physical map v5 source check passed on ${process.platform}/${process.arch}: default=${source.length}/${geojsonBytes.length} bytes, maximum=${maxSource.length}/${maxGeojson.length} bytes in ${maxSummary.generationMs.toFixed(1)}ms`,
+    `physical map v6 source check passed on ${process.platform}/${process.arch}: default=${source.length}/${geojsonBytes.length} bytes, maximum=${maxSource.length}/${maxGeojson.length} bytes in ${maxSummary.generationMs.toFixed(1)}ms`,
   );
 } finally {
   rmSync(temp, { recursive: true, force: true });

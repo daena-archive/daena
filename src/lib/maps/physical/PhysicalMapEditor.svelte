@@ -25,6 +25,7 @@ let host = $state<HTMLDivElement | null>(null);
 let editor: NativeVectorEditor | null = null;
 let name = $state("Physical World");
 let seed = $state(831429);
+let evolutionPreset = $state<"young" | "mature" | "old">("mature");
 let status = $state<PhysicalJobStatus | null>(null);
 let notice = $state("");
 let busy = $state(false);
@@ -167,6 +168,7 @@ async function generate() {
     const input: PhysicalGenerationInput = {
       seed,
       retryIndex: 0,
+      evolutionPreset,
       settings: {
         width: 64,
         height: 32,
@@ -242,6 +244,12 @@ onMount(() => {
     <div class="physical-map-controls">
       <label>Map name<input bind:value={name} disabled={busy} /></label>
       <label>Seed<input type="number" bind:value={seed} disabled={busy} min="0" max="4294967295" /></label>
+      <label
+        >Terrain age<select bind:value={evolutionPreset} disabled={busy}>
+          <option value="young">Young</option>
+          <option value="mature">Mature</option>
+          <option value="old">Old</option>
+        </select></label>
       <button class="quiet-button" type="button" onclick={randomSeed} disabled={busy}>Reroll seed</button>
     </div>
     {#if status}<p class="physical-map-progress" role="status">

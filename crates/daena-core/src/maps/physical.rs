@@ -50,6 +50,8 @@ pub fn validate_generation(value: &Value) -> Result<PhysicalMapGenerationSetting
     }
     .validate()
     .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?;
+    daena_physical_spike::evolution::EvolutionPreset::parse(&settings.evolution_preset)
+        .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?;
     Ok(settings)
 }
 

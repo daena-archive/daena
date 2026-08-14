@@ -23,7 +23,7 @@ The scaffold produces:
   hotspots, and subduction-arc centers.
 
 The active provider tuple is now `daena-physical` / adapter `2` /
-`physical-world-v2`, with generator version `5`. The v2 source includes the
+`physical-world-v2`, with generator version `6`. The v2 source includes the
 signed terrain field, target/sea-level provenance, per-cell plate ownership and
 crust, plate motion metadata, boundary classifications, and volcanic centers.
 The decoder is strict about counts, widths, bounds, and exact total length.
@@ -35,11 +35,13 @@ the canonical source bytes. The physical-map surface presents the non-base
 layers as locked, read-only visibility toggles; authored map editing remains
 separate from these generated diagnostics.
 
-The generator version is `5`: version `3` introduced the deterministic
+The generator version was `5` for the tectonic slice: version `3` introduced the deterministic
 neighboring-cell placement for subduction-arc centers, version `4` named and
 separated the subsystem seed schedule, and version `5` adds craton-grown
 continental crust plus causal rift-shoulder and spreading-ridge relief. The
-source adapter and `physical-world-v2` codec remain unchanged.
+source adapter and `physical-world-v2` codec remain unchanged. ADR 0018
+increments the generator to `6` because final terrain now includes the
+versioned evolution budget.
 
 The seed schedule is explicit in the pure-Rust boundary: plate sites,
 continental cratons, rotation axes, relief detail, hotspots, climate, erosion,

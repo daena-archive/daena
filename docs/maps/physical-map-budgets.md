@@ -8,17 +8,18 @@ cross-platform claim.
 
 | Preset | Grid | Wall time | Generator time | Peak RSS | Source | Derived GeoJSON | Features |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Default | 64 × 32 | 370 ms | 50.7 ms | 6.05 MiB | 25,633 B | 156,857 B | 772 |
-| Maximum | 128 × 64 | 710 ms | 401.1 ms | 19.08 MiB | 79,918 B | 617,697 B | 2,984 |
+| Default | 64 × 32 | 480 ms | 92.7 ms | 6.84 MiB | 25,633 B | 150,015 B | 738 |
+| Maximum | 128 × 64 | 1,580 ms | 1,205.8 ms | 21.00 MiB | 79,918 B | 587,631 B | 2,838 |
 
-The measured maximum remains below the locked 2 s generation budget, 16 MiB
-source budget, and 16 MiB derived-output budget. Peak RSS is process-level and
-includes the release binary; it is not an estimate of open-map memory. The
-cancellation fixture asserts observation below 100 ms at the maximum grid.
+The measured maximum remains below the locked 2 s generation budget, the
+128 MiB working-memory ceiling, 16 MiB source budget, and 16 MiB derived-output
+budget. Peak RSS is process-level and includes the release binary, not an
+estimate of open-map memory. The cancellation fixture asserts observation
+below 100 ms at the maximum grid.
 
-The benchmark intentionally records `peakResidentBytes: null` when the host
-does not expose RSS through its time utility. Such runs do not pass the memory
-gate and must not be silently converted into an estimate.
+The benchmark uses `/usr/bin/time` when it exposes RSS and otherwise samples
+the cargo process tree. If neither mechanism exposes RSS, it records
+`peakResidentBytes: null`; such runs do not pass the memory gate.
 
 Cross-target support is governed by
 `docs/maps/physical-map-golden-targets.md`: the locked CI matrix must pass the

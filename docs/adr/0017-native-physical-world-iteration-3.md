@@ -74,6 +74,6 @@ The pure-Rust fixture suite proves:
   reopened maps without adding climate bytes to the canonical source; and
 - cancellation remains observed through the existing progress boundary.
 
-Native climate raster rendering, terrain evolution, final hydrology, and
-historical climate remain later iteration work. This ADR therefore does not
-claim the final world-generation exit gate.
+Native climate raster rendering, final hydrology, and historical climate remain
+later iteration work. Terrain evolution is implemented separately under ADR
+0018. This ADR therefore does not claim the final world-generation exit gate.

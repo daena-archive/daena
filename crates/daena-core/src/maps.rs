@@ -16,7 +16,7 @@ pub const PHYSICAL_ADAPTER_VERSION: u32 = 2;
 pub const PHYSICAL_MIME: &str = "application/vnd.daena.physical-world";
 pub const PHYSICAL_FILENAME: &str = "world.pworld";
 pub const PHYSICAL_GENERATOR_ID: &str = "daena-physical-world";
-pub const PHYSICAL_GENERATOR_VERSION: u32 = 5;
+pub const PHYSICAL_GENERATOR_VERSION: u32 = 6;
 pub const PHYSICAL_MAX_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 pub const DETAIL_MAP_RELATIONSHIP: &str = "daena.maps:detail-map";
 pub const OVERVIEW_MAP_RELATIONSHIP: &str = "daena.maps:overview-map";
@@ -150,6 +150,15 @@ pub struct PhysicalMapGenerationSettings {
     pub tectonic_activity_ppm: u32,
     #[serde(rename = "islandActivityPpm")]
     pub island_activity_ppm: u32,
+    #[serde(
+        rename = "evolutionPreset",
+        default = "default_physical_evolution_preset"
+    )]
+    pub evolution_preset: String,
+}
+
+fn default_physical_evolution_preset() -> String {
+    "mature".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

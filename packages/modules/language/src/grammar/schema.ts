@@ -1,5 +1,6 @@
 import { CHOICE_SYSTEM_IDS } from "./choice.ts";
 import { INVENTORY_SYSTEM_IDS } from "./inventory.ts";
+import { STRATEGY_SYSTEM_IDS } from "./strategy.ts";
 import { GRAMMAR_SYSTEM_IDS } from "./types.ts";
 
 const example = {
@@ -244,7 +245,127 @@ const INVENTORY_CONFIG = {
   },
 } as const;
 
-const SPECIALIZED_SYSTEM_IDS = new Set<string>([...CHOICE_SYSTEM_IDS, ...INVENTORY_SYSTEM_IDS]);
+const article = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "form"],
+  properties: {
+    id: { type: "string" },
+    form: { type: "string" },
+    position: { type: "string" },
+    notes: { type: "string" },
+  },
+};
+
+const negativeForm = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "form"],
+  properties: {
+    id: { type: "string" },
+    form: { type: "string" },
+    conditions: { type: "string" },
+    notes: { type: "string" },
+  },
+};
+
+const STRATEGY_CONFIG = {
+  "nouns.definiteness": {
+    type: "object",
+    additionalProperties: false,
+    required: ["strategies", "articles"],
+    properties: {
+      strategies: stringArray([
+        "definite-article",
+        "indefinite-article",
+        "both",
+        "affixes",
+        "demonstratives",
+        "context",
+        "other",
+      ]),
+      articles: { type: "array", items: article },
+    },
+  },
+  "nouns.possession": {
+    type: "object",
+    additionalProperties: false,
+    required: ["strategies"],
+    properties: {
+      strategies: stringArray([
+        "possessive-pronouns",
+        "genitive",
+        "possessor-marking",
+        "possessed-marking",
+        "linking-particle",
+        "word-order",
+        "multiple",
+      ]),
+      alienability: { type: "boolean" },
+      alienabilityNotes: { type: "string" },
+    },
+  },
+  "verbs.marking-strategy": {
+    type: "object",
+    additionalProperties: false,
+    required: ["strategies"],
+    properties: {
+      strategies: stringArray([
+        "invariant",
+        "prefixes",
+        "suffixes",
+        "other-affixes",
+        "stem-changes",
+        "auxiliaries",
+        "particles",
+        "multiple",
+        "custom",
+      ]),
+      customStrategy: { type: "string" },
+    },
+  },
+  "verbs.negative-forms": {
+    type: "object",
+    additionalProperties: false,
+    required: ["strategies", "forms"],
+    properties: {
+      strategies: stringArray(["affix", "negative-auxiliary", "special-verb", "stem-change", "none", "multiple", "custom"]),
+      forms: { type: "array", items: negativeForm },
+    },
+  },
+  "modifiers.adjective-behavior": {
+    type: "object",
+    additionalProperties: false,
+    required: ["behaviors", "agreementRecordIds"],
+    properties: {
+      behaviors: stringArray(["invariant", "agree-with-noun", "verb-like", "noun-like", "multiple-classes", "custom"]),
+      customBehavior: { type: "string" },
+      agreementRecordIds: stringArray(),
+    },
+  },
+  "modifiers.comparative": {
+    type: "object",
+    additionalProperties: false,
+    required: ["strategies"],
+    properties: {
+      strategies: stringArray(["synthetic", "particle", "affix", "exceed", "special", "multiple", "custom"]),
+      marker: { type: "string" },
+      construction: { type: "string" },
+    },
+  },
+  "modifiers.superlative": {
+    type: "object",
+    additionalProperties: false,
+    required: ["strategies"],
+    properties: {
+      strategies: stringArray(["dedicated", "intensifier", "comparative", "definite", "none", "custom"]),
+      marker: { type: "string" },
+      construction: { type: "string" },
+    },
+  },
+} as const;
+
+const SPECIALIZED_SYSTEM_IDS = new Set<string>([...CHOICE_SYSTEM_IDS, ...INVENTORY_SYSTEM_IDS, ...STRATEGY_SYSTEM_IDS]);
 
 export const GRAMMAR_VALUE_SCHEMA = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
@@ -252,6 +373,7 @@ export const GRAMMAR_VALUE_SCHEMA = {
   oneOf: [
     ...CHOICE_SYSTEM_IDS.map((id) => systemBranch(id, { oneOf: [emptyConfig, CHOICE_CONFIG[id]] })),
     ...INVENTORY_SYSTEM_IDS.map((id) => systemBranch(id, { oneOf: [emptyConfig, INVENTORY_CONFIG[id]] })),
+    ...STRATEGY_SYSTEM_IDS.map((id) => systemBranch(id, { oneOf: [emptyConfig, STRATEGY_CONFIG[id]] })),
     ...GRAMMAR_SYSTEM_IDS.filter((id) => !SPECIALIZED_SYSTEM_IDS.has(id)).map((id) =>
       systemBranch(id, {
         oneOf: [

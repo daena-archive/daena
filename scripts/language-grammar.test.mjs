@@ -43,6 +43,20 @@ import {
   toggleNumberTemplate,
   toggleTamTemplate,
   updateNumberCategory,
+  DEFINITENESS_OPTIONS,
+  addArticle,
+  moveArticle,
+  setAlienability,
+  setAlienabilityNotes,
+  setCustomVerbMarking,
+  toggleAdjectiveBehavior,
+  toggleAgreementRecord,
+  toggleDefinitenessStrategy,
+  toggleDegreeStrategy,
+  toggleNegativeStrategy,
+  togglePossessionStrategy,
+  toggleVerbMarking,
+  updateArticle,
 } from "../packages/modules/language/src/grammar.ts";
 
 function matchesSchema(value, schema, defs = schema.$defs ?? {}) {
@@ -425,6 +439,7 @@ assert.equal(
   validateGrammarDraft(setSystemStatus(emptySystemRecord("nouns.case"), "configured")).some((item) => item.code === "configured-minimum"),
   true,
 );
+assert.equal(summarizeSystem("nouns.number", setSystemStatus(emptySystemRecord("nouns.number"), "configured")), "Configured");
 
 const api = fakeGrammarApi();
 const saved = await persistGrammarRecord(api, owner, opened);
@@ -620,5 +635,62 @@ assert.equal(savedNumber.ok, true);
 assert.equal(savedNumber.record.value.config.categories[0].id, pluralId);
 assert.match(sectionCardSummary(savedNumber.index, "nouns").detail, /1 system/);
 assert.match(grammarGlance(savedNumber.index).find((row) => row.label === "Number").value, /Plural/);
+
+assert.deepEqual(
+  DEFINITENESS_OPTIONS.map((item) => item.value),
+  ["definite-article", "indefinite-article", "both", "affixes", "demonstratives", "context", "other"],
+);
+
+let definiteness = toggleDefinitenessStrategy(setSystemStatus(emptySystemRecord("nouns.definiteness"), "configured"), "definite-article");
+definiteness = addArticle(definiteness, "le");
+const articleId = definiteness.config.articles[0].id;
+definiteness = addArticle(definiteness, "la");
+const secondArticle = definiteness.config.articles[1].id;
+definiteness = updateArticle(definiteness, articleId, { position: "before" });
+assert.equal(definiteness.config.articles[0].id, articleId);
+definiteness = moveArticle(definiteness, secondArticle, -1);
+assert.deepEqual(
+  definiteness.config.articles.map((item) => item.id),
+  [secondArticle, articleId],
+);
+assert.equal(summarizeSystem("nouns.definiteness", definiteness), "Definite article");
+assert.equal(validateGrammarDraft(definiteness).length, 0);
+assert.equal(matchesSchema(serializeGrammarRecord(definiteness), GRAMMAR_VALUE_SCHEMA), true);
+
+let possession = togglePossessionStrategy(setSystemStatus(emptySystemRecord("nouns.possession"), "configured"), "genitive");
+possession = setAlienability(possession, true);
+possession = setAlienabilityNotes(possession, "Body parts are inalienable.");
+assert.equal(possession.config.alienability, true);
+assert.equal(summarizeSystem("nouns.possession", possession), "Genitive marking");
+
+let marking = toggleVerbMarking(setSystemStatus(emptySystemRecord("verbs.marking-strategy"), "configured"), "custom");
+assert.equal(configuredMinimum("verbs.marking-strategy", marking.config), false);
+assert.equal(validateGrammarDraft(marking)[0].path, "customStrategy");
+marking = setCustomVerbMarking(marking, "Tone on the verb stem.");
+assert.equal(summarizeSystem("verbs.marking-strategy", marking), "Tone on the verb stem.");
+marking = toggleVerbMarking(marking, "suffixes");
+assert.match(summarizeSystem("verbs.marking-strategy", marking), /Suffixes/);
+
+let negative = toggleNegativeStrategy(setSystemStatus(emptySystemRecord("verbs.negative-forms"), "configured"), "affix");
+assert.equal(summarizeSystem("verbs.negative-forms", negative), "Affix");
+
+let adjectives = toggleAdjectiveBehavior(setSystemStatus(emptySystemRecord("modifiers.adjective-behavior"), "configured"), "agree-with-noun");
+adjectives = toggleAgreementRecord(adjectives, "agr-1");
+assert.deepEqual(adjectives.config.agreementRecordIds, ["agr-1"]);
+adjectives = toggleAdjectiveBehavior(adjectives, "agree-with-noun");
+assert.deepEqual(adjectives.config.agreementRecordIds, []);
+adjectives = toggleAdjectiveBehavior(adjectives, "invariant");
+assert.equal(summarizeSystem("modifiers.adjective-behavior", adjectives), "Invariant");
+
+let comparative = toggleDegreeStrategy(setSystemStatus(emptySystemRecord("modifiers.comparative"), "configured"), "particle");
+assert.equal(summarizeSystem("modifiers.comparative", comparative), "Comparative particle");
+let superlative = toggleDegreeStrategy(setSystemStatus(emptySystemRecord("modifiers.superlative"), "configured"), "none");
+assert.equal(summarizeSystem("modifiers.superlative", superlative), "No dedicated superlative");
+
+const strategyApi = fakeGrammarApi();
+const savedDefiniteness = await persistGrammarRecord(strategyApi, owner, { draft: definiteness });
+assert.equal(savedDefiniteness.ok, true);
+assert.equal(savedDefiniteness.record.value.config.articles[0].id, secondArticle);
+assert.match(sectionCardSummary(savedDefiniteness.index, "nouns").detail, /1 system/);
 
 console.log("language grammar helpers ok");

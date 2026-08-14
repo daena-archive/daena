@@ -72,6 +72,24 @@ export {
   toggleTamTemplate,
   updateNumberCategory,
 } from "./grammar/inventory.ts";
+export {
+  DEFINITENESS_OPTIONS,
+  STRATEGY_SYSTEM_IDS,
+  addArticle,
+  isStrategySystem,
+  moveArticle,
+  setAlienability,
+  setAlienabilityNotes,
+  setCustomVerbMarking,
+  toggleAdjectiveBehavior,
+  toggleAgreementRecord,
+  toggleDefinitenessStrategy,
+  toggleDegreeStrategy,
+  toggleNegativeStrategy,
+  togglePossessionStrategy,
+  toggleVerbMarking,
+  updateArticle,
+} from "./grammar/strategy.ts";
 export { GRAMMAR_VALUE_SCHEMA } from "./grammar/schema.ts";
 export {
   applyStoredVersion,

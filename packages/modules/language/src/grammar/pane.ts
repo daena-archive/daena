@@ -14,6 +14,7 @@ import { persistGrammarRecord, deleteGrammarRecord, type GrammarRecordsApi } fro
 import { configuredMinimum, grammarRecordSnapshot } from "./normalize.ts";
 import { isChoiceSystem, renderChoiceEditor } from "./choice.ts";
 import { isInventorySystem, referencedCategoryIds, renderInventoryEditor } from "./inventory.ts";
+import { isStrategySystem, renderStrategyEditor } from "./strategy.ts";
 import {
   applyStoredVersion,
   confirmGrammarLeave,
@@ -336,9 +337,8 @@ function renderEditor(panel: HTMLElement, state: GrammarUiState, ctx: GrammarPan
     });
     if (statuses) form.append(statuses);
     if (session.draft.status === "configured") {
-      const summaryText = summarizeSystem(session.draft.systemId, session.draft);
       if (configuredMinimum(session.draft.systemId, session.draft.config)) {
-        form.append(emptyMessage(summaryText));
+        form.append(emptyMessage(summarizeSystem(session.draft.systemId, session.draft)));
       }
       const choice = renderChoiceEditor(session.draft, session.locked, (next, rerender) => {
         if (session.draft.recordKind !== "system") return;
@@ -355,12 +355,28 @@ function renderEditor(panel: HTMLElement, state: GrammarUiState, ctx: GrammarPan
           if (rerender) ctx.render();
         },
       );
+      const strategy = renderStrategyEditor(
+        session.draft,
+        session.locked,
+        {
+          agreements: state.index.agreements
+            .filter((item) => item.value.recordKind === "agreement")
+            .map((item) => ({ id: item.id, title: item.value.title })),
+        },
+        (next, rerender) => {
+          if (session.draft.recordKind !== "system") return;
+          session.draft = next;
+          if (rerender) ctx.render();
+        },
+      );
       if (choice) form.append(choice);
       else if (inventory) form.append(inventory);
+      else if (strategy) form.append(strategy);
       else if (
         !configuredMinimum(session.draft.systemId, session.draft.config) &&
         !isChoiceSystem(session.draft.systemId) &&
-        !isInventorySystem(session.draft.systemId)
+        !isInventorySystem(session.draft.systemId) &&
+        !isStrategySystem(session.draft.systemId)
       ) {
         form.append(
           emptyMessage(

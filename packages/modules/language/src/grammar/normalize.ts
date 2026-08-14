@@ -215,6 +215,35 @@ function choiceMinimumIssue(value: GrammarSystemRecord): GrammarIssue | undefine
   ) {
     return issue("configured-minimum", "Add at least one category.", "categories");
   }
+  if (value.systemId === "nouns.definiteness" && !(config as DefinitenessConfig).strategies?.length) {
+    return issue("configured-minimum", "Choose how definiteness is marked.", "strategies");
+  }
+  if (value.systemId === "nouns.possession" && !(config as PossessionConfig).strategies?.length) {
+    return issue("configured-minimum", "Choose how possession is marked.", "strategies");
+  }
+  if (value.systemId === "verbs.marking-strategy") {
+    const marking = config as VerbMarkingConfig;
+    if (!marking.strategies?.length) return issue("configured-minimum", "Choose a verb marking strategy.", "strategies");
+    if (marking.strategies.includes("custom") && !marking.customStrategy?.trim()) {
+      return issue("configured-minimum", "Describe the custom verb marking strategy.", "customStrategy");
+    }
+  }
+  if (value.systemId === "verbs.negative-forms" && !(config as NegativeVerbConfig).strategies?.length) {
+    return issue("configured-minimum", "Choose how negative verb forms work.", "strategies");
+  }
+  if (value.systemId === "modifiers.adjective-behavior") {
+    const behavior = config as AdjectiveBehaviorConfig;
+    if (!behavior.behaviors?.length) return issue("configured-minimum", "Choose how adjectives behave.", "behaviors");
+    if (behavior.behaviors.includes("custom") && !behavior.customBehavior?.trim()) {
+      return issue("configured-minimum", "Describe the custom adjective behavior.", "customBehavior");
+    }
+  }
+  if (
+    (value.systemId === "modifiers.comparative" || value.systemId === "modifiers.superlative") &&
+    !(config as DegreeConfig).strategies?.length
+  ) {
+    return issue("configured-minimum", "Choose at least one strategy.", "strategies");
+  }
   return undefined;
 }
 
@@ -769,8 +798,11 @@ export function configuredMinimum(systemId: GrammarSystemId, config: GrammarSyst
       return (config as ParadigmConfig).axes?.length > 0;
     case "pronouns.demonstratives":
       return (config as DemonstrativeConfig).distances?.length > 0 || (config as DemonstrativeConfig).axes?.length > 0;
-    case "verbs.marking-strategy":
-      return (config as VerbMarkingConfig).strategies?.length > 0;
+    case "verbs.marking-strategy": {
+      const value = config as VerbMarkingConfig;
+      if (!value.strategies?.length) return false;
+      return !value.strategies.includes("custom") || Boolean(value.customStrategy?.trim());
+    }
     case "verbs.tense":
     case "verbs.aspect":
     case "verbs.mood":
@@ -779,8 +811,11 @@ export function configuredMinimum(systemId: GrammarSystemId, config: GrammarSyst
       return Boolean((config as ArgumentIndexingConfig).participants);
     case "verbs.negative-forms":
       return (config as NegativeVerbConfig).strategies?.length > 0;
-    case "modifiers.adjective-behavior":
-      return (config as AdjectiveBehaviorConfig).behaviors?.length > 0;
+    case "modifiers.adjective-behavior": {
+      const value = config as AdjectiveBehaviorConfig;
+      if (!value.behaviors?.length) return false;
+      return !value.behaviors.includes("custom") || Boolean(value.customBehavior?.trim());
+    }
     case "modifiers.comparative":
     case "modifiers.superlative":
       return (config as DegreeConfig).strategies?.length > 0;

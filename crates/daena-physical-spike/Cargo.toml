@@ -1,0 +1,13 @@
+[package]
+name = "daena-physical-spike"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "daena_physical_spike"
+path = "src/lib.rs"
+
+[[bin]]
+name = "physical-map-spike"
+path = "src/main.rs"

@@ -63,7 +63,7 @@ export type MapDescriptor =
       defaultView: { center: NormalizedPoint; zoom: number };
       generation?: {
         id: "daena-landmass";
-        version: 2 | 3;
+        version: 1;
         seed: number;
         settings: {
           landPercent: number;

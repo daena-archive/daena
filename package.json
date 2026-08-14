@@ -23,6 +23,7 @@
     "check:maps:phase4": "node scripts/maps-phase4.test.mjs",
     "check:maps:phase5": "node scripts/maps-phase5.test.mjs",
     "check:maps:native-vector": "node scripts/maps-native-vector.test.mjs && node --experimental-strip-types scripts/maps-native-vector-generator.test.mjs && node --experimental-strip-types scripts/maps-native-vector-editor.test.mjs",
+    "check:maps:physical": "node scripts/maps-native-vector-provenance.test.mjs && node scripts/maps-physical.test.mjs",
     "prepare:maps": "node scripts/ensure-fmg-archive.mjs",
     "check:plugin-isolation": "node scripts/check-plugin-isolation.mjs",
     "format": "prettier --write \"src/**/*.{js,ts,svelte}\" \"src-tauri/**/*.{js,ts,svelte}\" \"packages/**/*.{js,ts,svelte}\" \"scripts/**/*.{js,mjs,ts}\"",

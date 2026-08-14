@@ -15,6 +15,8 @@ import { configuredMinimum, grammarRecordSnapshot } from "./normalize.ts";
 import { isChoiceSystem, renderChoiceEditor } from "./choice.ts";
 import { isInventorySystem, referencedCategoryIds, renderInventoryEditor } from "./inventory.ts";
 import { isStrategySystem, renderStrategyEditor } from "./strategy.ts";
+import { isClauseSystem, renderClauseEditor } from "./clause.ts";
+import { isParadigmSystem, renderParadigmEditor } from "./paradigm.ts";
 import {
   applyStoredVersion,
   confirmGrammarLeave,
@@ -32,6 +34,7 @@ import type {
   GrammarSectionId,
   GrammarSystemId,
   GrammarSystemRecord,
+  ParadigmConfig,
 } from "./types.ts";
 
 export type GrammarLinkChoices = {
@@ -369,14 +372,57 @@ function renderEditor(panel: HTMLElement, state: GrammarUiState, ctx: GrammarPan
           if (rerender) ctx.render();
         },
       );
+      const negativeVerb = state.index.systems.get("verbs.negative-forms")?.value;
+      const relativePosition = state.index.systems.get("syntax.relative-clause-position")?.value;
+      const personalPronouns = state.index.systems.get("pronouns.personal")?.value;
+      const paradigm = renderParadigmEditor(
+        session.draft,
+        session.locked,
+        {
+          confirm: ctx.confirm,
+          referencedIds: referencedCategoryIds(state.index, session.draft.systemId),
+          pronounAxes:
+            personalPronouns?.recordKind === "system" ? (personalPronouns.config as ParadigmConfig).axes : undefined,
+          agreements: state.index.agreements
+            .filter((item) => item.value.recordKind === "agreement")
+            .map((item) => ({ id: item.id, title: item.value.title })),
+        },
+        (next, rerender) => {
+          if (session.draft.recordKind !== "system") return;
+          session.draft = next;
+          if (rerender) ctx.render();
+        },
+      );
+      const clause = renderClauseEditor(
+        session.draft,
+        session.locked,
+        {
+          lexemes: ctx.choices.lexemes,
+          negativeVerbSummary:
+            negativeVerb?.recordKind === "system" ? summarizeSystem("verbs.negative-forms", negativeVerb) : undefined,
+          relativePositionSummary:
+            relativePosition?.recordKind === "system"
+              ? summarizeSystem("syntax.relative-clause-position", relativePosition)
+              : undefined,
+        },
+        (next, rerender) => {
+          if (session.draft.recordKind !== "system") return;
+          session.draft = next;
+          if (rerender) ctx.render();
+        },
+      );
       if (choice) form.append(choice);
       else if (inventory) form.append(inventory);
       else if (strategy) form.append(strategy);
+      else if (clause) form.append(clause);
+      else if (paradigm) form.append(paradigm);
       else if (
         !configuredMinimum(session.draft.systemId, session.draft.config) &&
         !isChoiceSystem(session.draft.systemId) &&
         !isInventorySystem(session.draft.systemId) &&
-        !isStrategySystem(session.draft.systemId)
+        !isStrategySystem(session.draft.systemId) &&
+        !isClauseSystem(session.draft.systemId) &&
+        !isParadigmSystem(session.draft.systemId)
       ) {
         form.append(
           emptyMessage(

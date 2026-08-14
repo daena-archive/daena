@@ -244,6 +244,33 @@ function choiceMinimumIssue(value: GrammarSystemRecord): GrammarIssue | undefine
   ) {
     return issue("configured-minimum", "Choose at least one strategy.", "strategies");
   }
+  if (value.systemId === "clauses.yes-no-questions") {
+    const questions = config as YesNoQuestionsConfig;
+    if (!questions.strategies?.length) return issue("configured-minimum", "Choose how yes/no questions are formed.", "strategies");
+    if (questions.strategies.includes("particle") && !questions.particle?.trim()) {
+      return issue("configured-minimum", "Enter the question particle.", "particle");
+    }
+  }
+  if (value.systemId === "clauses.content-questions") {
+    const content = config as ContentQuestionsConfig;
+    if (!content.behavior) return issue("configured-minimum", "Choose where question words appear.", "behavior");
+    if (content.behavior === "custom" && !content.customBehavior?.trim()) {
+      return issue("configured-minimum", "Describe the custom question-word behavior.", "customBehavior");
+    }
+  }
+  if (value.systemId === "clauses.imperatives" && !(config as ImperativesConfig).strategies?.length) {
+    return issue("configured-minimum", "Choose how commands are formed.", "strategies");
+  }
+  if (value.systemId === "clauses.negation") {
+    const negation = config as ClauseNegationConfig;
+    if (!negation.strategies?.length) return issue("configured-minimum", "Choose a clause-negation strategy.", "strategies");
+    if (negation.strategies.includes("particle") && !negation.particle?.trim()) {
+      return issue("configured-minimum", "Enter the negation particle.", "particle");
+    }
+  }
+  if (value.systemId === "clauses.relative-clauses" && !(config as RelativeClausesConfig).strategies?.length) {
+    return issue("configured-minimum", "Choose a relativization strategy.", "strategies");
+  }
   return undefined;
 }
 
@@ -819,10 +846,16 @@ export function configuredMinimum(systemId: GrammarSystemId, config: GrammarSyst
     case "modifiers.comparative":
     case "modifiers.superlative":
       return (config as DegreeConfig).strategies?.length > 0;
-    case "clauses.yes-no-questions":
-      return (config as YesNoQuestionsConfig).strategies?.length > 0;
-    case "clauses.content-questions":
-      return Boolean((config as ContentQuestionsConfig).behavior);
+    case "clauses.yes-no-questions": {
+      const value = config as YesNoQuestionsConfig;
+      if (!value.strategies?.length) return false;
+      return !value.strategies.includes("particle") || Boolean(value.particle?.trim());
+    }
+    case "clauses.content-questions": {
+      const value = config as ContentQuestionsConfig;
+      if (!value.behavior) return false;
+      return value.behavior !== "custom" || Boolean(value.customBehavior?.trim());
+    }
     case "clauses.imperatives":
       return (config as ImperativesConfig).strategies?.length > 0;
     case "clauses.negation":
@@ -1040,10 +1073,20 @@ export function brokenAgreementFeatures(index: IndexedGrammar): GrammarDiagnosti
         });
         continue;
       }
-      const config = system.value.config as { categories?: { id: string }[]; cases?: { id: string }[]; classes?: { id: string }[] };
-      const ids = new Set(
-        [...(config.categories ?? []), ...(config.cases ?? []), ...(config.classes ?? [])].map((item) => item.id),
-      );
+      const config = system.value.config as {
+        categories?: { id: string }[];
+        cases?: { id: string }[];
+        classes?: { id: string }[];
+        axes?: { values: { id: string }[] }[];
+        cells?: { id: string }[];
+      };
+      const ids = new Set([
+        ...(config.categories ?? []).map((item) => item.id),
+        ...(config.cases ?? []).map((item) => item.id),
+        ...(config.classes ?? []).map((item) => item.id),
+        ...(config.axes ?? []).flatMap((axis) => axis.values.map((value) => value.id)),
+        ...(config.cells ?? []).map((item) => item.id),
+      ]);
       if (!ids.has(feature.categoryId)) {
         diagnostics.push({
           code: "broken-reference",

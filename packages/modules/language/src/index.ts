@@ -200,6 +200,11 @@ export const language: DaenaModule = {
           .grammar-inventory,.grammar-inventory-item{display:grid;gap:10px;min-width:0}
           .grammar-inventory-item{padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
           .grammar-inventory-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+          .grammar-paradigm{overflow:auto;max-width:100%}
+          .grammar-paradigm-table{border-collapse:collapse;min-width:100%}
+          .grammar-paradigm-table th,.grammar-paradigm-table td{border:1px solid var(--line);padding:8px;vertical-align:top;text-align:left}
+          .grammar-paradigm-table th[scope="row"]{position:sticky;left:0;background:var(--surface);z-index:1}
+          .grammar-paradigm-cell{display:grid;gap:6px;min-width:8rem}
           .grammar-example{display:grid;gap:8px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-muted)}
           .sample-block{padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--surface-muted);font-size:13px;line-height:1.55}
           .sample-block h3{margin:0 0 8px;font-family:var(--font-display);font-weight:500}

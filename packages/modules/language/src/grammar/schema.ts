@@ -1,6 +1,8 @@
 import { CHOICE_SYSTEM_IDS } from "./choice.ts";
 import { INVENTORY_SYSTEM_IDS } from "./inventory.ts";
 import { STRATEGY_SYSTEM_IDS } from "./strategy.ts";
+import { CLAUSE_SYSTEM_IDS } from "./clause.ts";
+import { PARADIGM_SYSTEM_IDS } from "./paradigm.ts";
 import { GRAMMAR_SYSTEM_IDS } from "./types.ts";
 
 const example = {
@@ -97,6 +99,33 @@ const paradigmConfig = {
   required: ["axes", "cells"],
   properties: { axes: { type: "array", items: axis }, cells: { type: "array", items: cell } },
 };
+
+const PARADIGM_CONFIG = {
+  "pronouns.personal": paradigmConfig,
+  "pronouns.demonstratives": {
+    type: "object",
+    additionalProperties: false,
+    required: ["axes", "cells"],
+    properties: {
+      axes: { type: "array", items: axis },
+      cells: { type: "array", items: cell },
+      distances: stringArray(),
+    },
+  },
+  "verbs.argument-indexing": {
+    type: "object",
+    additionalProperties: false,
+    required: ["participants", "axes", "cells"],
+    properties: {
+      participants: enumString(["none", "subject", "object", "subject-object", "other"]),
+      representation: enumString(["endings", "prefixes", "full-forms", "auxiliaries", "flexible-table", "custom"]),
+      axes: { type: "array", items: axis },
+      cells: { type: "array", items: cell },
+      flexibleNotes: { type: "string" },
+      agreementRecordId: { type: "string" },
+    },
+  },
+} as const;
 
 function enumString(values: string[]) {
   return { type: "string", enum: values };
@@ -365,7 +394,81 @@ const STRATEGY_CONFIG = {
   },
 } as const;
 
-const SPECIALIZED_SYSTEM_IDS = new Set<string>([...CHOICE_SYSTEM_IDS, ...INVENTORY_SYSTEM_IDS, ...STRATEGY_SYSTEM_IDS]);
+const interrogative = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "meaning"],
+  properties: {
+    id: { type: "string" },
+    meaning: { type: "string" },
+    form: { type: "string" },
+    lexemeId: { type: "string" },
+  },
+};
+
+const CLAUSE_CONFIG = {
+  "clauses.yes-no-questions": {
+    type: "object",
+    additionalProperties: false,
+    required: ["strategies"],
+    properties: {
+      strategies: stringArray(["intonation", "particle", "word-order", "verb-morphology", "auxiliary", "multiple", "custom"]),
+      particle: { type: "string" },
+      placement: enumString(["clause-initial", "clause-final", "before-verb", "after-verb", "other"]),
+    },
+  },
+  "clauses.content-questions": {
+    type: "object",
+    additionalProperties: false,
+    required: ["behavior", "interrogatives"],
+    properties: {
+      behavior: enumString(["in-situ", "fronted", "fixed-position", "special-structure", "mixed", "custom"]),
+      customBehavior: { type: "string" },
+      interrogatives: { type: "array", items: interrogative },
+    },
+  },
+  "clauses.imperatives": {
+    type: "object",
+    additionalProperties: false,
+    required: ["strategies"],
+    properties: {
+      strategies: stringArray(["bare-verb", "special-form", "particle", "auxiliary", "word-order", "multiple", "custom"]),
+      numberDistinction: { type: "boolean" },
+      polarityDistinction: { type: "boolean" },
+      politenessDistinction: { type: "boolean" },
+    },
+  },
+  "clauses.negation": {
+    type: "object",
+    additionalProperties: false,
+    required: ["strategies"],
+    properties: {
+      strategies: stringArray(["particle", "affix", "auxiliary", "special-verb", "multiple", "custom"]),
+      particle: { type: "string" },
+      placement: enumString(["clause-initial", "clause-final", "before-verb", "after-verb", "other"]),
+      negativeQuestions: { type: "string" },
+      negativeImperatives: { type: "string" },
+    },
+  },
+  "clauses.relative-clauses": {
+    type: "object",
+    additionalProperties: false,
+    required: ["strategies"],
+    properties: {
+      strategies: stringArray(["relative-pronoun", "complementizer", "gap", "resumptive", "internally-headed", "multiple", "custom"]),
+      headBehavior: { type: "string" },
+      resumptives: { type: "string" },
+    },
+  },
+} as const;
+
+const SPECIALIZED_SYSTEM_IDS = new Set<string>([
+  ...CHOICE_SYSTEM_IDS,
+  ...INVENTORY_SYSTEM_IDS,
+  ...STRATEGY_SYSTEM_IDS,
+  ...CLAUSE_SYSTEM_IDS,
+  ...PARADIGM_SYSTEM_IDS,
+]);
 
 export const GRAMMAR_VALUE_SCHEMA = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
@@ -374,62 +477,10 @@ export const GRAMMAR_VALUE_SCHEMA = {
     ...CHOICE_SYSTEM_IDS.map((id) => systemBranch(id, { oneOf: [emptyConfig, CHOICE_CONFIG[id]] })),
     ...INVENTORY_SYSTEM_IDS.map((id) => systemBranch(id, { oneOf: [emptyConfig, INVENTORY_CONFIG[id]] })),
     ...STRATEGY_SYSTEM_IDS.map((id) => systemBranch(id, { oneOf: [emptyConfig, STRATEGY_CONFIG[id]] })),
+    ...CLAUSE_SYSTEM_IDS.map((id) => systemBranch(id, { oneOf: [emptyConfig, CLAUSE_CONFIG[id]] })),
+    ...PARADIGM_SYSTEM_IDS.map((id) => systemBranch(id, { oneOf: [emptyConfig, PARADIGM_CONFIG[id]] })),
     ...GRAMMAR_SYSTEM_IDS.filter((id) => !SPECIALIZED_SYSTEM_IDS.has(id)).map((id) =>
-      systemBranch(id, {
-        oneOf: [
-          emptyConfig,
-          id === "pronouns.personal" || id === "verbs.argument-indexing"
-            ? id === "verbs.argument-indexing"
-              ? {
-                  type: "object",
-                  additionalProperties: false,
-                  required: ["participants", "axes", "cells"],
-                  properties: {
-                    participants: enumString(["none", "subject", "object", "subject-object", "other"]),
-                    representation: enumString([
-                      "endings",
-                      "prefixes",
-                      "full-forms",
-                      "auxiliaries",
-                      "flexible-table",
-                      "custom",
-                    ]),
-                    axes: { type: "array", items: axis },
-                    cells: { type: "array", items: cell },
-                    flexibleNotes: { type: "string" },
-                    agreementRecordId: { type: "string" },
-                  },
-                }
-              : paradigmConfig
-            : {
-                type: "object",
-                minProperties: 1,
-                additionalProperties: true,
-                properties: {
-                  position: { type: "string" },
-                  strategy: { type: "string" },
-                  strategies: stringArray(),
-                  categories: { type: "array", items: category },
-                  cases: { type: "array" },
-                  classes: { type: "array" },
-                  articles: { type: "array" },
-                  axes: { type: "array", items: axis },
-                  cells: { type: "array", items: cell },
-                  distances: stringArray(),
-                  behaviors: stringArray(),
-                  behavior: { type: "string" },
-                  kind: { type: "string" },
-                  participants: { type: "string" },
-                  interrogatives: { type: "array" },
-                  forms: { type: "array" },
-                  particle: { type: "string" },
-                  placement: { type: "string" },
-                  marker: { type: "string" },
-                  construction: { type: "string" },
-                },
-              },
-        ],
-      }),
+      systemBranch(id, { oneOf: [emptyConfig, { type: "object", minProperties: 1, additionalProperties: true }] }),
     ),
     {
       type: "object",

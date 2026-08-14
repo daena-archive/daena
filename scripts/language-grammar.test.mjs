@@ -57,6 +57,31 @@ import {
   togglePossessionStrategy,
   toggleVerbMarking,
   updateArticle,
+  YES_NO_OPTIONS,
+  moveInterrogative,
+  setContentBehavior,
+  setImperativeDistinction,
+  setNegationParticle,
+  setYesNoParticle,
+  setYesNoPlacement,
+  toggleImperativeStrategy,
+  toggleInterrogative,
+  toggleNegationStrategy,
+  toggleRelativization,
+  toggleYesNoStrategy,
+  updateInterrogative,
+  CHOICE_SYSTEM_IDS,
+  INVENTORY_SYSTEM_IDS,
+  STRATEGY_SYSTEM_IDS,
+  CLAUSE_SYSTEM_IDS,
+  PARADIGM_SYSTEM_IDS,
+  DISTANCE_VALUES,
+  NUMBER_VALUES,
+  PERSON_VALUES,
+  setArgumentParticipants,
+  toggleAxisValue,
+  toggleDistance,
+  updateParadigmCell,
 } from "../packages/modules/language/src/grammar.ts";
 
 function matchesSchema(value, schema, defs = schema.$defs ?? {}) {
@@ -692,5 +717,98 @@ const savedDefiniteness = await persistGrammarRecord(strategyApi, owner, { draft
 assert.equal(savedDefiniteness.ok, true);
 assert.equal(savedDefiniteness.record.value.config.articles[0].id, secondArticle);
 assert.match(sectionCardSummary(savedDefiniteness.index, "nouns").detail, /1 system/);
+
+assert.deepEqual(
+  YES_NO_OPTIONS.map((item) => item.value),
+  ["intonation", "particle", "word-order", "verb-morphology", "auxiliary", "multiple", "custom"],
+);
+
+let yesNo = toggleYesNoStrategy(setSystemStatus(emptySystemRecord("clauses.yes-no-questions"), "configured"), "particle");
+assert.equal(configuredMinimum("clauses.yes-no-questions", yesNo.config), false);
+assert.equal(validateGrammarDraft(yesNo)[0].path, "particle");
+yesNo = setYesNoParticle(yesNo, "ma");
+yesNo = setYesNoPlacement(yesNo, "clause-final");
+assert.equal(summarizeSystem("clauses.yes-no-questions", yesNo), "Question particle · “ma”");
+assert.equal(validateGrammarDraft(yesNo).length, 0);
+assert.equal(matchesSchema(serializeGrammarRecord(yesNo), GRAMMAR_VALUE_SCHEMA), true);
+
+let content = setContentBehavior(setSystemStatus(emptySystemRecord("clauses.content-questions"), "configured"), "custom");
+assert.equal(validateGrammarDraft(content)[0].path, "customBehavior");
+content = setContentBehavior(setSystemStatus(emptySystemRecord("clauses.content-questions"), "configured"), "in-situ");
+content = toggleInterrogative(content, "who");
+content = toggleInterrogative(content, "what");
+const whoId = content.config.interrogatives[0].id;
+content = updateInterrogative(content, whoId, { form: "ke" });
+assert.equal(content.config.interrogatives[0].id, whoId);
+content = moveInterrogative(content, content.config.interrogatives[1].id, -1);
+assert.equal(content.config.interrogatives[1].id, whoId);
+assert.equal(summarizeSystem("clauses.content-questions", content), "Remain in normal position · what, who");
+
+let imperatives = toggleImperativeStrategy(setSystemStatus(emptySystemRecord("clauses.imperatives"), "configured"), "bare-verb");
+imperatives = setImperativeDistinction(imperatives, "numberDistinction", true);
+assert.equal(summarizeSystem("clauses.imperatives", imperatives), "Bare verb");
+assert.equal(imperatives.config.numberDistinction, true);
+
+let negation = toggleNegationStrategy(setSystemStatus(emptySystemRecord("clauses.negation"), "configured"), "particle");
+assert.equal(validateGrammarDraft(negation)[0].path, "particle");
+negation = setNegationParticle(negation, "ne");
+assert.equal(summarizeSystem("clauses.negation", negation), "Particle · “ne”");
+
+let relativeClauses = toggleRelativization(setSystemStatus(emptySystemRecord("clauses.relative-clauses"), "configured"), "gap");
+assert.equal(summarizeSystem("clauses.relative-clauses", relativeClauses), "Gap");
+
+const clauseApi = fakeGrammarApi();
+const savedYesNo = await persistGrammarRecord(clauseApi, owner, { draft: yesNo });
+assert.equal(savedYesNo.ok, true);
+assert.equal(savedYesNo.record.value.config.particle, "ma");
+assert.equal(grammarGlance(savedYesNo.index).find((row) => row.label === "Questions").value, "Question particle · “ma”");
+
+assert.equal(
+  CHOICE_SYSTEM_IDS.length + INVENTORY_SYSTEM_IDS.length + STRATEGY_SYSTEM_IDS.length + CLAUSE_SYSTEM_IDS.length + PARADIGM_SYSTEM_IDS.length,
+  GRAMMAR_SYSTEM_IDS.length,
+);
+
+let personal = toggleAxisValue(setSystemStatus(emptySystemRecord("pronouns.personal"), "configured"), "person", PERSON_VALUES[0]).draft;
+personal = toggleAxisValue(personal, "person", PERSON_VALUES[1]).draft;
+personal = toggleAxisValue(personal, "number", NUMBER_VALUES[0]).draft;
+const firstCell = personal.config.cells.find((cell) => cell.coordinates.person === "person-1" && cell.coordinates.number === "number-sg");
+assert.equal(Boolean(firstCell), true);
+personal = updateParadigmCell(personal, firstCell.id, { form: "yo" });
+personal = toggleAxisValue(personal, "person", PERSON_VALUES[2]).draft;
+const preserved = personal.config.cells.find((cell) => cell.coordinates.person === "person-1" && cell.coordinates.number === "number-sg");
+assert.equal(preserved.id, firstCell.id);
+assert.equal(preserved.form, "yo");
+assert.match(summarizeSystem("pronouns.personal", personal), /1st/);
+const blockedAxis = toggleAxisValue(personal, "person", PERSON_VALUES[0]);
+assert.equal(blockedAxis.draft.config.cells.some((cell) => cell.form === "yo"), true);
+assert.equal(blockedAxis.blocked.populated > 0, true);
+const forcedAxis = toggleAxisValue(personal, "person", PERSON_VALUES[0], { force: true });
+assert.equal(forcedAxis.blocked, undefined);
+assert.equal(forcedAxis.draft.config.cells.some((cell) => cell.form === "yo"), false);
+assert.equal(validateGrammarDraft(personal).length, 0);
+assert.equal(matchesSchema(serializeGrammarRecord(personal), GRAMMAR_VALUE_SCHEMA), true);
+
+let demonstratives = toggleDistance(setSystemStatus(emptySystemRecord("pronouns.demonstratives"), "configured"), DISTANCE_VALUES[0]).draft;
+demonstratives = toggleDistance(demonstratives, DISTANCE_VALUES[1]).draft;
+assert.deepEqual(demonstratives.config.distances, ["distance-proximal", "distance-distal"]);
+assert.equal(demonstratives.config.axes[0].id, "distance");
+assert.equal(demonstratives.config.cells.length, 2);
+assert.equal(summarizeSystem("pronouns.demonstratives", demonstratives), "Proximal / Distal");
+assert.equal(matchesSchema(serializeGrammarRecord(demonstratives), GRAMMAR_VALUE_SCHEMA), true);
+
+let indexing = setArgumentParticipants(setSystemStatus(emptySystemRecord("verbs.argument-indexing"), "configured"), "none");
+assert.equal(configuredMinimum("verbs.argument-indexing", indexing.config), true);
+assert.equal(indexing.config.participants, "none");
+assert.equal(indexing.config.cells.length, 0);
+assert.equal(summarizeSystem("verbs.argument-indexing", indexing), "Does not index participants");
+indexing = setArgumentParticipants(indexing, "subject");
+assert.equal(indexing.config.axes.some((axis) => axis.id === "person"), true);
+assert.equal(indexing.config.cells.length > 0, true);
+assert.equal(matchesSchema(serializeGrammarRecord(indexing), GRAMMAR_VALUE_SCHEMA), true);
+
+const paradigmApi = fakeGrammarApi();
+const savedPersonal = await persistGrammarRecord(paradigmApi, owner, { draft: personal });
+assert.equal(savedPersonal.ok, true);
+assert.equal(savedPersonal.record.value.config.cells.find((cell) => cell.id === firstCell.id).form, "yo");
 
 console.log("language grammar helpers ok");

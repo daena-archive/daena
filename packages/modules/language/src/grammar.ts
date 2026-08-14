@@ -90,6 +90,34 @@ export {
   toggleVerbMarking,
   updateArticle,
 } from "./grammar/strategy.ts";
+export {
+  CLAUSE_SYSTEM_IDS,
+  YES_NO_OPTIONS,
+  isClauseSystem,
+  moveInterrogative,
+  setContentBehavior,
+  setImperativeDistinction,
+  setNegationParticle,
+  setYesNoParticle,
+  setYesNoPlacement,
+  toggleImperativeStrategy,
+  toggleInterrogative,
+  toggleNegationStrategy,
+  toggleRelativization,
+  toggleYesNoStrategy,
+  updateInterrogative,
+} from "./grammar/clause.ts";
+export {
+  DISTANCE_VALUES,
+  NUMBER_VALUES,
+  PARADIGM_SYSTEM_IDS,
+  PERSON_VALUES,
+  isParadigmSystem,
+  setArgumentParticipants,
+  toggleAxisValue,
+  toggleDistance,
+  updateParadigmCell,
+} from "./grammar/paradigm.ts";
 export { GRAMMAR_VALUE_SCHEMA } from "./grammar/schema.ts";
 export {
   applyStoredVersion,

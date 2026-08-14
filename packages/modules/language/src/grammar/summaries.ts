@@ -1,25 +1,19 @@
 import { GRAMMAR_CATALOG, GRAMMAR_SECTIONS, grammarSectionDescriptor, systemsForSection } from "./catalog.ts";
 import { summarizeChoice } from "./choice.ts";
+import { summarizeClause } from "./clause.ts";
+import { summarizeParadigm } from "./paradigm.ts";
 import { summarizeStrategy } from "./strategy.ts";
 import { systemStatus } from "./normalize.ts";
 import type {
-  ArgumentIndexingConfig,
   CaseConfig,
-  ClauseNegationConfig,
-  ContentQuestionsConfig,
-  DemonstrativeConfig,
   GrammarSearchHit,
   GrammarStatus,
   GrammarSystemId,
   GrammarSystemRecord,
-  ImperativesConfig,
   IndexedGrammar,
   NounClassesConfig,
   NumberConfig,
-  ParadigmConfig,
-  RelativeClausesConfig,
   TamConfig,
-  YesNoQuestionsConfig,
 } from "./types.ts";
 
 const STATUS_LABEL: Record<GrammarStatus, string> = {
@@ -49,6 +43,10 @@ export function summarizeSystem(systemId: GrammarSystemId, record: GrammarSystem
   if (choice) return choice;
   const strategy = summarizeStrategy(systemId, record.config);
   if (strategy) return strategy;
+  const clause = summarizeClause(systemId, record.config);
+  if (clause) return clause;
+  const paradigm = summarizeParadigm(systemId, record.config);
+  if (paradigm) return paradigm;
   const config = record.config;
   if (!config || Object.keys(config).length === 0) return STATUS_LABEL.configured;
   switch (systemId) {
@@ -65,41 +63,13 @@ export function summarizeSystem(systemId: GrammarSystemId, record: GrammarSystem
       const value = config as NounClassesConfig;
       return join([value.kind?.replace("-", " "), labels(value.classes?.map((item) => ({ label: item.name })))]) || STATUS_LABEL.configured;
     }
-    case "pronouns.personal":
-      return paradigmSummary(config as ParadigmConfig);
-    case "pronouns.demonstratives": {
-      const value = config as DemonstrativeConfig;
-      return value.distances?.length ? value.distances.join(" / ") : paradigmSummary(value);
-    }
     case "verbs.tense":
     case "verbs.aspect":
     case "verbs.mood":
       return labels((config as TamConfig).categories) || STATUS_LABEL.configured;
-    case "verbs.argument-indexing": {
-      const value = config as ArgumentIndexingConfig;
-      return join([value.participants?.replace("-", " and "), value.representation?.replaceAll("-", " ")]) || STATUS_LABEL.configured;
-    }
-    case "clauses.yes-no-questions": {
-      const value = config as YesNoQuestionsConfig;
-      return join([value.strategies?.join(" / ")?.replaceAll("-", " "), value.particle ? `“${value.particle}”` : undefined]) || STATUS_LABEL.configured;
-    }
-    case "clauses.content-questions":
-      return (config as ContentQuestionsConfig).behavior?.replaceAll("-", " ") || STATUS_LABEL.configured;
-    case "clauses.imperatives":
-      return (config as ImperativesConfig).strategies?.join(" / ")?.replaceAll("-", " ") || STATUS_LABEL.configured;
-    case "clauses.negation": {
-      const value = config as ClauseNegationConfig;
-      return join([value.strategies?.join(" / ")?.replaceAll("-", " "), value.particle ? `“${value.particle}”` : undefined]) || STATUS_LABEL.configured;
-    }
-    case "clauses.relative-clauses":
-      return (config as RelativeClausesConfig).strategies?.join(" / ")?.replaceAll("-", " ") || STATUS_LABEL.configured;
     default:
       return STATUS_LABEL.configured;
   }
-}
-
-function paradigmSummary(config: ParadigmConfig) {
-  return (config.axes ?? []).map((axis) => `${axis.label}: ${axis.values.map((item) => item.label).join("/")}`).join(" · ");
 }
 
 export type SectionCardSummary = {

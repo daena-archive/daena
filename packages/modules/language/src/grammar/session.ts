@@ -1,6 +1,7 @@
 import { grammarSystemDescriptor } from "./catalog.ts";
 import {
   cloneGrammarRecord,
+  emptyAgreementRecord,
   emptyAgreementSectionState,
   emptyCustomRule,
   emptySystemRecord,
@@ -33,6 +34,9 @@ export type GrammarUiState = {
   query: string;
   section: GrammarSectionId | null;
   editing: GrammarEditSession | null;
+  starterDismissed: boolean;
+  starterCurrent?: GrammarSystemId;
+  focusTarget?: string;
 };
 
 export function emptyGrammarUiState(): GrammarUiState {
@@ -49,6 +53,7 @@ export function emptyGrammarUiState(): GrammarUiState {
     query: "",
     section: null,
     editing: null,
+    starterDismissed: false,
   };
 }
 
@@ -114,6 +119,20 @@ export function openCustomRuleEditor(index: IndexedGrammar, recordId?: string): 
     conflict: false,
     learnMoreOpen: false,
     originSection: "other",
+  };
+}
+
+export function openAgreementEditor(index: IndexedGrammar, recordId?: string): GrammarEditSession {
+  const loaded = recordId ? index.agreements.find((item) => item.id === recordId) : undefined;
+  if (loaded) return sessionFromLoaded(loaded, "agreement");
+  const draft = emptyAgreementRecord();
+  return {
+    draft,
+    baseline: grammarRecordSnapshot(draft),
+    locked: false,
+    conflict: false,
+    learnMoreOpen: false,
+    originSection: "agreement",
   };
 }
 

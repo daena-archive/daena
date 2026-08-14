@@ -27,6 +27,7 @@ export {
   brokenAgreementFeatures,
   cloneGrammarRecord,
   configuredMinimum,
+  emptyAgreementRecord,
   emptyAgreementSectionState,
   emptyConfig,
   emptyCustomRule,
@@ -118,6 +119,17 @@ export {
   toggleDistance,
   updateParadigmCell,
 } from "./grammar/paradigm.ts";
+export {
+  addCustomAgreementFeature,
+  offeredAgreementGroups,
+  setAgreementBehavior,
+  setAgreementController,
+  setAgreementTarget,
+  summarizeAgreement,
+  toggleAgreementGroup,
+} from "./grammar/agreement.ts";
+export { CUSTOM_RULE_TAGS, toggleCustomRuleTag } from "./grammar/rules.ts";
+export { GRAMMAR_STARTER_STEPS, nextStarterSystem, remainingStarterSystems } from "./grammar/starter.ts";
 export { GRAMMAR_VALUE_SCHEMA } from "./grammar/schema.ts";
 export {
   applyStoredVersion,
@@ -125,6 +137,7 @@ export {
   emptyGrammarUiState,
   isGrammarDirty,
   keepDraftAfterConflict,
+  openAgreementEditor,
   openAgreementNotUsedEditor,
   openCustomRuleEditor,
   openSystemEditor,

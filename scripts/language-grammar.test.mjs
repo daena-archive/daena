@@ -82,6 +82,22 @@ import {
   toggleAxisValue,
   toggleDistance,
   updateParadigmCell,
+  emptyAgreementRecord,
+  emptyAgreementSectionState,
+  emptyCustomRule,
+  offeredAgreementGroups,
+  openAgreementEditor,
+  setAgreementBehavior,
+  setAgreementController,
+  setAgreementTarget,
+  summarizeAgreement,
+  toggleAgreementGroup,
+  addCustomAgreementFeature,
+  CUSTOM_RULE_TAGS,
+  toggleCustomRuleTag,
+  GRAMMAR_STARTER_STEPS,
+  nextStarterSystem,
+  remainingStarterSystems,
 } from "../packages/modules/language/src/grammar.ts";
 
 function matchesSchema(value, schema, defs = schema.$defs ?? {}) {
@@ -810,5 +826,88 @@ const paradigmApi = fakeGrammarApi();
 const savedPersonal = await persistGrammarRecord(paradigmApi, owner, { draft: personal });
 assert.equal(savedPersonal.ok, true);
 assert.equal(savedPersonal.record.value.config.cells.find((cell) => cell.id === firstCell.id).form, "yo");
+
+const numberGroups = offeredAgreementGroups(indexGrammarRecords([{ id: "num-1", value: number }]));
+const numberGroup = numberGroups.find((group) => group.id === "nouns.number");
+assert.equal(numberGroup.label, "Number");
+let subjectVerb = toggleAgreementGroup(emptyAgreementRecord(), numberGroup);
+assert.equal(subjectVerb.features.some((item) => item.categoryId === pluralId), true);
+number = updateNumberCategory(number, pluralId, { label: "Many" });
+assert.equal(subjectVerb.features.find((item) => item.categoryId === pluralId).categoryId, pluralId);
+assert.equal(subjectVerb.features.find((item) => item.categoryId === pluralId).label, "Plural");
+const renamedIndex = indexGrammarRecords([{ id: "num-1", value: number }, { id: "agr-1", value: subjectVerb }]);
+assert.equal(brokenAgreementFeatures(renamedIndex).length, 0);
+const missingNumber = removeNumberCategory(number, pluralId, { force: true }).draft;
+assert.equal(
+  brokenAgreementFeatures(indexGrammarRecords([{ id: "num-1", value: missingNumber }, { id: "agr-1", value: subjectVerb }])).length,
+  1,
+);
+
+subjectVerb = setAgreementController(subjectVerb, "custom");
+assert.equal(validateGrammarDraft(subjectVerb)[0].path, "controllerCustom");
+subjectVerb = setAgreementController(emptyAgreementRecord(), "subject");
+subjectVerb = setAgreementTarget(subjectVerb, "verb");
+subjectVerb = setAgreementBehavior(subjectVerb, "partial");
+assert.equal(summarizeAgreement(subjectVerb), "Subject → Verb");
+let nounAdjective = setAgreementTarget(setAgreementController(emptyAgreementRecord(), "noun"), "adjective");
+nounAdjective = addCustomAgreementFeature(nounAdjective, "Honorific");
+assert.equal(summarizeAgreement(nounAdjective), "Noun → Adjective · Honorific");
+assert.equal(matchesSchema(serializeGrammarRecord(subjectVerb), GRAMMAR_VALUE_SCHEMA), true);
+assert.equal(matchesSchema(serializeGrammarRecord(nounAdjective), GRAMMAR_VALUE_SCHEMA), true);
+
+const openedAgreement = openAgreementEditor(emptyGrammarUiState().index);
+assert.equal(openedAgreement.draft.recordKind, "agreement");
+assert.equal(openedAgreement.originSection, "agreement");
+
+assert.deepEqual(CUSTOM_RULE_TAGS.slice(0, 3), ["syntax", "morphology", "phonology interaction"]);
+let rule = toggleCustomRuleTag({ ...emptyCustomRule(), title: "Switch-reference" }, "discourse");
+assert.deepEqual(rule.tags, ["discourse"]);
+rule = toggleCustomRuleTag(rule, "discourse");
+assert.deepEqual(rule.tags, []);
+
+const unusedSeed = {
+  id: "section-state-1",
+  ownerEntityId: owner,
+  collection: "grammar",
+  value: emptyAgreementSectionState("No agreement."),
+  revision: "rev-1",
+  createdAt: "t",
+  updatedAt: "t",
+};
+const agreementApi = fakeGrammarApi([unusedSeed]);
+const savedAgreement = await persistGrammarRecord(agreementApi, owner, { draft: subjectVerb });
+assert.equal(savedAgreement.ok, true);
+assert.equal(savedAgreement.index.sectionStates.size, 0);
+assert.equal(savedAgreement.index.agreements.length, 1);
+assert.equal(savedAgreement.index.agreements[0].value.title, "Subject → Verb");
+assert.match(sectionCardSummary(savedAgreement.index, "agreement").detail, /1 system/);
+
+assert.deepEqual(GRAMMAR_STARTER_STEPS, [
+  "syntax.basic-word-order",
+  "syntax.adjective-position",
+  "nouns.number",
+  "pronouns.personal",
+  "verbs.tense",
+  "clauses.yes-no-questions",
+  "clauses.negation",
+]);
+assert.equal(GRAMMAR_CATALOG.every((item) => item.scope === "initial"), true);
+assert.deepEqual(remainingStarterSystems(emptyGrammarUiState().index), [...GRAMMAR_STARTER_STEPS]);
+const starterIndex = indexGrammarRecords([
+  {
+    id: "wo",
+    value: {
+      ...emptySystemRecord("syntax.basic-word-order", "configured"),
+      config: fixtures["syntax.basic-word-order"],
+    },
+  },
+]);
+assert.equal(nextStarterSystem(starterIndex), "syntax.adjective-position");
+assert.equal(nextStarterSystem(starterIndex, "syntax.adjective-position"), "nouns.number");
+assert.equal(remainingStarterSystems(starterIndex).includes("syntax.basic-word-order"), false);
+const dismissed = emptyGrammarUiState();
+dismissed.starterDismissed = true;
+assert.equal(dismissed.starterDismissed, true);
+assert.equal(dismissed.editing, null);
 
 console.log("language grammar helpers ok");

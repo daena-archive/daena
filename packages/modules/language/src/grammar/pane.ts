@@ -1,7 +1,6 @@
 import {
   GRAMMAR_SECTIONS,
   grammarGlance,
-  grammarSectionDescriptor,
   grammarStatusLabel,
   grammarSystemDescriptor,
   searchGrammar,
@@ -11,16 +10,20 @@ import {
 } from "../grammar.ts";
 import { alertMessage, button, emptyMessage, emptyState, field, input, textarea } from "../ui";
 import { persistGrammarRecord, deleteGrammarRecord, type GrammarRecordsApi } from "./repository.ts";
-import { configuredMinimum, grammarRecordSnapshot } from "./normalize.ts";
+import { configuredMinimum } from "./normalize.ts";
 import { isChoiceSystem, renderChoiceEditor } from "./choice.ts";
 import { isInventorySystem, referencedCategoryIds, renderInventoryEditor } from "./inventory.ts";
 import { isStrategySystem, renderStrategyEditor } from "./strategy.ts";
 import { isClauseSystem, renderClauseEditor } from "./clause.ts";
 import { isParadigmSystem, renderParadigmEditor } from "./paradigm.ts";
+import { renderAgreementEditor, summarizeAgreement } from "./agreement.ts";
+import { renderCustomRuleEditor } from "./rules.ts";
+import { GRAMMAR_STARTER_STEPS, nextStarterSystem, remainingStarterSystems, starterPosition, starterStepLabel } from "./starter.ts";
 import {
   applyStoredVersion,
   confirmGrammarLeave,
   keepDraftAfterConflict,
+  openAgreementEditor,
   openAgreementNotUsedEditor,
   openCustomRuleEditor,
   openSystemEditor,
@@ -72,6 +75,7 @@ export function goHome(state: GrammarUiState, confirm: (message: string) => bool
   state.editing = null;
   state.section = null;
   state.query = "";
+  state.starterCurrent = undefined;
   return true;
 }
 
@@ -83,31 +87,101 @@ export function goSection(state: GrammarUiState, sectionId: GrammarSectionId, co
   return true;
 }
 
+function startAgreementEditor(state: GrammarUiState, ctx: GrammarPaneContext) {
+  if (!tryLeaveGrammar(state, ctx.confirm)) return;
+  if (state.index.sectionStates.get("agreement")) {
+    if (
+      !ctx.confirm(
+        "This section is marked not used. Create an agreement system anyway? Saving it will clear the not-used marker.",
+      )
+    ) {
+      return;
+    }
+  }
+  state.section = "agreement";
+  state.query = "";
+  state.starterCurrent = undefined;
+  state.editing = openAgreementEditor(state.index);
+  state.focusTarget = "#grammar-editor-heading";
+  ctx.render();
+}
+
+function startGrammarStarter(state: GrammarUiState, ctx: GrammarPaneContext) {
+  if (!tryLeaveGrammar(state, ctx.confirm)) return;
+  const next = nextStarterSystem(state.index);
+  if (!next) {
+    state.starterDismissed = true;
+    ctx.render();
+    return;
+  }
+  state.query = "";
+  state.starterCurrent = next;
+  state.section = grammarSystemDescriptor(next)?.sectionId ?? null;
+  state.editing = openSystemEditor(state.index, next);
+  state.focusTarget = "#grammar-editor-heading";
+  ctx.render();
+}
+
+function dismissGrammarStarter(state: GrammarUiState, ctx: GrammarPaneContext) {
+  if (!tryLeaveGrammar(state, ctx.confirm)) return;
+  state.starterDismissed = true;
+  state.starterCurrent = undefined;
+  state.editing = null;
+  ctx.render();
+}
+
+function advanceStarter(state: GrammarUiState, current: GrammarSystemId) {
+  const next = nextStarterSystem(state.index, current);
+  if (!next) {
+    state.starterDismissed = true;
+    state.starterCurrent = undefined;
+    state.editing = null;
+    state.section = null;
+    state.focusTarget = '[data-grammar-id="section:syntax"]';
+    return;
+  }
+  state.starterCurrent = next;
+  state.section = grammarSystemDescriptor(next)?.sectionId ?? state.section;
+  state.editing = openSystemEditor(state.index, next);
+  state.focusTarget = "#grammar-editor-heading";
+}
+
+function grammarFocusSelector(draft: GrammarEditSession["draft"], recordId?: string) {
+  if (draft.recordKind === "system") return `[data-grammar-id="system:${draft.systemId}"]`;
+  if (draft.recordKind === "agreement") return `[data-grammar-id="agreement:${recordId ?? ""}"]`;
+  if (draft.recordKind === "custom-rule") return `[data-grammar-id="rule:${recordId ?? ""}"]`;
+  return '[data-grammar-id="section:agreement"]';
+}
+
+function applyGrammarFocus(panel: HTMLElement, state: GrammarUiState) {
+  const target = state.focusTarget;
+  state.focusTarget = undefined;
+  if (!target) return;
+  panel.querySelector<HTMLElement>(target)?.focus();
+}
+
 export function goSystem(state: GrammarUiState, systemId: GrammarSystemId, confirm: (message: string) => boolean) {
   if (!tryLeaveGrammar(state, confirm)) return false;
   state.query = "";
+  state.starterCurrent = undefined;
   state.section = grammarSystemDescriptor(systemId)?.sectionId ?? state.section;
   state.editing = openSystemEditor(state.index, systemId);
+  state.focusTarget = "#grammar-editor-heading";
   return true;
 }
 
 export async function saveGrammarEditor(state: GrammarUiState, ctx: GrammarPaneContext) {
   if (!ctx.ownerId || !state.editing || state.editing.locked) return "This system cannot be edited.";
-  const result = await persistGrammarRecord(ctx.records, ctx.ownerId, state.editing);
+  const session = state.editing;
+  const result = await persistGrammarRecord(ctx.records, ctx.ownerId, session);
   if (result.ok) {
     state.index = result.index;
-    if (result.record) {
-      state.editing = {
-        ...state.editing,
-        recordId: result.record.id,
-        revision: result.record.revision,
-        draft: result.record.value,
-        baseline: grammarRecordSnapshot(result.record.value),
-        conflict: false,
-        validationMessage: undefined,
-      };
+    if (state.starterCurrent && session.draft.recordKind === "system") {
+      advanceStarter(state, session.draft.systemId);
     } else {
       state.editing = null;
+      state.section = session.originSection;
+      state.focusTarget = grammarFocusSelector(session.draft, result.record?.id ?? session.recordId);
     }
     return "";
   }
@@ -125,20 +199,25 @@ export async function saveGrammarEditor(state: GrammarUiState, ctx: GrammarPaneC
 
 export async function deleteGrammarEditor(state: GrammarUiState, ctx: GrammarPaneContext) {
   if (!ctx.ownerId || !state.editing?.recordId || state.editing.locked) return "";
+  const session = state.editing;
+  const recordId = session.recordId;
+  if (!recordId) return "";
   const title =
-    state.editing.draft.recordKind === "system"
-      ? grammarSystemDescriptor(state.editing.draft.systemId)?.label ?? "this system"
-      : "title" in state.editing.draft
-        ? state.editing.draft.title
+    session.draft.recordKind === "system"
+      ? grammarSystemDescriptor(session.draft.systemId)?.label ?? "this system"
+      : "title" in session.draft
+        ? session.draft.title
         : "this record";
   if (!ctx.confirm(`Delete “${title}”?`)) return "";
   const result = await deleteGrammarRecord(ctx.records, ctx.ownerId, {
-    recordId: state.editing.recordId,
-    revision: state.editing.revision,
+    recordId,
+    revision: session.revision,
   });
   if (result.ok) {
     state.index = result.index;
     state.editing = null;
+    state.section = session.originSection;
+    state.focusTarget = grammarFocusSelector(session.draft, session.recordId);
     return "";
   }
   if (result.stale) {
@@ -298,16 +377,36 @@ function renderEditor(panel: HTMLElement, state: GrammarUiState, ctx: GrammarPan
   toolbar.className = "language-toolbar";
   const back = button("Back", "language-button secondary", () => {
     if (!tryLeaveGrammar(state, ctx.confirm)) return;
+    const origin = session.originSection;
+    const focus = grammarFocusSelector(session.draft, session.recordId);
     state.editing = null;
+    state.starterCurrent = undefined;
+    state.section = origin;
+    state.focusTarget = focus;
     ctx.render();
   });
   toolbar.append(back);
+  if (state.starterCurrent && session.draft.recordKind === "system") {
+    const progress = starterPosition(state.starterCurrent);
+    const status = document.createElement("span");
+    status.textContent = `Starter ${progress.current} of ${progress.total}`;
+    toolbar.append(status);
+    toolbar.append(
+      button("Skip", "language-button secondary", () => {
+        if (!tryLeaveGrammar(state, ctx.confirm)) return;
+        advanceStarter(state, state.starterCurrent!);
+        ctx.render();
+      }),
+      button("Exit starter", "language-button secondary", () => dismissGrammarStarter(state, ctx)),
+    );
+  }
   panel.append(toolbar);
 
   const form = document.createElement("form");
   form.className = "language-editor";
   let titleText = "Grammar";
   if (session.draft.recordKind === "system") titleText = grammarSystemDescriptor(session.draft.systemId)?.label ?? "System";
+  else if (session.draft.recordKind === "agreement") titleText = session.recordId ? session.draft.title || "Agreement" : "New agreement system";
   else if (session.draft.recordKind === "custom-rule") titleText = session.recordId ? "Custom rule" : "New custom rule";
   else if (session.draft.recordKind === "section-state") titleText = "Agreement";
   const title = heading(titleText, "grammar-editor-heading");
@@ -447,27 +546,28 @@ function renderEditor(panel: HTMLElement, state: GrammarUiState, ctx: GrammarPan
       };
       form.append(field("Notes", notes));
     }
+  } else if (session.draft.recordKind === "agreement") {
+    form.append(
+      renderAgreementEditor(session.draft, session.locked, state.index, (next, rerender) => {
+        if (session.draft.recordKind !== "agreement") return;
+        session.draft = next;
+        if (rerender) ctx.render();
+      }),
+    );
+    const notes = textarea("notes", session.draft.notes, 4);
+    notes.disabled = session.locked;
+    notes.oninput = () => {
+      if (session.draft.recordKind === "agreement") session.draft.notes = notes.value;
+    };
+    form.append(field("Notes", notes));
   } else if (session.draft.recordKind === "custom-rule") {
-    const descriptor = grammarSectionDescriptor("other")!;
-    form.append(emptyMessage(descriptor.orientation));
-    const titleField = input("title", session.draft.title);
-    titleField.disabled = session.locked;
-    titleField.oninput = () => {
-      if (session.draft.recordKind === "custom-rule") session.draft.title = titleField.value;
-    };
-    const tags = input("tags", session.draft.tags.join(", "));
-    tags.disabled = session.locked;
-    tags.oninput = () => {
-      if (session.draft.recordKind === "custom-rule") {
-        session.draft.tags = tags.value.split(",").map((item) => item.trim()).filter(Boolean);
-      }
-    };
-    const body = textarea("body", session.draft.body, 8);
-    body.disabled = session.locked;
-    body.oninput = () => {
-      if (session.draft.recordKind === "custom-rule") session.draft.body = body.value;
-    };
-    form.append(field("Title", titleField), field("Tags (optional)", tags), field("Description", body));
+    form.append(
+      renderCustomRuleEditor(session.draft, session.locked, (next, rerender) => {
+        if (session.draft.recordKind !== "custom-rule") return;
+        session.draft = next;
+        if (rerender) ctx.render();
+      }),
+    );
   } else if (session.draft.recordKind === "section-state") {
     form.append(emptyMessage("If your language does not use agreement, you can mark this section as not used."));
     const note = textarea("note", session.draft.note ?? "", 3);
@@ -478,7 +578,7 @@ function renderEditor(panel: HTMLElement, state: GrammarUiState, ctx: GrammarPan
     form.append(field("Note (optional)", note));
   }
 
-  if (session.draft.recordKind === "system" || session.draft.recordKind === "custom-rule") {
+  if (session.draft.recordKind === "system" || session.draft.recordKind === "custom-rule" || session.draft.recordKind === "agreement") {
     const draft = session.draft;
     form.append(
       exampleEditor(draft.examples, session.locked, (examples) => {
@@ -518,19 +618,24 @@ function renderEditor(panel: HTMLElement, state: GrammarUiState, ctx: GrammarPan
   actions.className = "language-actions";
   const left = document.createElement("span");
   if (session.recordId && !session.locked) {
-    left.append(
-      button("Delete", "language-button secondary language-danger", async () => {
-        const message = await deleteGrammarEditor(state, ctx);
-        if (message && state.editing) state.editing.validationMessage = message;
-        ctx.render();
-      }),
-    );
+    const remove = button("Delete", "language-button secondary language-danger", async () => {
+      const message = await deleteGrammarEditor(state, ctx);
+      if (message && state.editing) state.editing.validationMessage = message;
+      ctx.render();
+    });
+    remove.setAttribute("aria-label", `Delete ${titleText}`);
+    left.append(remove);
   }
   const right = document.createElement("span");
   right.append(
     button("Cancel", "language-button secondary", () => {
       if (!tryLeaveGrammar(state, ctx.confirm)) return;
+      const origin = session.originSection;
+      const focus = grammarFocusSelector(session.draft, session.recordId);
       state.editing = null;
+      state.starterCurrent = undefined;
+      state.section = origin;
+      state.focusTarget = focus;
       ctx.render();
     }),
   );
@@ -545,17 +650,15 @@ function renderEditor(panel: HTMLElement, state: GrammarUiState, ctx: GrammarPan
   form.onsubmit = async (event) => {
     event.preventDefault();
     const message = await saveGrammarEditor(state, ctx);
-    if (message && state.editing) {
-      state.editing.validationMessage = message;
-      const focus = state.editing.validationFocus;
-      ctx.render();
-      if (focus) form.querySelector<HTMLElement>(`[name="${focus}"]`)?.focus();
-      return;
+    if (message && state.editing?.validationFocus) {
+      state.focusTarget = `[name="${CSS.escape(state.editing.validationFocus)}"]`;
+    } else if (message) {
+      state.focusTarget = "#grammar-editor-heading";
     }
     ctx.render();
   };
   panel.append(form);
-  title.focus();
+  if (!state.focusTarget) state.focusTarget = "#grammar-editor-heading";
 }
 
 function renderSearch(home: HTMLElement, state: GrammarUiState, ctx: GrammarPaneContext) {
@@ -580,6 +683,11 @@ function renderSearch(home: HTMLElement, state: GrammarUiState, ctx: GrammarPane
         state.section = "other";
         state.query = "";
         state.editing = openCustomRuleEditor(state.index, hit.recordId);
+      } else if (hit.kind === "agreement" && hit.recordId) {
+        if (!tryLeaveGrammar(state, ctx.confirm)) return;
+        state.section = "agreement";
+        state.query = "";
+        state.editing = openAgreementEditor(state.index, hit.recordId);
       } else {
         goSection(state, hit.sectionId, ctx.confirm);
       }
@@ -594,6 +702,36 @@ function renderHome(home: HTMLElement, state: GrammarUiState, ctx: GrammarPaneCo
   home.append(
     emptyMessage("Define how sentences and words behave in this language. You do not need to configure every system."),
   );
+  const remaining = remainingStarterSystems(state.index);
+  if (!state.starterDismissed && remaining.length) {
+    const intro = document.createElement("section");
+    intro.className = "language-empty-card";
+    intro.setAttribute("data-grammar-id", "starter");
+    intro.append(
+      emptyMessage("Start your grammar"),
+      emptyMessage("Choose a few foundational systems now. Everything can be changed later."),
+    );
+    const list = document.createElement("ol");
+    list.className = "grammar-starter-list";
+    for (const systemId of remaining) {
+      const item = document.createElement("li");
+      item.textContent = starterStepLabel(systemId);
+      list.append(item);
+    }
+    intro.append(list);
+    const actions = document.createElement("div");
+    actions.className = "language-inline";
+    const start = button(remaining.length === GRAMMAR_STARTER_STEPS.length ? "Start" : "Continue starter", "language-button", () => {
+      startGrammarStarter(state, ctx);
+    });
+    start.setAttribute("data-grammar-id", "starter-start");
+    const manual = button("I'll configure grammar manually", "language-button secondary", () => {
+      dismissGrammarStarter(state, ctx);
+    });
+    actions.append(start, manual);
+    intro.append(actions);
+    home.append(intro);
+  }
   const cards = document.createElement("div");
   cards.className = "grammar-cards";
   for (const section of GRAMMAR_SECTIONS) {
@@ -601,6 +739,7 @@ function renderHome(home: HTMLElement, state: GrammarUiState, ctx: GrammarPaneCo
     const card = document.createElement("button");
     card.type = "button";
     card.className = "grammar-card";
+    card.setAttribute("data-grammar-id", `section:${section.id}`);
     const notUsed = summary.notUsed ? ` · ${summary.notUsed} not used` : "";
     card.setAttribute("aria-label", `${summary.label}: ${summary.detail}${notUsed}`);
     const headingNode = document.createElement("strong");
@@ -638,10 +777,12 @@ function renderSection(home: HTMLElement, state: GrammarUiState, ctx: GrammarPan
 
   if (section.id === "agreement") {
     const unused = state.index.sectionStates.get("agreement");
+    const add = button("Add agreement system", "language-button", () => startAgreementEditor(state, ctx));
     if (unused?.value.recordKind === "section-state") {
       home.append(emptyMessage("Not used"));
       if (unused.value.note) home.append(emptyMessage(unused.value.note));
       home.append(
+        add,
         button("Edit", "language-button secondary", () => {
           if (!tryLeaveGrammar(state, ctx.confirm)) return;
           state.editing = openAgreementNotUsedEditor(state.index);
@@ -656,19 +797,28 @@ function renderSection(home: HTMLElement, state: GrammarUiState, ctx: GrammarPan
         state.editing = openAgreementNotUsedEditor(state.index);
         ctx.render();
       });
-      home.append(emptyState(section.emptyBody, mark));
+      home.append(emptyState(section.emptyBody, add, mark));
       return;
     }
+    home.append(add);
     for (const record of state.index.agreements) {
       if (record.value.recordKind !== "agreement") continue;
-      const item = document.createElement("div");
+      const item = document.createElement("button");
+      item.type = "button";
       item.className = "grammar-system";
-      item.style.cursor = "default";
+      item.setAttribute("data-grammar-id", `agreement:${record.id}`);
+      item.setAttribute("aria-label", `${record.value.title}: ${summarizeAgreement(record.value)}`);
       const name = document.createElement("strong");
       name.textContent = record.value.title;
       const detail = document.createElement("span");
-      detail.textContent = `${record.value.controller.kind} → ${record.value.target.kind}`;
+      detail.textContent = summarizeAgreement(record.value);
       item.append(name, detail);
+      item.onclick = () => {
+        if (!tryLeaveGrammar(state, ctx.confirm)) return;
+        state.editing = openAgreementEditor(state.index, record.id);
+        state.focusTarget = "#grammar-editor-heading";
+        ctx.render();
+      };
       systems.append(item);
     }
     home.append(systems);
@@ -691,6 +841,8 @@ function renderSection(home: HTMLElement, state: GrammarUiState, ctx: GrammarPan
       const item = document.createElement("button");
       item.type = "button";
       item.className = "grammar-system";
+      item.setAttribute("data-grammar-id", `rule:${record.id}`);
+      item.setAttribute("aria-label", record.value.title);
       const name = document.createElement("strong");
       name.textContent = record.value.title;
       const detail = document.createElement("span");
@@ -699,6 +851,7 @@ function renderSection(home: HTMLElement, state: GrammarUiState, ctx: GrammarPan
       item.onclick = () => {
         if (!tryLeaveGrammar(state, ctx.confirm)) return;
         state.editing = openCustomRuleEditor(state.index, record.id);
+        state.focusTarget = "#grammar-editor-heading";
         ctx.render();
       };
       systems.append(item);
@@ -727,14 +880,17 @@ function renderSection(home: HTMLElement, state: GrammarUiState, ctx: GrammarPan
     const item = document.createElement("button");
     item.type = "button";
     item.className = "grammar-system";
+    item.setAttribute("data-grammar-id", `system:${system.id}`);
     const name = document.createElement("strong");
     name.textContent = system.label;
     const detail = document.createElement("span");
-    detail.textContent = duplicate
+    const summary = duplicate
       ? "Duplicate records — edits disabled"
       : record?.recordKind === "system"
         ? summarizeSystem(system.id, record)
         : grammarStatusLabel("unconfigured");
+    detail.textContent = summary;
+    item.setAttribute("aria-label", `${system.label}: ${summary}`);
     item.append(name, detail);
     item.onclick = () => {
       goSystem(state, system.id, ctx.confirm);
@@ -765,6 +921,7 @@ export function renderGrammarPane(panel: HTMLElement, state: GrammarUiState, ctx
   }
   if (state.editing) {
     renderEditor(panel, state, ctx, error);
+    applyGrammarFocus(panel, state);
     return;
   }
   const search = input("grammar-search", state.query);
@@ -777,9 +934,36 @@ export function renderGrammarPane(panel: HTMLElement, state: GrammarUiState, ctx
   panel.append(search);
   const home = document.createElement("div");
   home.className = "grammar-home";
-  for (const diagnostic of state.index.diagnostics) home.append(alertMessage(diagnostic.message));
+  for (const diagnostic of state.index.diagnostics) {
+    const row = document.createElement("div");
+    row.className = "grammar-diagnostic";
+    row.setAttribute("role", "group");
+    row.setAttribute("aria-label", "Grammar diagnostic");
+    row.append(alertMessage(diagnostic.message));
+    if (diagnostic.systemId) {
+      const label = grammarSystemDescriptor(diagnostic.systemId)?.label ?? diagnostic.systemId;
+      row.append(
+        button(`Open ${label}`, "language-button secondary", () => {
+          goSystem(state, diagnostic.systemId!, ctx.confirm);
+          ctx.render();
+        }),
+      );
+    } else if (diagnostic.recordIds[0] && state.index.agreements.some((item) => item.id === diagnostic.recordIds[0])) {
+      row.append(
+        button("Open agreement", "language-button secondary", () => {
+          if (!tryLeaveGrammar(state, ctx.confirm)) return;
+          state.section = "agreement";
+          state.editing = openAgreementEditor(state.index, diagnostic.recordIds[0]);
+          state.focusTarget = "#grammar-editor-heading";
+          ctx.render();
+        }),
+      );
+    }
+    home.append(row);
+  }
   if (state.query.trim()) renderSearch(home, state, ctx);
   else if (!state.section) renderHome(home, state, ctx);
   else renderSection(home, state, ctx);
   panel.append(home);
+  applyGrammarFocus(panel, state);
 }

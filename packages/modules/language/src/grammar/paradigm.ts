@@ -491,6 +491,10 @@ function paradigmGrid(
   wrap.setAttribute("aria-label", "Paradigm");
   const table = document.createElement("table");
   table.className = "grammar-paradigm-table";
+  const caption = document.createElement("caption");
+  caption.className = "visually-hidden";
+  caption.textContent = "Paradigm";
+  table.append(caption);
   const colAxis = axes.length > 1 ? axes[axes.length - 1] : undefined;
   const rowAxes = axes.length > 1 ? axes.slice(0, -1) : axes;
   const rowCombos = cartesianCoordinates(rowAxes);

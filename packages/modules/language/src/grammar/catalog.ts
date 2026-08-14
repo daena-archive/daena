@@ -18,7 +18,7 @@ export type GrammarSystemDescriptor = {
   hint: string;
   learnMore: string;
   searchAliases: string[];
-  scope: "initial";
+  scope: "initial" | "later";
   editorKind: GrammarEditorKind;
   summaryId: GrammarSystemId;
   emptyAction: string;

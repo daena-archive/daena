@@ -154,6 +154,21 @@ export function emptyCustomRule(): GrammarCustomRuleRecord {
   };
 }
 
+export function emptyAgreementRecord(): GrammarAgreementRecord {
+  return {
+    recordKind: "agreement",
+    schemaVersion: GRAMMAR_SCHEMA_VERSION,
+    title: "Subject → Verb",
+    controller: { kind: "subject" },
+    target: { kind: "verb" },
+    features: [],
+    behavior: "full",
+    notes: "",
+    examples: [],
+    links: [],
+  };
+}
+
 export function emptyAgreementSectionState(note?: string): GrammarSectionStateRecord {
   return {
     recordKind: "section-state",
@@ -287,8 +302,17 @@ export function validateGrammarDraft(value: GrammarRecord): GrammarIssue[] {
   if (value.recordKind === "custom-rule" && !value.title.trim()) {
     return [issue("malformed", "Title is required.", "title")];
   }
-  if (value.recordKind === "agreement" && !value.title.trim()) {
-    return [issue("malformed", "Title is required.", "title")];
+  if (value.recordKind === "agreement") {
+    if (!value.title.trim()) return [issue("malformed", "Title is required.", "title")];
+    if (value.controller.kind === "custom" && !value.controller.customLabel?.trim()) {
+      return [issue("malformed", "Describe the custom controller.", "controllerCustom")];
+    }
+    if (value.target.kind === "custom" && !value.target.customLabel?.trim()) {
+      return [issue("malformed", "Describe the custom target.", "targetCustom")];
+    }
+    if (value.features.some((item) => !item.label.trim())) {
+      return [issue("malformed", "Each custom feature needs a label.", "customFeature")];
+    }
   }
   return [];
 }
@@ -1062,7 +1086,7 @@ export function brokenAgreementFeatures(index: IndexedGrammar): GrammarDiagnosti
   for (const record of index.agreements) {
     if (record.value.recordKind !== "agreement") continue;
     for (const feature of record.value.features) {
-      if (!feature.sourceSystemId || !feature.categoryId) continue;
+      if (!feature.sourceSystemId) continue;
       const system = index.systems.get(feature.sourceSystemId);
       if (!system || system.value.recordKind !== "system") {
         diagnostics.push({
@@ -1073,6 +1097,7 @@ export function brokenAgreementFeatures(index: IndexedGrammar): GrammarDiagnosti
         });
         continue;
       }
+      if (!feature.categoryId) continue;
       const config = system.value.config as {
         categories?: { id: string }[];
         cases?: { id: string }[];
@@ -1084,10 +1109,11 @@ export function brokenAgreementFeatures(index: IndexedGrammar): GrammarDiagnosti
         ...(config.categories ?? []).map((item) => item.id),
         ...(config.cases ?? []).map((item) => item.id),
         ...(config.classes ?? []).map((item) => item.id),
+        ...(config.axes ?? []).map((axis) => axis.id),
         ...(config.axes ?? []).flatMap((axis) => axis.values.map((value) => value.id)),
         ...(config.cells ?? []).map((item) => item.id),
       ]);
-      if (!ids.has(feature.categoryId)) {
+      if (feature.categoryId && !ids.has(feature.categoryId)) {
         diagnostics.push({
           code: "broken-reference",
           message: `Agreement “${record.value.title}” references a missing category in ${feature.sourceSystemId}.`,

@@ -673,6 +673,7 @@ function itemCard(
 ) {
   const card = document.createElement("article");
   card.className = "grammar-inventory-item";
+  card.setAttribute("role", "listitem");
   const head = document.createElement("div");
   head.className = "grammar-inventory-toolbar";
   const title = document.createElement("strong");
@@ -686,9 +687,13 @@ function itemCard(
   if (!locked) {
     const up = button("Up", "language-button secondary", () => actions.move(-1));
     const down = button("Down", "language-button secondary", () => actions.move(1));
+    up.setAttribute("aria-label", `Move ${titleText} up`);
+    down.setAttribute("aria-label", `Move ${titleText} down`);
     up.disabled = index === 0;
     down.disabled = index === total - 1;
-    head.append(up, down, button("Remove", "language-button secondary language-danger", actions.remove));
+    const remove = button("Remove", "language-button secondary language-danger", actions.remove);
+    remove.setAttribute("aria-label", `Remove ${titleText}`);
+    head.append(up, down, remove);
   }
   card.append(head, ...fields);
   return card;

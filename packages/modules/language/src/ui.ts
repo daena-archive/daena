@@ -72,10 +72,15 @@ export function emptyMessage(text: string) {
   return message;
 }
 
-export function emptyState(text: string, action?: HTMLElement) {
+export function emptyState(text: string, ...actions: (HTMLElement | undefined)[]) {
   const wrap = document.createElement("div");
   wrap.className = "language-empty-card";
   wrap.append(emptyMessage(text));
-  if (action) wrap.append(action);
+  const row = document.createElement("div");
+  row.className = "language-inline";
+  for (const action of actions) {
+    if (action) row.append(action);
+  }
+  if (row.childNodes.length) wrap.append(row);
   return wrap;
 }

@@ -200,11 +200,16 @@ export const language: DaenaModule = {
           .grammar-inventory,.grammar-inventory-item{display:grid;gap:10px;min-width:0}
           .grammar-inventory-item{padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
           .grammar-inventory-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
-          .grammar-paradigm{overflow:auto;max-width:100%}
+          .grammar-paradigm{overflow:auto;max-width:100%;max-height:min(70vh,36rem)}
           .grammar-paradigm-table{border-collapse:collapse;min-width:100%}
-          .grammar-paradigm-table th,.grammar-paradigm-table td{border:1px solid var(--line);padding:8px;vertical-align:top;text-align:left}
-          .grammar-paradigm-table th[scope="row"]{position:sticky;left:0;background:var(--surface);z-index:1}
+          .grammar-paradigm-table caption.visually-hidden,.visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+          .grammar-paradigm-table th,.grammar-paradigm-table td{border:1px solid var(--line);padding:8px;vertical-align:top;text-align:left;background:var(--surface)}
+          .grammar-paradigm-table thead th{position:sticky;top:0;z-index:2;background:var(--surface-muted)}
+          .grammar-paradigm-table th[scope="row"]{position:sticky;left:0;z-index:1}
+          .grammar-paradigm-table thead th:first-child{z-index:3;left:0}
+          .grammar-starter-list{margin:0;padding-left:1.2em}
           .grammar-paradigm-cell{display:grid;gap:6px;min-width:8rem}
+          .grammar-diagnostic{display:grid;gap:8px;justify-items:start}
           .grammar-example{display:grid;gap:8px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-muted)}
           .sample-block{padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--surface-muted);font-size:13px;line-height:1.55}
           .sample-block h3{margin:0 0 8px;font-family:var(--font-display);font-weight:500}
@@ -230,7 +235,7 @@ export const language: DaenaModule = {
           .language-button.secondary{background:transparent;color:var(--accent-dark)}
           .language-button.secondary:hover{background:var(--surface-muted)}
           .language-button:disabled{opacity:.45;cursor:not-allowed;filter:none}
-          .language-button:focus-visible,.language-tabs button:focus-visible,.language-list button:focus-visible,.language-item:focus-visible,.lexeme-row:focus-visible,.grammar-card:focus-visible,.grammar-system:focus-visible,.sample-ref:focus-visible{outline:3px solid rgba(180,119,63,.24);outline-offset:2px}
+          .language-button:focus-visible,.language-tabs button:focus-visible,.language-list button:focus-visible,.language-item:focus-visible,.lexeme-row:focus-visible,.grammar-card:focus-visible,.grammar-system:focus-visible,.sample-ref:focus-visible,.grammar-choice:focus-within,.grammar-status input:focus-visible,.grammar-checks input:focus-visible,.grammar-learn summary:focus-visible{outline:3px solid rgba(180,119,63,.24);outline-offset:2px}
           .language-empty,.language-status{margin:0;color:var(--ink-soft);font-size:12px;line-height:1.6}
           .language-status.error{color:#a14f42}
           .language-empty-card{display:grid;gap:12px;justify-items:start;margin:18px 0;padding:20px;border:1px dashed var(--line);border-radius:12px;background:var(--surface-muted)}

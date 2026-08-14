@@ -83,6 +83,16 @@ export async function persistGrammarRecord(
     } else {
       saved = await api.create("grammar", ownerEntityId, payload, { requestId: crypto.randomUUID() });
     }
+    if (session.draft.recordKind === "agreement") {
+      const afterSave = await reload(api, ownerEntityId);
+      const unused = afterSave.index.sectionStates.get("agreement");
+      if (unused) {
+        await api.delete("grammar", unused.id, ownerEntityId, {
+          expectedRevision: unused.revision,
+          requestId: crypto.randomUUID(),
+        });
+      }
+    }
     const loaded = await reload(api, ownerEntityId);
     const current = loaded.records.find((item) => item.id === saved.id) ?? saved;
     return { ok: true, record: current, index: loaded.index };

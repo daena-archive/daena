@@ -1321,7 +1321,7 @@ fn language_phonology_and_orthography_records_round_trip() {
 }
 
 #[test]
-fn language_grammar_topics_round_trip_and_sort_by_section_title() {
+fn language_grammar_records_round_trip_and_rebuild_from_checkpoint() {
     let root = std::env::temp_dir().join(format!("daena-language-grammar-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();
     let language = store
@@ -1345,10 +1345,13 @@ fn language_grammar_topics_round_trip_and_sort_by_section_title() {
             "grammar",
             &language.id,
             serde_json::json!({
+                "recordKind": "custom-rule",
+                "schemaVersion": 1,
                 "title": "Verb stems",
-                "section": "verb",
-                "body": "See [[sol]](lexeme:PLACEHOLDER).",
-                "links": [{ "id": "l1", "kind": "lexeme", "lexemeId": lexeme.id, "label": "sol" }]
+                "tags": ["morphology"],
+                "body": "See linked lexeme.",
+                "examples": [],
+                "links": [{ "id": "l1", "kind": "lexeme", "targetId": lexeme.id, "label": "sol" }]
             }),
             Some(&Uuid::new_v4().to_string()),
         )
@@ -1359,15 +1362,43 @@ fn language_grammar_topics_round_trip_and_sort_by_section_title() {
             "grammar",
             &language.id,
             serde_json::json!({
-                "title": "Basic order",
-                "section": "word-order",
-                "body": "SVO.",
+                "recordKind": "system",
+                "schemaVersion": 1,
+                "systemId": "syntax.basic-word-order",
+                "status": "configured",
+                "config": {
+                    "order": "svo",
+                    "strength": "strict",
+                    "influences": []
+                },
+                "notes": "",
+                "examples": [],
                 "links": []
             }),
             Some(&Uuid::new_v4().to_string()),
         )
         .unwrap();
-    let topics = store
+    store
+        .create_module_record(
+            "daena.language",
+            "grammar",
+            &language.id,
+            serde_json::json!({
+                "recordKind": "agreement",
+                "schemaVersion": 1,
+                "title": "Subject verb",
+                "controller": { "kind": "subject" },
+                "target": { "kind": "verb" },
+                "features": [{ "sourceSystemId": "nouns.number", "categoryId": "plural", "label": "Number" }],
+                "behavior": "full",
+                "notes": "",
+                "examples": [],
+                "links": []
+            }),
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+    let records = store
         .list_module_records_with(
             "daena.language",
             "grammar",
@@ -1379,20 +1410,18 @@ fn language_grammar_topics_round_trip_and_sort_by_section_title() {
             },
         )
         .unwrap();
-    assert_eq!(
-        topics
-            .iter()
-            .map(|record| record.value["title"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        vec!["Basic order", "Verb stems"]
-    );
+    let titles: Vec<&str> = records
+        .iter()
+        .filter_map(|record| record.value["title"].as_str())
+        .collect();
+    assert_eq!(titles, vec!["Subject verb", "Verb stems"]);
     assert_eq!(
         store
             .list_module_records(
                 "daena.language",
                 "grammar",
                 &language.id,
-                Some("SVO"),
+                Some("svo"),
                 50,
                 0,
             )
@@ -1414,13 +1443,21 @@ fn language_grammar_topics_round_trip_and_sort_by_section_title() {
     drop(store);
     std::fs::remove_dir_all(root.join(".daena")).unwrap();
     let rebuilt = ProjectStore::open_directory(&root).unwrap();
-    assert_eq!(
-        rebuilt
-            .list_module_records("daena.language", "grammar", &language.id, None, 50, 0)
-            .unwrap()
-            .len(),
-        2
-    );
+    let rebuilt_records = rebuilt
+        .list_module_records("daena.language", "grammar", &language.id, None, 50, 0)
+        .unwrap();
+    assert_eq!(rebuilt_records.len(), 3);
+    assert!(rebuilt_records.iter().any(|record| {
+        record.value["recordKind"] == "system"
+            && record.value["systemId"] == "syntax.basic-word-order"
+            && record.value["config"]["order"] == "svo"
+    }));
+    assert!(rebuilt_records
+        .iter()
+        .any(|record| record.value["recordKind"] == "agreement"));
+    assert!(rebuilt_records
+        .iter()
+        .any(|record| record.value["recordKind"] == "custom-rule"));
     drop(rebuilt);
     std::fs::remove_dir_all(root).unwrap();
 }

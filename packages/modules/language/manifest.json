@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "daena.language",
   "name": "Language",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "publisher": "daena-archive",
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "sandboxed",
@@ -115,12 +115,28 @@
       "schema": {
         "type": "object",
         "properties": {
+          "recordKind": { "type": "string" },
+          "schemaVersion": { "type": "number" },
+          "systemId": { "type": "string" },
+          "status": { "type": "string" },
+          "config": { "type": "object" },
+          "notes": { "type": "string" },
+          "examples": { "type": "array" },
+          "links": { "type": "array" },
           "title": { "type": "string" },
-          "section": { "type": "string" },
+          "controller": { "type": "object" },
+          "target": { "type": "object" },
+          "features": { "type": "array" },
+          "behavior": { "type": "string" },
+          "defaultForm": { "type": "string" },
+          "conditions": { "type": "string" },
+          "exceptions": { "type": "string" },
+          "tags": { "type": "array" },
           "body": { "type": "string" },
-          "links": { "type": "array" }
+          "sectionId": { "type": "string" },
+          "note": { "type": "string" }
         },
-        "required": ["title", "section", "body", "links"],
+        "required": ["recordKind", "schemaVersion"],
         "additionalProperties": false
       }
     },

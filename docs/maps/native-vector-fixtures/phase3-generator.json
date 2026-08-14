@@ -1,7 +1,7 @@
 {
-  "generatorVersion": 3,
+  "generatorVersion": 1,
   "settings": {
-    "generatorVersion": 3,
+    "generatorVersion": 1,
     "seed": 831429,
     "landPercent": 30,
     "continentCount": 3,
@@ -12,38 +12,38 @@
     {
       "index": 0,
       "seed": 2517126580,
-      "geometryHash": "sha256:c394a7af696d20817f5e3f3f6d4f9416682e79e0328e489c3b8ac1fa5f8049cf",
-      "thumbnailHash": "sha256:e7a10e364801f9c367679867b4cf4c8a40d6acf7a4def7f2804b7c16463a93da"
+      "geometryHash": "sha256:cf7a6146456f395d941926ef5c67bb1756c4abc13603a145717176dcd6bc95f4",
+      "thumbnailHash": "sha256:fb6da5d7071c361f8fddff7d3af89042daba20fa9f1ee28491e5769471a10bf0"
     },
     {
       "index": 1,
       "seed": 3030160315,
-      "geometryHash": "sha256:fae1ea81149876c4ce4f62f1ee1464a6372eadfc2ed27c732da92bc60e6ffaee",
-      "thumbnailHash": "sha256:326ebbcce3e94567bcfa98b601e08a7cb9df6fe9fb0e84cff0e5907995005c30"
+      "geometryHash": "sha256:4cfdcea2411315e47dd12cad68881b5046db321548eace269ae8d2de5b658197",
+      "thumbnailHash": "sha256:509b0ca277d7bf282130747d44843fd4fd8f64056b918d9e575ac2d9c1338dad"
     },
     {
       "index": 2,
       "seed": 3504005328,
-      "geometryHash": "sha256:599a248965e4d4e753c642a91b6f4a3485e91f63a53565957abf5fbe0b3d1a9d",
-      "thumbnailHash": "sha256:149bc6e33c6c595aa23a7b6aa4fd04820edd0a2a33339e6a213107de7ec7a73b"
+      "geometryHash": "sha256:d4eeff8071718769f0f24264023901548cfff9387de5b18342c97c29da1b5cbc",
+      "thumbnailHash": "sha256:18e81b44d12bd9b545cacd4485fd469ed957381d7b5a0b0ab73f7d461e386aaf"
     },
     {
       "index": 3,
       "seed": 2788536200,
-      "geometryHash": "sha256:6c429d88b866915f3074604f12ed0a28b36db40dc8e18bba3e349666edb83c1c",
-      "thumbnailHash": "sha256:03dc12eda702f163aa526c9e7f194257ef3a5d52bb59700173d09abcc280455b"
+      "geometryHash": "sha256:85a853e92a3c6988d81a081260aca48d55a54e62e865d8fa12415ed0f09af123",
+      "thumbnailHash": "sha256:0574f223ec05aa22bc2e86b69739040aa7d7a395c111b7d077abf35c42334e73"
     },
     {
       "index": 4,
       "seed": 826760873,
-      "geometryHash": "sha256:04eb53c0405b87f588f09c4860bba8c131430cd6647e5b4e38b2c78f8fc37cb5",
-      "thumbnailHash": "sha256:23392fefd281865fb10f7b1461ac157081487255d290238b05dc5adaa77acb31"
+      "geometryHash": "sha256:f45d806f698eb2f91bc711412f8950cba9ca08fbebee04988aa1f8b4f61a1d19",
+      "thumbnailHash": "sha256:edb6e36afef2bb4632ff313116764ea4ea07593030923c4374331305717d6916"
     },
     {
       "index": 5,
       "seed": 3537569982,
-      "geometryHash": "sha256:fea603aca36db4c254404858566b0c10134b07a9627cfaca3a0993ca8d70bc4b",
-      "thumbnailHash": "sha256:e06bcca37415b27d3c5133f1e0d3118a4ade8ed39344ec7b2d13fe71ef01217e"
+      "geometryHash": "sha256:8455c1e12c65d9d650dd38a3b9ddb1ebd591d16ce65ad4ec973f32f3c6fa5619",
+      "thumbnailHash": "sha256:fb5c4f2ac52881aaea9d7f299c682c5b530f8712cdbea6e5303d54a949a3e10e"
     }
   ]
 }

@@ -1,6 +1,6 @@
 import { contours } from "d3-contour";
 
-export const GENERATOR_VERSION = 3 as const;
+export const GENERATOR_VERSION = 1 as const;
 export const CANDIDATE_COUNT = 6;
 const GRID_WIDTH = 512;
 const GRID_HEIGHT = 256;
@@ -22,7 +22,10 @@ const SIMPLIFY_THRESHOLD = { low: 0.35, medium: 0.06, high: 0.015 } as const;
 const ARCHIPELAGO_COUNT = { none: 0, low: 2, medium: 4, high: 7 } as const;
 const CONTINENT_LOBES = 8;
 const BAY_COUNT = 4;
+const PLACEMENT_ATTEMPTS = 48;
+const CONTINENT_RADIUS_SCALE = 1.18;
 const NOISE_STRENGTH = { low: 0.18, medium: 0.28, high: 0.38 } as const;
+const SHORELINE_BAND = { low: 0.26, medium: 0.2, high: 0.14 } as const;
 const WARP_X = 0x51ed;
 const WARP_Y = 0xa31c;
 const MASS_MASK = 0xc0a5;
@@ -31,7 +34,7 @@ export type CoastlineRoughness = "low" | "medium" | "high";
 export type IslandFrequency = "none" | "low" | "medium" | "high";
 
 export type NativeGeneratorSettings = {
-  generatorVersion: 3;
+  generatorVersion: 1;
   seed: number;
   landPercent: number;
   continentCount: number;
@@ -129,9 +132,9 @@ function kernelCoordinates(kernel: Kernel, x: number, y: number): [number, numbe
   return [along + kernel.shear * across, across];
 }
 
-function compactOrientedKernel(kernel: Kernel, x: number, y: number) {
+function compactOrientedKernel(kernel: Kernel, x: number, y: number, radiusScale = 1) {
   const [along, across] = kernelCoordinates(kernel, x, y);
-  return compactKernel(along, across, kernel.rx, kernel.ry, 0);
+  return compactKernel(along, across, kernel.rx * radiusScale, kernel.ry * radiusScale, 0);
 }
 
 function signedOrientedKernel(kernel: Kernel, x: number, y: number) {
@@ -140,11 +143,9 @@ function signedOrientedKernel(kernel: Kernel, x: number, y: number) {
   return 1 - q;
 }
 
-function maxCompactKernel(kernels: readonly Kernel[], x: number, y: number, scale = 1) {
+function maxCompactKernel(kernels: readonly Kernel[], x: number, y: number, scale = 1, radiusScale = 1) {
   let field = 0;
-  for (const kernel of kernels) {
-    field = Math.max(field, compactOrientedKernel(kernel, x, y) * scale);
-  }
+  for (const kernel of kernels) field = Math.max(field, compactOrientedKernel(kernel, x, y, radiusScale) * scale);
   return field;
 }
 
@@ -462,6 +463,7 @@ function generateOne(settings: NativeGeneratorSettings, index: number): NativeGe
     return value;
   };
   const values = new Float64Array(VALUE_COUNT);
+  const macroValues = new Float64Array(VALUE_COUNT);
   const continentGroups: Kernel[][] = [];
   const continentAnchors: ContinentAnchor[] = [];
   const bayGroups: Kernel[][] = [];
@@ -472,7 +474,7 @@ function generateOne(settings: NativeGeneratorSettings, index: number): NativeGe
     let bestScore = -Infinity;
     // Best-candidate placement keeps the requested bodies distinct instead of
     // allowing several random cores to collapse into one central supercontinent.
-    for (let attempt = 0; attempt < 12; attempt += 1) {
+    for (let attempt = 0; attempt < PLACEMENT_ATTEMPTS; attempt += 1) {
       const candidateX = 0.1 + take() * 0.8;
       const candidateY = 0.14 + take() * 0.72;
       const edgeScore = Math.min(candidateX - 0.06, 0.94 - candidateX, candidateY - 0.08, 0.92 - candidateY) * 3;
@@ -480,7 +482,13 @@ function generateOne(settings: NativeGeneratorSettings, index: number): NativeGe
       for (const anchor of continentAnchors) {
         separation = Math.min(
           separation,
-          Math.hypot((candidateX - anchor.cx) / (baseRx + anchor.rx), (candidateY - anchor.cy) / (baseRx + anchor.ry)),
+          Math.min(
+            1,
+            Math.hypot(
+              (candidateX - anchor.cx) / (baseRx + anchor.rx),
+              (candidateY - anchor.cy) / (baseRx + anchor.ry),
+            ) / 1.9,
+          ),
         );
       }
       const score = Math.min(edgeScore, separation);
@@ -508,14 +516,14 @@ function generateOne(settings: NativeGeneratorSettings, index: number): NativeGe
     // Overlapping side lobes become capes and peninsulas rather than radial bumps.
     for (let lobe = 0; lobe < CONTINENT_LOBES; lobe += 1) {
       const along = ((lobe + 0.5) / CONTINENT_LOBES) * 2 - 1 + (take() * 2 - 1) * 0.16;
-      const side = (take() * 2 - 1) * (0.38 + 0.24 * Math.abs(along));
-      const taper = 1 - Math.abs(along) * 0.38;
-      const lobeRx = rx * (0.34 + take() * 0.24) * taper;
-      const lobeRy = ry * (0.46 + take() * 0.45) * taper;
+      const side = (take() * 2 - 1) * (0.32 + 0.18 * Math.abs(along));
+      const taper = 1 - Math.abs(along) * 0.3;
+      const lobeRx = rx * (0.28 + take() * 0.18) * taper;
+      const lobeRy = ry * (0.38 + take() * 0.34) * taper;
       const [lobeUx, lobeUy] = unitVector(ux - uy * side * 0.35, uy + ux * side * 0.35);
       const component = {
-        cx: cx + ux * along * rx * 0.88 - uy * side * ry,
-        cy: cy + uy * along * rx * 0.88 + ux * side * ry,
+        cx: cx + ux * along * rx * 0.95 - uy * side * ry,
+        cy: cy + uy * along * rx * 0.95 + ux * side * ry,
         rx: lobeRx,
         ry: lobeRy,
         ux: lobeUx,
@@ -545,49 +553,6 @@ function generateOne(settings: NativeGeneratorSettings, index: number): NativeGe
     }
   }
 
-  const separators: Kernel[] = [];
-  for (let left = 0; left < continentAnchors.length; left += 1) {
-    for (let right = left + 1; right < continentAnchors.length; right += 1) {
-      const a = continentAnchors[left];
-      const b = continentAnchors[right];
-      const [towardX, towardY] = unitVector(b.cx - a.cx, b.cy - a.cy);
-      const alongX = -towardY;
-      const alongY = towardX;
-      const distance = Math.hypot(b.cx - a.cx, b.cy - a.cy);
-      const extent = Math.min(0.38, 0.24 + distance * 0.24);
-      for (let segment = -5; segment <= 5; segment += 1) {
-        const offset = segment / 5;
-        const wobble =
-          valueNoise(seed ^ Math.imul(left + 1, 0x45d9) ^ Math.imul(right + 1, 0x119d), offset, distance, 3) * 0.045;
-        const radius = 0.052 + valueNoise(seed ^ Math.imul(segment + 7, 0x27d4), distance, offset, 4) * 0.008;
-        separators.push({
-          cx: (a.cx + b.cx) / 2 + alongX * offset * extent + towardX * wobble,
-          cy: (a.cy + b.cy) / 2 + alongY * offset * extent + towardY * wobble,
-          rx: radius * 1.25,
-          ry: radius,
-          ux: alongX,
-          uy: alongY,
-          shear: valueNoise(seed ^ 0x7f4a, offset, distance, 5) * 0.25,
-        });
-      }
-    }
-  }
-  // Adapter v1 cannot persist a ring wider than 180 degrees. A narrow,
-  // seed-warped pole-to-pole ocean passage keeps every generated ring on one
-  // side of that boundary without clipping otherwise valid land.
-  for (let segment = -1; segment <= 17; segment += 1) {
-    const y = segment / 16;
-    separators.push({
-      cx: 0.5 + valueNoise(seed ^ 0x6a09, y, 0.5, 3) * 0.035,
-      cy: y,
-      rx: 0.075,
-      ry: 0.035,
-      ux: 0,
-      uy: 1,
-      shear: valueNoise(seed ^ 0xbb67, y, 0.5, 4) * 0.2,
-    });
-  }
-
   const islands: Kernel[] = [];
   const archipelagoCount = ARCHIPELAGO_COUNT[settings.islandFrequency];
   for (let cluster = 0; cluster < archipelagoCount; cluster += 1) {
@@ -605,15 +570,18 @@ function generateOne(settings: NativeGeneratorSettings, index: number): NativeGe
     for (let member = 0; member < memberCount; member += 1) {
       const offset = member - (memberCount - 1) / 2;
       const curve = offset * offset * 0.002;
-      const islandRx = 0.006 + take() * 0.007;
+      const centerBias = 1 - Math.min(1, Math.abs(offset) / Math.max(1, memberCount / 2));
+      const islandScale = 0.72 + centerBias * 0.58;
+      const islandRx = (0.0045 + take() * 0.0075) * islandScale;
       const aspect = 0.55 + take() * 0.9;
+      const crossJitter = (take() * 2 - 1) * (0.25 + (Math.abs(offset) / Math.max(1, memberCount)) * 0.45) * spacing;
       const [islandUx, islandUy] = unitVector(
         tangentX + outX * (take() * 0.5 - 0.25),
         tangentY + outY * (take() * 0.5 - 0.25),
       );
       islands.push({
-        cx: centerX + tangentX * offset * spacing + outX * curve + (take() * 2 - 1) * 0.006,
-        cy: centerY + tangentY * offset * spacing + outY * curve + (take() * 2 - 1) * 0.006,
+        cx: centerX + tangentX * offset * spacing + outX * (curve + crossJitter) + (take() * 2 - 1) * 0.006,
+        cy: centerY + tangentY * offset * spacing + outY * (curve + crossJitter) + (take() * 2 - 1) * 0.006,
         rx: islandRx,
         ry: islandRx * aspect,
         ux: islandUx,
@@ -624,6 +592,8 @@ function generateOne(settings: NativeGeneratorSettings, index: number): NativeGe
   }
   const amplitudes = NOISE_AMPLITUDE[settings.coastlineRoughness];
   const amplitudeSum = amplitudes.reduce((sum, value) => sum + value, 0);
+  // Normalize each compact continental field without lifting the shared ocean
+  // baseline, then apply the requested land budget once across the whole map.
   const targetPerContinent = Math.min(0.7, (settings.landPercent / 100 / continentGroups.length) * 1.08);
   const groupThresholds = continentGroups.map((group, groupIndex) => {
     const sampleWidth = 128;
@@ -634,15 +604,16 @@ function generateOne(settings: NativeGeneratorSettings, index: number): NativeGe
         const x = (column + 0.5) / sampleWidth;
         const y = (row + 0.5) / sampleHeight;
         const [sx, sy] = domainWarp(seed, x, y);
+        const compact = maxCompactKernel(group, sx, sy, 1, CONTINENT_RADIUS_SCALE);
         samples[row * sampleWidth + column] =
-          maxSignedKernel(group, sx, sy) +
-          valueNoise(seed ^ MASS_MASK ^ Math.imul(groupIndex + 1, 0x9e37), sx, sy, 3) * 0.2 -
+          compact +
+          valueNoise(seed ^ MASS_MASK ^ Math.imul(groupIndex + 1, 0x9e37), sx, sy, 3) * 0.2 * compact -
           maxCompactKernel(bayGroups[groupIndex], sx, sy, 4);
       }
     }
     samples.sort();
     const rank = Math.max(0, Math.min(samples.length - 1, Math.floor((1 - targetPerContinent) * samples.length)));
-    return samples[rank];
+    return continentGroups.length === 1 ? 0 : Math.max(0, samples[rank]);
   });
   for (let row = 0; row < GRID_HEIGHT; row += 1) {
     for (let column = 0; column < GRID_WIDTH; column += 1) {
@@ -652,23 +623,44 @@ function generateOne(settings: NativeGeneratorSettings, index: number): NativeGe
       const [sx, sy] = domainWarp(seed, x, y);
       let continentField = -Infinity;
       for (let groupIndex = 0; groupIndex < continentGroups.length; groupIndex += 1) {
+        const compact = maxCompactKernel(continentGroups[groupIndex], sx, sy, 1, CONTINENT_RADIUS_SCALE);
         const groupField =
-          maxSignedKernel(continentGroups[groupIndex], sx, sy) +
-          valueNoise(seed ^ MASS_MASK ^ Math.imul(groupIndex + 1, 0x9e37), sx, sy, 3) * 0.2 -
+          compact +
+          valueNoise(seed ^ MASS_MASK ^ Math.imul(groupIndex + 1, 0x9e37), sx, sy, 3) * 0.2 * compact -
           maxCompactKernel(bayGroups[groupIndex], sx, sy, 4) -
           groupThresholds[groupIndex];
         continentField = Math.max(continentField, groupField);
       }
-      continentField -= maxCompactKernel(separators, sx, sy, 80);
       const islandField = islands.length === 0 ? -Infinity : maxSignedKernel(islands, sx, sy) * 0.9 + 0.25;
+      const edgeDistance = Math.min(x, 1 - x, y, 1 - y);
+      const edgePenalty = edgeDistance < 0.04 ? ((0.04 - edgeDistance) / 0.04) * 24 : 0;
+      macroValues[cellIndex] = Math.max(continentField, islandField) - edgePenalty + cellIndex * 2 ** -40;
+    }
+  }
+  const macroSorted = Float64Array.from(macroValues);
+  macroSorted.sort();
+  const macroRank = Math.floor((1 - settings.landPercent / 100) * VALUE_COUNT);
+  const macroThreshold =
+    macroRank <= 0
+      ? macroSorted[0]
+      : macroRank >= VALUE_COUNT
+        ? macroSorted[VALUE_COUNT - 1]
+        : (macroSorted[macroRank - 1] + macroSorted[macroRank]) / 2;
+  const shorelineBand = SHORELINE_BAND[settings.coastlineRoughness];
+  for (let row = 0; row < GRID_HEIGHT; row += 1) {
+    for (let column = 0; column < GRID_WIDTH; column += 1) {
+      const cellIndex = row * GRID_WIDTH + column;
+      const x = (column + 0.5) / GRID_WIDTH;
+      const y = (row + 0.5) / GRID_HEIGHT;
+      const [sx, sy] = domainWarp(seed, x, y);
       let noise = 0;
       for (let octave = 0; octave < amplitudes.length; octave += 1) {
         noise += valueNoise(seed, sx, sy, 2 ** octave) * amplitudes[octave];
       }
       noise = (noise / amplitudeSum) * NOISE_STRENGTH[settings.coastlineRoughness];
-      const edgeDistance = Math.min(x, 1 - x, y, 1 - y);
-      const edgePenalty = edgeDistance < 0.04 ? ((0.04 - edgeDistance) / 0.04) * 24 : 0;
-      values[cellIndex] = Math.max(continentField, islandField) + noise - edgePenalty + cellIndex * 2 ** -40;
+      const shorelineWeight = Math.exp(-Math.abs(macroValues[cellIndex] - macroThreshold) / shorelineBand);
+      const localNoise = noise * (0.16 + shorelineWeight * 0.84);
+      values[cellIndex] = macroValues[cellIndex] + localNoise + cellIndex * 2 ** -40;
     }
   }
   const sorted = Float64Array.from(values);

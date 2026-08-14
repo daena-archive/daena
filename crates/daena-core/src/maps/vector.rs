@@ -854,14 +854,11 @@ pub fn validate_generation(value: &Value) -> Result<(), CoreError> {
     if object.get("id").and_then(Value::as_str) != Some("daena-landmass") {
         return Err(fail(CODE_GENERATOR, "generation.id", "must be daena-landmass"));
     }
-    if !matches!(
-        object.get("version").and_then(Value::as_u64),
-        Some(2 | 3)
-    ) {
+    if object.get("version").and_then(Value::as_u64) != Some(1) {
         return Err(fail(
             CODE_UNSUPPORTED_VERSION,
             "generation.version",
-            "must be 2 or 3",
+            "must be 1",
         ));
     }
     let seed = object.get("seed").and_then(Value::as_u64).ok_or_else(|| fail(CODE_GENERATOR, "generation.seed", "must be a uint32"))?;

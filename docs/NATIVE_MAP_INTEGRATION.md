@@ -338,11 +338,11 @@ limit or geometry rule requires an adapter-version compatibility decision.
 Generation runs in a bundled Web Worker so six candidates cannot block the
 Svelte UI. It performs no network, filesystem, Tauri, or project mutation.
 
-Version 3 has these inputs:
+Version 1 has these inputs:
 
 ```ts
 type NativeGeneratorSettings = {
-  generatorVersion: 3;
+  generatorVersion: 1;
   seed: number; // uint32
   landPercent: number; // integer 15..70
   continentCount: number; // integer 1..8
@@ -380,7 +380,7 @@ Math.imul(index + 1, 0x9e3779b9))`.
 3. Evaluate a `512 x 256` row-major scalar field. Cell `(column, row)` samples
    normalized coordinates `x = (column + .5) / 512` and
    `y = (row + .5) / 256`; `cellIndex = row * 512 + column`.
-4. Place `continentCount` continent cores with a deterministic 12-sample
+4. Place `continentCount` continent cores with a deterministic 48-sample
    best-candidate pass. The pass favors ocean margins and distance from the
    previously accepted cores, preventing several requested continents from
    collapsing onto the same center. Each core has an arbitrary normalized
@@ -388,25 +388,28 @@ Math.imul(index + 1, 0x9e3779b9))`.
 5. Build each continent independently from the core plus eight tapered lobes
    along a gently wandering spine. Four subtractive shelf kernels alternate
    sides to form connected bays and gulfs. Evaluate the oriented kernels as
-   signed elliptical distance fields. Sample each continent on a deterministic
-   `128 x 64` grid and subtract its own land-rank threshold before combining
-   the groups. This normalization prevents one broad core from consuming the
-   complete global land budget. Pairwise chains of small, overlapping water
-   kernels maintain meandering ocean passages between otherwise touching
-   continent groups. A narrow seed-warped pole-to-pole passage also keeps every
-   generated adapter-v1 ring within the 180-degree longitude-span contract.
+   compact elliptical fields. Sample each group on a deterministic `128 x 64`
+   grid, calculate its local land-rank threshold, and clamp that threshold at
+   the ocean baseline before combining groups. A single global threshold then
+   enforces the requested total land budget. Keep gaps between continent groups
+   as open ocean rather than carving a global separator network through the
+   map; subtractive shelf kernels are reserved for local bays and gulfs.
 6. Domain-warp every sample with two low-frequency value-noise octaves. The x
    amplitudes are `.09` and `.035`; the y amplitudes are `.07` and `.03`.
    Add five coastline octaves at frequencies `1, 2, 4, 8, 16`. The octave
    weights remain low `[1, .35, .12, .04, .01]`, medium
    `[1, .5, .25, .125, .0625]`, and high `[1, .65, .42, .27, .18]`; normalized
-   strengths are `.18`, `.28`, and `.38`. Lattice values and smoothstep
-   interpolation continue to use the fixed `mix32` contract.
+   strengths are `.18`, `.28`, and `.38`. Use the macro field to locate the
+   provisional shoreline, then apply the same detail noise at full strength
+   near that shoreline and at 16% strength in the interior. This keeps large
+   landmasses coherent while giving bays and capes finer, natural variation.
+   Lattice values and smoothstep interpolation continue to use the fixed
+   `mix32` contract.
 7. Generate `0`, `2`, `4`, or `7` archipelagos for none, low, medium, or high.
    Every archipelago is anchored just beyond a selected continental shelf and
    contains four to eight small oriented kernels along a curved, jittered arc.
-   This produces island chains and offshore islets instead of uniformly
-   scattering unrelated ellipses through the ocean.
+   Island sizes taper and vary within each cluster, producing a larger central
+   island with smaller satellites instead of a row of identical ellipses.
 8. Add `cellIndex * 2^-40` to break exact scalar ties. Sort a
    copy of the values numerically and choose the midpoint between the adjacent
    values around rank `floor((1 - landPercent / 100) * valueCount)`. This is
@@ -448,7 +451,7 @@ The committed descriptor records generator provenance in a new optional
 ```json
 {
   "id": "daena-landmass",
-  "version": 3,
+  "version": 1,
   "seed": 831429,
   "settings": {
     "landPercent": 30,
@@ -466,9 +469,9 @@ source. Regeneration after acceptance is out of scope and must never replace
 the source implicitly.
 
 Golden fixtures pin settings, candidate seeds, normalized geometry hashes, and
-thumbnail hashes. An intentional generator change increments
-`generatorVersion`; old committed maps require no migration because their
-GeoJSON is already canonical.
+thumbnail hashes. Generator version `1` is the only accepted provenance
+version; changing this algorithm requires updating the v1 fixture and any
+regenerated map source directly. Committed GeoJSON remains canonical.
 
 ## Rendering and editing
 

@@ -84,7 +84,7 @@ for (const candidate of first) {
 }
 
 const actual = {
-  generatorVersion: 3,
+  generatorVersion: 1,
   settings: DEFAULT_GENERATOR_SETTINGS,
   candidates: first.map((candidate) => ({
     index: candidate.index,
@@ -100,4 +100,4 @@ if (process.env.DAENA_WRITE_GENERATOR_GOLDEN === "1") {
 
 const expected = JSON.parse(readFileSync(fixtureUrl, "utf8"));
 assert.deepEqual(actual, expected, "native vector generator golden hashes drifted");
-console.log("native vector Phase 3 generator golden hashes matched");
+console.log("native vector v1 generator golden hashes matched");

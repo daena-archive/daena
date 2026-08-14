@@ -1,5 +1,10 @@
 import type { ModuleContext, ModuleRecord, ModuleRecordQuery } from "../../../../module-api/src/index";
-import { indexGrammarRecords, serializeGrammarRecord, validateGrammarDraft, brokenAgreementFeatures } from "./normalize.ts";
+import {
+  indexGrammarRecords,
+  serializeGrammarRecord,
+  validateGrammarDraft,
+  brokenAgreementFeatures,
+} from "./normalize.ts";
 import type { GrammarRecord, IndexedGrammar } from "./types.ts";
 
 export type GrammarRecordsApi = Pick<ModuleContext["records"], "list" | "create" | "update" | "delete">;

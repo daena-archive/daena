@@ -493,12 +493,7 @@ export const project = {
   listAssets: (entityId: string) => invoke<Asset[]>("project_list_assets", { entityId }),
   importImageMapFile: (sourcePath: string) =>
     invoke<{ entity: Entity; source: Asset; preview: Asset }>("project_import_image_map_file", { sourcePath }),
-  acceptVectorMap: (
-    name: string,
-    candidateJson: string,
-    generation: unknown,
-    options?: MutationOptions,
-  ) =>
+  acceptVectorMap: (name: string, candidateJson: string, generation: unknown, options?: MutationOptions) =>
     invoke<{ entity: Entity; source: Asset }>("project_accept_vector_map", {
       name,
       candidateJson,

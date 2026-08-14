@@ -136,7 +136,10 @@ export function toggleInterrogative(draft: GrammarSystemRecord, meaning: string)
   const config = contentConfig(draft);
   const existing = config.interrogatives.find((item) => item.meaning === meaning);
   if (existing) {
-    return setContent(draft, { ...config, interrogatives: config.interrogatives.filter((item) => item.id !== existing.id) });
+    return setContent(draft, {
+      ...config,
+      interrogatives: config.interrogatives.filter((item) => item.id !== existing.id),
+    });
   }
   return setContent(draft, {
     ...config,
@@ -175,7 +178,10 @@ export function removeInterrogative(draft: GrammarSystemRecord, id: string): Gra
   return setContent(draft, { ...config, interrogatives: config.interrogatives.filter((item) => item.id !== id) });
 }
 
-export function toggleImperativeStrategy(draft: GrammarSystemRecord, strategy: ImperativeStrategy): GrammarSystemRecord {
+export function toggleImperativeStrategy(
+  draft: GrammarSystemRecord,
+  strategy: ImperativeStrategy,
+): GrammarSystemRecord {
   if (draft.systemId !== "clauses.imperatives") return draft;
   const config = imperativeConfig(draft);
   return setImperative(draft, { ...config, strategies: toggle(config.strategies, strategy) });
@@ -190,7 +196,10 @@ export function setImperativeDistinction(
   return setImperative(draft, { ...imperativeConfig(draft), [key]: value });
 }
 
-export function toggleNegationStrategy(draft: GrammarSystemRecord, strategy: ClauseNegationStrategy): GrammarSystemRecord {
+export function toggleNegationStrategy(
+  draft: GrammarSystemRecord,
+  strategy: ClauseNegationStrategy,
+): GrammarSystemRecord {
   if (draft.systemId !== "clauses.negation") return draft;
   const config = negationConfig(draft);
   const strategies = toggle(config.strategies, strategy);
@@ -222,7 +231,10 @@ export function setNegationImperatives(draft: GrammarSystemRecord, negativeImper
   return setNegation(draft, { ...negationConfig(draft), negativeImperatives });
 }
 
-export function toggleRelativization(draft: GrammarSystemRecord, strategy: RelativizationStrategy): GrammarSystemRecord {
+export function toggleRelativization(
+  draft: GrammarSystemRecord,
+  strategy: RelativizationStrategy,
+): GrammarSystemRecord {
   if (draft.systemId !== "clauses.relative-clauses") return draft;
   const config = relativeConfig(draft);
   return setRelative(draft, { ...config, strategies: toggle(config.strategies, strategy) });
@@ -250,15 +262,21 @@ export function summarizeClause(systemId: GrammarSystemId, config: GrammarSystem
       const behavior =
         value.behavior === "custom" && value.customBehavior?.trim()
           ? value.customBehavior.trim()
-          : CONTENT_QUESTION_OPTIONS.find((item) => item.value === value.behavior)?.label ?? value.behavior;
-      const words = value.interrogatives?.map((item) => item.meaning).filter(Boolean).join(", ");
+          : (CONTENT_QUESTION_OPTIONS.find((item) => item.value === value.behavior)?.label ?? value.behavior);
+      const words = value.interrogatives
+        ?.map((item) => item.meaning)
+        .filter(Boolean)
+        .join(", ");
       return [behavior, words].filter(Boolean).join(" · ");
     }
     case "clauses.imperatives":
       return joinLabels(IMPERATIVE_OPTIONS, (config as ImperativesConfig).strategies);
     case "clauses.negation": {
       const value = config as ClauseNegationConfig;
-      return join([joinLabels(CLAUSE_NEGATION_OPTIONS, value.strategies), value.particle ? `“${value.particle}”` : undefined]);
+      return join([
+        joinLabels(CLAUSE_NEGATION_OPTIONS, value.strategies),
+        value.particle ? `“${value.particle}”` : undefined,
+      ]);
     }
     case "clauses.relative-clauses":
       return joinLabels(RELATIVIZATION_OPTIONS, (config as RelativeClausesConfig).strategies);
@@ -307,7 +325,10 @@ function yesNoEditor(
     const particle = input("particle", config.particle ?? "");
     particle.disabled = locked;
     particle.oninput = () => onChange(setYesNoParticle(draft, particle.value), false);
-    wrap.append(field("Particle", particle), placementRadios(config.placement, locked, (value) => onChange(setYesNoPlacement(draft, value), true)));
+    wrap.append(
+      field("Particle", particle),
+      placementRadios(config.placement, locked, (value) => onChange(setYesNoPlacement(draft, value), true)),
+    );
   }
   return wrap;
 }
@@ -321,9 +342,11 @@ function contentEditor(
   const wrap = document.createElement("div");
   wrap.className = "grammar-choice-stack";
   const config = contentConfig(draft);
-  wrap.append(radios("Where do question words appear?", CONTENT_QUESTION_OPTIONS, config.behavior, locked, (value) =>
-    onChange(setContentBehavior(draft, value as ContentQuestionBehavior), true),
-  ));
+  wrap.append(
+    radios("Where do question words appear?", CONTENT_QUESTION_OPTIONS, config.behavior, locked, (value) =>
+      onChange(setContentBehavior(draft, value as ContentQuestionBehavior), true),
+    ),
+  );
   if (config.behavior === "custom") {
     const custom = input("customBehavior", config.customBehavior ?? "");
     custom.disabled = locked;
@@ -340,7 +363,10 @@ function contentEditor(
       (value) => onChange(toggleInterrogative(draft, value), true),
     ),
   );
-  if (!locked) wrap.append(button("Add interrogative", "language-button secondary", () => onChange(addInterrogative(draft), true)));
+  if (!locked)
+    wrap.append(
+      button("Add interrogative", "language-button secondary", () => onChange(addInterrogative(draft), true)),
+    );
   for (const [index, item] of config.interrogatives.entries()) {
     const lexeme = document.createElement("select");
     lexeme.name = "lexemeId";
@@ -348,20 +374,28 @@ function contentEditor(
     lexeme.append(new Option("Not linked to a word", ""));
     for (const choice of ctx.lexemes) lexeme.append(new Option(choice.lemma, choice.id));
     lexeme.value = item.lexemeId ?? "";
-    lexeme.onchange = () => onChange(updateInterrogative(draft, item.id, { lexemeId: lexeme.value || undefined }), true);
+    lexeme.onchange = () =>
+      onChange(updateInterrogative(draft, item.id, { lexemeId: lexeme.value || undefined }), true);
     wrap.append(
-      rowCard(item.meaning || `Interrogative ${index + 1}`, index, config.interrogatives.length, locked, [
-        namedField("meaning", "Meaning", item.meaning, locked, (value) =>
-          onChange(updateInterrogative(draft, item.id, { meaning: value }), false),
-        ),
-        namedField("form", "Form", item.form ?? "", locked, (value) =>
-          onChange(updateInterrogative(draft, item.id, { form: value }), false),
-        ),
-        field("Linked word (optional)", lexeme),
-      ], {
-        move: (delta) => onChange(moveInterrogative(draft, item.id, delta), true),
-        remove: () => onChange(removeInterrogative(draft, item.id), true),
-      }),
+      rowCard(
+        item.meaning || `Interrogative ${index + 1}`,
+        index,
+        config.interrogatives.length,
+        locked,
+        [
+          namedField("meaning", "Meaning", item.meaning, locked, (value) =>
+            onChange(updateInterrogative(draft, item.id, { meaning: value }), false),
+          ),
+          namedField("form", "Form", item.form ?? "", locked, (value) =>
+            onChange(updateInterrogative(draft, item.id, { form: value }), false),
+          ),
+          field("Linked word (optional)", lexeme),
+        ],
+        {
+          move: (delta) => onChange(moveInterrogative(draft, item.id, delta), true),
+          remove: () => onChange(removeInterrogative(draft, item.id), true),
+        },
+      ),
     );
   }
   wrap.append(emptyMessage("Interrogatives do not become lexicon entries unless you link a word."));
@@ -425,7 +459,10 @@ function negationEditor(
     const particle = input("particle", config.particle ?? "");
     particle.disabled = locked;
     particle.oninput = () => onChange(setNegationParticle(draft, particle.value), false);
-    wrap.append(field("Particle", particle), placementRadios(config.placement, locked, (value) => onChange(setNegationPlacement(draft, value), true)));
+    wrap.append(
+      field("Particle", particle),
+      placementRadios(config.placement, locked, (value) => onChange(setNegationPlacement(draft, value), true)),
+    );
   }
   const questions = textarea("negativeQuestions", config.negativeQuestions ?? "", 3);
   questions.disabled = locked;
@@ -452,7 +489,8 @@ function relativeEditor(
       onChange(toggleRelativization(draft, value as RelativizationStrategy), true),
     ),
   );
-  if (ctx.relativePositionSummary) wrap.append(emptyMessage(`Relative clause position: ${ctx.relativePositionSummary}`));
+  if (ctx.relativePositionSummary)
+    wrap.append(emptyMessage(`Relative clause position: ${ctx.relativePositionSummary}`));
   const head = textarea("headBehavior", config.headBehavior ?? "", 3);
   head.disabled = locked;
   head.oninput = () => onChange(setRelativeHeadBehavior(draft, head.value), false);
@@ -463,7 +501,13 @@ function relativeEditor(
   return wrap;
 }
 
-function checks(legendText: string, options: ClauseOption[], selected: string[], locked: boolean, onToggle: (value: string) => void) {
+function checks(
+  legendText: string,
+  options: ClauseOption[],
+  selected: string[],
+  locked: boolean,
+  onToggle: (value: string) => void,
+) {
   const group = document.createElement("fieldset");
   group.className = "grammar-checks";
   const legend = document.createElement("legend");
@@ -483,7 +527,13 @@ function checks(legendText: string, options: ClauseOption[], selected: string[],
   return group;
 }
 
-function radios(legendText: string, options: ClauseOption[], selected: string | undefined, locked: boolean, onChange: (value: string) => void) {
+function radios(
+  legendText: string,
+  options: ClauseOption[],
+  selected: string | undefined,
+  locked: boolean,
+  onChange: (value: string) => void,
+) {
   const group = document.createElement("fieldset");
   group.className = "grammar-choices";
   const legend = document.createElement("legend");
@@ -508,7 +558,11 @@ function radios(legendText: string, options: ClauseOption[], selected: string | 
   return group;
 }
 
-function placementRadios(selected: ParticlePlacement | undefined, locked: boolean, onChange: (value: ParticlePlacement) => void) {
+function placementRadios(
+  selected: ParticlePlacement | undefined,
+  locked: boolean,
+  onChange: (value: ParticlePlacement) => void,
+) {
   const group = document.createElement("fieldset");
   group.className = "grammar-status";
   const legend = document.createElement("legend");
@@ -587,7 +641,9 @@ function join(parts: (string | undefined)[]) {
 
 function joinLabels(options: ClauseOption[], values: string[] | undefined) {
   if (!values?.length) return undefined;
-  return values.map((value) => options.find((option) => option.value === value)?.label ?? value.replaceAll("-", " ")).join(" / ");
+  return values
+    .map((value) => options.find((option) => option.value === value)?.label ?? value.replaceAll("-", " "))
+    .join(" / ");
 }
 
 function yesNoConfig(draft: GrammarSystemRecord): YesNoQuestionsConfig {

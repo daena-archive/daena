@@ -106,7 +106,15 @@ if (!worker.includes("generateCandidates") || worker.includes("invoke(")) {
   fail("generator worker must stay offline and mutation-free");
 }
 const dialog = read("src/lib/maps/native-vector/NativeVectorGenerator.svelte");
-for (const required of ["Copy", "Paste", "Regenerate", "Back to map details", "Full screen", "Accept candidate", "radiogroup"]) {
+for (const required of [
+  "Copy",
+  "Paste",
+  "Regenerate",
+  "Back to map details",
+  "Full screen",
+  "Accept candidate",
+  "radiogroup",
+]) {
   if (!dialog.includes(required)) fail(`NativeVectorGenerator missing ${required}`);
 }
 if (!dialog.includes("acceptVectorMap") || !dialog.includes("generationProvenance")) {

@@ -124,7 +124,8 @@ export function applyBasicWordOrder(draft: GrammarSystemRecord, patch: BasicWord
 
   const config: BasicWordOrderConfig = {
     order,
-    customOrder: order === "custom" ? (patch.customOrder !== undefined ? patch.customOrder : current.customOrder) : undefined,
+    customOrder:
+      order === "custom" ? (patch.customOrder !== undefined ? patch.customOrder : current.customOrder) : undefined,
     strength: patch.strength === "" ? undefined : patch.strength !== undefined ? patch.strength : current.strength,
     influences,
     customInfluence:
@@ -145,7 +146,10 @@ export type PositionPatch<T extends string> = {
   conditions?: string;
 };
 
-export function applyAdjectivePosition(draft: GrammarSystemRecord, patch: PositionPatch<PositionChoice>): GrammarSystemRecord {
+export function applyAdjectivePosition(
+  draft: GrammarSystemRecord,
+  patch: PositionPatch<PositionChoice>,
+): GrammarSystemRecord {
   if (draft.systemId !== "syntax.adjective-position") return draft;
   return applyPositionRecord(draft, ADJECTIVE_POSITION_OPTIONS, isPosition, patch);
 }
@@ -267,9 +271,16 @@ function wordOrderEditor(
   }
   if (config?.order) {
     wrap.append(
-      radioRow("strength", "How strong is this ordering?", WORD_ORDER_STRENGTH_OPTIONS, config.strength, locked, (strength) => {
-        onChange(applyBasicWordOrder(draft, { strength }), true);
-      }),
+      radioRow(
+        "strength",
+        "How strong is this ordering?",
+        WORD_ORDER_STRENGTH_OPTIONS,
+        config.strength,
+        locked,
+        (strength) => {
+          onChange(applyBasicWordOrder(draft, { strength }), true);
+        },
+      ),
     );
     const notes = textarea("changeNotes", config.changeNotes ?? "", 3);
     notes.disabled = locked;
@@ -352,16 +363,16 @@ function adpositionsEditor(
     choiceCards("strategy", "Adposition strategy", ADPOSITION_OPTIONS, config?.strategy, locked, (strategy) => {
       onChange(applyAdpositions(draft, { strategy }), true);
     }),
-    emptyMessage("If this language does not use adpositions, mark the system as not used. Case is configured under Nouns."),
+    emptyMessage(
+      "If this language does not use adpositions, mark the system as not used. Case is configured under Nouns.",
+    ),
   );
   if (config?.strategy === "both" || config?.strategy === "other") {
     const notes = textarea("distributionNotes", config.distributionNotes ?? "", 3);
     notes.disabled = locked;
     notes.placeholder = config.strategy === "both" ? "When does each appear?" : "Describe the strategy.";
     notes.oninput = () => onChange(applyAdpositions(draft, { distributionNotes: notes.value }), false);
-    wrap.append(
-      field(config.strategy === "both" ? "When does each appear?" : "Describe the strategy", notes),
-    );
+    wrap.append(field(config.strategy === "both" ? "When does each appear?" : "Describe the strategy", notes));
   }
   return wrap;
 }
@@ -471,7 +482,9 @@ function toggle<T>(values: T[], item: T) {
 function applyPositionRecord<T extends string>(
   draft: GrammarSystemRecord,
   options: ChoiceOption<T>[],
-  guard: (config: GrammarSystemRecord["config"]) => config is { position: T; alternatePositions: T[]; customPosition?: string; conditions?: string },
+  guard: (
+    config: GrammarSystemRecord["config"],
+  ) => config is { position: T; alternatePositions: T[]; customPosition?: string; conditions?: string },
   patch: PositionPatch<T>,
 ): GrammarSystemRecord {
   const allowed = new Set(options.map((option) => option.value));
@@ -484,7 +497,12 @@ function applyPositionRecord<T extends string>(
   }
   const config = {
     position,
-    customPosition: position === "custom" ? (patch.customPosition !== undefined ? patch.customPosition : current.customPosition) : undefined,
+    customPosition:
+      position === "custom"
+        ? patch.customPosition !== undefined
+          ? patch.customPosition
+          : current.customPosition
+        : undefined,
     alternatePositions: alternates,
     conditions: patch.conditions !== undefined ? patch.conditions || undefined : current.conditions,
   };
@@ -507,7 +525,10 @@ function isWordOrder(config: GrammarSystemRecord["config"]): config is BasicWord
 }
 
 function isPosition(config: GrammarSystemRecord["config"]): config is PositionConfig {
-  return "position" in config && ADJECTIVE_POSITION_OPTIONS.some((option) => option.value === (config as PositionConfig).position);
+  return (
+    "position" in config &&
+    ADJECTIVE_POSITION_OPTIONS.some((option) => option.value === (config as PositionConfig).position)
+  );
 }
 
 function isPossessive(config: GrammarSystemRecord["config"]): config is PossessivePositionConfig {
@@ -520,7 +541,9 @@ function isPossessive(config: GrammarSystemRecord["config"]): config is Possessi
 function isRelative(config: GrammarSystemRecord["config"]): config is RelativeClausePositionConfig {
   return (
     "position" in config &&
-    RELATIVE_CLAUSE_POSITION_OPTIONS.some((option) => option.value === (config as RelativeClausePositionConfig).position)
+    RELATIVE_CLAUSE_POSITION_OPTIONS.some(
+      (option) => option.value === (config as RelativeClausePositionConfig).position,
+    )
   );
 }
 

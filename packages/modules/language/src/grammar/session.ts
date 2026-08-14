@@ -67,7 +67,11 @@ export function confirmGrammarLeave(session: GrammarEditSession | null, confirm:
   return confirm("You have unsaved grammar changes. Leave anyway?");
 }
 
-function sessionFromLoaded(record: LoadedGrammarRecord, originSection: GrammarSectionId, locked = false): GrammarEditSession {
+function sessionFromLoaded(
+  record: LoadedGrammarRecord,
+  originSection: GrammarSectionId,
+  locked = false,
+): GrammarEditSession {
   const draft = cloneGrammarRecord(record.value);
   return {
     recordId: record.id,
@@ -173,7 +177,10 @@ export function keepDraftAfterConflict(session: GrammarEditSession, stored: Load
   };
 }
 
-export function setSystemStatus(draft: GrammarSystemRecord, status: GrammarSystemRecord["status"]): GrammarSystemRecord {
+export function setSystemStatus(
+  draft: GrammarSystemRecord,
+  status: GrammarSystemRecord["status"],
+): GrammarSystemRecord {
   if (status === "configured") return { ...draft, status };
   return { ...draft, status, config: {} };
 }

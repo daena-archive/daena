@@ -41,7 +41,11 @@ type StrategyOption<T extends string = string> = {
 
 export const DEFINITENESS_OPTIONS: StrategyOption<DefinitenessStrategy>[] = [
   { value: "definite-article", label: "Definite article", expansion: "A form that marks known or specific reference." },
-  { value: "indefinite-article", label: "Indefinite article", expansion: "A form that marks new or nonspecific reference." },
+  {
+    value: "indefinite-article",
+    label: "Indefinite article",
+    expansion: "A form that marks new or nonspecific reference.",
+  },
   { value: "both", label: "Both articles" },
   { value: "affixes", label: "Affixes" },
   { value: "demonstratives", label: "Demonstratives" },
@@ -113,7 +117,10 @@ export function isStrategySystem(systemId: GrammarSystemId): systemId is Strateg
   return (STRATEGY_SYSTEM_IDS as readonly string[]).includes(systemId);
 }
 
-export function toggleDefinitenessStrategy(draft: GrammarSystemRecord, strategy: DefinitenessStrategy): GrammarSystemRecord {
+export function toggleDefinitenessStrategy(
+  draft: GrammarSystemRecord,
+  strategy: DefinitenessStrategy,
+): GrammarSystemRecord {
   if (draft.systemId !== "nouns.definiteness") return draft;
   const config = definitenessConfig(draft);
   return setDefiniteness(draft, { ...config, strategies: toggle(config.strategies, strategy) });
@@ -126,7 +133,11 @@ export function addArticle(draft: GrammarSystemRecord, form = ""): GrammarSystem
   return setDefiniteness(draft, { ...config, articles: [...config.articles, { id: newId(), form }] });
 }
 
-export function updateArticle(draft: GrammarSystemRecord, id: string, patch: Partial<Omit<ArticleForm, "id">>): GrammarSystemRecord {
+export function updateArticle(
+  draft: GrammarSystemRecord,
+  id: string,
+  patch: Partial<Omit<ArticleForm, "id">>,
+): GrammarSystemRecord {
   if (draft.systemId !== "nouns.definiteness") return draft;
   const config = definitenessConfig(draft);
   return setDefiniteness(draft, {
@@ -147,7 +158,10 @@ export function removeArticle(draft: GrammarSystemRecord, id: string): GrammarSy
   return setDefiniteness(draft, { ...config, articles: config.articles.filter((item) => item.id !== id) });
 }
 
-export function togglePossessionStrategy(draft: GrammarSystemRecord, strategy: PossessionStrategy): GrammarSystemRecord {
+export function togglePossessionStrategy(
+  draft: GrammarSystemRecord,
+  strategy: PossessionStrategy,
+): GrammarSystemRecord {
   if (draft.systemId !== "nouns.possession") return draft;
   const config = possessionConfig(draft);
   return setPossession(draft, { ...config, strategies: toggle(config.strategies, strategy) });
@@ -185,7 +199,10 @@ export function setCustomVerbMarking(draft: GrammarSystemRecord, customStrategy:
   return setVerbMarking(draft, { ...config, customStrategy });
 }
 
-export function toggleNegativeStrategy(draft: GrammarSystemRecord, strategy: NegativeVerbStrategy): GrammarSystemRecord {
+export function toggleNegativeStrategy(
+  draft: GrammarSystemRecord,
+  strategy: NegativeVerbStrategy,
+): GrammarSystemRecord {
   if (draft.systemId !== "verbs.negative-forms") return draft;
   const config = negativeConfig(draft);
   return setNegative(draft, { ...config, strategies: toggle(config.strategies, strategy) });
@@ -223,7 +240,10 @@ export function removeNegativeForm(draft: GrammarSystemRecord, id: string): Gram
   return setNegative(draft, { ...config, forms: config.forms.filter((item) => item.id !== id) });
 }
 
-export function toggleAdjectiveBehavior(draft: GrammarSystemRecord, behavior: AdjectiveBehaviorKind): GrammarSystemRecord {
+export function toggleAdjectiveBehavior(
+  draft: GrammarSystemRecord,
+  behavior: AdjectiveBehaviorKind,
+): GrammarSystemRecord {
   if (draft.systemId !== "modifiers.adjective-behavior") return draft;
   const config = adjectiveConfig(draft);
   const behaviors = toggle(config.behaviors, behavior);
@@ -267,7 +287,10 @@ export function setDegreeConstruction(draft: GrammarSystemRecord, construction: 
   return setDegree(draft, { ...degreeConfig(draft), construction });
 }
 
-export function summarizeStrategy(systemId: GrammarSystemId, config: GrammarSystemRecord["config"]): string | undefined {
+export function summarizeStrategy(
+  systemId: GrammarSystemId,
+  config: GrammarSystemRecord["config"],
+): string | undefined {
   switch (systemId) {
     case "nouns.definiteness":
       return joinLabels(DEFINITENESS_OPTIONS, (config as DefinitenessConfig).strategies);
@@ -309,7 +332,8 @@ export function renderStrategyEditor(
   else if (draft.systemId === "nouns.possession") section.append(possessionEditor(draft, locked, onChange));
   else if (draft.systemId === "verbs.marking-strategy") section.append(verbMarkingEditor(draft, locked, onChange));
   else if (draft.systemId === "verbs.negative-forms") section.append(negativeEditor(draft, locked, onChange));
-  else if (draft.systemId === "modifiers.adjective-behavior") section.append(adjectiveEditor(draft, locked, ctx, onChange));
+  else if (draft.systemId === "modifiers.adjective-behavior")
+    section.append(adjectiveEditor(draft, locked, ctx, onChange));
   else section.append(degreeEditor(draft, locked, onChange));
   return section;
 }
@@ -333,7 +357,8 @@ function definitenessEditor(
     (item) => item === "definite-article" || item === "indefinite-article" || item === "both" || item === "affixes",
   );
   if (usesArticles) {
-    if (!locked) wrap.append(button("Add article form", "language-button secondary", () => onChange(addArticle(draft), true)));
+    if (!locked)
+      wrap.append(button("Add article form", "language-button secondary", () => onChange(addArticle(draft), true)));
     for (const [index, item] of config.articles.entries()) {
       wrap.append(
         rowCard(
@@ -342,7 +367,9 @@ function definitenessEditor(
           config.articles.length,
           locked,
           [
-            namedField("form", "Form", item.form, locked, (value) => onChange(updateArticle(draft, item.id, { form: value }), false)),
+            namedField("form", "Form", item.form, locked, (value) =>
+              onChange(updateArticle(draft, item.id, { form: value }), false),
+            ),
             namedField("position", "Position", item.position ?? "", locked, (value) =>
               onChange(updateArticle(draft, item.id, { position: value }), false),
             ),
@@ -447,7 +474,8 @@ function negativeEditor(
       onChange(toggleNegativeStrategy(draft, value as NegativeVerbStrategy), true),
     ),
   );
-  if (!locked) wrap.append(button("Add negative form", "language-button secondary", () => onChange(addNegativeForm(draft), true)));
+  if (!locked)
+    wrap.append(button("Add negative form", "language-button secondary", () => onChange(addNegativeForm(draft), true)));
   for (const [index, item] of config.forms.entries()) {
     wrap.append(
       rowCard(
@@ -498,7 +526,9 @@ function adjectiveEditor(
     wrap.append(field("Custom behavior", custom));
   }
   if (config.behaviors.includes("agree-with-noun")) {
-    wrap.append(emptyMessage("Link the Agreement system that describes adjective agreement. Do not copy those rules here."));
+    wrap.append(
+      emptyMessage("Link the Agreement system that describes adjective agreement. Do not copy those rules here."),
+    );
     if (ctx.agreements.length === 0) wrap.append(emptyMessage("No agreement systems are configured yet."));
     else {
       wrap.append(
@@ -523,18 +553,29 @@ function degreeEditor(
   wrap.className = "grammar-choice-stack";
   const config = degreeConfig(draft);
   const options = draft.systemId === "modifiers.superlative" ? SUPERLATIVE_OPTIONS : COMPARATIVE_OPTIONS;
-  wrap.append(strategyChecks(options, config.strategies, locked, (value) => onChange(toggleDegreeStrategy(draft, value), true)));
+  wrap.append(
+    strategyChecks(options, config.strategies, locked, (value) => onChange(toggleDegreeStrategy(draft, value), true)),
+  );
   const marker = input("marker", config.marker ?? "");
   marker.disabled = locked;
   marker.oninput = () => onChange(setDegreeMarker(draft, marker.value), false);
   const construction = textarea("construction", config.construction ?? "", 3);
   construction.disabled = locked;
   construction.oninput = () => onChange(setDegreeConstruction(draft, construction.value), false);
-  wrap.append(field("Marker", marker), field("Construction", construction), emptyMessage("Irregular forms can be recorded as examples."));
+  wrap.append(
+    field("Marker", marker),
+    field("Construction", construction),
+    emptyMessage("Irregular forms can be recorded as examples."),
+  );
   return wrap;
 }
 
-function strategyChecks(options: StrategyOption[], selected: string[], locked: boolean, onToggle: (value: string) => void) {
+function strategyChecks(
+  options: StrategyOption[],
+  selected: string[],
+  locked: boolean,
+  onToggle: (value: string) => void,
+) {
   const group = document.createElement("fieldset");
   group.className = "grammar-checks";
   const legend = document.createElement("legend");
@@ -632,7 +673,9 @@ function joinLabels(options: StrategyOption[], values: string[] | undefined, ext
 
 function definitenessConfig(draft: GrammarSystemRecord): DefinitenessConfig {
   const config = draft.config as DefinitenessConfig;
-  return Array.isArray(config.strategies) ? { strategies: config.strategies, articles: config.articles ?? [] } : { strategies: [], articles: [] };
+  return Array.isArray(config.strategies)
+    ? { strategies: config.strategies, articles: config.articles ?? [] }
+    : { strategies: [], articles: [] };
 }
 
 function possessionConfig(draft: GrammarSystemRecord): PossessionConfig {
@@ -647,13 +690,19 @@ function verbMarkingConfig(draft: GrammarSystemRecord): VerbMarkingConfig {
 
 function negativeConfig(draft: GrammarSystemRecord): NegativeVerbConfig {
   const config = draft.config as NegativeVerbConfig;
-  return Array.isArray(config.strategies) ? { strategies: config.strategies, forms: config.forms ?? [] } : { strategies: [], forms: [] };
+  return Array.isArray(config.strategies)
+    ? { strategies: config.strategies, forms: config.forms ?? [] }
+    : { strategies: [], forms: [] };
 }
 
 function adjectiveConfig(draft: GrammarSystemRecord): AdjectiveBehaviorConfig {
   const config = draft.config as AdjectiveBehaviorConfig;
   return Array.isArray(config.behaviors)
-    ? { behaviors: config.behaviors, customBehavior: config.customBehavior, agreementRecordIds: config.agreementRecordIds ?? [] }
+    ? {
+        behaviors: config.behaviors,
+        customBehavior: config.customBehavior,
+        agreementRecordIds: config.agreementRecordIds ?? [],
+      }
     : { behaviors: [], agreementRecordIds: [] };
 }
 

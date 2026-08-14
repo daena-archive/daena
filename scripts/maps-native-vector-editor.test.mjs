@@ -9,7 +9,10 @@ import {
 const source = readFileSync(new URL("../src/lib/maps/native-vector/source.ts", import.meta.url), "utf8");
 const style = readFileSync(new URL("../src/lib/maps/native-vector/style.ts", import.meta.url), "utf8");
 const runtime = readFileSync(new URL("../src/lib/maps/native-vector/runtime.ts", import.meta.url), "utf8");
-const editor = readFileSync(new URL("../src/lib/maps/native-vector/NativeVectorMapEditor.svelte", import.meta.url), "utf8");
+const editor = readFileSync(
+  new URL("../src/lib/maps/native-vector/NativeVectorMapEditor.svelte", import.meta.url),
+  "utf8",
+);
 
 for (const required of [
   "parseVectorCollection",

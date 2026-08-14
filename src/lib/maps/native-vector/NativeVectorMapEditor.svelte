@@ -24,7 +24,13 @@ import {
   reduceVectorEditor,
   type VectorEditorState,
 } from "./editor-state";
-import { DEFAULT_VECTOR_LAYER_STYLE, type VectorDrawMode, type VectorFeature, type VectorFeatureCollection, type VectorLayerDefinition } from "./types";
+import {
+  DEFAULT_VECTOR_LAYER_STYLE,
+  type VectorDrawMode,
+  type VectorFeature,
+  type VectorFeatureCollection,
+  type VectorLayerDefinition,
+} from "./types";
 
 let {
   mapId,
@@ -83,8 +89,10 @@ const icons = {
   redo: '<path d="M21 7v6h-6"/><path d="M21 13a9 9 0 1 1-3-7.3L21 13"/>',
   addLayer: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M8 12h8"/><path d="M12 8v8"/>',
   save: '<path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7H7v7"/><path d="M7 3v4h8"/>',
-  fullscreen: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
-  exitFullscreen: '<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>',
+  fullscreen:
+    '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
+  exitFullscreen:
+    '<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>',
   show: '<path d="M2.06 12a10.94 10.94 0 0 1 20 0"/><path d="M2.06 12a10.94 10.94 0 0 0 20 0"/><circle cx="12" cy="12" r="3"/>',
   hide: '<path d="M10.7 5.1A11 11 0 0 1 12 5c5 0 9.3 3.1 11 7-.5 1.2-1.2 2.3-2.1 3.2"/><path d="M17.9 17.9A11 11 0 0 1 12 19c-5 0-9.3-3.1-11-7 1-2.3 2.6-4.2 4.6-5.5"/><path d="m2 2 20 20"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>',
   lock: '<rect width="14" height="10" x="5" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
@@ -92,7 +100,8 @@ const icons = {
   rename: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
   up: '<path d="m18 15-6-6-6 6"/>',
   down: '<path d="m6 9 6 6 6-6"/>',
-  remove: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+  remove:
+    '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
 } as const;
 const activeLayer = $derived(layers.find((layer) => layer.id === activeLayerId) ?? null);
 const canDraw = $derived(Boolean(activeLayer) && !activeLayer?.locked && !picking);
@@ -204,7 +213,8 @@ async function load() {
       defaultView?: { center?: [number, number]; zoom?: number };
     };
     if (descriptor?.defaultView?.center) defaultView = { ...defaultView, center: descriptor.defaultView.center };
-    if (typeof descriptor?.defaultView?.zoom === "number") defaultView = { ...defaultView, zoom: descriptor.defaultView.zoom };
+    if (typeof descriptor?.defaultView?.zoom === "number")
+      defaultView = { ...defaultView, zoom: descriptor.defaultView.zoom };
     const nextLayersField = fields.find((item) => item.namespace === "maps" && item.key === "layers") ?? null;
     if (!nextLayersField) throw new Error("maps:layers is missing");
     applyLayersField(nextLayersField);
@@ -405,7 +415,8 @@ async function removeLayer(layer: VectorLayerDefinition) {
   if (!mapId || !layersField || !sourceAsset) return;
   const savedCount = featureCountForLayer(loaded, layer.id);
   const draftCount = featureCountForLayer(draft, layer.id);
-  const extra = draftCount === savedCount ? "" : ` Unsaved draft features on this layer (${draftCount}) will be discarded.`;
+  const extra =
+    draftCount === savedCount ? "" : ` Unsaved draft features on this layer (${draftCount}) will be discarded.`;
   if (
     !confirm(
       `Delete ${layer.name}? This removes ${savedCount} saved feature${savedCount === 1 ? "" : "s"} from the map.${extra}`,
@@ -494,7 +505,16 @@ onMount(() => {
 </script>
 
 {#snippet glyph(markup: string)}
-  <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{@html markup}</svg>
+  <svg
+    aria-hidden="true"
+    width="15"
+    height="15"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round">{@html markup}</svg>
 {/snippet}
 
 {#if !mapId}
@@ -505,232 +525,278 @@ onMount(() => {
     onfullscreen={(enabled) => void setFullscreen(enabled)}
     {fullscreen} />
 {:else}
-<section class="native-vector-editor" aria-label="Native vector map editor">
-  <header>
-    <div>
-      <span>NATIVE VECTOR MAP</span>
-      <strong>{busy ? "Loading…" : dirty ? "Unsaved changes" : "Saved"}</strong>
-    </div>
-    <div class="header-actions" role="toolbar" aria-label="Vector drawing tools">
-      <button type="button" class="icon-button" aria-label="Back to map details" title="Back to map details" onclick={() => void requestBack()}
-        >{@render glyph(icons.back)}</button>
-      <button type="button" class="icon-button" class:active={tool === "static"} aria-pressed={tool === "static"} aria-label="Pan" title="Pan" onclick={() => setTool("static")}
-        >{@render glyph(icons.pan)}</button>
-      <button type="button" class="icon-button" class:active={tool === "select"} aria-pressed={tool === "select"} aria-label="Select" title="Select" onclick={() => setTool("select")}
-        >{@render glyph(icons.select)}</button>
-      <button
-        type="button"
-        class="icon-button"
-        class:active={tool === "point"}
-        aria-pressed={tool === "point"}
-        aria-label="Point"
-        title="Point"
-        disabled={!canDraw}
-        onclick={() => setTool("point")}>{@render glyph(icons.point)}</button>
-      <button
-        type="button"
-        class="icon-button"
-        class:active={tool === "linestring"}
-        aria-pressed={tool === "linestring"}
-        aria-label="Line"
-        title="Line"
-        disabled={!canDraw}
-        onclick={() => setTool("linestring")}>{@render glyph(icons.line)}</button>
-      <button
-        type="button"
-        class="icon-button"
-        class:active={tool === "polygon"}
-        aria-pressed={tool === "polygon"}
-        aria-label="Polygon"
-        title="Polygon"
-        disabled={!canDraw}
-        onclick={() => setTool("polygon")}>{@render glyph(icons.polygon)}</button>
-      <button
-        type="button"
-        class="icon-button"
-        class:active={tool === "freehand"}
-        aria-pressed={tool === "freehand"}
-        aria-label="Freehand"
-        title="Freehand"
-        disabled={!canDraw}
-        onclick={() => setTool("freehand")}>{@render glyph(icons.freehand)}</button>
-      <button type="button" class="icon-button" aria-label="Undo" title="Undo" onclick={() => editor?.undo()}
-        >{@render glyph(icons.undo)}</button>
-      <button type="button" class="icon-button" aria-label="Redo" title="Redo" onclick={() => editor?.redo()}
-        >{@render glyph(icons.redo)}</button>
-      <button
-        type="button"
-        class="icon-button"
-        aria-label="Add layer"
-        title="Add layer"
-        disabled={busy || layers.length >= VECTOR_MAX_LAYERS}
-        onclick={() => void addLayer()}>{@render glyph(icons.addLayer)}</button>
-      <button
-        type="button"
-        class="icon-button save"
-        aria-label={busy ? "Saving…" : dirty ? "Save" : "Saved"}
-        title={busy ? "Saving…" : dirty ? "Save" : "Saved"}
-        disabled={busy || !dirty}
-        onclick={() => void save()}>{@render glyph(icons.save)}</button>
-      <button
-        type="button"
-        class="icon-button"
-        class:active={fullscreen}
-        aria-label={fullscreen ? "Exit full screen" : "Full screen"}
-        aria-pressed={fullscreen}
-        title={fullscreen ? "Exit full screen (Esc)" : "Full screen"}
-        onclick={toggleFullscreen}>{@render glyph(fullscreen ? icons.exitFullscreen : icons.fullscreen)}</button>
-    </div>
-  </header>
-  {#if conflict}
-    <p class="error" role="alert">
-      This map changed elsewhere. Reload the canonical source, export this draft, or keep editing without saving over it.
-      <button type="button" onclick={() => void load()}>Reload canonical source</button>
-      <button type="button" onclick={() => void exportDraft()}>Export draft</button>
-      <button type="button" onclick={() => applyEditorEvent({ type: "keep-editing" })}>Keep editing</button>
-    </p>
-  {/if}
-  {#if diagnostic && !conflict}
-    <p class="error" role="alert" data-code={diagnosticCode}>{diagnostic}</p>
-  {/if}
-  {#if notice}
-    <p class="hint" role="status">{notice}</p>
-  {/if}
-  <div class="editor-body">
-    <aside aria-label="Vector layers">
-      <strong id="vector-layers-heading">Vector layers</strong>
-      {#if listedLayers.length === 0}
-        <p class="hint">Add a vector layer to draw points, lines, and regions. Base geography stays read-only.</p>
-      {/if}
-      <div class="layer-list" role="list" aria-labelledby="vector-layers-heading">
-        {#each listedLayers as layer (layer.id)}
-          <div class="layer" class:active={layer.id === activeLayerId} role="listitem">
-            <button
-              class="layer-name"
-              type="button"
-              aria-pressed={layer.id === activeLayerId}
-              onclick={() => switchLayer(layer.id)}>
-              {#if renamingId === layer.id}
-                <input
-                  value={layer.name}
-                  aria-label="Layer name"
-                  onblur={(event) => void renameLayer(layer, event.currentTarget.value)}
-                  onkeydown={(event) => {
-                    if (event.key === "Enter") void renameLayer(layer, event.currentTarget.value);
-                    if (event.key === "Escape") renamingId = null;
-                  }} />
-              {:else}{layer.name}{/if}
-            </button>
-            <div class="layer-row">
-              <button
-                type="button"
-                class="icon-button"
-                aria-pressed={layer.defaultVisible}
-                aria-label={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
-                title={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
-                onclick={() => void toggleVisible(layer)}>{@render glyph(layer.defaultVisible ? icons.show : icons.hide)}</button>
-              <button
-                type="button"
-                class="icon-button"
-                aria-pressed={layer.locked}
-                aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
-                title={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
-                onclick={() => void toggleLock(layer)}>{@render glyph(layer.locked ? icons.lock : icons.unlock)}</button>
-              <button type="button" class="icon-button" aria-label={`Rename ${layer.name}`} title="Rename" onclick={() => (renamingId = layer.id)}
-                >{@render glyph(icons.rename)}</button>
-              <button type="button" class="icon-button" aria-label={`Move ${layer.name} up`} title="Up" onclick={() => void moveLayer(layer, -1)}
-                >{@render glyph(icons.up)}</button>
-              <button type="button" class="icon-button" aria-label={`Move ${layer.name} down`} title="Down" onclick={() => void moveLayer(layer, 1)}
-                >{@render glyph(icons.down)}</button>
-              <button type="button" class="icon-button" aria-label={`Delete ${layer.name}`} title="Delete" onclick={() => void removeLayer(layer)}
-                >{@render glyph(icons.remove)}</button>
-            </div>
-            {#if layer.id === activeLayerId}
-              <div class="style-row">
-                <label>
-                  Fill
-                  <input
-                    type="color"
-                    value={layer.style.fill}
-                    aria-label={`${layer.name} fill`}
-                    onchange={(event) => void updateStyle(layer, { fill: event.currentTarget.value })} />
-                </label>
-                <label>
-                  Stroke
-                  <input
-                    type="color"
-                    value={layer.style.stroke}
-                    aria-label={`${layer.name} stroke`}
-                    onchange={(event) => void updateStyle(layer, { stroke: event.currentTarget.value })} />
-                </label>
-                <label>
-                  Fill opacity
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.05"
-                    value={layer.style.fillOpacity}
-                    aria-label={`${layer.name} fill opacity`}
-                    oninput={(event) => void updateStyle(layer, { fillOpacity: Number(event.currentTarget.value) })} />
-                </label>
-                <label>
-                  Stroke width
-                  <input
-                    type="number"
-                    min="0"
-                    max="32"
-                    step="0.25"
-                    value={layer.style.strokeWidth}
-                    aria-label={`${layer.name} stroke width`}
-                    onchange={(event) => void updateStyle(layer, { strokeWidth: Number(event.currentTarget.value) })} />
-                </label>
-                <label>
-                  Point radius
-                  <input
-                    type="number"
-                    min="1"
-                    max="64"
-                    step="1"
-                    value={layer.style.pointRadius}
-                    aria-label={`${layer.name} point radius`}
-                    onchange={(event) => void updateStyle(layer, { pointRadius: Number(event.currentTarget.value) })} />
-                </label>
-              </div>
-            {/if}
-          </div>
-        {/each}
+  <section class="native-vector-editor" aria-label="Native vector map editor">
+    <header>
+      <div>
+        <span>NATIVE VECTOR MAP</span>
+        <strong>{busy ? "Loading…" : dirty ? "Unsaved changes" : "Saved"}</strong>
       </div>
-      {#if selectedFeature}
-        <div class="inspector" aria-label="Selected feature">
-          <strong>Selected feature</strong>
-          <p class="hint">{selectedFeature.properties.kind} · {selectedFeature.properties.daenaLayerId === "base" ? "base geography" : "authored"}</p>
-          <label>
-            Name
-            <input
-              value={selectedFeature.properties.name ?? ""}
-              maxlength="256"
-              aria-label="Feature name"
-              disabled={selectedFeature.properties.daenaLayerId === "base" || activeLayer?.locked}
-              onchange={(event) => {
-                const next = event.currentTarget.value.trim() || null;
-                editor?.updateSelectedName(next);
-              }} />
-          </label>
+      <div class="header-actions" role="toolbar" aria-label="Vector drawing tools">
+        <button
+          type="button"
+          class="icon-button"
+          aria-label="Back to map details"
+          title="Back to map details"
+          onclick={() => void requestBack()}>{@render glyph(icons.back)}</button>
+        <button
+          type="button"
+          class="icon-button"
+          class:active={tool === "static"}
+          aria-pressed={tool === "static"}
+          aria-label="Pan"
+          title="Pan"
+          onclick={() => setTool("static")}>{@render glyph(icons.pan)}</button>
+        <button
+          type="button"
+          class="icon-button"
+          class:active={tool === "select"}
+          aria-pressed={tool === "select"}
+          aria-label="Select"
+          title="Select"
+          onclick={() => setTool("select")}>{@render glyph(icons.select)}</button>
+        <button
+          type="button"
+          class="icon-button"
+          class:active={tool === "point"}
+          aria-pressed={tool === "point"}
+          aria-label="Point"
+          title="Point"
+          disabled={!canDraw}
+          onclick={() => setTool("point")}>{@render glyph(icons.point)}</button>
+        <button
+          type="button"
+          class="icon-button"
+          class:active={tool === "linestring"}
+          aria-pressed={tool === "linestring"}
+          aria-label="Line"
+          title="Line"
+          disabled={!canDraw}
+          onclick={() => setTool("linestring")}>{@render glyph(icons.line)}</button>
+        <button
+          type="button"
+          class="icon-button"
+          class:active={tool === "polygon"}
+          aria-pressed={tool === "polygon"}
+          aria-label="Polygon"
+          title="Polygon"
+          disabled={!canDraw}
+          onclick={() => setTool("polygon")}>{@render glyph(icons.polygon)}</button>
+        <button
+          type="button"
+          class="icon-button"
+          class:active={tool === "freehand"}
+          aria-pressed={tool === "freehand"}
+          aria-label="Freehand"
+          title="Freehand"
+          disabled={!canDraw}
+          onclick={() => setTool("freehand")}>{@render glyph(icons.freehand)}</button>
+        <button type="button" class="icon-button" aria-label="Undo" title="Undo" onclick={() => editor?.undo()}
+          >{@render glyph(icons.undo)}</button>
+        <button type="button" class="icon-button" aria-label="Redo" title="Redo" onclick={() => editor?.redo()}
+          >{@render glyph(icons.redo)}</button>
+        <button
+          type="button"
+          class="icon-button"
+          aria-label="Add layer"
+          title="Add layer"
+          disabled={busy || layers.length >= VECTOR_MAX_LAYERS}
+          onclick={() => void addLayer()}>{@render glyph(icons.addLayer)}</button>
+        <button
+          type="button"
+          class="icon-button save"
+          aria-label={busy ? "Saving…" : dirty ? "Save" : "Saved"}
+          title={busy ? "Saving…" : dirty ? "Save" : "Saved"}
+          disabled={busy || !dirty}
+          onclick={() => void save()}>{@render glyph(icons.save)}</button>
+        <button
+          type="button"
+          class="icon-button"
+          class:active={fullscreen}
+          aria-label={fullscreen ? "Exit full screen" : "Full screen"}
+          aria-pressed={fullscreen}
+          title={fullscreen ? "Exit full screen (Esc)" : "Full screen"}
+          onclick={toggleFullscreen}>{@render glyph(fullscreen ? icons.exitFullscreen : icons.fullscreen)}</button>
+      </div>
+    </header>
+    {#if conflict}
+      <p class="error" role="alert">
+        This map changed elsewhere. Reload the canonical source, export this draft, or keep editing without saving over
+        it.
+        <button type="button" onclick={() => void load()}>Reload canonical source</button>
+        <button type="button" onclick={() => void exportDraft()}>Export draft</button>
+        <button type="button" onclick={() => applyEditorEvent({ type: "keep-editing" })}>Keep editing</button>
+      </p>
+    {/if}
+    {#if diagnostic && !conflict}
+      <p class="error" role="alert" data-code={diagnosticCode}>{diagnostic}</p>
+    {/if}
+    {#if notice}
+      <p class="hint" role="status">{notice}</p>
+    {/if}
+    <div class="editor-body">
+      <aside aria-label="Vector layers">
+        <strong id="vector-layers-heading">Vector layers</strong>
+        {#if listedLayers.length === 0}
+          <p class="hint">Add a vector layer to draw points, lines, and regions. Base geography stays read-only.</p>
+        {/if}
+        <div class="layer-list" role="list" aria-labelledby="vector-layers-heading">
+          {#each listedLayers as layer (layer.id)}
+            <div class="layer" class:active={layer.id === activeLayerId} role="listitem">
+              <button
+                class="layer-name"
+                type="button"
+                aria-pressed={layer.id === activeLayerId}
+                onclick={() => switchLayer(layer.id)}>
+                {#if renamingId === layer.id}
+                  <input
+                    value={layer.name}
+                    aria-label="Layer name"
+                    onblur={(event) => void renameLayer(layer, event.currentTarget.value)}
+                    onkeydown={(event) => {
+                      if (event.key === "Enter") void renameLayer(layer, event.currentTarget.value);
+                      if (event.key === "Escape") renamingId = null;
+                    }} />
+                {:else}{layer.name}{/if}
+              </button>
+              <div class="layer-row">
+                <button
+                  type="button"
+                  class="icon-button"
+                  aria-pressed={layer.defaultVisible}
+                  aria-label={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
+                  title={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
+                  onclick={() => void toggleVisible(layer)}
+                  >{@render glyph(layer.defaultVisible ? icons.show : icons.hide)}</button>
+                <button
+                  type="button"
+                  class="icon-button"
+                  aria-pressed={layer.locked}
+                  aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
+                  title={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
+                  onclick={() => void toggleLock(layer)}
+                  >{@render glyph(layer.locked ? icons.lock : icons.unlock)}</button>
+                <button
+                  type="button"
+                  class="icon-button"
+                  aria-label={`Rename ${layer.name}`}
+                  title="Rename"
+                  onclick={() => (renamingId = layer.id)}>{@render glyph(icons.rename)}</button>
+                <button
+                  type="button"
+                  class="icon-button"
+                  aria-label={`Move ${layer.name} up`}
+                  title="Up"
+                  onclick={() => void moveLayer(layer, -1)}>{@render glyph(icons.up)}</button>
+                <button
+                  type="button"
+                  class="icon-button"
+                  aria-label={`Move ${layer.name} down`}
+                  title="Down"
+                  onclick={() => void moveLayer(layer, 1)}>{@render glyph(icons.down)}</button>
+                <button
+                  type="button"
+                  class="icon-button"
+                  aria-label={`Delete ${layer.name}`}
+                  title="Delete"
+                  onclick={() => void removeLayer(layer)}>{@render glyph(icons.remove)}</button>
+              </div>
+              {#if layer.id === activeLayerId}
+                <div class="style-row">
+                  <label>
+                    Fill
+                    <input
+                      type="color"
+                      value={layer.style.fill}
+                      aria-label={`${layer.name} fill`}
+                      onchange={(event) => void updateStyle(layer, { fill: event.currentTarget.value })} />
+                  </label>
+                  <label>
+                    Stroke
+                    <input
+                      type="color"
+                      value={layer.style.stroke}
+                      aria-label={`${layer.name} stroke`}
+                      onchange={(event) => void updateStyle(layer, { stroke: event.currentTarget.value })} />
+                  </label>
+                  <label>
+                    Fill opacity
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={layer.style.fillOpacity}
+                      aria-label={`${layer.name} fill opacity`}
+                      oninput={(event) =>
+                        void updateStyle(layer, { fillOpacity: Number(event.currentTarget.value) })} />
+                  </label>
+                  <label>
+                    Stroke width
+                    <input
+                      type="number"
+                      min="0"
+                      max="32"
+                      step="0.25"
+                      value={layer.style.strokeWidth}
+                      aria-label={`${layer.name} stroke width`}
+                      onchange={(event) =>
+                        void updateStyle(layer, { strokeWidth: Number(event.currentTarget.value) })} />
+                  </label>
+                  <label>
+                    Point radius
+                    <input
+                      type="number"
+                      min="1"
+                      max="64"
+                      step="1"
+                      value={layer.style.pointRadius}
+                      aria-label={`${layer.name} point radius`}
+                      onchange={(event) =>
+                        void updateStyle(layer, { pointRadius: Number(event.currentTarget.value) })} />
+                  </label>
+                </div>
+              {/if}
+            </div>
+          {/each}
         </div>
-      {/if}
-      <p class="hint">Base geography is read-only. Point, line, polygon, and freehand edits save through the canonical GeoJSON source. Delete removes the selected feature.</p>
-    </aside>
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
-    <div
-      class="canvas"
-      class:picking
-      bind:this={host}
-      tabindex="0"
-      role="application"
-      aria-label="Native vector map canvas"></div>
-  </div>
-</section>
+        {#if selectedFeature}
+          <div class="inspector" aria-label="Selected feature">
+            <strong>Selected feature</strong>
+            <p class="hint">
+              {selectedFeature.properties.kind} · {selectedFeature.properties.daenaLayerId === "base"
+                ? "base geography"
+                : "authored"}
+            </p>
+            <label>
+              Name
+              <input
+                value={selectedFeature.properties.name ?? ""}
+                maxlength="256"
+                aria-label="Feature name"
+                disabled={selectedFeature.properties.daenaLayerId === "base" || activeLayer?.locked}
+                onchange={(event) => {
+                  const next = event.currentTarget.value.trim() || null;
+                  editor?.updateSelectedName(next);
+                }} />
+            </label>
+          </div>
+        {/if}
+        <p class="hint">
+          Base geography is read-only. Point, line, polygon, and freehand edits save through the canonical GeoJSON
+          source. Delete removes the selected feature.
+        </p>
+      </aside>
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
+      <div
+        class="canvas"
+        class:picking
+        bind:this={host}
+        tabindex="0"
+        role="application"
+        aria-label="Native vector map canvas">
+      </div>
+    </div>
+  </section>
 {/if}
 
 <style>

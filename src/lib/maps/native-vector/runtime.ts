@@ -13,7 +13,13 @@ import type { CanvasSourceSpecification, GeoJSONSource, Map as MapLibreMap, MapL
 import maplibregl from "maplibre-gl/dist/maplibre-gl-csp.js";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-csp-worker.js?url";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { UNDO_STACK_SIZE, type VectorDrawMode, type VectorFeature, type VectorFeatureCollection, type VectorLayerDefinition } from "./types";
+import {
+  UNDO_STACK_SIZE,
+  type VectorDrawMode,
+  type VectorFeature,
+  type VectorFeatureCollection,
+  type VectorLayerDefinition,
+} from "./types";
 import {
   AUTHORED_SOURCE_ID,
   BASE_SOURCE_ID,
@@ -112,9 +118,7 @@ function toStoreFeature(feature: VectorFeature): GeoJSONStoreFeatures {
   };
 }
 
-function collectionBounds(
-  collection: VectorFeatureCollection,
-): [[number, number], [number, number]] | null {
+function collectionBounds(collection: VectorFeatureCollection): [[number, number], [number, number]] | null {
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -131,7 +135,7 @@ function collectionBounds(
     for (const item of position) visit(item);
   };
   for (const feature of collection.features) visit(feature.geometry.coordinates);
-  if (!Number.isFinite(minX) || minX === maxX && minY === maxY) return null;
+  if (!Number.isFinite(minX) || (minX === maxX && minY === maxY)) return null;
   return [
     [minX, minY],
     [maxX, maxY],

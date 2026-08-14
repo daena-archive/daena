@@ -27,7 +27,10 @@ export function grammarStatusLabel(status: GrammarStatus) {
 }
 
 function labels(items: { label?: string; name?: string }[] | undefined) {
-  return (items ?? []).map((item) => item.label || item.name).filter(Boolean).join(", ");
+  return (items ?? [])
+    .map((item) => item.label || item.name)
+    .filter(Boolean)
+    .join(", ");
 }
 
 function join(parts: (string | undefined)[]) {
@@ -52,7 +55,9 @@ export function summarizeSystem(systemId: GrammarSystemId, record: GrammarSystem
   switch (systemId) {
     case "nouns.number": {
       const value = config as NumberConfig;
-      return join([labels(value.categories), value.markingStrategies?.[0]?.replaceAll("-", " ")]) || STATUS_LABEL.configured;
+      return (
+        join([labels(value.categories), value.markingStrategies?.[0]?.replaceAll("-", " ")]) || STATUS_LABEL.configured
+      );
     }
     case "nouns.case": {
       const value = config as CaseConfig;
@@ -61,7 +66,10 @@ export function summarizeSystem(systemId: GrammarSystemId, record: GrammarSystem
     }
     case "nouns.classes": {
       const value = config as NounClassesConfig;
-      return join([value.kind?.replace("-", " "), labels(value.classes?.map((item) => ({ label: item.name })))]) || STATUS_LABEL.configured;
+      return (
+        join([value.kind?.replace("-", " "), labels(value.classes?.map((item) => ({ label: item.name })))]) ||
+        STATUS_LABEL.configured
+      );
     }
     case "verbs.tense":
     case "verbs.aspect":
@@ -181,9 +189,11 @@ export function searchGrammar(query: string, index: IndexedGrammar): GrammarSear
   }
   for (const record of index.agreements) {
     if (record.value.recordKind !== "agreement") continue;
-    const blob = [record.value.title, record.value.notes, record.value.features.map((item) => item.label).join(" ")].join(
-      "\n",
-    );
+    const blob = [
+      record.value.title,
+      record.value.notes,
+      record.value.features.map((item) => item.label).join(" "),
+    ].join("\n");
     if (matches(blob, needle)) {
       hits.push({
         kind: "agreement",

@@ -3,7 +3,6 @@ import { INVENTORY_SYSTEM_IDS } from "./inventory.ts";
 import { STRATEGY_SYSTEM_IDS } from "./strategy.ts";
 import { CLAUSE_SYSTEM_IDS } from "./clause.ts";
 import { PARADIGM_SYSTEM_IDS } from "./paradigm.ts";
-import { GRAMMAR_SYSTEM_IDS } from "./types.ts";
 
 const example = {
   type: "object",
@@ -358,7 +357,15 @@ const STRATEGY_CONFIG = {
     additionalProperties: false,
     required: ["strategies", "forms"],
     properties: {
-      strategies: stringArray(["affix", "negative-auxiliary", "special-verb", "stem-change", "none", "multiple", "custom"]),
+      strategies: stringArray([
+        "affix",
+        "negative-auxiliary",
+        "special-verb",
+        "stem-change",
+        "none",
+        "multiple",
+        "custom",
+      ]),
       forms: { type: "array", items: negativeForm },
     },
   },
@@ -412,7 +419,15 @@ const CLAUSE_CONFIG = {
     additionalProperties: false,
     required: ["strategies"],
     properties: {
-      strategies: stringArray(["intonation", "particle", "word-order", "verb-morphology", "auxiliary", "multiple", "custom"]),
+      strategies: stringArray([
+        "intonation",
+        "particle",
+        "word-order",
+        "verb-morphology",
+        "auxiliary",
+        "multiple",
+        "custom",
+      ]),
       particle: { type: "string" },
       placement: enumString(["clause-initial", "clause-final", "before-verb", "after-verb", "other"]),
     },
@@ -432,7 +447,15 @@ const CLAUSE_CONFIG = {
     additionalProperties: false,
     required: ["strategies"],
     properties: {
-      strategies: stringArray(["bare-verb", "special-form", "particle", "auxiliary", "word-order", "multiple", "custom"]),
+      strategies: stringArray([
+        "bare-verb",
+        "special-form",
+        "particle",
+        "auxiliary",
+        "word-order",
+        "multiple",
+        "custom",
+      ]),
       numberDistinction: { type: "boolean" },
       polarityDistinction: { type: "boolean" },
       politenessDistinction: { type: "boolean" },
@@ -455,20 +478,20 @@ const CLAUSE_CONFIG = {
     additionalProperties: false,
     required: ["strategies"],
     properties: {
-      strategies: stringArray(["relative-pronoun", "complementizer", "gap", "resumptive", "internally-headed", "multiple", "custom"]),
+      strategies: stringArray([
+        "relative-pronoun",
+        "complementizer",
+        "gap",
+        "resumptive",
+        "internally-headed",
+        "multiple",
+        "custom",
+      ]),
       headBehavior: { type: "string" },
       resumptives: { type: "string" },
     },
   },
 } as const;
-
-const SPECIALIZED_SYSTEM_IDS = new Set<string>([
-  ...CHOICE_SYSTEM_IDS,
-  ...INVENTORY_SYSTEM_IDS,
-  ...STRATEGY_SYSTEM_IDS,
-  ...CLAUSE_SYSTEM_IDS,
-  ...PARADIGM_SYSTEM_IDS,
-]);
 
 export const GRAMMAR_VALUE_SCHEMA = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
@@ -479,9 +502,6 @@ export const GRAMMAR_VALUE_SCHEMA = {
     ...STRATEGY_SYSTEM_IDS.map((id) => systemBranch(id, { oneOf: [emptyConfig, STRATEGY_CONFIG[id]] })),
     ...CLAUSE_SYSTEM_IDS.map((id) => systemBranch(id, { oneOf: [emptyConfig, CLAUSE_CONFIG[id]] })),
     ...PARADIGM_SYSTEM_IDS.map((id) => systemBranch(id, { oneOf: [emptyConfig, PARADIGM_CONFIG[id]] })),
-    ...GRAMMAR_SYSTEM_IDS.filter((id) => !SPECIALIZED_SYSTEM_IDS.has(id)).map((id) =>
-      systemBranch(id, { oneOf: [emptyConfig, { type: "object", minProperties: 1, additionalProperties: true }] }),
-    ),
     {
       type: "object",
       additionalProperties: false,

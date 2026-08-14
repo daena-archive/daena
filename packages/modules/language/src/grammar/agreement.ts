@@ -36,7 +36,11 @@ export const TARGET_OPTIONS: { value: AgreementTargetKind; label: string }[] = [
 export const BEHAVIOR_OPTIONS: { value: AgreementBehavior; label: string; expansion?: string }[] = [
   { value: "full", label: "Full agreement" },
   { value: "partial", label: "Partial agreement", expansion: "Only some forms or features agree." },
-  { value: "conditional", label: "Conditional agreement", expansion: "Agreement depends on tense, person, or similar conditions." },
+  {
+    value: "conditional",
+    label: "Conditional agreement",
+    expansion: "Agreement depends on tense, person, or similar conditions.",
+  },
 ];
 
 export type OfferedAgreementGroup = {
@@ -49,9 +53,9 @@ export type OfferedAgreementGroup = {
 export function endpointLabel(endpoint: AgreementEndpoint) {
   if (endpoint.kind === "custom") return endpoint.customLabel?.trim() || "Custom";
   return (
-    CONTROLLER_OPTIONS.find((item) => item.value === endpoint.kind)?.label
-    ?? TARGET_OPTIONS.find((item) => item.value === endpoint.kind)?.label
-    ?? endpoint.kind
+    CONTROLLER_OPTIONS.find((item) => item.value === endpoint.kind)?.label ??
+    TARGET_OPTIONS.find((item) => item.value === endpoint.kind)?.label ??
+    endpoint.kind
   );
 }
 
@@ -60,7 +64,10 @@ export function agreementTitleFromEndpoints(controller: AgreementEndpoint, targe
 }
 
 export function summarizeAgreement(record: GrammarAgreementRecord) {
-  const features = record.features.map((item) => item.label).filter(Boolean).join(", ");
+  const features = record.features
+    .map((item) => item.label)
+    .filter(Boolean)
+    .join(", ");
   return [agreementTitleFromEndpoints(record.controller, record.target), features].filter(Boolean).join(" · ");
 }
 
@@ -105,8 +112,14 @@ export function featureDisplayLabel(index: IndexedGrammar, feature: AgreementFea
   return feature.label;
 }
 
-export function setAgreementController(draft: GrammarAgreementRecord, kind: AgreementControllerKind): GrammarAgreementRecord {
-  const controller: AgreementEndpoint = { kind, customLabel: kind === "custom" ? draft.controller.customLabel : undefined };
+export function setAgreementController(
+  draft: GrammarAgreementRecord,
+  kind: AgreementControllerKind,
+): GrammarAgreementRecord {
+  const controller: AgreementEndpoint = {
+    kind,
+    customLabel: kind === "custom" ? draft.controller.customLabel : undefined,
+  };
   return withAutoTitle(draft, { controller });
 }
 
@@ -124,7 +137,10 @@ export function setAgreementEndpointLabel(
   return withAutoTitle(draft, { [role]: next });
 }
 
-export function setAgreementBehavior(draft: GrammarAgreementRecord, behavior: AgreementBehavior): GrammarAgreementRecord {
+export function setAgreementBehavior(
+  draft: GrammarAgreementRecord,
+  behavior: AgreementBehavior,
+): GrammarAgreementRecord {
   return { ...draft, behavior };
 }
 
@@ -136,11 +152,17 @@ export function setAgreementField(
   return { ...draft, [fieldName]: value };
 }
 
-export function toggleAgreementGroup(draft: GrammarAgreementRecord, group: OfferedAgreementGroup): GrammarAgreementRecord {
+export function toggleAgreementGroup(
+  draft: GrammarAgreementRecord,
+  group: OfferedAgreementGroup,
+): GrammarAgreementRecord {
   const keys = new Set(group.features.map((item) => featureKey(group.sourceSystemId, item.categoryId)));
   const selected = draft.features.filter((item) => keys.has(featureKey(item.sourceSystemId, item.categoryId)));
   if (selected.length === group.features.length) {
-    return { ...draft, features: draft.features.filter((item) => !keys.has(featureKey(item.sourceSystemId, item.categoryId))) };
+    return {
+      ...draft,
+      features: draft.features.filter((item) => !keys.has(featureKey(item.sourceSystemId, item.categoryId))),
+    };
   }
   const next = [...draft.features];
   for (const item of group.features) {
@@ -177,7 +199,8 @@ export function groupSelected(draft: GrammarAgreementRecord, group: OfferedAgree
     group.features.length > 0 &&
     group.features.every((item) =>
       draft.features.some(
-        (feature) => featureKey(feature.sourceSystemId, feature.categoryId) === featureKey(group.sourceSystemId, item.categoryId),
+        (feature) =>
+          featureKey(feature.sourceSystemId, feature.categoryId) === featureKey(group.sourceSystemId, item.categoryId),
       ),
     )
   );
@@ -224,7 +247,8 @@ export function renderAgreementEditor(
   const legend = document.createElement("legend");
   legend.textContent = `${endpointLabel(draft.target)} agrees with ${endpointLabel(draft.controller)} in`;
   features.append(legend);
-  if (groups.length === 0) features.append(emptyMessage("Configure number, case, classes, or pronouns first to reuse those categories here."));
+  if (groups.length === 0)
+    features.append(emptyMessage("Configure number, case, classes, or pronouns first to reuse those categories here."));
   for (const group of groups) {
     const label = document.createElement("label");
     const box = document.createElement("input");
@@ -261,10 +285,17 @@ export function renderAgreementEditor(
     add.onclick = () => onChange(addCustomAgreementFeature(draft), true);
     section.append(add);
   }
-  const broken = draft.features.filter((item) => item.sourceSystemId && item.categoryId && !liveCategoryLabel(index, item.sourceSystemId, item.categoryId)
-    || (item.sourceSystemId && !item.categoryId && !configured(index, item.sourceSystemId)));
+  const broken = draft.features.filter(
+    (item) =>
+      (item.sourceSystemId && item.categoryId && !liveCategoryLabel(index, item.sourceSystemId, item.categoryId)) ||
+      (item.sourceSystemId && !item.categoryId && !configured(index, item.sourceSystemId)),
+  );
   if (broken.length) {
-    section.append(emptyMessage(`Broken references: ${broken.map((item) => item.label).join(", ")}. Edit the owning system to restore them, or remove the feature.`));
+    section.append(
+      emptyMessage(
+        `Broken references: ${broken.map((item) => item.label).join(", ")}. Edit the owning system to restore them, or remove the feature.`,
+      ),
+    );
   }
   section.append(
     radios("Behavior", BEHAVIOR_OPTIONS, draft.behavior, locked, (value) => {
@@ -291,7 +322,8 @@ export function renderAgreementEditor(
 function withAutoTitle(draft: GrammarAgreementRecord, patch: Partial<GrammarAgreementRecord>): GrammarAgreementRecord {
   const next = { ...draft, ...patch };
   const previous = agreementTitleFromEndpoints(draft.controller, draft.target);
-  if (!draft.title.trim() || draft.title === previous) next.title = agreementTitleFromEndpoints(next.controller, next.target);
+  if (!draft.title.trim() || draft.title === previous)
+    next.title = agreementTitleFromEndpoints(next.controller, next.target);
   return next;
 }
 

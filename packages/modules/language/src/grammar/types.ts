@@ -3,14 +3,7 @@ export const GRAMMAR_SCHEMA_VERSION = 1 as const;
 export type GrammarStatus = "unconfigured" | "configured" | "not-used";
 
 export type GrammarSectionId =
-  | "syntax"
-  | "nouns"
-  | "pronouns"
-  | "verbs"
-  | "modifiers"
-  | "clauses"
-  | "agreement"
-  | "other";
+  "syntax" | "nouns" | "pronouns" | "verbs" | "modifiers" | "clauses" | "agreement" | "other";
 
 export const GRAMMAR_SYSTEM_IDS = [
   "syntax.basic-word-order",
@@ -92,14 +85,7 @@ export type EmptyConfig = Record<string, never>;
 
 export type WordOrderPattern = "sov" | "svo" | "vso" | "vos" | "ovs" | "osv" | "flexible" | "custom";
 export type WordOrderStrength = "strict" | "strongly-preferred" | "default-flexible" | "context";
-export type WordOrderInfluence =
-  | "topic"
-  | "focus"
-  | "emphasis"
-  | "definiteness"
-  | "animacy"
-  | "discourse"
-  | "custom";
+export type WordOrderInfluence = "topic" | "focus" | "emphasis" | "definiteness" | "animacy" | "discourse" | "custom";
 
 export type BasicWordOrderConfig = {
   order: WordOrderPattern;
@@ -119,12 +105,7 @@ export type PositionConfig = {
 };
 
 export type PossessivePositionChoice =
-  | "possessor-before"
-  | "possessor-after"
-  | "either"
-  | "morphological"
-  | "multiple"
-  | "custom";
+  "possessor-before" | "possessor-after" | "either" | "morphological" | "multiple" | "custom";
 
 export type PossessivePositionConfig = {
   position: PossessivePositionChoice;
@@ -133,12 +114,7 @@ export type PossessivePositionConfig = {
   conditions?: string;
 };
 
-export type RelativeClausePositionChoice =
-  | "before"
-  | "after"
-  | "internally-headed"
-  | "multiple"
-  | "custom";
+export type RelativeClausePositionChoice = "before" | "after" | "internally-headed" | "multiple" | "custom";
 
 export type RelativeClausePositionConfig = {
   position: RelativeClausePositionChoice;
@@ -217,13 +193,7 @@ export type NounClassesConfig = {
 };
 
 export type DefinitenessStrategy =
-  | "definite-article"
-  | "indefinite-article"
-  | "both"
-  | "affixes"
-  | "demonstratives"
-  | "context"
-  | "other";
+  "definite-article" | "indefinite-article" | "both" | "affixes" | "demonstratives" | "context" | "other";
 
 export type ArticleForm = {
   id: string;
@@ -292,7 +262,8 @@ export type TamConfig = {
 };
 
 export type ArgumentParticipants = "none" | "subject" | "object" | "subject-object" | "other";
-export type ArgumentRepresentation = "endings" | "prefixes" | "full-forms" | "auxiliaries" | "flexible-table" | "custom";
+export type ArgumentRepresentation =
+  "endings" | "prefixes" | "full-forms" | "auxiliaries" | "flexible-table" | "custom";
 
 export type ArgumentIndexingConfig = {
   participants: ArgumentParticipants;
@@ -304,13 +275,7 @@ export type ArgumentIndexingConfig = {
 };
 
 export type NegativeVerbStrategy =
-  | "affix"
-  | "negative-auxiliary"
-  | "special-verb"
-  | "stem-change"
-  | "none"
-  | "multiple"
-  | "custom";
+  "affix" | "negative-auxiliary" | "special-verb" | "stem-change" | "none" | "multiple" | "custom";
 
 export type NegativeVerbForm = {
   id: string;
@@ -325,12 +290,7 @@ export type NegativeVerbConfig = {
 };
 
 export type AdjectiveBehaviorKind =
-  | "invariant"
-  | "agree-with-noun"
-  | "verb-like"
-  | "noun-like"
-  | "multiple-classes"
-  | "custom";
+  "invariant" | "agree-with-noun" | "verb-like" | "noun-like" | "multiple-classes" | "custom";
 
 export type AdjectiveBehaviorConfig = {
   behaviors: AdjectiveBehaviorKind[];
@@ -338,22 +298,9 @@ export type AdjectiveBehaviorConfig = {
   agreementRecordIds: string[];
 };
 
-export type ComparativeStrategy =
-  | "synthetic"
-  | "particle"
-  | "affix"
-  | "exceed"
-  | "special"
-  | "multiple"
-  | "custom";
+export type ComparativeStrategy = "synthetic" | "particle" | "affix" | "exceed" | "special" | "multiple" | "custom";
 
-export type SuperlativeStrategy =
-  | "dedicated"
-  | "intensifier"
-  | "comparative"
-  | "definite"
-  | "none"
-  | "custom";
+export type SuperlativeStrategy = "dedicated" | "intensifier" | "comparative" | "definite" | "none" | "custom";
 
 export type DegreeConfig = {
   strategies: string[];
@@ -362,13 +309,7 @@ export type DegreeConfig = {
 };
 
 export type YesNoQuestionStrategy =
-  | "intonation"
-  | "particle"
-  | "word-order"
-  | "verb-morphology"
-  | "auxiliary"
-  | "multiple"
-  | "custom";
+  "intonation" | "particle" | "word-order" | "verb-morphology" | "auxiliary" | "multiple" | "custom";
 
 export type ParticlePlacement = "clause-initial" | "clause-final" | "before-verb" | "after-verb" | "other";
 
@@ -379,12 +320,7 @@ export type YesNoQuestionsConfig = {
 };
 
 export type ContentQuestionBehavior =
-  | "in-situ"
-  | "fronted"
-  | "fixed-position"
-  | "special-structure"
-  | "mixed"
-  | "custom";
+  "in-situ" | "fronted" | "fixed-position" | "special-structure" | "mixed" | "custom";
 
 export type InterrogativeItem = {
   id: string;
@@ -400,13 +336,7 @@ export type ContentQuestionsConfig = {
 };
 
 export type ImperativeStrategy =
-  | "bare-verb"
-  | "special-form"
-  | "particle"
-  | "auxiliary"
-  | "word-order"
-  | "multiple"
-  | "custom";
+  "bare-verb" | "special-form" | "particle" | "auxiliary" | "word-order" | "multiple" | "custom";
 
 export type ImperativesConfig = {
   strategies: ImperativeStrategy[];
@@ -415,13 +345,7 @@ export type ImperativesConfig = {
   politenessDistinction?: boolean;
 };
 
-export type ClauseNegationStrategy =
-  | "particle"
-  | "affix"
-  | "auxiliary"
-  | "special-verb"
-  | "multiple"
-  | "custom";
+export type ClauseNegationStrategy = "particle" | "affix" | "auxiliary" | "special-verb" | "multiple" | "custom";
 
 export type ClauseNegationConfig = {
   strategies: ClauseNegationStrategy[];
@@ -432,13 +356,7 @@ export type ClauseNegationConfig = {
 };
 
 export type RelativizationStrategy =
-  | "relative-pronoun"
-  | "complementizer"
-  | "gap"
-  | "resumptive"
-  | "internally-headed"
-  | "multiple"
-  | "custom";
+  "relative-pronoun" | "complementizer" | "gap" | "resumptive" | "internally-headed" | "multiple" | "custom";
 
 export type RelativeClausesConfig = {
   strategies: RelativizationStrategy[];
@@ -533,10 +451,7 @@ export type GrammarSectionStateRecord = {
 };
 
 export type GrammarRecord =
-  | GrammarSystemRecord
-  | GrammarAgreementRecord
-  | GrammarCustomRuleRecord
-  | GrammarSectionStateRecord;
+  GrammarSystemRecord | GrammarAgreementRecord | GrammarCustomRuleRecord | GrammarSectionStateRecord;
 
 export type GrammarIssueCode =
   | "legacy-topic"

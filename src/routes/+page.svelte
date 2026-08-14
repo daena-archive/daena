@@ -3930,8 +3930,7 @@ onMount(() => {
                 >Create map</button>
               {#if mapProviderMenuOpen === "header"}<div class="map-provider-menu" role="menu">
                   <button type="button" role="menuitem" onclick={() => void createMap("fmg")}>Create with FMG</button>
-                  <button type="button" role="menuitem" onclick={() => void createMap("image")}
-                    >Import image</button>
+                  <button type="button" role="menuitem" onclick={() => void createMap("image")}>Import image</button>
                   <button type="button" role="menuitem" onclick={() => void createMap("vector")}>New vector map</button>
                 </div>{/if}
             </div>{/if}

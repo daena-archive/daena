@@ -72,7 +72,11 @@ export const CASE_TEMPLATES: InventoryTemplate<CaseTemplateId>[] = [
 
 export const NOUN_CLASS_KIND_OPTIONS: InventoryTemplate<NounClassKind>[] = [
   { id: "gender", label: "Gender system", meaning: "A small set of classes such as masculine and feminine." },
-  { id: "noun-class", label: "Noun class system", meaning: "A larger set of grammatical classes, not necessarily gendered." },
+  {
+    id: "noun-class",
+    label: "Noun class system",
+    meaning: "A larger set of grammatical classes, not necessarily gendered.",
+  },
   { id: "custom", label: "Custom classification" },
 ];
 
@@ -89,7 +93,11 @@ export const TENSE_TEMPLATES: InventoryTemplate[] = [
 
 export const ASPECT_TEMPLATES: InventoryTemplate[] = [
   { id: "perfective", label: "Perfective", meaning: "Presents an event as a bounded whole." },
-  { id: "imperfective", label: "Imperfective", meaning: "Presents an event as ongoing, habitual, or internally structured." },
+  {
+    id: "imperfective",
+    label: "Imperfective",
+    meaning: "Presents an event as ongoing, habitual, or internally structured.",
+  },
   { id: "progressive", label: "Progressive", meaning: "An event in progress." },
   { id: "habitual", label: "Habitual", meaning: "A repeated or usual event." },
   { id: "perfect", label: "Perfect", meaning: "A past event with present relevance." },
@@ -138,11 +146,15 @@ export function toggleNumberTemplate(
   if (draft.systemId !== "nouns.number") return { draft };
   const config = numberConfig(draft);
   if (templateId === "custom") {
-    return { draft: setNumber(draft, { ...config, categories: append(config.categories, numberFromTemplate("custom")) }) };
+    return {
+      draft: setNumber(draft, { ...config, categories: append(config.categories, numberFromTemplate("custom")) }),
+    };
   }
   const existing = config.categories.find((item) => item.templateId === templateId);
   if (existing) return removeById(draft, existing.id, options);
-  return { draft: setNumber(draft, { ...config, categories: append(config.categories, numberFromTemplate(templateId)) }) };
+  return {
+    draft: setNumber(draft, { ...config, categories: append(config.categories, numberFromTemplate(templateId)) }),
+  };
 }
 
 export function updateNumberCategory(
@@ -164,7 +176,11 @@ export function moveNumberCategory(draft: GrammarSystemRecord, id: string, delta
   return setNumber(draft, { ...config, categories: move(config.categories, id, delta) });
 }
 
-export function removeNumberCategory(draft: GrammarSystemRecord, id: string, options?: { force?: boolean; referenced?: Set<string> }) {
+export function removeNumberCategory(
+  draft: GrammarSystemRecord,
+  id: string,
+  options?: { force?: boolean; referenced?: Set<string> },
+) {
   return removeById(draft, id, options);
 }
 
@@ -183,7 +199,11 @@ export function addCase(draft: GrammarSystemRecord, templateId: CaseTemplateId):
   return setCase(draft, { cases: append(config.cases, caseFromTemplate(templateId)) });
 }
 
-export function updateCase(draft: GrammarSystemRecord, id: string, patch: Partial<Omit<CaseItem, "id">>): GrammarSystemRecord {
+export function updateCase(
+  draft: GrammarSystemRecord,
+  id: string,
+  patch: Partial<Omit<CaseItem, "id">>,
+): GrammarSystemRecord {
   if (draft.systemId !== "nouns.case") return draft;
   const config = caseConfig(draft);
   return setCase(draft, {
@@ -197,7 +217,11 @@ export function moveCase(draft: GrammarSystemRecord, id: string, delta: number):
   return setCase(draft, { cases: move(config.cases, id, delta) });
 }
 
-export function removeCase(draft: GrammarSystemRecord, id: string, options?: { force?: boolean; referenced?: Set<string> }) {
+export function removeCase(
+  draft: GrammarSystemRecord,
+  id: string,
+  options?: { force?: boolean; referenced?: Set<string> },
+) {
   return removeById(draft, id, options);
 }
 
@@ -235,7 +259,11 @@ export function moveNounClass(draft: GrammarSystemRecord, id: string, delta: num
   return setClasses(draft, { kind: config.kind ?? "gender", classes: move(config.classes, id, delta) });
 }
 
-export function removeNounClass(draft: GrammarSystemRecord, id: string, options?: { force?: boolean; referenced?: Set<string> }) {
+export function removeNounClass(
+  draft: GrammarSystemRecord,
+  id: string,
+  options?: { force?: boolean; referenced?: Set<string> },
+) {
   return removeById(draft, id, options);
 }
 
@@ -275,7 +303,11 @@ export function moveTamCategory(draft: GrammarSystemRecord, id: string, delta: n
   return setTam(draft, { categories: move(config.categories, id, delta) });
 }
 
-export function removeTamCategory(draft: GrammarSystemRecord, id: string, options?: { force?: boolean; referenced?: Set<string> }) {
+export function removeTamCategory(
+  draft: GrammarSystemRecord,
+  id: string,
+  options?: { force?: boolean; referenced?: Set<string> },
+) {
   return removeById(draft, id, options);
 }
 
@@ -316,7 +348,12 @@ function numberEditor(
       NUMBER_TEMPLATES.filter((item) => item.id !== "custom"),
       selected,
       locked,
-      (templateId) => applyMutation(toggleNumberTemplate(draft, templateId as NumberCategoryId, { referenced: ctx.referencedIds }), ctx, onChange),
+      (templateId) =>
+        applyMutation(
+          toggleNumberTemplate(draft, templateId as NumberCategoryId, { referenced: ctx.referencedIds }),
+          ctx,
+          onChange,
+        ),
     ),
   );
   if (!locked) {
@@ -327,9 +364,15 @@ function numberEditor(
     );
   }
   wrap.append(
-    templateChecks("How is number usually expressed?", NUMBER_MARKING_OPTIONS, new Set(config.markingStrategies), locked, (id) => {
-      onChange(toggleNumberMarking(draft, id as MarkingStrategy), true);
-    }),
+    templateChecks(
+      "How is number usually expressed?",
+      NUMBER_MARKING_OPTIONS,
+      new Set(config.markingStrategies),
+      locked,
+      (id) => {
+        onChange(toggleNumberMarking(draft, id as MarkingStrategy), true);
+      },
+    ),
   );
   for (const [index, item] of config.categories.entries()) {
     wrap.append(
@@ -340,7 +383,9 @@ function numberEditor(
         ctx.referencedIds.has(item.id),
         locked,
         [
-          namedField("label", "Label", item.label, locked, (value) => onChange(updateNumberCategory(draft, item.id, { label: value }), false)),
+          namedField("label", "Label", item.label, locked, (value) =>
+            onChange(updateNumberCategory(draft, item.id, { label: value }), false),
+          ),
           namedField("meaning", "Meaning", item.meaning ?? "", locked, (value) =>
             onChange(updateNumberCategory(draft, item.id, { meaning: value }), false),
           ),
@@ -356,7 +401,8 @@ function numberEditor(
         ],
         {
           move: (delta) => onChange(moveNumberCategory(draft, item.id, delta), true),
-          remove: () => applyMutation(removeNumberCategory(draft, item.id, { referenced: ctx.referencedIds }), ctx, onChange),
+          remove: () =>
+            applyMutation(removeNumberCategory(draft, item.id, { referenced: ctx.referencedIds }), ctx, onChange),
         },
       ),
     );
@@ -394,7 +440,9 @@ function caseEditor(
         ctx.referencedIds.has(item.id),
         locked,
         [
-          namedField("name", "Name", item.name, locked, (value) => onChange(updateCase(draft, item.id, { name: value }), false)),
+          namedField("name", "Name", item.name, locked, (value) =>
+            onChange(updateCase(draft, item.id, { name: value }), false),
+          ),
           namedField("abbreviation", "Abbreviation", item.abbreviation ?? "", locked, (value) =>
             onChange(updateCase(draft, item.id, { abbreviation: value }), false),
           ),
@@ -407,7 +455,9 @@ function caseEditor(
           namedField("marking", "How it is marked", item.marking ?? "", locked, (value) =>
             onChange(updateCase(draft, item.id, { marking: value }), false),
           ),
-          namedArea("notes", "Notes", item.notes ?? "", locked, (value) => onChange(updateCase(draft, item.id, { notes: value }), false)),
+          namedArea("notes", "Notes", item.notes ?? "", locked, (value) =>
+            onChange(updateCase(draft, item.id, { notes: value }), false),
+          ),
         ],
         {
           move: (delta) => onChange(moveCase(draft, item.id, delta), true),
@@ -428,7 +478,9 @@ function classEditor(
   const wrap = document.createElement("div");
   wrap.className = "grammar-choice-stack";
   wrap.append(
-    emptyMessage("If this language has no grammatical classes, mark the system as not used. Agreement behavior belongs under Agreement."),
+    emptyMessage(
+      "If this language has no grammatical classes, mark the system as not used. Agreement behavior belongs under Agreement.",
+    ),
   );
   const config = classConfig(draft);
   wrap.append(
@@ -446,7 +498,9 @@ function classEditor(
         ctx.referencedIds.has(item.id),
         locked,
         [
-          namedField("name", "Name", item.name, locked, (value) => onChange(updateNounClass(draft, item.id, { name: value }), false)),
+          namedField("name", "Name", item.name, locked, (value) =>
+            onChange(updateNounClass(draft, item.id, { name: value }), false),
+          ),
           namedField("abbreviation", "Abbreviation", item.abbreviation ?? "", locked, (value) =>
             onChange(updateNounClass(draft, item.id, { abbreviation: value }), false),
           ),
@@ -459,7 +513,8 @@ function classEditor(
         ],
         {
           move: (delta) => onChange(moveNounClass(draft, item.id, delta), true),
-          remove: () => applyMutation(removeNounClass(draft, item.id, { referenced: ctx.referencedIds }), ctx, onChange),
+          remove: () =>
+            applyMutation(removeNounClass(draft, item.id, { referenced: ctx.referencedIds }), ctx, onChange),
         },
       ),
     );
@@ -515,7 +570,9 @@ function tamEditor(
         ctx.referencedIds.has(item.id),
         locked,
         [
-          namedField("label", "Label", item.label, locked, (value) => onChange(updateTamCategory(draft, item.id, { label: value }), false)),
+          namedField("label", "Label", item.label, locked, (value) =>
+            onChange(updateTamCategory(draft, item.id, { label: value }), false),
+          ),
           namedArea("meaning", "Meaning", item.meaning ?? "", locked, (value) =>
             onChange(updateTamCategory(draft, item.id, { meaning: value }), false),
           ),
@@ -531,7 +588,8 @@ function tamEditor(
         ],
         {
           move: (delta) => onChange(moveTamCategory(draft, item.id, delta), true),
-          remove: () => applyMutation(removeTamCategory(draft, item.id, { referenced: ctx.referencedIds }), ctx, onChange),
+          remove: () =>
+            applyMutation(removeTamCategory(draft, item.id, { referenced: ctx.referencedIds }), ctx, onChange),
         },
       ),
     );
@@ -578,7 +636,12 @@ function removeById(
   }
   if (draft.systemId === "nouns.classes") {
     const config = classConfig(draft);
-    return { draft: setClasses(draft, { kind: config.kind ?? "gender", classes: config.classes.filter((item) => item.id !== id) }) };
+    return {
+      draft: setClasses(draft, {
+        kind: config.kind ?? "gender",
+        classes: config.classes.filter((item) => item.id !== id),
+      }),
+    };
   }
   if (isTam(draft.systemId)) {
     const config = tamConfig(draft);
@@ -588,9 +651,11 @@ function removeById(
 }
 
 function itemLabel(draft: GrammarSystemRecord, id: string) {
-  if (draft.systemId === "nouns.number") return numberConfig(draft).categories.find((item) => item.id === id)?.label ?? "category";
+  if (draft.systemId === "nouns.number")
+    return numberConfig(draft).categories.find((item) => item.id === id)?.label ?? "category";
   if (draft.systemId === "nouns.case") return caseConfig(draft).cases.find((item) => item.id === id)?.name ?? "case";
-  if (draft.systemId === "nouns.classes") return classConfig(draft).classes.find((item) => item.id === id)?.name ?? "class";
+  if (draft.systemId === "nouns.classes")
+    return classConfig(draft).classes.find((item) => item.id === id)?.name ?? "class";
   if (isTam(draft.systemId)) return tamConfig(draft).categories.find((item) => item.id === id)?.label ?? "category";
   return "category";
 }

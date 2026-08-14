@@ -39,7 +39,13 @@ export {
   systemStatus,
   validateGrammarDraft,
 } from "./grammar/normalize.ts";
-export { grammarGlance, grammarStatusLabel, searchGrammar, sectionCardSummary, summarizeSystem } from "./grammar/summaries.ts";
+export {
+  grammarGlance,
+  grammarStatusLabel,
+  searchGrammar,
+  sectionCardSummary,
+  summarizeSystem,
+} from "./grammar/summaries.ts";
 export {
   ADJECTIVE_POSITION_OPTIONS,
   ADPOSITION_OPTIONS,

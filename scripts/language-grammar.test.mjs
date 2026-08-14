@@ -151,11 +151,23 @@ assert.equal(legacy.ok, false);
 assert.equal(legacy.issues[0].code, "legacy-topic");
 assert.equal(matchesSchema({ title: "Tense", section: "verb", body: "Past.", links: [] }, GRAMMAR_VALUE_SCHEMA), false);
 
-assert.equal(normalizeGrammarRecord({ recordKind: "system", schemaVersion: 1, systemId: "mystery", status: "configured" }).ok, false);
+assert.equal(
+  normalizeGrammarRecord({ recordKind: "system", schemaVersion: 1, systemId: "mystery", status: "configured" }).ok,
+  false,
+);
 assert.equal(normalizeGrammarRecord({ recordKind: "note", schemaVersion: 1 }).ok, false);
 assert.equal(normalizeGrammarRecord({ recordKind: "custom-rule", schemaVersion: 1, tags: [], body: "" }).ok, false);
 
-const unknownSystem = { recordKind: "system", schemaVersion: 1, systemId: "syntax.banana", status: "configured", config: {}, notes: "", examples: [], links: [] };
+const unknownSystem = {
+  recordKind: "system",
+  schemaVersion: 1,
+  systemId: "syntax.banana",
+  status: "configured",
+  config: {},
+  notes: "",
+  examples: [],
+  links: [],
+};
 assert.equal(normalizeGrammarRecord(unknownSystem).ok, false);
 
 function ok(value) {
@@ -168,7 +180,12 @@ function ok(value) {
 }
 
 const fixtures = {
-  "syntax.basic-word-order": { order: "sov", strength: "default-flexible", influences: ["topic"], changeNotes: "Focus can front." },
+  "syntax.basic-word-order": {
+    order: "sov",
+    strength: "default-flexible",
+    influences: ["topic"],
+    changeNotes: "Focus can front.",
+  },
   "syntax.adjective-position": { position: "before", alternatePositions: [], conditions: "" },
   "syntax.adpositions": { strategy: "postpositions", distributionNotes: "Case may co-occur." },
   "syntax.possessive-position": { position: "possessor-before", alternatePositions: [] },
@@ -183,16 +200,42 @@ const fixtures = {
   "nouns.case": {
     cases: [
       { id: "nom", templateId: "nominative", name: "Nominative", abbreviation: "NOM", primaryFunction: "Subject" },
-      { id: "acc", templateId: "accusative", name: "Accusative", abbreviation: "ACC", primaryFunction: "Direct object" },
+      {
+        id: "acc",
+        templateId: "accusative",
+        name: "Accusative",
+        abbreviation: "ACC",
+        primaryFunction: "Direct object",
+      },
     ],
   },
-  "nouns.classes": { kind: "gender", classes: [{ id: "m", name: "Masculine" }, { id: "f", name: "Feminine" }] },
+  "nouns.classes": {
+    kind: "gender",
+    classes: [
+      { id: "m", name: "Masculine" },
+      { id: "f", name: "Feminine" },
+    ],
+  },
   "nouns.definiteness": { strategies: ["definite-article"], articles: [{ id: "def", form: "le", position: "before" }] },
   "nouns.possession": { strategies: ["genitive"] },
   "pronouns.personal": {
     axes: [
-      { id: "person", label: "Person", values: [{ id: "1", label: "1st" }, { id: "2", label: "2nd" }] },
-      { id: "number", label: "Number", values: [{ id: "sg", label: "Singular" }, { id: "pl", label: "Plural" }] },
+      {
+        id: "person",
+        label: "Person",
+        values: [
+          { id: "1", label: "1st" },
+          { id: "2", label: "2nd" },
+        ],
+      },
+      {
+        id: "number",
+        label: "Number",
+        values: [
+          { id: "sg", label: "Singular" },
+          { id: "pl", label: "Plural" },
+        ],
+      },
     ],
     cells: [
       { id: "1sg", coordinates: { person: "1", number: "sg" }, state: "form", form: "na" },
@@ -203,7 +246,16 @@ const fixtures = {
   },
   "pronouns.demonstratives": {
     distances: ["proximal", "distal"],
-    axes: [{ id: "distance", label: "Distance", values: [{ id: "proximal", label: "this" }, { id: "distal", label: "that" }] }],
+    axes: [
+      {
+        id: "distance",
+        label: "Distance",
+        values: [
+          { id: "proximal", label: "this" },
+          { id: "distal", label: "that" },
+        ],
+      },
+    ],
     cells: [{ id: "prox", coordinates: { distance: "proximal" }, state: "form", form: "si" }],
   },
   "verbs.marking-strategy": { strategies: ["suffixes"] },
@@ -260,7 +312,10 @@ const incomplete = normalizeGrammarRecord({
   links: [],
 });
 assert.equal(incomplete.ok, true);
-assert.equal(incomplete.issues.some((item) => item.code === "configured-minimum"), true);
+assert.equal(
+  incomplete.issues.some((item) => item.code === "configured-minimum"),
+  true,
+);
 
 const trimmed = ok({
   recordKind: "system",
@@ -270,7 +325,10 @@ const trimmed = ok({
   config: { position: " after ", alternatePositions: ["mystery"] },
   notes: "  note  ",
   examples: [{ text: " house red " }],
-  links: [{ kind: "lexeme", targetId: "  abc  ", label: " x " }, { kind: "mystery", targetId: "abc" }],
+  links: [
+    { kind: "lexeme", targetId: "  abc  ", label: " x " },
+    { kind: "mystery", targetId: "abc" },
+  ],
 });
 assert.equal(trimmed.config.position, "after");
 assert.deepEqual(trimmed.config.alternatePositions, []);
@@ -304,7 +362,13 @@ const custom = ok({
 assert.equal(custom.title, "Switch-reference");
 assert.equal(custom.body.includes("\r"), false);
 
-const sectionState = ok({ recordKind: "section-state", schemaVersion: 1, sectionId: "agreement", status: "not-used", note: "No agreement." });
+const sectionState = ok({
+  recordKind: "section-state",
+  schemaVersion: 1,
+  sectionId: "agreement",
+  status: "not-used",
+  note: "No agreement.",
+});
 assert.equal(sectionState.sectionId, "agreement");
 
 const numberRecord = {
@@ -320,7 +384,10 @@ const numberRecord = {
     links: [],
   },
 };
-const duplicateA = { id: "22222222-2222-2222-2222-222222222222", value: emptySystemRecord("syntax.basic-word-order", "configured") };
+const duplicateA = {
+  id: "22222222-2222-2222-2222-222222222222",
+  value: emptySystemRecord("syntax.basic-word-order", "configured"),
+};
 duplicateA.value = {
   ...emptySystemRecord("syntax.basic-word-order", "configured"),
   config: fixtures["syntax.basic-word-order"],
@@ -411,7 +478,10 @@ assert.equal(hits[0].status, "unconfigured");
 assert.ok(searchGrammar("questions", emptyIndex).some((item) => item.systemId === "clauses.yes-no-questions"));
 assert.ok(searchGrammar("switch-reference", indexed).some((item) => item.kind === "custom-rule"));
 
-assert.equal(GRAMMAR_SECTIONS.map((item) => item.id).join(","), "syntax,nouns,pronouns,verbs,modifiers,clauses,agreement,other");
+assert.equal(
+  GRAMMAR_SECTIONS.map((item) => item.id).join(","),
+  "syntax,nouns,pronouns,verbs,modifiers,clauses,agreement,other",
+);
 
 const owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 function fakeGrammarApi(seed = []) {
@@ -440,7 +510,9 @@ function fakeGrammarApi(seed = []) {
       const current = store.get(id);
       if (!current) throw new Error("missing");
       if (current.revision !== options.expectedRevision) {
-        throw new Error(`module record revision conflict: expected ${options.expectedRevision}, current ${current.revision}`);
+        throw new Error(
+          `module record revision conflict: expected ${options.expectedRevision}, current ${current.revision}`,
+        );
       }
       current.value = value;
       current.revision = `rev-${store.size + 2}`;
@@ -451,7 +523,9 @@ function fakeGrammarApi(seed = []) {
       const current = store.get(id);
       if (!current) throw new Error("missing");
       if (current.revision !== options.expectedRevision) {
-        throw new Error(`module record revision conflict: expected ${options.expectedRevision}, current ${current.revision}`);
+        throw new Error(
+          `module record revision conflict: expected ${options.expectedRevision}, current ${current.revision}`,
+        );
       }
       store.delete(id);
     },
@@ -473,14 +547,25 @@ assert.equal(openSystemEditor(dupIndex, "nouns.case").locked, true);
 opened.draft = setSystemStatus(opened.draft, "not-used");
 opened.draft.notes = "Word order covers this.";
 assert.equal(isGrammarDirty(opened), true);
-assert.equal(confirmGrammarLeave(opened, () => false), false);
-assert.equal(confirmGrammarLeave(opened, () => true), true);
-assert.equal(validateGrammarDraft(opened.draft).length, 0);
 assert.equal(
-  validateGrammarDraft(setSystemStatus(emptySystemRecord("nouns.case"), "configured")).some((item) => item.code === "configured-minimum"),
+  confirmGrammarLeave(opened, () => false),
+  false,
+);
+assert.equal(
+  confirmGrammarLeave(opened, () => true),
   true,
 );
-assert.equal(summarizeSystem("nouns.number", setSystemStatus(emptySystemRecord("nouns.number"), "configured")), "Configured");
+assert.equal(validateGrammarDraft(opened.draft).length, 0);
+assert.equal(
+  validateGrammarDraft(setSystemStatus(emptySystemRecord("nouns.case"), "configured")).some(
+    (item) => item.code === "configured-minimum",
+  ),
+  true,
+);
+assert.equal(
+  summarizeSystem("nouns.number", setSystemStatus(emptySystemRecord("nouns.number"), "configured")),
+  "Configured",
+);
 
 const api = fakeGrammarApi();
 const saved = await persistGrammarRecord(api, owner, opened);
@@ -488,7 +573,12 @@ assert.equal(saved.ok, true);
 assert.equal(saved.record.value.status, "not-used");
 assert.equal(saved.index.systems.get("nouns.case").value.status, "not-used");
 assert.match(sectionCardSummary(saved.index, "nouns").detail, /not used|0 system/i);
-assert.equal(grammarGlance(saved.index).find((row) => row.label === "Case system").value.startsWith("Not used"), true);
+assert.equal(
+  grammarGlance(saved.index)
+    .find((row) => row.label === "Case system")
+    .value.startsWith("Not used"),
+  true,
+);
 
 const staleApi = fakeGrammarApi([saved.record]);
 staleApi.store.get(saved.record.id).revision = "rev-other";
@@ -548,9 +638,12 @@ assert.deepEqual(withoutTopic.config.influences, ["focus"]);
 const notFlexible = applyBasicWordOrder(withoutTopic, { order: "svo" });
 assert.deepEqual(notFlexible.config.influences, []);
 
-const adjective = applyAdjectivePosition(setSystemStatus(emptySystemRecord("syntax.adjective-position"), "configured"), {
-  position: "before",
-});
+const adjective = applyAdjectivePosition(
+  setSystemStatus(emptySystemRecord("syntax.adjective-position"), "configured"),
+  {
+    position: "before",
+  },
+);
 assert.equal(summarizeSystem("syntax.adjective-position", adjective), "Before noun");
 const adjectiveAlt = applyAdjectivePosition(adjective, { toggleAlternate: "after", conditions: "Poetry allows both." });
 assert.deepEqual(adjectiveAlt.config.alternatePositions, ["after"]);
@@ -559,9 +652,12 @@ assert.deepEqual(adjectiveMoved.config.alternatePositions, []);
 const adjectiveCustom = applyAdjectivePosition(adjective, { position: "custom" });
 assert.equal(validateGrammarDraft(adjectiveCustom)[0].path, "customPosition");
 
-const possessive = applyPossessivePosition(setSystemStatus(emptySystemRecord("syntax.possessive-position"), "configured"), {
-  position: "possessor-before",
-});
+const possessive = applyPossessivePosition(
+  setSystemStatus(emptySystemRecord("syntax.possessive-position"), "configured"),
+  {
+    position: "possessor-before",
+  },
+);
 assert.equal(summarizeSystem("syntax.possessive-position", possessive), "Possessor before noun");
 
 const relative = applyRelativeClausePosition(
@@ -646,7 +742,10 @@ assert.deepEqual(
   forced.draft.config.categories.map((item) => item.id),
   [pluralId],
 );
-assert.equal(brokenAgreementFeatures(indexGrammarRecords([{ id: "num-1", value: forced.draft }, agreementRef])).length, 1);
+assert.equal(
+  brokenAgreementFeatures(indexGrammarRecords([{ id: "num-1", value: forced.draft }, agreementRef])).length,
+  1,
+);
 
 let cases = addCase(setSystemStatus(emptySystemRecord("nouns.case"), "configured"), "nominative");
 const nomId = cases.config.cases[0].id;
@@ -682,7 +781,10 @@ assert.deepEqual(
   ["definite-article", "indefinite-article", "both", "affixes", "demonstratives", "context", "other"],
 );
 
-let definiteness = toggleDefinitenessStrategy(setSystemStatus(emptySystemRecord("nouns.definiteness"), "configured"), "definite-article");
+let definiteness = toggleDefinitenessStrategy(
+  setSystemStatus(emptySystemRecord("nouns.definiteness"), "configured"),
+  "definite-article",
+);
 definiteness = addArticle(definiteness, "le");
 const articleId = definiteness.config.articles[0].id;
 definiteness = addArticle(definiteness, "la");
@@ -698,7 +800,10 @@ assert.equal(summarizeSystem("nouns.definiteness", definiteness), "Definite arti
 assert.equal(validateGrammarDraft(definiteness).length, 0);
 assert.equal(matchesSchema(serializeGrammarRecord(definiteness), GRAMMAR_VALUE_SCHEMA), true);
 
-let possession = togglePossessionStrategy(setSystemStatus(emptySystemRecord("nouns.possession"), "configured"), "genitive");
+let possession = togglePossessionStrategy(
+  setSystemStatus(emptySystemRecord("nouns.possession"), "configured"),
+  "genitive",
+);
 possession = setAlienability(possession, true);
 possession = setAlienabilityNotes(possession, "Body parts are inalienable.");
 assert.equal(possession.config.alienability, true);
@@ -712,10 +817,16 @@ assert.equal(summarizeSystem("verbs.marking-strategy", marking), "Tone on the ve
 marking = toggleVerbMarking(marking, "suffixes");
 assert.match(summarizeSystem("verbs.marking-strategy", marking), /Suffixes/);
 
-let negative = toggleNegativeStrategy(setSystemStatus(emptySystemRecord("verbs.negative-forms"), "configured"), "affix");
+let negative = toggleNegativeStrategy(
+  setSystemStatus(emptySystemRecord("verbs.negative-forms"), "configured"),
+  "affix",
+);
 assert.equal(summarizeSystem("verbs.negative-forms", negative), "Affix");
 
-let adjectives = toggleAdjectiveBehavior(setSystemStatus(emptySystemRecord("modifiers.adjective-behavior"), "configured"), "agree-with-noun");
+let adjectives = toggleAdjectiveBehavior(
+  setSystemStatus(emptySystemRecord("modifiers.adjective-behavior"), "configured"),
+  "agree-with-noun",
+);
 adjectives = toggleAgreementRecord(adjectives, "agr-1");
 assert.deepEqual(adjectives.config.agreementRecordIds, ["agr-1"]);
 adjectives = toggleAdjectiveBehavior(adjectives, "agree-with-noun");
@@ -723,9 +834,15 @@ assert.deepEqual(adjectives.config.agreementRecordIds, []);
 adjectives = toggleAdjectiveBehavior(adjectives, "invariant");
 assert.equal(summarizeSystem("modifiers.adjective-behavior", adjectives), "Invariant");
 
-let comparative = toggleDegreeStrategy(setSystemStatus(emptySystemRecord("modifiers.comparative"), "configured"), "particle");
+let comparative = toggleDegreeStrategy(
+  setSystemStatus(emptySystemRecord("modifiers.comparative"), "configured"),
+  "particle",
+);
 assert.equal(summarizeSystem("modifiers.comparative", comparative), "Comparative particle");
-let superlative = toggleDegreeStrategy(setSystemStatus(emptySystemRecord("modifiers.superlative"), "configured"), "none");
+let superlative = toggleDegreeStrategy(
+  setSystemStatus(emptySystemRecord("modifiers.superlative"), "configured"),
+  "none",
+);
 assert.equal(summarizeSystem("modifiers.superlative", superlative), "No dedicated superlative");
 
 const strategyApi = fakeGrammarApi();
@@ -739,7 +856,10 @@ assert.deepEqual(
   ["intonation", "particle", "word-order", "verb-morphology", "auxiliary", "multiple", "custom"],
 );
 
-let yesNo = toggleYesNoStrategy(setSystemStatus(emptySystemRecord("clauses.yes-no-questions"), "configured"), "particle");
+let yesNo = toggleYesNoStrategy(
+  setSystemStatus(emptySystemRecord("clauses.yes-no-questions"), "configured"),
+  "particle",
+);
 assert.equal(configuredMinimum("clauses.yes-no-questions", yesNo.config), false);
 assert.equal(validateGrammarDraft(yesNo)[0].path, "particle");
 yesNo = setYesNoParticle(yesNo, "ma");
@@ -748,7 +868,10 @@ assert.equal(summarizeSystem("clauses.yes-no-questions", yesNo), "Question parti
 assert.equal(validateGrammarDraft(yesNo).length, 0);
 assert.equal(matchesSchema(serializeGrammarRecord(yesNo), GRAMMAR_VALUE_SCHEMA), true);
 
-let content = setContentBehavior(setSystemStatus(emptySystemRecord("clauses.content-questions"), "configured"), "custom");
+let content = setContentBehavior(
+  setSystemStatus(emptySystemRecord("clauses.content-questions"), "configured"),
+  "custom",
+);
 assert.equal(validateGrammarDraft(content)[0].path, "customBehavior");
 content = setContentBehavior(setSystemStatus(emptySystemRecord("clauses.content-questions"), "configured"), "in-situ");
 content = toggleInterrogative(content, "who");
@@ -760,7 +883,10 @@ content = moveInterrogative(content, content.config.interrogatives[1].id, -1);
 assert.equal(content.config.interrogatives[1].id, whoId);
 assert.equal(summarizeSystem("clauses.content-questions", content), "Remain in normal position · what, who");
 
-let imperatives = toggleImperativeStrategy(setSystemStatus(emptySystemRecord("clauses.imperatives"), "configured"), "bare-verb");
+let imperatives = toggleImperativeStrategy(
+  setSystemStatus(emptySystemRecord("clauses.imperatives"), "configured"),
+  "bare-verb",
+);
 imperatives = setImperativeDistinction(imperatives, "numberDistinction", true);
 assert.equal(summarizeSystem("clauses.imperatives", imperatives), "Bare verb");
 assert.equal(imperatives.config.numberDistinction, true);
@@ -770,41 +896,70 @@ assert.equal(validateGrammarDraft(negation)[0].path, "particle");
 negation = setNegationParticle(negation, "ne");
 assert.equal(summarizeSystem("clauses.negation", negation), "Particle · “ne”");
 
-let relativeClauses = toggleRelativization(setSystemStatus(emptySystemRecord("clauses.relative-clauses"), "configured"), "gap");
+let relativeClauses = toggleRelativization(
+  setSystemStatus(emptySystemRecord("clauses.relative-clauses"), "configured"),
+  "gap",
+);
 assert.equal(summarizeSystem("clauses.relative-clauses", relativeClauses), "Gap");
 
 const clauseApi = fakeGrammarApi();
 const savedYesNo = await persistGrammarRecord(clauseApi, owner, { draft: yesNo });
 assert.equal(savedYesNo.ok, true);
 assert.equal(savedYesNo.record.value.config.particle, "ma");
-assert.equal(grammarGlance(savedYesNo.index).find((row) => row.label === "Questions").value, "Question particle · “ma”");
-
 assert.equal(
-  CHOICE_SYSTEM_IDS.length + INVENTORY_SYSTEM_IDS.length + STRATEGY_SYSTEM_IDS.length + CLAUSE_SYSTEM_IDS.length + PARADIGM_SYSTEM_IDS.length,
-  GRAMMAR_SYSTEM_IDS.length,
+  grammarGlance(savedYesNo.index).find((row) => row.label === "Questions").value,
+  "Question particle · “ma”",
 );
 
-let personal = toggleAxisValue(setSystemStatus(emptySystemRecord("pronouns.personal"), "configured"), "person", PERSON_VALUES[0]).draft;
+assert.equal(
+  CHOICE_SYSTEM_IDS.length +
+    INVENTORY_SYSTEM_IDS.length +
+    STRATEGY_SYSTEM_IDS.length +
+    CLAUSE_SYSTEM_IDS.length +
+    PARADIGM_SYSTEM_IDS.length,
+  GRAMMAR_SYSTEM_IDS.length,
+);
+assert.equal(GRAMMAR_VALUE_SCHEMA.oneOf.length, GRAMMAR_SYSTEM_IDS.length + 3);
+assert.equal(JSON.stringify(GRAMMAR_VALUE_SCHEMA).includes('"additionalProperties":true'), false);
+
+let personal = toggleAxisValue(
+  setSystemStatus(emptySystemRecord("pronouns.personal"), "configured"),
+  "person",
+  PERSON_VALUES[0],
+).draft;
 personal = toggleAxisValue(personal, "person", PERSON_VALUES[1]).draft;
 personal = toggleAxisValue(personal, "number", NUMBER_VALUES[0]).draft;
-const firstCell = personal.config.cells.find((cell) => cell.coordinates.person === "person-1" && cell.coordinates.number === "number-sg");
+const firstCell = personal.config.cells.find(
+  (cell) => cell.coordinates.person === "person-1" && cell.coordinates.number === "number-sg",
+);
 assert.equal(Boolean(firstCell), true);
 personal = updateParadigmCell(personal, firstCell.id, { form: "yo" });
 personal = toggleAxisValue(personal, "person", PERSON_VALUES[2]).draft;
-const preserved = personal.config.cells.find((cell) => cell.coordinates.person === "person-1" && cell.coordinates.number === "number-sg");
+const preserved = personal.config.cells.find(
+  (cell) => cell.coordinates.person === "person-1" && cell.coordinates.number === "number-sg",
+);
 assert.equal(preserved.id, firstCell.id);
 assert.equal(preserved.form, "yo");
 assert.match(summarizeSystem("pronouns.personal", personal), /1st/);
 const blockedAxis = toggleAxisValue(personal, "person", PERSON_VALUES[0]);
-assert.equal(blockedAxis.draft.config.cells.some((cell) => cell.form === "yo"), true);
+assert.equal(
+  blockedAxis.draft.config.cells.some((cell) => cell.form === "yo"),
+  true,
+);
 assert.equal(blockedAxis.blocked.populated > 0, true);
 const forcedAxis = toggleAxisValue(personal, "person", PERSON_VALUES[0], { force: true });
 assert.equal(forcedAxis.blocked, undefined);
-assert.equal(forcedAxis.draft.config.cells.some((cell) => cell.form === "yo"), false);
+assert.equal(
+  forcedAxis.draft.config.cells.some((cell) => cell.form === "yo"),
+  false,
+);
 assert.equal(validateGrammarDraft(personal).length, 0);
 assert.equal(matchesSchema(serializeGrammarRecord(personal), GRAMMAR_VALUE_SCHEMA), true);
 
-let demonstratives = toggleDistance(setSystemStatus(emptySystemRecord("pronouns.demonstratives"), "configured"), DISTANCE_VALUES[0]).draft;
+let demonstratives = toggleDistance(
+  setSystemStatus(emptySystemRecord("pronouns.demonstratives"), "configured"),
+  DISTANCE_VALUES[0],
+).draft;
 demonstratives = toggleDistance(demonstratives, DISTANCE_VALUES[1]).draft;
 assert.deepEqual(demonstratives.config.distances, ["distance-proximal", "distance-distal"]);
 assert.equal(demonstratives.config.axes[0].id, "distance");
@@ -812,13 +967,19 @@ assert.equal(demonstratives.config.cells.length, 2);
 assert.equal(summarizeSystem("pronouns.demonstratives", demonstratives), "Proximal / Distal");
 assert.equal(matchesSchema(serializeGrammarRecord(demonstratives), GRAMMAR_VALUE_SCHEMA), true);
 
-let indexing = setArgumentParticipants(setSystemStatus(emptySystemRecord("verbs.argument-indexing"), "configured"), "none");
+let indexing = setArgumentParticipants(
+  setSystemStatus(emptySystemRecord("verbs.argument-indexing"), "configured"),
+  "none",
+);
 assert.equal(configuredMinimum("verbs.argument-indexing", indexing.config), true);
 assert.equal(indexing.config.participants, "none");
 assert.equal(indexing.config.cells.length, 0);
 assert.equal(summarizeSystem("verbs.argument-indexing", indexing), "Does not index participants");
 indexing = setArgumentParticipants(indexing, "subject");
-assert.equal(indexing.config.axes.some((axis) => axis.id === "person"), true);
+assert.equal(
+  indexing.config.axes.some((axis) => axis.id === "person"),
+  true,
+);
 assert.equal(indexing.config.cells.length > 0, true);
 assert.equal(matchesSchema(serializeGrammarRecord(indexing), GRAMMAR_VALUE_SCHEMA), true);
 
@@ -831,15 +992,26 @@ const numberGroups = offeredAgreementGroups(indexGrammarRecords([{ id: "num-1", 
 const numberGroup = numberGroups.find((group) => group.id === "nouns.number");
 assert.equal(numberGroup.label, "Number");
 let subjectVerb = toggleAgreementGroup(emptyAgreementRecord(), numberGroup);
-assert.equal(subjectVerb.features.some((item) => item.categoryId === pluralId), true);
+assert.equal(
+  subjectVerb.features.some((item) => item.categoryId === pluralId),
+  true,
+);
 number = updateNumberCategory(number, pluralId, { label: "Many" });
 assert.equal(subjectVerb.features.find((item) => item.categoryId === pluralId).categoryId, pluralId);
 assert.equal(subjectVerb.features.find((item) => item.categoryId === pluralId).label, "Plural");
-const renamedIndex = indexGrammarRecords([{ id: "num-1", value: number }, { id: "agr-1", value: subjectVerb }]);
+const renamedIndex = indexGrammarRecords([
+  { id: "num-1", value: number },
+  { id: "agr-1", value: subjectVerb },
+]);
 assert.equal(brokenAgreementFeatures(renamedIndex).length, 0);
 const missingNumber = removeNumberCategory(number, pluralId, { force: true }).draft;
 assert.equal(
-  brokenAgreementFeatures(indexGrammarRecords([{ id: "num-1", value: missingNumber }, { id: "agr-1", value: subjectVerb }])).length,
+  brokenAgreementFeatures(
+    indexGrammarRecords([
+      { id: "num-1", value: missingNumber },
+      { id: "agr-1", value: subjectVerb },
+    ]),
+  ).length,
   1,
 );
 
@@ -891,7 +1063,10 @@ assert.deepEqual(GRAMMAR_STARTER_STEPS, [
   "clauses.yes-no-questions",
   "clauses.negation",
 ]);
-assert.equal(GRAMMAR_CATALOG.every((item) => item.scope === "initial"), true);
+assert.equal(
+  GRAMMAR_CATALOG.every((item) => item.scope === "initial"),
+  true,
+);
 assert.deepEqual(remainingStarterSystems(emptyGrammarUiState().index), [...GRAMMAR_STARTER_STEPS]);
 const starterIndex = indexGrammarRecords([
   {

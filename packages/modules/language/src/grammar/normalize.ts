@@ -129,7 +129,10 @@ export function emptyConfig(): EmptyConfig {
   return {};
 }
 
-export function emptySystemRecord(systemId: GrammarSystemId, status: GrammarStatus = "unconfigured"): GrammarSystemRecord {
+export function emptySystemRecord(
+  systemId: GrammarSystemId,
+  status: GrammarStatus = "unconfigured",
+): GrammarSystemRecord {
   return {
     recordKind: "system",
     schemaVersion: GRAMMAR_SCHEMA_VERSION,
@@ -215,7 +218,10 @@ function choiceMinimumIssue(value: GrammarSystemRecord): GrammarIssue | undefine
   if (value.systemId === "nouns.number" && !(config as NumberConfig).categories?.some((item) => item.label?.trim())) {
     return issue("configured-minimum", "Add at least one number category.", "categories");
   }
-  if (value.systemId === "nouns.case" && !(config as CaseConfig).cases?.some((item) => item.name?.trim() && item.primaryFunction?.trim())) {
+  if (
+    value.systemId === "nouns.case" &&
+    !(config as CaseConfig).cases?.some((item) => item.name?.trim() && item.primaryFunction?.trim())
+  ) {
     return issue("configured-minimum", "Each saved case needs a name and primary function.", "cases");
   }
   if (
@@ -238,7 +244,8 @@ function choiceMinimumIssue(value: GrammarSystemRecord): GrammarIssue | undefine
   }
   if (value.systemId === "verbs.marking-strategy") {
     const marking = config as VerbMarkingConfig;
-    if (!marking.strategies?.length) return issue("configured-minimum", "Choose a verb marking strategy.", "strategies");
+    if (!marking.strategies?.length)
+      return issue("configured-minimum", "Choose a verb marking strategy.", "strategies");
     if (marking.strategies.includes("custom") && !marking.customStrategy?.trim()) {
       return issue("configured-minimum", "Describe the custom verb marking strategy.", "customStrategy");
     }
@@ -261,7 +268,8 @@ function choiceMinimumIssue(value: GrammarSystemRecord): GrammarIssue | undefine
   }
   if (value.systemId === "clauses.yes-no-questions") {
     const questions = config as YesNoQuestionsConfig;
-    if (!questions.strategies?.length) return issue("configured-minimum", "Choose how yes/no questions are formed.", "strategies");
+    if (!questions.strategies?.length)
+      return issue("configured-minimum", "Choose how yes/no questions are formed.", "strategies");
     if (questions.strategies.includes("particle") && !questions.particle?.trim()) {
       return issue("configured-minimum", "Enter the question particle.", "particle");
     }
@@ -278,7 +286,8 @@ function choiceMinimumIssue(value: GrammarSystemRecord): GrammarIssue | undefine
   }
   if (value.systemId === "clauses.negation") {
     const negation = config as ClauseNegationConfig;
-    if (!negation.strategies?.length) return issue("configured-minimum", "Choose a clause-negation strategy.", "strategies");
+    if (!negation.strategies?.length)
+      return issue("configured-minimum", "Choose a clause-negation strategy.", "strategies");
     if (negation.strategies.includes("particle") && !negation.particle?.trim()) {
       return issue("configured-minimum", "Enter the negation particle.", "particle");
     }
@@ -295,7 +304,13 @@ export function validateGrammarDraft(value: GrammarRecord): GrammarIssue[] {
     const missing = choiceMinimumIssue(value);
     if (missing) return [missing];
     if (!configuredMinimum(value.systemId, value.config)) {
-      return [issue("configured-minimum", "This system needs its grammatical settings before it can be saved as configured.", "status")];
+      return [
+        issue(
+          "configured-minimum",
+          "This system needs its grammatical settings before it can be saved as configured.",
+          "status",
+        ),
+      ];
     }
     return [];
   }
@@ -408,7 +423,10 @@ function normalizeCells(value: unknown, axes: ParadigmAxis[], examples: GrammarE
         state,
         form: state === "form" ? optional(entry.form, CELL_FORM) : undefined,
         alternateForms: Array.isArray(entry.alternateForms)
-          ? entry.alternateForms.map((item) => text(item, CELL_FORM)).filter(Boolean).slice(0, MAX_ALTERNATES)
+          ? entry.alternateForms
+              .map((item) => text(item, CELL_FORM))
+              .filter(Boolean)
+              .slice(0, MAX_ALTERNATES)
           : undefined,
         sameAsCellId: state === "same-as" ? optional(entry.sameAsCellId) : undefined,
         notes: optional(entry.notes, NOTES),
@@ -671,7 +689,10 @@ function normalizeSystemConfig(
       const config: DemonstrativeConfig = {
         ...base,
         distances: Array.isArray(raw.distances)
-          ? raw.distances.map((item) => text(item)).filter(Boolean).slice(0, MAX_AXIS_VALUES)
+          ? raw.distances
+              .map((item) => text(item))
+              .filter(Boolean)
+              .slice(0, MAX_AXIS_VALUES)
           : [],
       };
       return config;
@@ -740,7 +761,10 @@ function normalizeSystemConfig(
         behaviors: pickList(raw.behaviors, ADJ_BEHAVIOR),
         customBehavior: optional(raw.customBehavior),
         agreementRecordIds: Array.isArray(raw.agreementRecordIds)
-          ? raw.agreementRecordIds.map((item) => text(item)).filter(Boolean).slice(0, MAX_FEATURES)
+          ? raw.agreementRecordIds
+              .map((item) => text(item))
+              .filter(Boolean)
+              .slice(0, MAX_FEATURES)
           : [],
       };
       return config;
@@ -840,7 +864,10 @@ export function configuredMinimum(systemId: GrammarSystemId, config: GrammarSyst
     case "nouns.case":
       return (config as CaseConfig).cases?.some((item) => item.name?.trim() && item.primaryFunction?.trim()) === true;
     case "nouns.classes":
-      return Boolean((config as NounClassesConfig).kind) && (config as NounClassesConfig).classes?.some((item) => item.name?.trim()) === true;
+      return (
+        Boolean((config as NounClassesConfig).kind) &&
+        (config as NounClassesConfig).classes?.some((item) => item.name?.trim()) === true
+      );
     case "nouns.definiteness":
       return (config as DefinitenessConfig).strategies?.length > 0;
     case "nouns.possession":
@@ -928,7 +955,8 @@ export function normalizeGrammarRecord(value: unknown): NormalizeResult {
     const issues: GrammarIssue[] = [];
     let config: GrammarSystemConfig = emptyConfig();
     if (status === "not-used" || status === "unconfigured") {
-      if (Object.keys(rawConfig).length > 0) issues.push(issue("empty-config-required", "Unconfigured and not-used records keep config empty."));
+      if (Object.keys(rawConfig).length > 0)
+        issues.push(issue("empty-config-required", "Unconfigured and not-used records keep config empty."));
       config = emptyConfig();
     } else {
       config = normalizeSystemConfig(systemId as GrammarSystemId, rawConfig, common.examples);
@@ -961,7 +989,8 @@ export function normalizeGrammarRecord(value: unknown): NormalizeResult {
             if (!label) return null;
             const sourceSystemId = optional(entry.sourceSystemId);
             return {
-              sourceSystemId: sourceSystemId && SYSTEM_IDS.has(sourceSystemId) ? (sourceSystemId as GrammarSystemId) : undefined,
+              sourceSystemId:
+                sourceSystemId && SYSTEM_IDS.has(sourceSystemId) ? (sourceSystemId as GrammarSystemId) : undefined,
               categoryId: optional(entry.categoryId),
               label,
             };
@@ -991,7 +1020,12 @@ export function normalizeGrammarRecord(value: unknown): NormalizeResult {
       recordKind: "custom-rule",
       schemaVersion: 1,
       title,
-      tags: Array.isArray(record.tags) ? record.tags.map((item) => text(item)).filter(Boolean).slice(0, MAX_TAGS) : [],
+      tags: Array.isArray(record.tags)
+        ? record.tags
+            .map((item) => text(item))
+            .filter(Boolean)
+            .slice(0, MAX_TAGS)
+        : [],
       body: lines(record.body, BODY),
       examples: normalizeExamples(record.examples),
       links: normalizeLinks(record.links),

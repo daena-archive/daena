@@ -38,10 +38,7 @@ import {
   type PhonemeValue,
   type PhonologyNotes,
 } from "./phonology";
-import {
-  emptyGrammarUiState,
-  type GrammarUiState,
-} from "./grammar";
+import { emptyGrammarUiState, type GrammarUiState } from "./grammar";
 import { loadGrammarIndex } from "./grammar/repository";
 import { renderGrammarPane, tryLeaveGrammar, type GrammarPaneContext } from "./grammar/pane";
 import {

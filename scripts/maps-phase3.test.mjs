@@ -12,7 +12,7 @@ for (const required of ["importImageMapFile", "Import image", "autostartImport"]
 for (const required of ['start?: "generate" | "import"', "previewAssetId", "Could not decode the imported map image"]) {
   if (!editor.includes(required)) throw new Error(`Native vector editor missing ${required}`);
 }
-for (const required of ["IMAGE_SOURCE_ID", "imageOverlayCoordinates", "type: \"image\""]) {
+for (const required of ["IMAGE_SOURCE_ID", "imageOverlayCoordinates", 'type: "image"']) {
   if (!runtime.includes(required)) throw new Error(`Native vector runtime missing ${required}`);
 }
 if (adapter.includes("ImageMapAdapter") || adapter.includes("daena-image")) {

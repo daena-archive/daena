@@ -201,12 +201,24 @@ onDestroy(() => {
         aria-label="Back to map details"
         title="Back to map details"
         onclick={cancel}>
-        <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+        <svg
+          aria-hidden="true"
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg>
       </button>
       <button type="button" class="quiet" disabled={busy || accepting} onclick={() => void importImage()}
         >{accepting && autostartImport ? "Importing…" : "Import image"}</button>
-      <button type="button" class="primary" disabled={selected === null || busy || accepting} onclick={() => void accept()}
-        >{accepting ? "Accepting…" : "Accept candidate"}</button>
+      <button
+        type="button"
+        class="primary"
+        disabled={selected === null || busy || accepting}
+        onclick={() => void accept()}>{accepting ? "Accepting…" : "Accept candidate"}</button>
       <button
         type="button"
         class="icon-button"
@@ -231,11 +243,7 @@ onDestroy(() => {
       <fieldset>
         <legend>Seed</legend>
         <div class="seed-row">
-          <input
-            aria-label="Generator seed"
-            inputmode="numeric"
-            bind:value={seedText}
-            onchange={applySeed} />
+          <input aria-label="Generator seed" inputmode="numeric" bind:value={seedText} onchange={applySeed} />
           <button type="button" onclick={() => void copySeed()}>Copy</button>
           <button type="button" onclick={() => void pasteSeed()}>Paste</button>
         </div>

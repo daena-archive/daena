@@ -14,7 +14,11 @@ export const CUSTOM_RULE_TAGS = [
 
 export function toggleCustomRuleTag(draft: GrammarCustomRuleRecord, tag: string): GrammarCustomRuleRecord {
   const present = draft.tags.includes(tag);
-  const tags = present ? draft.tags.filter((item) => item !== tag) : draft.tags.length >= MAX_TAGS ? draft.tags : [...draft.tags, tag];
+  const tags = present
+    ? draft.tags.filter((item) => item !== tag)
+    : draft.tags.length >= MAX_TAGS
+      ? draft.tags
+      : [...draft.tags, tag];
   return { ...draft, tags };
 }
 

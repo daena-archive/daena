@@ -43,22 +43,107 @@ export const DISTANCE_VALUES: AxisValueTemplate[] = [
 ];
 
 export const EXTRA_PRONOUN_AXES: { id: string; label: string; values: AxisValueTemplate[] }[] = [
-  { id: "clusivity", label: "Inclusive / exclusive", values: [{ id: "clusivity-in", label: "Inclusive" }, { id: "clusivity-ex", label: "Exclusive" }] },
-  { id: "gender", label: "Gender", values: [{ id: "gender-m", label: "Masculine" }, { id: "gender-f", label: "Feminine" }, { id: "gender-n", label: "Neuter" }] },
-  { id: "noun-class", label: "Noun class", values: [{ id: "class-a", label: "Class A" }, { id: "class-b", label: "Class B" }] },
-  { id: "case", label: "Case", values: [{ id: "case-nom", label: "Nominative" }, { id: "case-acc", label: "Accusative" }] },
-  { id: "animacy", label: "Animacy", values: [{ id: "animacy-anim", label: "Animate" }, { id: "animacy-inan", label: "Inanimate" }] },
-  { id: "formality", label: "Formality", values: [{ id: "formality-fam", label: "Familiar" }, { id: "formality-form", label: "Formal" }] },
-  { id: "proximity", label: "Proximity", values: [{ id: "proximity-near", label: "Near" }, { id: "proximity-far", label: "Far" }] },
+  {
+    id: "clusivity",
+    label: "Inclusive / exclusive",
+    values: [
+      { id: "clusivity-in", label: "Inclusive" },
+      { id: "clusivity-ex", label: "Exclusive" },
+    ],
+  },
+  {
+    id: "gender",
+    label: "Gender",
+    values: [
+      { id: "gender-m", label: "Masculine" },
+      { id: "gender-f", label: "Feminine" },
+      { id: "gender-n", label: "Neuter" },
+    ],
+  },
+  {
+    id: "noun-class",
+    label: "Noun class",
+    values: [
+      { id: "class-a", label: "Class A" },
+      { id: "class-b", label: "Class B" },
+    ],
+  },
+  {
+    id: "case",
+    label: "Case",
+    values: [
+      { id: "case-nom", label: "Nominative" },
+      { id: "case-acc", label: "Accusative" },
+    ],
+  },
+  {
+    id: "animacy",
+    label: "Animacy",
+    values: [
+      { id: "animacy-anim", label: "Animate" },
+      { id: "animacy-inan", label: "Inanimate" },
+    ],
+  },
+  {
+    id: "formality",
+    label: "Formality",
+    values: [
+      { id: "formality-fam", label: "Familiar" },
+      { id: "formality-form", label: "Formal" },
+    ],
+  },
+  {
+    id: "proximity",
+    label: "Proximity",
+    values: [
+      { id: "proximity-near", label: "Near" },
+      { id: "proximity-far", label: "Far" },
+    ],
+  },
 ];
 
 export const EXTRA_DEMONSTRATIVE_AXES: { id: string; label: string; values: AxisValueTemplate[] }[] = [
   { id: "number", label: "Number", values: NUMBER_VALUES },
-  { id: "gender", label: "Gender / class", values: [{ id: "gender-m", label: "Masculine" }, { id: "gender-f", label: "Feminine" }] },
-  { id: "visibility", label: "Visibility", values: [{ id: "vis-seen", label: "Visible" }, { id: "vis-unseen", label: "Not visible" }] },
-  { id: "elevation", label: "Elevation", values: [{ id: "elev-up", label: "Uphill" }, { id: "elev-down", label: "Downhill" }] },
-  { id: "direction", label: "Direction", values: [{ id: "dir-towards", label: "Towards" }, { id: "dir-away", label: "Away" }] },
-  { id: "discourse", label: "Discourse status", values: [{ id: "disc-new", label: "New" }, { id: "disc-given", label: "Given" }] },
+  {
+    id: "gender",
+    label: "Gender / class",
+    values: [
+      { id: "gender-m", label: "Masculine" },
+      { id: "gender-f", label: "Feminine" },
+    ],
+  },
+  {
+    id: "visibility",
+    label: "Visibility",
+    values: [
+      { id: "vis-seen", label: "Visible" },
+      { id: "vis-unseen", label: "Not visible" },
+    ],
+  },
+  {
+    id: "elevation",
+    label: "Elevation",
+    values: [
+      { id: "elev-up", label: "Uphill" },
+      { id: "elev-down", label: "Downhill" },
+    ],
+  },
+  {
+    id: "direction",
+    label: "Direction",
+    values: [
+      { id: "dir-towards", label: "Towards" },
+      { id: "dir-away", label: "Away" },
+    ],
+  },
+  {
+    id: "discourse",
+    label: "Discourse status",
+    values: [
+      { id: "disc-new", label: "New" },
+      { id: "disc-given", label: "Given" },
+    ],
+  },
 ];
 
 export const PARTICIPANT_OPTIONS: { value: ArgumentParticipants; label: string }[] = [
@@ -178,7 +263,11 @@ export function addParadigmAxis(
 ): GrammarSystemRecord {
   const axes = paradigmAxes(draft);
   if (axes.some((item) => item.id === axis.id) || axes.length >= MAX_AXES) return draft;
-  return setParadigm(draft, [...axes, { id: axis.id, label: axis.label, values: axis.values.map((value) => ({ ...value })) }], paradigmCells(draft));
+  return setParadigm(
+    draft,
+    [...axes, { id: axis.id, label: axis.label, values: axis.values.map((value) => ({ ...value })) }],
+    paradigmCells(draft),
+  );
 }
 
 export function addCustomAxis(draft: GrammarSystemRecord): GrammarSystemRecord {
@@ -199,7 +288,12 @@ export function addCustomAxisValue(draft: GrammarSystemRecord, axisId: string): 
   return setParadigm(draft, next, paradigmCells(draft));
 }
 
-export function renameAxisValue(draft: GrammarSystemRecord, axisId: string, valueId: string, label: string): GrammarSystemRecord {
+export function renameAxisValue(
+  draft: GrammarSystemRecord,
+  axisId: string,
+  valueId: string,
+  label: string,
+): GrammarSystemRecord {
   const axes = paradigmAxes(draft).map((axis) =>
     axis.id === axisId
       ? { ...axis, values: axis.values.map((value) => (value.id === valueId ? { ...value, label } : value)) }
@@ -232,11 +326,17 @@ export function updateParadigmCell(
   cellId: string,
   patch: Partial<Omit<ParadigmCell, "id" | "coordinates">>,
 ): GrammarSystemRecord {
-  const cells = paradigmCells(draft).map((cell) => (cell.id === cellId ? { ...cell, ...patch, id: cell.id, coordinates: cell.coordinates } : cell));
+  const cells = paradigmCells(draft).map((cell) =>
+    cell.id === cellId ? { ...cell, ...patch, id: cell.id, coordinates: cell.coordinates } : cell,
+  );
   return setParadigm(draft, paradigmAxes(draft), cells, { relabelOnly: true });
 }
 
-export function toggleDistance(draft: GrammarSystemRecord, value: AxisValueTemplate, options?: { force?: boolean; referenced?: Set<string> }): ParadigmMutation {
+export function toggleDistance(
+  draft: GrammarSystemRecord,
+  value: AxisValueTemplate,
+  options?: { force?: boolean; referenced?: Set<string> },
+): ParadigmMutation {
   if (draft.systemId !== "pronouns.demonstratives") return { draft };
   const result = toggleAxisValue(draft, "distance", value, options);
   if (result.blocked) return result;
@@ -251,17 +351,30 @@ export function toggleDistance(draft: GrammarSystemRecord, value: AxisValueTempl
   };
 }
 
-export function setArgumentParticipants(draft: GrammarSystemRecord, participants: ArgumentParticipants, seed?: ParadigmAxis[]): GrammarSystemRecord {
+export function setArgumentParticipants(
+  draft: GrammarSystemRecord,
+  participants: ArgumentParticipants,
+  seed?: ParadigmAxis[],
+): GrammarSystemRecord {
   if (draft.systemId !== "verbs.argument-indexing") return draft;
   const current = argumentConfig(draft);
   if (participants === "none") {
-    return setArgument(draft, { participants, representation: current.representation, axes: [], cells: [], agreementRecordId: current.agreementRecordId });
+    return setArgument(draft, {
+      participants,
+      representation: current.representation,
+      axes: [],
+      cells: [],
+      agreementRecordId: current.agreementRecordId,
+    });
   }
   const axes = current.axes.length ? current.axes : seedPersonNumber(seed);
   return setArgument(draft, { ...current, participants, axes, cells: current.cells });
 }
 
-export function setArgumentRepresentation(draft: GrammarSystemRecord, representation: ArgumentRepresentation): GrammarSystemRecord {
+export function setArgumentRepresentation(
+  draft: GrammarSystemRecord,
+  representation: ArgumentRepresentation,
+): GrammarSystemRecord {
   if (draft.systemId !== "verbs.argument-indexing") return draft;
   return setArgument(draft, { ...argumentConfig(draft), representation });
 }
@@ -271,12 +384,18 @@ export function setArgumentFlexibleNotes(draft: GrammarSystemRecord, flexibleNot
   return setArgument(draft, { ...argumentConfig(draft), flexibleNotes });
 }
 
-export function setArgumentAgreement(draft: GrammarSystemRecord, agreementRecordId: string | undefined): GrammarSystemRecord {
+export function setArgumentAgreement(
+  draft: GrammarSystemRecord,
+  agreementRecordId: string | undefined,
+): GrammarSystemRecord {
   if (draft.systemId !== "verbs.argument-indexing") return draft;
   return setArgument(draft, { ...argumentConfig(draft), agreementRecordId });
 }
 
-export function summarizeParadigm(systemId: GrammarSystemId, config: GrammarSystemRecord["config"]): string | undefined {
+export function summarizeParadigm(
+  systemId: GrammarSystemId,
+  config: GrammarSystemRecord["config"],
+): string | undefined {
   if (systemId === "pronouns.personal") return axisSummary(config as ParadigmConfig);
   if (systemId === "pronouns.demonstratives") {
     const value = config as DemonstrativeConfig;
@@ -290,11 +409,14 @@ export function summarizeParadigm(systemId: GrammarSystemId, config: GrammarSyst
   if (systemId === "verbs.argument-indexing") {
     const value = config as ArgumentIndexingConfig;
     if (!value.participants) return undefined;
-    const participant = PARTICIPANT_OPTIONS.find((item) => item.value === value.participants)?.label ?? value.participants;
+    const participant =
+      PARTICIPANT_OPTIONS.find((item) => item.value === value.participants)?.label ?? value.participants;
     const representation = value.representation
       ? REPRESENTATION_OPTIONS.find((item) => item.value === value.representation)?.label
       : undefined;
-    return [participant === "No" ? "Does not index participants" : participant, representation, axisSummary(value)].filter(Boolean).join(" · ");
+    return [participant === "No" ? "Does not index participants" : participant, representation, axisSummary(value)]
+      .filter(Boolean)
+      .join(" · ");
   }
   return undefined;
 }
@@ -316,7 +438,8 @@ export function renderParadigmEditor(
   const section = document.createElement("section");
   section.className = "language-group grammar-choice-stack";
   if (draft.systemId === "pronouns.personal") section.append(personalEditor(draft, locked, ctx, onChange));
-  else if (draft.systemId === "pronouns.demonstratives") section.append(demonstrativeEditor(draft, locked, ctx, onChange));
+  else if (draft.systemId === "pronouns.demonstratives")
+    section.append(demonstrativeEditor(draft, locked, ctx, onChange));
   else section.append(argumentEditor(draft, locked, ctx, onChange));
   return section;
 }
@@ -348,11 +471,27 @@ function demonstrativeEditor(
   const wrap = document.createElement("div");
   wrap.className = "grammar-choice-stack";
   wrap.append(emptyMessage("The grid is generated only from the dimensions you select."));
-  const selected = new Set((draft.config as DemonstrativeConfig).distances ?? paradigmAxes(draft).find((axis) => axis.id === "distance")?.values.map((item) => item.id));
-  wrap.append(templateChecks("Distance distinctions", DISTANCE_VALUES, selected, locked, (value) => {
-    applyMutation(toggleDistance(draft, value, { referenced: ctx.referencedIds }), ctx, onChange);
-  }));
-  wrap.append(extraAxisControls(draft, locked, EXTRA_DEMONSTRATIVE_AXES.filter((axis) => axis.id !== "distance"), ctx, onChange), paradigmGrid(draft, locked, onChange));
+  const selected = new Set(
+    (draft.config as DemonstrativeConfig).distances ??
+      paradigmAxes(draft)
+        .find((axis) => axis.id === "distance")
+        ?.values.map((item) => item.id),
+  );
+  wrap.append(
+    templateChecks("Distance distinctions", DISTANCE_VALUES, selected, locked, (value) => {
+      applyMutation(toggleDistance(draft, value, { referenced: ctx.referencedIds }), ctx, onChange);
+    }),
+  );
+  wrap.append(
+    extraAxisControls(
+      draft,
+      locked,
+      EXTRA_DEMONSTRATIVE_AXES.filter((axis) => axis.id !== "distance"),
+      ctx,
+      onChange,
+    ),
+    paradigmGrid(draft, locked, onChange),
+  );
   return wrap;
 }
 
@@ -366,10 +505,18 @@ function argumentEditor(
   wrap.className = "grammar-choice-stack";
   const config = argumentConfig(draft);
   wrap.append(
-    emptyMessage("Describe whether the verb changes based on who takes part. This is not always the same as Agreement."),
-    radios("Do verbs change based on their participants?", PARTICIPANT_OPTIONS, config.participants, locked, (value) => {
-      onChange(setArgumentParticipants(draft, value as ArgumentParticipants, ctx.pronounAxes), true);
-    }),
+    emptyMessage(
+      "Describe whether the verb changes based on who takes part. This is not always the same as Agreement.",
+    ),
+    radios(
+      "Do verbs change based on their participants?",
+      PARTICIPANT_OPTIONS,
+      config.participants,
+      locked,
+      (value) => {
+        onChange(setArgumentParticipants(draft, value as ArgumentParticipants, ctx.pronounAxes), true);
+      },
+    ),
   );
   if (config.participants && config.participants !== "none") {
     wrap.append(
@@ -399,7 +546,11 @@ function argumentEditor(
         paradigmGrid(draft, locked, onChange),
       );
     } else {
-      wrap.append(emptyMessage("This display is linked to an Agreement system. Edit the relationship there instead of copying person/number rules."));
+      wrap.append(
+        emptyMessage(
+          "This display is linked to an Agreement system. Edit the relationship there instead of copying person/number rules.",
+        ),
+      );
     }
   }
   return wrap;
@@ -425,7 +576,15 @@ function extraAxisControls(
     add.append(new Option("Custom dimension", "custom"));
     add.onchange = () => {
       if (!add.value) return;
-      onChange(add.value === "custom" ? addCustomAxis(draft) : addParadigmAxis(draft, extras.find((item) => item.id === add.value)!), true);
+      onChange(
+        add.value === "custom"
+          ? addCustomAxis(draft)
+          : addParadigmAxis(
+              draft,
+              extras.find((item) => item.id === add.value)!,
+            ),
+        true,
+      );
     };
     wrap.append(add);
   }
@@ -467,7 +626,8 @@ function valueChecks(
     box.type = "checkbox";
     box.checked = true;
     box.disabled = locked;
-    box.onchange = () => applyMutation(removeAxisValue(draft, axisId, value.id, { referenced: ctx.referencedIds }), ctx, onChange);
+    box.onchange = () =>
+      applyMutation(removeAxisValue(draft, axisId, value.id, { referenced: ctx.referencedIds }), ctx, onChange);
     const name = input("label", value.label);
     name.disabled = locked;
     name.oninput = () => onChange(renameAxisValue(draft, axisId, value.id, name.value), false);
@@ -518,7 +678,9 @@ function paradigmGrid(
     const tr = document.createElement("tr");
     const th = document.createElement("th");
     th.scope = "row";
-    th.textContent = rowAxes.map((axis) => axis.values.find((value) => value.id === row[axis.id])?.label ?? "").join(" · ");
+    th.textContent = rowAxes
+      .map((axis) => axis.values.find((value) => value.id === row[axis.id])?.label ?? "")
+      .join(" · ");
     tr.append(th);
     for (const column of columns) {
       const coordinates = colAxis ? { ...row, [colAxis.id]: column.id } : row;
@@ -548,7 +710,8 @@ function cellEditor(
   state.disabled = locked;
   for (const option of CELL_STATE_OPTIONS) state.append(new Option(option.label, option.value));
   state.value = cell.state;
-  state.onchange = () => onChange(updateParadigmCell(draft, cell.id, { state: state.value as ParadigmCellState }), true);
+  state.onchange = () =>
+    onChange(updateParadigmCell(draft, cell.id, { state: state.value as ParadigmCellState }), true);
   wrap.append(state);
   if (cell.state === "form") {
     const form = input("form", cell.form ?? "");
@@ -567,7 +730,8 @@ function cellEditor(
       select.append(new Option(label, other.id));
     }
     select.value = cell.sameAsCellId ?? "";
-    select.onchange = () => onChange(updateParadigmCell(draft, cell.id, { sameAsCellId: select.value || undefined }), true);
+    select.onchange = () =>
+      onChange(updateParadigmCell(draft, cell.id, { sameAsCellId: select.value || undefined }), true);
     wrap.append(select);
   }
   const notes = input("notes", cell.notes ?? "");
@@ -668,10 +832,12 @@ function removalBlock(
   const dropped = cells.filter((cell) => !kept.has(cell.id));
   const populated = dropped.filter(isPopulatedCell).length;
   const remainingValues = new Set(nextAxes.flatMap((axis) => axis.values.map((value) => value.id)));
-  const removedValues = previousAxes.flatMap((axis) => axis.values.map((value) => value.id)).filter((id) => !remainingValues.has(id));
+  const removedValues = previousAxes
+    .flatMap((axis) => axis.values.map((value) => value.id))
+    .filter((id) => !remainingValues.has(id));
   const references =
-    dropped.filter((cell) => options?.referenced?.has(cell.id)).length
-    + removedValues.filter((id) => options?.referenced?.has(id)).length;
+    dropped.filter((cell) => options?.referenced?.has(cell.id)).length +
+    removedValues.filter((id) => options?.referenced?.has(id)).length;
   if (populated === 0 && references === 0) return undefined;
   return { label, populated, references };
 }
@@ -680,9 +846,11 @@ function axisLabel(axisId: string) {
   if (axisId === "person") return "Person";
   if (axisId === "number") return "Number";
   if (axisId === "distance") return "Distance";
-  return EXTRA_PRONOUN_AXES.find((item) => item.id === axisId)?.label
-    ?? EXTRA_DEMONSTRATIVE_AXES.find((item) => item.id === axisId)?.label
-    ?? "Distinction";
+  return (
+    EXTRA_PRONOUN_AXES.find((item) => item.id === axisId)?.label ??
+    EXTRA_DEMONSTRATIVE_AXES.find((item) => item.id === axisId)?.label ??
+    "Distinction"
+  );
 }
 
 function axisSummary(config: { axes?: ParadigmAxis[] }) {
@@ -693,17 +861,24 @@ function axisSummary(config: { axes?: ParadigmAxis[] }) {
 function seedPersonNumber(seed?: ParadigmAxis[]): ParadigmAxis[] {
   const person = seed?.find((axis) => axis.id === "person");
   const number = seed?.find((axis) => axis.id === "number");
-  if (person || number) return [person, number].filter((axis): axis is ParadigmAxis => Boolean(axis)).map((axis) => ({
-    ...axis,
-    values: axis.values.map((value) => ({ ...value })),
-  }));
+  if (person || number)
+    return [person, number]
+      .filter((axis): axis is ParadigmAxis => Boolean(axis))
+      .map((axis) => ({
+        ...axis,
+        values: axis.values.map((value) => ({ ...value })),
+      }));
   return defaultPersonNumberAxes();
 }
 
 function defaultPersonNumberAxes(): ParadigmAxis[] {
   return [
     { id: "person", label: "Person", values: PERSON_VALUES.map((item) => ({ ...item })) },
-    { id: "number", label: "Number", values: NUMBER_VALUES.filter((item) => item.id !== "number-du").map((item) => ({ ...item })) },
+    {
+      id: "number",
+      label: "Number",
+      values: NUMBER_VALUES.filter((item) => item.id !== "number-du").map((item) => ({ ...item })),
+    },
   ];
 }
 
@@ -727,11 +902,20 @@ function argumentConfig(draft: GrammarSystemRecord): ArgumentIndexingConfig {
   };
 }
 
-function setParadigm(draft: GrammarSystemRecord, axes: ParadigmAxis[], cells: ParadigmCell[], options?: { relabelOnly?: boolean }): GrammarSystemRecord {
+function setParadigm(
+  draft: GrammarSystemRecord,
+  axes: ParadigmAxis[],
+  cells: ParadigmCell[],
+  options?: { relabelOnly?: boolean },
+): GrammarSystemRecord {
   const nextCells = options?.relabelOnly ? cells : syncParadigm(axes, cells);
   if (draft.systemId === "pronouns.demonstratives") {
     const distance = axes.find((axis) => axis.id === "distance");
-    return setDemonstrative(draft, { distances: distance?.values.map((item) => item.id) ?? [], axes, cells: nextCells });
+    return setDemonstrative(draft, {
+      distances: distance?.values.map((item) => item.id) ?? [],
+      axes,
+      cells: nextCells,
+    });
   }
   if (draft.systemId === "verbs.argument-indexing") {
     return setArgument(draft, { ...argumentConfig(draft), axes, cells: nextCells });
@@ -744,7 +928,11 @@ function setDemonstrative(draft: GrammarSystemRecord, config: DemonstrativeConfi
 }
 
 function setArgument(draft: GrammarSystemRecord, config: ArgumentIndexingConfig): GrammarSystemRecord {
-  return { ...draft, status: "configured", config: { ...config, axes: config.axes, cells: syncParadigm(config.axes, config.cells) } };
+  return {
+    ...draft,
+    status: "configured",
+    config: { ...config, axes: config.axes, cells: syncParadigm(config.axes, config.cells) },
+  };
 }
 
 function newId() {

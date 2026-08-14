@@ -11,14 +11,20 @@ import {
 import { alertMessage, button, emptyMessage, emptyState, field, input, textarea } from "../ui";
 import { persistGrammarRecord, deleteGrammarRecord, type GrammarRecordsApi } from "./repository.ts";
 import { configuredMinimum } from "./normalize.ts";
-import { isChoiceSystem, renderChoiceEditor } from "./choice.ts";
-import { isInventorySystem, referencedCategoryIds, renderInventoryEditor } from "./inventory.ts";
-import { isStrategySystem, renderStrategyEditor } from "./strategy.ts";
-import { isClauseSystem, renderClauseEditor } from "./clause.ts";
-import { isParadigmSystem, renderParadigmEditor } from "./paradigm.ts";
+import { renderChoiceEditor } from "./choice.ts";
+import { referencedCategoryIds, renderInventoryEditor } from "./inventory.ts";
+import { renderStrategyEditor } from "./strategy.ts";
+import { renderClauseEditor } from "./clause.ts";
+import { renderParadigmEditor } from "./paradigm.ts";
 import { renderAgreementEditor, summarizeAgreement } from "./agreement.ts";
 import { renderCustomRuleEditor } from "./rules.ts";
-import { GRAMMAR_STARTER_STEPS, nextStarterSystem, remainingStarterSystems, starterPosition, starterStepLabel } from "./starter.ts";
+import {
+  GRAMMAR_STARTER_STEPS,
+  nextStarterSystem,
+  remainingStarterSystems,
+  starterPosition,
+  starterStepLabel,
+} from "./starter.ts";
 import {
   applyStoredVersion,
   confirmGrammarLeave,
@@ -204,7 +210,7 @@ export async function deleteGrammarEditor(state: GrammarUiState, ctx: GrammarPan
   if (!recordId) return "";
   const title =
     session.draft.recordKind === "system"
-      ? grammarSystemDescriptor(session.draft.systemId)?.label ?? "this system"
+      ? (grammarSystemDescriptor(session.draft.systemId)?.label ?? "this system")
       : "title" in session.draft
         ? session.draft.title
         : "this record";
@@ -339,7 +345,9 @@ function linkEditor(
   add.setAttribute("aria-label", "Link a record");
   add.append(new Option("Link a word, sample, or paradigm…", ""));
   for (const lexeme of choices.lexemes) {
-    add.append(new Option(`Word: ${lexeme.lemma}`, JSON.stringify({ kind: "lexeme", targetId: lexeme.id, label: lexeme.lemma })));
+    add.append(
+      new Option(`Word: ${lexeme.lemma}`, JSON.stringify({ kind: "lexeme", targetId: lexeme.id, label: lexeme.lemma })),
+    );
   }
   for (const example of choices.examples) {
     add.append(
@@ -355,11 +363,19 @@ function linkEditor(
     );
   }
   for (const sample of choices.samples) {
-    add.append(new Option(`Sample: ${sample.title}`, JSON.stringify({ kind: "sample", targetId: sample.id, label: sample.title })));
+    add.append(
+      new Option(
+        `Sample: ${sample.title}`,
+        JSON.stringify({ kind: "sample", targetId: sample.id, label: sample.title }),
+      ),
+    );
   }
   for (const paradigm of choices.paradigms) {
     add.append(
-      new Option(`Paradigm: ${paradigm.name}`, JSON.stringify({ kind: "paradigm", targetId: paradigm.id, label: paradigm.name })),
+      new Option(
+        `Paradigm: ${paradigm.name}`,
+        JSON.stringify({ kind: "paradigm", targetId: paradigm.id, label: paradigm.name }),
+      ),
     );
   }
   add.onchange = () => {
@@ -405,8 +421,10 @@ function renderEditor(panel: HTMLElement, state: GrammarUiState, ctx: GrammarPan
   const form = document.createElement("form");
   form.className = "language-editor";
   let titleText = "Grammar";
-  if (session.draft.recordKind === "system") titleText = grammarSystemDescriptor(session.draft.systemId)?.label ?? "System";
-  else if (session.draft.recordKind === "agreement") titleText = session.recordId ? session.draft.title || "Agreement" : "New agreement system";
+  if (session.draft.recordKind === "system")
+    titleText = grammarSystemDescriptor(session.draft.systemId)?.label ?? "System";
+  else if (session.draft.recordKind === "agreement")
+    titleText = session.recordId ? session.draft.title || "Agreement" : "New agreement system";
   else if (session.draft.recordKind === "custom-rule") titleText = session.recordId ? "Custom rule" : "New custom rule";
   else if (session.draft.recordKind === "section-state") titleText = "Agreement";
   const title = heading(titleText, "grammar-editor-heading");
@@ -515,20 +533,6 @@ function renderEditor(panel: HTMLElement, state: GrammarUiState, ctx: GrammarPan
       else if (strategy) form.append(strategy);
       else if (clause) form.append(clause);
       else if (paradigm) form.append(paradigm);
-      else if (
-        !configuredMinimum(session.draft.systemId, session.draft.config) &&
-        !isChoiceSystem(session.draft.systemId) &&
-        !isInventorySystem(session.draft.systemId) &&
-        !isStrategySystem(session.draft.systemId) &&
-        !isClauseSystem(session.draft.systemId) &&
-        !isParadigmSystem(session.draft.systemId)
-      ) {
-        form.append(
-          emptyMessage(
-            "Specialized settings for this system will appear here. Mark it as not used if the language does not have this feature, or leave it not configured.",
-          ),
-        );
-      }
     }
     if (session.draft.status === "not-used") {
       const note = textarea("notes", session.draft.notes, 3);
@@ -578,7 +582,11 @@ function renderEditor(panel: HTMLElement, state: GrammarUiState, ctx: GrammarPan
     form.append(field("Note (optional)", note));
   }
 
-  if (session.draft.recordKind === "system" || session.draft.recordKind === "custom-rule" || session.draft.recordKind === "agreement") {
+  if (
+    session.draft.recordKind === "system" ||
+    session.draft.recordKind === "custom-rule" ||
+    session.draft.recordKind === "agreement"
+  ) {
     const draft = session.draft;
     form.append(
       exampleEditor(draft.examples, session.locked, (examples) => {
@@ -594,9 +602,12 @@ function renderEditor(panel: HTMLElement, state: GrammarUiState, ctx: GrammarPan
 
   if (error || session.validationMessage) form.append(alertMessage(session.validationMessage || error));
   if (session.conflict && session.recordId) {
-    const stored = [...state.index.systems.values(), ...state.index.customRules, ...state.index.agreements, ...state.index.sectionStates.values()].find(
-      (item) => item.id === session.recordId,
-    );
+    const stored = [
+      ...state.index.systems.values(),
+      ...state.index.customRules,
+      ...state.index.agreements,
+      ...state.index.sectionStates.values(),
+    ].find((item) => item.id === session.recordId);
     const actions = document.createElement("div");
     actions.className = "language-inline";
     actions.append(
@@ -721,9 +732,13 @@ function renderHome(home: HTMLElement, state: GrammarUiState, ctx: GrammarPaneCo
     intro.append(list);
     const actions = document.createElement("div");
     actions.className = "language-inline";
-    const start = button(remaining.length === GRAMMAR_STARTER_STEPS.length ? "Start" : "Continue starter", "language-button", () => {
-      startGrammarStarter(state, ctx);
-    });
+    const start = button(
+      remaining.length === GRAMMAR_STARTER_STEPS.length ? "Start" : "Continue starter",
+      "language-button",
+      () => {
+        startGrammarStarter(state, ctx);
+      },
+    );
     start.setAttribute("data-grammar-id", "starter-start");
     const manual = button("I'll configure grammar manually", "language-button secondary", () => {
       dismissGrammarStarter(state, ctx);

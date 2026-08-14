@@ -62,7 +62,8 @@ export const GRAMMAR_SECTIONS: GrammarSectionDescriptor[] = [
   {
     id: "modifiers",
     label: "Modifiers & Comparison",
-    orientation: "Describe adjectives, comparison, and related modifier behavior. Adjective position lives under Syntax.",
+    orientation:
+      "Describe adjectives, comparison, and related modifier behavior. Adjective position lives under Syntax.",
     emptyTitle: "Nothing configured yet.",
     emptyBody: "This section covers how adjectives behave and how comparison is formed, not where adjectives appear.",
     emptyActions: ["Configure adjective behavior", "Browse modifier systems"],
@@ -181,7 +182,8 @@ export const GRAMMAR_CATALOG: GrammarSystemDescriptor[] = [
     sectionId: "nouns",
     label: "Case",
     hint: "Cases mark the grammatical role or relationship of a noun. If your language expresses these relationships mainly through word order or adpositions, you may not need grammatical case.",
-    learnMore: "Case names are convenient labels, not universal exact meanings. Ergative/absolutive is one alignment among several.",
+    learnMore:
+      "Case names are convenient labels, not universal exact meanings. Ergative/absolutive is one alignment among several.",
     searchAliases: ["case", "nominative", "accusative", "ergative", "absolutive", "dative", "declension"],
     scope: "initial",
     editorKind: "inventory",
@@ -285,7 +287,8 @@ export const GRAMMAR_CATALOG: GrammarSystemDescriptor[] = [
     sectionId: "verbs",
     label: "Aspect",
     hint: "Aspect describes the internal structure of an event, such as completed, ongoing, or habitual.",
-    learnMore: "Perfective presents an event as a bounded whole. Imperfective presents it as ongoing, habitual, or internally structured.",
+    learnMore:
+      "Perfective presents an event as a bounded whole. Imperfective presents it as ongoing, habitual, or internally structured.",
     searchAliases: ["perfective", "imperfective", "progressive", "habitual", "aspect"],
     scope: "initial",
     editorKind: "inventory",
@@ -377,7 +380,8 @@ export const GRAMMAR_CATALOG: GrammarSystemDescriptor[] = [
     sectionId: "clauses",
     label: "Yes/no questions",
     hint: "Describe how polar questions are formed.",
-    learnMore: "A final question particle is one common strategy among several, including intonation and word-order change.",
+    learnMore:
+      "A final question particle is one common strategy among several, including intonation and word-order change.",
     searchAliases: ["questions", "yes no", "polar question", "question particle"],
     scope: "initial",
     editorKind: "clause",

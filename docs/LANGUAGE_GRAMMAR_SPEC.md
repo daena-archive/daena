@@ -1877,18 +1877,24 @@ That combination of specialized workflows, progressive disclosure, contextual ed
 
 # 21. Verified Implementation Baseline
 
-As of this specification, the implemented Grammar area is still the generic
-notes experience this product replaces:
+The Grammar area is the hard-cut specialized system described in this
+document, not the former Markdown topic list:
 
-- `packages/modules/language/src/grammar.ts` defines a `GrammarTopic` with only
-  `title`, `section`, Markdown `body`, and lexeme/example `links`;
-- `packages/modules/language/src/index.ts` lists at most 100 `grammar` records,
-  groups them into eight buckets, and opens the same form for every topic;
-- `packages/modules/language/manifest.json` declares that legacy record shape;
-- `scripts/language-grammar.test.mjs` tests only normalization, grouping,
-  Markdown rendering, and link markup for generic topics; and
-- the core round-trip test in `crates/daena-core/src/project/tests.rs` persists
-  the same generic shape.
+- `packages/modules/language/src/grammar/` holds discriminated records,
+  catalog, normalizers, specialized editors, Agreement, Other Rules, and
+  Grammar Starter. `grammar.ts` is the public barrel; `index.ts` only
+  orchestrates the Language pane.
+- Collection `grammar` remains Language-owned module records. The packaged
+  manifest schema is CommandSchema-safe (a single object with
+  `additionalProperties: false`). The authored contract with `oneOf`
+  branches keyed by `recordKind` and `systemId` lives in
+  `GRAMMAR_VALUE_SCHEMA` and is enforced by Language normalizers and tests.
+- There is no `language-v2` migration, legacy topic reader, converter, or
+  dual-write path. `{ title, section, body, links }` records are rejected.
+- The core round-trip test
+  `language_grammar_records_round_trip_and_rebuild_from_checkpoint`
+  persists system, agreement, and custom-rule values and rebuilds them
+  after deleting `.daena/`.
 
 The existing `paradigms` collection is a morphology rule engine: its slots and
 operations generate lexeme forms. It is not a suitable storage model for a

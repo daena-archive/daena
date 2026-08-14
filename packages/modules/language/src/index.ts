@@ -39,17 +39,11 @@ import {
   type PhonologyNotes,
 } from "./phonology";
 import {
-  GRAMMAR_SECTIONS,
-  grammarGlance,
-  grammarStatusLabel,
-  indexGrammarRecords,
-  searchGrammar,
-  sectionCardSummary,
-  summarizeSystem,
-  systemsForSection,
-  type GrammarRecord,
-  type IndexedGrammar,
+  emptyGrammarUiState,
+  type GrammarUiState,
 } from "./grammar";
+import { loadGrammarIndex } from "./grammar/repository";
+import { renderGrammarPane, tryLeaveGrammar, type GrammarPaneContext } from "./grammar/pane";
 import {
   clearOverride,
   emptyOperation,
@@ -130,9 +124,7 @@ export const language: DaenaModule = {
         let orthographyEditing: ModuleRecord<OrthographyValue> | null = null;
         let orthographyEditorOpen = false;
         let orthographyDraft: OrthographyValue = emptyOrthography();
-        let grammarIndex: IndexedGrammar = indexGrammarRecords([]);
-        let grammarQuery = "";
-        let grammarSection: (typeof GRAMMAR_SECTIONS)[number]["id"] | null = null;
+        let grammarUi: GrammarUiState = emptyGrammarUiState();
         let pendingLexemeId: string | null = null;
         let paradigms: ModuleRecord<Paradigm>[] = [];
         let paradigmEditing: ModuleRecord<Paradigm> | null = null;
@@ -189,6 +181,11 @@ export const language: DaenaModule = {
           .grammar-glance dt{margin:0;color:var(--ink-faint);font-size:11px}
           .grammar-glance dd{margin:0}
           .grammar-systems{display:grid;gap:8px}
+          .grammar-status{display:flex;gap:14px;flex-wrap:wrap;border:0;margin:0;padding:0}
+          .grammar-status legend{padding:0;color:var(--ink-soft);font-size:11px}
+          .grammar-help{margin:8px 0 0;font-size:13px;line-height:1.55}
+          .grammar-learn{margin:4px 0 8px}
+          .grammar-example{display:grid;gap:8px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-muted)}
           .sample-block{padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--surface-muted);font-size:13px;line-height:1.55}
           .sample-block h3{margin:0 0 8px;font-family:var(--font-display);font-weight:500}
           .sample-ref{padding:0;border:0;border-bottom:1px dotted var(--accent-dark);background:transparent;color:var(--accent-dark);font:inherit;cursor:pointer}
@@ -745,9 +742,7 @@ export const language: DaenaModule = {
           orthographyEditing = null;
           orthographyEditorOpen = false;
           orthographyDraft = emptyOrthography();
-          grammarIndex = indexGrammarRecords([]);
-          grammarQuery = "";
-          grammarSection = null;
+          grammarUi = emptyGrammarUiState();
           paradigmEditing = null;
           paradigmEditorOpen = false;
           paradigmDraft = emptyParadigm();
@@ -827,31 +822,24 @@ export const language: DaenaModule = {
 
         async function loadGrammar() {
           if (!selectedLanguage) {
-            grammarIndex = indexGrammarRecords([]);
+            grammarUi.index = emptyGrammarUiState().index;
             records = [];
             render();
             return;
           }
           const token = ++request;
           try {
-            const collected: ModuleRecord<GrammarRecord>[] = [];
-            let offset = 0;
-            for (;;) {
-              const page = await context.records.list<GrammarRecord>("grammar", selectedLanguage.id, {
-                limit: 100,
-                offset,
-                sort: "updatedAt",
-              });
-              collected.push(...page);
-              if (page.length < 100) break;
-              offset += 100;
-            }
-            const [lexemes] = await Promise.all([
+            const loaded = await loadGrammarIndex(context.records, selectedLanguage.id);
+            const [lexemes, sampleRecords, paradigmRecords] = await Promise.all([
               context.records.list<LexemeValue>("lexemes", selectedLanguage.id, { limit: 500, sort: "lemma" }),
+              context.records.list<Sample>("samples", selectedLanguage.id, { limit: 100, sort: "title" }),
+              context.records.list<Paradigm>("paradigms", selectedLanguage.id, { limit: 100, sort: "name" }),
             ]);
             if (!cancelled && token === request) {
-              grammarIndex = indexGrammarRecords(collected);
+              grammarUi.index = loaded.index;
               records = lexemes.map((record) => ({ ...record, value: normalizeLexeme(record.value) }));
+              samples = sampleRecords.map((record) => ({ ...record, value: normalizeSample(record.value) }));
+              paradigms = paradigmRecords.map((record) => ({ ...record, value: normalizeParadigm(record.value) }));
               render();
             }
           } catch (cause) {
@@ -1448,172 +1436,33 @@ export const language: DaenaModule = {
           void loadRecords();
         }
 
-        function renderGrammar(panel: HTMLElement, error: string) {
-          const toolbar = document.createElement("div");
-          toolbar.className = "language-toolbar";
-          const title = document.createElement("h2");
-          title.textContent = selectedLanguage ? `${selectedLanguage.name} grammar` : "Grammar";
-          toolbar.append(title);
-          if (grammarSection) {
-            toolbar.append(
-              button("All sections", "language-button secondary", () => {
-                grammarSection = null;
-                render();
-              }),
-            );
-          }
-          panel.append(toolbar);
-          if (error) panel.append(alertMessage(error));
-          if (!selectedLanguage) {
-            panel.append(emptyMessage("Select a language to document its grammar."));
-            return;
-          }
-          const search = input("grammar-search", grammarQuery);
-          search.placeholder = "Search grammar systems…";
-          search.setAttribute("aria-label", "Search grammar systems");
-          search.oninput = () => {
-            grammarQuery = search.value;
-            render();
+        function grammarContext(): GrammarPaneContext {
+          return {
+            languageName: selectedLanguage?.name,
+            ownerId: selectedLanguage?.id,
+            records: context.records,
+            confirm: (message) => window.confirm(message),
+            render,
+            choices: {
+              lexemes: records.map((record) => ({ id: record.id, lemma: record.value.lemma })),
+              samples: samples.map((record) => ({ id: record.id, title: sampleTitle(record.value) })),
+              paradigms: paradigms.map((record) => ({ id: record.id, name: record.value.name })),
+              examples: records.flatMap((record) =>
+                record.value.senses.flatMap((sense) =>
+                  sense.examples.map((example) => ({
+                    lexemeId: record.id,
+                    exampleId: example.id,
+                    lemma: record.value.lemma,
+                    text: example.text,
+                  })),
+                ),
+              ),
+            },
           };
-          panel.append(search);
-          const home = document.createElement("div");
-          home.className = "grammar-home";
-          for (const diagnostic of grammarIndex.diagnostics) {
-            home.append(alertMessage(diagnostic.message));
-          }
-          if (grammarQuery.trim()) {
-            const hits = searchGrammar(grammarQuery, grammarIndex);
-            const list = document.createElement("div");
-            list.className = "grammar-systems";
-            if (hits.length === 0) list.append(emptyMessage("No matching grammar systems."));
-            for (const hit of hits) {
-              const item = document.createElement("button");
-              item.type = "button";
-              item.className = "grammar-system";
-              const heading = document.createElement("strong");
-              heading.textContent = hit.label;
-              const detail = document.createElement("span");
-              detail.textContent = `${GRAMMAR_SECTIONS.find((section) => section.id === hit.sectionId)?.label ?? ""} · ${hit.status ? grammarStatusLabel(hit.status) : hit.summary}`;
-              item.append(heading, detail);
-              item.onclick = () => {
-                grammarQuery = "";
-                grammarSection = hit.sectionId;
-                render();
-              };
-              list.append(item);
-            }
-            home.append(list);
-            panel.append(home);
-            return;
-          }
-          if (!grammarSection) {
-            const intro = emptyMessage(
-              "Define how sentences and words behave in this language. You do not need to configure every system.",
-            );
-            home.append(intro);
-            const cards = document.createElement("div");
-            cards.className = "grammar-cards";
-            for (const section of GRAMMAR_SECTIONS) {
-              const summary = sectionCardSummary(grammarIndex, section.id);
-              const card = document.createElement("button");
-              card.type = "button";
-              card.className = "grammar-card";
-              card.setAttribute("aria-label", `${summary.label}: ${summary.detail}`);
-              const heading = document.createElement("strong");
-              heading.textContent = summary.label;
-              const detail = document.createElement("span");
-              detail.textContent = summary.detail;
-              card.append(heading, detail);
-              card.onclick = () => {
-                grammarSection = section.id;
-                render();
-              };
-              cards.append(card);
-            }
-            home.append(cards);
-            const glance = document.createElement("dl");
-            glance.className = "grammar-glance";
-            glance.setAttribute("aria-label", "At a glance");
-            for (const row of grammarGlance(grammarIndex)) {
-              const term = document.createElement("dt");
-              term.textContent = row.label;
-              const value = document.createElement("dd");
-              value.textContent = row.value;
-              glance.append(term, value);
-            }
-            home.append(glance);
-            panel.append(home);
-            return;
-          }
-          const section = GRAMMAR_SECTIONS.find((item) => item.id === grammarSection)!;
-          const heading = document.createElement("h3");
-          heading.textContent = section.label;
-          home.append(heading, emptyMessage(section.orientation));
-          const systems = document.createElement("div");
-          systems.className = "grammar-systems";
-          if (section.id === "agreement") {
-            if (grammarIndex.agreements.length === 0) {
-              home.append(emptyState(section.emptyBody));
-            } else {
-              for (const record of grammarIndex.agreements) {
-                if (record.value.recordKind !== "agreement") continue;
-                const item = document.createElement("div");
-                item.className = "grammar-system";
-                item.style.cursor = "default";
-                const name = document.createElement("strong");
-                name.textContent = record.value.title;
-                const detail = document.createElement("span");
-                detail.textContent = `${record.value.controller.kind} → ${record.value.target.kind}`;
-                item.append(name, detail);
-                systems.append(item);
-              }
-              home.append(systems);
-            }
-          } else if (section.id === "other") {
-            if (grammarIndex.customRules.length === 0) {
-              home.append(emptyState(section.emptyBody));
-            } else {
-              for (const record of grammarIndex.customRules) {
-                if (record.value.recordKind !== "custom-rule") continue;
-                const item = document.createElement("div");
-                item.className = "grammar-system";
-                item.style.cursor = "default";
-                const name = document.createElement("strong");
-                name.textContent = record.value.title;
-                const detail = document.createElement("span");
-                detail.textContent = record.value.tags.join(", ") || record.value.body.split("\n")[0] || "Custom rule";
-                item.append(name, detail);
-                systems.append(item);
-              }
-              home.append(systems);
-            }
-          } else {
-            const listed = systemsForSection(section.id);
-            if (listed.every((system) => !grammarIndex.systems.has(system.id) && !grammarIndex.duplicates.has(system.id))) {
-              home.append(emptyState(section.emptyBody));
-            }
-            for (const system of listed) {
-              const record = grammarIndex.systems.get(system.id)?.value;
-              const duplicate = grammarIndex.duplicates.has(system.id);
-              const status = duplicate ? "unconfigured" : record?.recordKind === "system" ? record.status : "unconfigured";
-              const item = document.createElement("div");
-              item.className = "grammar-system";
-              item.style.cursor = "default";
-              const name = document.createElement("strong");
-              name.textContent = system.label;
-              const detail = document.createElement("span");
-              detail.textContent = duplicate
-                ? "Duplicate records — edits disabled"
-                : record?.recordKind === "system"
-                  ? summarizeSystem(system.id, record)
-                  : grammarStatusLabel(status);
-              item.append(name, detail);
-              item.append(emptyMessage(system.hint));
-              systems.append(item);
-            }
-            home.append(systems);
-          }
-          panel.append(home);
+        }
+
+        function renderGrammar(panel: HTMLElement, error: string) {
+          renderGrammarPane(panel, grammarUi, grammarContext(), error);
         }
 
         function captureParadigm(form: HTMLFormElement) {
@@ -2327,6 +2176,7 @@ export const language: DaenaModule = {
             languageButton.textContent = language.name;
             if (selectedLanguage?.id === language.id) languageButton.setAttribute("aria-current", "page");
             languageButton.onclick = () => {
+              if (!tryLeaveGrammar(grammarUi, (message) => window.confirm(message))) return;
               selectedLanguage = language;
               resetEditors();
               search = "";
@@ -2392,6 +2242,7 @@ export const language: DaenaModule = {
             ["samples", "Samples"],
           ] as const) {
             const tab = button(label, "", () => {
+              if (!tryLeaveGrammar(grammarUi, (message) => window.confirm(message))) return;
               pane = id;
               resetEditors();
               void loadPane();

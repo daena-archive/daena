@@ -16,6 +16,15 @@ import {
   sectionCardSummary,
   serializeGrammarRecord,
   summarizeSystem,
+  validateGrammarDraft,
+  emptyGrammarUiState,
+  isGrammarDirty,
+  openSystemEditor,
+  persistGrammarRecord,
+  isStaleRevisionError,
+  setSystemStatus,
+  confirmGrammarLeave,
+  loadGrammarIndex,
 } from "../packages/modules/language/src/grammar.ts";
 
 function matchesSchema(value, schema, defs = schema.$defs ?? {}) {
@@ -330,5 +339,108 @@ assert.ok(searchGrammar("questions", emptyIndex).some((item) => item.systemId ==
 assert.ok(searchGrammar("switch-reference", indexed).some((item) => item.kind === "custom-rule"));
 
 assert.equal(GRAMMAR_SECTIONS.map((item) => item.id).join(","), "syntax,nouns,pronouns,verbs,modifiers,clauses,agreement,other");
+
+const owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+function fakeGrammarApi(seed = []) {
+  const store = new Map(seed.map((record) => [record.id, { ...record }]));
+  return {
+    store,
+    async list(_collection, ownerEntityId, query = {}) {
+      const all = [...store.values()].filter((item) => item.ownerEntityId === ownerEntityId);
+      const offset = query.offset ?? 0;
+      return all.slice(offset, offset + (query.limit ?? 100));
+    },
+    async create(_collection, ownerEntityId, value) {
+      const record = {
+        id: crypto.randomUUID(),
+        collection: "grammar",
+        ownerEntityId,
+        value,
+        createdAt: "t",
+        updatedAt: "t",
+        revision: "rev-1",
+      };
+      store.set(record.id, record);
+      return record;
+    },
+    async update(_collection, id, _owner, value, options) {
+      const current = store.get(id);
+      if (!current) throw new Error("missing");
+      if (current.revision !== options.expectedRevision) {
+        throw new Error(`module record revision conflict: expected ${options.expectedRevision}, current ${current.revision}`);
+      }
+      current.value = value;
+      current.revision = `rev-${store.size + 2}`;
+      current.updatedAt = "t2";
+      return { ...current };
+    },
+    async delete(_collection, id, _owner, options) {
+      const current = store.get(id);
+      if (!current) throw new Error("missing");
+      if (current.revision !== options.expectedRevision) {
+        throw new Error(`module record revision conflict: expected ${options.expectedRevision}, current ${current.revision}`);
+      }
+      store.delete(id);
+    },
+  };
+}
+
+assert.equal(isStaleRevisionError(new Error("module record revision conflict: expected a, current b")), true);
+assert.equal(isStaleRevisionError(new Error("nope")), false);
+
+const emptyUi = emptyGrammarUiState();
+const opened = openSystemEditor(emptyUi.index, "nouns.case");
+assert.equal(opened.draft.status, "unconfigured");
+assert.equal(isGrammarDirty(opened), false);
+const dupIndex = indexGrammarRecords([
+  { id: "d1", value: emptySystemRecord("nouns.case", "not-used") },
+  { id: "d2", value: emptySystemRecord("nouns.case", "not-used") },
+]);
+assert.equal(openSystemEditor(dupIndex, "nouns.case").locked, true);
+opened.draft = setSystemStatus(opened.draft, "not-used");
+opened.draft.notes = "Word order covers this.";
+assert.equal(isGrammarDirty(opened), true);
+assert.equal(confirmGrammarLeave(opened, () => false), false);
+assert.equal(confirmGrammarLeave(opened, () => true), true);
+assert.equal(validateGrammarDraft(opened.draft).length, 0);
+assert.equal(
+  validateGrammarDraft(setSystemStatus(emptySystemRecord("nouns.case"), "configured")).some((item) => item.code === "configured-minimum"),
+  true,
+);
+
+const api = fakeGrammarApi();
+const saved = await persistGrammarRecord(api, owner, opened);
+assert.equal(saved.ok, true);
+assert.equal(saved.record.value.status, "not-used");
+assert.equal(saved.index.systems.get("nouns.case").value.status, "not-used");
+assert.match(sectionCardSummary(saved.index, "nouns").detail, /not used|0 system/i);
+assert.equal(grammarGlance(saved.index).find((row) => row.label === "Case system").value.startsWith("Not used"), true);
+
+const staleApi = fakeGrammarApi([saved.record]);
+staleApi.store.get(saved.record.id).revision = "rev-other";
+const stale = await persistGrammarRecord(staleApi, owner, {
+  recordId: saved.record.id,
+  revision: "rev-1",
+  draft: saved.record.value,
+});
+assert.equal(stale.ok, false);
+assert.equal(stale.stale, true);
+assert.equal(stale.stored.revision, "rev-other");
+
+const paged = fakeGrammarApi();
+for (let index = 0; index < 120; index += 1) {
+  await paged.create("grammar", owner, {
+    recordKind: "custom-rule",
+    schemaVersion: 1,
+    title: `Rule ${index}`,
+    tags: [],
+    body: "",
+    examples: [],
+    links: [],
+  });
+}
+const loaded = await loadGrammarIndex(paged, owner);
+assert.equal(loaded.records.length, 120);
+assert.equal(loaded.index.customRules.length, 120);
 
 console.log("language grammar helpers ok");

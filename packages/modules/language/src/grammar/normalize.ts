@@ -142,6 +142,52 @@ export function emptySystemRecord(systemId: GrammarSystemId, status: GrammarStat
   };
 }
 
+export function emptyCustomRule(): GrammarCustomRuleRecord {
+  return {
+    recordKind: "custom-rule",
+    schemaVersion: GRAMMAR_SCHEMA_VERSION,
+    title: "",
+    tags: [],
+    body: "",
+    examples: [],
+    links: [],
+  };
+}
+
+export function emptyAgreementSectionState(note?: string): GrammarSectionStateRecord {
+  return {
+    recordKind: "section-state",
+    schemaVersion: GRAMMAR_SCHEMA_VERSION,
+    sectionId: "agreement",
+    status: "not-used",
+    note,
+  };
+}
+
+export function cloneGrammarRecord<T extends GrammarRecord>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+export function grammarRecordSnapshot(value: GrammarRecord) {
+  return JSON.stringify(cloneGrammarRecord(value));
+}
+
+export function validateGrammarDraft(value: GrammarRecord): GrammarIssue[] {
+  if (value.recordKind === "system") {
+    if (value.status === "configured" && !configuredMinimum(value.systemId, value.config)) {
+      return [issue("configured-minimum", "This system needs its grammatical settings before it can be saved as configured.", "status")];
+    }
+    return [];
+  }
+  if (value.recordKind === "custom-rule" && !value.title.trim()) {
+    return [issue("malformed", "Title is required.", "title")];
+  }
+  if (value.recordKind === "agreement" && !value.title.trim()) {
+    return [issue("malformed", "Title is required.", "title")];
+  }
+  return [];
+}
+
 function normalizeExamples(value: unknown): GrammarExample[] {
   if (!Array.isArray(value)) return [];
   return value

@@ -199,7 +199,9 @@ export function sectionCardSummary(
     detail:
       configured === 0 && notUsed === 0
         ? "None configured"
-        : `${configured} system${configured === 1 ? "" : "s"} configured`,
+        : configured === 0
+          ? `${notUsed} not used`
+          : `${configured} system${configured === 1 ? "" : "s"} configured`,
     configured,
     notUsed,
     total: systems.length,

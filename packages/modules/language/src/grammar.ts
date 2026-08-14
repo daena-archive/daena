@@ -25,13 +25,37 @@ export {
 } from "./grammar/catalog.ts";
 export {
   brokenAgreementFeatures,
+  cloneGrammarRecord,
   configuredMinimum,
+  emptyAgreementSectionState,
   emptyConfig,
+  emptyCustomRule,
   emptySystemRecord,
+  grammarRecordSnapshot,
   indexGrammarRecords,
   normalizeGrammarRecord,
   serializeGrammarRecord,
   systemStatus,
+  validateGrammarDraft,
 } from "./grammar/normalize.ts";
 export { grammarGlance, grammarStatusLabel, searchGrammar, sectionCardSummary, summarizeSystem } from "./grammar/summaries.ts";
 export { GRAMMAR_VALUE_SCHEMA } from "./grammar/schema.ts";
+export {
+  applyStoredVersion,
+  confirmGrammarLeave,
+  emptyGrammarUiState,
+  isGrammarDirty,
+  keepDraftAfterConflict,
+  openAgreementNotUsedEditor,
+  openCustomRuleEditor,
+  openSystemEditor,
+  setSystemStatus,
+} from "./grammar/session.ts";
+export type { GrammarEditSession, GrammarUiState } from "./grammar/session.ts";
+export {
+  deleteGrammarRecord,
+  isStaleRevisionError,
+  loadGrammarIndex,
+  paginateRecords,
+  persistGrammarRecord,
+} from "./grammar/repository.ts";

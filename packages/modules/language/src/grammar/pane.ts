@@ -13,6 +13,7 @@ import { alertMessage, button, emptyMessage, emptyState, field, input, textarea 
 import { persistGrammarRecord, deleteGrammarRecord, type GrammarRecordsApi } from "./repository.ts";
 import { configuredMinimum, grammarRecordSnapshot } from "./normalize.ts";
 import { isChoiceSystem, renderChoiceEditor } from "./choice.ts";
+import { isInventorySystem, referencedCategoryIds, renderInventoryEditor } from "./inventory.ts";
 import {
   applyStoredVersion,
   confirmGrammarLeave,
@@ -344,8 +345,23 @@ function renderEditor(panel: HTMLElement, state: GrammarUiState, ctx: GrammarPan
         session.draft = next;
         if (rerender) ctx.render();
       });
+      const inventory = renderInventoryEditor(
+        session.draft,
+        session.locked,
+        { referencedIds: referencedCategoryIds(state.index, session.draft.systemId), confirm: ctx.confirm },
+        (next, rerender) => {
+          if (session.draft.recordKind !== "system") return;
+          session.draft = next;
+          if (rerender) ctx.render();
+        },
+      );
       if (choice) form.append(choice);
-      else if (!configuredMinimum(session.draft.systemId, session.draft.config) && !isChoiceSystem(session.draft.systemId)) {
+      else if (inventory) form.append(inventory);
+      else if (
+        !configuredMinimum(session.draft.systemId, session.draft.config) &&
+        !isChoiceSystem(session.draft.systemId) &&
+        !isInventorySystem(session.draft.systemId)
+      ) {
         form.append(
           emptyMessage(
             "Specialized settings for this system will appear here. Mark it as not used if the language does not have this feature, or leave it not configured.",

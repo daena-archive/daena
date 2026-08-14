@@ -10,6 +10,8 @@ import {
   applyBasicWordOrder,
   applyPossessivePosition,
   applyRelativeClausePosition,
+  addCase,
+  addNounClass,
   assertCatalogComplete,
   brokenAgreementFeatures,
   configuredMinimum,
@@ -31,6 +33,16 @@ import {
   setSystemStatus,
   confirmGrammarLeave,
   loadGrammarIndex,
+  moveNumberCategory,
+  NUMBER_TEMPLATES,
+  referencedCategoryIds,
+  removeCase,
+  removeNumberCategory,
+  setNounClassKind,
+  toggleNumberMarking,
+  toggleNumberTemplate,
+  toggleTamTemplate,
+  updateNumberCategory,
 } from "../packages/modules/language/src/grammar.ts";
 
 function matchesSchema(value, schema, defs = schema.$defs ?? {}) {
@@ -524,5 +536,89 @@ assert.equal(
   grammarGlance(adjectiveSaved.index).find((row) => row.label === "Adjective position").value,
   "Before noun",
 );
+
+assert.deepEqual(
+  NUMBER_TEMPLATES.map((item) => item.id),
+  ["singular", "plural", "dual", "trial", "paucal", "collective", "custom"],
+);
+
+let number = toggleNumberTemplate(setSystemStatus(emptySystemRecord("nouns.number"), "configured"), "singular").draft;
+number = toggleNumberTemplate(number, "plural").draft;
+const singularId = number.config.categories[0].id;
+const pluralId = number.config.categories[1].id;
+assert.equal(number.config.categories[0].templateId, "singular");
+number = updateNumberCategory(number, singularId, { label: "Sg", marker: "-∅" });
+assert.equal(number.config.categories[0].id, singularId);
+assert.equal(number.config.categories[0].templateId, "singular");
+number = moveNumberCategory(number, pluralId, -1);
+assert.deepEqual(
+  number.config.categories.map((item) => item.id),
+  [pluralId, singularId],
+);
+number = toggleNumberMarking(number, "affix");
+assert.equal(summarizeSystem("nouns.number", number), "Plural, Sg · affix");
+assert.equal(validateGrammarDraft(number).length, 0);
+assert.equal(matchesSchema(serializeGrammarRecord(number), GRAMMAR_VALUE_SCHEMA), true);
+
+const agreementRef = {
+  id: "agr-1",
+  value: {
+    recordKind: "agreement",
+    schemaVersion: 1,
+    title: "Noun → Adj",
+    controller: { kind: "noun" },
+    target: { kind: "adjective" },
+    features: [{ sourceSystemId: "nouns.number", categoryId: singularId, label: "Number" }],
+    behavior: "full",
+    notes: "",
+    examples: [],
+    links: [],
+  },
+};
+const referencedIndex = indexGrammarRecords([{ id: "num-1", value: number }, agreementRef]);
+const referenced = referencedCategoryIds(referencedIndex, "nouns.number");
+assert.equal(referenced.has(singularId), true);
+const blocked = removeNumberCategory(number, singularId, { referenced });
+assert.equal(blocked.blocked.id, singularId);
+assert.deepEqual(
+  blocked.draft.config.categories.map((item) => item.id),
+  [pluralId, singularId],
+);
+const forced = removeNumberCategory(number, singularId, { referenced, force: true });
+assert.equal(forced.blocked, undefined);
+assert.deepEqual(
+  forced.draft.config.categories.map((item) => item.id),
+  [pluralId],
+);
+assert.equal(brokenAgreementFeatures(indexGrammarRecords([{ id: "num-1", value: forced.draft }, agreementRef])).length, 1);
+
+let cases = addCase(setSystemStatus(emptySystemRecord("nouns.case"), "configured"), "nominative");
+const nomId = cases.config.cases[0].id;
+cases = addCase(cases, "accusative");
+assert.equal(cases.config.cases[0].id, nomId);
+assert.equal(cases.config.cases[0].primaryFunction, "Subject");
+assert.match(summarizeSystem("nouns.case", cases), /2 cases/);
+const customCase = addCase(setSystemStatus(emptySystemRecord("nouns.case"), "configured"), "custom");
+assert.equal(configuredMinimum("nouns.case", customCase.config), false);
+assert.equal(removeCase(cases, nomId).draft.config.cases.length, 1);
+
+let classes = setNounClassKind(setSystemStatus(emptySystemRecord("nouns.classes"), "configured"), "gender");
+assert.equal(configuredMinimum("nouns.classes", classes.config), false);
+classes = addNounClass(classes, "Masculine");
+classes = addNounClass(classes, "Feminine");
+assert.equal(summarizeSystem("nouns.classes", classes), "gender · Masculine, Feminine");
+assert.equal(validateGrammarDraft(classes).length, 0);
+
+let tense = toggleTamTemplate(setSystemStatus(emptySystemRecord("verbs.tense"), "configured"), "past").draft;
+tense = toggleTamTemplate(tense, "future").draft;
+assert.equal(summarizeSystem("verbs.tense", tense), "Past, Future");
+assert.equal(tense.config.categories[0].id !== tense.config.categories[1].id, true);
+
+const inventoryApi = fakeGrammarApi();
+const savedNumber = await persistGrammarRecord(inventoryApi, owner, { draft: number });
+assert.equal(savedNumber.ok, true);
+assert.equal(savedNumber.record.value.config.categories[0].id, pluralId);
+assert.match(sectionCardSummary(savedNumber.index, "nouns").detail, /1 system/);
+assert.match(grammarGlance(savedNumber.index).find((row) => row.label === "Number").value, /Plural/);
 
 console.log("language grammar helpers ok");

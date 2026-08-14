@@ -197,6 +197,24 @@ function choiceMinimumIssue(value: GrammarSystemRecord): GrammarIssue | undefine
   if (value.systemId === "syntax.adpositions" && !(config as AdpositionsConfig).strategy) {
     return issue("configured-minimum", "Choose how adpositions work.", "strategy");
   }
+  if (value.systemId === "nouns.number" && !(config as NumberConfig).categories?.some((item) => item.label?.trim())) {
+    return issue("configured-minimum", "Add at least one number category.", "categories");
+  }
+  if (value.systemId === "nouns.case" && !(config as CaseConfig).cases?.some((item) => item.name?.trim() && item.primaryFunction?.trim())) {
+    return issue("configured-minimum", "Each saved case needs a name and primary function.", "cases");
+  }
+  if (
+    value.systemId === "nouns.classes" &&
+    (!(config as NounClassesConfig).kind || !(config as NounClassesConfig).classes?.some((item) => item.name?.trim()))
+  ) {
+    return issue("configured-minimum", "Choose a classification kind and add at least one class.", "kind");
+  }
+  if (
+    (value.systemId === "verbs.tense" || value.systemId === "verbs.aspect" || value.systemId === "verbs.mood") &&
+    !(config as TamConfig).categories?.some((item) => item.label?.trim())
+  ) {
+    return issue("configured-minimum", "Add at least one category.", "categories");
+  }
   return undefined;
 }
 
@@ -738,11 +756,11 @@ export function configuredMinimum(systemId: GrammarSystemId, config: GrammarSyst
     case "syntax.adpositions":
       return "strategy" in config && Boolean((config as AdpositionsConfig).strategy);
     case "nouns.number":
-      return (config as NumberConfig).categories?.length > 0;
+      return (config as NumberConfig).categories?.some((item) => item.label?.trim()) === true;
     case "nouns.case":
-      return (config as CaseConfig).cases?.some((item) => item.name && item.primaryFunction) === true;
+      return (config as CaseConfig).cases?.some((item) => item.name?.trim() && item.primaryFunction?.trim()) === true;
     case "nouns.classes":
-      return Boolean((config as NounClassesConfig).kind) && (config as NounClassesConfig).classes.length > 0;
+      return Boolean((config as NounClassesConfig).kind) && (config as NounClassesConfig).classes?.some((item) => item.name?.trim()) === true;
     case "nouns.definiteness":
       return (config as DefinitenessConfig).strategies?.length > 0;
     case "nouns.possession":
@@ -756,7 +774,7 @@ export function configuredMinimum(systemId: GrammarSystemId, config: GrammarSyst
     case "verbs.tense":
     case "verbs.aspect":
     case "verbs.mood":
-      return (config as TamConfig).categories?.length > 0;
+      return (config as TamConfig).categories?.some((item) => item.label?.trim()) === true;
     case "verbs.argument-indexing":
       return Boolean((config as ArgumentIndexingConfig).participants);
     case "verbs.negative-forms":

@@ -55,6 +55,23 @@ export {
   applyRelativeClausePosition,
   isChoiceSystem,
 } from "./grammar/choice.ts";
+export {
+  CASE_TEMPLATES,
+  INVENTORY_SYSTEM_IDS,
+  NUMBER_TEMPLATES,
+  addCase,
+  addNounClass,
+  isInventorySystem,
+  moveNumberCategory,
+  referencedCategoryIds,
+  removeCase,
+  removeNumberCategory,
+  setNounClassKind,
+  toggleNumberMarking,
+  toggleNumberTemplate,
+  toggleTamTemplate,
+  updateNumberCategory,
+} from "./grammar/inventory.ts";
 export { GRAMMAR_VALUE_SCHEMA } from "./grammar/schema.ts";
 export {
   applyStoredVersion,

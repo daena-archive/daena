@@ -1,4 +1,5 @@
 import { CHOICE_SYSTEM_IDS } from "./choice.ts";
+import { INVENTORY_SYSTEM_IDS } from "./inventory.ts";
 import { GRAMMAR_SYSTEM_IDS } from "./types.ts";
 
 const example = {
@@ -169,12 +170,89 @@ const category = {
   },
 };
 
+const caseItem = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "name", "primaryFunction"],
+  properties: {
+    id: { type: "string" },
+    templateId: { type: "string" },
+    name: { type: "string" },
+    abbreviation: { type: "string" },
+    primaryFunction: { type: "string" },
+    additionalFunctions: { type: "string" },
+    marking: { type: "string" },
+    notes: { type: "string" },
+  },
+};
+
+const classItem = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "name"],
+  properties: {
+    id: { type: "string" },
+    name: { type: "string" },
+    abbreviation: { type: "string" },
+    membership: { type: "string" },
+    exceptions: { type: "string" },
+  },
+};
+
+const INVENTORY_CONFIG = {
+  "nouns.number": {
+    type: "object",
+    additionalProperties: false,
+    required: ["categories", "markingStrategies"],
+    properties: {
+      categories: { type: "array", items: category },
+      markingStrategies: stringArray(["affix", "separate-word", "stem-change", "multiple", "unmarked", "custom"]),
+    },
+  },
+  "nouns.case": {
+    type: "object",
+    additionalProperties: false,
+    required: ["cases"],
+    properties: { cases: { type: "array", items: caseItem } },
+  },
+  "nouns.classes": {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "classes"],
+    properties: {
+      kind: enumString(["gender", "noun-class", "custom"]),
+      classes: { type: "array", items: classItem },
+    },
+  },
+  "verbs.tense": {
+    type: "object",
+    additionalProperties: false,
+    required: ["categories"],
+    properties: { categories: { type: "array", items: category } },
+  },
+  "verbs.aspect": {
+    type: "object",
+    additionalProperties: false,
+    required: ["categories"],
+    properties: { categories: { type: "array", items: category } },
+  },
+  "verbs.mood": {
+    type: "object",
+    additionalProperties: false,
+    required: ["categories"],
+    properties: { categories: { type: "array", items: category } },
+  },
+} as const;
+
+const SPECIALIZED_SYSTEM_IDS = new Set<string>([...CHOICE_SYSTEM_IDS, ...INVENTORY_SYSTEM_IDS]);
+
 export const GRAMMAR_VALUE_SCHEMA = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   $id: "daena.language.grammar",
   oneOf: [
     ...CHOICE_SYSTEM_IDS.map((id) => systemBranch(id, { oneOf: [emptyConfig, CHOICE_CONFIG[id]] })),
-    ...GRAMMAR_SYSTEM_IDS.filter((id) => !(CHOICE_SYSTEM_IDS as readonly string[]).includes(id)).map((id) =>
+    ...INVENTORY_SYSTEM_IDS.map((id) => systemBranch(id, { oneOf: [emptyConfig, INVENTORY_CONFIG[id]] })),
+    ...GRAMMAR_SYSTEM_IDS.filter((id) => !SPECIALIZED_SYSTEM_IDS.has(id)).map((id) =>
       systemBranch(id, {
         oneOf: [
           emptyConfig,

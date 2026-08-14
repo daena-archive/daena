@@ -195,6 +195,11 @@ export const language: DaenaModule = {
           .grammar-choice span,.grammar-choice em{color:var(--ink-soft);font-size:12px;line-height:1.45}
           .grammar-choice em{font-style:italic}
           .grammar-checks{display:flex;flex-wrap:wrap;gap:8px 16px}
+          .grammar-checks label{display:grid;gap:2px;align-content:start}
+          .grammar-template-hint{color:var(--ink-faint);font-size:11px}
+          .grammar-inventory,.grammar-inventory-item{display:grid;gap:10px;min-width:0}
+          .grammar-inventory-item{padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+          .grammar-inventory-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
           .grammar-example{display:grid;gap:8px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-muted)}
           .sample-block{padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--surface-muted);font-size:13px;line-height:1.55}
           .sample-block h3{margin:0 0 8px;font-family:var(--font-display);font-weight:500}

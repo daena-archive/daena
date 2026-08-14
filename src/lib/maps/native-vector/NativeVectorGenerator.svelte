@@ -35,6 +35,11 @@ let requestId = 0;
 let worker: Worker | null = null;
 let WorkerCtor: (new () => Worker) | null = null;
 let workerReady: Promise<Worker> | null = null;
+let controlsWidth = $state(360);
+let resizingControls = $state(false);
+
+const CONTROLS_MIN_WIDTH = 300;
+const CONTROLS_MAX_WIDTH = 560;
 
 function parseSeed(value: string) {
   const parsed = Number.parseInt(value.trim(), 10);
@@ -52,6 +57,50 @@ function applySeed() {
   settings = { ...settings, seed: parsed };
   seedText = String(parsed);
   return true;
+}
+
+function randomSeed() {
+  const values = new Uint32Array(1);
+  do {
+    crypto.getRandomValues(values);
+  } while (values[0] === settings.seed);
+  return values[0];
+}
+
+function setControlsWidth(width: number) {
+  controlsWidth = Math.min(CONTROLS_MAX_WIDTH, Math.max(CONTROLS_MIN_WIDTH, width));
+}
+
+function startControlsResize(event: PointerEvent) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  resizingControls = true;
+  const resizer = event.currentTarget as HTMLElement;
+  resizer.setPointerCapture(event.pointerId);
+  resizer.dataset.startX = String(event.clientX);
+  resizer.dataset.startWidth = String(controlsWidth);
+}
+
+function moveControlsResize(event: PointerEvent) {
+  if (!resizingControls) return;
+  const resizer = event.currentTarget as HTMLElement;
+  const startX = Number(resizer.dataset.startX);
+  const startWidth = Number(resizer.dataset.startWidth);
+  setControlsWidth(startWidth + event.clientX - startX);
+}
+
+function finishControlsResize(event: PointerEvent) {
+  if (!resizingControls) return;
+  resizingControls = false;
+  const resizer = event.currentTarget as HTMLElement;
+  if (resizer.hasPointerCapture(event.pointerId)) resizer.releasePointerCapture(event.pointerId);
+  delete resizer.dataset.startX;
+  delete resizer.dataset.startWidth;
+}
+
+function handleControlsResizeInput(event: Event) {
+  const width = Number((event.currentTarget as HTMLInputElement).value);
+  if (Number.isFinite(width)) setControlsWidth(width);
 }
 
 async function ensureWorker() {
@@ -90,8 +139,12 @@ async function ensureWorker() {
   return workerReady;
 }
 
-function generate() {
-  if (!applySeed()) return;
+function generate({ randomizeSeed = true }: { randomizeSeed?: boolean } = {}) {
+  if (randomizeSeed) {
+    const seed = randomSeed();
+    settings = { ...settings, seed };
+    seedText = String(seed);
+  } else if (!applySeed()) return;
   busy = true;
   message = "";
   selected = null;
@@ -121,7 +174,7 @@ async function copySeed() {
 async function pasteSeed() {
   try {
     seedText = (await navigator.clipboard.readText()).trim();
-    if (applySeed()) generate();
+    generate({ randomizeSeed: false });
   } catch {
     message = "Could not paste a seed.";
   }
@@ -188,7 +241,7 @@ onDestroy(() => {
 });
 </script>
 
-<section class="generator" aria-label="Generate a native vector map">
+<section class:resizing={resizingControls} class="generator" aria-label="Generate a native vector map">
   <header>
     <div>
       <span>NATIVE VECTOR MAP</span>
@@ -229,7 +282,7 @@ onDestroy(() => {
         onclick={toggleFullscreen}>⛶</button>
     </div>
   </header>
-  <div class="body">
+  <div class="body" style={`--controls-width: ${controlsWidth}px`}>
     <form
       class="controls"
       onsubmit={(event) => {
@@ -285,6 +338,19 @@ onDestroy(() => {
       </label>
       <button type="submit" class="primary" disabled={busy}>{busy ? "Generating…" : "Regenerate"}</button>
     </form>
+    <input
+      class="controls-resizer"
+      type="range"
+      min={CONTROLS_MIN_WIDTH}
+      max={CONTROLS_MAX_WIDTH}
+      step="1"
+      value={controlsWidth}
+      aria-label="Resize generator controls"
+      oninput={handleControlsResizeInput}
+      onpointerdown={startControlsResize}
+      onpointermove={moveControlsResize}
+      onpointerup={finishControlsResize}
+      onpointercancel={finishControlsResize} />
     <div class="candidates" role="radiogroup" aria-label="Landmass candidates" aria-busy={busy}>
       {#each candidates as candidate (candidate.index)}
         <label class="card" class:selected={selected === candidate.index}>
@@ -334,7 +400,7 @@ header span {
 }
 .body {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-columns: minmax(0, var(--controls-width)) 10px minmax(0, 1fr);
   min-height: 0;
   flex: 1;
 }
@@ -346,6 +412,51 @@ header span {
   overflow: auto;
   border-right: 1px solid #405047;
   background: #202c27;
+}
+.controls-resizer {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 10px;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  cursor: col-resize;
+  touch-action: none;
+  background: linear-gradient(to right, transparent 4px, #405047 4px, #405047 5px, transparent 5px);
+}
+.controls-resizer::-webkit-slider-runnable-track {
+  height: 100%;
+  background: transparent;
+}
+.controls-resizer::-webkit-slider-thumb {
+  width: 10px;
+  height: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+}
+.controls-resizer::-moz-range-track {
+  height: 100%;
+  background: transparent;
+}
+.controls-resizer::-moz-range-thumb {
+  width: 10px;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.controls-resizer:hover,
+.controls-resizer:focus-visible {
+  background: linear-gradient(to right, transparent 4px, #d5ab6c 4px, #d5ab6c 5px, transparent 5px);
+}
+.resizing,
+.resizing * {
+  user-select: none;
 }
 label,
 fieldset {
@@ -445,6 +556,23 @@ select:focus-visible,
   .generator * {
     transition: none !important;
     animation: none !important;
+  }
+}
+@media (max-width: 760px) {
+  .body {
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+  .controls {
+    max-height: 52vh;
+    border-right: 0;
+    border-bottom: 1px solid #405047;
+  }
+  .controls-resizer {
+    display: none;
+  }
+  .candidates {
+    overflow: visible;
   }
 }
 </style>

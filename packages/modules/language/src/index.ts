@@ -119,6 +119,7 @@ export const language: DaenaModule = {
         let phonemeDraft: PhonemeValue = emptyPhoneme();
         let phonologyRecord: ModuleRecord<PhonologyNotes> | null = null;
         let phonologyDraft: PhonologyNotes = emptyPhonologyNotes();
+        let phonologyNotesOpen = false;
         let orthographies: ModuleRecord<OrthographyValue>[] = [];
         let orthographyEditing: ModuleRecord<OrthographyValue> | null = null;
         let orthographyEditorOpen = false;
@@ -153,9 +154,13 @@ export const language: DaenaModule = {
         let overviewDocumentRevision = "";
         let overviewLoading = false;
         let overviewSaving = false;
+        let overviewSavingAutomatically = false;
+        let overviewDeleting = false;
         let overviewDirty = false;
         let overviewError = "";
         let overviewRequest = 0;
+        let overviewAutosaveTimer: number | null = null;
+        let overviewAutosaveQueued = false;
         let paneLoading = false;
         let lexiconLoading = false;
         let lexiconSaving = false;
@@ -190,8 +195,26 @@ export const language: DaenaModule = {
           .language-pane-section{display:grid;gap:10px;margin-top:16px;padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--surface-muted)}
           .language-pane-section > p{margin:0;color:var(--ink-soft);font-size:12px;line-height:1.55}
           .language-pane-section .lexeme-list{margin-top:2px}
+          .language-sounds-notes{display:block;margin-top:8px;padding:0;border:0;border-top:1px solid var(--line);border-radius:0;background:transparent;overflow:visible}
+          .language-sounds-notes summary{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;color:var(--ink);cursor:pointer;list-style:none}
+          .language-sounds-notes summary::-webkit-details-marker{display:none}
+          .language-sounds-notes summary::after{content:"⌄";color:var(--ink-faint);font-size:15px;line-height:1;transition:transform .16s ease}
+          .language-sounds-notes[open] summary{border-bottom:1px solid var(--line)}
+          .language-sounds-notes[open] summary::after{transform:rotate(180deg)}
+          .language-sounds-notes-title{display:flex;align-items:baseline;gap:9px;min-width:0}
+          .language-sounds-notes-title strong{font-family:var(--font-display);font-size:15px;font-weight:500}
+          .language-sounds-notes-title span,.language-sounds-notes-meta{color:var(--ink-faint);font-size:11px}
+          .language-sounds-notes-meta{white-space:nowrap}
+          .language-sounds-notes-body{display:grid;gap:10px;padding:12px 0 14px}
+          .language-sounds-notes-body > p{margin:0;color:var(--ink-soft);font-size:12px;line-height:1.55}
+          .language-sounds-notes-body .language-sounds-notes-content{display:grid;gap:10px;margin-top:0;padding:0}
+          .language-sounds-notes-content > p{margin:0;color:var(--ink-soft);font-size:12px;line-height:1.55}
+          .language-group.language-sounds-chart{margin-top:4px;padding:14px 0 0;border:0;border-top:1px solid var(--line);border-radius:0;background:transparent}
+          .language-sounds-chart-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+          .language-sounds-chart-heading h3{font-family:var(--font-sans);font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft)}
+          .language-sounds-chart .language-empty{margin:0;color:var(--ink-faint);font-size:12px}
           .language-pane-summary{margin:16px 0 0;color:var(--ink-faint);font-size:11px}
-          .language-overview{display:grid;gap:16px;margin-top:18px;min-width:0}
+          .language-overview{display:flex;flex:1;flex-direction:column;gap:16px;margin-top:18px;min-width:0;min-height:0}
           .language-overview-identity{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,.55fr);gap:16px;padding:18px;border:1px solid var(--line);border-radius:14px;background:var(--surface-muted)}
           .language-overview-identity h3{font-size:20px}
           .language-overview-identity p{margin:5px 0 0;color:var(--ink-soft);font-size:12px;line-height:1.55}
@@ -202,9 +225,13 @@ export const language: DaenaModule = {
           .language-overview-section > p{margin:0;color:var(--ink-soft);font-size:12px;line-height:1.55}
           .language-overview-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
           .language-overview-document{min-height:16rem;resize:vertical;line-height:1.6}
-          .language-overview-actions{position:sticky;bottom:0;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 0 2px;background:linear-gradient(180deg,transparent,var(--surface) 10px)}
-          .language-overview-actions > span{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-          .language-overview-save-state{color:var(--ink-soft);font-size:12px}
+          .language-overview-status{display:flex;align-items:center;gap:8px;min-height:32px;padding:8px 12px;border:1px solid var(--line);border-radius:999px;background:var(--surface-muted);color:var(--ink-soft);font-size:12px;font-weight:600;white-space:nowrap}
+          .language-overview-status::before{content:"";width:7px;height:7px;flex:0 0 7px;border-radius:50%;background:currentColor}
+          .language-overview-status[data-state=saved]{border-color:#c6d8cb;background:#eef3ef;color:var(--accent-dark)}
+          .language-overview-status[data-state=saving]{border-color:#d8c3a5;color:var(--accent-dark)}
+          .language-overview-status[data-state=saving]::before{animation:language-pulse 1.2s ease-in-out infinite}
+          .language-overview-status[data-state=error]{border-color:#e2b7af;background:#fff5f2;color:#a14f42}
+          .language-overview-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap;margin:auto -20px -24px;padding:12px 20px 24px;border-top:1px solid var(--line);background:var(--surface);box-shadow:0 -8px 16px -16px rgba(38,42,33,.4)}
           .language-search-row{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;margin-top:16px}
           .language-filter-panel{margin-top:10px;border:1px solid var(--line);border-radius:12px;background:var(--surface-muted)}
           .language-filter-panel summary{padding:10px 12px;color:var(--accent-dark);font-size:12px;font-weight:600;cursor:pointer;list-style-position:inside}
@@ -216,7 +243,7 @@ export const language: DaenaModule = {
           .language-search,.language-filters input,.language-filters select,.language-field input,.language-field textarea,.language-field select{box-sizing:border-box;width:100%;min-width:0;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);font:inherit}
           .language-field textarea{min-height:4.5em;resize:vertical}
           .language-check{display:flex;align-items:center;gap:8px;color:var(--ink-soft);font-size:12px}
-          .language-tabs{position:sticky;top:0;z-index:1;display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px;padding:0 0 12px;background:var(--surface)}
+          .language-tabs{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px;padding:0 0 12px;background:var(--surface)}
           .language-tabs button{padding:7px 12px;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--ink-soft);cursor:pointer}
           .language-tabs button:hover{border-color:#d8c3a5;color:var(--ink);background:var(--surface-muted)}
           .language-tabs button[aria-selected=true]{border-color:var(--accent-dark);background:var(--surface-muted);color:var(--accent-dark)}
@@ -300,6 +327,7 @@ export const language: DaenaModule = {
           .language-loading{display:flex;align-items:center;gap:8px;color:var(--ink-soft)}
           .language-loading::before{content:"";width:11px;height:11px;flex:0 0 11px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:language-spin .75s linear infinite}
           @keyframes language-spin{to{transform:rotate(360deg)}}
+          @keyframes language-pulse{50%{opacity:.35}}
           @media(prefers-reduced-motion:reduce){.language-loading::before{animation:none}}
           .language-empty-card{display:grid;gap:12px;justify-items:start;margin:18px 0;padding:20px;border:1px dashed var(--line);border-radius:12px;background:var(--surface-muted)}
           .language-editor{display:grid;gap:16px;margin-top:16px;min-width:0}
@@ -309,7 +337,7 @@ export const language: DaenaModule = {
           .language-section-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px}
           .language-field-wide{grid-column:1/-1}
           .language-field{display:grid;gap:6px;min-width:0;color:var(--ink-soft);font-size:11px;letter-spacing:.01em}
-          .language-actions{position:sticky;bottom:0;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:12px 0 2px;background:linear-gradient(180deg,transparent,var(--surface) 10px)}
+          .language-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:0 -20px -24px;padding:12px 20px 24px;border-top:1px solid var(--line);background:var(--surface);box-shadow:0 -8px 16px -16px rgba(38,42,33,.4)}
           .language-actions span{display:flex;gap:8px;flex-wrap:wrap}
           .language-danger{border-color:#a14f42!important;color:#a14f42!important;background:transparent}
           .language-group{display:grid;gap:10px;min-width:0;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-muted)}
@@ -338,10 +366,36 @@ export const language: DaenaModule = {
           return manifest.schemas.flatMap((schema) => schema.fields).filter((field) => !field.relationshipType);
         }
 
+        function clearOverviewAutosave() {
+          if (overviewAutosaveTimer !== null) window.clearTimeout(overviewAutosaveTimer);
+          overviewAutosaveTimer = null;
+          overviewAutosaveQueued = false;
+        }
+
+        function scheduleOverviewAutosave() {
+          if (!overviewDirty || !selectedLanguage || !overviewEntity || overviewDeleting) {
+            if (!overviewDirty) clearOverviewAutosave();
+            return;
+          }
+          if (overviewSaving) {
+            overviewAutosaveQueued = true;
+            return;
+          }
+          if (overviewAutosaveTimer !== null) window.clearTimeout(overviewAutosaveTimer);
+          overviewAutosaveTimer = window.setTimeout(() => {
+            overviewAutosaveTimer = null;
+            void saveOverview(true);
+          }, 800);
+        }
+
         function tryLeaveOverview(confirmLeave: (message: string) => boolean) {
-          if (!overviewDirty) return true;
+          if (!overviewDirty) {
+            clearOverviewAutosave();
+            return true;
+          }
           const allowed = confirmLeave("You have unsaved language details. Leave without saving?");
           if (allowed) {
+            clearOverviewAutosave();
             overviewDirty = false;
             overviewError = "";
           }
@@ -349,6 +403,7 @@ export const language: DaenaModule = {
         }
 
         async function loadOverview() {
+          clearOverviewAutosave();
           paneLoading = false;
           if (!selectedLanguage) {
             overviewEntity = null;
@@ -392,15 +447,20 @@ export const language: DaenaModule = {
           }
         }
 
-        async function saveOverview() {
-          if (!selectedLanguage || !overviewEntity || overviewSaving) return;
+        async function saveOverview(automatic = false) {
+          if (!selectedLanguage || !overviewEntity || overviewSaving || overviewDeleting) return;
+          clearOverviewAutosave();
           const name = overviewName.trim();
           if (!name) {
             overviewError = "Language name is required.";
             render();
             return;
           }
+          const entityId = overviewEntity.id;
+          const draftFields = { ...overviewFields };
+          const draftDocument = overviewDocument;
           overviewSaving = true;
+          overviewSavingAutomatically = automatic;
           overviewError = "";
           render();
           try {
@@ -412,21 +472,44 @@ export const language: DaenaModule = {
               );
             }
             for (const definition of overviewFieldDefinitions()) {
-              const value = overviewFields[definition.key] ?? "";
+              const value = draftFields[definition.key] ?? "";
               if (JSON.stringify(value) === JSON.stringify(overviewSavedFields[definition.key] ?? "")) continue;
               await context.fields.set(overviewEntity.id, definition.key, value, {
-                expectedRevision: overviewFieldRevisions[definition.key],
+                expectedRevision: overviewFieldRevisions[definition.key] ?? "",
                 requestId: crypto.randomUUID(),
               });
             }
-            if (overviewDocument !== overviewSavedDocument) {
+            if (draftDocument !== overviewSavedDocument) {
               await context.documents.save(
-                { entityId: overviewEntity.id, body: overviewDocument, format: "markdown" },
-                { expectedRevision: overviewDocumentRevision || undefined, requestId: crypto.randomUUID() },
+                { entityId: overviewEntity.id, body: draftDocument, format: "markdown" },
+                { expectedRevision: overviewDocumentRevision, requestId: crypto.randomUUID() },
               );
             }
+            const currentDraftChanged =
+              overviewName.trim() !== name ||
+              overviewFieldDefinitions().some(
+                (definition) =>
+                  JSON.stringify(overviewFields[definition.key] ?? "") !==
+                  JSON.stringify(draftFields[definition.key] ?? ""),
+              ) ||
+              overviewDocument !== draftDocument;
+            const currentDraftName = overviewName;
+            const currentDraftFields = { ...overviewFields };
+            const currentDraftDocument = overviewDocument;
+            const needsFollowUpSave = currentDraftChanged || overviewAutosaveQueued;
             overviewSaving = false;
+            overviewSavingAutomatically = false;
             await loadOverview();
+            if (selectedLanguage?.id !== entityId) return;
+            if (needsFollowUpSave) {
+              overviewName = currentDraftName;
+              overviewFields = currentDraftFields;
+              overviewDocument = currentDraftDocument;
+              overviewDirty = true;
+              render();
+              scheduleOverviewAutosave();
+              return;
+            }
             languageSummaries = languageSummaries.map((language) =>
               language.id === selectedLanguage?.id
                 ? { ...language, name, revision: overviewEntity?.revision ?? language.revision }
@@ -438,7 +521,49 @@ export const language: DaenaModule = {
             render();
           } catch (cause) {
             overviewSaving = false;
+            overviewSavingAutomatically = false;
             overviewDirty = true;
+            overviewError = cause instanceof Error ? cause.message : String(cause);
+            render();
+            if (overviewAutosaveQueued) scheduleOverviewAutosave();
+          }
+        }
+
+        async function archiveOverviewLanguage() {
+          if (!selectedLanguage || !overviewEntity || overviewDeleting) return;
+          const name = selectedLanguage.name;
+          const message = overviewDirty
+            ? `Archive “${name}”? Unsaved language details will be discarded.`
+            : `Archive “${name}”? It will be removed from the active language list.`;
+          if (!window.confirm(message)) return;
+          clearOverviewAutosave();
+          overviewDeleting = true;
+          overviewError = "";
+          render();
+          try {
+            await context.entities.delete(overviewEntity.id, {
+              expectedRevision: overviewEntity.revision,
+              requestId: crypto.randomUUID(),
+            });
+            languageSummaries = languageSummaries.filter((language) => language.id !== overviewEntity?.id);
+            selectedLanguage = languageSummaries[0] ?? null;
+            overviewEntity = null;
+            overviewName = "";
+            overviewFields = {};
+            overviewSavedFields = {};
+            overviewFieldRevisions = {};
+            overviewDocument = "";
+            overviewSavedDocument = "";
+            overviewDocumentRevision = "";
+            overviewDirty = false;
+            overviewAutosaveQueued = false;
+            overviewDeleting = false;
+            overviewLoading = false;
+            resetEditors();
+            render();
+            if (selectedLanguage) void loadPane();
+          } catch (cause) {
+            overviewDeleting = false;
             overviewError = cause instanceof Error ? cause.message : String(cause);
             render();
           }
@@ -460,7 +585,12 @@ export const language: DaenaModule = {
             ? `${selectedLanguage.name} · identity, properties, and canonical notes`
             : "Select a language to begin.";
           titleBlock.append(eyebrow, title, subtitle);
-          toolbar.append(titleBlock);
+          const overviewStatus = document.createElement("span");
+          overviewStatus.className = "language-overview-status";
+          overviewStatus.setAttribute("role", "status");
+          overviewStatus.setAttribute("aria-live", "polite");
+          overviewStatus.textContent = selectedLanguage ? "Loading language details…" : "Select a language";
+          toolbar.append(titleBlock, overviewStatus);
           panel.append(toolbar);
           if (!selectedLanguage) {
             panel.append(emptyState("Select a language, or create one from the list."));
@@ -472,6 +602,39 @@ export const language: DaenaModule = {
           }
           const form = document.createElement("form");
           form.className = "language-overview";
+          let identityStatus: HTMLElement | null = null;
+          const syncOverviewStatus = () => {
+            const hasError = Boolean(overviewError || error);
+            overviewStatus.dataset.state = hasError
+              ? "error"
+              : overviewDeleting || overviewSaving
+                ? "saving"
+                : overviewDirty
+                  ? "dirty"
+                  : "saved";
+            overviewStatus.textContent = hasError
+              ? "Changes need attention"
+              : overviewDeleting
+                ? "Archiving language…"
+                : overviewSaving
+                  ? overviewSavingAutomatically
+                    ? "Saving automatically…"
+                    : "Saving language details…"
+                  : overviewDirty
+                    ? "Changes save automatically"
+                    : "All changes saved";
+          };
+          const syncOverviewDirty = () => {
+            const nameDirty = overviewName.trim() !== overviewEntity?.name;
+            const fieldsDirty = overviewFieldDefinitions().some(
+              (definition) =>
+                JSON.stringify(overviewFields[definition.key] ?? "") !==
+                JSON.stringify(overviewSavedFields[definition.key] ?? ""),
+            );
+            overviewDirty = nameDirty || fieldsDirty || overviewDocument !== overviewSavedDocument;
+            syncOverviewStatus();
+            if (identityStatus) identityStatus.textContent = overviewDirty ? "Draft changes" : "Ready to build";
+          };
           const identity = document.createElement("section");
           identity.className = "language-overview-identity";
           const identityCopy = document.createElement("div");
@@ -483,7 +646,8 @@ export const language: DaenaModule = {
           nameControl.autocomplete = "off";
           nameControl.oninput = () => {
             overviewName = nameControl.value;
-            overviewDirty = true;
+            syncOverviewDirty();
+            scheduleOverviewAutosave();
           };
           identityCopy.append(identityTitle, identityIntro, field("Language name", nameControl));
           const identityMeta = document.createElement("div");
@@ -492,6 +656,7 @@ export const language: DaenaModule = {
           metaLabel.textContent = "Workspace status";
           const metaValue = document.createElement("strong");
           metaValue.textContent = overviewDirty ? "Draft changes" : "Ready to build";
+          identityStatus = metaValue;
           identityMeta.append(metaLabel, metaValue);
           identity.append(identityCopy, identityMeta);
           form.append(identity);
@@ -519,7 +684,8 @@ export const language: DaenaModule = {
                       .filter(Boolean)
                   : control.value,
               };
-              overviewDirty = true;
+              syncOverviewDirty();
+              scheduleOverviewAutosave();
             };
             propertyFields.append(field(definition.label, control));
           }
@@ -537,7 +703,8 @@ export const language: DaenaModule = {
           documentControl.className = "language-overview-document";
           documentControl.oninput = () => {
             overviewDocument = documentControl.value;
-            overviewDirty = true;
+            syncOverviewDirty();
+            scheduleOverviewAutosave();
           };
           documentSection.append(documentTitle, documentIntro, documentControl);
           form.append(documentSection);
@@ -546,33 +713,20 @@ export const language: DaenaModule = {
           if (message) form.append(alertMessage(message));
           const actions = document.createElement("div");
           actions.className = "language-overview-actions";
-          const state = document.createElement("span");
-          state.className = "language-overview-save-state";
-          state.textContent = overviewSaving
-            ? "Saving language details…"
-            : overviewDirty
-              ? "Unsaved changes"
-              : "All changes saved";
-          const buttons = document.createElement("span");
-          if (overviewDirty && !overviewSaving) {
-            buttons.append(
-              button("Discard changes", "language-button secondary", () => {
-                if (!window.confirm("Discard your unsaved language details?")) return;
-                void loadOverview();
-              }),
-            );
-          }
-          const save = document.createElement("button");
-          save.type = "submit";
-          save.className = "language-button";
-          save.disabled = overviewSaving || !overviewDirty;
-          save.textContent = overviewSaving ? "Saving…" : "Save overview";
-          buttons.append(save);
-          actions.append(state, buttons);
+          const archive = button(
+            overviewDeleting ? "Archiving…" : "Archive language",
+            "language-button secondary language-danger",
+            () => void archiveOverviewLanguage(),
+          );
+          archive.disabled = overviewSaving || overviewDeleting;
+          const archiveGroup = document.createElement("span");
+          archiveGroup.className = "language-overview-danger";
+          archiveGroup.append(archive);
+          actions.append(archiveGroup);
           form.append(actions);
+          syncOverviewDirty();
           form.onsubmit = (event) => {
             event.preventDefault();
-            void saveOverview();
           };
           panel.append(form);
         }
@@ -1180,6 +1334,7 @@ export const language: DaenaModule = {
           phonemeEditing = null;
           phonemeEditorOpen = false;
           phonemeDraft = emptyPhoneme();
+          phonologyNotesOpen = false;
           orthographyEditing = null;
           orthographyEditorOpen = false;
           orthographyDraft = emptyOrthography();
@@ -1210,6 +1365,7 @@ export const language: DaenaModule = {
             phonemes = [];
             phonologyRecord = null;
             phonologyDraft = emptyPhonologyNotes();
+            phonologyNotesOpen = false;
             paneLoading = false;
             render();
             return;
@@ -1649,14 +1805,19 @@ export const language: DaenaModule = {
           onSelect: (item: PhonemeValue) => void,
         ) {
           const wrap = document.createElement("section");
-          wrap.className = "language-group";
+          wrap.className = "language-group language-sounds-chart";
+          const headingRow = document.createElement("div");
+          headingRow.className = "language-sounds-chart-heading";
           const heading = document.createElement("h3");
           heading.textContent = caption;
-          wrap.append(heading);
+          headingRow.append(heading);
+          wrap.append(headingRow);
           if (!chart.columns.length) {
             wrap.append(
               emptyMessage(
-                "Add place and manner (or height and backness) to place sounds on this chart. Incomplete inventories are allowed.",
+                caption === "Consonants"
+                  ? "Add place and manner to position consonants here."
+                  : "Add height and backness to position vowels here.",
               ),
             );
             return wrap;
@@ -1781,7 +1942,7 @@ export const language: DaenaModule = {
             return;
           }
           const notes = document.createElement("form");
-          notes.className = "language-editor language-pane-form";
+          notes.className = "language-editor language-pane-form language-sounds-notes-content";
           notes.append(
             field("Syllable structure (optional)", textarea("syllableStructure", phonologyDraft.syllableStructure, 2)),
             field("Stress (optional)", textarea("stress", phonologyDraft.stress, 2)),
@@ -1803,13 +1964,30 @@ export const language: DaenaModule = {
               render(cause instanceof Error ? cause.message : String(cause));
             }
           };
-          const notesSection = document.createElement("section");
-          notesSection.className = "language-pane-section";
-          const notesTitle = document.createElement("h3");
-          notesTitle.textContent = "Phonology notes";
+          const notesSection = document.createElement("details");
+          notesSection.className = "language-sounds-notes";
+          notesSection.open = phonologyNotesOpen;
+          notesSection.ontoggle = () => {
+            phonologyNotesOpen = notesSection.open;
+          };
+          const notesSummary = document.createElement("summary");
+          const notesTitle = document.createElement("span");
+          notesTitle.className = "language-sounds-notes-title";
+          const notesTitleText = document.createElement("strong");
+          notesTitleText.textContent = "Phonology notes";
+          const notesTitleHint = document.createElement("span");
+          notesTitleHint.textContent = "Optional sound-pattern notes";
+          notesTitle.append(notesTitleText, notesTitleHint);
+          const notesMeta = document.createElement("span");
+          notesMeta.className = "language-sounds-notes-meta";
+          notesMeta.textContent = phonologyRecord ? "Saved" : "Optional";
+          notesSummary.append(notesTitle, notesMeta);
           const notesIntro = document.createElement("p");
           notesIntro.textContent = "Capture the sound patterns that sit behind the inventory and charts.";
-          notesSection.append(notesTitle, notesIntro, notes);
+          const notesBody = document.createElement("div");
+          notesBody.className = "language-sounds-notes-body";
+          notesBody.append(notesIntro, notes);
+          notesSection.append(notesSummary, notesBody);
           panel.append(notesSection);
           const values = phonemes.map((record) => record.value);
           const openFromChart = (item: PhonemeValue) => {
@@ -3200,6 +3378,7 @@ export const language: DaenaModule = {
           cancelled = true;
           request += 1;
           if (searchTimer !== null) window.clearTimeout(searchTimer);
+          clearOverviewAutosave();
           element.replaceChildren();
         };
       },

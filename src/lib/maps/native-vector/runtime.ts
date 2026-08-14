@@ -178,6 +178,7 @@ export function createNativeVectorEditor(
       style,
       center: [longitude, latitude],
       zoom: session.zoom,
+      renderWorldCopies: false,
       attributionControl: false,
       maxPitch: 0,
       pitchWithRotate: false,
@@ -198,6 +199,7 @@ export function createNativeVectorEditor(
 
   let draw: TerraDraw | null = null;
   let disposed = false;
+  let styleInitialized = false;
   const objectUrls: string[] = [];
   let hoveredId: string | number | null = null;
   let mapSelectedId: string | number | null = null;
@@ -485,7 +487,8 @@ export function createNativeVectorEditor(
   };
 
   const onStyleLoad = () => {
-    if (disposed) return;
+    if (disposed || styleInitialized) return;
+    styleInitialized = true;
     map.resize();
     applyBackground();
     applySources(session.activeLayerId);
@@ -494,6 +497,7 @@ export function createNativeVectorEditor(
   };
 
   map.on("style.load", onStyleLoad);
+  if (map.isStyleLoaded()) onStyleLoad();
   map.on("mousemove", onHover);
   map.on("click", onMapClick);
   map.on("error", (event) => {

@@ -4013,7 +4013,7 @@ onMount(() => {
                           >New vector map</button>
                       </div>{/if}
                   </div>
-                  >{:else}<button class="empty-create" type="button" onclick={toggleCreateForm}
+                {:else}<button class="empty-create" type="button" onclick={toggleCreateForm}
                     >＋ Create {createLabel()}</button
                   >{/if}
               </div>{:else}{#each visibleEntities() as entity}<button

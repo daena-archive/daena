@@ -2053,6 +2053,31 @@ fn saving_identical_document_content_preserves_revision() {
 }
 
 #[test]
+fn empty_document_revision_allows_first_document_save() {
+    let store = ProjectStore::in_memory().unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "First document".into(),
+            entity_type: Some("language".into()),
+        })
+        .unwrap();
+
+    store
+        .save_document_with_options(
+            SaveDocument {
+                entity_id: entity.id.clone(),
+                body: "Initial notes".into(),
+                format: Some("markdown".into()),
+            },
+            Some(""),
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(store.list_documents(entity.id).unwrap()[0].body, "Initial notes");
+}
+
+#[test]
 fn opening_and_updating_rebuilds_search_for_documents_and_fields() {
     let path = std::env::temp_dir().join(format!("daena-search-test-{}", Uuid::new_v4()));
     {
@@ -4331,7 +4356,7 @@ fn vector_map_accept_replace_layer_delete_and_checkpoint_rebuild() {
         replaced.source.content_hash,
         format!(
             "sha256:{:x}",
-            Sha256::digest(&crate::maps::vector::canonicalize_committed(
+            Sha256::digest(crate::maps::vector::canonicalize_committed(
                 &authored_bytes,
                 &crate::maps::vector::layer_ids_from_layers_field(&created.layers.value)
             )

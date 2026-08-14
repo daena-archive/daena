@@ -29,8 +29,12 @@ for (const required of [
 
 assert.equal(style.includes("daenaLayerId !== activeLayerId"), true);
 assert.equal(style.includes("daena-hover-fill"), true);
+assert.equal(style.includes('filter: ["==", ["feature-state"'), false);
+assert.equal(style.includes('"fill-opacity": ["case", ["boolean", ["feature-state"'), true);
 assert.equal(style.includes("IMAGE_SOURCE_ID"), true);
 assert.equal(style.includes("blob:"), true);
+assert.equal(editor.includes("JSON.parse(JSON.stringify(collection))"), true);
+assert.equal(editor.includes("return structuredClone(collection)"), false);
 assert.equal(runtime.includes('type: "canvas"'), true);
 assert.equal(runtime.includes("fitBounds"), true);
 assert.equal(runtime.includes("imageOverlayCoordinates"), true);

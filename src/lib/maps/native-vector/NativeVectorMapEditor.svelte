@@ -139,7 +139,10 @@ function applyEditorEvent(event: Parameters<typeof reduceVectorEditor>[1]) {
 }
 
 function cloneCollection(collection: VectorFeatureCollection): VectorFeatureCollection {
-  return structuredClone(collection);
+  // `draft` is Svelte state and may be a reactive Proxy after an edit. The
+  // browser structured-clone algorithm rejects that proxy, while GeoJSON is
+  // intentionally JSON-shaped and can be copied safely at this boundary.
+  return JSON.parse(JSON.stringify(collection)) as VectorFeatureCollection;
 }
 
 function applyLayersField(field: FieldValue) {

@@ -53,6 +53,8 @@ struct Feature {
     geometry: Geometry,
 }
 
+pub type FeatureBounds = (String, String, String, f64, f64, f64, f64);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceProfile {
     Candidate,
@@ -418,7 +420,7 @@ fn canonical_polygon(
     for (index, hole) in rings.into_iter().skip(1).enumerate() {
         holes.push(canonical_ring(hole, &format!("{path}[{}]", index + 1), true)?);
     }
-    holes.sort_by(|left, right| left.cmp(right));
+    holes.sort();
     Ok((exterior, holes))
 }
 
@@ -542,13 +544,13 @@ fn parse_geometry(value: &Value, path: &str) -> Result<Geometry, CoreError> {
 }
 
 fn geometry_matches_kind(kind: &str, geometry: &Geometry) -> bool {
-    match (kind, geometry) {
-        ("land" | "lake" | "region", Geometry::Polygon { .. } | Geometry::MultiPolygon(_)) => true,
-        ("route", Geometry::LineString(_)) => true,
-        ("marker", Geometry::Point(_)) => true,
-        ("custom", _) => true,
-        _ => false,
-    }
+    matches!(
+        (kind, geometry),
+        ("land" | "lake" | "region", Geometry::Polygon { .. } | Geometry::MultiPolygon(_))
+            | ("route", Geometry::LineString(_))
+            | ("marker", Geometry::Point(_))
+            | ("custom", _)
+    )
 }
 
 fn parse_feature(value: &Value, path: &str, profile: SourceProfile, known_layers: &BTreeSet<String>) -> Result<Feature, CoreError> {
@@ -797,7 +799,7 @@ pub fn remove_layer_features(bytes: &[u8], layer_id: &str, known_layers: &BTreeS
     Ok((serialize_features(&features), deleted))
 }
 
-pub fn feature_bounds(bytes: &[u8], known_layers: &BTreeSet<String>) -> Result<Vec<(String, String, String, f64, f64, f64, f64)>, CoreError> {
+pub fn feature_bounds(bytes: &[u8], known_layers: &BTreeSet<String>) -> Result<Vec<FeatureBounds>, CoreError> {
     let value = parse_strict_json(bytes)?;
     let features = parse_collection(&value, SourceProfile::Committed, known_layers)?;
     Ok(features

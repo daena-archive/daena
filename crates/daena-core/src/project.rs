@@ -5289,6 +5289,7 @@ impl ProjectStore {
         expected_revision: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<(), CoreError> {
+        let expected_revision = expected_revision.filter(|revision| !revision.is_empty());
         self.save_entry_with_options(
             SaveEntry {
                 document: input,

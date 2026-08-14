@@ -37,6 +37,50 @@ fn physical_jobs_are_session_scoped_and_expire() {
 }
 
 #[test]
+fn physical_climate_products_expose_derived_fields_without_source_data() {
+    let grid =
+        daena_physical_spike::Grid::new(8, 4, daena_physical_spike::DEFAULT_RADIUS_METRES).unwrap();
+    let mut elevations = vec![500; grid.sample_count()];
+    elevations[0] = -2_000;
+    let field = daena_physical_spike::PhysicalField {
+        grid,
+        seed: 831_429,
+        retry_index: 0,
+        target_land_fraction_ppm: 300_000,
+        sea_level_mm: 0,
+        elevations_mm: elevations,
+    };
+    let mut progress = daena_physical_spike::NoopProgress;
+    let climate = daena_physical_spike::climate::derive_current_climate(
+        &field,
+        daena_physical_spike::climate::ClimateSettings::default_for(grid),
+        field.seed,
+        field.retry_index,
+        &mut progress,
+    )
+    .unwrap();
+    let products = physical_climate_products(&climate);
+    assert_eq!(products["derivationVersion"], 1);
+    assert_eq!(products["width"], 8);
+    assert_eq!(products["height"], 4);
+    for key in [
+        "temperatureCentiC",
+        "moistureMmPerYear",
+        "precipitationMmPerYear",
+        "runoffMmPerYear",
+        "runoffVolumeM3PerYear",
+    ] {
+        assert_eq!(products[key].as_array().unwrap().len(), grid.sample_count());
+    }
+    assert!(
+        products["metrics"]["precipitationVolumeM3PerYear"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+}
+
+#[test]
 fn stopping_project_watcher_releases_resources_without_joining() {
     let (stop, _receiver) = mpsc::channel();
     let watcher = Arc::new(Mutex::new(ProjectWatcher {

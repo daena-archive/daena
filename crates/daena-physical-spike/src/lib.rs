@@ -7,6 +7,7 @@
 use std::fmt::{Display, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+pub mod climate;
 pub mod tectonics;
 
 pub const SOURCE_MAGIC: [u8; 8] = *b"DAENAPW1";
@@ -241,6 +242,7 @@ impl ProgressSink for CancellationProgress<'_> {
 pub struct GeneratedWorld {
     pub field: PhysicalField,
     pub tectonics: tectonics::TectonicWorld,
+    pub climate: climate::ClimateField,
     pub source: Vec<u8>,
     pub derived_geojson: String,
     pub report: ValidationReport,
@@ -519,7 +521,6 @@ pub fn generate_world(
         progress,
     )?;
     let elevations_mm = tectonics.elevations_mm.clone();
-    progress.report(ProgressPhase::CalculatingWater, 0, 1)?;
     let sea_level_mm = solve_sea_level(&grid, &elevations_mm, settings.target_land_fraction_ppm)
         .map_err(|error| PhysicalError::coded(PhysicalErrorCode::WaterNonConvergent, error))?;
     tectonics.target_land_fraction_ppm = settings.target_land_fraction_ppm;
@@ -532,6 +533,14 @@ pub fn generate_world(
         sea_level_mm,
         elevations_mm,
     };
+    let climate = climate::derive_current_climate(
+        &field,
+        climate::ClimateSettings::default_for(grid),
+        seed,
+        retry_index,
+        progress,
+    )?;
+    progress.report(ProgressPhase::CalculatingWater, 0, 1)?;
     progress.report(ProgressPhase::CalculatingWater, 1, 1)?;
     progress.report(ProgressPhase::PreparingGeography, 0, 1)?;
     let derived_geojson = tectonics::to_diagnostic_geojson(&tectonics)
@@ -544,6 +553,7 @@ pub fn generate_world(
     Ok(GeneratedWorld {
         field,
         tectonics,
+        climate,
         source,
         derived_geojson,
         report,
@@ -919,6 +929,26 @@ mod tests {
         let world = generate_world(settings, 831_429, 0, &mut progress).unwrap();
         assert!(world.report.reference_water_inventory_m3 > 0);
         assert!(world.report.coastline_segments > 0);
+        assert_eq!(world.climate.grid, world.field.grid);
+        assert!(world.climate.metrics.precipitation_volume_m3_per_year > 0);
+        assert!(world.climate.metrics.runoff_volume_m3_per_year > 0);
+        assert!(world.climate.metrics.transport_iterations > 0);
+        assert_eq!(encode_source(&world.tectonics).unwrap(), world.source);
+        let source_before_derived_disposal = world.source.clone();
+        let mut climate_progress = NoopProgress;
+        let disposable_climate = climate::derive_current_climate(
+            &world.field,
+            climate::ClimateSettings::default_for(world.field.grid),
+            world.field.seed,
+            world.field.retry_index,
+            &mut climate_progress,
+        )
+        .unwrap();
+        drop(disposable_climate);
+        assert_eq!(
+            encode_source(&world.tectonics).unwrap(),
+            source_before_derived_disposal
+        );
         assert!(world.derived_geojson.contains("physical coastline"));
 
         let cancelled = AtomicBool::new(true);

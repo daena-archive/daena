@@ -8,8 +8,8 @@ cross-platform claim.
 
 | Preset | Grid | Wall time | Generator time | Peak RSS | Source | Derived GeoJSON | Features |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Default | 64 × 32 | 720 ms | 44.0 ms | 6.05 MiB | 25,633 B | 156,857 B | 772 |
-| Maximum | 128 × 64 | 670 ms | 356.4 ms | 19.08 MiB | 79,918 B | 617,697 B | 2,984 |
+| Default | 64 × 32 | 370 ms | 50.7 ms | 6.05 MiB | 25,633 B | 156,857 B | 772 |
+| Maximum | 128 × 64 | 710 ms | 401.1 ms | 19.08 MiB | 79,918 B | 617,697 B | 2,984 |
 
 The measured maximum remains below the locked 2 s generation budget, 16 MiB
 source budget, and 16 MiB derived-output budget. Peak RSS is process-level and

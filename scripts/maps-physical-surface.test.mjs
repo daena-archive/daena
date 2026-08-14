@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 const source = readFileSync(resolve(root, "src/lib/maps/physical/PhysicalMapEditor.svelte"), "utf8");
+const client = readFileSync(resolve(root, "src/lib/project/client.ts"), "utf8");
+const host = readFileSync(resolve(root, "src-tauri/src/lib.rs"), "utf8");
 
 for (const required of [
   "onMount",
@@ -25,5 +27,11 @@ assert.match(
   "surface teardown must cancel an active generation",
 );
 assert.equal(/https?:\/\//.test(source), false, "physical surface must not introduce remote resources");
+for (const required of ["PhysicalClimateProducts", "physicalMapClimate", "physicalMapDerivedClimate"]) {
+  assert.ok(client.includes(required), `physical client is missing ${required}`);
+}
+for (const required of ["project_physical_climate", "project_physical_derived_climate", "temperatureCentiC", "runoffVolumeM3PerYear"]) {
+  assert.ok(host.includes(required), `physical host is missing ${required}`);
+}
 
 console.log("physical native surface contract check passed");

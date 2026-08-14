@@ -1649,12 +1649,10 @@ mod tests {
                     .count(),
             world.grid.sample_count()
         );
-        assert!(world.plates.iter().all(|plate| {
-            world
-                .plate_by_cell
-                .iter()
-                .any(|assigned| *assigned == plate.id)
-        }));
+        assert!(world
+            .plates
+            .iter()
+            .all(|plate| { world.plate_by_cell.contains(&plate.id) }));
         assert!((0..world.plates.len()).any(|plate_id| {
             let mut has_continental = false;
             let mut has_oceanic = false;

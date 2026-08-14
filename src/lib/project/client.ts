@@ -111,6 +111,29 @@ export interface PhysicalJobStatus {
   error: string | null;
   errorCode: string | null;
 }
+export interface PhysicalClimateProducts {
+  derivationVersion: number;
+  width: number;
+  height: number;
+  temperatureCentiC: number[];
+  moistureMmPerYear: number[];
+  precipitationMmPerYear: number[];
+  runoffMmPerYear: number[];
+  runoffVolumeM3PerYear: number[];
+  maritimeFactorPpm: number[];
+  metrics: {
+    precipitationVolumeM3PerYear: number;
+    runoffVolumeM3PerYear: number;
+    meanTemperatureCentiC: number;
+    minimumTemperatureCentiC: number;
+    maximumTemperatureCentiC: number;
+    meanPrecipitationMmPerYear: number;
+    meanRunoffMmPerYear: number;
+    wettestCellPrecipitationMmPerYear: number;
+    driestLandCellPrecipitationMmPerYear: number;
+    transportIterations: number;
+  };
+}
 export interface PhysicalGenerationInput {
   seed: number;
   retryIndex: number;
@@ -524,6 +547,8 @@ export const project = {
     invoke<PhysicalJobStatus>("project_physical_generate", { input, requestId }),
   physicalMapStatus: (jobId: string) => invoke<PhysicalJobStatus>("project_physical_status", { jobId }),
   physicalMapPreview: (jobId: string) => invoke<string>("project_physical_preview", { jobId }),
+  physicalMapClimate: (jobId: string) =>
+    invoke<PhysicalClimateProducts>("project_physical_climate", { jobId }),
   cancelPhysicalMap: (jobId: string) => invoke<PhysicalJobStatus>("project_physical_cancel", { jobId }),
   acceptPhysicalMap: (jobId: string, name: string, options?: MutationOptions) =>
     invoke<{ entity: Entity; source: Asset }>("project_physical_accept", {
@@ -578,6 +603,8 @@ export const project = {
     invoke<string>("maps_recovery_export", { entityId, bytes: Array.from(bytes) }),
   physicalMapDerivedGeoJson: (mapEntityId: string) =>
     invoke<string>("project_physical_derived_geojson", { mapEntityId }),
+  physicalMapDerivedClimate: (mapEntityId: string) =>
+    invoke<PhysicalClimateProducts>("project_physical_derived_climate", { mapEntityId }),
   readAssetBytes: (assetId: string) => invoke<number[]>("project_read_asset_bytes", { assetId }),
   createRasterLayer: (mapEntityId: string, name: string, expectedRevision: string, options?: MutationOptions) =>
     invoke<RasterLayerChange>("project_create_raster_layer", {

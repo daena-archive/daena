@@ -73,6 +73,7 @@ struct PhysicalJobResult {
     source: Vec<u8>,
     generation: serde_json::Value,
     derived_geojson: String,
+    climate: daena_physical_spike::climate::ClimateField,
 }
 
 struct PhysicalJob {
@@ -7011,6 +7012,7 @@ async fn project_physical_generate(
                     source: world.source,
                     generation,
                     derived_geojson: world.derived_geojson,
+                    climate: world.climate,
                 });
             }
             Err(daena_physical_spike::PhysicalError::Cancelled) => {
@@ -7109,6 +7111,60 @@ fn project_physical_preview(
         .as_ref()
         .map(|result| result.derived_geojson.clone())
         .ok_or_else(|| "physical job preview is not ready".to_string())
+}
+
+fn physical_climate_products(
+    climate: &daena_physical_spike::climate::ClimateField,
+) -> serde_json::Value {
+    serde_json::json!({
+        "derivationVersion": climate.derivation_version,
+        "width": climate.grid.width,
+        "height": climate.grid.height,
+        "temperatureCentiC": climate.temperature_centi_c,
+        "moistureMmPerYear": climate.moisture_mm_per_year,
+        "precipitationMmPerYear": climate.precipitation_mm_per_year,
+        "runoffMmPerYear": climate.runoff_mm_per_year,
+        "runoffVolumeM3PerYear": climate.runoff_volume_m3_per_year,
+        "maritimeFactorPpm": climate.maritime_factor_ppm,
+        "metrics": {
+            "precipitationVolumeM3PerYear": climate.metrics.precipitation_volume_m3_per_year,
+            "runoffVolumeM3PerYear": climate.metrics.runoff_volume_m3_per_year,
+            "meanTemperatureCentiC": climate.metrics.mean_temperature_centi_c,
+            "minimumTemperatureCentiC": climate.metrics.minimum_temperature_centi_c,
+            "maximumTemperatureCentiC": climate.metrics.maximum_temperature_centi_c,
+            "meanPrecipitationMmPerYear": climate.metrics.mean_precipitation_mm_per_year,
+            "meanRunoffMmPerYear": climate.metrics.mean_runoff_mm_per_year,
+            "wettestCellPrecipitationMmPerYear": climate.metrics.wettest_cell_precipitation_mm_per_year,
+            "driestLandCellPrecipitationMmPerYear": climate.metrics.driest_land_cell_precipitation_mm_per_year,
+            "transportIterations": climate.metrics.transport_iterations,
+        },
+    })
+}
+
+#[tauri::command]
+fn project_physical_climate(
+    state: tauri::State<'_, SharedCore>,
+    jobs: tauri::State<'_, SharedPhysicalJobs>,
+    job_id: String,
+) -> Result<serde_json::Value, String> {
+    let project_id = current_info(state.inner())?
+        .ok_or_else(|| "open a project before reading physical climate".to_string())?
+        .root;
+    let mut manager = jobs
+        .lock()
+        .map_err(|_| "physical job state is unavailable".to_string())?;
+    manager.reap_expired();
+    let job = manager
+        .jobs
+        .get(&job_id)
+        .filter(|job| manager.active_session_matches(&project_id, &job.session_id))
+        .ok_or("physical job was not found, expired, or belongs to another session")?;
+    let climate = job
+        .result
+        .as_ref()
+        .map(|result| &result.climate)
+        .ok_or_else(|| "physical job climate is not ready".to_string())?;
+    Ok(physical_climate_products(climate))
 }
 
 #[tauri::command]
@@ -7263,6 +7319,43 @@ async fn project_physical_derived_geojson(
         let (world, _) = daena_core::maps::physical::validate_source(&bytes, &generation)?;
         daena_physical_spike::tectonics::to_diagnostic_geojson(&world)
             .map_err(|error| CoreError::Validation(format!("maps.physical: {error}")))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_physical_derived_climate(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+) -> Result<serde_json::Value, String> {
+    with_read_project(state, move |project| {
+        let descriptor = project
+            .list_fields(map_entity_id.clone())?
+            .into_iter()
+            .find(|field| field.namespace == daena_core::maps::MAP_NAMESPACE && field.key == "map")
+            .ok_or_else(|| CoreError::Validation("maps:map descriptor is missing".into()))?;
+        let source_id = descriptor
+            .value
+            .get("sourceAssetId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| CoreError::Validation("maps: sourceAssetId is missing".into()))?;
+        let generation =
+            descriptor.value.get("generation").cloned().ok_or_else(|| {
+                CoreError::Validation("maps: physical generation is missing".into())
+            })?;
+        let bytes = project.asset_bytes(source_id.to_string())?;
+        let (world, _) = daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        let field = world.physical_field();
+        let mut progress = daena_physical_spike::NoopProgress;
+        let climate = daena_physical_spike::climate::derive_current_climate(
+            &field,
+            daena_physical_spike::climate::ClimateSettings::default_for(field.grid),
+            world.seed,
+            world.retry_index,
+            &mut progress,
+        )
+        .map_err(|error| CoreError::Validation(format!("maps.physical: {error}")))?;
+        Ok(physical_climate_products(&climate))
     })
     .await
 }
@@ -7765,12 +7858,14 @@ pub fn run() {
             project_physical_status,
             project_physical_cancel,
             project_physical_preview,
+            project_physical_climate,
             project_physical_accept,
             project_replace_vector_source,
             project_create_vector_layer,
             project_delete_vector_layer,
             maps_recovery_export,
             project_physical_derived_geojson,
+            project_physical_derived_climate,
             project_read_asset_bytes,
             project_create_raster_layer,
             project_create_semantic_layer,

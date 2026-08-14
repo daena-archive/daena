@@ -859,6 +859,12 @@ hotspots, seamounts, and islands share one physical cause chain.
 
 ## Iteration 3: current climate and runoff
 
+Implementation status (2026-08-15): the pure-Rust current-climate/runoff slice
+is implemented in `daena-physical-spike` under ADR 0017. Climate remains a
+derived, disposable field; the locked physical-world-v2 source is unchanged.
+Native climate raster presentation and later terrain evolution remain deferred
+to the subsequent integration slices.
+
 ### Goal
 
 Add the minimum coherent climate field needed to drive spatially varying

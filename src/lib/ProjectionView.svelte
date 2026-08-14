@@ -7,7 +7,8 @@ let {
   view,
   context,
   onClose,
-}: { title: string; view: ModuleView; context: ModuleContext; onClose: () => void } = $props();
+  embedded = false,
+}: { title: string; view: ModuleView; context: ModuleContext; onClose: () => void; embedded?: boolean } = $props();
 
 let container = $state<HTMLElement | null>(null);
 let error = $state("");
@@ -23,15 +24,15 @@ onMount(() => {
 });
 </script>
 
-<section class="projection-view-shell" aria-label={title}>
-  <header class="projection-view-header">
-    <button class="quiet-button" type="button" onclick={onClose}>Back to workspace</button>
-    <div>
-      <span class="overline">Workspace projection</span>
-      <h1>{title}</h1>
-    </div>
-  </header>
-  <div bind:this={container} class="projection-view-container">
+<section class:embedded class="projection-view-shell" aria-label={title}>
+  {#if !embedded}<header class="projection-view-header">
+      <button class="quiet-button" type="button" onclick={onClose}>Back to workspace</button>
+      <div>
+        <span class="overline">Workspace projection</span>
+        <h1>{title}</h1>
+      </div>
+    </header>{/if}
+  <div bind:this={container} class:embedded-container={embedded} class="projection-view-container">
     {#if error}<p class="projection-view-error">{error}</p>{/if}
   </div>
 </section>
@@ -42,6 +43,9 @@ onMount(() => {
   min-height: 0;
   height: calc(100vh - 58px);
   flex-direction: column;
+}
+.projection-view-shell.embedded {
+  height: calc(100vh - 58px);
 }
 .projection-view-header {
   display: flex;
@@ -99,6 +103,9 @@ onMount(() => {
   padding: 24px 40px 40px;
   background: var(--canvas);
 }
+.projection-view-shell.embedded .projection-view-container {
+  padding: 24px 32px 32px;
+}
 .projection-view-container :global(.language-workspace) {
   flex: 1;
   min-height: 0;
@@ -117,6 +124,9 @@ onMount(() => {
     font-size: 24px;
   }
   .projection-view-container {
+    padding: 20px 17px 28px;
+  }
+  .projection-view-shell.embedded .projection-view-container {
     padding: 20px 17px 28px;
   }
 }

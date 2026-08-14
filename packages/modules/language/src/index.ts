@@ -1,5 +1,6 @@
 import type {
   DaenaModule,
+  EntityRecord,
   EntitySummary,
   ModuleContext,
   ModuleManifest,
@@ -85,7 +86,7 @@ import {
 
 const manifest = manifestJson as unknown as ModuleManifest;
 
-type Pane = "lexicon" | "sounds" | "writing" | "grammar" | "forms" | "samples";
+type Pane = "overview" | "lexicon" | "sounds" | "writing" | "grammar" | "forms" | "samples";
 
 export const language: DaenaModule = {
   manifest,
@@ -109,8 +110,9 @@ export const language: DaenaModule = {
         let hasNextPage = false;
         let homonymCount = 0;
         let request = 0;
+        let languageRequest = 0;
         let searchTimer: number | null = null;
-        let pane: Pane = "lexicon";
+        let pane: Pane = "overview";
         let phonemes: ModuleRecord<PhonemeValue>[] = [];
         let phonemeEditing: ModuleRecord<PhonemeValue> | null = null;
         let phonemeEditorOpen = false;
@@ -135,6 +137,28 @@ export const language: DaenaModule = {
         let sampleDraft: Sample = emptySample();
         let languageQuery = "";
         let languageSummaries: EntitySummary[] = [];
+        let languageListLoaded = false;
+        let languageLoading = false;
+        let languageLoadError = "";
+        let creatingLanguage = false;
+        let languageCreateName = "";
+        let languageCreateError = "";
+        let overviewEntity: EntityRecord | null = null;
+        let overviewName = "";
+        let overviewFields: Record<string, unknown> = {};
+        let overviewSavedFields: Record<string, unknown> = {};
+        let overviewFieldRevisions: Record<string, string> = {};
+        let overviewDocument = "";
+        let overviewSavedDocument = "";
+        let overviewDocumentRevision = "";
+        let overviewLoading = false;
+        let overviewSaving = false;
+        let overviewDirty = false;
+        let overviewError = "";
+        let overviewRequest = 0;
+        let paneLoading = false;
+        let lexiconLoading = false;
+        let lexiconSaving = false;
         let focusName = "";
         let focusOffset = 0;
 
@@ -142,25 +166,60 @@ export const language: DaenaModule = {
         root.className = "language-workspace";
         const style = document.createElement("style");
         style.textContent = `
-          .language-workspace{display:grid;grid-template-columns:minmax(200px,240px) minmax(0,1fr);gap:14px;height:100%;min-height:0;color:var(--ink)}
-          .language-panel{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:auto;border:1px solid var(--line);border-radius:14px;background:var(--surface);padding:18px 18px 20px;box-shadow:var(--shadow-sm,0 2px 8px rgba(38,42,33,.05))}
+          .language-workspace{display:grid;grid-template-columns:minmax(220px,260px) minmax(0,1fr);gap:18px;height:100%;min-height:0;color:var(--ink)}
+          .language-panel{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:auto;border:1px solid var(--line);border-radius:16px;background:var(--surface);padding:22px 20px 24px;box-shadow:var(--shadow-sm,0 2px 8px rgba(38,42,33,.05))}
+          .language-sidebar{gap:14px}
+          .language-sidebar-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+          .language-sidebar-kicker,.language-toolbar-eyebrow{margin:0 0 5px;color:var(--accent);font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase}
+          .language-sidebar-intro,.language-toolbar-subtitle{margin:0;color:var(--ink-soft);font-size:12px;line-height:1.55}
+          .language-sidebar-intro{margin-top:-5px}
           .language-panel h2,.language-panel h3{margin:0;font-family:var(--font-display);font-weight:500}
           .language-panel h2{font-size:24px;line-height:1.15}.language-panel h3{font-size:16px;line-height:1.3}
-          .language-list,.lexeme-list{display:grid;gap:6px;margin:12px 0 0;padding:0;list-style:none}
-          .language-list button{width:100%;padding:10px 12px;border:1px solid #ebe7de;border-radius:9px;background:var(--surface);color:inherit;text-align:left;cursor:pointer;box-shadow:0 1px 2px rgba(38,42,33,.03)}
+          .language-list,.lexeme-list{display:grid;gap:8px;margin:4px 0 0;padding:0;list-style:none}
+          .language-list button{display:grid;gap:3px;width:100%;padding:11px 12px;border:1px solid #ebe7de;border-radius:10px;background:var(--surface);color:inherit;text-align:left;cursor:pointer;box-shadow:0 1px 2px rgba(38,42,33,.03)}
           .language-list button:hover{border-color:#e5d8c6;background:var(--surface-muted)}
           .language-list button[aria-current=page]{border-color:#d8c3a5;background:var(--surface-muted);box-shadow:inset 3px 0 var(--accent),0 1px 2px rgba(38,42,33,.03);color:var(--ink)}
+          .language-list-name{font-weight:600}
+          .language-list-meta{color:var(--ink-faint);font-size:11px}
+          .language-create{display:grid;gap:10px;padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--surface-muted)}
+          .language-create-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
           .language-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+          .language-toolbar-title{display:grid;gap:3px}
+          .language-toolbar-title h2{margin:0}
           .language-toolbar-actions{display:flex;flex-wrap:wrap;gap:8px}
-          .language-filters{display:grid;grid-template-columns:minmax(160px,1.5fr) repeat(3,minmax(110px,.75fr));gap:10px 12px;align-items:end;margin-top:14px}
+          .language-pane-section{display:grid;gap:10px;margin-top:16px;padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--surface-muted)}
+          .language-pane-section > p{margin:0;color:var(--ink-soft);font-size:12px;line-height:1.55}
+          .language-pane-section .lexeme-list{margin-top:2px}
+          .language-pane-summary{margin:16px 0 0;color:var(--ink-faint);font-size:11px}
+          .language-overview{display:grid;gap:16px;margin-top:18px;min-width:0}
+          .language-overview-identity{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,.55fr);gap:16px;padding:18px;border:1px solid var(--line);border-radius:14px;background:var(--surface-muted)}
+          .language-overview-identity h3{font-size:20px}
+          .language-overview-identity p{margin:5px 0 0;color:var(--ink-soft);font-size:12px;line-height:1.55}
+          .language-overview-identity-meta{display:grid;align-content:center;justify-items:end;gap:4px;color:var(--ink-soft);font-size:12px;text-align:right}
+          .language-overview-identity-meta strong{color:var(--accent-dark);font-size:13px}
+          .language-overview-section{display:grid;gap:12px;padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--surface)}
+          .language-overview-section h3{font-size:17px}
+          .language-overview-section > p{margin:0;color:var(--ink-soft);font-size:12px;line-height:1.55}
+          .language-overview-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+          .language-overview-document{min-height:16rem;resize:vertical;line-height:1.6}
+          .language-overview-actions{position:sticky;bottom:0;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 0 2px;background:linear-gradient(180deg,transparent,var(--surface) 10px)}
+          .language-overview-actions > span{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+          .language-overview-save-state{color:var(--ink-soft);font-size:12px}
+          .language-search-row{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;margin-top:16px}
+          .language-filter-panel{margin-top:10px;border:1px solid var(--line);border-radius:12px;background:var(--surface-muted)}
+          .language-filter-panel summary{padding:10px 12px;color:var(--accent-dark);font-size:12px;font-weight:600;cursor:pointer;list-style-position:inside}
+          .language-filter-panel[open] summary{border-bottom:1px solid var(--line)}
+          .language-filter-panel .language-filters{margin:0;padding:12px}
+          .language-filters{display:grid;grid-template-columns:repeat(3,minmax(110px,1fr));gap:10px 12px;align-items:end}
           .language-filters .language-check{grid-column:1/-1;padding:2px 0 0}
+          .language-filter-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;grid-column:1/-1;flex-wrap:wrap}
           .language-search,.language-filters input,.language-filters select,.language-field input,.language-field textarea,.language-field select{box-sizing:border-box;width:100%;min-width:0;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);font:inherit}
           .language-field textarea{min-height:4.5em;resize:vertical}
           .language-check{display:flex;align-items:center;gap:8px;color:var(--ink-soft);font-size:12px}
           .language-tabs{position:sticky;top:0;z-index:1;display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px;padding:0 0 12px;background:var(--surface)}
           .language-tabs button{padding:7px 12px;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--ink-soft);cursor:pointer}
           .language-tabs button:hover{border-color:#d8c3a5;color:var(--ink);background:var(--surface-muted)}
-          .language-tabs button[aria-current=page]{border-color:var(--accent-dark);background:var(--surface-muted);color:var(--accent-dark)}
+          .language-tabs button[aria-selected=true]{border-color:var(--accent-dark);background:var(--surface-muted);color:var(--accent-dark)}
           .language-chart-wrap{overflow-x:auto;margin:8px 0 4px}
           .language-chart,.paradigm-preview{width:100%;border-collapse:collapse;font-size:12px}
           .language-chart th,.language-chart td,.paradigm-preview th,.paradigm-preview td{border:1px solid var(--line);padding:8px;text-align:center;min-width:52px}
@@ -222,11 +281,14 @@ export const language: DaenaModule = {
           .sample-translation{margin:8px 0 0;font-style:italic}
           .sample-source{margin:0 0 8px;white-space:pre-wrap}
           .language-item,.lexeme-row{display:grid;grid-template-columns:minmax(0,1.2fr) auto minmax(0,1.4fr);gap:8px 12px;align-items:baseline;width:100%;padding:10px 12px;border:1px solid #ebe7de;border-radius:10px;background:var(--surface);color:inherit;text-align:left;cursor:pointer;box-shadow:0 1px 2px rgba(38,42,33,.03)}
-          .lexeme-row{grid-template-columns:minmax(0,1.1fr) minmax(0,.55fr) minmax(0,1.4fr) minmax(0,.55fr)}
+          .lexeme-row{grid-template-columns:minmax(0,1.05fr) minmax(0,.6fr) minmax(0,1.55fr) minmax(0,.7fr);padding:13px 14px}
           .language-item:hover,.lexeme-row:hover{border-color:#e5d8c6;background:var(--surface-muted)}
           .language-item strong,.lexeme-row strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
           .language-item small,.lexeme-row small{color:var(--ink-faint)}
           .language-item span,.lexeme-row span{min-width:0;color:var(--ink-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+          .lexeme-meaning{font-size:13px}
+          .lexeme-status{justify-self:end;padding:3px 7px;border-radius:999px;background:var(--surface-muted);font-size:10px;letter-spacing:.03em}
+          .language-results{margin:14px 0 0;color:var(--ink-faint);font-size:11px}
           .language-button{padding:8px 12px;border:1px solid var(--accent-dark);border-radius:8px;background:var(--accent-dark);color:#fff;cursor:pointer}
           .language-button:hover{filter:brightness(1.06)}
           .language-button.secondary{background:transparent;color:var(--accent-dark)}
@@ -235,8 +297,17 @@ export const language: DaenaModule = {
           .language-button:focus-visible,.language-tabs button:focus-visible,.language-list button:focus-visible,.language-item:focus-visible,.lexeme-row:focus-visible,.grammar-card:focus-visible,.grammar-system:focus-visible,.sample-ref:focus-visible,.grammar-choice:focus-within,.grammar-status input:focus-visible,.grammar-checks input:focus-visible,.grammar-learn summary:focus-visible{outline:3px solid rgba(180,119,63,.24);outline-offset:2px}
           .language-empty,.language-status{margin:0;color:var(--ink-soft);font-size:12px;line-height:1.6}
           .language-status.error{color:#a14f42}
+          .language-loading{display:flex;align-items:center;gap:8px;color:var(--ink-soft)}
+          .language-loading::before{content:"";width:11px;height:11px;flex:0 0 11px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:language-spin .75s linear infinite}
+          @keyframes language-spin{to{transform:rotate(360deg)}}
+          @media(prefers-reduced-motion:reduce){.language-loading::before{animation:none}}
           .language-empty-card{display:grid;gap:12px;justify-items:start;margin:18px 0;padding:20px;border:1px dashed var(--line);border-radius:12px;background:var(--surface-muted)}
-          .language-editor{display:grid;gap:14px;margin-top:16px;min-width:0}
+          .language-editor{display:grid;gap:16px;margin-top:16px;min-width:0}
+          .language-editor-head{display:grid;gap:4px;padding-bottom:2px}
+          .language-editor-head p{margin:0;color:var(--ink-soft);font-size:12px;line-height:1.55}
+          .language-form-section{display:grid;gap:10px;min-width:0;padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--surface-muted)}
+          .language-section-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px}
+          .language-field-wide{grid-column:1/-1}
           .language-field{display:grid;gap:6px;min-width:0;color:var(--ink-soft);font-size:11px;letter-spacing:.01em}
           .language-actions{position:sticky;bottom:0;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:12px 0 2px;background:linear-gradient(180deg,transparent,var(--surface) 10px)}
           .language-actions span{display:flex;gap:8px;flex-wrap:wrap}
@@ -249,20 +320,329 @@ export const language: DaenaModule = {
           .language-inline>.language-button{flex:0 0 auto}
           .file-input{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
           @media(max-width:760px){
-            .language-workspace,.language-filters,.lexeme-row,.language-item{grid-template-columns:1fr}
+            .language-workspace{display:flex;flex-direction:column;overflow:auto}
+            .language-sidebar{max-height:none}
+            .language-filters,.lexeme-row,.language-item,.language-section-grid{grid-template-columns:1fr}
+            .language-overview-identity,.language-overview-fields{grid-template-columns:1fr}
+            .language-overview-identity-meta{justify-items:start;text-align:left}
+            .language-main{min-height:34rem}
             .language-item span,.lexeme-row span,.lexeme-row small{white-space:normal}
+            .lexeme-status{justify-self:start}
             .language-inline{flex-direction:column;align-items:stretch}
+            .language-tabs{flex-wrap:nowrap;overflow-x:auto;overscroll-behavior-inline:contain;padding-bottom:10px;scrollbar-width:thin}
+            .language-tabs button{flex:0 0 auto}
           }
-        `;
+          `;
+
+        function overviewFieldDefinitions() {
+          return manifest.schemas.flatMap((schema) => schema.fields).filter((field) => !field.relationshipType);
+        }
+
+        function tryLeaveOverview(confirmLeave: (message: string) => boolean) {
+          if (!overviewDirty) return true;
+          const allowed = confirmLeave("You have unsaved language details. Leave without saving?");
+          if (allowed) {
+            overviewDirty = false;
+            overviewError = "";
+          }
+          return allowed;
+        }
+
+        async function loadOverview() {
+          paneLoading = false;
+          if (!selectedLanguage) {
+            overviewEntity = null;
+            overviewLoading = false;
+            render();
+            return;
+          }
+          const token = ++overviewRequest;
+          overviewLoading = true;
+          overviewError = "";
+          render();
+          try {
+            const [entity, fieldRecords] = await Promise.all([
+              context.entities.get(selectedLanguage.id),
+              context.fields.listRecords(selectedLanguage.id),
+            ]);
+            if (cancelled || token !== overviewRequest) return;
+            if (!entity) throw new Error("This language is no longer available.");
+            const values = Object.fromEntries(fieldRecords.map((record) => [record.key, record.value]));
+            for (const definition of overviewFieldDefinitions()) {
+              if (!(definition.key in values)) values[definition.key] = "";
+            }
+            const document = entity.documents.find((item) => item.format === "markdown") ?? entity.documents[0];
+            overviewEntity = entity;
+            overviewName = entity.name;
+            overviewFields = values;
+            overviewSavedFields = { ...values };
+            overviewFieldRevisions = Object.fromEntries(fieldRecords.map((record) => [record.key, record.revision]));
+            overviewDocument = document?.body ?? "";
+            overviewSavedDocument = overviewDocument;
+            overviewDocumentRevision = document?.revision ?? "";
+            overviewDirty = false;
+            overviewLoading = false;
+            overviewError = "";
+            render();
+          } catch (cause) {
+            if (cancelled || token !== overviewRequest) return;
+            overviewLoading = false;
+            overviewError = cause instanceof Error ? cause.message : String(cause);
+            render();
+          }
+        }
+
+        async function saveOverview() {
+          if (!selectedLanguage || !overviewEntity || overviewSaving) return;
+          const name = overviewName.trim();
+          if (!name) {
+            overviewError = "Language name is required.";
+            render();
+            return;
+          }
+          overviewSaving = true;
+          overviewError = "";
+          render();
+          try {
+            if (name !== overviewEntity.name) {
+              overviewEntity = await context.entities.update(
+                overviewEntity.id,
+                { name },
+                { expectedRevision: overviewEntity.revision, requestId: crypto.randomUUID() },
+              );
+            }
+            for (const definition of overviewFieldDefinitions()) {
+              const value = overviewFields[definition.key] ?? "";
+              if (JSON.stringify(value) === JSON.stringify(overviewSavedFields[definition.key] ?? "")) continue;
+              await context.fields.set(overviewEntity.id, definition.key, value, {
+                expectedRevision: overviewFieldRevisions[definition.key],
+                requestId: crypto.randomUUID(),
+              });
+            }
+            if (overviewDocument !== overviewSavedDocument) {
+              await context.documents.save(
+                { entityId: overviewEntity.id, body: overviewDocument, format: "markdown" },
+                { expectedRevision: overviewDocumentRevision || undefined, requestId: crypto.randomUUID() },
+              );
+            }
+            overviewSaving = false;
+            await loadOverview();
+            languageSummaries = languageSummaries.map((language) =>
+              language.id === selectedLanguage?.id
+                ? { ...language, name, revision: overviewEntity?.revision ?? language.revision }
+                : language,
+            );
+            selectedLanguage = selectedLanguage
+              ? { ...selectedLanguage, name, revision: overviewEntity?.revision ?? selectedLanguage.revision }
+              : selectedLanguage;
+            render();
+          } catch (cause) {
+            overviewSaving = false;
+            overviewDirty = true;
+            overviewError = cause instanceof Error ? cause.message : String(cause);
+            render();
+          }
+        }
+
+        function renderOverview(panel: HTMLElement, error = "") {
+          const toolbar = document.createElement("div");
+          toolbar.className = "language-toolbar";
+          const titleBlock = document.createElement("div");
+          titleBlock.className = "language-toolbar-title";
+          const eyebrow = document.createElement("p");
+          eyebrow.className = "language-toolbar-eyebrow";
+          eyebrow.textContent = "Unified language workspace";
+          const title = document.createElement("h2");
+          title.textContent = "Overview";
+          const subtitle = document.createElement("p");
+          subtitle.className = "language-toolbar-subtitle";
+          subtitle.textContent = selectedLanguage
+            ? `${selectedLanguage.name} · identity, properties, and canonical notes`
+            : "Select a language to begin.";
+          titleBlock.append(eyebrow, title, subtitle);
+          toolbar.append(titleBlock);
+          panel.append(toolbar);
+          if (!selectedLanguage) {
+            panel.append(emptyState("Select a language, or create one from the list."));
+            return;
+          }
+          if (overviewLoading || !overviewEntity) {
+            panel.append(loadingMessage("Loading language details…"));
+            return;
+          }
+          const form = document.createElement("form");
+          form.className = "language-overview";
+          const identity = document.createElement("section");
+          identity.className = "language-overview-identity";
+          const identityCopy = document.createElement("div");
+          const identityTitle = document.createElement("h3");
+          identityTitle.textContent = "Language identity";
+          const identityIntro = document.createElement("p");
+          identityIntro.textContent = "Keep the name and short identity details close while you build the language.";
+          const nameControl = input("overviewName", overviewName);
+          nameControl.autocomplete = "off";
+          nameControl.oninput = () => {
+            overviewName = nameControl.value;
+            overviewDirty = true;
+          };
+          identityCopy.append(identityTitle, identityIntro, field("Language name", nameControl));
+          const identityMeta = document.createElement("div");
+          identityMeta.className = "language-overview-identity-meta";
+          const metaLabel = document.createElement("span");
+          metaLabel.textContent = "Workspace status";
+          const metaValue = document.createElement("strong");
+          metaValue.textContent = overviewDirty ? "Draft changes" : "Ready to build";
+          identityMeta.append(metaLabel, metaValue);
+          identity.append(identityCopy, identityMeta);
+          form.append(identity);
+
+          const properties = document.createElement("section");
+          properties.className = "language-overview-section";
+          const propertiesTitle = document.createElement("h3");
+          propertiesTitle.textContent = "Properties";
+          const propertiesIntro = document.createElement("p");
+          propertiesIntro.textContent = "A few useful anchors for how this language belongs in the world.";
+          const propertyFields = document.createElement("div");
+          propertyFields.className = "language-overview-fields";
+          for (const definition of overviewFieldDefinitions()) {
+            const value = overviewFields[definition.key];
+            const control = definition.multiple
+              ? textarea(`overview-${definition.key}`, Array.isArray(value) ? value.join("\n") : String(value ?? ""), 2)
+              : input(`overview-${definition.key}`, String(value ?? ""));
+            control.oninput = () => {
+              overviewFields = {
+                ...overviewFields,
+                [definition.key]: definition.multiple
+                  ? control.value
+                      .split(/[,\n]/)
+                      .map((item) => item.trim())
+                      .filter(Boolean)
+                  : control.value,
+              };
+              overviewDirty = true;
+            };
+            propertyFields.append(field(definition.label, control));
+          }
+          properties.append(propertiesTitle, propertiesIntro, propertyFields);
+          form.append(properties);
+
+          const documentSection = document.createElement("section");
+          documentSection.className = "language-overview-section";
+          const documentTitle = document.createElement("h3");
+          documentTitle.textContent = "Canonical notes";
+          const documentIntro = document.createElement("p");
+          documentIntro.textContent =
+            "Describe what makes this language itself. These notes stay with the language as the projection grows.";
+          const documentControl = textarea("overviewDocument", overviewDocument, 12);
+          documentControl.className = "language-overview-document";
+          documentControl.oninput = () => {
+            overviewDocument = documentControl.value;
+            overviewDirty = true;
+          };
+          documentSection.append(documentTitle, documentIntro, documentControl);
+          form.append(documentSection);
+
+          const message = overviewError || error;
+          if (message) form.append(alertMessage(message));
+          const actions = document.createElement("div");
+          actions.className = "language-overview-actions";
+          const state = document.createElement("span");
+          state.className = "language-overview-save-state";
+          state.textContent = overviewSaving
+            ? "Saving language details…"
+            : overviewDirty
+              ? "Unsaved changes"
+              : "All changes saved";
+          const buttons = document.createElement("span");
+          if (overviewDirty && !overviewSaving) {
+            buttons.append(
+              button("Discard changes", "language-button secondary", () => {
+                if (!window.confirm("Discard your unsaved language details?")) return;
+                void loadOverview();
+              }),
+            );
+          }
+          const save = document.createElement("button");
+          save.type = "submit";
+          save.className = "language-button";
+          save.disabled = overviewSaving || !overviewDirty;
+          save.textContent = overviewSaving ? "Saving…" : "Save overview";
+          buttons.append(save);
+          actions.append(state, buttons);
+          form.append(actions);
+          form.onsubmit = (event) => {
+            event.preventDefault();
+            void saveOverview();
+          };
+          panel.append(form);
+        }
+
+        async function loadLanguages() {
+          const token = ++languageRequest;
+          try {
+            const languages = await context.entities.list({ type: "language", limit: 500 });
+            if (cancelled || token !== languageRequest) return;
+            languageSummaries = languages;
+            languageListLoaded = true;
+            languageLoading = false;
+            languageLoadError = "";
+            let shouldLoadPane = false;
+            if (!selectedLanguage && languages.length) {
+              selectedLanguage = languages.find((language) => language.id === context.focusEntityId) ?? languages[0];
+              shouldLoadPane = true;
+            }
+            render();
+            if (shouldLoadPane) void loadPane();
+          } catch (cause) {
+            if (cancelled || token !== languageRequest) return;
+            languageLoading = false;
+            languageLoadError = cause instanceof Error ? cause.message : String(cause);
+            render();
+          }
+        }
+
+        function paneToolbar(titleText: string, subtitleText: string, action?: HTMLElement) {
+          const toolbar = document.createElement("div");
+          toolbar.className = "language-toolbar";
+          const titleBlock = document.createElement("div");
+          titleBlock.className = "language-toolbar-title";
+          const eyebrow = document.createElement("p");
+          eyebrow.className = "language-toolbar-eyebrow";
+          eyebrow.textContent = "Focused projection";
+          const title = document.createElement("h2");
+          title.textContent = titleText;
+          const subtitle = document.createElement("p");
+          subtitle.className = "language-toolbar-subtitle";
+          subtitle.textContent = subtitleText;
+          titleBlock.append(eyebrow, title, subtitle);
+          toolbar.append(titleBlock);
+          if (action) {
+            const actions = document.createElement("div");
+            actions.className = "language-toolbar-actions";
+            actions.append(action);
+            toolbar.append(actions);
+          }
+          return toolbar;
+        }
+
+        function loadingMessage(message: string) {
+          const loading = emptyMessage(message);
+          loading.classList.add("language-loading");
+          loading.setAttribute("aria-live", "polite");
+          return loading;
+        }
 
         async function loadRecords() {
           if (!selectedLanguage) {
             records = [];
             paradigms = [];
+            lexiconLoading = false;
             render();
             return;
           }
           const token = ++request;
+          lexiconLoading = true;
+          render();
           try {
             const [result, paradigmList] = await Promise.all([
               context.records.list<LexemeValue>("lexemes", selectedLanguage.id, {
@@ -277,6 +657,7 @@ export const language: DaenaModule = {
               context.records.list<Paradigm>("paradigms", selectedLanguage.id, { limit: 100, sort: "name" }),
             ]);
             if (!cancelled && token === request) {
+              lexiconLoading = false;
               hasNextPage = result.length > 50;
               records = result.slice(0, 50).map((record) => ({
                 ...record,
@@ -307,7 +688,10 @@ export const language: DaenaModule = {
               render();
             }
           } catch (cause) {
-            if (!cancelled && token === request) render(cause instanceof Error ? cause.message : String(cause));
+            if (!cancelled && token === request) {
+              lexiconLoading = false;
+              render(cause instanceof Error ? cause.message : String(cause));
+            }
           }
         }
 
@@ -346,6 +730,15 @@ export const language: DaenaModule = {
           page = 0;
           if (searchTimer !== null) window.clearTimeout(searchTimer);
           searchTimer = window.setTimeout(() => void loadRecords(), 180);
+        }
+
+        function clearLexiconFilters() {
+          search = "";
+          statusFilter = "";
+          tagFilter = "";
+          sort = "lemma";
+          homonymsOnly = false;
+          scheduleLoad();
         }
 
         function formPreviewTable(
@@ -413,6 +806,7 @@ export const language: DaenaModule = {
           const form = document.createElement("form");
           form.className = "language-editor";
           const lists = document.createElement("div");
+          lists.className = "visually-hidden";
           const posList = document.createElement("datalist");
           posList.id = "language-pos";
           posList.append(...PART_OF_SPEECH_SUGGESTIONS.map((item) => new Option(item)));
@@ -420,13 +814,31 @@ export const language: DaenaModule = {
           statusList.id = "language-status";
           statusList.append(...STATUS_SUGGESTIONS.map((item) => new Option(item)));
           lists.append(posList, statusList);
-          form.append(lists);
-          form.append(
-            field("Lemma", input("lemma", draft.lemma)),
+          const editorHead = document.createElement("div");
+          editorHead.className = "language-editor-head";
+          const editorTitle = document.createElement("h3");
+          editorTitle.textContent = editing ? "Edit word" : "New word";
+          const editorIntro = document.createElement("p");
+          editorIntro.textContent =
+            "Capture the core meaning first; pronunciation, forms, and notes can grow with the entry.";
+          editorHead.append(editorTitle, editorIntro);
+          form.append(editorHead, lists);
+          const core = document.createElement("section");
+          core.className = "language-form-section";
+          const coreTitle = document.createElement("h3");
+          coreTitle.textContent = "Core details";
+          const coreFields = document.createElement("div");
+          coreFields.className = "language-section-grid";
+          const lemmaField = field("Lemma", input("lemma", draft.lemma));
+          lemmaField.classList.add("language-field-wide");
+          coreFields.append(
+            lemmaField,
             field("Part of speech (optional)", input("partOfSpeech", draft.partOfSpeech, "language-pos")),
             field("Status (optional)", input("status", draft.status, "language-status")),
             field("Tags — comma or line separated (optional)", textarea("tags", draft.tags.join("\n"), 2)),
           );
+          core.append(coreTitle, coreFields);
+          form.append(core);
           const paradigmSelect = document.createElement("select");
           paradigmSelect.name = "paradigmId";
           paradigmSelect.setAttribute("aria-label", "Paradigm");
@@ -453,7 +865,7 @@ export const language: DaenaModule = {
             form.append(notice);
           }
           const pronunciations = document.createElement("section");
-          pronunciations.className = "language-group";
+          pronunciations.className = "language-group language-form-section";
           pronunciations.append(
             groupHead("Pronunciation variants", () => {
               capture(form);
@@ -477,7 +889,7 @@ export const language: DaenaModule = {
             );
           }
           const forms = document.createElement("section");
-          forms.className = "language-group";
+          forms.className = "language-group language-form-section";
           forms.append(
             groupHead("Alternate forms", () => {
               capture(form);
@@ -502,7 +914,7 @@ export const language: DaenaModule = {
             );
           }
           const senses = document.createElement("section");
-          senses.className = "language-group";
+          senses.className = "language-group language-form-section";
           senses.append(
             groupHead("Senses", () => {
               capture(form);
@@ -570,7 +982,7 @@ export const language: DaenaModule = {
           const attached = paradigms.find((record) => record.id === draft.paradigmId);
           if (attached) {
             const preview = document.createElement("section");
-            preview.className = "language-group";
+            preview.className = "language-group language-form-section";
             const heading = document.createElement("h3");
             heading.textContent = "Generated forms preview";
             preview.append(
@@ -600,6 +1012,7 @@ export const language: DaenaModule = {
             message.textContent = error;
             form.append(message);
           }
+          if (lexiconSaving) form.append(emptyMessage("Saving word…"));
           const actions = document.createElement("div");
           actions.className = "language-actions";
           const left = document.createElement("span");
@@ -642,13 +1055,14 @@ export const language: DaenaModule = {
           const save = document.createElement("button");
           save.type = "submit";
           save.className = "language-button";
-          save.textContent = "Save word";
+          save.textContent = lexiconSaving ? "Saving…" : "Save word";
+          save.disabled = lexiconSaving;
           right.append(save);
           actions.append(left, right);
           form.append(actions);
           form.onsubmit = async (event) => {
             event.preventDefault();
-            if (!selectedLanguage) return;
+            if (!selectedLanguage || lexiconSaving) return;
             capture(form);
             const value = normalizeLexeme(draft);
             if (!value.lemma) {
@@ -657,6 +1071,9 @@ export const language: DaenaModule = {
               return;
             }
             draft = value;
+            lexiconSaving = true;
+            save.disabled = true;
+            save.textContent = "Saving…";
             try {
               const payload = serializeLexeme(value);
               if (editing) {
@@ -673,10 +1090,12 @@ export const language: DaenaModule = {
               }
               editorOpen = true;
               draft = editing.value;
+              lexiconSaving = false;
               await loadRecords();
               await refreshHomonyms(draft.lemma);
               render();
             } catch (cause) {
+              lexiconSaving = false;
               render(cause instanceof Error ? cause.message : String(cause));
             }
           };
@@ -773,9 +1192,11 @@ export const language: DaenaModule = {
           sampleEditing = null;
           sampleEditorOpen = false;
           sampleDraft = emptySample();
+          lexiconSaving = false;
         }
 
         async function loadPane() {
+          if (pane === "overview") return loadOverview();
           if (pane === "sounds") return loadSounds();
           if (pane === "writing") return loadWriting();
           if (pane === "grammar") return loadGrammar();
@@ -789,16 +1210,20 @@ export const language: DaenaModule = {
             phonemes = [];
             phonologyRecord = null;
             phonologyDraft = emptyPhonologyNotes();
+            paneLoading = false;
             render();
             return;
           }
           const token = ++request;
+          paneLoading = true;
+          render();
           try {
             const [inventory, notes] = await Promise.all([
               context.records.list<PhonemeValue>("phonemes", selectedLanguage.id, { limit: 100, sort: "symbol" }),
               context.records.list<PhonologyNotes>("phonology", selectedLanguage.id, { limit: 1 }),
             ]);
             if (!cancelled && token === request) {
+              paneLoading = false;
               phonemes = inventory.map((record) => ({ ...record, value: normalizePhoneme(record.value) }));
               phonologyRecord = notes[0] ? { ...notes[0], value: normalizePhonologyNotes(notes[0].value) } : null;
               phonologyDraft = phonologyRecord?.value ?? emptyPhonologyNotes();
@@ -809,17 +1234,23 @@ export const language: DaenaModule = {
               render();
             }
           } catch (cause) {
-            if (!cancelled && token === request) render(cause instanceof Error ? cause.message : String(cause));
+            if (!cancelled && token === request) {
+              paneLoading = false;
+              render(cause instanceof Error ? cause.message : String(cause));
+            }
           }
         }
 
         async function loadWriting() {
           if (!selectedLanguage) {
             orthographies = [];
+            paneLoading = false;
             render();
             return;
           }
           const token = ++request;
+          paneLoading = true;
+          render();
           try {
             const [systems, inventory] = await Promise.all([
               context.records.list<OrthographyValue>("orthographies", selectedLanguage.id, {
@@ -829,6 +1260,7 @@ export const language: DaenaModule = {
               context.records.list<PhonemeValue>("phonemes", selectedLanguage.id, { limit: 100, sort: "symbol" }),
             ]);
             if (!cancelled && token === request) {
+              paneLoading = false;
               orthographies = systems.map((record) => ({ ...record, value: normalizeOrthography(record.value) }));
               phonemes = inventory.map((record) => ({ ...record, value: normalizePhoneme(record.value) }));
               if (orthographyEditing) {
@@ -838,7 +1270,10 @@ export const language: DaenaModule = {
               render();
             }
           } catch (cause) {
-            if (!cancelled && token === request) render(cause instanceof Error ? cause.message : String(cause));
+            if (!cancelled && token === request) {
+              paneLoading = false;
+              render(cause instanceof Error ? cause.message : String(cause));
+            }
           }
         }
 
@@ -846,10 +1281,13 @@ export const language: DaenaModule = {
           if (!selectedLanguage) {
             grammarUi.index = emptyGrammarUiState().index;
             records = [];
+            paneLoading = false;
             render();
             return;
           }
           const token = ++request;
+          paneLoading = true;
+          render();
           try {
             const loaded = await loadGrammarIndex(context.records, selectedLanguage.id);
             const [lexemes, sampleRecords, paradigmRecords] = await Promise.all([
@@ -858,6 +1296,7 @@ export const language: DaenaModule = {
               context.records.list<Paradigm>("paradigms", selectedLanguage.id, { limit: 100, sort: "name" }),
             ]);
             if (!cancelled && token === request) {
+              paneLoading = false;
               grammarUi.index = loaded.index;
               records = lexemes.map((record) => ({ ...record, value: normalizeLexeme(record.value) }));
               samples = sampleRecords.map((record) => ({ ...record, value: normalizeSample(record.value) }));
@@ -865,7 +1304,10 @@ export const language: DaenaModule = {
               render();
             }
           } catch (cause) {
-            if (!cancelled && token === request) render(cause instanceof Error ? cause.message : String(cause));
+            if (!cancelled && token === request) {
+              paneLoading = false;
+              render(cause instanceof Error ? cause.message : String(cause));
+            }
           }
         }
 
@@ -873,16 +1315,20 @@ export const language: DaenaModule = {
           if (!selectedLanguage) {
             paradigms = [];
             records = [];
+            paneLoading = false;
             render();
             return;
           }
           const token = ++request;
+          paneLoading = true;
+          render();
           try {
             const [tables, lexemes] = await Promise.all([
               context.records.list<Paradigm>("paradigms", selectedLanguage.id, { limit: 100, sort: "name" }),
               context.records.list<LexemeValue>("lexemes", selectedLanguage.id, { limit: 500, sort: "lemma" }),
             ]);
             if (!cancelled && token === request) {
+              paneLoading = false;
               paradigms = tables.map((record) => ({ ...record, value: normalizeParadigm(record.value) }));
               records = lexemes.map((record) => ({ ...record, value: normalizeLexeme(record.value) }));
               if (paradigmEditing) {
@@ -892,7 +1338,10 @@ export const language: DaenaModule = {
               render();
             }
           } catch (cause) {
-            if (!cancelled && token === request) render(cause instanceof Error ? cause.message : String(cause));
+            if (!cancelled && token === request) {
+              paneLoading = false;
+              render(cause instanceof Error ? cause.message : String(cause));
+            }
           }
         }
 
@@ -900,16 +1349,20 @@ export const language: DaenaModule = {
           if (!selectedLanguage) {
             samples = [];
             records = [];
+            paneLoading = false;
             render();
             return;
           }
           const token = ++request;
+          paneLoading = true;
+          render();
           try {
             const [items, lexemes] = await Promise.all([
               context.records.list<Sample>("samples", selectedLanguage.id, { limit: 100, sort: "title" }),
               context.records.list<LexemeValue>("lexemes", selectedLanguage.id, { limit: 500, sort: "lemma" }),
             ]);
             if (!cancelled && token === request) {
+              paneLoading = false;
               samples = items.map((record) => ({ ...record, value: normalizeSample(record.value) }));
               records = lexemes.map((record) => ({ ...record, value: normalizeLexeme(record.value) }));
               if (sampleEditing) {
@@ -919,7 +1372,10 @@ export const language: DaenaModule = {
               render();
             }
           } catch (cause) {
-            if (!cancelled && token === request) render(cause instanceof Error ? cause.message : String(cause));
+            if (!cancelled && token === request) {
+              paneLoading = false;
+              render(cause instanceof Error ? cause.message : String(cause));
+            }
           }
         }
 
@@ -1295,21 +1751,29 @@ export const language: DaenaModule = {
         }
 
         function renderSounds(panel: HTMLElement, error: string) {
-          const toolbar = document.createElement("div");
-          toolbar.className = "language-toolbar";
-          const title = document.createElement("h2");
-          title.textContent = selectedLanguage ? `${selectedLanguage.name} sounds` : "Sounds";
-          const add = button("Add sound", "language-button", () => {
+          const addSound = () => {
             phonemeEditing = null;
             phonemeEditorOpen = true;
             phonemeDraft = emptyPhoneme();
             render();
-          });
+          };
+          const add = button("Add sound", "language-button", addSound);
           add.disabled = !selectedLanguage;
-          toolbar.append(title, add);
-          panel.append(toolbar);
+          panel.append(
+            paneToolbar(
+              "Sounds",
+              selectedLanguage
+                ? `${selectedLanguage.name} · phoneme inventory and phonology notes`
+                : "Select a language to document its sound system.",
+              add,
+            ),
+          );
           if (!selectedLanguage) {
-            panel.append(emptyMessage("Select a language to document its sounds."));
+            panel.append(emptyState("Select a language to document its sounds."));
+            return;
+          }
+          if (paneLoading) {
+            panel.append(loadingMessage("Loading sound inventory…"));
             return;
           }
           if (phonemeEditorOpen) {
@@ -1317,7 +1781,7 @@ export const language: DaenaModule = {
             return;
           }
           const notes = document.createElement("form");
-          notes.className = "language-editor";
+          notes.className = "language-editor language-pane-form";
           notes.append(
             field("Syllable structure (optional)", textarea("syllableStructure", phonologyDraft.syllableStructure, 2)),
             field("Stress (optional)", textarea("stress", phonologyDraft.stress, 2)),
@@ -1339,7 +1803,14 @@ export const language: DaenaModule = {
               render(cause instanceof Error ? cause.message : String(cause));
             }
           };
-          panel.append(notes);
+          const notesSection = document.createElement("section");
+          notesSection.className = "language-pane-section";
+          const notesTitle = document.createElement("h3");
+          notesTitle.textContent = "Phonology notes";
+          const notesIntro = document.createElement("p");
+          notesIntro.textContent = "Capture the sound patterns that sit behind the inventory and charts.";
+          notesSection.append(notesTitle, notesIntro, notes);
+          panel.append(notesSection);
           const values = phonemes.map((record) => record.value);
           const openFromChart = (item: PhonemeValue) => {
             const record = phonemes.find(
@@ -1357,8 +1828,9 @@ export const language: DaenaModule = {
           if (error) panel.append(alertMessage(error));
           else if (phonemes.length === 0)
             panel.append(
-              emptyMessage(
+              emptyState(
                 "No sounds yet. Add consonants and vowels; charts stay empty until place, manner, height, or backness is filled in.",
+                button("Add first sound", "language-button secondary", addSound),
               ),
             );
           else {
@@ -1369,6 +1841,7 @@ export const language: DaenaModule = {
               const rowButton = document.createElement("button");
               rowButton.type = "button";
               rowButton.className = "language-item";
+              rowButton.setAttribute("aria-label", `Edit sound ${record.value.symbol}`);
               const symbol = document.createElement("strong");
               symbol.textContent = record.value.symbol;
               const kind = document.createElement("small");
@@ -1385,32 +1858,52 @@ export const language: DaenaModule = {
               item.append(rowButton);
               list.append(item);
             }
-            panel.append(list);
+            const inventory = document.createElement("section");
+            inventory.className = "language-pane-section";
+            const inventoryTitle = document.createElement("h3");
+            inventoryTitle.textContent = "Sound inventory";
+            const inventorySummary = document.createElement("p");
+            inventorySummary.textContent = `${phonemes.length} sound${phonemes.length === 1 ? "" : "s"} · select one to edit its features.`;
+            inventory.append(inventoryTitle, inventorySummary, list);
+            panel.append(inventory);
           }
         }
 
         function renderWriting(panel: HTMLElement, error: string) {
-          const toolbar = document.createElement("div");
-          toolbar.className = "language-toolbar";
-          const title = document.createElement("h2");
-          title.textContent = selectedLanguage ? `${selectedLanguage.name} writing` : "Writing";
-          const add = button("Add writing system", "language-button", () => {
+          const addWriting = () => {
             orthographyEditing = null;
             orthographyEditorOpen = true;
             orthographyDraft = emptyOrthography();
             render();
-          });
+          };
+          const add = button("Add writing system", "language-button", addWriting);
           add.disabled = !selectedLanguage;
-          toolbar.append(title, add);
-          panel.append(toolbar);
+          panel.append(
+            paneToolbar(
+              "Writing",
+              selectedLanguage
+                ? `${selectedLanguage.name} · scripts, graphemes, and sound mappings`
+                : "Select a language to document its writing systems.",
+              add,
+            ),
+          );
+          if (paneLoading) {
+            panel.append(loadingMessage("Loading writing systems…"));
+            return;
+          }
           if (orthographyEditorOpen) {
             panel.append(orthographyForm(error));
             return;
           }
           if (error) panel.append(alertMessage(error));
-          else if (!selectedLanguage) panel.append(emptyMessage("Select a language to document its writing systems."));
+          else if (!selectedLanguage) panel.append(emptyState("Select a language to document its writing systems."));
           else if (orthographies.length === 0)
-            panel.append(emptyMessage("No writing systems yet. Add one and map graphemes to sounds."));
+            panel.append(
+              emptyState(
+                "No writing systems yet. Add one and map graphemes to sounds.",
+                button("Add first writing system", "language-button secondary", addWriting),
+              ),
+            );
           else {
             const list = document.createElement("ul");
             list.className = "lexeme-list";
@@ -1419,6 +1912,7 @@ export const language: DaenaModule = {
               const rowButton = document.createElement("button");
               rowButton.type = "button";
               rowButton.className = "language-item";
+              rowButton.setAttribute("aria-label", `Edit writing system ${record.value.name}`);
               const name = document.createElement("strong");
               name.textContent = record.value.name;
               const status = document.createElement("small");
@@ -1435,7 +1929,14 @@ export const language: DaenaModule = {
               item.append(rowButton);
               list.append(item);
             }
-            panel.append(list);
+            const inventory = document.createElement("section");
+            inventory.className = "language-pane-section";
+            const inventoryTitle = document.createElement("h3");
+            inventoryTitle.textContent = "Writing systems";
+            const inventorySummary = document.createElement("p");
+            inventorySummary.textContent = `${orthographies.length} system${orthographies.length === 1 ? "" : "s"} · select one to edit its mappings.`;
+            inventory.append(inventoryTitle, inventorySummary, list);
+            panel.append(inventory);
           }
         }
 
@@ -1484,7 +1985,7 @@ export const language: DaenaModule = {
         }
 
         function renderGrammar(panel: HTMLElement, error: string) {
-          renderGrammarPane(panel, grammarUi, grammarContext(), error);
+          renderGrammarPane(panel, grammarUi, grammarContext(), error, paneLoading);
         }
 
         function captureParadigm(form: HTMLFormElement) {
@@ -1818,30 +2319,41 @@ export const language: DaenaModule = {
         }
 
         function renderForms(panel: HTMLElement, error: string) {
-          const toolbar = document.createElement("div");
-          toolbar.className = "language-toolbar";
-          const title = document.createElement("h2");
-          title.textContent = selectedLanguage ? `${selectedLanguage.name} forms` : "Forms";
-          const add = button("Add paradigm", "language-button", () => {
+          const addParadigm = () => {
             paradigmEditing = null;
             paradigmEditorOpen = true;
             paradigmDraft = emptyParadigm();
             previewStem = "";
             previewLexemeId = "";
             render();
-          });
+          };
+          const add = button("Add paradigm", "language-button", addParadigm);
           add.disabled = !selectedLanguage;
-          toolbar.append(title, add);
-          panel.append(toolbar);
+          panel.append(
+            paneToolbar(
+              "Forms",
+              selectedLanguage
+                ? `${selectedLanguage.name} · paradigms, rules, and generated forms`
+                : "Select a language to document its morphology.",
+              add,
+            ),
+          );
+          if (paneLoading) {
+            panel.append(loadingMessage("Loading paradigms…"));
+            return;
+          }
           if (paradigmEditorOpen) {
             panel.append(paradigmForm(error));
             return;
           }
           if (error) panel.append(alertMessage(error));
-          else if (!selectedLanguage) panel.append(emptyMessage("Select a language to document its paradigms."));
+          else if (!selectedLanguage) panel.append(emptyState("Select a language to document its paradigms."));
           else if (paradigms.length === 0) {
             panel.append(
-              emptyMessage("No paradigms yet. Add an inflection or derivation table, then preview generated forms."),
+              emptyState(
+                "No paradigms yet. Add an inflection or derivation table, then preview generated forms.",
+                button("Add first paradigm", "language-button secondary", addParadigm),
+              ),
             );
           } else {
             const list = document.createElement("ul");
@@ -1851,6 +2363,7 @@ export const language: DaenaModule = {
               const rowButton = document.createElement("button");
               rowButton.type = "button";
               rowButton.className = "language-item";
+              rowButton.setAttribute("aria-label", `Edit paradigm ${record.value.name}`);
               const name = document.createElement("strong");
               name.textContent = record.value.name;
               const kind = document.createElement("small");
@@ -1867,7 +2380,14 @@ export const language: DaenaModule = {
               item.append(rowButton);
               list.append(item);
             }
-            panel.append(list);
+            const inventory = document.createElement("section");
+            inventory.className = "language-pane-section";
+            const inventoryTitle = document.createElement("h3");
+            inventoryTitle.textContent = "Paradigm library";
+            const inventorySummary = document.createElement("p");
+            inventorySummary.textContent = `${paradigms.length} paradigm${paradigms.length === 1 ? "" : "s"} · select one to edit rules or preview forms.`;
+            inventory.append(inventoryTitle, inventorySummary, list);
+            panel.append(inventory);
           }
         }
 
@@ -2073,27 +2593,39 @@ export const language: DaenaModule = {
         }
 
         function renderSamples(panel: HTMLElement, error: string) {
-          const toolbar = document.createElement("div");
-          toolbar.className = "language-toolbar";
-          const title = document.createElement("h2");
-          title.textContent = selectedLanguage ? `${selectedLanguage.name} samples` : "Samples";
-          const add = button("Add sample", "language-button", () => {
+          const addSample = (kind: SampleKind = "sentence") => {
             sampleEditing = null;
             sampleEditorOpen = true;
-            sampleDraft = emptySample("sentence");
+            sampleDraft = emptySample(kind);
             render();
-          });
+          };
+          const add = button("Add sample", "language-button", () => addSample());
           add.disabled = !selectedLanguage;
-          toolbar.append(title, add);
-          panel.append(toolbar);
+          panel.append(
+            paneToolbar(
+              "Samples",
+              selectedLanguage
+                ? `${selectedLanguage.name} · examples, translations, and interlinear notes`
+                : "Select a language to collect examples and usage.",
+              add,
+            ),
+          );
+          if (paneLoading) {
+            panel.append(loadingMessage("Loading samples…"));
+            return;
+          }
           if (sampleEditorOpen) {
             panel.append(sampleForm(error));
             return;
           }
           if (error) panel.append(alertMessage(error));
           else if (!selectedLanguage)
-            panel.append(emptyMessage("Select a language to collect sample sentences and paragraphs."));
+            panel.append(emptyState("Select a language to collect sample sentences and paragraphs."));
           else {
+            const summary = document.createElement("p");
+            summary.className = "language-pane-summary";
+            summary.textContent = `${samples.length} sample${samples.length === 1 ? "" : "s"} · grouped by kind for quick browsing.`;
+            panel.append(summary);
             const nav = document.createElement("div");
             nav.className = "grammar-nav";
             for (const group of groupSamples(samples)) {
@@ -2105,12 +2637,7 @@ export const language: DaenaModule = {
               heading.textContent = group.label;
               head.append(
                 heading,
-                button("Add", "language-button secondary", () => {
-                  sampleEditing = null;
-                  sampleEditorOpen = true;
-                  sampleDraft = emptySample(group.id);
-                  render();
-                }),
+                button(`Add ${group.label.toLowerCase()}`, "language-button secondary", () => addSample(group.id)),
               );
               block.append(head);
               if (group.samples.length === 0) {
@@ -2123,6 +2650,7 @@ export const language: DaenaModule = {
                   const rowButton = document.createElement("button");
                   rowButton.type = "button";
                   rowButton.className = "language-item";
+                  rowButton.setAttribute("aria-label", `Edit sample ${sampleTitle(record.value)}`);
                   const name = document.createElement("strong");
                   name.textContent = sampleTitle(record.value);
                   const preview = document.createElement("span");
@@ -2195,9 +2723,16 @@ export const language: DaenaModule = {
             const item = document.createElement("li");
             const languageButton = document.createElement("button");
             languageButton.type = "button";
-            languageButton.textContent = language.name;
+            const name = document.createElement("span");
+            name.className = "language-list-name";
+            name.textContent = language.name;
+            const meta = document.createElement("span");
+            meta.className = "language-list-meta";
+            meta.textContent = selectedLanguage?.id === language.id ? "Selected language" : "Open language";
+            languageButton.append(name, meta);
             if (selectedLanguage?.id === language.id) languageButton.setAttribute("aria-current", "page");
             languageButton.onclick = () => {
+              if (!tryLeaveOverview((message) => window.confirm(message))) return;
               if (!tryLeaveGrammar(grammarUi, (message) => window.confirm(message))) return;
               selectedLanguage = language;
               resetEditors();
@@ -2212,10 +2747,19 @@ export const language: DaenaModule = {
             item.append(languageButton);
             list.append(item);
           }
-          if (languageSummaries.length === 0) {
-            list.replaceChildren(emptyMessage("Create a Language from the main workspace first."));
+          const listMessage = (message: HTMLElement) => {
+            const item = document.createElement("li");
+            item.append(message);
+            list.replaceChildren(item);
+          };
+          if (languageLoading) {
+            listMessage(emptyMessage("Loading languages…"));
+          } else if (languageLoadError) {
+            listMessage(alertMessage(languageLoadError));
+          } else if (languageSummaries.length === 0) {
+            listMessage(emptyMessage("No languages yet. Create one to start."));
           } else if (visible.length === 0) {
-            list.replaceChildren(emptyMessage("No languages match that filter."));
+            listMessage(emptyMessage("No languages match that filter."));
           }
         }
 
@@ -2224,10 +2768,30 @@ export const language: DaenaModule = {
           rememberFocus();
           root.replaceChildren(style);
           const languagesPanel = document.createElement("aside");
-          languagesPanel.className = "language-panel";
+          languagesPanel.className = "language-panel language-sidebar";
+          languagesPanel.setAttribute("aria-busy", String(languageLoading));
+          const sidebarHead = document.createElement("div");
+          sidebarHead.className = "language-sidebar-head";
+          const sidebarTitle = document.createElement("div");
+          const sidebarKicker = document.createElement("p");
+          sidebarKicker.className = "language-sidebar-kicker";
+          sidebarKicker.textContent = "Language studio";
           const languagesTitle = document.createElement("h2");
           languagesTitle.textContent = "Languages";
-          languagesPanel.append(languagesTitle);
+          sidebarTitle.append(sidebarKicker, languagesTitle);
+          const createLanguageButton = button("Create language", "language-button secondary", () => {
+            creatingLanguage = true;
+            languageCreateName = "";
+            languageCreateError = "";
+            render();
+            root.querySelector<HTMLInputElement>('[name="languageCreateName"]')?.focus();
+          });
+          sidebarHead.append(sidebarTitle, createLanguageButton);
+          languagesPanel.append(sidebarHead);
+          const sidebarIntro = document.createElement("p");
+          sidebarIntro.className = "language-sidebar-intro";
+          sidebarIntro.textContent = "Choose a language to shape its words, sounds, writing, and grammar.";
+          languagesPanel.append(sidebarIntro);
           const languageSearch = input("languageQuery", languageQuery);
           languageSearch.type = "search";
           languageSearch.oninput = () => {
@@ -2235,27 +2799,93 @@ export const language: DaenaModule = {
             fillLanguageList(languagesList);
           };
           languagesPanel.append(field("Filter languages", languageSearch));
+          if (creatingLanguage) {
+            const createForm = document.createElement("form");
+            createForm.className = "language-create";
+            const createInput = input("languageCreateName", languageCreateName);
+            createInput.autocomplete = "off";
+            createForm.append(field("Language name", createInput));
+            if (languageCreateError) createForm.append(alertMessage(languageCreateError));
+            const createActions = document.createElement("div");
+            createActions.className = "language-create-actions";
+            createActions.append(
+              button("Cancel", "language-button secondary", () => {
+                creatingLanguage = false;
+                languageCreateName = "";
+                languageCreateError = "";
+                render();
+              }),
+            );
+            const saveLanguage = document.createElement("button");
+            saveLanguage.type = "submit";
+            saveLanguage.className = "language-button";
+            saveLanguage.textContent = "Create";
+            createActions.append(saveLanguage);
+            createForm.append(createActions);
+            createInput.oninput = () => {
+              languageCreateName = createInput.value;
+              languageCreateError = "";
+            };
+            createForm.onsubmit = async (event) => {
+              event.preventDefault();
+              languageCreateName = createInput.value.trim();
+              if (!languageCreateName) {
+                languageCreateError = "Language name is required.";
+                render();
+                root.querySelector<HTMLInputElement>('[name="languageCreateName"]')?.focus();
+                return;
+              }
+              saveLanguage.disabled = true;
+              saveLanguage.textContent = "Creating…";
+              try {
+                const created = await context.entities.create({ name: languageCreateName, type: "language" });
+                languageSummaries = [created, ...languageSummaries.filter((language) => language.id !== created.id)];
+                languageListLoaded = true;
+                languageLoading = false;
+                selectedLanguage = created;
+                creatingLanguage = false;
+                languageCreateName = "";
+                languageCreateError = "";
+                resetEditors();
+                search = "";
+                statusFilter = "";
+                tagFilter = "";
+                page = 0;
+                render();
+                void loadPane();
+              } catch (cause) {
+                languageCreateError = cause instanceof Error ? cause.message : String(cause);
+                render();
+                root.querySelector<HTMLInputElement>('[name="languageCreateName"]')?.focus();
+              }
+            };
+            languagesPanel.append(createForm);
+          }
           const languagesList = document.createElement("ul");
           languagesList.className = "language-list";
-          if (languageSummaries.length) fillLanguageList(languagesList);
-          void context.entities.list({ type: "language", limit: 500 }).then((languages) => {
-            if (cancelled) return;
-            languageSummaries = languages;
-            fillLanguageList(languagesList);
-            if (!selectedLanguage && languages.length) {
-              selectedLanguage = languages.find((language) => language.id === context.focusEntityId) ?? languages[0];
-              void loadPane();
-            }
-          });
+          if (!languageListLoaded && !languageLoading) {
+            languageLoading = true;
+            void loadLanguages();
+          }
+          fillLanguageList(languagesList);
           languagesPanel.append(languagesList);
 
           const lexiconPanel = document.createElement("main");
-          lexiconPanel.className = "language-panel";
+          lexiconPanel.className = "language-panel language-main";
+          lexiconPanel.id = "language-pane";
+          lexiconPanel.setAttribute("role", "tabpanel");
+          lexiconPanel.setAttribute("aria-labelledby", `language-tab-${pane}`);
+          lexiconPanel.setAttribute(
+            "aria-busy",
+            String(pane === "overview" ? overviewLoading : pane === "lexicon" ? lexiconLoading : paneLoading),
+          );
           const tabs = document.createElement("div");
           tabs.className = "language-tabs";
           tabs.setAttribute("role", "tablist");
           tabs.setAttribute("aria-label", "Language workspace");
+          const tabButtons: HTMLButtonElement[] = [];
           for (const [id, label] of [
+            ["overview", "Overview"],
             ["lexicon", "Lexicon"],
             ["sounds", "Sounds"],
             ["writing", "Writing"],
@@ -2264,16 +2894,49 @@ export const language: DaenaModule = {
             ["samples", "Samples"],
           ] as const) {
             const tab = button(label, "", () => {
+              if (pane === id) return;
+              if (!tryLeaveOverview((message) => window.confirm(message))) return;
               if (!tryLeaveGrammar(grammarUi, (message) => window.confirm(message))) return;
               pane = id;
               resetEditors();
               void loadPane();
             });
             tab.setAttribute("role", "tab");
-            if (pane === id) tab.setAttribute("aria-current", "page");
+            tab.id = `language-tab-${id}`;
+            tab.setAttribute("aria-controls", "language-pane");
+            tab.setAttribute("aria-selected", String(pane === id));
+            tab.tabIndex = pane === id ? 0 : -1;
+            tab.addEventListener("keydown", (event) => {
+              if (
+                event.key !== "ArrowLeft" &&
+                event.key !== "ArrowRight" &&
+                event.key !== "Home" &&
+                event.key !== "End"
+              ) {
+                return;
+              }
+              event.preventDefault();
+              const current = tabButtons.indexOf(tab);
+              const next =
+                event.key === "Home"
+                  ? 0
+                  : event.key === "End"
+                    ? tabButtons.length - 1
+                    : (current + (event.key === "ArrowRight" ? 1 : -1) + tabButtons.length) % tabButtons.length;
+              tabButtons[next]?.focus();
+              tabButtons[next]?.click();
+            });
+            tabButtons.push(tab);
             tabs.append(tab);
           }
           lexiconPanel.append(tabs);
+          if (pane === "overview") {
+            renderOverview(lexiconPanel, error);
+            root.append(languagesPanel, lexiconPanel);
+            element.replaceChildren(root);
+            restoreFocus();
+            return;
+          }
           if (pane === "sounds") {
             renderSounds(lexiconPanel, error);
             root.append(languagesPanel, lexiconPanel);
@@ -2311,8 +2974,19 @@ export const language: DaenaModule = {
           }
           const toolbar = document.createElement("div");
           toolbar.className = "language-toolbar";
+          const titleBlock = document.createElement("div");
+          titleBlock.className = "language-toolbar-title";
+          const eyebrow = document.createElement("p");
+          eyebrow.className = "language-toolbar-eyebrow";
+          eyebrow.textContent = "Focused projection";
           const title = document.createElement("h2");
-          title.textContent = selectedLanguage ? `${selectedLanguage.name} lexicon` : "Lexicon";
+          title.textContent = "Lexicon";
+          const subtitle = document.createElement("p");
+          subtitle.className = "language-toolbar-subtitle";
+          subtitle.textContent = selectedLanguage
+            ? `${selectedLanguage.name} · words, meanings, and usage`
+            : "Select a language to begin building its lexicon.";
+          titleBlock.append(eyebrow, title, subtitle);
           const actions = document.createElement("div");
           actions.className = "language-toolbar-actions";
           const file = document.createElement("input");
@@ -2330,8 +3004,8 @@ export const language: DaenaModule = {
             editorOpen = true;
             draft = emptyLexeme();
             homonymCount = 0;
-            lexiconPanel.replaceChildren(toolbar, editForm());
-            lexiconPanel.querySelector<HTMLInputElement>("[name=lemma]")?.focus();
+            render();
+            root.querySelector<HTMLInputElement>("[name=lemma]")?.focus();
           });
           add.disabled = !selectedLanguage;
           const exportButton = button("Export JSON", "language-button secondary", () => void exportLexicon());
@@ -2339,7 +3013,7 @@ export const language: DaenaModule = {
           const importButton = button("Import JSON", "language-button secondary", () => file.click());
           importButton.disabled = !selectedLanguage;
           actions.append(file, importButton, exportButton, add);
-          toolbar.append(title, actions);
+          toolbar.append(titleBlock, actions);
           lexiconPanel.append(toolbar);
           if (editorOpen) {
             lexiconPanel.append(editForm(error));
@@ -2349,8 +3023,6 @@ export const language: DaenaModule = {
             return;
           }
           if (selectedLanguage) {
-            const filters = document.createElement("div");
-            filters.className = "language-filters";
             const searchInput = input("search", search);
             searchInput.className = "language-search";
             searchInput.type = "search";
@@ -2395,15 +3067,40 @@ export const language: DaenaModule = {
             const filterLists = document.createElement("datalist");
             filterLists.id = "language-filter-status";
             filterLists.append(...STATUS_SUGGESTIONS.map((item) => new Option(item)));
+            const searchRow = document.createElement("div");
+            searchRow.className = "language-search-row";
+            searchRow.append(field("Search lemma or meaning", searchInput));
+            lexiconPanel.append(searchRow);
+            const activeFilterCount = [search, statusFilter, tagFilter, homonymsOnly ? "homonyms" : ""].filter(
+              Boolean,
+            ).length;
+            const filterPanel = document.createElement("details");
+            filterPanel.className = "language-filter-panel";
+            filterPanel.open = activeFilterCount > 0;
+            const filterSummary = document.createElement("summary");
+            filterSummary.textContent = activeFilterCount
+              ? `Filters · ${activeFilterCount} active`
+              : "Filters and sorting";
+            const filters = document.createElement("div");
+            filters.className = "language-filters";
             filters.append(
-              field("Search lexicon", searchInput),
               field("Status", statusInput),
               field("Tag", tagInput),
               field("Sort", sortSelect),
               homonymLabel,
               filterLists,
             );
-            lexiconPanel.append(filters);
+            const filterActions = document.createElement("div");
+            filterActions.className = "language-filter-actions";
+            const filterHint = document.createElement("span");
+            filterHint.className = "language-status";
+            filterHint.textContent = "Use filters to narrow the working set.";
+            const clearFilters = button("Clear filters", "language-button secondary", clearLexiconFilters);
+            clearFilters.disabled = activeFilterCount === 0;
+            filterActions.append(filterHint, clearFilters);
+            filters.append(filterActions);
+            filterPanel.append(filterSummary, filters);
+            lexiconPanel.append(filterPanel);
           }
           if (error) {
             const message = document.createElement("p");
@@ -2414,24 +3111,35 @@ export const language: DaenaModule = {
           } else if (!selectedLanguage) {
             const empty = emptyMessage("Select a language to view its lexicon.");
             lexiconPanel.append(empty);
+          } else if (lexiconLoading) {
+            const loading = emptyMessage("Loading lexicon…");
+            loading.classList.add("language-loading");
+            lexiconPanel.append(loading);
           } else if (records.length === 0) {
             const filtered = Boolean(search || statusFilter || tagFilter || homonymsOnly);
             lexiconPanel.append(
               emptyState(
                 filtered ? "No words match these filters." : "No words yet.",
                 filtered
-                  ? undefined
+                  ? button("Clear filters", "language-button secondary", clearLexiconFilters)
                   : button("Add word", "language-button", () => {
                       editing = null;
                       editorOpen = true;
                       draft = emptyLexeme();
                       homonymCount = 0;
-                      lexiconPanel.replaceChildren(toolbar, editForm());
-                      lexiconPanel.querySelector<HTMLInputElement>("[name=lemma]")?.focus();
+                      render();
+                      root.querySelector<HTMLInputElement>("[name=lemma]")?.focus();
                     }),
               ),
             );
           } else {
+            const resultSummary = document.createElement("p");
+            resultSummary.className = "language-results";
+            resultSummary.setAttribute("role", "status");
+            const firstResult = page * 50 + 1;
+            const lastResult = page * 50 + records.length;
+            resultSummary.textContent = `Showing ${firstResult}–${lastResult}${hasNextPage ? "+" : ""} words`;
+            lexiconPanel.append(resultSummary);
             const list = document.createElement("ul");
             list.className = "lexeme-list";
             for (const record of records) {
@@ -2439,13 +3147,17 @@ export const language: DaenaModule = {
               const rowButton = document.createElement("button");
               rowButton.type = "button";
               rowButton.className = "language-item lexeme-row";
+              rowButton.setAttribute("aria-label", `Edit ${record.value.lemma || "word"}`);
               const lemma = document.createElement("strong");
               lemma.textContent = record.value.lemma;
               const part = document.createElement("small");
+              part.className = "lexeme-part";
               part.textContent = record.value.partOfSpeech || "—";
               const meaning = document.createElement("span");
+              meaning.className = "lexeme-meaning";
               meaning.textContent = firstGloss(record.value) || "No gloss yet";
               const status = document.createElement("small");
+              status.className = "lexeme-status";
               status.textContent = [record.value.status, record.value.tags[0]].filter(Boolean).join(" · ") || "—";
               rowButton.append(lemma, part, meaning, status);
               rowButton.onclick = () => {
@@ -2453,7 +3165,8 @@ export const language: DaenaModule = {
                 editorOpen = true;
                 draft = normalizeLexeme(record.value);
                 void refreshHomonyms(draft.lemma).then(() => {
-                  lexiconPanel.replaceChildren(toolbar, editForm());
+                  render();
+                  root.querySelector<HTMLInputElement>("[name=lemma]")?.focus();
                 });
               };
               item.append(rowButton);

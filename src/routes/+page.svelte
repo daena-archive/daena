@@ -3869,6 +3869,19 @@ onMount(() => {
           })}
           onClose={() => (projectionView = null)} />
       {/key}
+    {:else if section === "language"}
+      {@const languageProjection = projectionModule("language")}
+      {#key selected?.id ?? "language"}
+        <ProjectionView
+          title="Languages"
+          view={languageProjection.module.views[0]}
+          context={buildModuleContext(languageProjection.module.manifest, projectInfo?.root ?? "", {
+            focusEntityId: selected?.id as UUID | undefined,
+            availableServices: enabledServices(),
+          })}
+          embedded={true}
+          onClose={() => {}} />
+      {/key}
     {:else if hostView}
       <div class="host-view-shell">
         <button class="quiet-button host-view-back" onclick={() => (hostView = null)}>Back to workspace</button
@@ -3901,9 +3914,7 @@ onMount(() => {
                 ? "CHRONOLOGY"
                 : section === "maps"
                   ? "MAP ATLAS"
-                  : section === "language"
-                    ? "LANGUAGE WORKSHOP"
-                    : "DRAFTING DESK"}</span>
+                  : "DRAFTING DESK"}</span>
           <h1>{sectionLabel()}</h1>
           <p>
             {section === "lore"
@@ -3912,11 +3923,9 @@ onMount(() => {
                 ? "Events, eras, and the threads that connect them."
                 : section === "maps"
                   ? "Keep every map beside its notes, links, and provider source."
-                  : section === "language"
-                    ? "Build languages, from sounds to grammar and vocabulary."
-                    : writingView === "manuscripts"
-                      ? "Draft stories, essays, and other long-form work."
-                      : "Build the pages, notes, and references behind the story."}
+                  : writingView === "manuscripts"
+                    ? "Draft stories, essays, and other long-form work."
+                    : "Build the pages, notes, and references behind the story."}
           </p>
         </div>
         <div class="heading-actions">
@@ -3950,11 +3959,9 @@ onMount(() => {
                     ? "TIMELINE"
                     : section === "maps"
                       ? "MAPS"
-                      : section === "language"
-                        ? "LANGUAGES"
-                        : writingView === "manuscripts"
-                          ? "MANUSCRIPTS"
-                          : "REFERENCE PAGES"}</span
+                      : writingView === "manuscripts"
+                        ? "MANUSCRIPTS"
+                        : "REFERENCE PAGES"}</span
               ><strong>{visibleEntities().length} {collectionLabel()}</strong>
             </div>
           </div>
@@ -4111,11 +4118,9 @@ onMount(() => {
                         ? "TIMELINE EVENT"
                         : section === "maps"
                           ? "MAP"
-                          : section === "language"
-                            ? "LANGUAGE"
-                            : writingView === "manuscripts"
-                              ? "MANUSCRIPT"
-                              : "REFERENCE PAGE"}</span>
+                          : writingView === "manuscripts"
+                            ? "MANUSCRIPT"
+                            : "REFERENCE PAGE"}</span>
                 <h2>{selected?.name ?? (section === "maps" ? "Choose a map" : "Choose an entry")}</h2>
               </div>
               {#if selected}

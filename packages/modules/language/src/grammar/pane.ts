@@ -917,22 +917,50 @@ function renderSection(home: HTMLElement, state: GrammarUiState, ctx: GrammarPan
   home.append(systems);
 }
 
-export function renderGrammarPane(panel: HTMLElement, state: GrammarUiState, ctx: GrammarPaneContext, error: string) {
+export function renderGrammarPane(
+  panel: HTMLElement,
+  state: GrammarUiState,
+  ctx: GrammarPaneContext,
+  error: string,
+  loading = false,
+) {
   const toolbar = document.createElement("div");
   toolbar.className = "language-toolbar";
-  toolbar.append(heading(ctx.languageName ? `${ctx.languageName} grammar` : "Grammar"));
+  const titleBlock = document.createElement("div");
+  titleBlock.className = "language-toolbar-title";
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "language-toolbar-eyebrow";
+  eyebrow.textContent = "Focused projection";
+  const title = heading("Grammar");
+  const subtitle = document.createElement("p");
+  subtitle.className = "language-toolbar-subtitle";
+  subtitle.textContent = ctx.languageName
+    ? `${ctx.languageName} · systems, examples, and usage patterns`
+    : "Select a language to document its grammar.";
+  titleBlock.append(eyebrow, title, subtitle);
+  toolbar.append(titleBlock);
   if (state.section || state.editing) {
-    toolbar.append(
+    const actions = document.createElement("div");
+    actions.className = "language-toolbar-actions";
+    actions.append(
       button("All sections", "language-button secondary", () => {
         if (!goHome(state, ctx.confirm)) return;
         ctx.render();
       }),
     );
+    toolbar.append(actions);
   }
   panel.append(toolbar);
   if (error) panel.append(alertMessage(error));
   if (!ctx.ownerId) {
-    panel.append(emptyMessage("Select a language to document its grammar."));
+    panel.append(emptyState("Select a language to document its grammar."));
+    return;
+  }
+  if (loading) {
+    const message = emptyMessage("Loading grammar systems…");
+    message.classList.add("language-loading");
+    message.setAttribute("aria-live", "polite");
+    panel.append(message);
     return;
   }
   if (state.editing) {
@@ -947,7 +975,10 @@ export function renderGrammarPane(panel: HTMLElement, state: GrammarUiState, ctx
     state.query = search.value;
     ctx.render();
   };
-  panel.append(search);
+  const searchRow = document.createElement("div");
+  searchRow.className = "language-search-row";
+  searchRow.append(field("Search grammar systems", search));
+  panel.append(searchRow);
   const home = document.createElement("div");
   home.className = "grammar-home";
   for (const diagnostic of state.index.diagnostics) {

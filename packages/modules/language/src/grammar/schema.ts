@@ -1,3 +1,4 @@
+import { CHOICE_SYSTEM_IDS } from "./choice.ts";
 import { GRAMMAR_SYSTEM_IDS } from "./types.ts";
 
 const example = {
@@ -103,6 +104,55 @@ function stringArray(values?: string[]) {
   return { type: "array", items: values ? enumString(values) : { type: "string" } };
 }
 
+function positionConfig(positions: string[]) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["position", "alternatePositions"],
+    properties: {
+      position: enumString(positions),
+      customPosition: { type: "string" },
+      alternatePositions: stringArray(positions),
+      conditions: { type: "string" },
+    },
+  };
+}
+
+const CHOICE_CONFIG = {
+  "syntax.basic-word-order": {
+    type: "object",
+    additionalProperties: false,
+    required: ["order", "influences"],
+    properties: {
+      order: enumString(["sov", "svo", "vso", "vos", "ovs", "osv", "flexible", "custom"]),
+      customOrder: { type: "string" },
+      strength: enumString(["strict", "strongly-preferred", "default-flexible", "context"]),
+      influences: stringArray(["topic", "focus", "emphasis", "definiteness", "animacy", "discourse", "custom"]),
+      customInfluence: { type: "string" },
+      changeNotes: { type: "string" },
+    },
+  },
+  "syntax.adjective-position": positionConfig(["before", "after", "either", "meaning-changes", "custom"]),
+  "syntax.adpositions": {
+    type: "object",
+    additionalProperties: false,
+    required: ["strategy"],
+    properties: {
+      strategy: enumString(["prepositions", "postpositions", "both", "other"]),
+      distributionNotes: { type: "string" },
+    },
+  },
+  "syntax.possessive-position": positionConfig([
+    "possessor-before",
+    "possessor-after",
+    "either",
+    "morphological",
+    "multiple",
+    "custom",
+  ]),
+  "syntax.relative-clause-position": positionConfig(["before", "after", "internally-headed", "multiple", "custom"]),
+} as const;
+
 const category = {
   type: "object",
   additionalProperties: false,
@@ -123,25 +173,8 @@ export const GRAMMAR_VALUE_SCHEMA = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   $id: "daena.language.grammar",
   oneOf: [
-    systemBranch("syntax.basic-word-order", {
-      oneOf: [
-        emptyConfig,
-        {
-          type: "object",
-          additionalProperties: false,
-          required: ["order", "influences"],
-          properties: {
-            order: enumString(["sov", "svo", "vso", "vos", "ovs", "osv", "flexible", "custom"]),
-            customOrder: { type: "string" },
-            strength: enumString(["strict", "strongly-preferred", "default-flexible", "context"]),
-            influences: stringArray(["topic", "focus", "emphasis", "definiteness", "animacy", "discourse", "custom"]),
-            customInfluence: { type: "string" },
-            changeNotes: { type: "string" },
-          },
-        },
-      ],
-    }),
-    ...GRAMMAR_SYSTEM_IDS.filter((id) => id !== "syntax.basic-word-order").map((id) =>
+    ...CHOICE_SYSTEM_IDS.map((id) => systemBranch(id, { oneOf: [emptyConfig, CHOICE_CONFIG[id]] })),
+    ...GRAMMAR_SYSTEM_IDS.filter((id) => !(CHOICE_SYSTEM_IDS as readonly string[]).includes(id)).map((id) =>
       systemBranch(id, {
         oneOf: [
           emptyConfig,

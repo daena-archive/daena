@@ -4,6 +4,12 @@ import {
   GRAMMAR_SECTIONS,
   GRAMMAR_SYSTEM_IDS,
   GRAMMAR_VALUE_SCHEMA,
+  WORD_ORDER_OPTIONS,
+  applyAdjectivePosition,
+  applyAdpositions,
+  applyBasicWordOrder,
+  applyPossessivePosition,
+  applyRelativeClausePosition,
   assertCatalogComplete,
   brokenAgreementFeatures,
   configuredMinimum,
@@ -442,5 +448,81 @@ for (let index = 0; index < 120; index += 1) {
 const loaded = await loadGrammarIndex(paged, owner);
 assert.equal(loaded.records.length, 120);
 assert.equal(loaded.index.customRules.length, 120);
+
+assert.deepEqual(
+  WORD_ORDER_OPTIONS.map((item) => item.value),
+  ["sov", "svo", "vso", "vos", "ovs", "osv", "flexible", "custom"],
+);
+
+const wordOrder = applyBasicWordOrder(setSystemStatus(emptySystemRecord("syntax.basic-word-order"), "configured"), {
+  order: "sov",
+  strength: "strict",
+});
+assert.equal(configuredMinimum("syntax.basic-word-order", wordOrder.config), true);
+assert.equal(summarizeSystem("syntax.basic-word-order", wordOrder), "SOV · Strict");
+assert.equal(validateGrammarDraft(wordOrder).length, 0);
+assert.equal(matchesSchema(serializeGrammarRecord(wordOrder), GRAMMAR_VALUE_SCHEMA), true);
+
+const customOrder = applyBasicWordOrder(wordOrder, { order: "custom" });
+assert.equal(configuredMinimum("syntax.basic-word-order", customOrder.config), false);
+assert.equal(validateGrammarDraft(customOrder)[0].path, "customOrder");
+const namedCustom = applyBasicWordOrder(customOrder, { customOrder: "Topic first, then verb." });
+assert.equal(summarizeSystem("syntax.basic-word-order", namedCustom), "Topic first, then verb. · Strict");
+assert.equal(namedCustom.config.order, "custom");
+
+const flexible = applyBasicWordOrder(namedCustom, { order: "flexible", toggleInfluence: "topic" });
+assert.equal(flexible.config.customOrder, undefined);
+assert.deepEqual(flexible.config.influences, ["topic"]);
+const withFocus = applyBasicWordOrder(flexible, { toggleInfluence: "focus" });
+assert.deepEqual(withFocus.config.influences, ["topic", "focus"]);
+const withoutTopic = applyBasicWordOrder(withFocus, { toggleInfluence: "topic" });
+assert.deepEqual(withoutTopic.config.influences, ["focus"]);
+const notFlexible = applyBasicWordOrder(withoutTopic, { order: "svo" });
+assert.deepEqual(notFlexible.config.influences, []);
+
+const adjective = applyAdjectivePosition(setSystemStatus(emptySystemRecord("syntax.adjective-position"), "configured"), {
+  position: "before",
+});
+assert.equal(summarizeSystem("syntax.adjective-position", adjective), "Before noun");
+const adjectiveAlt = applyAdjectivePosition(adjective, { toggleAlternate: "after", conditions: "Poetry allows both." });
+assert.deepEqual(adjectiveAlt.config.alternatePositions, ["after"]);
+const adjectiveMoved = applyAdjectivePosition(adjectiveAlt, { position: "after" });
+assert.deepEqual(adjectiveMoved.config.alternatePositions, []);
+const adjectiveCustom = applyAdjectivePosition(adjective, { position: "custom" });
+assert.equal(validateGrammarDraft(adjectiveCustom)[0].path, "customPosition");
+
+const possessive = applyPossessivePosition(setSystemStatus(emptySystemRecord("syntax.possessive-position"), "configured"), {
+  position: "possessor-before",
+});
+assert.equal(summarizeSystem("syntax.possessive-position", possessive), "Possessor before noun");
+
+const relative = applyRelativeClausePosition(
+  setSystemStatus(emptySystemRecord("syntax.relative-clause-position"), "configured"),
+  { position: "internally-headed" },
+);
+assert.equal(summarizeSystem("syntax.relative-clause-position", relative), "Internally headed");
+
+const adpositions = applyAdpositions(setSystemStatus(emptySystemRecord("syntax.adpositions"), "configured"), {
+  strategy: "both",
+  distributionNotes: "Time uses prepositions; space uses postpositions.",
+});
+assert.equal(summarizeSystem("syntax.adpositions", adpositions), "Both");
+assert.match(adpositions.config.distributionNotes, /Time/);
+const prepositions = applyAdpositions(adpositions, { strategy: "prepositions" });
+assert.equal(prepositions.config.distributionNotes, undefined);
+
+const choiceApi = fakeGrammarApi();
+const savedChoice = await persistGrammarRecord(choiceApi, owner, { draft: wordOrder });
+assert.equal(savedChoice.ok, true);
+assert.equal(savedChoice.record.value.config.order, "sov");
+assert.match(sectionCardSummary(savedChoice.index, "syntax").detail, /1 system/);
+assert.equal(grammarGlance(savedChoice.index).find((row) => row.label === "Basic word order").value, "SOV · Strict");
+
+const adjectiveSaved = await persistGrammarRecord(choiceApi, owner, { draft: adjectiveAlt });
+assert.equal(adjectiveSaved.ok, true);
+assert.equal(
+  grammarGlance(adjectiveSaved.index).find((row) => row.label === "Adjective position").value,
+  "Before noun",
+);
 
 console.log("language grammar helpers ok");

@@ -172,9 +172,40 @@ export function grammarRecordSnapshot(value: GrammarRecord) {
   return JSON.stringify(cloneGrammarRecord(value));
 }
 
+function choiceMinimumIssue(value: GrammarSystemRecord): GrammarIssue | undefined {
+  const config = value.config;
+  if (value.systemId === "syntax.basic-word-order") {
+    const order = (config as BasicWordOrderConfig).order;
+    if (!order) return issue("configured-minimum", "Choose a word-order pattern.", "order");
+    if (order === "custom" && !((config as BasicWordOrderConfig).customOrder ?? "").trim()) {
+      return issue("configured-minimum", "Describe the custom word order.", "customOrder");
+    }
+    return undefined;
+  }
+  if (
+    value.systemId === "syntax.adjective-position" ||
+    value.systemId === "syntax.possessive-position" ||
+    value.systemId === "syntax.relative-clause-position"
+  ) {
+    const position = (config as PositionConfig).position;
+    if (!position) return issue("configured-minimum", "Choose a position.", "position");
+    if (position === "custom" && !((config as PositionConfig).customPosition ?? "").trim()) {
+      return issue("configured-minimum", "Describe the custom position.", "customPosition");
+    }
+    return undefined;
+  }
+  if (value.systemId === "syntax.adpositions" && !(config as AdpositionsConfig).strategy) {
+    return issue("configured-minimum", "Choose how adpositions work.", "strategy");
+  }
+  return undefined;
+}
+
 export function validateGrammarDraft(value: GrammarRecord): GrammarIssue[] {
   if (value.recordKind === "system") {
-    if (value.status === "configured" && !configuredMinimum(value.systemId, value.config)) {
+    if (value.status !== "configured") return [];
+    const missing = choiceMinimumIssue(value);
+    if (missing) return [missing];
+    if (!configuredMinimum(value.systemId, value.config)) {
       return [issue("configured-minimum", "This system needs its grammatical settings before it can be saved as configured.", "status")];
     }
     return [];
@@ -692,12 +723,18 @@ function normalizeSystemConfig(
 export function configuredMinimum(systemId: GrammarSystemId, config: GrammarSystemConfig): boolean {
   if (!config || Object.keys(config).length === 0) return false;
   switch (systemId) {
-    case "syntax.basic-word-order":
-      return "order" in config && Boolean((config as BasicWordOrderConfig).order);
+    case "syntax.basic-word-order": {
+      const value = config as BasicWordOrderConfig;
+      if (!value.order) return false;
+      return value.order !== "custom" || Boolean(value.customOrder?.trim());
+    }
     case "syntax.adjective-position":
     case "syntax.possessive-position":
-    case "syntax.relative-clause-position":
-      return "position" in config && Boolean((config as PositionConfig).position);
+    case "syntax.relative-clause-position": {
+      const value = config as PositionConfig;
+      if (!value.position) return false;
+      return value.position !== "custom" || Boolean(value.customPosition?.trim());
+    }
     case "syntax.adpositions":
       return "strategy" in config && Boolean((config as AdpositionsConfig).strategy);
     case "nouns.number":

@@ -185,6 +185,16 @@ export const language: DaenaModule = {
           .grammar-status legend{padding:0;color:var(--ink-soft);font-size:11px}
           .grammar-help{margin:8px 0 0;font-size:13px;line-height:1.55}
           .grammar-learn{margin:4px 0 8px}
+          .grammar-choice-editor,.grammar-choice-stack{display:grid;gap:12px;min-width:0}
+          .grammar-choices,.grammar-checks{display:grid;gap:8px;margin:0;padding:0;border:0}
+          .grammar-choices{grid-template-columns:repeat(auto-fit,minmax(168px,1fr))}
+          .grammar-choices legend,.grammar-checks legend,.grammar-status legend{padding:0;color:var(--ink-soft);font-size:11px}
+          .grammar-choice{display:grid;gap:4px;align-content:start;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface);cursor:pointer}
+          .grammar-choice.is-selected{border-color:var(--accent-dark);background:var(--surface-muted)}
+          .grammar-choice input{margin:0}
+          .grammar-choice span,.grammar-choice em{color:var(--ink-soft);font-size:12px;line-height:1.45}
+          .grammar-choice em{font-style:italic}
+          .grammar-checks{display:flex;flex-wrap:wrap;gap:8px 16px}
           .grammar-example{display:grid;gap:8px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-muted)}
           .sample-block{padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--surface-muted);font-size:13px;line-height:1.55}
           .sample-block h3{margin:0 0 8px;font-family:var(--font-display);font-weight:500}

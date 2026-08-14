@@ -11,7 +11,8 @@ import {
 } from "../grammar.ts";
 import { alertMessage, button, emptyMessage, emptyState, field, input, textarea } from "../ui";
 import { persistGrammarRecord, deleteGrammarRecord, type GrammarRecordsApi } from "./repository.ts";
-import { grammarRecordSnapshot } from "./normalize.ts";
+import { configuredMinimum, grammarRecordSnapshot } from "./normalize.ts";
+import { isChoiceSystem, renderChoiceEditor } from "./choice.ts";
 import {
   applyStoredVersion,
   confirmGrammarLeave,
@@ -335,13 +336,22 @@ function renderEditor(panel: HTMLElement, state: GrammarUiState, ctx: GrammarPan
     if (statuses) form.append(statuses);
     if (session.draft.status === "configured") {
       const summaryText = summarizeSystem(session.draft.systemId, session.draft);
-      form.append(
-        emptyMessage(
-          configuredReady(session.draft)
-            ? summaryText
-            : "Specialized settings for this system will appear here. Mark it as not used if the language does not have this feature, or leave it not configured.",
-        ),
-      );
+      if (configuredMinimum(session.draft.systemId, session.draft.config)) {
+        form.append(emptyMessage(summaryText));
+      }
+      const choice = renderChoiceEditor(session.draft, session.locked, (next, rerender) => {
+        if (session.draft.recordKind !== "system") return;
+        session.draft = next;
+        if (rerender) ctx.render();
+      });
+      if (choice) form.append(choice);
+      else if (!configuredMinimum(session.draft.systemId, session.draft.config) && !isChoiceSystem(session.draft.systemId)) {
+        form.append(
+          emptyMessage(
+            "Specialized settings for this system will appear here. Mark it as not used if the language does not have this feature, or leave it not configured.",
+          ),
+        );
+      }
     }
     if (session.draft.status === "not-used") {
       const note = textarea("notes", session.draft.notes, 3);
@@ -468,10 +478,6 @@ function renderEditor(panel: HTMLElement, state: GrammarUiState, ctx: GrammarPan
   };
   panel.append(form);
   title.focus();
-}
-
-function configuredReady(draft: GrammarSystemRecord) {
-  return Object.keys(draft.config).length > 0;
 }
 
 function renderSearch(home: HTMLElement, state: GrammarUiState, ctx: GrammarPaneContext) {

@@ -39,6 +39,22 @@ export {
   validateGrammarDraft,
 } from "./grammar/normalize.ts";
 export { grammarGlance, grammarStatusLabel, searchGrammar, sectionCardSummary, summarizeSystem } from "./grammar/summaries.ts";
+export {
+  ADJECTIVE_POSITION_OPTIONS,
+  ADPOSITION_OPTIONS,
+  CHOICE_SYSTEM_IDS,
+  POSSESSIVE_POSITION_OPTIONS,
+  RELATIVE_CLAUSE_POSITION_OPTIONS,
+  WORD_ORDER_INFLUENCE_OPTIONS,
+  WORD_ORDER_OPTIONS,
+  WORD_ORDER_STRENGTH_OPTIONS,
+  applyAdjectivePosition,
+  applyAdpositions,
+  applyBasicWordOrder,
+  applyPossessivePosition,
+  applyRelativeClausePosition,
+  isChoiceSystem,
+} from "./grammar/choice.ts";
 export { GRAMMAR_VALUE_SCHEMA } from "./grammar/schema.ts";
 export {
   applyStoredVersion,

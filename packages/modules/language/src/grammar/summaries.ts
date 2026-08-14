@@ -1,10 +1,9 @@
 import { GRAMMAR_CATALOG, GRAMMAR_SECTIONS, grammarSectionDescriptor, systemsForSection } from "./catalog.ts";
+import { summarizeChoice } from "./choice.ts";
 import { systemStatus } from "./normalize.ts";
 import type {
   AdjectiveBehaviorConfig,
-  AdpositionsConfig,
   ArgumentIndexingConfig,
-  BasicWordOrderConfig,
   CaseConfig,
   ClauseNegationConfig,
   ContentQuestionsConfig,
@@ -21,10 +20,7 @@ import type {
   NounClassesConfig,
   NumberConfig,
   ParadigmConfig,
-  PositionConfig,
-  PossessivePositionConfig,
   PossessionConfig,
-  RelativeClausePositionConfig,
   RelativeClausesConfig,
   TamConfig,
   VerbMarkingConfig,
@@ -49,43 +45,15 @@ function join(parts: (string | undefined)[]) {
   return parts.filter(Boolean).join(" · ");
 }
 
-const ORDER_LABEL: Record<string, string> = {
-  sov: "SOV",
-  svo: "SVO",
-  vso: "VSO",
-  vos: "VOS",
-  ovs: "OVS",
-  osv: "OSV",
-  flexible: "Flexible",
-  custom: "Custom",
-};
-
-const STRENGTH_LABEL: Record<string, string> = {
-  strict: "Strict",
-  "strongly-preferred": "Strongly preferred",
-  "default-flexible": "Default, but flexible",
-  context: "Mostly determined by context",
-};
-
 export function summarizeSystem(systemId: GrammarSystemId, record: GrammarSystemRecord | undefined): string {
   if (!record || record.status === "unconfigured") return STATUS_LABEL.unconfigured;
   if (record.status === "not-used") {
     return record.notes ? `${STATUS_LABEL["not-used"]} · ${record.notes}` : STATUS_LABEL["not-used"];
   }
+  const choice = summarizeChoice(systemId, record.config);
+  if (choice) return choice;
   const config = record.config;
   switch (systemId) {
-    case "syntax.basic-word-order": {
-      const value = config as BasicWordOrderConfig;
-      return join([ORDER_LABEL[value.order] ?? value.order, value.strength ? STRENGTH_LABEL[value.strength] : undefined]);
-    }
-    case "syntax.adjective-position":
-      return (config as PositionConfig).position.replaceAll("-", " ");
-    case "syntax.possessive-position":
-      return (config as PossessivePositionConfig).position.replaceAll("-", " ");
-    case "syntax.relative-clause-position":
-      return (config as RelativeClausePositionConfig).position.replaceAll("-", " ");
-    case "syntax.adpositions":
-      return (config as AdpositionsConfig).strategy.replaceAll("-", " ");
     case "nouns.number": {
       const value = config as NumberConfig;
       return join([labels(value.categories), value.markingStrategies[0]?.replaceAll("-", " ")]);
@@ -139,6 +107,8 @@ export function summarizeSystem(systemId: GrammarSystemId, record: GrammarSystem
     }
     case "clauses.relative-clauses":
       return (config as RelativeClausesConfig).strategies.join(" / ").replaceAll("-", " ");
+    default:
+      return STATUS_LABEL.configured;
   }
 }
 

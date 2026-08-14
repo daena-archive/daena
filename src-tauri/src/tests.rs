@@ -1828,7 +1828,7 @@ fn maps_image_import_rpc_round_trips_and_cancel_leaves_no_entity() {
         daena_core::maps::MAP_ENTITY_TYPE
     );
     let source_id = imported["source"]["id"].as_str().unwrap().to_string();
-    let layers_revision = {
+    {
         let core = current_session(&core).unwrap();
         let core = core.core.lock().unwrap();
         let project = core.project(trusted_shell()).unwrap();
@@ -1838,34 +1838,12 @@ fn maps_image_import_rpc_round_trips_and_cancel_leaves_no_entity() {
             .into_iter()
             .find(|field| field.key == "map")
             .unwrap();
+        assert_eq!(descriptor.value["provider"]["id"], daena_core::maps::VECTOR_PROVIDER);
         assert_eq!(descriptor.value["sourceAssetId"], source_id);
-        project
-            .list_fields(map_id.clone())
-            .unwrap()
-            .into_iter()
-            .find(|field| field.key == "layers")
-            .unwrap()
-            .revision
-    };
-    let created = {
-        let session = current_session(&core).unwrap();
-        let mut core = session.core.lock().unwrap();
-        dispatch_module_rpc(
-            &mut core,
-            Some("daena.maps"),
-            None,
-            "maps.layer.create",
-            serde_json::json!({
-                "mapEntityId": map_id,
-                "name": "Ink",
-                "expectedRevision": layers_revision
-            }),
-            None,
-        )
-        .unwrap()
-    };
-    assert!(created["layer_id"].as_str().is_some());
-    assert_eq!(created["asset"]["mime_type"], "image/png");
+        assert_eq!(descriptor.value["previewAssetId"], imported["preview"]["id"]);
+        assert_eq!(imported["source"]["mime_type"], daena_core::maps::VECTOR_MIME);
+        assert_eq!(imported["preview"]["mime_type"], "image/png");
+    }
 
     std::fs::remove_dir_all(root).ok();
 }

@@ -2,12 +2,9 @@ import { readFile } from "node:fs/promises";
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
-const docs = await read("docs/IMAGE_MAP_INTEGRATION.md");
 const maps = await read("crates/daena-core/src/maps.rs");
 const project = await read("crates/daena-core/src/project.rs");
 const sdk = await read("packages/plugin-sdk/src/maps.ts");
-const editor = await read("src/lib/maps/image-map/ImageMapEditor.svelte");
-const engine = await read("src/lib/maps/image-map/engine.ts");
 const client = await read("src/lib/project/client.ts");
 const host = await read("src-tauri/src/lib.rs");
 
@@ -47,32 +44,6 @@ for (const required of [
   "project_query_map_locations",
 ]) {
   if (!host.includes(required)) throw new Error(`host missing ${required}`);
-}
-
-for (const required of ['"path"', '"area"', "setFeatures", "finishDraft", "onFeatureChange"]) {
-  if (!engine.includes(required)) throw new Error(`image map engine missing ${required}`);
-}
-
-for (const required of [
-  "Add path overlay",
-  "Add area overlay",
-  "Semantic overlays",
-  "persistFeature",
-  "syncFeatures",
-]) {
-  if (!editor.includes(required)) throw new Error(`Image Map editor missing ${required}`);
-}
-
-for (const required of [
-  "Semantic features are the existing location records",
-  "query_map_locations",
-  'kind: "semantic"',
-]) {
-  if (!docs.includes(required)) throw new Error(`IMAGE_MAP_INTEGRATION.md missing ${required}`);
-}
-
-if (editor.includes("rasterAssetId") && !editor.includes("deleteSemanticLayer")) {
-  throw new Error("Semantic overlay delete must not use deleteRasterLayer");
 }
 
 console.log("maps phase-5 semantic features checks passed");

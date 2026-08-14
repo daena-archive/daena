@@ -12,9 +12,11 @@ import {
 let {
   oncreated,
   oncancel,
+  autostartImport = false,
 }: {
   oncreated?: (map: Entity) => void;
   oncancel?: () => void;
+  autostartImport?: boolean;
 } = $props();
 
 let settings = $state<NativeGeneratorSettings>({ ...DEFAULT_GENERATOR_SETTINGS });
@@ -150,8 +152,27 @@ function cancel() {
   oncancel?.();
 }
 
+async function importImage() {
+  const source = await project.pickFile();
+  if (typeof source !== "string") {
+    if (autostartImport) oncancel?.();
+    return;
+  }
+  accepting = true;
+  message = "";
+  try {
+    const imported = await project.importImageMapFile(source);
+    await oncreated?.(imported.entity);
+  } catch (cause) {
+    message = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    accepting = false;
+  }
+}
+
 onMount(() => {
-  generate();
+  if (autostartImport) void importImage();
+  else generate();
 });
 
 onDestroy(() => {
@@ -167,6 +188,8 @@ onDestroy(() => {
     </div>
     <div class="header-actions">
       <button type="button" class="quiet" onclick={cancel}>Cancel</button>
+      <button type="button" class="quiet" disabled={busy || accepting} onclick={() => void importImage()}
+        >{accepting && autostartImport ? "Importing…" : "Import image"}</button>
       <button type="button" class="primary" disabled={selected === null || busy || accepting} onclick={() => void accept()}
         >{accepting ? "Accepting…" : "Accept candidate"}</button>
     </div>

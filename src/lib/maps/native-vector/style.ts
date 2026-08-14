@@ -3,6 +3,8 @@ import { BASE_LAYER_ID, type VectorFeature, type VectorFeatureCollection, type V
 
 export const BASE_SOURCE_ID = "daena-base";
 export const AUTHORED_SOURCE_ID = "daena-authored";
+export const IMAGE_SOURCE_ID = "daena-preview";
+export const IMAGE_LAYER_ID = "daena-preview-overlay";
 
 export function emptyFeatureCollection(): VectorFeatureCollection {
   return { type: "FeatureCollection", features: [] };

@@ -59,15 +59,16 @@ for (const fixture of fixtures.fixtures) {
   const value = fixture.value;
   if (fixture.shape === "map") {
     const provider = value.provider;
-    const imageFormat = provider?.id === "daena-image" && ["png", "jpeg", "svg"].includes(provider.sourceFormat);
-    if ((provider?.id !== "azgaar-fmg" || provider?.sourceFormat !== "fmg-map") && !imageFormat) {
+    const fmg = provider?.id === "azgaar-fmg" && provider?.sourceFormat === "fmg-map";
+    const vector = provider?.id === "daena-vector" && provider?.sourceFormat === "geojson";
+    if (!fmg && !vector) {
       throw new Error(`${fixture.id}: invalid map descriptor`);
     }
     if (value.defaultView?.zoom <= 0 || !pointOk(value.defaultView?.center)) {
       throw new Error(`${fixture.id}: invalid map descriptor`);
     }
-    if (provider?.id === "daena-image" && !uuid.test(value.sourceAssetId ?? "")) {
-      throw new Error(`${fixture.id}: image maps require sourceAssetId`);
+    if (provider?.id === "daena-vector" && !uuid.test(value.sourceAssetId ?? "")) {
+      throw new Error(`${fixture.id}: vector maps require sourceAssetId`);
     }
   } else if (fixture.shape === "locations") {
     if (!Array.isArray(value.locations) || value.locations.length < 2)

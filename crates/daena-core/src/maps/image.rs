@@ -14,7 +14,7 @@ pub const IMAGE_MAX_DECODED_BYTES: usize = (IMAGE_MAX_PIXELS as usize)
     .saturating_add(1024);
 /// Upper bound on raster layers on one map.
 pub const IMAGE_MAX_RASTER_LAYERS: usize = 16;
-/// In-memory undo/redo budget for one Image Map editing session.
+/// In-memory undo/redo budget for one raster painting session.
 pub const IMAGE_MAX_UNDO_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

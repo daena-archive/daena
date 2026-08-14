@@ -9,7 +9,6 @@ use uuid::Uuid;
 pub const MAP_ENTITY_TYPE: &str = "daena.maps:map";
 pub const MAP_NAMESPACE: &str = "maps";
 pub const FMG_PROVIDER: &str = "azgaar-fmg";
-pub const IMAGE_PROVIDER: &str = "daena-image";
 pub const VECTOR_PROVIDER: &str = "daena-vector";
 pub const DETAIL_MAP_RELATIONSHIP: &str = "daena.maps:detail-map";
 pub const OVERVIEW_MAP_RELATIONSHIP: &str = "daena.maps:overview-map";
@@ -23,9 +22,9 @@ pub use image::{
     IMAGE_MAX_PIXELS, IMAGE_MAX_RASTER_LAYERS, IMAGE_MAX_UNDO_BYTES,
 };
 pub use vector::{
-    VECTOR_CENTER_Y_MAX, VECTOR_CENTER_Y_MIN, VECTOR_FILENAME, VECTOR_MAX_BYTES, VECTOR_MAX_FEATURES,
-    VECTOR_MAX_FEATURE_POSITIONS, VECTOR_MAX_LAYERS, VECTOR_MAX_POSITIONS, VECTOR_MAX_PROPERTY_BYTES,
-    VECTOR_MIME, VECTOR_SOURCE_FORMAT,
+    empty_canonical_bytes, VECTOR_CENTER_Y_MAX, VECTOR_CENTER_Y_MIN, VECTOR_FILENAME, VECTOR_MAX_BYTES,
+    VECTOR_MAX_FEATURES, VECTOR_MAX_FEATURE_POSITIONS, VECTOR_MAX_LAYERS, VECTOR_MAX_POSITIONS,
+    VECTOR_MAX_PROPERTY_BYTES, VECTOR_MIME, VECTOR_SOURCE_FORMAT,
 };
 
 /// Upper bound on vertices in a path or one area ring.
@@ -349,20 +348,10 @@ fn invalid(message: impl Into<String>) -> CoreError {
     CoreError::Validation(format!("maps: {}", message.into()))
 }
 
-fn image_source_mime(source_format: &str) -> Option<&'static str> {
-    match source_format {
-        "png" => Some("image/png"),
-        "jpeg" => Some("image/jpeg"),
-        "svg" => Some("image/svg+xml"),
-        _ => None,
-    }
-}
-
 fn validate_provider(provider: &ProviderDescriptor) -> Result<(), CoreError> {
     let supported = provider.adapter_version == 1
         && match provider.id.as_str() {
             FMG_PROVIDER => provider.source_format == "fmg-map",
-            IMAGE_PROVIDER => matches!(provider.source_format.as_str(), "png" | "jpeg" | "svg"),
             VECTOR_PROVIDER => provider.source_format == VECTOR_SOURCE_FORMAT,
             _ => false,
         };
@@ -613,9 +602,6 @@ pub fn validate_field(
             return Err(invalid("unsupported map provider or descriptor version"));
         }
         validate_provider(&descriptor.provider)?;
-        if descriptor.provider.id == IMAGE_PROVIDER && descriptor.source_asset_id.is_none() {
-            return Err(invalid("daena-image maps require sourceAssetId"));
-        }
         if descriptor.provider.id == VECTOR_PROVIDER && descriptor.source_asset_id.is_none() {
             return Err(invalid("daena-vector maps require sourceAssetId"));
         }
@@ -628,19 +614,15 @@ pub fn validate_field(
         if let Some(source_asset_id) = &descriptor.source_asset_id {
             let (_, mime_type) =
                 owned_map_asset(connection, entity_id, source_asset_id, "sourceAssetId")?;
-            if let Some(expected_mime) = image_source_mime(&descriptor.provider.source_format) {
-                if mime_type != expected_mime {
-                    return Err(invalid(
-                        "sourceAssetId MIME type must match the image sourceFormat",
-                    ));
-                }
-            }
             if descriptor.provider.id == VECTOR_PROVIDER && mime_type != VECTOR_MIME {
                 return Err(invalid("sourceAssetId MIME type must be application/geo+json"));
             }
         }
         if let Some(preview) = &descriptor.preview_asset_id {
-            owned_map_asset(connection, entity_id, preview, "previewAssetId")?;
+            let (_, mime_type) = owned_map_asset(connection, entity_id, preview, "previewAssetId")?;
+            if descriptor.provider.id == VECTOR_PROVIDER {
+                source_format_for_mime(&mime_type)?;
+            }
         }
         if descriptor.default_view.zoom <= 0.0 || !descriptor.default_view.zoom.is_finite() {
             return Err(invalid("defaultView.zoom must be finite and positive"));
@@ -815,16 +797,7 @@ pub fn validate_image_map_content(
         validate_field(connection, &entity_id, "map", &value)?;
         let descriptor: MapDescriptor = serde_json::from_value(value)
             .map_err(|error| invalid(format!("invalid map descriptor: {error}")))?;
-        if descriptor.provider.id == IMAGE_PROVIDER {
-            let source_id = descriptor
-                .source_asset_id
-                .as_deref()
-                .ok_or_else(|| invalid("daena-image maps require sourceAssetId"))?;
-            let bytes = load_asset(source_id)?;
-            let mime = mime_for_source_format(&descriptor.provider.source_format)?;
-            let source = validate_image_source(&bytes, mime)?;
-            source_dimensions.insert(entity_id, (source.width, source.height));
-        } else if descriptor.provider.id == VECTOR_PROVIDER {
+        if descriptor.provider.id == VECTOR_PROVIDER {
             let source_id = descriptor
                 .source_asset_id
                 .as_deref()
@@ -845,6 +818,12 @@ pub fn validate_image_map_content(
                 .map(vector::layer_ids_from_layers_field)
                 .unwrap_or_default();
             vector::require_canonical_bytes(Path::new("assets/maps/map.geojson"), &bytes, &known)?;
+            if let Some(preview_id) = descriptor.preview_asset_id.as_deref() {
+                let preview_bytes = load_asset(preview_id)?;
+                let (_, mime) = owned_map_asset(connection, &entity_id, preview_id, "previewAssetId")?;
+                let source = validate_image_source(&preview_bytes, &mime)?;
+                source_dimensions.insert(entity_id, (source.width, source.height));
+            }
         }
     }
     let mut layers = connection.prepare(

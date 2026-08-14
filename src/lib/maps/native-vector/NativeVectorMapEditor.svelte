@@ -29,12 +29,17 @@ import { DEFAULT_VECTOR_LAYER_STYLE, type VectorDrawMode, type VectorFeature, ty
 let {
   mapId,
   picking = false,
+  start = "generate",
+  focusLinkId: _focusLinkId,
   oncreated,
   oncancel,
+  onpick: _onpick,
+  onopen: _onopen,
   onstate,
 }: {
   mapId?: string;
   picking?: boolean;
+  start?: "generate" | "import";
   focusLinkId?: string;
   oncreated?: (map: Entity) => void;
   oncancel?: () => void;
@@ -59,6 +64,7 @@ let notice = $state("");
 let renamingId = $state<string | null>(null);
 let selectedFeature = $state<VectorFeature | null>(null);
 let defaultView = $state({ center: [0.5, 0.5] as [number, number], zoom: 1 });
+let background = $state<{ url: string; width: number; height: number } | null>(null);
 
 const listedLayers = $derived(
   [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id)),
@@ -131,6 +137,9 @@ function mountEditor() {
     onSelect(feature) {
       selectedFeature = feature;
     },
+    get background() {
+      return background;
+    },
   });
   if ("error" in created) {
     applyEditorEvent({ type: "save-failed", message: `${created.error}: ${created.detail}` });
@@ -166,6 +175,23 @@ async function load() {
     const collection = parseVectorCollection(bytes);
     draft = cloneCollection(collection);
     loaded = cloneCollection(collection);
+    if (background?.url) URL.revokeObjectURL(background.url);
+    background = null;
+    const previewId = (descriptorField?.value as { previewAssetId?: string | null } | undefined)?.previewAssetId;
+    const preview = previewId ? assets.find((asset) => asset.id === previewId) : null;
+    if (preview) {
+      const previewBytes = await project.readAssetBytes(preview.id);
+      const url = URL.createObjectURL(new Blob([new Uint8Array(previewBytes)], { type: preview.mime_type }));
+      background = await new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve({ url, width: image.naturalWidth, height: image.naturalHeight });
+        image.onerror = () => {
+          URL.revokeObjectURL(url);
+          reject(new Error("Could not decode the imported map image"));
+        };
+        image.src = url;
+      });
+    }
     const ordered = [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id));
     activeLayerId = ordered.some((layer) => layer.id === activeLayerId) ? activeLayerId : (ordered[0]?.id ?? null);
     tool = "select";
@@ -403,13 +429,14 @@ onMount(() => {
   return () => {
     window.removeEventListener("keydown", onKey);
     destroyEditor();
+    if (background?.url) URL.revokeObjectURL(background.url);
     registerNativeVectorSession(null);
   };
 });
 </script>
 
 {#if !mapId}
-  <NativeVectorGenerator {oncreated} {oncancel} />
+  <NativeVectorGenerator {oncreated} {oncancel} autostartImport={start === "import"} />
 {:else}
 <section class="native-vector-editor" aria-label="Native vector map editor">
   <header>

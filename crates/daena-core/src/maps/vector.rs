@@ -723,6 +723,10 @@ fn write_geometry(out: &mut String, geometry: &Geometry) {
     }
 }
 
+pub fn empty_canonical_bytes() -> Vec<u8> {
+    serialize_features(&[])
+}
+
 fn serialize_features(features: &[Feature]) -> Vec<u8> {
     let mut out = String::from("{\"type\":\"FeatureCollection\",\"features\":[");
     for (index, feature) in features.iter().enumerate() {

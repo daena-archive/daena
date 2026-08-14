@@ -27,14 +27,14 @@
         "provider": {
           "oneOf": [
             { "type": "object", "additionalProperties": false, "required": ["id", "adapterVersion", "sourceFormat"], "properties": { "id": { "const": "azgaar-fmg" }, "adapterVersion": { "const": 1 }, "sourceFormat": { "const": "fmg-map" } } },
-            { "type": "object", "additionalProperties": false, "required": ["id", "adapterVersion", "sourceFormat"], "properties": { "id": { "const": "daena-image" }, "adapterVersion": { "const": 1 }, "sourceFormat": { "enum": ["png", "jpeg", "svg"] } } }
+            { "type": "object", "additionalProperties": false, "required": ["id", "adapterVersion", "sourceFormat"], "properties": { "id": { "const": "daena-vector" }, "adapterVersion": { "const": 1 }, "sourceFormat": { "const": "geojson" } } }
           ]
         },
         "sourceAssetId": { "anyOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] },
         "previewAssetId": { "anyOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] },
         "defaultView": { "type": "object", "additionalProperties": false, "required": ["center", "zoom"], "properties": { "center": { "$ref": "#/$defs/point" }, "zoom": { "type": "number", "exclusiveMinimum": 0 } } }
       },
-      "if": { "properties": { "provider": { "properties": { "id": { "const": "daena-image" } }, "required": ["id"] } } },
+      "if": { "properties": { "provider": { "properties": { "id": { "const": "daena-vector" } }, "required": ["id"] } } },
       "then": { "properties": { "sourceAssetId": { "$ref": "#/$defs/uuid" } } }
     },
     "locations": { "type": "object", "additionalProperties": false, "required": ["schemaVersion", "locations"], "properties": { "schemaVersion": { "const": 1 }, "locations": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["id", "mapEntityId", "role", "label", "anchor", "validity"], "properties": { "id": { "$ref": "#/$defs/uuid" }, "mapEntityId": { "$ref": "#/$defs/uuid" }, "role": { "type": "string", "minLength": 1, "maxLength": 128 }, "label": { "type": "string", "maxLength": 256 }, "anchor": { "$ref": "#/$defs/anchor" }, "validity": { "type": "object", "additionalProperties": false, "required": ["from", "to"], "properties": { "from": { "$ref": "#/$defs/date" }, "to": { "$ref": "#/$defs/date" } } } } } } } },

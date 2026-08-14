@@ -1,7 +1,5 @@
 import {
   FMG_PROVIDER,
-  IMAGE_PROVIDER,
-  ImageMapAdapter,
   JsonProviderAdapter,
   MapEditorController,
   UnavailableProviderAdapter,
@@ -132,32 +130,6 @@ Deno.test("provider contract fixture round-trips and does not retarget selectors
   if (new TextDecoder().decode(serialized) !== new TextDecoder().decode(fixture))
     throw new Error("fixture source was not deterministic");
   unsubscribe();
-  await adapter.dispose();
-});
-
-Deno.test("Image Map adapter is selected without FMG internals", async () => {
-  const adapter = new ImageMapAdapter();
-  const adapters = new Map<string, MapProviderAdapter>([[IMAGE_PROVIDER, adapter]]);
-  if (selectProviderAdapter(IMAGE_PROVIDER, adapters) !== adapter) {
-    throw new Error("image provider was not selected by id");
-  }
-  const capabilities = await adapter.capabilities();
-  if (capabilities.provider !== IMAGE_PROVIDER || capabilities.featureKinds.length !== 0) {
-    throw new Error("image adapter advertised FMG features");
-  }
-  const loaded = await adapter.load(new Uint8Array([1, 2, 3]));
-  if (loaded.provider !== IMAGE_PROVIDER || loaded.dirty) throw new Error("image load did not stay clean");
-  const point = await adapter.resolveAnchor({ kind: "point", point: [0.2, 0.8] });
-  if (!point.resolved || point.point?.[0] !== 0.2) throw new Error("point anchors must resolve in place");
-  const feature = await adapter.resolveAnchor({
-    kind: "provider-feature",
-    provider: FMG_PROVIDER,
-    featureKind: "burg",
-    featureId: "42",
-    fallbackPoint: [0.5, 0.5],
-  });
-  if (feature.resolved) throw new Error("image maps must not resolve FMG selectors");
-  if ((await adapter.listFeatures()).length !== 0) throw new Error("image maps must not expose provider features");
   await adapter.dispose();
 });
 

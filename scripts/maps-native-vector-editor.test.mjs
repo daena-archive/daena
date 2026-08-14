@@ -26,8 +26,11 @@ for (const required of [
 
 assert.equal(style.includes("daenaLayerId !== activeLayerId"), true);
 assert.equal(style.includes("daena-hover-fill"), true);
-assert.equal(style.includes("daena-selection-line"), true);
-assert.equal(runtime.includes("maxStackSize: UNDO_STACK_SIZE"), true);
+assert.equal(style.includes("IMAGE_SOURCE_ID"), true);
+assert.equal(runtime.includes("imageOverlayCoordinates"), true);
+assert.equal(runtime.includes("whenStyleReady"), true);
+assert.equal(runtime.includes("style is not done loading"), true);
+assert.equal(editor.includes("importImageMapFile") || editor.includes('start?: "generate" | "import"'), true);
 assert.equal(runtime.includes('delete: "Delete"'), true);
 assert.equal(runtime.includes("flush()"), true);
 assert.equal(editor.includes("mapsRecoveryExport"), true);

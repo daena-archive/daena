@@ -1,10 +1,9 @@
 export const MAP_ENTITY_TYPE = "daena.maps:map";
 export const MAP_NAMESPACE = "maps";
 export const FMG_PROVIDER = "azgaar-fmg";
-export const IMAGE_PROVIDER = "daena-image";
 export const VECTOR_PROVIDER = "daena-vector";
 export const IMAGE_SOURCE_FORMATS = ["png", "jpeg", "svg"];
-/** Recorded Image Map resource budgets. Mirrored from `daena-core` maps::image. */
+/** Recorded imported-image resource budgets. Mirrored from `daena-core` maps::image. */
 export const IMAGE_MAX_ENCODED_BYTES = 32 * 1024 * 1024;
 export const IMAGE_MAX_PIXELS = 16_777_216;
 export const IMAGE_MAX_DECODED_BYTES = IMAGE_MAX_PIXELS * 4 + 1024;

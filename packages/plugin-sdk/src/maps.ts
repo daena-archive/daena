@@ -4,11 +4,10 @@ export type NormalizedPoint = readonly [number, number];
 export const MAP_ENTITY_TYPE = "daena.maps:map" as const;
 export const MAP_NAMESPACE = "maps" as const;
 export const FMG_PROVIDER = "azgaar-fmg" as const;
-export const IMAGE_PROVIDER = "daena-image" as const;
 export const VECTOR_PROVIDER = "daena-vector" as const;
 export const IMAGE_SOURCE_FORMATS = ["png", "jpeg", "svg"] as const;
 
-/** Recorded Image Map resource budgets. Mirrored from `daena-core` maps::image. */
+/** Recorded imported-image resource budgets. Mirrored from `daena-core` maps::image. */
 export const IMAGE_MAX_ENCODED_BYTES = 32 * 1024 * 1024;
 export const IMAGE_MAX_PIXELS = 16_777_216;
 export const IMAGE_MAX_DECODED_BYTES = IMAGE_MAX_PIXELS * 4 + 1024;
@@ -53,13 +52,6 @@ export type MapDescriptor =
       schemaVersion: 1;
       provider: { id: typeof FMG_PROVIDER; adapterVersion: 1; sourceFormat: "fmg-map" };
       sourceAssetId: string | null;
-      previewAssetId: string | null;
-      defaultView: { center: NormalizedPoint; zoom: number };
-    }
-  | {
-      schemaVersion: 1;
-      provider: { id: typeof IMAGE_PROVIDER; adapterVersion: 1; sourceFormat: ImageSourceFormat };
-      sourceAssetId: string;
       previewAssetId: string | null;
       defaultView: { center: NormalizedPoint; zoom: number };
     }

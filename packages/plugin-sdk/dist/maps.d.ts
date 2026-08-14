@@ -3,10 +3,9 @@ export type NormalizedPoint = readonly [number, number];
 export declare const MAP_ENTITY_TYPE: "daena.maps:map";
 export declare const MAP_NAMESPACE: "maps";
 export declare const FMG_PROVIDER: "azgaar-fmg";
-export declare const IMAGE_PROVIDER: "daena-image";
 export declare const VECTOR_PROVIDER: "daena-vector";
 export declare const IMAGE_SOURCE_FORMATS: readonly ["png", "jpeg", "svg"];
-/** Recorded Image Map resource budgets. Mirrored from `daena-core` maps::image. */
+/** Recorded imported-image resource budgets. Mirrored from `daena-core` maps::image. */
 export declare const IMAGE_MAX_ENCODED_BYTES: number;
 export declare const IMAGE_MAX_PIXELS = 16777216;
 export declare const IMAGE_MAX_DECODED_BYTES: number;
@@ -53,19 +52,6 @@ export type MapDescriptor = {
         sourceFormat: "fmg-map";
     };
     sourceAssetId: string | null;
-    previewAssetId: string | null;
-    defaultView: {
-        center: NormalizedPoint;
-        zoom: number;
-    };
-} | {
-    schemaVersion: 1;
-    provider: {
-        id: typeof IMAGE_PROVIDER;
-        adapterVersion: 1;
-        sourceFormat: ImageSourceFormat;
-    };
-    sourceAssetId: string;
     previewAssetId: string | null;
     defaultView: {
         center: NormalizedPoint;

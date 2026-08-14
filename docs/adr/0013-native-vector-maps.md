@@ -7,8 +7,8 @@
 
 Daena already has a provider-neutral Maps domain: one `daena.maps:map` entity,
 `maps:map` / `maps:layers` fields, content-addressed source assets, and a
-trusted host surface that dispatches FMG (child webview) and Image Maps
-(Konva in the main webview). Native Vector Maps must extend that model without
+trusted host surface that dispatches FMG (child webview) and Native Vector Maps
+(MapLibre in the main webview). Native Vector Maps must extend that model without
 creating a second identity system, storage root, or plugin surface.
 
 MapLibre and Terra Draw are capable render/edit libraries, but they are not
@@ -36,10 +36,10 @@ while existing Maps anchors stay normalized to `[0, 1]`.
    Mercator latitude limit rather than clamping them.
 
 3. **Trusted host surface.** `NativeVectorMapEditor` runs in the main Tauri
-   webview beside `ImageMapEditor`. It is not a plugin child webview. MapLibre
+   webview. It is not a plugin child webview. MapLibre
    uses the CSP bundle, an explicit same-origin worker URL, `worker-src
    'self'`, and a local style with no tiles, glyphs, sprites, or telemetry.
-   FMG remains isolated in its child webview.
+   Imported images are local object URLs on that same style. FMG remains isolated in its child webview.
 
 ## Consequences
 

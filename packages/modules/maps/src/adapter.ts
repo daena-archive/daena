@@ -5,7 +5,6 @@
  * deterministic contract fixture used until that bundle is vendored.
  */
 export const FMG_PROVIDER = "azgaar-fmg" as const;
-export const IMAGE_PROVIDER = "daena-image" as const;
 
 export type NormalizedPoint = readonly [number, number];
 export type MapAnchor =
@@ -329,94 +328,6 @@ export class FmgBrowserAdapter implements MapProviderAdapter {
     await this.provider.dispose?.();
   }
 }
-
-/** Image Maps use normalized shared anchors rather than provider selectors.
- * Painting lives in the host editor; this adapter is the provider-neutral
- * contract used for selection, overlay, and lifecycle tests. */
-export class ImageMapAdapter implements MapProviderAdapter {
-  private source = new Uint8Array();
-  private selection: MapAnchor | null = null;
-  private overlay: OverlayFrame = { locations: [] };
-  private dirty = false;
-  private listeners = new Set<(event: ProviderEvent) => void>();
-
-  async capabilities(): Promise<ProviderCapabilities> {
-    return { provider: IMAGE_PROVIDER, adapterVersion: 1, featureKinds: [], supportsEditing: true };
-  }
-
-  async load(source: Uint8Array): Promise<LoadedMap> {
-    this.source = source.slice();
-    this.dirty = false;
-    this.emit({ type: "ready" });
-    return { provider: IMAGE_PROVIDER, sourceHash: await digest(source), dirty: false };
-  }
-
-  async serialize(): Promise<Uint8Array> {
-    return this.source.slice();
-  }
-
-  async open(session: MapEditorSession, source?: Uint8Array): Promise<void> {
-    if (source) await this.load(source);
-    session.dirty = false;
-    this.dirty = false;
-  }
-
-  async save(_session: MapEditorSession): Promise<MapEditorSaveResult> {
-    const bytes = await this.serialize();
-    this.dirty = false;
-    return { bytes, hash: await digest(bytes) };
-  }
-
-  async close(session: MapEditorSession): Promise<boolean> {
-    if (!session.dirty && !this.dirty) return false;
-    this.dirty = false;
-    return true;
-  }
-
-  async listFeatures(_query?: FeatureQuery): Promise<ProviderFeature[]> {
-    return [];
-  }
-
-  async captureSelection(): Promise<MapAnchor | null> {
-    return this.selection;
-  }
-
-  async resolveAnchor(anchor: MapAnchor): Promise<{ resolved: boolean; point: NormalizedPoint | null }> {
-    if (anchor.kind === "point") return { resolved: true, point: anchor.point };
-    if (anchor.kind === "path") return { resolved: true, point: anchor.points[0] ?? null };
-    if (anchor.kind === "area") return { resolved: true, point: anchor.rings[0]?.[0] ?? null };
-    return { resolved: false, point: anchor.fallbackPoint };
-  }
-
-  async focus(anchor: MapAnchor): Promise<void> {
-    this.selection = anchor;
-    this.emit({ type: "selection-changed", anchor });
-  }
-
-  async setSemanticOverlay(frame: OverlayFrame): Promise<void> {
-    this.overlay = frame;
-  }
-
-  subscribe(listener: (event: ProviderEvent) => void): () => void {
-    this.listeners.add(listener);
-    return () => {
-      this.listeners.delete(listener);
-    };
-  }
-
-  async dispose(): Promise<void> {
-    this.listeners.clear();
-    this.source = new Uint8Array();
-    this.selection = null;
-  }
-
-  private emit(event: ProviderEvent): void {
-    for (const listener of this.listeners) listener(event);
-  }
-}
-
-/** @deprecated Use ImageMapAdapter. Kept so older phase-3 sketches keep compiling. */
-export class ImageBrowserAdapter extends ImageMapAdapter {}
 
 async function digest(bytes: Uint8Array): Promise<string> {
   const hash = await globalThis.crypto.subtle.digest("SHA-256", new Uint8Array(bytes).buffer as ArrayBuffer);

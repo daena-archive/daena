@@ -169,6 +169,7 @@ pub struct Asset {
 pub struct ImportedImageMap {
     pub entity: Entity,
     pub source: Asset,
+    pub preview: Asset,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3872,24 +3873,30 @@ impl ProjectStore {
                 _ => "map.png",
             })
             .to_owned();
-        let content_hash = crate::maps::image::content_hash(&bytes);
-        let size = bytes.len() as i64;
+        let preview_hash = crate::maps::image::content_hash(&bytes);
+        let preview_size = bytes.len() as i64;
+        let canonical = crate::maps::empty_canonical_bytes();
+        let source_hash = format!("sha256:{:x}", Sha256::digest(&canonical));
+        let source_size = canonical.len() as i64;
         if let Some(root) = self.root.as_deref() {
-            store_runtime_asset(root, bytes.as_slice(), Some(&content_hash))?;
+            store_runtime_asset(root, bytes.as_slice(), Some(&preview_hash))?;
+            store_runtime_asset(root, canonical.as_slice(), Some(&source_hash))?;
         }
         let entity_id = Uuid::new_v4().to_string();
-        let asset_id = Uuid::new_v4().to_string();
+        let source_id = Uuid::new_v4().to_string();
+        let preview_id = Uuid::new_v4().to_string();
         let now = chrono_like_now();
-        let relative_path = format!("assets/maps/{}-{filename}", Uuid::new_v4());
+        let source_path = format!("assets/maps/{}-{}", Uuid::new_v4(), crate::maps::VECTOR_FILENAME);
+        let preview_path = format!("assets/maps/{}-{filename}", Uuid::new_v4());
         let descriptor = serde_json::json!({
             "schemaVersion": 1,
             "provider": {
-                "id": crate::maps::IMAGE_PROVIDER,
+                "id": crate::maps::VECTOR_PROVIDER,
                 "adapterVersion": 1,
-                "sourceFormat": source.source_format
+                "sourceFormat": crate::maps::VECTOR_SOURCE_FORMAT
             },
-            "sourceAssetId": asset_id,
-            "previewAssetId": null,
+            "sourceAssetId": source_id,
+            "previewAssetId": preview_id,
             "defaultView": {"center": [0.5, 0.5], "zoom": 1}
         });
         let layers = serde_json::json!({"schemaVersion": 1, "layers": []});
@@ -3902,21 +3909,34 @@ impl ProjectStore {
             updated_at: now.clone(),
             revision: String::new(),
         };
-        let asset = Asset {
-            id: asset_id.clone(),
+        let source_asset = Asset {
+            id: source_id.clone(),
+            entity_id: entity_id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            filename: crate::maps::VECTOR_FILENAME.into(),
+            content_hash: source_hash.clone(),
+            size: source_size,
+            mime_type: crate::maps::VECTOR_MIME.into(),
+            path: source_path.clone(),
+            created_at: now.clone(),
+            revision: String::new(),
+        };
+        let preview_asset = Asset {
+            id: preview_id.clone(),
             entity_id: entity_id.clone(),
             namespace: crate::maps::MAP_NAMESPACE.into(),
             filename: filename.clone(),
-            content_hash: content_hash.clone(),
-            size,
+            content_hash: preview_hash.clone(),
+            size: preview_size,
             mime_type: mime_type.clone(),
-            path: relative_path.clone(),
+            path: preview_path.clone(),
             created_at: now.clone(),
             revision: String::new(),
         };
         let imported = ImportedImageMap {
             entity: entity.clone(),
-            source: asset.clone(),
+            source: source_asset.clone(),
+            preview: preview_asset.clone(),
         };
         let request_id = self.request_id(request_id)?;
         let result = serde_json::to_value(&imported)
@@ -3924,7 +3944,11 @@ impl ProjectStore {
         let transaction = self.begin_mutation_with_fingerprint(
             &request_id,
             Some(&result),
-            &[format!("entities/{entity_id}/"), relative_path.clone()],
+            &[
+                format!("entities/{entity_id}/"),
+                source_path.clone(),
+                preview_path.clone(),
+            ],
             &input_fingerprint,
         )?;
         transaction.execute(
@@ -3933,7 +3957,11 @@ impl ProjectStore {
         )?;
         transaction.execute(
             "INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-            params![asset_id, entity_id, crate::maps::MAP_NAMESPACE, filename, content_hash, size, mime_type, relative_path, now],
+            params![source_id, entity_id, crate::maps::MAP_NAMESPACE, crate::maps::VECTOR_FILENAME, source_hash, source_size, crate::maps::VECTOR_MIME, source_path, now],
+        )?;
+        transaction.execute(
+            "INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![preview_id, entity_id, crate::maps::MAP_NAMESPACE, filename, preview_hash, preview_size, mime_type, preview_path, now],
         )?;
         crate::maps::validate_field(&transaction, &entity_id, "map", &descriptor)?;
         crate::maps::validate_field(&transaction, &entity_id, "layers", &layers)?;
@@ -3951,6 +3979,7 @@ impl ProjectStore {
         let mut imported = imported;
         imported.entity.revision = self.revision_for_entity(&imported.entity.id)?;
         imported.source.revision = self.revision_for_asset(&imported.source.id)?;
+        imported.preview.revision = self.revision_for_asset(&imported.preview.id)?;
         self.write_mutation_result(
             &request_id,
             &serde_json::to_value(&imported)
@@ -5143,12 +5172,12 @@ impl ProjectStore {
             .into_iter()
             .find(|field| field.namespace == crate::maps::MAP_NAMESPACE && field.key == "map")
             .ok_or_else(|| CoreError::NotFound("map descriptor not found".into()))?;
-        let source_asset_id = descriptor
+        let preview_asset_id = descriptor
             .value
-            .pointer("/sourceAssetId")
+            .pointer("/previewAssetId")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| CoreError::Validation("maps: image maps require sourceAssetId".into()))?;
-        let asset = self.asset_unchecked(source_asset_id)?;
+            .ok_or_else(|| CoreError::Validation("maps: imported vector maps require previewAssetId".into()))?;
+        let asset = self.asset_unchecked(preview_asset_id)?;
         let bytes = self.read_asset_bytes(&asset)?;
         let source = crate::maps::validate_image_source(&bytes, &asset.mime_type)?;
         Ok((source.width, source.height))
@@ -5200,13 +5229,13 @@ impl ProjectStore {
             return Ok(false);
         };
         Ok(
-            descriptor.value.pointer("/provider/id").and_then(serde_json::Value::as_str)
-                == Some(crate::maps::IMAGE_PROVIDER)
-                && descriptor
-                    .value
-                    .pointer("/sourceAssetId")
-                    .and_then(serde_json::Value::as_str)
-                    == Some(asset.id.as_str()),
+            descriptor
+                .value
+                .pointer("/previewAssetId")
+                .and_then(serde_json::Value::as_str)
+                == Some(asset.id.as_str())
+                && descriptor.value.pointer("/provider/id").and_then(serde_json::Value::as_str)
+                    == Some(crate::maps::VECTOR_PROVIDER),
         )
     }
 

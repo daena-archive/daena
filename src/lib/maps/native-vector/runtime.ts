@@ -17,12 +17,14 @@ import { UNDO_STACK_SIZE, type VectorDrawMode, type VectorFeature, type VectorFe
 import {
   AUTHORED_SOURCE_ID,
   BASE_SOURCE_ID,
+  IMAGE_LAYER_ID,
+  IMAGE_SOURCE_ID,
   nativeVectorStyle,
   splitVectorSources,
   styleContainsRemoteUrl,
 } from "./style";
 import { drawModeForGeometry, kindForDrawMode, simplifyFreehandGeometry } from "./geometry";
-import { normalizedToLonLat } from "./coordinates";
+import { imageOverlayCoordinates, normalizedToLonLat } from "./coordinates";
 
 if (typeof maplibregl.setWorkerUrl === "function") maplibregl.setWorkerUrl(workerUrl);
 
@@ -122,6 +124,7 @@ export function createNativeVectorEditor(
     onDirty?: () => void;
     onDiagnostic?: (code: string, detail: string) => void;
     onSelect?: (feature: VectorFeature | null) => void;
+    background?: { url: string; width: number; height: number } | null;
   },
 ): NativeVectorEditor | { error: typeof RENDERER_UNAVAILABLE; detail: string } {
   if (!webgl2Available()) {
@@ -165,9 +168,52 @@ export function createNativeVectorEditor(
   let draw: TerraDraw | null = null;
   let disposed = false;
   const objectUrls: string[] = [];
+  if (session.background?.url) objectUrls.push(session.background.url);
   let hoveredId: string | number | null = null;
   let mapSelectedId: string | number | null = null;
   let terraSelectedId: string | number | null = null;
+
+  const styleNotLoaded = (error: unknown) =>
+    /style is not done loading/i.test(error instanceof Error ? error.message : String(error));
+
+  const whenStyleReady = (run: () => void) => {
+    const attempt = () => {
+      if (disposed) return;
+      try {
+        run();
+      } catch (error) {
+        if (!styleNotLoaded(error)) throw error;
+        map.once("style.load", attempt);
+        map.once("idle", attempt);
+      }
+    };
+    if (map.isStyleLoaded()) attempt();
+    else {
+      map.once("style.load", attempt);
+      map.once("idle", attempt);
+    }
+  };
+
+  const applyBackground = () => {
+    const background = session.background;
+    if (!background || disposed) return;
+    whenStyleReady(() => {
+      if (disposed || !session.background) return;
+      if (map.getLayer(IMAGE_LAYER_ID)) map.removeLayer(IMAGE_LAYER_ID);
+      if (map.getSource(IMAGE_SOURCE_ID)) map.removeSource(IMAGE_SOURCE_ID);
+      map.addSource(IMAGE_SOURCE_ID, {
+        type: "image",
+        url: background.url,
+        coordinates: imageOverlayCoordinates(background.width, background.height),
+      });
+      if (map.getLayer("daena-base-fill")) {
+        map.addLayer({ id: IMAGE_LAYER_ID, type: "raster", source: IMAGE_SOURCE_ID }, "daena-base-fill");
+      } else {
+        map.addLayer({ id: IMAGE_LAYER_ID, type: "raster", source: IMAGE_SOURCE_ID });
+      }
+    });
+  };
+  map.on("style.load", applyBackground);
 
   const clearFeatureState = (id: string | number | null, key: "hover" | "selected") => {
     if (id === null) return;
@@ -301,44 +347,46 @@ export function createNativeVectorEditor(
   };
 
   const startDraw = () => {
-    if (disposed || draw) return;
-    draw = new TerraDraw({
-      adapter: new TerraDrawMapLibreGLAdapter({ map, coordinatePrecision: 6 }),
-      idStrategy: {
-        isValidId: (candidate) => typeof candidate === "string",
-        getId: () => crypto.randomUUID(),
-      },
-      undoRedo: { sessionLevel: new TerraDrawSessionUndoRedo({ maxStackSize: UNDO_STACK_SIZE }) },
-      modes: [
-        new TerraDrawSelectMode({
-          keyEvents: { deselect: "Escape", delete: "Delete", rotate: null, scale: null },
-          flags: {
-            point: { feature: { draggable: true } },
-            linestring: {
-              feature: { draggable: true, coordinates: { midpoints: true, draggable: true, deletable: true } },
+    whenStyleReady(() => {
+      if (disposed || draw) return;
+      draw = new TerraDraw({
+        adapter: new TerraDrawMapLibreGLAdapter({ map, coordinatePrecision: 6 }),
+        idStrategy: {
+          isValidId: (candidate) => typeof candidate === "string",
+          getId: () => crypto.randomUUID(),
+        },
+        undoRedo: { sessionLevel: new TerraDrawSessionUndoRedo({ maxStackSize: UNDO_STACK_SIZE }) },
+        modes: [
+          new TerraDrawSelectMode({
+            keyEvents: { deselect: "Escape", delete: "Delete", rotate: null, scale: null },
+            flags: {
+              point: { feature: { draggable: true } },
+              linestring: {
+                feature: { draggable: true, coordinates: { midpoints: true, draggable: true, deletable: true } },
+              },
+              polygon: {
+                feature: { draggable: true, coordinates: { midpoints: true, draggable: true, deletable: true } },
+              },
+              freehand: {
+                feature: { draggable: true, coordinates: { midpoints: true, draggable: true, deletable: true } },
+              },
             },
-            polygon: {
-              feature: { draggable: true, coordinates: { midpoints: true, draggable: true, deletable: true } },
-            },
-            freehand: {
-              feature: { draggable: true, coordinates: { midpoints: true, draggable: true, deletable: true } },
-            },
-          },
-        }),
-        new TerraDrawPointMode(),
-        new TerraDrawLineStringMode(),
-        new TerraDrawPolygonMode(),
-        new TerraDrawFreehandMode(),
-      ],
+          }),
+          new TerraDrawPointMode(),
+          new TerraDrawLineStringMode(),
+          new TerraDrawPolygonMode(),
+          new TerraDrawFreehandMode(),
+        ],
+      });
+      applySources(session.activeLayerId);
+      draw.start();
+      loadActiveLayer();
+      draw.setMode(terraLayerId() ? "select" : "static");
+      draw.on("change", onChange);
+      draw.on("finish", onFinish);
+      draw.on("select", onSelect);
+      draw.on("deselect", onDeselect);
     });
-    applySources(session.activeLayerId);
-    draw.start();
-    loadActiveLayer();
-    draw.setMode(terraLayerId() ? "select" : "static");
-    draw.on("change", onChange);
-    draw.on("finish", onFinish);
-    draw.on("select", onSelect);
-    draw.on("deselect", onDeselect);
   };
 
   const onHover = (event: MapLayerMouseEvent) => {
@@ -414,7 +462,7 @@ export function createNativeVectorEditor(
       startDraw();
     },
     syncLayers(layers) {
-      const apply = () => {
+      whenStyleReady(() => {
         const generated = nativeVectorStyle(layers);
         if (styleContainsRemoteUrl(generated)) {
           session.onDiagnostic?.(RENDERER_UNAVAILABLE, "Native vector style must not request remote URLs.");
@@ -431,12 +479,7 @@ export function createNativeVectorEditor(
           }
         }
         applySources(session.activeLayerId);
-      };
-      if (!map.isStyleLoaded()) {
-        map.once("style.load", apply);
-        return;
-      }
-      apply();
+      });
     },
     applyView(center, zoom) {
       const [lon, lat] = normalizedToLonLat(center[0], center[1]);
@@ -479,6 +522,7 @@ export function createNativeVectorEditor(
       if (disposed) return;
       disposed = true;
       map.off("style.load", startDraw);
+      map.off("style.load", applyBackground);
       map.off("mousemove", onHover);
       map.off("click", onMapClick);
       clearFeatureState(hoveredId, "hover");

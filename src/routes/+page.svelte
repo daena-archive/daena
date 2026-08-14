@@ -31,9 +31,7 @@ import type {
 import { buildModuleContext } from "$lib/modules/context";
 import HostView from "$lib/plugins/HostView.svelte";
 import SandboxView from "$lib/plugins/SandboxView.svelte";
-import ImageMapEditor from "$lib/maps/image-map/ImageMapEditor.svelte";
 import NativeVectorMapEditor from "$lib/maps/native-vector/NativeVectorMapEditor.svelte";
-import { imageMapSession } from "$lib/maps/image-map/session";
 import { nativeVectorSession } from "$lib/maps/native-vector/session";
 import ProjectionView from "$lib/ProjectionView.svelte";
 import SettingsView from "$lib/SettingsView.svelte";
@@ -681,10 +679,6 @@ async function resolveDirtyMapSession(): Promise<boolean> {
   if (!mapId || sandboxView?.renderer !== "maps" || mapSaveStates[mapId]?.status !== "dirty") return true;
   if (confirm("Save changes to this map before leaving?")) {
     try {
-      if (mapsEditorMode === "image") {
-        await imageMapSession()?.save();
-        return imageMapSession()?.isDirty() !== true && mapSaveStates[mapId]?.status !== "dirty";
-      }
       if (mapsEditorMode === "vector") {
         await nativeVectorSession()?.save();
         return nativeVectorSession()?.isDirty() !== true && mapSaveStates[mapId]?.status !== "dirty";
@@ -816,12 +810,7 @@ async function openPluginView(item: PluginNavigationItem) {
         (field) => field.namespace === "maps" && field.key === "map",
       );
       const descriptor = mapField?.value as { provider?: { id?: string } } | undefined;
-      mapsEditorMode =
-        descriptor?.provider?.id === "daena-image"
-          ? "image"
-          : descriptor?.provider?.id === "daena-vector"
-            ? "vector"
-            : "fmg";
+      mapsEditorMode = descriptor?.provider?.id === "daena-vector" ? "vector" : "fmg";
     }
     mapFocusLinkId = null;
     if (!(await leavePluginView())) return;
@@ -842,7 +831,8 @@ async function openPluginView(item: PluginNavigationItem) {
   sandboxView = { plugin: item.plugin, view: item.view, renderer: "webview" };
 }
 
-let mapsEditorMode = $state<"fmg" | "image" | "vector">("fmg");
+let mapsEditorMode = $state<"fmg" | "vector">("fmg");
+let mapsVectorStart = $state<"generate" | "import">("generate");
 let mapProviderMenuOpen = $state<"header" | "empty" | null>(null);
 async function createMap(provider: "fmg" | "image" | "vector" = "fmg") {
   if (projectDiagnostics.length > 0) return;
@@ -859,7 +849,8 @@ async function createMap(provider: "fmg" | "image" | "vector" = "fmg") {
     if (!(await dismissSettings())) return;
     if (!(await leavePluginView())) return;
     // Draft editor: no map entity until the in-FMG Save overlay commits one.
-    mapsEditorMode = provider;
+    mapsEditorMode = provider === "fmg" ? "fmg" : "vector";
+    mapsVectorStart = provider === "image" ? "import" : "generate";
     mapsEditorKey = `draft-${Date.now()}`;
     sandboxView = { plugin: mapView.plugin, view: mapView.view, renderer: "maps" };
   } catch (cause) {
@@ -947,10 +938,6 @@ function savedMaps() {
 
 async function saveCurrentMap() {
   try {
-    if (mapsEditorMode === "image") {
-      await imageMapSession()?.save();
-      return;
-    }
     if (mapsEditorMode === "vector") {
       await nativeVectorSession()?.save();
       return;
@@ -2009,7 +1996,7 @@ async function beginMapPick(pending: NonNullable<typeof mapPickPending>) {
       ? "Click the map to rebind this location."
       : "Click for a point, or use Path/Area to draw a route or region.";
   await ensureMapEditorOpen(pending.mapEntityId);
-  if (mapsEditorMode === "image" || mapsEditorMode === "vector") return;
+  if (mapsEditorMode === "vector") return;
   // Webview remounts when the map key changes; give the bridge a moment to boot.
   window.setTimeout(() => {
     void project.mapsEditorStartPick(activeMapsPluginId()).catch((cause) => {
@@ -3943,7 +3930,7 @@ onMount(() => {
               {#if mapProviderMenuOpen === "header"}<div class="map-provider-menu" role="menu">
                   <button type="button" role="menuitem" onclick={() => void createMap("fmg")}>Create with FMG</button>
                   <button type="button" role="menuitem" onclick={() => void createMap("image")}
-                    >Import image map</button>
+                    >Import image</button>
                   <button type="button" role="menuitem" onclick={() => void createMap("vector")}>New vector map</button>
                 </div>{/if}
             </div>{/if}
@@ -4014,7 +4001,7 @@ onMount(() => {
                         <button type="button" role="menuitem" onclick={() => void createMap("fmg")}
                           >Create with FMG</button>
                         <button type="button" role="menuitem" onclick={() => void createMap("image")}
-                          >Import image map</button>
+                          >Import image</button>
                         <button type="button" role="menuitem" onclick={() => void createMap("vector")}
                           >New vector map</button>
                       </div>{/if}
@@ -4070,6 +4057,7 @@ onMount(() => {
                     <NativeVectorMapEditor
                       mapId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
                       picking={Boolean(mapPickPending)}
+                      start={mapsEditorKey.startsWith("draft-") ? mapsVectorStart : "generate"}
                       focusLinkId={mapFocusLinkId ?? undefined}
                       onpick={(anchor) => void applyMapPick(anchor)}
                       onopen={(entityId) => void openMapEntityFromLink(entityId)}
@@ -4087,27 +4075,6 @@ onMount(() => {
                       }}
                       oncancel={() => {
                         sandboxView = null;
-                      }} />
-                  {/key}
-                {:else if mapsEditorMode === "image"}
-                  {#key mapsEditorKey}
-                    <ImageMapEditor
-                      mapId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
-                      picking={Boolean(mapPickPending)}
-                      focusLinkId={mapFocusLinkId ?? undefined}
-                      onpick={(anchor) => void applyMapPick(anchor)}
-                      onopen={(entityId) => void openMapEntityFromLink(entityId)}
-                      onstate={(status, detail) => {
-                        if (!mapId) return;
-                        mapSaveStates[mapId] = { status, detail };
-                      }}
-                      oncreated={async (map) => {
-                        entities = await project.listEntities();
-                        savedMapsCache = null;
-                        selected = map;
-                        mapsEditorKey = map.id;
-                        mapsEditorMode = "image";
-                        await loadSelectedState(map);
                       }} />
                   {/key}
                 {:else}

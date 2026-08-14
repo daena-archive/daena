@@ -3966,8 +3966,11 @@ fn image_map_import_layer_mutations_and_checkpoint_rebuild() {
         .into_iter()
         .find(|field| field.key == "map")
         .unwrap();
-    assert_eq!(descriptor.value["provider"]["id"], crate::maps::IMAGE_PROVIDER);
+    assert_eq!(descriptor.value["provider"]["id"], crate::maps::VECTOR_PROVIDER);
     assert_eq!(descriptor.value["sourceAssetId"], imported.source.id);
+    assert_eq!(descriptor.value["previewAssetId"], imported.preview.id);
+    assert_eq!(imported.source.mime_type, crate::maps::VECTOR_MIME);
+    assert_eq!(imported.preview.mime_type, "image/png");
 
     let jpeg_map = store
         .import_image_map(
@@ -3978,16 +3981,7 @@ fn image_map_import_layer_mutations_and_checkpoint_rebuild() {
             None,
         )
         .unwrap();
-    assert_eq!(
-        store
-            .list_fields(jpeg_map.entity.id)
-            .unwrap()
-            .into_iter()
-            .find(|field| field.key == "map")
-            .unwrap()
-            .value["provider"]["sourceFormat"],
-        "jpeg"
-    );
+    assert_eq!(jpeg_map.preview.mime_type, "image/jpeg");
 
     let unsafe_svg = b"<svg viewBox=\"0 0 10 10\"><script>alert(1)</script></svg>".to_vec();
     assert!(store
@@ -4048,13 +4042,13 @@ fn image_map_import_layer_mutations_and_checkpoint_rebuild() {
     assert!(store
         .replace_asset_bytes_with_request(
             AssetReplaceInput {
-                asset_id: imported.source.id.clone(),
+                asset_id: imported.preview.id.clone(),
                 content_hash: crate::maps::image::content_hash(&png),
                 size: png.len() as i64,
                 mime_type: "image/png".into(),
             },
             png.clone(),
-            &store.asset(imported.source.id.clone()).unwrap().revision,
+            &store.asset(imported.preview.id.clone()).unwrap().revision,
             None,
         )
         .unwrap_err()
@@ -4471,14 +4465,18 @@ fn image_map_runtime_bytes_survive_an_interrupted_export() {
             None,
         )
         .unwrap();
-    assert!(!root.join(&imported.source.path).exists());
+    assert!(!root.join(&imported.preview.path).exists());
     drop(store);
 
     let reopened = ProjectStore::open_directory(&root).unwrap();
     reopened
         .flush_checkpoint("recover interrupted image map export")
         .unwrap();
-    assert_eq!(std::fs::read(root.join(&imported.source.path)).unwrap(), png);
+    assert_eq!(std::fs::read(root.join(&imported.preview.path)).unwrap(), png);
+    assert_eq!(
+        std::fs::read(root.join(&imported.source.path)).unwrap(),
+        crate::maps::empty_canonical_bytes()
+    );
     assert_eq!(reopened.sync_summary().unwrap().state, "clean");
     drop(reopened);
     std::fs::remove_dir_all(root).unwrap();

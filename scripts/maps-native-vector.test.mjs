@@ -9,6 +9,7 @@ function fail(message) {
 }
 
 const pkg = JSON.parse(read("package.json"));
+if (pkg.dependencies?.konva) fail("Konva must not remain after merging image import into native vector maps");
 for (const [name, major] of [
   ["maplibre-gl", "5"],
   ["terra-draw", "1"],

@@ -175,9 +175,9 @@
               "additionalProperties": false,
               "required": ["id", "adapterVersion", "sourceFormat"],
               "properties": {
-                "id": { "const": "daena-image" },
+                "id": { "const": "daena-vector" },
                 "adapterVersion": { "const": 1 },
-                "sourceFormat": { "enum": ["png", "jpeg", "svg"] }
+                "sourceFormat": { "const": "geojson" }
               }
             }
           ]
@@ -197,7 +197,7 @@
       "if": {
         "properties": {
           "provider": {
-            "properties": { "id": { "const": "daena-image" } },
+            "properties": { "id": { "const": "daena-vector" } },
             "required": ["id"]
           }
         }

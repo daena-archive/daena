@@ -16,28 +16,30 @@ is subordinate to:
 Native Vector Maps extend the existing bundled `daena.maps` module. They do not
 create another map identity system, storage root, plugin, or host surface.
 
-The initial deliverable is complete when an author can generate candidates,
-accept one as a normal map entity, draw and edit Daena-owned vector layers,
-link vector features to entities, close and reopen the project, and reconstruct
-the same canonical map after deleting a clean `.daena/` directory.
+The initial deliverable is complete when an author can generate candidates or
+import an image (skipping generation), accept the result as a normal map entity,
+draw and edit Daena-owned vector layers, link vector features to entities, close
+and reopen the project, and reconstruct the same canonical map after deleting a
+clean `.daena/` directory.
 
 ## Scope and non-goals
 
 Daena supports independent map providers:
 
 1. `azgaar-fmg` owns FMG generation, source format, editing, and rendering.
-2. `daena-image` owns image-backed maps and raster paint layers.
-3. `daena-vector` owns GeoJSON geography and vector editing.
+2. `daena-vector` owns GeoJSON geography, vector editing, and optional imported
+   image backgrounds.
 
 The provider-neutral map entity, location, navigation, hierarchy, and
 checkpoint contracts remain shared. Provider source representations do not.
-An FMG source is not converted to GeoJSON, and an image map is not made
-dependent on MapLibre.
+An FMG source is not converted to GeoJSON. An imported image is a background
+on a Native Vector Map; it is not a second map identity or paint-layer provider.
 
 The first native-vector slice includes:
 
 - deterministic landmass candidates;
 - explicit candidate acceptance;
+- **Import image**, which skips generation and stores the image as `previewAssetId`;
 - an offline MapLibre renderer;
 - point, line, polygon, and freehand editing through Terra Draw;
 - vector layer creation, rename, style, visibility, ordering, locking, and
@@ -65,7 +67,7 @@ them:
 - mutations carry request IDs and expected revisions;
 - runtime writes commit to SQLite first and the checkpoint worker exports
   deterministic portable files; and
-- the trusted Maps host surface already dispatches FMG and Image Map editors.
+- the trusted Maps host surface already dispatches FMG and Native Vector editors.
 
 The primary implementation locations are:
 
@@ -477,10 +479,13 @@ do not move this slice to MapLibre 6 until the adapter's official compatibility
 and the Phase 0 fixtures pass. Keep exact resolved versions in the lockfile and
 retain license notices.
 
-`NativeVectorMapEditor.svelte` is a trusted host-surface implementation like
-`ImageMapEditor.svelte`; it is not a new child webview. It is selected when the
-descriptor provider is `daena-vector`. FMG continues to use its isolated child
-webview.
+`NativeVectorMapEditor.svelte` is a trusted host-surface implementation. It is
+selected when the descriptor provider is `daena-vector`. FMG continues to use
+its isolated child webview. Authors can **Import image** from the generator
+instead of accepting a landmass candidate. Import reuses image safety budgets
+(`IMAGE_MAX_ENCODED_BYTES`, pixel, and decoded-memory caps), stores an empty
+canonical GeoJSON source, and places the image on `previewAssetId`. MapLibre
+renders that preview as a local image overlay under authored vector layers.
 
 MapLibre configuration:
 
@@ -528,7 +533,7 @@ an existing feature but is not assigned by the first-release toolbar.
 ### Candidate acceptance
 
 Add `maps.vector.create.begin` and `maps.vector.create.commit` RPC methods,
-mirroring the bounded Image Map import flow.
+mirroring the bounded image-import transfer flow.
 
 `begin` accepts the map name, generator provenance, declared byte size, and
 request ID, then returns a session-bound upload handle. `commit` accepts the

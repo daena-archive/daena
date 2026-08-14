@@ -52,12 +52,12 @@ fn fmg_descriptor(source_asset_id: Option<String>) -> Value {
     })
 }
 
-fn image_descriptor(source_format: &str, source_asset_id: &str) -> Value {
+fn vector_descriptor(source_asset_id: &str, preview_asset_id: Option<&str>) -> Value {
     serde_json::json!({
         "schemaVersion": 1,
-        "provider": {"id": IMAGE_PROVIDER, "adapterVersion": 1, "sourceFormat": source_format},
+        "provider": {"id": VECTOR_PROVIDER, "adapterVersion": 1, "sourceFormat": VECTOR_SOURCE_FORMAT},
         "sourceAssetId": source_asset_id,
-        "previewAssetId": null,
+        "previewAssetId": preview_asset_id,
         "defaultView": {"center": [0.5, 0.5], "zoom": 1}
     })
 }
@@ -172,9 +172,9 @@ fn rejects_inverted_validity_date_bounds() {
 fn image_descriptors_and_raster_layers_round_trip() {
     let png = serde_json::json!({
         "schemaVersion": 1,
-        "provider": {"id": IMAGE_PROVIDER, "adapterVersion": 1, "sourceFormat": "png"},
+        "provider": {"id": VECTOR_PROVIDER, "adapterVersion": 1, "sourceFormat": VECTOR_SOURCE_FORMAT},
         "sourceAssetId": "018f89ec-25fc-7816-8b47-6f80905f2868",
-        "previewAssetId": null,
+        "previewAssetId": "018f89ec-25fc-7816-8b47-6f80905f2869",
         "defaultView": {"center": [0.5, 0.5], "zoom": 1}
     });
     let descriptor: MapDescriptor = serde_json::from_value(png.clone()).unwrap();
@@ -395,16 +395,18 @@ fn validates_image_source_ownership_and_mime() {
     let other_id = Uuid::new_v4().to_string();
     insert_entity(&connection, &map_id, MAP_ENTITY_TYPE);
     insert_entity(&connection, &other_id, MAP_ENTITY_TYPE);
+    let geojson = Uuid::new_v4().to_string();
+    insert_asset(&connection, &geojson, &map_id, VECTOR_MIME);
 
     assert!(validate_field(
         &connection,
         &map_id,
         "map",
-        &image_descriptor("png", &Uuid::new_v4().to_string())
+        &vector_descriptor(&geojson, Some(&Uuid::new_v4().to_string()))
     )
     .unwrap_err()
     .to_string()
-    .contains("sourceAssetId"));
+    .contains("previewAssetId"));
 
     let foreign = Uuid::new_v4().to_string();
     insert_asset(&connection, &foreign, &other_id, "image/png");
@@ -412,17 +414,17 @@ fn validates_image_source_ownership_and_mime() {
         &connection,
         &map_id,
         "map",
-        &image_descriptor("png", &foreign)
+        &vector_descriptor(&geojson, Some(&foreign))
     )
     .is_err());
 
     let wrong_mime = Uuid::new_v4().to_string();
-    insert_asset(&connection, &wrong_mime, &map_id, "image/jpeg");
+    insert_asset(&connection, &wrong_mime, &map_id, "application/octet-stream");
     assert!(validate_field(
         &connection,
         &map_id,
         "map",
-        &image_descriptor("png", &wrong_mime)
+        &vector_descriptor(&geojson, Some(&wrong_mime))
     )
     .unwrap_err()
     .to_string()
@@ -430,7 +432,13 @@ fn validates_image_source_ownership_and_mime() {
 
     let png = Uuid::new_v4().to_string();
     insert_asset(&connection, &png, &map_id, "image/png");
-    assert!(validate_field(&connection, &map_id, "map", &image_descriptor("png", &png)).is_ok());
+    assert!(validate_field(
+        &connection,
+        &map_id,
+        "map",
+        &vector_descriptor(&geojson, Some(&png))
+    )
+    .is_ok());
 
     let jpeg = Uuid::new_v4().to_string();
     insert_asset(&connection, &jpeg, &map_id, "image/jpeg");
@@ -438,13 +446,35 @@ fn validates_image_source_ownership_and_mime() {
         &connection,
         &map_id,
         "map",
-        &image_descriptor("jpeg", &jpeg)
+        &vector_descriptor(&geojson, Some(&jpeg))
     )
     .is_ok());
 
     let svg = Uuid::new_v4().to_string();
     insert_asset(&connection, &svg, &map_id, "image/svg+xml");
-    assert!(validate_field(&connection, &map_id, "map", &image_descriptor("svg", &svg)).is_ok());
+    assert!(validate_field(
+        &connection,
+        &map_id,
+        "map",
+        &vector_descriptor(&geojson, Some(&svg))
+    )
+    .is_ok());
+
+    assert!(validate_field(
+        &connection,
+        &map_id,
+        "map",
+        &serde_json::json!({
+            "schemaVersion": 1,
+            "provider": {"id": "daena-image", "adapterVersion": 1, "sourceFormat": "png"},
+            "sourceAssetId": png,
+            "previewAssetId": null,
+            "defaultView": {"center": [0.5, 0.5], "zoom": 1}
+        })
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("unsupported map provider"));
 }
 
 #[test]
@@ -613,7 +643,9 @@ fn checkpoint_image_bytes_must_decode_and_stay_safe() {
     let source_id = Uuid::new_v4().to_string();
     insert_entity(&connection, &map_id, MAP_ENTITY_TYPE);
     insert_asset(&connection, &source_id, &map_id, "image/svg+xml");
-    let descriptor = image_descriptor("svg", &source_id);
+    let geojson = Uuid::new_v4().to_string();
+    insert_asset(&connection, &geojson, &map_id, VECTOR_MIME);
+    let descriptor = vector_descriptor(&geojson, Some(&source_id));
     connection
         .execute(
             "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
@@ -626,8 +658,15 @@ fn checkpoint_image_bytes_must_decode_and_stay_safe() {
         )
         .unwrap();
     let unsafe_svg = b"<svg\nonload=\"alert(1)\" viewBox=\"0 0 10 10\"></svg>";
-    let error = validate_image_map_content(&connection, |_| Ok(unsafe_svg.to_vec()))
-        .unwrap_err()
-        .to_string();
+    let empty = crate::maps::empty_canonical_bytes();
+    let error = validate_image_map_content(&connection, |asset_id| {
+        if asset_id == geojson {
+            Ok(empty.clone())
+        } else {
+            Ok(unsafe_svg.to_vec())
+        }
+    })
+    .unwrap_err()
+    .to_string();
     assert!(error.contains("unsupported active"), "{error}");
 }

@@ -64,11 +64,36 @@ let notice = $state("");
 let renamingId = $state<string | null>(null);
 let selectedFeature = $state<VectorFeature | null>(null);
 let defaultView = $state({ center: [0.5, 0.5] as [number, number], zoom: 1 });
-let background = $state<{ url: string; width: number; height: number } | null>(null);
+let background = $state<{ url: string; width: number; height: number; canvas: HTMLCanvasElement } | null>(null);
+let fullscreen = $state(false);
 
 const listedLayers = $derived(
   [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id)),
 );
+
+const icons = {
+  back: '<path d="M19 12H5"/><path d="m12 19-7-7 7-7"/>',
+  pan: '<path d="M12 2v20"/><path d="m15 19-3 3-3-3"/><path d="m19 9 3 3-3 3"/><path d="M2 12h20"/><path d="m5 9-3 3 3 3"/><path d="m9 5 3-3 3 3"/>',
+  select: '<path d="M4 4 16 9.5 10.5 11 9.5 16Z"/>',
+  point: '<circle cx="12" cy="12" r="3.5"/>',
+  line: '<path d="M5 19 19 5"/>',
+  polygon: '<path d="M12 3 20 8.5v7L12 21 4 15.5v-7Z"/>',
+  freehand: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+  undo: '<path d="M3 7v6h6"/><path d="M3 13a9 9 0 1 0 3-7.3L3 13"/>',
+  redo: '<path d="M21 7v6h-6"/><path d="M21 13a9 9 0 1 1-3-7.3L21 13"/>',
+  addLayer: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M8 12h8"/><path d="M12 8v8"/>',
+  save: '<path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7H7v7"/><path d="M7 3v4h8"/>',
+  fullscreen: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
+  exitFullscreen: '<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>',
+  show: '<path d="M2.06 12a10.94 10.94 0 0 1 20 0"/><path d="M2.06 12a10.94 10.94 0 0 0 20 0"/><circle cx="12" cy="12" r="3"/>',
+  hide: '<path d="M10.7 5.1A11 11 0 0 1 12 5c5 0 9.3 3.1 11 7-.5 1.2-1.2 2.3-2.1 3.2"/><path d="M17.9 17.9A11 11 0 0 1 12 19c-5 0-9.3-3.1-11-7 1-2.3 2.6-4.2 4.6-5.5"/><path d="m2 2 20 20"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>',
+  lock: '<rect width="14" height="10" x="5" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  unlock: '<rect width="14" height="10" x="5" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
+  rename: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+  up: '<path d="m18 15-6-6-6 6"/>',
+  down: '<path d="m6 9 6 6 6-6"/>',
+  remove: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+} as const;
 const activeLayer = $derived(layers.find((layer) => layer.id === activeLayerId) ?? null);
 const canDraw = $derived(Boolean(activeLayer) && !activeLayer?.locked && !picking);
 const dirty = $derived(editorState.dirty);
@@ -78,6 +103,22 @@ const conflict = $derived(editorState.conflict);
 
 function publish(status: string, detail: unknown = null) {
   onstate?.(status, detail);
+}
+
+async function requestBack() {
+  publish("back");
+}
+
+async function setFullscreen(enabled: boolean) {
+  if (fullscreen === enabled) return;
+  fullscreen = enabled;
+  publish("fullscreen", { enabled });
+  await tick();
+  editor?.resize();
+}
+
+function toggleFullscreen() {
+  void setFullscreen(!fullscreen);
 }
 
 function applyEditorEvent(event: Parameters<typeof reduceVectorEditor>[1]) {
@@ -184,7 +225,19 @@ async function load() {
       const url = URL.createObjectURL(new Blob([new Uint8Array(previewBytes)], { type: preview.mime_type }));
       background = await new Promise((resolve, reject) => {
         const image = new Image();
-        image.onload = () => resolve({ url, width: image.naturalWidth, height: image.naturalHeight });
+        image.onload = () => {
+          const canvas = document.createElement("canvas");
+          canvas.width = image.naturalWidth;
+          canvas.height = image.naturalHeight;
+          const context = canvas.getContext("2d");
+          if (!context) {
+            URL.revokeObjectURL(url);
+            reject(new Error("Could not decode the imported map image"));
+            return;
+          }
+          context.drawImage(image, 0, 0);
+          resolve({ url, width: image.naturalWidth, height: image.naturalHeight, canvas });
+        };
         image.onerror = () => {
           URL.revokeObjectURL(url);
           reject(new Error("Could not decode the imported map image"));
@@ -397,6 +450,11 @@ async function removeLayer(layer: VectorLayerDefinition) {
 }
 
 function onKey(event: KeyboardEvent) {
+  if (event.key === "Escape" && fullscreen) {
+    event.preventDefault();
+    void setFullscreen(false);
+    return;
+  }
   if (event.target instanceof HTMLElement && event.target.closest("input, textarea, select, [contenteditable=true]")) {
     return;
   }
@@ -435,8 +493,17 @@ onMount(() => {
 });
 </script>
 
+{#snippet glyph(markup: string)}
+  <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{@html markup}</svg>
+{/snippet}
+
 {#if !mapId}
-  <NativeVectorGenerator {oncreated} {oncancel} autostartImport={start === "import"} />
+  <NativeVectorGenerator
+    {oncreated}
+    {oncancel}
+    autostartImport={start === "import"}
+    onfullscreen={(enabled) => void setFullscreen(enabled)}
+    {fullscreen} />
 {:else}
 <section class="native-vector-editor" aria-label="Native vector map editor">
   <header>
@@ -445,40 +512,74 @@ onMount(() => {
       <strong>{busy ? "Loading…" : dirty ? "Unsaved changes" : "Saved"}</strong>
     </div>
     <div class="header-actions" role="toolbar" aria-label="Vector drawing tools">
-      <button type="button" class:active={tool === "static"} aria-pressed={tool === "static"} onclick={() => setTool("static")}
-        >Pan</button>
-      <button type="button" class:active={tool === "select"} aria-pressed={tool === "select"} onclick={() => setTool("select")}
-        >Select</button>
+      <button type="button" class="icon-button" aria-label="Back to map details" title="Back to map details" onclick={() => void requestBack()}
+        >{@render glyph(icons.back)}</button>
+      <button type="button" class="icon-button" class:active={tool === "static"} aria-pressed={tool === "static"} aria-label="Pan" title="Pan" onclick={() => setTool("static")}
+        >{@render glyph(icons.pan)}</button>
+      <button type="button" class="icon-button" class:active={tool === "select"} aria-pressed={tool === "select"} aria-label="Select" title="Select" onclick={() => setTool("select")}
+        >{@render glyph(icons.select)}</button>
       <button
         type="button"
+        class="icon-button"
         class:active={tool === "point"}
         aria-pressed={tool === "point"}
+        aria-label="Point"
+        title="Point"
         disabled={!canDraw}
-        onclick={() => setTool("point")}>Point</button>
+        onclick={() => setTool("point")}>{@render glyph(icons.point)}</button>
       <button
         type="button"
+        class="icon-button"
         class:active={tool === "linestring"}
         aria-pressed={tool === "linestring"}
+        aria-label="Line"
+        title="Line"
         disabled={!canDraw}
-        onclick={() => setTool("linestring")}>Line</button>
+        onclick={() => setTool("linestring")}>{@render glyph(icons.line)}</button>
       <button
         type="button"
+        class="icon-button"
         class:active={tool === "polygon"}
         aria-pressed={tool === "polygon"}
+        aria-label="Polygon"
+        title="Polygon"
         disabled={!canDraw}
-        onclick={() => setTool("polygon")}>Polygon</button>
+        onclick={() => setTool("polygon")}>{@render glyph(icons.polygon)}</button>
       <button
         type="button"
+        class="icon-button"
         class:active={tool === "freehand"}
         aria-pressed={tool === "freehand"}
+        aria-label="Freehand"
+        title="Freehand"
         disabled={!canDraw}
-        onclick={() => setTool("freehand")}>Freehand</button>
-      <button type="button" onclick={() => editor?.undo()}>Undo</button>
-      <button type="button" onclick={() => editor?.redo()}>Redo</button>
-      <button type="button" disabled={busy || layers.length >= VECTOR_MAX_LAYERS} onclick={() => void addLayer()}
-        >Add layer</button>
-      <button type="button" class="save" disabled={busy || !dirty} onclick={() => void save()}
-        >{busy ? "Saving…" : dirty ? "Save" : "Saved"}</button>
+        onclick={() => setTool("freehand")}>{@render glyph(icons.freehand)}</button>
+      <button type="button" class="icon-button" aria-label="Undo" title="Undo" onclick={() => editor?.undo()}
+        >{@render glyph(icons.undo)}</button>
+      <button type="button" class="icon-button" aria-label="Redo" title="Redo" onclick={() => editor?.redo()}
+        >{@render glyph(icons.redo)}</button>
+      <button
+        type="button"
+        class="icon-button"
+        aria-label="Add layer"
+        title="Add layer"
+        disabled={busy || layers.length >= VECTOR_MAX_LAYERS}
+        onclick={() => void addLayer()}>{@render glyph(icons.addLayer)}</button>
+      <button
+        type="button"
+        class="icon-button save"
+        aria-label={busy ? "Saving…" : dirty ? "Save" : "Saved"}
+        title={busy ? "Saving…" : dirty ? "Save" : "Saved"}
+        disabled={busy || !dirty}
+        onclick={() => void save()}>{@render glyph(icons.save)}</button>
+      <button
+        type="button"
+        class="icon-button"
+        class:active={fullscreen}
+        aria-label={fullscreen ? "Exit full screen" : "Full screen"}
+        aria-pressed={fullscreen}
+        title={fullscreen ? "Exit full screen (Esc)" : "Full screen"}
+        onclick={toggleFullscreen}>{@render glyph(fullscreen ? icons.exitFullscreen : icons.fullscreen)}</button>
     </div>
   </header>
   {#if conflict}
@@ -523,18 +624,26 @@ onMount(() => {
             <div class="layer-row">
               <button
                 type="button"
+                class="icon-button"
                 aria-pressed={layer.defaultVisible}
                 aria-label={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
-                onclick={() => void toggleVisible(layer)}>{layer.defaultVisible ? "Show" : "Hide"}</button>
+                title={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
+                onclick={() => void toggleVisible(layer)}>{@render glyph(layer.defaultVisible ? icons.show : icons.hide)}</button>
               <button
                 type="button"
+                class="icon-button"
                 aria-pressed={layer.locked}
                 aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
-                onclick={() => void toggleLock(layer)}>{layer.locked ? "Locked" : "Unlocked"}</button>
-              <button type="button" onclick={() => (renamingId = layer.id)}>Rename</button>
-              <button type="button" onclick={() => void moveLayer(layer, -1)}>Up</button>
-              <button type="button" onclick={() => void moveLayer(layer, 1)}>Down</button>
-              <button type="button" onclick={() => void removeLayer(layer)}>Delete</button>
+                title={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
+                onclick={() => void toggleLock(layer)}>{@render glyph(layer.locked ? icons.lock : icons.unlock)}</button>
+              <button type="button" class="icon-button" aria-label={`Rename ${layer.name}`} title="Rename" onclick={() => (renamingId = layer.id)}
+                >{@render glyph(icons.rename)}</button>
+              <button type="button" class="icon-button" aria-label={`Move ${layer.name} up`} title="Up" onclick={() => void moveLayer(layer, -1)}
+                >{@render glyph(icons.up)}</button>
+              <button type="button" class="icon-button" aria-label={`Move ${layer.name} down`} title="Down" onclick={() => void moveLayer(layer, 1)}
+                >{@render glyph(icons.down)}</button>
+              <button type="button" class="icon-button" aria-label={`Delete ${layer.name}`} title="Delete" onclick={() => void removeLayer(layer)}
+                >{@render glyph(icons.remove)}</button>
             </div>
             {#if layer.id === activeLayerId}
               <div class="style-row">
@@ -627,6 +736,7 @@ onMount(() => {
 <style>
 .native-vector-editor {
   display: flex;
+  width: 100%;
   min-height: 0;
   flex: 1;
   flex-direction: column;
@@ -680,8 +790,9 @@ button:disabled {
 .editor-body {
   display: grid;
   min-height: 0;
-  flex: 1;
-  grid-template-columns: 260px 1fr;
+  flex: 1 1 auto;
+  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
 }
 aside {
   display: flex;
@@ -734,12 +845,32 @@ aside {
   color: #b8c8bc;
 }
 .canvas {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
   min-height: 0;
   background: #0d1b2a;
+}
+.canvas :global(.maplibregl-map) {
+  width: 100%;
+  height: 100%;
 }
 .canvas.picking {
   outline: 2px solid #d5ab6c;
   outline-offset: -2px;
+}
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid #4d6358;
+  background: transparent;
+}
+.layer-row .icon-button {
+  width: 28px;
+  height: 28px;
 }
 .hint,
 .error {

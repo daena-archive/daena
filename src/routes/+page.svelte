@@ -702,6 +702,7 @@ async function resolveDirtyMapSession(): Promise<boolean> {
 
 async function leavePluginView(): Promise<boolean> {
   if (!(await resolveDirtyMapSession())) return false;
+  editorFullscreen = false;
   hostView = null;
   sandboxView = null;
   projectionView = null;
@@ -4062,6 +4063,18 @@ onMount(() => {
                       onpick={(anchor) => void applyMapPick(anchor)}
                       onopen={(entityId) => void openMapEntityFromLink(entityId)}
                       onstate={(status, detail) => {
+                        if (status === "fullscreen") {
+                          editorFullscreen =
+                            typeof detail === "object" &&
+                            detail !== null &&
+                            "enabled" in detail &&
+                            detail.enabled === true;
+                          return;
+                        }
+                        if (status === "back") {
+                          void leavePluginView();
+                          return;
+                        }
                         if (!mapId) return;
                         mapSaveStates[mapId] = { status, detail };
                       }}
@@ -4074,7 +4087,7 @@ onMount(() => {
                         await loadSelectedState(map);
                       }}
                       oncancel={() => {
-                        sandboxView = null;
+                        void leavePluginView();
                       }} />
                   {/key}
                 {:else}
@@ -5153,8 +5166,13 @@ onMount(() => {
 .map-surface {
   position: relative;
   display: flex;
+  width: 100%;
   min-height: 0;
   flex: 1 1 auto;
+}
+.map-surface :global(.native-vector-editor),
+.map-surface :global(.generator) {
+  width: 100%;
 }
 .map-editor-notices {
   display: flex;

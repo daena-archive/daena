@@ -9,7 +9,7 @@ import {
   type GeoJSONStoreFeatures,
 } from "terra-draw";
 import { TerraDrawMapLibreGLAdapter } from "terra-draw-maplibre-gl-adapter";
-import type { GeoJSONSource, Map as MapLibreMap, MapLayerMouseEvent } from "maplibre-gl";
+import type { CanvasSourceSpecification, GeoJSONSource, Map as MapLibreMap, MapLayerMouseEvent } from "maplibre-gl";
 import maplibregl from "maplibre-gl/dist/maplibre-gl-csp.js";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-csp-worker.js?url";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -49,6 +49,7 @@ export type NativeVectorEditor = {
   updateSelectedName: (name: string | null) => void;
   undo: () => void;
   redo: () => void;
+  resize: () => void;
   dispose: () => void;
 };
 
@@ -111,6 +112,32 @@ function toStoreFeature(feature: VectorFeature): GeoJSONStoreFeatures {
   };
 }
 
+function collectionBounds(
+  collection: VectorFeatureCollection,
+): [[number, number], [number, number]] | null {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  const visit = (position: unknown) => {
+    if (!Array.isArray(position)) return;
+    if (typeof position[0] === "number" && typeof position[1] === "number") {
+      minX = Math.min(minX, position[0]);
+      minY = Math.min(minY, position[1]);
+      maxX = Math.max(maxX, position[0]);
+      maxY = Math.max(maxY, position[1]);
+      return;
+    }
+    for (const item of position) visit(item);
+  };
+  for (const feature of collection.features) visit(feature.geometry.coordinates);
+  if (!Number.isFinite(minX) || minX === maxX && minY === maxY) return null;
+  return [
+    [minX, minY],
+    [maxX, maxY],
+  ];
+}
+
 export function createNativeVectorEditor(
   container: HTMLElement,
   session: {
@@ -124,7 +151,7 @@ export function createNativeVectorEditor(
     onDirty?: () => void;
     onDiagnostic?: (code: string, detail: string) => void;
     onSelect?: (feature: VectorFeature | null) => void;
-    background?: { url: string; width: number; height: number } | null;
+    background?: { url: string; width: number; height: number; canvas?: HTMLCanvasElement } | null;
   },
 ): NativeVectorEditor | { error: typeof RENDERER_UNAVAILABLE; detail: string } {
   if (!webgl2Available()) {
@@ -168,7 +195,6 @@ export function createNativeVectorEditor(
   let draw: TerraDraw | null = null;
   let disposed = false;
   const objectUrls: string[] = [];
-  if (session.background?.url) objectUrls.push(session.background.url);
   let hoveredId: string | number | null = null;
   let mapSelectedId: string | number | null = null;
   let terraSelectedId: string | number | null = null;
@@ -193,27 +219,6 @@ export function createNativeVectorEditor(
       map.once("idle", attempt);
     }
   };
-
-  const applyBackground = () => {
-    const background = session.background;
-    if (!background || disposed) return;
-    whenStyleReady(() => {
-      if (disposed || !session.background) return;
-      if (map.getLayer(IMAGE_LAYER_ID)) map.removeLayer(IMAGE_LAYER_ID);
-      if (map.getSource(IMAGE_SOURCE_ID)) map.removeSource(IMAGE_SOURCE_ID);
-      map.addSource(IMAGE_SOURCE_ID, {
-        type: "image",
-        url: background.url,
-        coordinates: imageOverlayCoordinates(background.width, background.height),
-      });
-      if (map.getLayer("daena-base-fill")) {
-        map.addLayer({ id: IMAGE_LAYER_ID, type: "raster", source: IMAGE_SOURCE_ID }, "daena-base-fill");
-      } else {
-        map.addLayer({ id: IMAGE_LAYER_ID, type: "raster", source: IMAGE_SOURCE_ID });
-      }
-    });
-  };
-  map.on("style.load", applyBackground);
 
   const clearFeatureState = (id: string | number | null, key: "hover" | "selected") => {
     if (id === null) return;
@@ -251,6 +256,57 @@ export function createNativeVectorEditor(
     const split = splitVectorSources(session.draft, editing);
     (map.getSource(BASE_SOURCE_ID) as GeoJSONSource | undefined)?.setData(split.base);
     (map.getSource(AUTHORED_SOURCE_ID) as GeoJSONSource | undefined)?.setData(split.authored);
+  };
+
+  const applyBackground = () => {
+    const background = session.background;
+    if (!background || disposed || map.getSource(IMAGE_SOURCE_ID)) return;
+    if (background.canvas) {
+      const source: CanvasSourceSpecification = {
+        type: "canvas",
+        canvas: background.canvas,
+        coordinates: imageOverlayCoordinates(background.width, background.height),
+        animate: false,
+      };
+      map.addSource(IMAGE_SOURCE_ID, source);
+    } else {
+      map.addSource(IMAGE_SOURCE_ID, {
+        type: "image",
+        url: background.url,
+        coordinates: imageOverlayCoordinates(background.width, background.height),
+      });
+    }
+    if (map.getLayer("daena-base-fill")) {
+      map.addLayer({ id: IMAGE_LAYER_ID, type: "raster", source: IMAGE_SOURCE_ID }, "daena-base-fill");
+    } else {
+      map.addLayer({ id: IMAGE_LAYER_ID, type: "raster", source: IMAGE_SOURCE_ID });
+    }
+  };
+
+  const fitContent = () => {
+    if (disposed) return;
+    if (session.background) {
+      const [northWest, northEast, southEast, southWest] = imageOverlayCoordinates(
+        session.background.width,
+        session.background.height,
+      );
+      map.fitBounds(
+        [
+          [
+            Math.min(northWest[0], southWest[0], northEast[0], southEast[0]),
+            Math.min(northWest[1], southWest[1], northEast[1], southEast[1]),
+          ],
+          [
+            Math.max(northWest[0], southWest[0], northEast[0], southEast[0]),
+            Math.max(northWest[1], southWest[1], northEast[1], southEast[1]),
+          ],
+        ],
+        { padding: 28, duration: 0, maxZoom: 4 },
+      );
+      return;
+    }
+    const bounds = collectionBounds(session.draft);
+    if (bounds) map.fitBounds(bounds, { padding: 28, duration: 0, maxZoom: 4 });
   };
 
   const mergeDrawIntoDraft = () => {
@@ -424,7 +480,16 @@ export function createNativeVectorEditor(
     emitSelect(feature);
   };
 
-  map.once("style.load", startDraw);
+  const onStyleLoad = () => {
+    if (disposed) return;
+    map.resize();
+    applyBackground();
+    applySources(session.activeLayerId);
+    fitContent();
+    startDraw();
+  };
+
+  map.on("style.load", onStyleLoad);
   map.on("mousemove", onHover);
   map.on("click", onMapClick);
   map.on("error", (event) => {
@@ -432,6 +497,15 @@ export function createNativeVectorEditor(
     if (/webgl/i.test(message) || /context/i.test(message)) {
       session.onDiagnostic?.(RENDERER_UNAVAILABLE, message);
     }
+  });
+
+  const resizeObserver = new ResizeObserver(() => {
+    if (disposed || container.clientWidth <= 0 || container.clientHeight <= 0) return;
+    map.resize();
+  });
+  resizeObserver.observe(container);
+  requestAnimationFrame(() => {
+    if (!disposed) map.resize();
   });
 
   const editor: NativeVectorEditor = {
@@ -512,6 +586,9 @@ export function createNativeVectorEditor(
       mergeDrawIntoDraft();
       if (JSON.stringify(session.draft) !== before) session.onDirty?.();
     },
+    resize() {
+      map.resize();
+    },
     redo() {
       const before = JSON.stringify(session.draft);
       draw?.redo();
@@ -521,8 +598,8 @@ export function createNativeVectorEditor(
     dispose() {
       if (disposed) return;
       disposed = true;
-      map.off("style.load", startDraw);
-      map.off("style.load", applyBackground);
+      resizeObserver.disconnect();
+      map.off("style.load", onStyleLoad);
       map.off("mousemove", onHover);
       map.off("click", onMapClick);
       clearFeatureState(hoveredId, "hover");

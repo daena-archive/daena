@@ -30,6 +30,7 @@ if (!lock.includes("npm:maplibre-gl@^5.24.0") || lock.includes("npm:maplibre-gl@
 const tauri = JSON.parse(read("src-tauri/tauri.conf.json"));
 const csp = tauri.app?.security?.csp ?? "";
 if (!csp.includes("worker-src 'self'")) fail("tauri CSP must set worker-src 'self'");
+if (!/img-src[^;]*blob:/.test(csp)) fail("tauri CSP must allow blob: images for local map previews");
 if (csp.includes("worker-src") && csp.includes("blob:") && /worker-src[^;]*blob:/.test(csp)) {
   fail("MapLibre worker must not rely on blob: worker-src");
 }
@@ -105,7 +106,7 @@ if (!worker.includes("generateCandidates") || worker.includes("invoke(")) {
   fail("generator worker must stay offline and mutation-free");
 }
 const dialog = read("src/lib/maps/native-vector/NativeVectorGenerator.svelte");
-for (const required of ["Copy", "Paste", "Regenerate", "Cancel", "Accept candidate", "radiogroup"]) {
+for (const required of ["Copy", "Paste", "Regenerate", "Back to map details", "Full screen", "Accept candidate", "radiogroup"]) {
   if (!dialog.includes(required)) fail(`NativeVectorGenerator missing ${required}`);
 }
 if (!dialog.includes("acceptVectorMap") || !dialog.includes("generationProvenance")) {
@@ -128,6 +129,8 @@ for (const required of [
   "Add layer",
   "Selected feature",
   "reduceVectorEditor",
+  "Back to map details",
+  "Full screen",
 ]) {
   if (!editor.includes(required)) fail(`NativeVectorMapEditor missing ${required}`);
 }

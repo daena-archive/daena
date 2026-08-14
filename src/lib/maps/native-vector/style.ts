@@ -136,5 +136,5 @@ export function nativeVectorStyle(layers: readonly VectorLayerDefinition[]): Sty
 }
 
 export function styleContainsRemoteUrl(style: StyleSpecification): boolean {
-  return JSON.stringify(style).search(/https?:\/\//i) >= 0;
+  return /https?:\/\//i.test(JSON.stringify(style).replace(/blob:[^"]+/g, ""));
 }

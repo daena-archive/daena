@@ -12,11 +12,15 @@ import {
 let {
   oncreated,
   oncancel,
+  onfullscreen,
   autostartImport = false,
+  fullscreen = false,
 }: {
   oncreated?: (map: Entity) => void;
   oncancel?: () => void;
+  onfullscreen?: (enabled: boolean) => void;
   autostartImport?: boolean;
+  fullscreen?: boolean;
 } = $props();
 
 let settings = $state<NativeGeneratorSettings>({ ...DEFAULT_GENERATOR_SETTINGS });
@@ -152,6 +156,10 @@ function cancel() {
   oncancel?.();
 }
 
+function toggleFullscreen() {
+  onfullscreen?.(!fullscreen);
+}
+
 async function importImage() {
   const source = await project.pickFile();
   if (typeof source !== "string") {
@@ -187,11 +195,26 @@ onDestroy(() => {
       <strong>Generate landmass</strong>
     </div>
     <div class="header-actions">
-      <button type="button" class="quiet" onclick={cancel}>Cancel</button>
+      <button
+        type="button"
+        class="icon-button"
+        aria-label="Back to map details"
+        title="Back to map details"
+        onclick={cancel}>
+        <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+      </button>
       <button type="button" class="quiet" disabled={busy || accepting} onclick={() => void importImage()}
         >{accepting && autostartImport ? "Importing…" : "Import image"}</button>
       <button type="button" class="primary" disabled={selected === null || busy || accepting} onclick={() => void accept()}
         >{accepting ? "Accepting…" : "Accept candidate"}</button>
+      <button
+        type="button"
+        class="icon-button"
+        class:active={fullscreen}
+        aria-label={fullscreen ? "Exit full screen" : "Full screen"}
+        aria-pressed={fullscreen}
+        title={fullscreen ? "Exit full screen" : "Full screen"}
+        onclick={toggleFullscreen}>⛶</button>
     </div>
   </header>
   <div class="body">
@@ -381,6 +404,19 @@ button {
   padding: 10px 16px;
   color: #f5a49c;
   border-top: 1px solid #405047;
+}
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid #4d6358;
+  background: transparent;
+}
+.icon-button.active {
+  background: #d5ab6c;
+  color: #17211d;
 }
 .visually-hidden {
   position: absolute;

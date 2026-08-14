@@ -27,6 +27,9 @@ for (const required of [
 assert.equal(style.includes("daenaLayerId !== activeLayerId"), true);
 assert.equal(style.includes("daena-hover-fill"), true);
 assert.equal(style.includes("IMAGE_SOURCE_ID"), true);
+assert.equal(style.includes("blob:"), true);
+assert.equal(runtime.includes('type: "canvas"'), true);
+assert.equal(runtime.includes("fitBounds"), true);
 assert.equal(runtime.includes("imageOverlayCoordinates"), true);
 assert.equal(runtime.includes("whenStyleReady"), true);
 assert.equal(runtime.includes("style is not done loading"), true);
@@ -38,6 +41,9 @@ assert.equal(editor.includes("deleteVectorLayer"), true);
 assert.equal(editor.includes("Reload canonical source"), true);
 assert.equal(editor.includes("Selected feature"), true);
 assert.equal(editor.includes("reduceVectorEditor"), true);
+assert.equal(editor.includes("Back to map details"), true);
+assert.equal(editor.includes("Full screen"), true);
+assert.equal(runtime.includes("resize()"), true);
 
 let state = initialVectorEditorState();
 state = reduceVectorEditor(state, { type: "loaded" });

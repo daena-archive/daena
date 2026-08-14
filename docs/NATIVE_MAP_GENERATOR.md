@@ -110,8 +110,8 @@ locked as:
   "schemaVersion": 1,
   "provider": {
     "id": "daena-physical",
-    "adapterVersion": 1,
-    "sourceFormat": "physical-world-v1"
+    "adapterVersion": 2,
+    "sourceFormat": "physical-world-v2"
   },
   "sourceAssetId": "<asset UUID>",
   "previewAssetId": null,
@@ -121,7 +121,7 @@ locked as:
   },
   "generation": {
     "id": "daena-physical-world",
-    "version": 1,
+    "version": 4,
     "seed": 831429,
     "retryIndex": 0,
     "settings": {}

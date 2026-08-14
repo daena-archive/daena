@@ -78,7 +78,11 @@ fn physical_map_acceptance_is_atomic_and_request_idempotent() {
             "height": settings.height,
             "radiusMetres": settings.radius_metres,
             "targetLandFractionPpm": settings.target_land_fraction_ppm,
-            "referenceWaterInventoryM3": world.report.reference_water_inventory_m3
+            "referenceWaterInventoryM3": world.report.reference_water_inventory_m3,
+            "plateCount": world.tectonics.settings.plate_count,
+            "continentalPlateCount": world.tectonics.settings.continental_plate_count,
+            "tectonicActivityPpm": world.tectonics.settings.tectonic_activity_ppm,
+            "islandActivityPpm": world.tectonics.settings.island_activity_ppm
         }
     });
     let root = std::env::temp_dir().join(format!("daena-physical-{}", Uuid::new_v4()));
@@ -101,19 +105,25 @@ fn physical_map_acceptance_is_atomic_and_request_idempotent() {
         .unwrap();
     assert_eq!(accepted.entity.id, replayed.entity.id);
     assert_eq!(store.list_entities().unwrap().len(), 1);
-    assert_eq!(store.asset_bytes(accepted.source.id.clone()).unwrap(), world.source);
+    assert_eq!(
+        store.asset_bytes(accepted.source.id.clone()).unwrap(),
+        world.source
+    );
     let descriptor = store
         .list_fields(accepted.entity.id.clone())
         .unwrap()
         .into_iter()
         .find(|field| field.key == "map")
         .unwrap();
-    assert_eq!(descriptor.value["provider"]["id"], crate::maps::PHYSICAL_PROVIDER);
+    assert_eq!(
+        descriptor.value["provider"]["id"],
+        crate::maps::PHYSICAL_PROVIDER
+    );
     assert_eq!(descriptor.value["sourceAssetId"], accepted.source.id);
     assert!(matches!(
         store.accept_physical_map(
             "Different name".into(),
-            daena_physical_spike::encode_source(&daena_physical_spike::decode_source(&store.asset_bytes(accepted.source.id.clone()).unwrap()).unwrap()).unwrap(),
+            world.source.clone(),
             generation,
             Some("00000000-0000-4000-8000-000000000001"),
         ),
@@ -124,7 +134,10 @@ fn physical_map_acceptance_is_atomic_and_request_idempotent() {
     std::fs::remove_dir_all(root.join(".daena")).unwrap();
     let rebuilt = ProjectStore::open_directory(&root).unwrap();
     assert_eq!(rebuilt.list_entities().unwrap().len(), 1);
-    assert_eq!(rebuilt.asset_bytes(accepted.source.id.clone()).unwrap(), world.source);
+    assert_eq!(
+        rebuilt.asset_bytes(accepted.source.id.clone()).unwrap(),
+        world.source
+    );
     drop(rebuilt);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -1056,14 +1069,7 @@ fn module_records_are_scoped_revisioned_and_rebuild_from_checkpoint() {
         )
         .is_err());
     assert!(store
-        .list_module_records(
-            "daena.language",
-            "lexemes",
-            &other.id,
-            None,
-            50,
-            0,
-        )
+        .list_module_records("daena.language", "lexemes", &other.id, None, 50, 0,)
         .unwrap()
         .is_empty());
     assert!(store
@@ -1140,7 +1146,10 @@ fn module_records_are_scoped_revisioned_and_rebuild_from_checkpoint() {
         by_status.len(),
         1,
         "status filter: {:?}",
-        by_status.iter().map(|record| &record.value).collect::<Vec<_>>()
+        by_status
+            .iter()
+            .map(|record| &record.value)
+            .collect::<Vec<_>>()
     );
     let filtered = store
         .list_module_records_with(
@@ -1256,14 +1265,7 @@ fn module_records_are_scoped_revisioned_and_rebuild_from_checkpoint() {
     let rebuilt = ProjectStore::open_directory(&root).unwrap();
     assert_eq!(
         rebuilt
-            .list_module_records(
-                "daena.language",
-                "lexemes",
-                &language.id,
-                None,
-                50,
-                0,
-            )
+            .list_module_records("daena.language", "lexemes", &language.id, None, 50, 0,)
             .unwrap()
             .len(),
         2
@@ -2116,9 +2118,7 @@ fn saving_identical_document_content_preserves_revision() {
         .revision
         .clone();
     store.save_document(document).unwrap();
-    let second_revision = store.list_documents(entity.id).unwrap()[0]
-        .revision
-        .clone();
+    let second_revision = store.list_documents(entity.id).unwrap()[0].revision.clone();
 
     assert_eq!(first_revision, second_revision);
 }
@@ -2145,7 +2145,10 @@ fn empty_document_revision_allows_first_document_save() {
         )
         .unwrap();
 
-    assert_eq!(store.list_documents(entity.id).unwrap()[0].body, "Initial notes");
+    assert_eq!(
+        store.list_documents(entity.id).unwrap()[0].body,
+        "Initial notes"
+    );
 }
 
 #[test]
@@ -2488,7 +2491,8 @@ fn seed_example_survives_reopen() {
 #[test]
 fn markdown_export_uses_flat_named_files_and_relative_relationship_links() {
     let root = std::env::temp_dir().join(format!("daena-markdown-export-{}", Uuid::new_v4()));
-    let destination = std::env::temp_dir().join(format!("daena-markdown-destination-{}", Uuid::new_v4()));
+    let destination =
+        std::env::temp_dir().join(format!("daena-markdown-destination-{}", Uuid::new_v4()));
     let mut store = ProjectStore::open_directory(&root).unwrap();
     store.seed_example().unwrap();
 
@@ -2531,7 +2535,8 @@ fn markdown_export_uses_flat_named_files_and_relative_relationship_links() {
 
 #[test]
 fn markdown_export_prefixes_colliding_entity_names() {
-    let destination = std::env::temp_dir().join(format!("daena-markdown-collision-{}", Uuid::new_v4()));
+    let destination =
+        std::env::temp_dir().join(format!("daena-markdown-collision-{}", Uuid::new_v4()));
     let store = ProjectStore::in_memory().unwrap();
     let first = store
         .create_entity(CreateEntity {
@@ -2549,7 +2554,9 @@ fn markdown_export_prefixes_colliding_entity_names() {
     let export = store.export_markdown_to(&destination).unwrap();
     let export = Path::new(&export);
     assert!(export.join(format!("Twin-{}.md", &first.id[..8])).is_file());
-    assert!(export.join(format!("Twin-{}.md", &second.id[..8])).is_file());
+    assert!(export
+        .join(format!("Twin-{}.md", &second.id[..8]))
+        .is_file());
     std::fs::remove_dir_all(&destination).unwrap();
 }
 
@@ -3245,7 +3252,9 @@ fn map_entities_and_locations_survive_disposable_index_rebuild() {
         .list_relationships(place.id.clone())
         .unwrap()
         .into_iter()
-        .filter(|relationship| relationship.relationship_type == crate::maps::DETAIL_MAP_RELATIONSHIP)
+        .filter(|relationship| {
+            relationship.relationship_type == crate::maps::DETAIL_MAP_RELATIONSHIP
+        })
         .map(|relationship| {
             (
                 relationship.source_id,
@@ -3291,7 +3300,9 @@ fn map_entities_and_locations_survive_disposable_index_rebuild() {
         .list_relationships(place.id)
         .unwrap()
         .into_iter()
-        .filter(|relationship| relationship.relationship_type == crate::maps::DETAIL_MAP_RELATIONSHIP)
+        .filter(|relationship| {
+            relationship.relationship_type == crate::maps::DETAIL_MAP_RELATIONSHIP
+        })
         .map(|relationship| {
             (
                 relationship.source_id,
@@ -3380,7 +3391,7 @@ fn map_layers_round_trip_and_reject_non_map_owners() {
             "order": 1,
             "defaultVisible": false,
             "style": {},
-            "selector": {"entityTypes": ["place"]}
+            "selector": {"roles": ["place"]}
         }]
     });
     store
@@ -3967,7 +3978,10 @@ fn entity_revision_batch_matches_point_revision() {
         .into_iter()
         .find(|entity| entity.id == source.id)
         .unwrap();
-    assert_eq!(listed.revision, store.revision_for_entity(&source.id).unwrap());
+    assert_eq!(
+        listed.revision,
+        store.revision_for_entity(&source.id).unwrap()
+    );
 }
 
 #[test]
@@ -4031,10 +4045,7 @@ fn search_updates_only_the_changed_source_row() {
         .keys()
         .find(|key| key.starts_with("document:"))
         .unwrap();
-    assert_ne!(
-        before_document[document_key],
-        after_document[document_key]
-    );
+    assert_ne!(before_document[document_key], after_document[document_key]);
 
     store
         .set_field(FieldValue {
@@ -4099,7 +4110,10 @@ fn image_map_import_layer_mutations_and_checkpoint_rebuild() {
         .into_iter()
         .find(|field| field.key == "map")
         .unwrap();
-    assert_eq!(descriptor.value["provider"]["id"], crate::maps::VECTOR_PROVIDER);
+    assert_eq!(
+        descriptor.value["provider"]["id"],
+        crate::maps::VECTOR_PROVIDER
+    );
     assert_eq!(descriptor.value["sourceAssetId"], imported.source.id);
     assert_eq!(descriptor.value["previewAssetId"], imported.preview.id);
     assert_eq!(imported.source.mime_type, crate::maps::VECTOR_MIME);
@@ -4256,17 +4270,26 @@ fn image_map_import_layer_mutations_and_checkpoint_rebuild() {
     .unwrap();
     crate::storage::validate_checkpoint(&root, &checkpoint).unwrap();
     let before = canonical_files(&root);
-    let source_hash = store.asset(imported.source.id.clone()).unwrap().content_hash;
+    let source_hash = store
+        .asset(imported.source.id.clone())
+        .unwrap()
+        .content_hash;
     let layer_hash = store.asset(raster_id.clone()).unwrap().content_hash;
     drop(store);
     std::fs::remove_dir_all(root.join(".daena")).unwrap();
     let rebuilt = ProjectStore::open_directory(&root).unwrap();
     assert_eq!(canonical_files(&root), before);
     assert_eq!(
-        rebuilt.asset(imported.source.id.clone()).unwrap().content_hash,
+        rebuilt
+            .asset(imported.source.id.clone())
+            .unwrap()
+            .content_hash,
         source_hash
     );
-    assert_eq!(rebuilt.asset(raster_id.clone()).unwrap().content_hash, layer_hash);
+    assert_eq!(
+        rebuilt.asset(raster_id.clone()).unwrap().content_hash,
+        layer_hash
+    );
     let layers = rebuilt
         .list_fields(imported.entity.id.clone())
         .unwrap()
@@ -4427,11 +4450,13 @@ fn vector_map_accept_replace_layer_delete_and_checkpoint_rebuild() {
         replaced.source.content_hash,
         format!(
             "sha256:{:x}",
-            Sha256::digest(crate::maps::vector::canonicalize_committed(
-                &authored_bytes,
-                &crate::maps::vector::layer_ids_from_layers_field(&created.layers.value)
+            Sha256::digest(
+                crate::maps::vector::canonicalize_committed(
+                    &authored_bytes,
+                    &crate::maps::vector::layer_ids_from_layers_field(&created.layers.value)
+                )
+                .unwrap()
             )
-            .unwrap())
         )
     );
     assert!(store
@@ -4505,7 +4530,10 @@ fn vector_map_accept_replace_layer_delete_and_checkpoint_rebuild() {
         1,
         None,
     );
-    assert!(crashed.unwrap_err().to_string().contains("install runtime asset"));
+    assert!(crashed
+        .unwrap_err()
+        .to_string()
+        .contains("install runtime asset"));
     assert_eq!(
         store.asset(accepted.source.id.clone()).unwrap().revision,
         replaced.source.revision
@@ -4544,13 +4572,19 @@ fn vector_map_accept_replace_layer_delete_and_checkpoint_rebuild() {
     .unwrap();
     crate::storage::validate_checkpoint(&root, &checkpoint).unwrap();
     let before = canonical_files(&root);
-    let source_hash = store.asset(accepted.source.id.clone()).unwrap().content_hash;
+    let source_hash = store
+        .asset(accepted.source.id.clone())
+        .unwrap()
+        .content_hash;
     drop(store);
     std::fs::remove_dir_all(root.join(".daena")).unwrap();
     let rebuilt = ProjectStore::open_directory(&root).unwrap();
     assert_eq!(canonical_files(&root), before);
     assert_eq!(
-        rebuilt.asset(accepted.source.id.clone()).unwrap().content_hash,
+        rebuilt
+            .asset(accepted.source.id.clone())
+            .unwrap()
+            .content_hash,
         source_hash
     );
     let layers = rebuilt
@@ -4605,7 +4639,10 @@ fn image_map_runtime_bytes_survive_an_interrupted_export() {
     reopened
         .flush_checkpoint("recover interrupted image map export")
         .unwrap();
-    assert_eq!(std::fs::read(root.join(&imported.preview.path)).unwrap(), png);
+    assert_eq!(
+        std::fs::read(root.join(&imported.preview.path)).unwrap(),
+        png
+    );
     assert_eq!(
         std::fs::read(root.join(&imported.source.path)).unwrap(),
         crate::maps::empty_canonical_bytes()
@@ -4726,7 +4763,10 @@ fn image_map_semantic_features_survive_checkpoint_rebuild_and_spatial_query() {
     assert_eq!(canonical_files(&root), before);
     let projection = rebuilt.map_location_projection(map_id.clone()).unwrap();
     assert_eq!(projection[0]["anchor"]["kind"], "path");
-    assert_eq!(projection[0]["anchor"]["points"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        projection[0]["anchor"]["points"].as_array().unwrap().len(),
+        3
+    );
     let layers = rebuilt
         .list_fields(map_id.clone())
         .unwrap()
@@ -4735,7 +4775,12 @@ fn image_map_semantic_features_survive_checkpoint_rebuild_and_spatial_query() {
         .unwrap();
     assert_eq!(layers.value["layers"][0]["kind"], "semantic");
     rebuilt
-        .delete_semantic_layer(map_id.clone(), overlay.layer_id.clone(), &layers.revision, None)
+        .delete_semantic_layer(
+            map_id.clone(),
+            overlay.layer_id.clone(),
+            &layers.revision,
+            None,
+        )
         .unwrap();
     let leftover = rebuilt
         .list_fields(map_id.clone())

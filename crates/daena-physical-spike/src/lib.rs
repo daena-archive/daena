@@ -1,40 +1,162 @@
-//! Pure, disposable feasibility spike for the native physical map model.
+//! Pure Rust physical generator for the native physical map model.
 //!
 //! This crate deliberately has no Daena, Tauri, SQLite, or frontend
 //! dependency. Its integer source codec and deterministic field generation are
-//! the parts that iteration 0 measures; the algorithms are not yet the
-//! production physical generator.
+//! the canonical physical-map production boundary.
 
 use std::fmt::{Display, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+pub mod tectonics;
+
 pub const SOURCE_MAGIC: [u8; 8] = *b"DAENAPW1";
-pub const SOURCE_VERSION: u16 = 1;
-pub const SOURCE_HEADER_BYTES: usize = 48;
+pub const SOURCE_VERSION: u16 = tectonics::TECTONIC_SOURCE_VERSION;
+pub const SOURCE_HEADER_BYTES: usize = tectonics::TECTONIC_SOURCE_HEADER_BYTES;
 pub const DEFAULT_WIDTH: u32 = 64;
 pub const DEFAULT_HEIGHT: u32 = 32;
 pub const DEFAULT_RADIUS_METRES: u64 = 6_371_000;
 pub const MAX_WIDTH: u32 = 128;
 pub const MAX_HEIGHT: u32 = 64;
 pub const MAX_GEOJSON_FEATURES: usize = 32_768;
+pub const CANCELLATION_LATENCY_BUDGET_MS: u128 = 100;
 pub const GENERATOR_ID: &str = "daena-physical-world";
-pub const GENERATOR_VERSION: u32 = 1;
+pub const GENERATOR_VERSION: u32 = 4;
+
+pub const CODE_GENERATOR_INVALID_SETTINGS: &str = "physical.generator.invalid-settings";
+pub const CODE_GENERATOR_UNSUPPORTED_VERSION: &str = "physical.generator.unsupported-version";
+pub const CODE_GENERATOR_CANCELLED: &str = "physical.generator.cancelled";
+pub const CODE_GENERATOR_RETRY_EXHAUSTED: &str = "physical.generator.retry-exhausted";
+pub const CODE_SOURCE_INVALID: &str = "physical.source.invalid";
+pub const CODE_SOURCE_UNSUPPORTED_VERSION: &str = "physical.source.unsupported-version";
+pub const CODE_NUMERIC_NON_FINITE: &str = "physical.numeric.non-finite";
+pub const CODE_NUMERIC_NON_CONVERGENT: &str = "physical.numeric.non-convergent";
+pub const CODE_WATER_NON_CONVERGENT: &str = "physical.water.non-convergent";
+pub const CODE_HYDROLOGY_CYCLE: &str = "physical.hydrology.cycle";
+pub const CODE_GEOMETRY_INVALID: &str = "physical.geometry.invalid";
+pub const CODE_LIMIT_EXCEEDED: &str = "physical.limit.exceeded";
+pub const CODE_RENDERER_UNAVAILABLE: &str = "physical.renderer.unavailable";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhysicalErrorCode {
+    GeneratorInvalidSettings,
+    GeneratorUnsupportedVersion,
+    GeneratorCancelled,
+    GeneratorRetryExhausted,
+    SourceInvalid,
+    SourceUnsupportedVersion,
+    NumericNonFinite,
+    NumericNonConvergent,
+    WaterNonConvergent,
+    HydrologyCycle,
+    GeometryInvalid,
+    LimitExceeded,
+    RendererUnavailable,
+}
+
+impl PhysicalErrorCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::GeneratorInvalidSettings => CODE_GENERATOR_INVALID_SETTINGS,
+            Self::GeneratorUnsupportedVersion => CODE_GENERATOR_UNSUPPORTED_VERSION,
+            Self::GeneratorCancelled => CODE_GENERATOR_CANCELLED,
+            Self::GeneratorRetryExhausted => CODE_GENERATOR_RETRY_EXHAUSTED,
+            Self::SourceInvalid => CODE_SOURCE_INVALID,
+            Self::SourceUnsupportedVersion => CODE_SOURCE_UNSUPPORTED_VERSION,
+            Self::NumericNonFinite => CODE_NUMERIC_NON_FINITE,
+            Self::NumericNonConvergent => CODE_NUMERIC_NON_CONVERGENT,
+            Self::WaterNonConvergent => CODE_WATER_NON_CONVERGENT,
+            Self::HydrologyCycle => CODE_HYDROLOGY_CYCLE,
+            Self::GeometryInvalid => CODE_GEOMETRY_INVALID,
+            Self::LimitExceeded => CODE_LIMIT_EXCEEDED,
+            Self::RendererUnavailable => CODE_RENDERER_UNAVAILABLE,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressPhase {
+    BuildingTectonicStructure,
+    BuildingTerrain,
+    CalculatingClimate,
+    ErodingLandscape,
+    CalculatingWater,
+    BuildingRiversAndLakes,
+    PreparingGeography,
+    ValidatingWorld,
+}
+
+impl ProgressPhase {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::BuildingTectonicStructure => "Building tectonic structure",
+            Self::BuildingTerrain => "Building terrain",
+            Self::CalculatingClimate => "Calculating climate",
+            Self::ErodingLandscape => "Eroding landscape",
+            Self::CalculatingWater => "Calculating water",
+            Self::BuildingRiversAndLakes => "Building rivers and lakes",
+            Self::PreparingGeography => "Preparing geography",
+            Self::ValidatingWorld => "Validating world",
+        }
+    }
+}
+
+pub const PROGRESS_PHASES: [ProgressPhase; 8] = [
+    ProgressPhase::BuildingTectonicStructure,
+    ProgressPhase::BuildingTerrain,
+    ProgressPhase::CalculatingClimate,
+    ProgressPhase::ErodingLandscape,
+    ProgressPhase::CalculatingWater,
+    ProgressPhase::BuildingRiversAndLakes,
+    ProgressPhase::PreparingGeography,
+    ProgressPhase::ValidatingWorld,
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PhysicalError {
     InvalidSettings(String),
     InvalidSource(String),
     Validation(String),
+    Coded {
+        code: PhysicalErrorCode,
+        message: String,
+    },
     Cancelled,
 }
 
 impl Display for PhysicalError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.code(), self.message())
+    }
+}
+
+impl PhysicalError {
+    pub fn code(&self) -> &'static str {
         match self {
-            Self::InvalidSettings(message) => write!(formatter, "invalid settings: {message}"),
-            Self::InvalidSource(message) => write!(formatter, "invalid physical source: {message}"),
-            Self::Validation(message) => write!(formatter, "physical validation failed: {message}"),
-            Self::Cancelled => formatter.write_str("physical generation cancelled"),
+            Self::InvalidSettings(_) => CODE_GENERATOR_INVALID_SETTINGS,
+            Self::InvalidSource(message) if message.contains("unsupported") => {
+                CODE_SOURCE_UNSUPPORTED_VERSION
+            }
+            Self::InvalidSource(_) => CODE_SOURCE_INVALID,
+            Self::Validation(_) => CODE_NUMERIC_NON_CONVERGENT,
+            Self::Coded { code, .. } => code.as_str(),
+            Self::Cancelled => CODE_GENERATOR_CANCELLED,
+        }
+    }
+
+    fn message(&self) -> &str {
+        match self {
+            Self::InvalidSettings(message)
+            | Self::InvalidSource(message)
+            | Self::Validation(message) => message,
+            Self::Coded { message, .. } => message,
+            Self::Cancelled => "generation was cancelled",
+        }
+    }
+
+    pub fn coded(code: PhysicalErrorCode, message: impl Into<String>) -> Self {
+        Self::Coded {
+            code,
+            message: message.into(),
         }
     }
 }
@@ -66,10 +188,14 @@ pub struct ValidationReport {
 pub trait ProgressSink {
     fn report(
         &mut self,
-        stage: &'static str,
+        phase: ProgressPhase,
         completed: u32,
         total: u32,
     ) -> Result<(), PhysicalError>;
+
+    fn check_cancelled(&self) -> Result<(), PhysicalError> {
+        Ok(())
+    }
 }
 
 pub struct NoopProgress;
@@ -77,7 +203,7 @@ pub struct NoopProgress;
 impl ProgressSink for NoopProgress {
     fn report(
         &mut self,
-        _stage: &'static str,
+        _phase: ProgressPhase,
         _completed: u32,
         _total: u32,
     ) -> Result<(), PhysicalError> {
@@ -87,27 +213,34 @@ impl ProgressSink for NoopProgress {
 
 pub struct CancellationProgress<'a> {
     pub cancelled: &'a AtomicBool,
-    pub on_progress: &'a mut dyn FnMut(&'static str, u32, u32),
+    pub on_progress: &'a mut dyn FnMut(ProgressPhase, u32, u32),
 }
 
 impl ProgressSink for CancellationProgress<'_> {
     fn report(
         &mut self,
-        stage: &'static str,
+        phase: ProgressPhase,
         completed: u32,
         total: u32,
     ) -> Result<(), PhysicalError> {
-        if self.cancelled.load(Ordering::Relaxed) {
-            return Err(PhysicalError::Cancelled);
-        }
-        (self.on_progress)(stage, completed, total);
+        self.check_cancelled()?;
+        (self.on_progress)(phase, completed, total);
         Ok(())
+    }
+
+    fn check_cancelled(&self) -> Result<(), PhysicalError> {
+        if self.cancelled.load(Ordering::Relaxed) {
+            Err(PhysicalError::Cancelled)
+        } else {
+            Ok(())
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratedWorld {
     pub field: PhysicalField,
+    pub tectonics: tectonics::TectonicWorld,
     pub source: Vec<u8>,
     pub derived_geojson: String,
     pub report: ValidationReport,
@@ -243,6 +376,41 @@ fn splitmix64(mut value: u64) -> u64 {
     result ^ (result >> 31)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeedDomain {
+    PlateSites,
+    ContinentalRanking,
+    RotationAxes,
+    ReliefDetail,
+    Hotspots,
+    Climate,
+    Erosion,
+    Hydrology,
+    Hazards,
+}
+
+impl SeedDomain {
+    const fn tag(self) -> u64 {
+        match self {
+            Self::PlateSites => 0x706c_6174_6573_0001,
+            Self::ContinentalRanking => 0x6372_7573_7400_0002,
+            Self::RotationAxes => 0x726f_7461_7465_0003,
+            Self::ReliefDetail => 0x7265_6c69_6566_0004,
+            Self::Hotspots => 0x686f_7473_706f_0005,
+            Self::Climate => 0x636c_696d_6174_0006,
+            Self::Erosion => 0x6572_6f73_696f_0007,
+            Self::Hydrology => 0x6879_6472_6f00_0008,
+            Self::Hazards => 0x6861_7a61_7264_0009,
+        }
+    }
+}
+
+pub fn derive_subsystem_seed(seed: u32, retry_index: u32, domain: SeedDomain) -> u64 {
+    splitmix64(
+        u64::from(seed) ^ u64::from(retry_index).wrapping_mul(0xd6e8_feb8_6659_fd93) ^ domain.tag(),
+    )
+}
+
 fn elevation_for(seed: u32, retry_index: u32, index: usize) -> i32 {
     let state = u64::from(seed)
         ^ (u64::from(retry_index).wrapping_mul(0xd6e8_feb8_6659_fd93))
@@ -341,17 +509,21 @@ pub fn generate_world(
     progress: &mut dyn ProgressSink,
 ) -> Result<GeneratedWorld, PhysicalError> {
     let grid = settings.grid()?;
-    progress.report("elevation", 0, grid.height)?;
-    let mut elevations_mm = Vec::with_capacity(grid.sample_count());
-    for row in 0..grid.height {
-        for col in 0..grid.width {
-            elevations_mm.push(elevation_for(seed, retry_index, grid.index(row, col)));
-        }
-        progress.report("elevation", row + 1, grid.height)?;
-    }
-    progress.report("sea-level", 0, 1)?;
+    let tectonic_settings = tectonics::TectonicSettings::default_for(grid);
+    let mut tectonics = tectonics::generate_tectonic_world(
+        grid,
+        tectonic_settings,
+        settings.target_land_fraction_ppm,
+        seed,
+        retry_index,
+        progress,
+    )?;
+    let elevations_mm = tectonics.elevations_mm.clone();
+    progress.report(ProgressPhase::CalculatingWater, 0, 1)?;
     let sea_level_mm = solve_sea_level(&grid, &elevations_mm, settings.target_land_fraction_ppm)
-        .map_err(PhysicalError::Validation)?;
+        .map_err(|error| PhysicalError::coded(PhysicalErrorCode::WaterNonConvergent, error))?;
+    tectonics.target_land_fraction_ppm = settings.target_land_fraction_ppm;
+    tectonics.sea_level_mm = sea_level_mm;
     let field = PhysicalField {
         grid,
         seed,
@@ -360,13 +532,18 @@ pub fn generate_world(
         sea_level_mm,
         elevations_mm,
     };
+    progress.report(ProgressPhase::CalculatingWater, 1, 1)?;
+    progress.report(ProgressPhase::PreparingGeography, 0, 1)?;
+    let derived_geojson = tectonics::to_diagnostic_geojson(&tectonics)
+        .map_err(|error| PhysicalError::coded(PhysicalErrorCode::GeometryInvalid, error))?;
+    progress.report(ProgressPhase::PreparingGeography, 1, 1)?;
+    progress.report(ProgressPhase::ValidatingWorld, 0, 1)?;
     let report = validate_field_report(&field)?;
-    progress.report("derived-coastline", 0, 1)?;
-    let derived_geojson = to_geojson(&field).map_err(PhysicalError::Validation)?;
-    let source = encode_source(&field).map_err(PhysicalError::InvalidSource)?;
-    progress.report("complete", 1, 1)?;
+    let source = tectonics::encode_source_v2(&tectonics).map_err(PhysicalError::InvalidSource)?;
+    progress.report(ProgressPhase::ValidatingWorld, 1, 1)?;
     Ok(GeneratedWorld {
         field,
+        tectonics,
         source,
         derived_geojson,
         report,
@@ -563,26 +740,6 @@ fn push_i32(output: &mut Vec<u8>, value: i32) {
     output.extend_from_slice(&value.to_le_bytes());
 }
 
-pub fn encode_source(field: &PhysicalField) -> Result<Vec<u8>, String> {
-    field.validate()?;
-    let mut output = Vec::with_capacity(SOURCE_HEADER_BYTES + field.elevations_mm.len() * 4);
-    output.extend_from_slice(&SOURCE_MAGIC);
-    push_u16(&mut output, SOURCE_VERSION);
-    push_u16(&mut output, SOURCE_HEADER_BYTES as u16);
-    push_u32(&mut output, field.grid.width);
-    push_u32(&mut output, field.grid.height);
-    push_u64(&mut output, field.grid.radius_metres);
-    push_u32(&mut output, field.seed);
-    push_u32(&mut output, field.retry_index);
-    push_u32(&mut output, field.target_land_fraction_ppm);
-    push_i32(&mut output, field.sea_level_mm);
-    push_u32(&mut output, field.elevations_mm.len() as u32);
-    for elevation in &field.elevations_mm {
-        push_i32(&mut output, *elevation);
-    }
-    Ok(output)
-}
-
 fn read_exact<const N: usize>(bytes: &[u8], offset: &mut usize) -> Result<[u8; N], String> {
     let end = offset
         .checked_add(N)
@@ -596,72 +753,76 @@ fn read_exact<const N: usize>(bytes: &[u8], offset: &mut usize) -> Result<[u8; N
         .map_err(|_| "source field has an invalid width".to_string())
 }
 
-pub fn decode_source(bytes: &[u8]) -> Result<PhysicalField, String> {
-    if bytes.len() < SOURCE_HEADER_BYTES {
-        return Err("source is shorter than its fixed header".into());
-    }
-    let mut offset = 0;
-    if read_exact::<8>(bytes, &mut offset)? != SOURCE_MAGIC {
-        return Err("source magic does not match physical-world-v1".into());
-    }
-    let version = u16::from_le_bytes(read_exact(bytes, &mut offset)?);
-    if version != SOURCE_VERSION {
-        return Err("source version is unsupported".into());
-    }
-    let header_bytes = u16::from_le_bytes(read_exact(bytes, &mut offset)?);
-    if header_bytes as usize != SOURCE_HEADER_BYTES {
-        return Err("source header length is unsupported".into());
-    }
-    let width = u32::from_le_bytes(read_exact(bytes, &mut offset)?);
-    let height = u32::from_le_bytes(read_exact(bytes, &mut offset)?);
-    let radius_metres = u64::from_le_bytes(read_exact(bytes, &mut offset)?);
-    let grid = Grid::new(width, height, radius_metres)?;
-    let seed = u32::from_le_bytes(read_exact(bytes, &mut offset)?);
-    let retry_index = u32::from_le_bytes(read_exact(bytes, &mut offset)?);
-    let target_land_fraction_ppm = u32::from_le_bytes(read_exact(bytes, &mut offset)?);
-    let sea_level_mm = i32::from_le_bytes(read_exact(bytes, &mut offset)?);
-    let sample_count = u32::from_le_bytes(read_exact(bytes, &mut offset)?) as usize;
-    if sample_count != grid.sample_count() {
-        return Err("source sample count does not match the grid".into());
-    }
-    let expected_len = SOURCE_HEADER_BYTES
-        .checked_add(
-            sample_count
-                .checked_mul(4)
-                .ok_or_else(|| "source size overflow".to_string())?,
-        )
-        .ok_or_else(|| "source size overflow".to_string())?;
-    if bytes.len() != expected_len {
-        return Err("source has trailing or missing sample bytes".into());
-    }
-    let mut elevations_mm = Vec::with_capacity(sample_count);
-    for _ in 0..sample_count {
-        elevations_mm.push(i32::from_le_bytes(read_exact(bytes, &mut offset)?));
-    }
-    let field = PhysicalField {
-        grid,
-        seed,
-        retry_index,
-        target_land_fraction_ppm,
-        sea_level_mm,
-        elevations_mm,
-    };
-    field.validate()?;
-    Ok(field)
+pub fn encode_source(world: &tectonics::TectonicWorld) -> Result<Vec<u8>, String> {
+    tectonics::encode_source_v2(world)
+}
+
+pub fn decode_source(bytes: &[u8]) -> Result<tectonics::TectonicWorld, String> {
+    tectonics::decode_source_v2(bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn fixture() -> PhysicalField {
-        generate_field(
-            Grid::new(DEFAULT_WIDTH, DEFAULT_HEIGHT, DEFAULT_RADIUS_METRES).unwrap(),
-            831_429,
-            0,
-            300_000,
-        )
-        .unwrap()
+    fn fixture() -> GeneratedWorld {
+        let settings = GenerationSettings {
+            width: DEFAULT_WIDTH,
+            height: DEFAULT_HEIGHT,
+            radius_metres: DEFAULT_RADIUS_METRES,
+            target_land_fraction_ppm: 300_000,
+        };
+        let mut progress = NoopProgress;
+        generate_world(settings, 831_429, 0, &mut progress).unwrap()
+    }
+
+    #[test]
+    fn stable_error_and_progress_vocabularies_are_complete() {
+        let labels = PROGRESS_PHASES.map(ProgressPhase::label);
+        assert_eq!(
+            labels,
+            [
+                "Building tectonic structure",
+                "Building terrain",
+                "Calculating climate",
+                "Eroding landscape",
+                "Calculating water",
+                "Building rivers and lakes",
+                "Preparing geography",
+                "Validating world",
+            ]
+        );
+        assert_eq!(
+            PhysicalError::coded(PhysicalErrorCode::WaterNonConvergent, "test").code(),
+            CODE_WATER_NON_CONVERGENT
+        );
+        assert_eq!(PhysicalError::Cancelled.code(), CODE_GENERATOR_CANCELLED);
+    }
+
+    #[test]
+    fn named_subsystem_seeds_are_distinct_and_retry_scoped() {
+        let domains = [
+            SeedDomain::PlateSites,
+            SeedDomain::ContinentalRanking,
+            SeedDomain::RotationAxes,
+            SeedDomain::ReliefDetail,
+            SeedDomain::Hotspots,
+            SeedDomain::Climate,
+            SeedDomain::Erosion,
+            SeedDomain::Hydrology,
+            SeedDomain::Hazards,
+        ];
+        for (index, domain) in domains.iter().copied().enumerate() {
+            assert!(domains
+                .iter()
+                .skip(index + 1)
+                .all(|other| derive_subsystem_seed(831_429, 0, domain)
+                    != derive_subsystem_seed(831_429, 0, *other)));
+            assert_ne!(
+                derive_subsystem_seed(831_429, 0, domain),
+                derive_subsystem_seed(831_429, 1, domain)
+            );
+        }
     }
 
     #[test]
@@ -699,9 +860,18 @@ mod tests {
 
     #[test]
     fn source_round_trip_is_byte_exact_and_strict() {
-        let field = fixture();
-        let encoded = encode_source(&field).unwrap();
-        assert_eq!(decode_source(&encoded).unwrap(), field);
+        let world = fixture();
+        let encoded = encode_source(&world.tectonics).unwrap();
+        assert_eq!(encoded, world.source);
+        assert_eq!(
+            u16::from_le_bytes(encoded[8..10].try_into().unwrap()),
+            SOURCE_VERSION
+        );
+        assert_eq!(
+            u16::from_le_bytes(encoded[10..12].try_into().unwrap()) as usize,
+            SOURCE_HEADER_BYTES
+        );
+        assert_eq!(decode_source(&encoded).unwrap(), world.tectonics);
         assert_eq!(
             encode_source(&decode_source(&encoded).unwrap()).unwrap(),
             encoded
@@ -713,12 +883,15 @@ mod tests {
         let mut duplicate_header = encoded.clone();
         duplicate_header[0] = b'X';
         assert!(decode_source(&duplicate_header).is_err());
+        let mut old_version = encoded.clone();
+        old_version[8..10].copy_from_slice(&1u16.to_le_bytes());
+        assert!(decode_source(&old_version).is_err());
     }
 
     #[test]
     fn coastline_and_geojson_are_bounded_and_seam_safe() {
-        let field = fixture();
-        let segments = coastline_segments(&field);
+        let world = fixture();
+        let segments = coastline_segments(&world.field);
         assert!(!segments.is_empty());
         assert!(segments.len() <= MAX_GEOJSON_FEATURES);
         for segment in &segments {
@@ -727,7 +900,7 @@ mod tests {
                 assert!((-90_000_000..=90_000_000).contains(&point[1]));
             }
         }
-        let geojson = to_geojson(&field).unwrap();
+        let geojson = to_geojson(&world.field).unwrap();
         assert!(geojson.starts_with(r#"{"type":"FeatureCollection","features":["#));
         assert!(!geojson.contains("http://"));
         assert!(!geojson.contains("https://"));
@@ -749,7 +922,7 @@ mod tests {
         assert!(world.derived_geojson.contains("physical coastline"));
 
         let cancelled = AtomicBool::new(true);
-        let mut updates = |_stage: &'static str, _completed: u32, _total: u32| {};
+        let mut updates = |_phase: ProgressPhase, _completed: u32, _total: u32| {};
         let mut progress = CancellationProgress {
             cancelled: &cancelled,
             on_progress: &mut updates,
@@ -758,5 +931,24 @@ mod tests {
             generate_world(settings, 831_429, 0, &mut progress),
             Err(PhysicalError::Cancelled)
         );
+
+        let settings = GenerationSettings {
+            width: MAX_WIDTH,
+            height: MAX_HEIGHT,
+            radius_metres: DEFAULT_RADIUS_METRES,
+            target_land_fraction_ppm: 300_000,
+        };
+        let cancelled = AtomicBool::new(false);
+        let mut updates = |_: ProgressPhase, _, _| cancelled.store(true, Ordering::Relaxed);
+        let mut progress = CancellationProgress {
+            cancelled: &cancelled,
+            on_progress: &mut updates,
+        };
+        let started = std::time::Instant::now();
+        assert_eq!(
+            generate_world(settings, 831_429, 0, &mut progress),
+            Err(PhysicalError::Cancelled)
+        );
+        assert!(started.elapsed().as_millis() < CANCELLATION_LATENCY_BUDGET_MS);
     }
 }

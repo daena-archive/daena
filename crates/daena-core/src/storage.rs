@@ -337,9 +337,8 @@ fn canonical_module_records(
             updated_at: record.updated_at.clone(),
         })
         .collect::<Vec<_>>();
-    records.sort_by(|left, right| {
-        (&left.collection, &left.id).cmp(&(&right.collection, &right.id))
-    });
+    records
+        .sort_by(|left, right| (&left.collection, &left.id).cmp(&(&right.collection, &right.id)));
     records
 }
 
@@ -893,9 +892,9 @@ pub(crate) fn write_canonical_entity(
     fs::create_dir_all(&entity_dir)
         .map_err(|error| codec_error(&entity_dir, "entity.mkdir", error))?;
     let document_ref = document.map(|document| EntityDocumentRef {
-            id: document.id.clone(),
-            path: "document.md".into(),
-        });
+        id: document.id.clone(),
+        path: "document.md".into(),
+    });
     write_json(
         &entity_dir.join("entity.json"),
         &EntityFile {
@@ -1457,8 +1456,11 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
         (&left.module_id, &left.migration_id).cmp(&(&right.module_id, &right.migration_id))
     });
     module_records.sort_by(|left, right| {
-        (&left.module_id, &left.collection, &left.id)
-            .cmp(&(&right.module_id, &right.collection, &right.id))
+        (&left.module_id, &left.collection, &left.id).cmp(&(
+            &right.module_id,
+            &right.collection,
+            &right.id,
+        ))
     });
     Ok(CanonicalProject {
         manifest,

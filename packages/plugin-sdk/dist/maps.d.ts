@@ -86,8 +86,8 @@ export type MapDescriptor = {
     schemaVersion: 1;
     provider: {
         id: typeof PHYSICAL_PROVIDER;
-        adapterVersion: 1;
-        sourceFormat: "physical-world-v1";
+        adapterVersion: 2;
+        sourceFormat: "physical-world-v2";
     };
     sourceAssetId: string;
     previewAssetId: null;
@@ -97,7 +97,7 @@ export type MapDescriptor = {
     };
     generation: {
         id: "daena-physical-world";
-        version: 1;
+        version: 4;
         seed: number;
         retryIndex: number;
         settings: {
@@ -106,6 +106,10 @@ export type MapDescriptor = {
             radiusMetres: number;
             targetLandFractionPpm: number;
             referenceWaterInventoryM3: number;
+            plateCount: number;
+            continentalPlateCount: number;
+            tectonicActivityPpm: number;
+            islandActivityPpm: number;
         };
     };
 };

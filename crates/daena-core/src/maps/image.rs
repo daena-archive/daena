@@ -162,12 +162,10 @@ fn decode_png(bytes: &[u8]) -> Result<(u32, u32), CoreError> {
         },
     );
     decoder.set_transformations(png::Transformations::IDENTITY);
-    let mut reader = decoder
-        .read_info()
-        .map_err(|error| match error {
-            png::DecodingError::LimitsExceeded => pixel_budget_error(),
-            other => invalid(format!("PNG content does not match image/png: {other}")),
-        })?;
+    let mut reader = decoder.read_info().map_err(|error| match error {
+        png::DecodingError::LimitsExceeded => pixel_budget_error(),
+        other => invalid(format!("PNG content does not match image/png: {other}")),
+    })?;
     let (width, height) = {
         let info = reader.info();
         (info.width, info.height)
@@ -207,14 +205,17 @@ fn decode_jpeg(bytes: &[u8]) -> Result<(u32, u32), CoreError> {
 
 fn parse_svg(bytes: &[u8]) -> Result<(u32, u32), CoreError> {
     let text = std::str::from_utf8(bytes).map_err(|_| invalid("SVG must be UTF-8"))?;
-    let document =
-        roxmltree::Document::parse(text).map_err(|error| invalid(format!("malformed SVG: {error}")))?;
+    let document = roxmltree::Document::parse(text)
+        .map_err(|error| invalid(format!("malformed SVG: {error}")))?;
     reject_unsafe_svg(&document)?;
     let root = document.root_element();
     if !root.has_tag_name("svg") {
         return Err(invalid("SVG root element must be svg"));
     }
-    if let Some(view_box) = root.attribute("viewBox").or_else(|| root.attribute("viewbox")) {
+    if let Some(view_box) = root
+        .attribute("viewBox")
+        .or_else(|| root.attribute("viewbox"))
+    {
         let parts = view_box
             .split(|ch: char| ch.is_ascii_whitespace() || ch == ',')
             .filter(|part| !part.is_empty())
@@ -426,7 +427,10 @@ mod tests {
         );
         validate_raster_png(&png, 4, 3).unwrap();
         let mut corrupt = png.clone();
-        let idat = corrupt.windows(4).position(|window| window == b"IDAT").unwrap();
+        let idat = corrupt
+            .windows(4)
+            .position(|window| window == b"IDAT")
+            .unwrap();
         corrupt[idat + 4] ^= 0xff;
         assert!(validate_image_source(&corrupt, "image/png").is_err());
 
@@ -457,13 +461,18 @@ mod tests {
 
     #[test]
     fn budget_errors_name_the_recorded_limits_before_allocation() {
-        let empty = validate_image_source(&[], "image/png").unwrap_err().to_string();
+        let empty = validate_image_source(&[], "image/png")
+            .unwrap_err()
+            .to_string();
         assert!(empty.contains("empty"), "{empty}");
         let oversized = vec![0_u8; IMAGE_MAX_ENCODED_BYTES + 1];
         let encoded = validate_image_source(&oversized, "image/png")
             .unwrap_err()
             .to_string();
-        assert!(encoded.contains(&IMAGE_MAX_ENCODED_BYTES.to_string()), "{encoded}");
+        assert!(
+            encoded.contains(&IMAGE_MAX_ENCODED_BYTES.to_string()),
+            "{encoded}"
+        );
         assert!(encoded.contains("32 MiB"), "{encoded}");
         assert_eq!(IMAGE_MAX_DECODED_BYTES, 16_777_216 * 4 + 1024);
         assert_eq!(IMAGE_MAX_UNDO_BYTES, 64 * 1024 * 1024);

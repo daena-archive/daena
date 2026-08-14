@@ -109,6 +109,7 @@ export interface PhysicalJobStatus {
   completed: number;
   total: number;
   error: string | null;
+  errorCode: string | null;
 }
 export interface PhysicalGenerationInput {
   seed: number;
@@ -521,12 +522,9 @@ export const project = {
     }),
   generatePhysicalMap: (input: PhysicalGenerationInput, requestId = crypto.randomUUID()) =>
     invoke<PhysicalJobStatus>("project_physical_generate", { input, requestId }),
-  physicalMapStatus: (jobId: string) =>
-    invoke<PhysicalJobStatus>("project_physical_status", { jobId }),
-  physicalMapPreview: (jobId: string) =>
-    invoke<string>("project_physical_preview", { jobId }),
-  cancelPhysicalMap: (jobId: string) =>
-    invoke<PhysicalJobStatus>("project_physical_cancel", { jobId }),
+  physicalMapStatus: (jobId: string) => invoke<PhysicalJobStatus>("project_physical_status", { jobId }),
+  physicalMapPreview: (jobId: string) => invoke<string>("project_physical_preview", { jobId }),
+  cancelPhysicalMap: (jobId: string) => invoke<PhysicalJobStatus>("project_physical_cancel", { jobId }),
   acceptPhysicalMap: (jobId: string, name: string, options?: MutationOptions) =>
     invoke<{ entity: Entity; source: Asset }>("project_physical_accept", {
       jobId,

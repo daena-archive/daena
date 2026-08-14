@@ -3946,10 +3946,12 @@ onMount(() => {
                 onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "header" ? null : "header")}
                 >Create map</button>
               {#if mapProviderMenuOpen === "header"}<div class="map-provider-menu" role="menu">
-                  <button type="button" role="menuitem" onclick={() => void createMap("physical")}>Create physical world</button>
+                  <button type="button" role="menuitem" onclick={() => void createMap("physical")}
+                    >Create physical world</button>
                   <button type="button" role="menuitem" onclick={() => void createMap("fmg")}>Create with FMG</button>
                   <button type="button" role="menuitem" onclick={() => void createMap("image")}>Import image</button>
-                  <button type="button" role="menuitem" onclick={() => void createMap("vector")}>Import vector map</button>
+                  <button type="button" role="menuitem" onclick={() => void createMap("vector")}
+                    >Import vector map</button>
                 </div>{/if}
             </div>{/if}
           {#if section !== "writing" && section !== "maps"}<button class="quiet-button" onclick={openProjection}
@@ -4070,27 +4072,27 @@ onMount(() => {
                 </div>
               {/if}
               <div class="map-surface">
-              {#if mapsEditorMode === "physical"}
-                {#key mapsEditorKey}
-                  <PhysicalMapEditor
-                    mapId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
-                    onstate={(status, detail) => {
-                      if (!mapId) return;
-                      mapSaveStates[mapId] = { status, detail };
-                    }}
-                    oncreated={async (map) => {
-                      entities = await project.listEntities();
-                      savedMapsCache = null;
-                      selected = map;
-                      mapsEditorKey = map.id;
-                      mapsEditorMode = "physical";
-                      await loadSelectedState(map);
-                    }}
-                    oncancel={() => {
-                      void leavePluginView();
-                    }} />
-                {/key}
-              {:else if mapsEditorMode === "vector"}
+                {#if mapsEditorMode === "physical"}
+                  {#key mapsEditorKey}
+                    <PhysicalMapEditor
+                      mapId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
+                      onstate={(status, detail) => {
+                        if (!mapId) return;
+                        mapSaveStates[mapId] = { status, detail };
+                      }}
+                      oncreated={async (map) => {
+                        entities = await project.listEntities();
+                        savedMapsCache = null;
+                        selected = map;
+                        mapsEditorKey = map.id;
+                        mapsEditorMode = "physical";
+                        await loadSelectedState(map);
+                      }}
+                      oncancel={() => {
+                        void leavePluginView();
+                      }} />
+                  {/key}
+                {:else if mapsEditorMode === "vector"}
                   {#key mapsEditorKey}
                     <NativeVectorMapEditor
                       mapId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}

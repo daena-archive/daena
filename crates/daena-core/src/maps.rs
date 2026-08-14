@@ -11,11 +11,12 @@ pub const MAP_NAMESPACE: &str = "maps";
 pub const FMG_PROVIDER: &str = "azgaar-fmg";
 pub const VECTOR_PROVIDER: &str = "daena-vector";
 pub const PHYSICAL_PROVIDER: &str = "daena-physical";
-pub const PHYSICAL_SOURCE_FORMAT: &str = "physical-world-v1";
+pub const PHYSICAL_SOURCE_FORMAT: &str = "physical-world-v2";
+pub const PHYSICAL_ADAPTER_VERSION: u32 = 2;
 pub const PHYSICAL_MIME: &str = "application/vnd.daena.physical-world";
 pub const PHYSICAL_FILENAME: &str = "world.pworld";
 pub const PHYSICAL_GENERATOR_ID: &str = "daena-physical-world";
-pub const PHYSICAL_GENERATOR_VERSION: u32 = 1;
+pub const PHYSICAL_GENERATOR_VERSION: u32 = 4;
 pub const PHYSICAL_MAX_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 pub const DETAIL_MAP_RELATIONSHIP: &str = "daena.maps:detail-map";
 pub const OVERVIEW_MAP_RELATIONSHIP: &str = "daena.maps:overview-map";
@@ -30,9 +31,9 @@ pub use image::{
     IMAGE_MAX_PIXELS, IMAGE_MAX_RASTER_LAYERS, IMAGE_MAX_UNDO_BYTES,
 };
 pub use vector::{
-    empty_canonical_bytes, VECTOR_CENTER_Y_MAX, VECTOR_CENTER_Y_MIN, VECTOR_FILENAME, VECTOR_MAX_BYTES,
-    VECTOR_MAX_FEATURES, VECTOR_MAX_FEATURE_POSITIONS, VECTOR_MAX_LAYERS, VECTOR_MAX_POSITIONS,
-    VECTOR_MAX_PROPERTY_BYTES, VECTOR_MIME, VECTOR_SOURCE_FORMAT,
+    empty_canonical_bytes, VECTOR_CENTER_Y_MAX, VECTOR_CENTER_Y_MIN, VECTOR_FILENAME,
+    VECTOR_MAX_BYTES, VECTOR_MAX_FEATURES, VECTOR_MAX_FEATURE_POSITIONS, VECTOR_MAX_LAYERS,
+    VECTOR_MAX_POSITIONS, VECTOR_MAX_PROPERTY_BYTES, VECTOR_MIME, VECTOR_SOURCE_FORMAT,
 };
 
 /// Upper bound on vertices in a path or one area ring.
@@ -141,6 +142,14 @@ pub struct PhysicalMapGenerationSettings {
     pub target_land_fraction_ppm: u32,
     #[serde(rename = "referenceWaterInventoryM3")]
     pub reference_water_inventory_m3: u64,
+    #[serde(rename = "plateCount")]
+    pub plate_count: u16,
+    #[serde(rename = "continentalPlateCount")]
+    pub continental_plate_count: u16,
+    #[serde(rename = "tectonicActivityPpm")]
+    pub tectonic_activity_ppm: u32,
+    #[serde(rename = "islandActivityPpm")]
+    pub island_activity_ppm: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -157,7 +166,11 @@ pub struct MapGeneration {
     pub version: u32,
     pub seed: u32,
     pub settings: MapGenerationSettings,
-    #[serde(rename = "retryIndex", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "retryIndex",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub retry_index: Option<u32>,
 }
 
@@ -305,9 +318,9 @@ fn validate_semantic_style(style: &Value) -> Result<(), CoreError> {
                 }
             }
             "strokeWidth" => {
-                let width = value.as_f64().ok_or_else(|| {
-                    invalid("semantic style.strokeWidth must be a finite number")
-                })?;
+                let width = value
+                    .as_f64()
+                    .ok_or_else(|| invalid("semantic style.strokeWidth must be a finite number"))?;
                 if !width.is_finite() || !(0.0..=32.0).contains(&width) {
                     return Err(invalid(
                         "semantic style.strokeWidth must be finite in [0, 32]",
@@ -323,9 +336,7 @@ fn validate_semantic_style(style: &Value) -> Result<(), CoreError> {
                 }
             }
             _ => {
-                return Err(invalid(
-                    "semantic style contains an unsupported property",
-                ));
+                return Err(invalid("semantic style contains an unsupported property"));
             }
         }
     }
@@ -378,19 +389,96 @@ fn invalid(message: impl Into<String>) -> CoreError {
     CoreError::Validation(format!("maps: {}", message.into()))
 }
 
-fn validate_provider(provider: &ProviderDescriptor) -> Result<(), CoreError> {
-    let supported = provider.adapter_version == 1
-        && match provider.id.as_str() {
-            FMG_PROVIDER => provider.source_format == "fmg-map",
-            VECTOR_PROVIDER => provider.source_format == VECTOR_SOURCE_FORMAT,
-            PHYSICAL_PROVIDER => provider.source_format == PHYSICAL_SOURCE_FORMAT,
-            _ => false,
-        };
-    if supported {
-        Ok(())
-    } else {
-        Err(invalid("unsupported map provider or descriptor version"))
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderKind {
+    Fmg,
+    Vector,
+    Physical,
+}
+
+type GenerationValidator = fn(&Value) -> Result<(), CoreError>;
+type PreviewMimeValidator = fn(&str) -> Result<&'static str, CoreError>;
+
+#[derive(Clone, Copy)]
+struct ProviderSpec {
+    kind: ProviderKind,
+    id: &'static str,
+    adapter_version: u32,
+    source_format: &'static str,
+    requires_source_asset: bool,
+    source_mime: Option<&'static str>,
+    generation_validator: Option<GenerationValidator>,
+    preview_mime_validator: Option<PreviewMimeValidator>,
+    validate_center: fn(&Point) -> Result<(), CoreError>,
+}
+
+fn validate_vector_generation(value: &Value) -> Result<(), CoreError> {
+    vector::validate_generation(value).map(|_| ())
+}
+
+fn validate_physical_generation(value: &Value) -> Result<(), CoreError> {
+    physical::validate_generation(value).map(|_| ())
+}
+
+fn validate_normalized_center(center: &Point) -> Result<(), CoreError> {
+    point(center)
+}
+
+fn validate_web_mercator_center(center: &Point) -> Result<(), CoreError> {
+    point(center)?;
+    if !(VECTOR_CENTER_Y_MIN..=VECTOR_CENTER_Y_MAX).contains(&center.1) {
+        return Err(invalid(
+            "defaultView.center y is outside the Web Mercator latitude limit",
+        ));
     }
+    Ok(())
+}
+
+const PROVIDER_REGISTRY: &[ProviderSpec] = &[
+    ProviderSpec {
+        kind: ProviderKind::Fmg,
+        id: FMG_PROVIDER,
+        adapter_version: 1,
+        source_format: "fmg-map",
+        requires_source_asset: false,
+        source_mime: None,
+        generation_validator: None,
+        preview_mime_validator: None,
+        validate_center: validate_normalized_center,
+    },
+    ProviderSpec {
+        kind: ProviderKind::Vector,
+        id: VECTOR_PROVIDER,
+        adapter_version: 1,
+        source_format: VECTOR_SOURCE_FORMAT,
+        requires_source_asset: true,
+        source_mime: Some(VECTOR_MIME),
+        generation_validator: Some(validate_vector_generation),
+        preview_mime_validator: Some(source_format_for_mime),
+        validate_center: validate_web_mercator_center,
+    },
+    ProviderSpec {
+        kind: ProviderKind::Physical,
+        id: PHYSICAL_PROVIDER,
+        adapter_version: PHYSICAL_ADAPTER_VERSION,
+        source_format: PHYSICAL_SOURCE_FORMAT,
+        requires_source_asset: true,
+        source_mime: Some(PHYSICAL_MIME),
+        generation_validator: Some(validate_physical_generation),
+        preview_mime_validator: None,
+        validate_center: validate_normalized_center,
+    },
+];
+
+fn provider_spec(provider: &ProviderDescriptor) -> Result<&'static ProviderSpec, CoreError> {
+    PROVIDER_REGISTRY
+        .iter()
+        .find(|spec| {
+            spec.id == provider.id
+                && spec.adapter_version == provider.adapter_version
+                && spec.source_format == provider.source_format
+        })
+        .ok_or_else(|| invalid("unsupported map provider or descriptor version"))
 }
 
 fn map_asset(
@@ -632,50 +720,41 @@ pub fn validate_field(
         if descriptor.schema_version != 1 {
             return Err(invalid("unsupported map provider or descriptor version"));
         }
-        validate_provider(&descriptor.provider)?;
-        if descriptor.provider.id == VECTOR_PROVIDER && descriptor.source_asset_id.is_none() {
-            return Err(invalid("daena-vector maps require sourceAssetId"));
-        }
-        if descriptor.generation.is_some()
-            && !matches!(descriptor.provider.id.as_str(), VECTOR_PROVIDER | PHYSICAL_PROVIDER)
-        {
-            return Err(invalid("generation is only valid on generated map providers"));
+        let provider = provider_spec(&descriptor.provider)?;
+        if provider.requires_source_asset && descriptor.source_asset_id.is_none() {
+            return Err(invalid(format!(
+                "{} maps require sourceAssetId",
+                provider.id
+            )));
         }
         if let Some(generation) = &descriptor.generation {
             let value = serde_json::to_value(generation).map_err(|e| invalid(e.to_string()))?;
-            if descriptor.provider.id == VECTOR_PROVIDER {
-                vector::validate_generation(&value)?;
-            } else {
-                physical::validate_generation(&value)?;
-            }
+            let validate_generation = provider
+                .generation_validator
+                .ok_or_else(|| invalid("generation is only valid on generated map providers"))?;
+            validate_generation(&value)?;
         }
         if let Some(source_asset_id) = &descriptor.source_asset_id {
             let (_, mime_type) =
                 owned_map_asset(connection, entity_id, source_asset_id, "sourceAssetId")?;
-            if descriptor.provider.id == VECTOR_PROVIDER && mime_type != VECTOR_MIME {
-                return Err(invalid("sourceAssetId MIME type must be application/geo+json"));
-            }
-            if descriptor.provider.id == PHYSICAL_PROVIDER && mime_type != PHYSICAL_MIME {
-                return Err(invalid("sourceAssetId MIME type must be application/vnd.daena.physical-world"));
+            if let Some(expected_mime) = provider.source_mime {
+                if mime_type != expected_mime {
+                    return Err(invalid(format!(
+                        "sourceAssetId MIME type must be {expected_mime}"
+                    )));
+                }
             }
         }
         if let Some(preview) = &descriptor.preview_asset_id {
             let (_, mime_type) = owned_map_asset(connection, entity_id, preview, "previewAssetId")?;
-            if descriptor.provider.id == VECTOR_PROVIDER {
-                source_format_for_mime(&mime_type)?;
+            if let Some(validate_preview_mime) = provider.preview_mime_validator {
+                validate_preview_mime(&mime_type)?;
             }
         }
         if descriptor.default_view.zoom <= 0.0 || !descriptor.default_view.zoom.is_finite() {
             return Err(invalid("defaultView.zoom must be finite and positive"));
         }
-        point(&descriptor.default_view.center)?;
-        if descriptor.provider.id == VECTOR_PROVIDER
-            && !(VECTOR_CENTER_Y_MIN..=VECTOR_CENTER_Y_MAX).contains(&descriptor.default_view.center.1)
-        {
-            return Err(invalid(
-                "defaultView.center y is outside the Web Mercator latitude limit",
-            ));
-        }
+        (provider.validate_center)(&descriptor.default_view.center)?;
         Ok(())
     } else if key == "locations" {
         let object = value
@@ -825,9 +904,8 @@ pub fn validate_image_map_content(
     mut load_asset: impl FnMut(&str) -> Result<Vec<u8>, CoreError>,
 ) -> Result<(), CoreError> {
     let mut source_dimensions = std::collections::BTreeMap::new();
-    let mut maps = connection.prepare(
-        "SELECT entity_id, value FROM entity_fields WHERE namespace=?1 AND key='map'",
-    )?;
+    let mut maps = connection
+        .prepare("SELECT entity_id, value FROM entity_fields WHERE namespace=?1 AND key='map'")?;
     let map_rows = maps.query_map([MAP_NAMESPACE], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
@@ -838,46 +916,56 @@ pub fn validate_image_map_content(
         validate_field(connection, &entity_id, "map", &value)?;
         let descriptor: MapDescriptor = serde_json::from_value(value)
             .map_err(|error| invalid(format!("invalid map descriptor: {error}")))?;
-        if descriptor.provider.id == PHYSICAL_PROVIDER {
-            let source_id = descriptor
-                .source_asset_id
-                .as_deref()
-                .ok_or_else(|| invalid("daena-physical maps require sourceAssetId"))?;
-            let generation = descriptor
-                .generation
-                .as_ref()
-                .ok_or_else(|| invalid("daena-physical maps require generation"))?;
-            let generation = serde_json::to_value(generation)
-                .map_err(|error| invalid(error.to_string()))?;
-            let bytes = load_asset(source_id)?;
-            physical::validate_source(&bytes, &generation)?;
-        } else if descriptor.provider.id == VECTOR_PROVIDER {
-            let source_id = descriptor
-                .source_asset_id
-                .as_deref()
-                .ok_or_else(|| invalid("daena-vector maps require sourceAssetId"))?;
-            let bytes = load_asset(source_id)?;
-            let layers_value: Option<Value> = connection
-                .query_row(
-                    "SELECT value FROM entity_fields WHERE entity_id=?1 AND namespace=?2 AND key='layers'",
-                    [&entity_id, MAP_NAMESPACE],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .map(|raw: String| serde_json::from_str(&raw))
-                .transpose()
-                .map_err(|error| invalid(error.to_string()))?;
-            let known = layers_value
-                .as_ref()
-                .map(vector::layer_ids_from_layers_field)
-                .unwrap_or_default();
-            vector::require_canonical_bytes(Path::new("assets/maps/map.geojson"), &bytes, &known)?;
-            if let Some(preview_id) = descriptor.preview_asset_id.as_deref() {
-                let preview_bytes = load_asset(preview_id)?;
-                let (_, mime) = owned_map_asset(connection, &entity_id, preview_id, "previewAssetId")?;
-                let source = validate_image_source(&preview_bytes, &mime)?;
-                source_dimensions.insert(entity_id, (source.width, source.height));
+        let provider = provider_spec(&descriptor.provider)?;
+        match provider.kind {
+            ProviderKind::Physical => {
+                let source_id = descriptor
+                    .source_asset_id
+                    .as_deref()
+                    .ok_or_else(|| invalid("daena-physical maps require sourceAssetId"))?;
+                let generation = descriptor
+                    .generation
+                    .as_ref()
+                    .ok_or_else(|| invalid("daena-physical maps require generation"))?;
+                let generation =
+                    serde_json::to_value(generation).map_err(|error| invalid(error.to_string()))?;
+                let bytes = load_asset(source_id)?;
+                physical::validate_source(&bytes, &generation)?;
             }
+            ProviderKind::Vector => {
+                let source_id = descriptor
+                    .source_asset_id
+                    .as_deref()
+                    .ok_or_else(|| invalid("daena-vector maps require sourceAssetId"))?;
+                let bytes = load_asset(source_id)?;
+                let layers_value: Option<Value> = connection
+                    .query_row(
+                        "SELECT value FROM entity_fields WHERE entity_id=?1 AND namespace=?2 AND key='layers'",
+                        [&entity_id, MAP_NAMESPACE],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+                    .map(|raw: String| serde_json::from_str(&raw))
+                    .transpose()
+                    .map_err(|error| invalid(error.to_string()))?;
+                let known = layers_value
+                    .as_ref()
+                    .map(vector::layer_ids_from_layers_field)
+                    .unwrap_or_default();
+                vector::require_canonical_bytes(
+                    Path::new("assets/maps/map.geojson"),
+                    &bytes,
+                    &known,
+                )?;
+                if let Some(preview_id) = descriptor.preview_asset_id.as_deref() {
+                    let preview_bytes = load_asset(preview_id)?;
+                    let (_, mime) =
+                        owned_map_asset(connection, &entity_id, preview_id, "previewAssetId")?;
+                    let source = validate_image_source(&preview_bytes, &mime)?;
+                    source_dimensions.insert(entity_id, (source.width, source.height));
+                }
+            }
+            ProviderKind::Fmg => {}
         }
     }
     let mut layers = connection.prepare(

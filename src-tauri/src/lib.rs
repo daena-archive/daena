@@ -46,6 +46,7 @@ type SharedBinaryTransfers = Arc<Mutex<BinaryTransferManager>>;
 type SharedPhysicalJobs = Arc<Mutex<PhysicalJobManager>>;
 type SharedSettings = Arc<Mutex<SettingsStore>>;
 const READ_CONNECTION_POOL_CAPACITY: usize = 4;
+const PHYSICAL_JOB_TTL: Duration = Duration::from_secs(15 * 60);
 
 fn new_shared_core() -> SharedCore {
     Arc::new(Mutex::new(Arc::new(ProjectSession {
@@ -64,6 +65,7 @@ struct PhysicalJobStatus {
     completed: u32,
     total: u32,
     error: Option<String>,
+    error_code: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +77,8 @@ struct PhysicalJobResult {
 
 struct PhysicalJob {
     project_id: String,
+    session_id: String,
+    expires_at: Instant,
     cancel: Arc<AtomicBool>,
     status: PhysicalJobStatus,
     result: Option<PhysicalJobResult>,
@@ -83,6 +87,60 @@ struct PhysicalJob {
 #[derive(Default)]
 struct PhysicalJobManager {
     jobs: BTreeMap<String, PhysicalJob>,
+    active_session: Option<PhysicalSession>,
+}
+
+struct PhysicalSession {
+    id: String,
+    project_id: String,
+}
+
+impl PhysicalJobManager {
+    fn reap_expired(&mut self) {
+        let now = Instant::now();
+        self.jobs.retain(|_, job| {
+            if job.expires_at <= now {
+                job.cancel.store(true, Ordering::Relaxed);
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    fn cancel_all(&mut self) {
+        for job in self.jobs.values() {
+            job.cancel.store(true, Ordering::Relaxed);
+        }
+        self.jobs.clear();
+        self.active_session = None;
+    }
+
+    fn begin_session(&mut self, project_id: String) -> String {
+        self.cancel_all();
+        let id = uuid::Uuid::new_v4().to_string();
+        self.active_session = Some(PhysicalSession {
+            id: id.clone(),
+            project_id,
+        });
+        id
+    }
+
+    fn ensure_session(&mut self, project_id: &str) -> String {
+        self.reap_expired();
+        if let Some(session) = &self.active_session {
+            if session.project_id == project_id {
+                return session.id.clone();
+            }
+        }
+        self.begin_session(project_id.to_string())
+    }
+
+    fn active_session_matches(&self, project_id: &str, session_id: &str) -> bool {
+        self.active_session
+            .as_ref()
+            .is_some_and(|session| session.project_id == project_id && session.id == session_id)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -111,23 +169,29 @@ struct PhysicalProgress {
 impl daena_physical_spike::ProgressSink for PhysicalProgress {
     fn report(
         &mut self,
-        stage: &'static str,
+        phase: daena_physical_spike::ProgressPhase,
         completed: u32,
         total: u32,
     ) -> Result<(), daena_physical_spike::PhysicalError> {
-        if self.cancel.load(Ordering::Relaxed) {
-            return Err(daena_physical_spike::PhysicalError::Cancelled);
-        }
-        let mut manager = self
-            .jobs
-            .lock()
-            .map_err(|_| daena_physical_spike::PhysicalError::Validation("job state is unavailable".into()))?;
+        self.check_cancelled()?;
+        let mut manager = self.jobs.lock().map_err(|_| {
+            daena_physical_spike::PhysicalError::Validation("job state is unavailable".into())
+        })?;
+        manager.reap_expired();
         if let Some(job) = manager.jobs.get_mut(&self.job_id) {
-            job.status.stage = stage.into();
+            job.status.stage = phase.label().into();
             job.status.completed = completed;
             job.status.total = total;
         }
         Ok(())
+    }
+
+    fn check_cancelled(&self) -> Result<(), daena_physical_spike::PhysicalError> {
+        if self.cancel.load(Ordering::Relaxed) {
+            Err(daena_physical_spike::PhysicalError::Cancelled)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -144,6 +208,31 @@ fn current_info(core: &SharedCore) -> Result<Option<ProjectInfo>, String> {
         .lock()
         .map_err(|_| "core lock poisoned".to_string())?;
     Ok(core.info())
+}
+
+fn cancel_physical_jobs(jobs: &SharedPhysicalJobs) -> Result<(), String> {
+    jobs.lock()
+        .map_err(|_| "physical job state is unavailable".to_string())?
+        .cancel_all();
+    Ok(())
+}
+
+fn begin_physical_session(jobs: &SharedPhysicalJobs, project_id: String) -> Result<(), String> {
+    jobs.lock()
+        .map_err(|_| "physical job state is unavailable".to_string())?
+        .begin_session(project_id);
+    Ok(())
+}
+
+fn begin_current_physical_session(
+    jobs: &SharedPhysicalJobs,
+    core: &SharedCore,
+) -> Result<(), String> {
+    if let Some(project_id) = current_info(core)?.map(|info| info.root) {
+        begin_physical_session(jobs, project_id)
+    } else {
+        cancel_physical_jobs(jobs)
+    }
 }
 
 const MAX_ASSET_TRANSFER_BYTES: usize = 64 * 1024 * 1024;
@@ -5604,11 +5693,13 @@ fn publish_core_mutation_event(
 async fn project_open(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
+    jobs: tauri::State<'_, SharedPhysicalJobs>,
     plugins: tauri::State<'_, SharedPluginHost>,
     ai_runtime: tauri::State<'_, ai::SharedAiRuntime>,
     watcher: tauri::State<'_, SharedProjectWatcher>,
     path: String,
 ) -> Result<(), String> {
+    cancel_physical_jobs(jobs.inner())?;
     flush_project_checkpoint(state.clone(), "project lifecycle transition").await?;
     let plugins = plugins.inner().clone();
     let ai_runtime = ai_runtime.inner().clone();
@@ -5629,6 +5720,7 @@ async fn project_open(
     })
     .await;
     if result.is_ok() {
+        begin_current_physical_session(jobs.inner(), &core)?;
         sync_project_usage_and_wait(core.clone(), sync_plugins).await?;
         flush_project_checkpoint_for_shared_core(core.clone(), "project startup synchronization")
             .await?;
@@ -5642,11 +5734,13 @@ async fn project_open(
 async fn project_open_directory(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
+    jobs: tauri::State<'_, SharedPhysicalJobs>,
     plugins: tauri::State<'_, SharedPluginHost>,
     ai_runtime: tauri::State<'_, ai::SharedAiRuntime>,
     watcher: tauri::State<'_, SharedProjectWatcher>,
     path: String,
 ) -> Result<ProjectInfo, String> {
+    cancel_physical_jobs(jobs.inner())?;
     flush_project_checkpoint(state.clone(), "project lifecycle transition").await?;
     let plugins = plugins.inner().clone();
     let ai_runtime = ai_runtime.inner().clone();
@@ -5667,6 +5761,7 @@ async fn project_open_directory(
     })
     .await;
     if result.is_ok() {
+        begin_current_physical_session(jobs.inner(), &core)?;
         sync_project_usage_and_wait(core.clone(), sync_plugins).await?;
         flush_project_checkpoint_for_shared_core(core.clone(), "project startup synchronization")
             .await?;
@@ -5680,11 +5775,13 @@ async fn project_open_directory(
 async fn project_new(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
+    jobs: tauri::State<'_, SharedPhysicalJobs>,
     plugins: tauri::State<'_, SharedPluginHost>,
     ai_runtime: tauri::State<'_, ai::SharedAiRuntime>,
     watcher: tauri::State<'_, SharedProjectWatcher>,
     path: String,
 ) -> Result<ProjectInfo, String> {
+    cancel_physical_jobs(jobs.inner())?;
     flush_project_checkpoint(state.clone(), "project lifecycle transition").await?;
     let plugins = plugins.inner().clone();
     let ai_runtime = ai_runtime.inner().clone();
@@ -5705,6 +5802,7 @@ async fn project_new(
     })
     .await;
     if result.is_ok() {
+        begin_current_physical_session(jobs.inner(), &core)?;
         sync_project_usage_and_wait(core.clone(), sync_plugins).await?;
         flush_project_checkpoint_for_shared_core(core.clone(), "project startup synchronization")
             .await?;
@@ -5718,17 +5816,20 @@ async fn project_new(
 async fn project_close(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
+    jobs: tauri::State<'_, SharedPhysicalJobs>,
     plugins: tauri::State<'_, SharedPluginHost>,
     ai_runtime: tauri::State<'_, ai::SharedAiRuntime>,
     watcher: tauri::State<'_, SharedProjectWatcher>,
 ) -> Result<(), String> {
+    cancel_physical_jobs(jobs.inner())?;
     let plugins = plugins.inner().clone();
     let ai_runtime = ai_runtime.inner().clone();
     let app = app.clone();
     let core = state.inner().clone();
+    let jobs = jobs.inner().clone();
     let watcher = watcher.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        close_project_for_app(&app, &core, &plugins, &ai_runtime, &watcher)
+        close_project_for_app(&app, &core, &jobs, &plugins, &ai_runtime, &watcher)
     })
     .await
     .map_err(|error| format!("project close worker failed: {error}"))?
@@ -5737,10 +5838,12 @@ async fn project_close(
 fn close_project_for_app(
     app: &tauri::AppHandle,
     core: &SharedCore,
+    jobs: &SharedPhysicalJobs,
     plugins: &SharedPluginHost,
     ai_runtime: &ai::SharedAiRuntime,
     watcher: &SharedProjectWatcher,
 ) -> Result<(), String> {
+    cancel_physical_jobs(jobs)?;
     stop_project_watcher(watcher)?;
     flush_checkpoint_for_shared_core(core, "project lifecycle transition")?;
     let session = current_session(core)?;
@@ -6006,9 +6109,11 @@ async fn open_external_url(url: String) -> Result<(), String> {
 #[tauri::command]
 async fn project_open_memory(
     state: tauri::State<'_, SharedCore>,
+    jobs: tauri::State<'_, SharedPhysicalJobs>,
     ai_runtime: tauri::State<'_, ai::SharedAiRuntime>,
     watcher: tauri::State<'_, SharedProjectWatcher>,
 ) -> Result<(), String> {
+    cancel_physical_jobs(jobs.inner())?;
     stop_project_watcher(watcher.inner())?;
     flush_project_checkpoint(state.clone(), "project lifecycle transition").await?;
     let core = state.inner().clone();
@@ -6017,6 +6122,7 @@ async fn project_open_memory(
     })
     .await;
     if result.is_ok() {
+        begin_current_physical_session(jobs.inner(), &core)?;
         schedule_ai_index_refresh(&core, ai_runtime.inner());
     }
     result
@@ -6026,10 +6132,12 @@ async fn project_open_memory(
 async fn project_open_default(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
+    jobs: tauri::State<'_, SharedPhysicalJobs>,
     plugins: tauri::State<'_, SharedPluginHost>,
     ai_runtime: tauri::State<'_, ai::SharedAiRuntime>,
     watcher: tauri::State<'_, SharedProjectWatcher>,
 ) -> Result<(), String> {
+    cancel_physical_jobs(jobs.inner())?;
     let directory = app
         .path()
         .app_data_dir()
@@ -6056,6 +6164,7 @@ async fn project_open_default(
     })
     .await;
     if result.is_ok() {
+        begin_current_physical_session(jobs.inner(), &core)?;
         sync_project_usage_and_wait(core.clone(), sync_plugins).await?;
         flush_project_checkpoint_for_shared_core(core.clone(), "project startup synchronization")
             .await?;
@@ -6807,6 +6916,12 @@ async fn project_physical_generate(
     let project_id = current_info(state.inner())?
         .ok_or_else(|| "open a project before generating a physical map".to_string())?
         .root;
+    let session_id = {
+        let mut manager = jobs
+            .lock()
+            .map_err(|_| "physical job state is unavailable".to_string())?;
+        manager.ensure_session(&project_id)
+    };
     let job_id = uuid::Uuid::new_v4().to_string();
     let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     uuid::Uuid::parse_str(&request_id)
@@ -6816,10 +6931,13 @@ async fn project_physical_generate(
         job_id: job_id.clone(),
         request_id: request_id.clone(),
         state: "running".into(),
-        stage: "queued".into(),
+        stage: daena_physical_spike::ProgressPhase::BuildingTectonicStructure
+            .label()
+            .into(),
         completed: 0,
         total: 1,
         error: None,
+        error_code: None,
     };
     jobs.lock()
         .map_err(|_| "physical job state is unavailable".to_string())?
@@ -6828,6 +6946,8 @@ async fn project_physical_generate(
             job_id.clone(),
             PhysicalJob {
                 project_id,
+                session_id,
+                expires_at: Instant::now() + PHYSICAL_JOB_TTL,
                 cancel: cancel.clone(),
                 status: status.clone(),
                 result: None,
@@ -6873,12 +6993,20 @@ async fn project_physical_generate(
                         "radiusMetres": input.settings.radius_metres,
                         "targetLandFractionPpm": input.settings.target_land_fraction_ppm,
                         "referenceWaterInventoryM3": world.report.reference_water_inventory_m3,
+                        "plateCount": world.tectonics.settings.plate_count,
+                        "continentalPlateCount": world.tectonics.settings.continental_plate_count,
+                        "tectonicActivityPpm": world.tectonics.settings.tectonic_activity_ppm,
+                        "islandActivityPpm": world.tectonics.settings.island_activity_ppm,
                     }
                 });
                 job.status.state = "completed".into();
-                job.status.stage = "complete".into();
+                job.status.stage = daena_physical_spike::ProgressPhase::ValidatingWorld
+                    .label()
+                    .into();
                 job.status.completed = 1;
                 job.status.total = 1;
+                job.status.error = None;
+                job.status.error_code = None;
                 job.result = Some(PhysicalJobResult {
                     source: world.source,
                     generation,
@@ -6887,13 +7015,19 @@ async fn project_physical_generate(
             }
             Err(daena_physical_spike::PhysicalError::Cancelled) => {
                 job.status.state = "cancelled".into();
-                job.status.stage = "cancelled".into();
+                job.status.stage = daena_physical_spike::ProgressPhase::ValidatingWorld
+                    .label()
+                    .into();
                 job.status.error = None;
+                job.status.error_code = Some(daena_physical_spike::CODE_GENERATOR_CANCELLED.into());
             }
             Err(error) => {
                 job.status.state = "failed".into();
-                job.status.stage = "failed".into();
+                job.status.stage = daena_physical_spike::ProgressPhase::ValidatingWorld
+                    .label()
+                    .into();
                 job.status.error = Some(error.to_string());
+                job.status.error_code = Some(error.code().into());
             }
         }
     });
@@ -6902,25 +7036,46 @@ async fn project_physical_generate(
 
 #[tauri::command]
 fn project_physical_status(
+    state: tauri::State<'_, SharedCore>,
     jobs: tauri::State<'_, SharedPhysicalJobs>,
     job_id: String,
 ) -> Result<PhysicalJobStatus, String> {
-    jobs.lock()
-        .map_err(|_| "physical job state is unavailable".to_string())?
+    let project_id = current_info(state.inner())?
+        .ok_or_else(|| "open a project before reading a physical job".to_string())?
+        .root;
+    let mut manager = jobs
+        .lock()
+        .map_err(|_| "physical job state is unavailable".to_string())?;
+    manager.reap_expired();
+    let job = manager
         .jobs
         .get(&job_id)
-        .map(|job| job.status.clone())
-        .ok_or_else(|| "physical job was not found or has expired".to_string())
+        .filter(|job| manager.active_session_matches(&project_id, &job.session_id))
+        .ok_or("physical job was not found, expired, or belongs to another session")?;
+    Ok(job.status.clone())
 }
 
 #[tauri::command]
 fn project_physical_cancel(
+    state: tauri::State<'_, SharedCore>,
     jobs: tauri::State<'_, SharedPhysicalJobs>,
     job_id: String,
 ) -> Result<PhysicalJobStatus, String> {
+    let project_id = current_info(state.inner())?
+        .ok_or_else(|| "open a project before cancelling a physical job".to_string())?
+        .root;
     let mut manager = jobs
         .lock()
         .map_err(|_| "physical job state is unavailable".to_string())?;
+    manager.reap_expired();
+    let session_matches = manager
+        .jobs
+        .get(&job_id)
+        .map(|job| manager.active_session_matches(&project_id, &job.session_id))
+        .unwrap_or(false);
+    if !session_matches {
+        return Err("physical job was not found, expired, or belongs to another session".into());
+    }
     let job = manager
         .jobs
         .get_mut(&job_id)
@@ -6928,21 +7083,30 @@ fn project_physical_cancel(
     if job.status.state == "running" {
         job.cancel.store(true, Ordering::Relaxed);
         job.status.state = "cancelling".into();
-        job.status.stage = "cancelling".into();
     }
     Ok(job.status.clone())
 }
 
 #[tauri::command]
 fn project_physical_preview(
+    state: tauri::State<'_, SharedCore>,
     jobs: tauri::State<'_, SharedPhysicalJobs>,
     job_id: String,
 ) -> Result<String, String> {
-    jobs.lock()
-        .map_err(|_| "physical job state is unavailable".to_string())?
+    let project_id = current_info(state.inner())?
+        .ok_or_else(|| "open a project before reading a physical preview".to_string())?
+        .root;
+    let mut manager = jobs
+        .lock()
+        .map_err(|_| "physical job state is unavailable".to_string())?;
+    manager.reap_expired();
+    let job = manager
         .jobs
         .get(&job_id)
-        .and_then(|job| job.result.as_ref())
+        .filter(|job| manager.active_session_matches(&project_id, &job.session_id))
+        .ok_or("physical job was not found, expired, or belongs to another session")?;
+    job.result
+        .as_ref()
         .map(|result| result.derived_geojson.clone())
         .ok_or_else(|| "physical job preview is not ready".to_string())
 }
@@ -6959,15 +7123,19 @@ async fn project_physical_accept(
         .ok_or_else(|| "open a project before accepting a physical map".to_string())?
         .root;
     let result = {
-        let manager = jobs
+        let mut manager = jobs
             .lock()
             .map_err(|_| "physical job state is unavailable".to_string())?;
+        manager.reap_expired();
         let job = manager
             .jobs
             .get(&job_id)
             .ok_or_else(|| "physical job was not found or has expired".to_string())?;
         if job.project_id != project_id {
             return Err("physical job belongs to a different project".into());
+        }
+        if !manager.active_session_matches(&project_id, &job.session_id) {
+            return Err("physical job belongs to another session".into());
         }
         if job.status.state != "completed" {
             return Err("physical job is not ready for acceptance".into());
@@ -7087,14 +7255,13 @@ async fn project_physical_derived_geojson(
             .get("sourceAssetId")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| CoreError::Validation("maps: sourceAssetId is missing".into()))?;
-        let generation = descriptor
-            .value
-            .get("generation")
-            .cloned()
-            .ok_or_else(|| CoreError::Validation("maps: physical generation is missing".into()))?;
+        let generation =
+            descriptor.value.get("generation").cloned().ok_or_else(|| {
+                CoreError::Validation("maps: physical generation is missing".into())
+            })?;
         let bytes = project.asset_bytes(source_id.to_string())?;
-        let (field, _) = daena_core::maps::physical::validate_source(&bytes, &generation)?;
-        daena_physical_spike::to_geojson(&field)
+        let (world, _) = daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        daena_physical_spike::tectonics::to_diagnostic_geojson(&world)
             .map_err(|error| CoreError::Validation(format!("maps.physical: {error}")))
     })
     .await
@@ -7424,6 +7591,7 @@ pub fn run() {
     let watcher = Arc::new(Mutex::new(ProjectWatcher::default()));
     let ai_runtime = protocol_ai_runtime.clone();
     let close_core = core.clone();
+    let close_jobs = physical_jobs.clone();
     let close_plugins = plugins.clone();
     let close_watcher = watcher.clone();
     let close_ai_runtime = ai_runtime.clone();
@@ -7461,6 +7629,7 @@ pub fn run() {
                 if let Err(error) = close_project_for_app(
                     window.app_handle(),
                     &close_core,
+                    &close_jobs,
                     &close_plugins,
                     &close_ai_runtime,
                     &close_watcher,

@@ -1,10 +1,14 @@
 # ADR 0015: Native physical-world durable single-map slice
 
-- Status: Implemented slice; desktop exit-gate evidence remains open
+- Status: Superseded by ADR 0016 hard-cut v2 source contract
 - Date: 2026-08-15
 - Scope: Iteration 1 of `NATIVE_MAP_GENERATOR.md`
 
 ## Decision
+
+This ADR records the completed v1 vertical slice as historical context. The
+active physical provider no longer preserves or reads this source contract;
+ADR 0016 replaces it with `physical-world-v2` without a compatibility path.
 
 The physical provider is now a production descriptor branch of the existing
 `daena.maps:map` entity. It uses the iteration-0 source tuple unchanged:

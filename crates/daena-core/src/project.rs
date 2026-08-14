@@ -345,15 +345,15 @@ pub struct GitStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitLogEntry {
-  pub hash: String,
-  pub date: String,
-  pub subject: String,
+    pub hash: String,
+    pub date: String,
+    pub subject: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitChange {
-  pub status: String,
-  pub path: String,
+    pub status: String,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -442,7 +442,12 @@ fn markdown_export_stem(value: &str) -> String {
     let mut stem = value
         .chars()
         .map(|character| {
-            if character.is_control() || matches!(character, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+            if character.is_control()
+                || matches!(
+                    character,
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+                )
+            {
                 '_'
             } else {
                 character
@@ -533,7 +538,9 @@ fn rewrite_markdown_entity_links(body: &str, filenames: &BTreeMap<String, String
                     let target_start = label_end + 2;
                     if let Some(target_end) = line[target_start..].find(')') {
                         let target_end = target_start + target_end;
-                        if let Some(entity_id) = line[target_start..target_end].strip_prefix("daena://entity/") {
+                        if let Some(entity_id) =
+                            line[target_start..target_end].strip_prefix("daena://entity/")
+                        {
                             if let Some(filename) = filenames.get(entity_id) {
                                 let label = &line[label_start..label_end];
                                 output.push('[');
@@ -779,9 +786,9 @@ impl ExportWorker {
                                 let remaining = deadline.saturating_duration_since(Instant::now());
                                 match receiver.recv_timeout(remaining) {
                                     Ok(ExportWorkerCommand::Wake) => {
-                                        idle_deadline =
-                                            (Instant::now() + BACKGROUND_EXPORT_IDLE_DELAY)
-                                                .min(max_deadline);
+                                        idle_deadline = (Instant::now()
+                                            + BACKGROUND_EXPORT_IDLE_DELAY)
+                                            .min(max_deadline);
                                     }
                                     Ok(ExportWorkerCommand::Flush(reason, reply)) => {
                                         let _ = reply.send(export(&reason, true));
@@ -1765,21 +1772,20 @@ impl ProjectStore {
             "SELECT entity_id,id,format,body,updated_at FROM documents ORDER BY entity_id,id".into()
         };
         let mut statement = self.connection.prepare(&sql)?;
-        let rows = statement.query_map(rusqlite::params_from_iter(ids.iter().take(if restricted {
-            ids.len()
-        } else {
-            0
-        })), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                (
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                ),
-            ))
-        })?;
+        let rows = statement.query_map(
+            rusqlite::params_from_iter(ids.iter().take(if restricted { ids.len() } else { 0 })),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    (
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ),
+                ))
+            },
+        )?;
         for row in rows {
             let (entity_id, document) = row?;
             documents.entry(entity_id).or_default().push(document);
@@ -1792,20 +1798,19 @@ impl ProjectStore {
             "SELECT entity_id,namespace,key,value FROM entity_fields ORDER BY entity_id,namespace,key".into()
         };
         let mut statement = self.connection.prepare(&sql)?;
-        let rows = statement.query_map(rusqlite::params_from_iter(ids.iter().take(if restricted {
-            ids.len()
-        } else {
-            0
-        })), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                (
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                ),
-            ))
-        })?;
+        let rows = statement.query_map(
+            rusqlite::params_from_iter(ids.iter().take(if restricted { ids.len() } else { 0 })),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    (
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ),
+                ))
+            },
+        )?;
         for row in rows {
             let (entity_id, field) = row?;
             fields.entry(entity_id).or_default().push(field);
@@ -1818,11 +1823,10 @@ impl ProjectStore {
         } else {
             "SELECT id,source_id,target_id,relationship_type,metadata FROM relationships ORDER BY id".into()
         };
-        let relationship_params = ids.iter().chain(ids.iter()).take(if restricted {
-            ids.len() * 2
-        } else {
-            0
-        });
+        let relationship_params =
+            ids.iter()
+                .chain(ids.iter())
+                .take(if restricted { ids.len() * 2 } else { 0 });
         let mut statement = self.connection.prepare(&sql)?;
         let rows = statement.query_map(rusqlite::params_from_iter(relationship_params), |row| {
             Ok((
@@ -1855,25 +1859,24 @@ impl ProjectStore {
             "SELECT entity_id,id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets ORDER BY entity_id,id".into()
         };
         let mut statement = self.connection.prepare(&sql)?;
-        let rows = statement.query_map(rusqlite::params_from_iter(ids.iter().take(if restricted {
-            ids.len()
-        } else {
-            0
-        })), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                (
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, String>(7)?,
-                    row.get::<_, String>(8)?,
-                ),
-            ))
-        })?;
+        let rows = statement.query_map(
+            rusqlite::params_from_iter(ids.iter().take(if restricted { ids.len() } else { 0 })),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    (
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                    ),
+                ))
+            },
+        )?;
         for row in rows {
             let (entity_id, asset) = row?;
             assets.entry(entity_id).or_default().push(asset);
@@ -2017,10 +2020,7 @@ impl ProjectStore {
         self.revision_digest(&value)
     }
 
-    fn revision_for_module_record_value(
-        &self,
-        record: &ModuleRecord,
-    ) -> Result<String, CoreError> {
+    fn revision_for_module_record_value(&self, record: &ModuleRecord) -> Result<String, CoreError> {
         self.revision_digest(&(
             &record.module_id,
             &record.collection,
@@ -2184,12 +2184,7 @@ impl ProjectStore {
             )
             .collect::<BTreeSet<_>>();
         for plugin_id in plugin_ids {
-            crate::storage::write_canonical_plugin(
-                &staging_root,
-                &manifest,
-                snapshot,
-                plugin_id,
-            )?;
+            crate::storage::write_canonical_plugin(&staging_root, &manifest, snapshot, plugin_id)?;
         }
         let mut current_sources = staged_canonical_sources(&staging_root, snapshot)?;
         let mut transaction_staged_paths = BTreeSet::new();
@@ -2797,7 +2792,9 @@ impl ProjectStore {
 
     pub fn git_super_squash_after_checkpoint(&self, message: &str) -> Result<GitStatus, CoreError> {
         if message.trim().is_empty() {
-            return Err(CoreError::NotFound("snapshot message cannot be empty".into()));
+            return Err(CoreError::NotFound(
+                "snapshot message cannot be empty".into(),
+            ));
         }
         let preflight = self.git_preflight_after_checkpoint()?;
         if !preflight.ready {
@@ -3053,7 +3050,9 @@ impl ProjectStore {
             return Err(CoreError::Git("project is not a git repository".into()));
         }
         if paths.is_empty() {
-            return Err(CoreError::Validation("at least one diff path is required".into()));
+            return Err(CoreError::Validation(
+                "at least one diff path is required".into(),
+            ));
         }
         if paths.iter().any(|path| !Self::is_canonical_git_path(path)) {
             return Err(CoreError::Validation(
@@ -3860,12 +3859,10 @@ impl ProjectStore {
             }))
             .map_err(|error| CoreError::Serialization(error.to_string()))?,
         );
-        if let Some(imported) = self
-            .committed_mutation_with_fingerprint::<ImportedImageMap>(
-                request_id,
-                Some(&input_fingerprint),
-            )?
-        {
+        if let Some(imported) = self.committed_mutation_with_fingerprint::<ImportedImageMap>(
+            request_id,
+            Some(&input_fingerprint),
+        )? {
             return Ok(imported);
         }
         let source = crate::maps::validate_image_source(&bytes, &mime_type)?;
@@ -3892,7 +3889,11 @@ impl ProjectStore {
         let source_id = Uuid::new_v4().to_string();
         let preview_id = Uuid::new_v4().to_string();
         let now = chrono_like_now();
-        let source_path = format!("assets/maps/{}-{}", Uuid::new_v4(), crate::maps::VECTOR_FILENAME);
+        let source_path = format!(
+            "assets/maps/{}-{}",
+            Uuid::new_v4(),
+            crate::maps::VECTOR_FILENAME
+        );
         let preview_path = format!("assets/maps/{}-{filename}", Uuid::new_v4());
         let descriptor = serde_json::json!({
             "schemaVersion": 1,
@@ -3973,11 +3974,21 @@ impl ProjectStore {
         crate::maps::validate_field(&transaction, &entity_id, "layers", &layers)?;
         transaction.execute(
             "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
-            params![entity_id, crate::maps::MAP_NAMESPACE, "map", encode_field_value(&descriptor)?],
+            params![
+                entity_id,
+                crate::maps::MAP_NAMESPACE,
+                "map",
+                encode_field_value(&descriptor)?
+            ],
         )?;
         transaction.execute(
             "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
-            params![entity_id, crate::maps::MAP_NAMESPACE, "layers", encode_field_value(&layers)?],
+            params![
+                entity_id,
+                crate::maps::MAP_NAMESPACE,
+                "layers",
+                encode_field_value(&layers)?
+            ],
         )?;
         transaction.commit()?;
         self.refresh_maps_projection_for_entities(std::slice::from_ref(&imported.entity.id))?;
@@ -4018,12 +4029,10 @@ impl ProjectStore {
             }))
             .map_err(|error| CoreError::Serialization(error.to_string()))?,
         );
-        if let Some(accepted) = self
-            .committed_mutation_with_fingerprint::<AcceptedVectorMap>(
-                request_id,
-                Some(&input_fingerprint),
-            )?
-        {
+        if let Some(accepted) = self.committed_mutation_with_fingerprint::<AcceptedVectorMap>(
+            request_id,
+            Some(&input_fingerprint),
+        )? {
             return Ok(accepted);
         }
         if bytes.len() > crate::maps::VECTOR_MAX_BYTES {
@@ -4102,11 +4111,21 @@ impl ProjectStore {
         crate::maps::validate_field(&transaction, &entity_id, "layers", &layers)?;
         transaction.execute(
             "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
-            params![entity_id, crate::maps::MAP_NAMESPACE, "map", encode_field_value(&descriptor)?],
+            params![
+                entity_id,
+                crate::maps::MAP_NAMESPACE,
+                "map",
+                encode_field_value(&descriptor)?
+            ],
         )?;
         transaction.execute(
             "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
-            params![entity_id, crate::maps::MAP_NAMESPACE, "layers", encode_field_value(&layers)?],
+            params![
+                entity_id,
+                crate::maps::MAP_NAMESPACE,
+                "layers",
+                encode_field_value(&layers)?
+            ],
         )?;
         transaction.commit()?;
         self.refresh_maps_projection_for_entities(std::slice::from_ref(&accepted.entity.id))?;
@@ -4146,18 +4165,17 @@ impl ProjectStore {
             }))
             .map_err(|error| CoreError::Serialization(error.to_string()))?,
         );
-        if let Some(accepted) = self
-            .committed_mutation_with_fingerprint::<AcceptedPhysicalMap>(
-                request_id,
-                Some(&input_fingerprint),
-            )?
-        {
+        if let Some(accepted) = self.committed_mutation_with_fingerprint::<AcceptedPhysicalMap>(
+            request_id,
+            Some(&input_fingerprint),
+        )? {
             return Ok(accepted);
         }
         if bytes.len() > crate::maps::PHYSICAL_MAX_SOURCE_BYTES {
-            return Err(CoreError::Validation(
-                "maps.physical.invalid-source: source asset exceeds 16 MiB".into(),
-            ));
+            return Err(CoreError::Validation(format!(
+                "{}: source asset exceeds 16 MiB",
+                crate::maps::physical::CODE_INVALID_SOURCE
+            )));
         }
         crate::maps::physical::validate_source(&bytes, &generation)?;
         let content_hash = format!("sha256:{:x}", Sha256::digest(&bytes));
@@ -4173,7 +4191,7 @@ impl ProjectStore {
             "schemaVersion": 1,
             "provider": {
                 "id": crate::maps::PHYSICAL_PROVIDER,
-                "adapterVersion": 1,
+                "adapterVersion": crate::maps::PHYSICAL_ADAPTER_VERSION,
                 "sourceFormat": crate::maps::PHYSICAL_SOURCE_FORMAT
             },
             "sourceAssetId": asset_id,
@@ -4228,11 +4246,21 @@ impl ProjectStore {
         crate::maps::validate_field(&transaction, &entity_id, "layers", &layers)?;
         transaction.execute(
             "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
-            params![entity_id, crate::maps::MAP_NAMESPACE, "map", encode_field_value(&descriptor)?],
+            params![
+                entity_id,
+                crate::maps::MAP_NAMESPACE,
+                "map",
+                encode_field_value(&descriptor)?
+            ],
         )?;
         transaction.execute(
             "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
-            params![entity_id, crate::maps::MAP_NAMESPACE, "layers", encode_field_value(&layers)?],
+            params![
+                entity_id,
+                crate::maps::MAP_NAMESPACE,
+                "layers",
+                encode_field_value(&layers)?
+            ],
         )?;
         transaction.commit()?;
         self.refresh_maps_projection_for_entities(std::slice::from_ref(&accepted.entity.id))?;
@@ -4271,12 +4299,10 @@ impl ProjectStore {
             }))
             .map_err(|error| CoreError::Serialization(error.to_string()))?,
         );
-        if let Some(replaced) = self
-            .committed_mutation_with_fingerprint::<VectorSourceReplace>(
-                request_id,
-                Some(&input_fingerprint),
-            )?
-        {
+        if let Some(replaced) = self.committed_mutation_with_fingerprint::<VectorSourceReplace>(
+            request_id,
+            Some(&input_fingerprint),
+        )? {
             return Ok(replaced);
         }
         let digest = format!("sha256:{:x}", Sha256::digest(&upload_bytes));
@@ -4287,7 +4313,9 @@ impl ProjectStore {
         }
         let mut asset = self.asset_unchecked(&asset_id)?;
         Self::ensure_expected_revision(Some(expected_revision), asset.revision.clone(), "asset")?;
-        if asset.namespace != crate::maps::MAP_NAMESPACE || asset.mime_type != crate::maps::VECTOR_MIME {
+        if asset.namespace != crate::maps::MAP_NAMESPACE
+            || asset.mime_type != crate::maps::VECTOR_MIME
+        {
             return Err(crate::maps::vector::fail(
                 crate::maps::vector::CODE_SOURCE_INVALID,
                 "$",
@@ -4629,7 +4657,10 @@ impl ProjectStore {
             return Err(crate::maps::vector::fail(
                 crate::maps::vector::CODE_LIMIT,
                 "layers",
-                format!("vector layer count exceeds {}", crate::maps::VECTOR_MAX_LAYERS),
+                format!(
+                    "vector layer count exceeds {}",
+                    crate::maps::VECTOR_MAX_LAYERS
+                ),
             ));
         }
         let layer_id = Uuid::new_v4().to_string();
@@ -4639,13 +4670,15 @@ impl ProjectStore {
             .max()
             .map(|order| order + 1)
             .unwrap_or(0);
-        let style = style.unwrap_or_else(|| serde_json::json!({
-            "fill": "#8f6fd1",
-            "fillOpacity": 0.35,
-            "stroke": "#5e4893",
-            "strokeWidth": 1.5,
-            "pointRadius": 5
-        }));
+        let style = style.unwrap_or_else(|| {
+            serde_json::json!({
+                "fill": "#8f6fd1",
+                "fillOpacity": 0.35,
+                "stroke": "#5e4893",
+                "strokeWidth": 1.5,
+                "pointRadius": 5
+            })
+        });
         crate::maps::vector::validate_vector_style(&style)?;
         let mut layers = layers;
         layers.push(serde_json::json!({
@@ -4779,7 +4812,9 @@ impl ProjectStore {
         }
         let remaining: Vec<_> = layers
             .into_iter()
-            .filter(|layer| layer.get("id").and_then(serde_json::Value::as_str) != Some(layer_id.as_str()))
+            .filter(|layer| {
+                layer.get("id").and_then(serde_json::Value::as_str) != Some(layer_id.as_str())
+            })
             .collect();
         let layers_value = serde_json::json!({"schemaVersion": 1, "layers": remaining});
         let known = crate::maps::vector::layer_ids_from_layers_field(&layers_value);
@@ -4938,7 +4973,9 @@ impl ProjectStore {
         }
         let remaining = layers
             .into_iter()
-            .filter(|layer| layer.get("id").and_then(serde_json::Value::as_str) != Some(layer_id.as_str()))
+            .filter(|layer| {
+                layer.get("id").and_then(serde_json::Value::as_str) != Some(layer_id.as_str())
+            })
             .collect::<Vec<_>>();
         let layers_value = serde_json::json!({"schemaVersion": 1, "layers": remaining});
         let request_id = self.request_id(request_id)?;
@@ -5035,7 +5072,9 @@ impl ProjectStore {
             .to_owned();
         let remaining = layers
             .into_iter()
-            .filter(|layer| layer.get("id").and_then(serde_json::Value::as_str) != Some(layer_id.as_str()))
+            .filter(|layer| {
+                layer.get("id").and_then(serde_json::Value::as_str) != Some(layer_id.as_str())
+            })
             .collect::<Vec<_>>();
         let layers_value = serde_json::json!({"schemaVersion": 1, "layers": remaining});
         let request_id = self.request_id(request_id)?;
@@ -5123,9 +5162,9 @@ impl ProjectStore {
         }) else {
             return Err(CoreError::NotFound("layer not found".into()));
         };
-        let object = layer.as_object_mut().ok_or_else(|| {
-            CoreError::Validation("maps: layer definition is invalid".into())
-        })?;
+        let object = layer
+            .as_object_mut()
+            .ok_or_else(|| CoreError::Validation("maps: layer definition is invalid".into()))?;
         if let Some(name) = update.name {
             object.insert("name".into(), serde_json::Value::String(name));
         }
@@ -5133,7 +5172,10 @@ impl ProjectStore {
             object.insert("order".into(), serde_json::json!(order));
         }
         if let Some(default_visible) = update.default_visible {
-            object.insert("defaultVisible".into(), serde_json::Value::Bool(default_visible));
+            object.insert(
+                "defaultVisible".into(),
+                serde_json::Value::Bool(default_visible),
+            );
         }
         if object.get("kind").and_then(serde_json::Value::as_str) == Some("raster") {
             if let Some(opacity) = update.opacity {
@@ -5308,7 +5350,9 @@ impl ProjectStore {
             .value
             .pointer("/previewAssetId")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| CoreError::Validation("maps: imported vector maps require previewAssetId".into()))?;
+            .ok_or_else(|| {
+                CoreError::Validation("maps: imported vector maps require previewAssetId".into())
+            })?;
         let asset = self.asset_unchecked(preview_asset_id)?;
         let bytes = self.read_asset_bytes(&asset)?;
         let source = crate::maps::validate_image_source(&bytes, &asset.mime_type)?;
@@ -5340,7 +5384,9 @@ impl ProjectStore {
             .flatten()
             .any(|layer| {
                 layer.get("kind").and_then(serde_json::Value::as_str) == Some("raster")
-                    && layer.get("rasterAssetId").and_then(serde_json::Value::as_str)
+                    && layer
+                        .get("rasterAssetId")
+                        .and_then(serde_json::Value::as_str)
                         == Some(asset.id.as_str())
             });
         if !is_raster {
@@ -5360,15 +5406,16 @@ impl ProjectStore {
         else {
             return Ok(false);
         };
-        Ok(
-            descriptor
+        Ok(descriptor
+            .value
+            .pointer("/previewAssetId")
+            .and_then(serde_json::Value::as_str)
+            == Some(asset.id.as_str())
+            && descriptor
                 .value
-                .pointer("/previewAssetId")
+                .pointer("/provider/id")
                 .and_then(serde_json::Value::as_str)
-                == Some(asset.id.as_str())
-                && descriptor.value.pointer("/provider/id").and_then(serde_json::Value::as_str)
-                    == Some(crate::maps::VECTOR_PROVIDER),
-        )
+                == Some(crate::maps::VECTOR_PROVIDER))
     }
 
     pub fn delete_entity(&self, id: String) -> Result<(), CoreError> {
@@ -6617,7 +6664,10 @@ impl ProjectStore {
         for indexes in collisions.values().filter(|indexes| indexes.len() > 1) {
             for index in indexes {
                 let suffix = entities[*index].id.chars().take(8).collect::<String>();
-                proposed[*index] = format!("{}-{suffix}.md", markdown_export_stem(&entities[*index].name));
+                proposed[*index] = format!(
+                    "{}-{suffix}.md",
+                    markdown_export_stem(&entities[*index].name)
+                );
             }
         }
 
@@ -6687,7 +6737,9 @@ impl ProjectStore {
                 markdown.push_str("_No outgoing relationships._\n");
             } else {
                 for (relationship_type, mut targets) in grouped {
-                    targets.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+                    targets.sort_by(|left, right| {
+                        left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1))
+                    });
                     markdown.push_str("### ");
                     markdown.push_str(&markdown_relationship_heading(&relationship_type));
                     markdown.push_str("\n\n");
@@ -7457,10 +7509,9 @@ impl ProjectStore {
             &serde_json::to_vec(&(module_id, collection, owner_entity_id, &value))
                 .map_err(|error| CoreError::Serialization(error.to_string()))?,
         );
-        if let Some(mut record) = self.committed_mutation_with_fingerprint::<ModuleRecord>(
-            request_id,
-            Some(&fingerprint),
-        )? {
+        if let Some(mut record) = self
+            .committed_mutation_with_fingerprint::<ModuleRecord>(request_id, Some(&fingerprint))?
+        {
             record.revision = self.revision_for_module_record_value(&record)?;
             return Ok(record);
         }
@@ -7539,11 +7590,10 @@ impl ProjectStore {
         }
         let status = optional_record_filter(params.status, "record status")?;
         let tag = optional_record_filter(params.tag, "record tag")?;
-        let order = module_record_order_sql(params.sort.unwrap_or("lemma"), if query.is_empty() {
-            ""
-        } else {
-            "r."
-        })?;
+        let order = module_record_order_sql(
+            params.sort.unwrap_or("lemma"),
+            if query.is_empty() { "" } else { "r." },
+        )?;
         let filters = module_record_filter_sql(if query.is_empty() { "" } else { "r." });
         let sql = if query.is_empty() {
             format!(
@@ -7562,18 +7612,18 @@ impl ProjectStore {
         let homonyms = i64::from(params.homonyms_only);
         let mut statement = self.connection.prepare(&sql)?;
         let read_record = |row: &rusqlite::Row<'_>| {
-                let encoded: String = row.get(4)?;
-                Ok(ModuleRecord {
-                    module_id: row.get(0)?,
-                    collection: row.get(1)?,
-                    id: row.get(2)?,
-                    owner_entity_id: row.get(3)?,
-                    value: decode_field_value(encoded),
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
-                    revision: String::new(),
-                })
-            };
+            let encoded: String = row.get(4)?;
+            Ok(ModuleRecord {
+                module_id: row.get(0)?,
+                collection: row.get(1)?,
+                id: row.get(2)?,
+                owner_entity_id: row.get(3)?,
+                value: decode_field_value(encoded),
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                revision: String::new(),
+            })
+        };
         let rows = if query.is_empty() {
             statement.query_map(
                 named_params! {
@@ -7636,10 +7686,9 @@ impl ProjectStore {
             ))
             .map_err(|error| CoreError::Serialization(error.to_string()))?,
         );
-        if let Some(mut record) = self.committed_mutation_with_fingerprint::<ModuleRecord>(
-            request_id,
-            Some(&fingerprint),
-        )? {
+        if let Some(mut record) = self
+            .committed_mutation_with_fingerprint::<ModuleRecord>(request_id, Some(&fingerprint))?
+        {
             record.revision = self.revision_for_module_record_value(&record)?;
             return Ok(record);
         }
@@ -7685,8 +7734,14 @@ impl ProjectStore {
         Uuid::parse_str(id)
             .map_err(|_| CoreError::Validation("module record ID must be a UUID".into()))?;
         let fingerprint = digest_bytes(
-            &serde_json::to_vec(&(module_id, collection, id, owner_entity_id, expected_revision))
-                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+            &serde_json::to_vec(&(
+                module_id,
+                collection,
+                id,
+                owner_entity_id,
+                expected_revision,
+            ))
+            .map_err(|error| CoreError::Serialization(error.to_string()))?,
         );
         if self
             .committed_mutation_with_fingerprint::<serde_json::Value>(
@@ -8213,7 +8268,10 @@ impl ProjectStore {
             != 0)
     }
 
-    pub fn module_schema_overlay(&self, module_id: &str) -> Result<Option<serde_json::Value>, CoreError> {
+    pub fn module_schema_overlay(
+        &self,
+        module_id: &str,
+    ) -> Result<Option<serde_json::Value>, CoreError> {
         let overlay_json: Option<String> = self
             .connection
             .query_row(
@@ -8630,7 +8688,9 @@ fn validate_module_record_scope(
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
     };
     if !valid_component(module_id) {
-        return Err(CoreError::Validation("invalid module record module ID".into()));
+        return Err(CoreError::Validation(
+            "invalid module record module ID".into(),
+        ));
     }
     if !valid_component(collection) {
         return Err(CoreError::Validation(
@@ -8654,12 +8714,10 @@ fn validate_module_record_input(
             "module record value must be an object".into(),
         ));
     }
-    let bytes = serde_json::to_vec(value)
-        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+    let bytes =
+        serde_json::to_vec(value).map_err(|error| CoreError::Serialization(error.to_string()))?;
     if bytes.len() > 64 * 1024 {
-        return Err(CoreError::Validation(
-            "module record exceeds 64 KiB".into(),
-        ));
+        return Err(CoreError::Validation("module record exceeds 64 KiB".into()));
     }
     Ok(())
 }

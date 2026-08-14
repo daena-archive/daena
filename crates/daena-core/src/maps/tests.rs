@@ -63,6 +63,46 @@ fn vector_descriptor(source_asset_id: &str, preview_asset_id: Option<&str>) -> V
 }
 
 #[test]
+fn provider_registry_dispatches_all_descriptor_variants() {
+    let cases = [
+        (
+            ProviderDescriptor {
+                id: FMG_PROVIDER.into(),
+                adapter_version: 1,
+                source_format: "fmg-map".into(),
+            },
+            ProviderKind::Fmg,
+        ),
+        (
+            ProviderDescriptor {
+                id: VECTOR_PROVIDER.into(),
+                adapter_version: 1,
+                source_format: VECTOR_SOURCE_FORMAT.into(),
+            },
+            ProviderKind::Vector,
+        ),
+        (
+            ProviderDescriptor {
+                id: PHYSICAL_PROVIDER.into(),
+                adapter_version: PHYSICAL_ADAPTER_VERSION,
+                source_format: PHYSICAL_SOURCE_FORMAT.into(),
+            },
+            ProviderKind::Physical,
+        ),
+    ];
+
+    for (descriptor, expected_kind) in cases {
+        assert_eq!(provider_spec(&descriptor).unwrap().kind, expected_kind);
+    }
+    assert!(provider_spec(&ProviderDescriptor {
+        id: "unknown-provider".into(),
+        adapter_version: 1,
+        source_format: "unknown".into(),
+    })
+    .is_err());
+}
+
+#[test]
 fn rejects_out_of_range_and_open_geometry() {
     assert!(point(&Point(1.1, 0.2)).is_err());
     assert!(anchor(
@@ -73,10 +113,12 @@ fn rejects_out_of_range_and_open_geometry() {
     let too_long = (0..=crate::maps::IMAGE_MAX_PATH_POINTS)
         .map(|index| serde_json::json!([0.0, index as f64 / 1000.0]))
         .collect::<Vec<_>>();
-    assert!(anchor(&serde_json::json!({"kind":"path","points": too_long}))
-        .unwrap_err()
-        .to_string()
-        .contains("budget of"));
+    assert!(
+        anchor(&serde_json::json!({"kind":"path","points": too_long}))
+            .unwrap_err()
+            .to_string()
+            .contains("budget of")
+    );
     assert!(point(&Point(1.1, 0.2))
         .unwrap_err()
         .to_string()
@@ -337,10 +379,12 @@ fn rejects_invalid_semantic_style_and_selector() {
             "selector": {}
         }]
     });
-    assert!(validate_field(&connection, &map_id, "layers", &invalid_style)
-        .unwrap_err()
-        .to_string()
-        .contains("unsupported property"));
+    assert!(
+        validate_field(&connection, &map_id, "layers", &invalid_style)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported property")
+    );
     let invalid_kind = serde_json::json!({
         "schemaVersion": 1,
         "layers": [{
@@ -352,10 +396,12 @@ fn rejects_invalid_semantic_style_and_selector() {
             "selector": {"anchorKind": "river"}
         }]
     });
-    assert!(validate_field(&connection, &map_id, "layers", &invalid_kind)
-        .unwrap_err()
-        .to_string()
-        .contains("anchorKind"));
+    assert!(
+        validate_field(&connection, &map_id, "layers", &invalid_kind)
+            .unwrap_err()
+            .to_string()
+            .contains("anchorKind")
+    );
 }
 
 #[test]
@@ -419,7 +465,12 @@ fn validates_image_source_ownership_and_mime() {
     .is_err());
 
     let wrong_mime = Uuid::new_v4().to_string();
-    insert_asset(&connection, &wrong_mime, &map_id, "application/octet-stream");
+    insert_asset(
+        &connection,
+        &wrong_mime,
+        &map_id,
+        "application/octet-stream",
+    );
     assert!(validate_field(
         &connection,
         &map_id,

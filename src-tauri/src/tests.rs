@@ -1,6 +1,42 @@
 use super::*;
 
 #[test]
+fn physical_jobs_are_session_scoped_and_expire() {
+    let mut manager = PhysicalJobManager::default();
+    let first_session = manager.begin_session("project-a".into());
+    let cancelled = Arc::new(AtomicBool::new(false));
+    manager.jobs.insert(
+        "job-a".into(),
+        PhysicalJob {
+            project_id: "project-a".into(),
+            session_id: first_session.clone(),
+            expires_at: Instant::now() - Duration::from_secs(1),
+            cancel: cancelled.clone(),
+            status: PhysicalJobStatus {
+                job_id: "job-a".into(),
+                request_id: "request-a".into(),
+                state: "running".into(),
+                stage: "Building terrain".into(),
+                completed: 0,
+                total: 1,
+                error: None,
+                error_code: None,
+            },
+            result: None,
+        },
+    );
+
+    manager.reap_expired();
+    assert!(cancelled.load(Ordering::Relaxed));
+    assert!(!manager.jobs.contains_key("job-a"));
+
+    let second_session = manager.begin_session("project-b".into());
+    assert_ne!(first_session, second_session);
+    assert!(manager.active_session_matches("project-b", &second_session));
+    assert!(!manager.active_session_matches("project-a", &second_session));
+}
+
+#[test]
 fn stopping_project_watcher_releases_resources_without_joining() {
     let (stop, _receiver) = mpsc::channel();
     let watcher = Arc::new(Mutex::new(ProjectWatcher {
@@ -1301,7 +1337,7 @@ fn bundled_maps_shell_is_deterministic_and_provider_fail_closed() {
     );
     assert!(body.contains("rel=\"stylesheet\"\n      href=\"index.css?v=1.113.1\""));
     assert!(!body.contains("rel=\"preload\""));
-    assert_eq!(response.headers().get("Content-Security-Policy").unwrap(), "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'");
+    assert_eq!(response.headers().get("Content-Security-Policy").unwrap(), "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'");
 
     let bridge = tauri::http::Request::builder()
         .uri("plugin://daena.maps/dist/ui/fmg/daena-bridge.js")
@@ -1838,10 +1874,19 @@ fn maps_image_import_rpc_round_trips_and_cancel_leaves_no_entity() {
             .into_iter()
             .find(|field| field.key == "map")
             .unwrap();
-        assert_eq!(descriptor.value["provider"]["id"], daena_core::maps::VECTOR_PROVIDER);
+        assert_eq!(
+            descriptor.value["provider"]["id"],
+            daena_core::maps::VECTOR_PROVIDER
+        );
         assert_eq!(descriptor.value["sourceAssetId"], source_id);
-        assert_eq!(descriptor.value["previewAssetId"], imported["preview"]["id"]);
-        assert_eq!(imported["source"]["mime_type"], daena_core::maps::VECTOR_MIME);
+        assert_eq!(
+            descriptor.value["previewAssetId"],
+            imported["preview"]["id"]
+        );
+        assert_eq!(
+            imported["source"]["mime_type"],
+            daena_core::maps::VECTOR_MIME
+        );
         assert_eq!(imported["preview"]["mime_type"], "image/png");
     }
 

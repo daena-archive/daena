@@ -56,6 +56,13 @@ The sandboxed `/usr/bin/time -l` probe could not report peak memory because
 the host denied its `sysctl kern.clockrate` query; the record therefore keeps
 memory as an explicit open measurement rather than claiming it passed.
 
+Follow-up release-mode measurement on 2026-08-15 succeeded on macOS arm64:
+the default workload measured 380 ms wall time, 30.6 ms generator time, and
+6.17 MiB peak RSS; the maximum measured 690 ms wall time, 386.7 ms generator
+time, and 19.06 MiB peak RSS. The maximum cancellation fixture observed the
+cancel flag below the locked 100 ms budget. The current v2 hashes and the
+complete benchmark record are in `docs/maps/physical-map-budgets.md`.
+
 The Rust tests prove exact source round-trip, strict trailing/truncation
 rejection, whole-sphere cell-area coverage, wrapped distance, explicit pole
 adjacency, monotonic sea-level selection, and bounded seam-safe GeoJSON. The
@@ -64,8 +71,6 @@ network URL and only bounded `LineString` coordinates.
 
 ## Open exit-gate evidence
 
-- Run the maximum `128 × 64` workload in release mode and record wall time,
-  source/derived sizes, and process memory.
 - Run the same golden input on every supported CI target available for this
   repository; compare canonical bytes, not only metrics.
 - Load the generated local GeoJSON in the packaged Tauri host with network

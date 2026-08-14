@@ -10,13 +10,14 @@ pub use authority::{Authority, AuthorityContext};
 pub use error::CoreError;
 pub use migrations::{FieldDefinition, Migration, Operation};
 pub use project::{
-    Asset, AssetFileInput, AssetInput, AssetReplaceInput, CheckpointHandle, CreateEntity,
-    CreateEntry, CreateEntryDocument, CreateEntryField, Document, Entity, ExternalChangeReport,
-    FieldValue, Generation, GitChange, GitLogEntry, GitPreflight, GitRemote, GitResetResult, GitStatus,
-    GitToolInfo, GitUpstream, AcceptedPhysicalMap, AcceptedVectorMap, ImportedImageMap, MigrationHistoryEntry, ModuleField, ModuleNamespace, ModuleRecordListParams,
-    ModuleState,
-    PluginBackup, ProjectInfo, ProjectSnapshot, ProjectStore, RasterLayerChange, RasterLayerUpdate, Relationship, RelationshipInput,
-    SaveDocument, SaveEntry, SearchPassage, SyncSummary, VectorLayerDelete, VectorSourceReplace,
+    AcceptedPhysicalMap, AcceptedVectorMap, Asset, AssetFileInput, AssetInput, AssetReplaceInput,
+    CheckpointHandle, CreateEntity, CreateEntry, CreateEntryDocument, CreateEntryField, Document,
+    Entity, ExternalChangeReport, FieldValue, Generation, GitChange, GitLogEntry, GitPreflight,
+    GitRemote, GitResetResult, GitStatus, GitToolInfo, GitUpstream, ImportedImageMap,
+    MigrationHistoryEntry, ModuleField, ModuleNamespace, ModuleRecordListParams, ModuleState,
+    PluginBackup, ProjectInfo, ProjectSnapshot, ProjectStore, RasterLayerChange, RasterLayerUpdate,
+    Relationship, RelationshipInput, SaveDocument, SaveEntry, SearchPassage, SyncSummary,
+    VectorLayerDelete, VectorSourceReplace,
 };
 pub use storage::{
     build_checkpoint_manifest, canonical_json_bytes, canonical_markdown, canonical_markdown_bytes,

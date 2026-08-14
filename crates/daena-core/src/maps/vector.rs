@@ -40,7 +40,10 @@ pub struct Micro(pub i32, pub i32);
 enum Geometry {
     Point(Micro),
     LineString(Vec<Micro>),
-    Polygon { exterior: Vec<Micro>, holes: Vec<Vec<Micro>> },
+    Polygon {
+        exterior: Vec<Micro>,
+        holes: Vec<Vec<Micro>>,
+    },
     MultiPolygon(Vec<(Vec<Micro>, Vec<Vec<Micro>>)>),
 }
 
@@ -73,7 +76,12 @@ pub fn fail(code: &str, path: &str, detail: impl fmt::Display) -> CoreError {
     }
 }
 
-pub fn path_fail(fs_path: &Path, code: &str, json_path: &str, detail: impl fmt::Display) -> CoreError {
+pub fn path_fail(
+    fs_path: &Path,
+    code: &str,
+    json_path: &str,
+    detail: impl fmt::Display,
+) -> CoreError {
     CoreError::Validation(format!(
         "{} [{code}] {json_path}: {detail}",
         fs_path.display()
@@ -158,7 +166,8 @@ impl<'de> Visitor<'de> for StrictVisitor {
             return Err(de::Error::custom("non-finite numbers are not allowed"));
         }
         Ok(Value::Number(
-            serde_json::Number::from_f64(value).ok_or_else(|| de::Error::custom("non-finite numbers are not allowed"))?,
+            serde_json::Number::from_f64(value)
+                .ok_or_else(|| de::Error::custom("non-finite numbers are not allowed"))?,
         ))
     }
 
@@ -198,30 +207,54 @@ impl<'de> Visitor<'de> for StrictVisitor {
     }
 }
 
-fn object_keys<'a>(value: &'a Value, path: &str, allowed: &[&str]) -> Result<&'a serde_json::Map<String, Value>, CoreError> {
+fn object_keys<'a>(
+    value: &'a Value,
+    path: &str,
+    allowed: &[&str],
+) -> Result<&'a serde_json::Map<String, Value>, CoreError> {
     let object = value
         .as_object()
         .ok_or_else(|| fail(CODE_SOURCE_INVALID, path, "expected an object"))?;
     for key in object.keys() {
         if !allowed.contains(&key.as_str()) {
-            return Err(fail(CODE_SOURCE_INVALID, path, format!("unknown member `{key}`")));
+            return Err(fail(
+                CODE_SOURCE_INVALID,
+                path,
+                format!("unknown member `{key}`"),
+            ));
         }
     }
     Ok(object)
 }
 
-fn require_type(object: &serde_json::Map<String, Value>, path: &str, expected: &str) -> Result<(), CoreError> {
+fn require_type(
+    object: &serde_json::Map<String, Value>,
+    path: &str,
+    expected: &str,
+) -> Result<(), CoreError> {
     match object.get("type").and_then(Value::as_str) {
         Some(found) if found == expected => Ok(()),
-        Some(_) => Err(fail(CODE_SOURCE_INVALID, &format!("{path}.type"), format!("must be {expected}"))),
-        None => Err(fail(CODE_SOURCE_INVALID, &format!("{path}.type"), "is required")),
+        Some(_) => Err(fail(
+            CODE_SOURCE_INVALID,
+            &format!("{path}.type"),
+            format!("must be {expected}"),
+        )),
+        None => Err(fail(
+            CODE_SOURCE_INVALID,
+            &format!("{path}.type"),
+            "is required",
+        )),
     }
 }
 
 fn as_f64(value: &Value, path: &str) -> Result<f64, CoreError> {
-    value
-        .as_f64()
-        .ok_or_else(|| fail(CODE_SOURCE_INVALID, path, "coordinates must be finite numbers"))
+    value.as_f64().ok_or_else(|| {
+        fail(
+            CODE_SOURCE_INVALID,
+            path,
+            "coordinates must be finite numbers",
+        )
+    })
 }
 
 fn parse_position(value: &Value, path: &str) -> Result<Micro, CoreError> {
@@ -229,23 +262,39 @@ fn parse_position(value: &Value, path: &str) -> Result<Micro, CoreError> {
         .as_array()
         .ok_or_else(|| fail(CODE_GEOMETRY_INVALID, path, "position must be an array"))?;
     if pair.len() != 2 {
-        return Err(fail(CODE_GEOMETRY_INVALID, path, "position must be [longitude, latitude]"));
+        return Err(fail(
+            CODE_GEOMETRY_INVALID,
+            path,
+            "position must be [longitude, latitude]",
+        ));
     }
     let longitude = as_f64(&pair[0], &format!("{path}[0]"))?;
     let latitude = as_f64(&pair[1], &format!("{path}[1]"))?;
     let coord = Micro(to_micro(longitude), to_micro(latitude));
     if coord.0.abs() > LON_LIMIT {
-        return Err(fail(CODE_GEOMETRY_INVALID, path, "longitude must be in [-180, 180]"));
+        return Err(fail(
+            CODE_GEOMETRY_INVALID,
+            path,
+            "longitude must be in [-180, 180]",
+        ));
     }
     if coord.1.abs() > LAT_LIMIT {
-        return Err(fail(CODE_GEOMETRY_INVALID, path, "latitude exceeds the Web Mercator limit"));
+        return Err(fail(
+            CODE_GEOMETRY_INVALID,
+            path,
+            "latitude exceeds the Web Mercator limit",
+        ));
     }
     Ok(coord)
 }
 
 fn parse_line(values: &[Value], path: &str) -> Result<Vec<Micro>, CoreError> {
     if values.len() < 2 {
-        return Err(fail(CODE_GEOMETRY_INVALID, path, "LineString requires at least two positions"));
+        return Err(fail(
+            CODE_GEOMETRY_INVALID,
+            path,
+            "LineString requires at least two positions",
+        ));
     }
     values
         .iter()
@@ -256,7 +305,11 @@ fn parse_line(values: &[Value], path: &str) -> Result<Vec<Micro>, CoreError> {
 
 fn parse_ring(values: &[Value], path: &str) -> Result<Vec<Micro>, CoreError> {
     if values.len() < 4 {
-        return Err(fail(CODE_GEOMETRY_INVALID, path, "polygon rings must contain at least four positions"));
+        return Err(fail(
+            CODE_GEOMETRY_INVALID,
+            path,
+            "polygon rings must contain at least four positions",
+        ));
     }
     let ring = values
         .iter()
@@ -264,7 +317,11 @@ fn parse_ring(values: &[Value], path: &str) -> Result<Vec<Micro>, CoreError> {
         .map(|(index, value)| parse_position(value, &format!("{path}[{index}]")))
         .collect::<Result<Vec<_>, _>>()?;
     if ring.first() != ring.last() {
-        return Err(fail(CODE_GEOMETRY_INVALID, path, "polygon rings must be closed"));
+        return Err(fail(
+            CODE_GEOMETRY_INVALID,
+            path,
+            "polygon rings must be closed",
+        ));
     }
     Ok(ring)
 }
@@ -328,11 +385,19 @@ fn crosses_antimeridian(a: Micro, b: Micro) -> bool {
 
 fn validate_line(line: &[Micro], path: &str) -> Result<(), CoreError> {
     if line.len() < 2 {
-        return Err(fail(CODE_GEOMETRY_INVALID, path, "line requires at least two distinct positions"));
+        return Err(fail(
+            CODE_GEOMETRY_INVALID,
+            path,
+            "line requires at least two distinct positions",
+        ));
     }
     for pair in line.windows(2) {
         if crosses_antimeridian(pair[0], pair[1]) {
-            return Err(fail(CODE_ANTIMERIDIAN, path, "segment crosses the antimeridian"));
+            return Err(fail(
+                CODE_ANTIMERIDIAN,
+                path,
+                "segment crosses the antimeridian",
+            ));
         }
     }
     Ok(())
@@ -349,17 +414,29 @@ fn canonical_ring(mut ring: Vec<Micro>, path: &str, hole: bool) -> Result<Vec<Mi
     }
     let mut open = ring[..ring.len() - 1].to_vec();
     if open.len() < 3 {
-        return Err(fail(CODE_GEOMETRY_INVALID, path, "ring requires at least three distinct positions"));
+        return Err(fail(
+            CODE_GEOMETRY_INVALID,
+            path,
+            "ring requires at least three distinct positions",
+        ));
     }
     for pair in ring.windows(2) {
         if crosses_antimeridian(pair[0], pair[1]) {
-            return Err(fail(CODE_ANTIMERIDIAN, path, "segment crosses the antimeridian"));
+            return Err(fail(
+                CODE_ANTIMERIDIAN,
+                path,
+                "segment crosses the antimeridian",
+            ));
         }
     }
     let min_lon = open.iter().map(|coord| coord.0).min().unwrap();
     let max_lon = open.iter().map(|coord| coord.0).max().unwrap();
     if i64::from(max_lon) - i64::from(min_lon) > i64::from(ANTIMERIDIAN) {
-        return Err(fail(CODE_ANTIMERIDIAN, path, "ring longitude span exceeds 180 degrees"));
+        return Err(fail(
+            CODE_ANTIMERIDIAN,
+            path,
+            "ring longitude span exceeds 180 degrees",
+        ));
     }
     let n = open.len();
     for i in 0..n {
@@ -372,13 +449,21 @@ fn canonical_ring(mut ring: Vec<Micro>, path: &str, hole: bool) -> Result<Vec<Mi
             let c = open[j];
             let d = open[(j + 1) % n];
             if segments_intersect(a, b, c, d) {
-                return Err(fail(CODE_GEOMETRY_INVALID, path, "ring is self-intersecting"));
+                return Err(fail(
+                    CODE_GEOMETRY_INVALID,
+                    path,
+                    "ring is self-intersecting",
+                ));
             }
         }
     }
     let area = signed_area(&close_ring(open.clone()));
     if area == 0 {
-        return Err(fail(CODE_GEOMETRY_INVALID, path, "ring has zero signed area"));
+        return Err(fail(
+            CODE_GEOMETRY_INVALID,
+            path,
+            "ring has zero signed area",
+        ));
     }
     let clockwise = area < 0;
     if hole != clockwise {
@@ -410,15 +495,27 @@ fn canonical_polygon(
     path: &str,
 ) -> Result<(Vec<Micro>, Vec<Vec<Micro>>), CoreError> {
     if rings.is_empty() {
-        return Err(fail(CODE_GEOMETRY_INVALID, path, "polygon requires an exterior ring"));
+        return Err(fail(
+            CODE_GEOMETRY_INVALID,
+            path,
+            "polygon requires an exterior ring",
+        ));
     }
     if rings.len() > VECTOR_MAX_RINGS {
-        return Err(fail(CODE_LIMIT, path, format!("polygon exceeds {VECTOR_MAX_RINGS} rings")));
+        return Err(fail(
+            CODE_LIMIT,
+            path,
+            format!("polygon exceeds {VECTOR_MAX_RINGS} rings"),
+        ));
     }
     let exterior = canonical_ring(rings[0].clone(), &format!("{path}[0]"), false)?;
     let mut holes = Vec::new();
     for (index, hole) in rings.into_iter().skip(1).enumerate() {
-        holes.push(canonical_ring(hole, &format!("{path}[{}]", index + 1), true)?);
+        holes.push(canonical_ring(
+            hole,
+            &format!("{path}[{}]", index + 1),
+            true,
+        )?);
     }
     holes.sort();
     Ok((exterior, holes))
@@ -432,7 +529,9 @@ fn count_positions(geometry: &Geometry) -> usize {
     match geometry {
         Geometry::Point(_) => 1,
         Geometry::LineString(line) => line.len(),
-        Geometry::Polygon { exterior, holes } => exterior.len() + holes.iter().map(Vec::len).sum::<usize>(),
+        Geometry::Polygon { exterior, holes } => {
+            exterior.len() + holes.iter().map(Vec::len).sum::<usize>()
+        }
         Geometry::MultiPolygon(members) => members
             .iter()
             .map(|(exterior, holes)| exterior.len() + holes.iter().map(Vec::len).sum::<usize>())
@@ -441,10 +540,15 @@ fn count_positions(geometry: &Geometry) -> usize {
 }
 
 fn canonical_uuid(value: &str, path: &str) -> Result<String, CoreError> {
-    let uuid = Uuid::parse_str(value).map_err(|_| fail(CODE_SOURCE_INVALID, path, "feature id must be a UUID"))?;
+    let uuid = Uuid::parse_str(value)
+        .map_err(|_| fail(CODE_SOURCE_INVALID, path, "feature id must be a UUID"))?;
     let text = uuid.to_string();
     if text != value {
-        return Err(fail(CODE_SOURCE_INVALID, path, "feature id must be lowercase hyphenated UUID text"));
+        return Err(fail(
+            CODE_SOURCE_INVALID,
+            path,
+            "feature id must be lowercase hyphenated UUID text",
+        ));
     }
     Ok(text)
 }
@@ -453,7 +557,10 @@ fn parse_kind(value: Option<&Value>, path: &str) -> Result<String, CoreError> {
     let kind = value
         .and_then(Value::as_str)
         .ok_or_else(|| fail(CODE_SOURCE_INVALID, path, "kind is required"))?;
-    if matches!(kind, "land" | "lake" | "region" | "route" | "marker" | "custom") {
+    if matches!(
+        kind,
+        "land" | "lake" | "region" | "route" | "marker" | "custom"
+    ) {
         Ok(kind.to_owned())
     } else {
         Err(fail(CODE_SOURCE_INVALID, path, "kind is not supported"))
@@ -465,11 +572,19 @@ fn parse_name(value: Option<&Value>, path: &str) -> Result<Option<String>, CoreE
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(name)) => {
             if name.is_empty() || name.chars().count() > 256 {
-                return Err(fail(CODE_SOURCE_INVALID, path, "name must be null or 1..=256 Unicode scalars"));
+                return Err(fail(
+                    CODE_SOURCE_INVALID,
+                    path,
+                    "name must be null or 1..=256 Unicode scalars",
+                ));
             }
             Ok(Some(name.clone()))
         }
-        Some(_) => Err(fail(CODE_SOURCE_INVALID, path, "name must be a string or null")),
+        Some(_) => Err(fail(
+            CODE_SOURCE_INVALID,
+            path,
+            "name must be a string or null",
+        )),
     }
 }
 
@@ -479,40 +594,76 @@ fn parse_geometry(value: &Value, path: &str) -> Result<Geometry, CoreError> {
         .get("type")
         .and_then(Value::as_str)
         .ok_or_else(|| fail(CODE_SOURCE_INVALID, &format!("{path}.type"), "is required"))?;
-    let coordinates = object
-        .get("coordinates")
-        .ok_or_else(|| fail(CODE_SOURCE_INVALID, &format!("{path}.coordinates"), "is required"))?;
+    let coordinates = object.get("coordinates").ok_or_else(|| {
+        fail(
+            CODE_SOURCE_INVALID,
+            &format!("{path}.coordinates"),
+            "is required",
+        )
+    })?;
     match kind {
-        "Point" => Ok(Geometry::Point(parse_position(coordinates, &format!("{path}.coordinates"))?)),
+        "Point" => Ok(Geometry::Point(parse_position(
+            coordinates,
+            &format!("{path}.coordinates"),
+        )?)),
         "LineString" => {
-            let values = coordinates
-                .as_array()
-                .ok_or_else(|| fail(CODE_GEOMETRY_INVALID, &format!("{path}.coordinates"), "must be an array"))?;
+            let values = coordinates.as_array().ok_or_else(|| {
+                fail(
+                    CODE_GEOMETRY_INVALID,
+                    &format!("{path}.coordinates"),
+                    "must be an array",
+                )
+            })?;
             let line = dedup_adjacent(parse_line(values, &format!("{path}.coordinates"))?);
             validate_line(&line, &format!("{path}.coordinates"))?;
             Ok(Geometry::LineString(line))
         }
         "Polygon" => {
-            let values = coordinates
-                .as_array()
-                .ok_or_else(|| fail(CODE_GEOMETRY_INVALID, &format!("{path}.coordinates"), "must be an array"))?;
+            let values = coordinates.as_array().ok_or_else(|| {
+                fail(
+                    CODE_GEOMETRY_INVALID,
+                    &format!("{path}.coordinates"),
+                    "must be an array",
+                )
+            })?;
             let rings = values
                 .iter()
                 .enumerate()
-                .map(|(index, ring)| parse_ring(ring.as_array().ok_or_else(|| fail(CODE_GEOMETRY_INVALID, &format!("{path}.coordinates[{index}]"), "ring must be an array"))?, &format!("{path}.coordinates[{index}]")))
+                .map(|(index, ring)| {
+                    parse_ring(
+                        ring.as_array().ok_or_else(|| {
+                            fail(
+                                CODE_GEOMETRY_INVALID,
+                                &format!("{path}.coordinates[{index}]"),
+                                "ring must be an array",
+                            )
+                        })?,
+                        &format!("{path}.coordinates[{index}]"),
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             let (exterior, holes) = canonical_polygon(rings, &format!("{path}.coordinates"))?;
             Ok(Geometry::Polygon { exterior, holes })
         }
         "MultiPolygon" => {
-            let values = coordinates
-                .as_array()
-                .ok_or_else(|| fail(CODE_GEOMETRY_INVALID, &format!("{path}.coordinates"), "must be an array"))?;
+            let values = coordinates.as_array().ok_or_else(|| {
+                fail(
+                    CODE_GEOMETRY_INVALID,
+                    &format!("{path}.coordinates"),
+                    "must be an array",
+                )
+            })?;
             let mut members = Vec::new();
             for (index, polygon) in values.iter().enumerate() {
                 let rings = polygon
                     .as_array()
-                    .ok_or_else(|| fail(CODE_GEOMETRY_INVALID, &format!("{path}.coordinates[{index}]"), "must be an array"))?
+                    .ok_or_else(|| {
+                        fail(
+                            CODE_GEOMETRY_INVALID,
+                            &format!("{path}.coordinates[{index}]"),
+                            "must be an array",
+                        )
+                    })?
                     .iter()
                     .enumerate()
                     .map(|(ring_index, ring)| {
@@ -528,7 +679,10 @@ fn parse_geometry(value: &Value, path: &str) -> Result<Geometry, CoreError> {
                         )
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                members.push(canonical_polygon(rings, &format!("{path}.coordinates[{index}]"))?);
+                members.push(canonical_polygon(
+                    rings,
+                    &format!("{path}.coordinates[{index}]"),
+                )?);
             }
             members.sort_by(|left, right| {
                 polygon_abs_area(&right.0)
@@ -538,22 +692,37 @@ fn parse_geometry(value: &Value, path: &str) -> Result<Geometry, CoreError> {
             });
             Ok(Geometry::MultiPolygon(members))
         }
-        "GeometryCollection" => Err(fail(CODE_SOURCE_INVALID, path, "GeometryCollection is not allowed")),
-        _ => Err(fail(CODE_SOURCE_INVALID, &format!("{path}.type"), "unsupported geometry type")),
+        "GeometryCollection" => Err(fail(
+            CODE_SOURCE_INVALID,
+            path,
+            "GeometryCollection is not allowed",
+        )),
+        _ => Err(fail(
+            CODE_SOURCE_INVALID,
+            &format!("{path}.type"),
+            "unsupported geometry type",
+        )),
     }
 }
 
 fn geometry_matches_kind(kind: &str, geometry: &Geometry) -> bool {
     matches!(
         (kind, geometry),
-        ("land" | "lake" | "region", Geometry::Polygon { .. } | Geometry::MultiPolygon(_))
-            | ("route", Geometry::LineString(_))
+        (
+            "land" | "lake" | "region",
+            Geometry::Polygon { .. } | Geometry::MultiPolygon(_)
+        ) | ("route", Geometry::LineString(_))
             | ("marker", Geometry::Point(_))
             | ("custom", _)
     )
 }
 
-fn parse_feature(value: &Value, path: &str, profile: SourceProfile, known_layers: &BTreeSet<String>) -> Result<Feature, CoreError> {
+fn parse_feature(
+    value: &Value,
+    path: &str,
+    profile: SourceProfile,
+    known_layers: &BTreeSet<String>,
+) -> Result<Feature, CoreError> {
     let allowed = match profile {
         SourceProfile::Candidate => ["type", "geometry", "properties"].as_slice(),
         SourceProfile::Committed => ["type", "id", "properties", "geometry"].as_slice(),
@@ -561,26 +730,55 @@ fn parse_feature(value: &Value, path: &str, profile: SourceProfile, known_layers
     let object = object_keys(value, path, allowed)?;
     require_type(object, path, "Feature")?;
     if profile == SourceProfile::Candidate && object.contains_key("id") {
-        return Err(fail(CODE_SOURCE_INVALID, &format!("{path}.id"), "candidate features must not include ids"));
+        return Err(fail(
+            CODE_SOURCE_INVALID,
+            &format!("{path}.id"),
+            "candidate features must not include ids",
+        ));
     }
     let geometry = parse_geometry(
-        object.get("geometry").ok_or_else(|| fail(CODE_SOURCE_INVALID, &format!("{path}.geometry"), "is required"))?,
+        object.get("geometry").ok_or_else(|| {
+            fail(
+                CODE_SOURCE_INVALID,
+                &format!("{path}.geometry"),
+                "is required",
+            )
+        })?,
         &format!("{path}.geometry"),
     )?;
     if count_positions(&geometry) > VECTOR_MAX_FEATURE_POSITIONS {
-        return Err(fail(CODE_LIMIT, path, format!("feature exceeds {VECTOR_MAX_FEATURE_POSITIONS} positions")));
+        return Err(fail(
+            CODE_LIMIT,
+            path,
+            format!("feature exceeds {VECTOR_MAX_FEATURE_POSITIONS} positions"),
+        ));
     }
     let properties = object.get("properties").unwrap_or(&Value::Null);
     match profile {
         SourceProfile::Candidate => {
-            if properties.as_object().is_none_or(|object| !object.is_empty()) && !properties.is_null() {
+            if properties
+                .as_object()
+                .is_none_or(|object| !object.is_empty())
+                && !properties.is_null()
+            {
                 let object = object_keys(properties, &format!("{path}.properties"), &[])?;
                 if !object.is_empty() {
-                    return Err(fail(CODE_SOURCE_INVALID, &format!("{path}.properties"), "candidate properties must be empty"));
+                    return Err(fail(
+                        CODE_SOURCE_INVALID,
+                        &format!("{path}.properties"),
+                        "candidate properties must be empty",
+                    ));
                 }
             }
-            if !matches!(geometry, Geometry::Polygon { .. } | Geometry::MultiPolygon(_)) {
-                return Err(fail(CODE_SOURCE_INVALID, &format!("{path}.geometry"), "candidates must be polygonal"));
+            if !matches!(
+                geometry,
+                Geometry::Polygon { .. } | Geometry::MultiPolygon(_)
+            ) {
+                return Err(fail(
+                    CODE_SOURCE_INVALID,
+                    &format!("{path}.geometry"),
+                    "candidates must be polygonal",
+                ));
             }
             Ok(Feature {
                 id: Uuid::new_v4().to_string(),
@@ -592,7 +790,9 @@ fn parse_feature(value: &Value, path: &str, profile: SourceProfile, known_layers
         }
         SourceProfile::Committed => {
             let id = canonical_uuid(
-                object.get("id").and_then(Value::as_str).ok_or_else(|| fail(CODE_SOURCE_INVALID, &format!("{path}.id"), "is required"))?,
+                object.get("id").and_then(Value::as_str).ok_or_else(|| {
+                    fail(CODE_SOURCE_INVALID, &format!("{path}.id"), "is required")
+                })?,
                 &format!("{path}.id"),
             )?;
             let properties = object_keys(
@@ -603,21 +803,44 @@ fn parse_feature(value: &Value, path: &str, profile: SourceProfile, known_layers
             let layer_id = properties
                 .get("daenaLayerId")
                 .and_then(Value::as_str)
-                .ok_or_else(|| fail(CODE_SOURCE_INVALID, &format!("{path}.properties.daenaLayerId"), "is required"))?
+                .ok_or_else(|| {
+                    fail(
+                        CODE_SOURCE_INVALID,
+                        &format!("{path}.properties.daenaLayerId"),
+                        "is required",
+                    )
+                })?
                 .to_owned();
             let kind = parse_kind(properties.get("kind"), &format!("{path}.properties.kind"))?;
             let name = parse_name(properties.get("name"), &format!("{path}.properties.name"))?;
             if layer_id == "base" {
-                if !matches!(kind.as_str(), "land" | "lake") || !matches!(geometry, Geometry::Polygon { .. } | Geometry::MultiPolygon(_)) {
-                    return Err(fail(CODE_SOURCE_INVALID, path, "base features must be land or lake polygons"));
+                if !matches!(kind.as_str(), "land" | "lake")
+                    || !matches!(
+                        geometry,
+                        Geometry::Polygon { .. } | Geometry::MultiPolygon(_)
+                    )
+                {
+                    return Err(fail(
+                        CODE_SOURCE_INVALID,
+                        path,
+                        "base features must be land or lake polygons",
+                    ));
                 }
             } else {
                 canonical_uuid(&layer_id, &format!("{path}.properties.daenaLayerId"))?;
                 if !known_layers.is_empty() && !known_layers.contains(&layer_id) {
-                    return Err(fail(CODE_LAYER_MISSING, &format!("{path}.properties.daenaLayerId"), "layer does not exist"));
+                    return Err(fail(
+                        CODE_LAYER_MISSING,
+                        &format!("{path}.properties.daenaLayerId"),
+                        "layer does not exist",
+                    ));
                 }
                 if !geometry_matches_kind(&kind, &geometry) {
-                    return Err(fail(CODE_GEOMETRY_INVALID, path, "geometry does not match kind"));
+                    return Err(fail(
+                        CODE_GEOMETRY_INVALID,
+                        path,
+                        "geometry does not match kind",
+                    ));
                 }
             }
             let encoded = format!(
@@ -627,7 +850,11 @@ fn parse_feature(value: &Value, path: &str, profile: SourceProfile, known_layers
                 serde_json::to_string(&name).unwrap()
             );
             if encoded.len() > VECTOR_MAX_PROPERTY_BYTES {
-                return Err(fail(CODE_LIMIT, &format!("{path}.properties"), "feature properties exceed 2 KiB"));
+                return Err(fail(
+                    CODE_LIMIT,
+                    &format!("{path}.properties"),
+                    "feature properties exceed 2 KiB",
+                ));
             }
             Ok(Feature {
                 id,
@@ -640,7 +867,11 @@ fn parse_feature(value: &Value, path: &str, profile: SourceProfile, known_layers
     }
 }
 
-fn parse_collection(value: &Value, profile: SourceProfile, known_layers: &BTreeSet<String>) -> Result<Vec<Feature>, CoreError> {
+fn parse_collection(
+    value: &Value,
+    profile: SourceProfile,
+    known_layers: &BTreeSet<String>,
+) -> Result<Vec<Feature>, CoreError> {
     let object = object_keys(value, "$", &["type", "features"])?;
     require_type(object, "$", "FeatureCollection")?;
     let features = object
@@ -648,19 +879,36 @@ fn parse_collection(value: &Value, profile: SourceProfile, known_layers: &BTreeS
         .and_then(Value::as_array)
         .ok_or_else(|| fail(CODE_SOURCE_INVALID, "$.features", "must be an array"))?;
     if features.len() > VECTOR_MAX_FEATURES {
-        return Err(fail(CODE_LIMIT, "$.features", format!("exceeds {VECTOR_MAX_FEATURES} features")));
+        return Err(fail(
+            CODE_LIMIT,
+            "$.features",
+            format!("exceeds {VECTOR_MAX_FEATURES} features"),
+        ));
     }
     let mut parsed = Vec::with_capacity(features.len());
     let mut ids = BTreeSet::new();
     let mut positions = 0usize;
     for (index, feature) in features.iter().enumerate() {
-        let feature = parse_feature(feature, &format!("$.features[{index}]"), profile, known_layers)?;
+        let feature = parse_feature(
+            feature,
+            &format!("$.features[{index}]"),
+            profile,
+            known_layers,
+        )?;
         positions += count_positions(&feature.geometry);
         if positions > VECTOR_MAX_POSITIONS {
-            return Err(fail(CODE_LIMIT, "$.features", format!("exceeds {VECTOR_MAX_POSITIONS} positions")));
+            return Err(fail(
+                CODE_LIMIT,
+                "$.features",
+                format!("exceeds {VECTOR_MAX_POSITIONS} positions"),
+            ));
         }
         if profile == SourceProfile::Committed && !ids.insert(feature.id.clone()) {
-            return Err(fail(CODE_SOURCE_INVALID, &format!("$.features[{index}].id"), "feature ids must be unique"));
+            return Err(fail(
+                CODE_SOURCE_INVALID,
+                &format!("$.features[{index}].id"),
+                "feature ids must be unique",
+            ));
         }
         parsed.push(feature);
     }
@@ -751,7 +999,10 @@ fn serialize_features(features: &[Feature]) -> Vec<u8> {
     out.into_bytes()
 }
 
-pub fn canonicalize_committed(bytes: &[u8], known_layers: &BTreeSet<String>) -> Result<Vec<u8>, CoreError> {
+pub fn canonicalize_committed(
+    bytes: &[u8],
+    known_layers: &BTreeSet<String>,
+) -> Result<Vec<u8>, CoreError> {
     let value = parse_strict_json(bytes)?;
     let features = parse_collection(&value, SourceProfile::Committed, known_layers)?;
     Ok(serialize_features(&features))
@@ -763,7 +1014,11 @@ pub fn canonicalize_candidate(bytes: &[u8]) -> Result<Vec<u8>, CoreError> {
     Ok(serialize_features(&features))
 }
 
-pub fn require_canonical_bytes(fs_path: &Path, bytes: &[u8], known_layers: &BTreeSet<String>) -> Result<Vec<u8>, CoreError> {
+pub fn require_canonical_bytes(
+    fs_path: &Path,
+    bytes: &[u8],
+    known_layers: &BTreeSet<String>,
+) -> Result<Vec<u8>, CoreError> {
     let canonical = canonicalize_committed(bytes, known_layers).map_err(|error| match error {
         CoreError::Validation(detail) => path_fail(fs_path, CODE_SOURCE_INVALID, "$", detail),
         other => other,
@@ -790,7 +1045,11 @@ pub fn layer_ids_from_layers_field(value: &Value) -> BTreeSet<String> {
         .collect()
 }
 
-pub fn remove_layer_features(bytes: &[u8], layer_id: &str, known_layers: &BTreeSet<String>) -> Result<(Vec<u8>, usize), CoreError> {
+pub fn remove_layer_features(
+    bytes: &[u8],
+    layer_id: &str,
+    known_layers: &BTreeSet<String>,
+) -> Result<(Vec<u8>, usize), CoreError> {
     let value = parse_strict_json(bytes)?;
     let mut features = parse_collection(&value, SourceProfile::Committed, known_layers)?;
     let before = features.len();
@@ -799,7 +1058,10 @@ pub fn remove_layer_features(bytes: &[u8], layer_id: &str, known_layers: &BTreeS
     Ok((serialize_features(&features), deleted))
 }
 
-pub fn feature_bounds(bytes: &[u8], known_layers: &BTreeSet<String>) -> Result<Vec<FeatureBounds>, CoreError> {
+pub fn feature_bounds(
+    bytes: &[u8],
+    known_layers: &BTreeSet<String>,
+) -> Result<Vec<FeatureBounds>, CoreError> {
     let value = parse_strict_json(bytes)?;
     let features = parse_collection(&value, SourceProfile::Committed, known_layers)?;
     Ok(features
@@ -829,9 +1091,23 @@ pub fn feature_bounds(bytes: &[u8], known_layers: &BTreeSet<String>) -> Result<V
                     }
                 }
             }
-            let (min_x, max_y) = lon_lat_to_normalized(f64::from(min_lon) / 1_000_000.0, f64::from(max_lat) / 1_000_000.0);
-            let (max_x, min_y) = lon_lat_to_normalized(f64::from(max_lon) / 1_000_000.0, f64::from(min_lat) / 1_000_000.0);
-            (feature.id, feature.layer_id, feature.kind, min_x, min_y, max_x, max_y)
+            let (min_x, max_y) = lon_lat_to_normalized(
+                f64::from(min_lon) / 1_000_000.0,
+                f64::from(max_lat) / 1_000_000.0,
+            );
+            let (max_x, min_y) = lon_lat_to_normalized(
+                f64::from(max_lon) / 1_000_000.0,
+                f64::from(min_lat) / 1_000_000.0,
+            );
+            (
+                feature.id,
+                feature.layer_id,
+                feature.kind,
+                min_x,
+                min_y,
+                max_x,
+                max_y,
+            )
         })
         .collect())
 }
@@ -852,7 +1128,11 @@ pub fn validate_generation(value: &Value) -> Result<(), CoreError> {
         .as_object()
         .ok_or_else(|| fail(CODE_GENERATOR, "generation", "must be an object"))?;
     if object.get("id").and_then(Value::as_str) != Some("daena-landmass") {
-        return Err(fail(CODE_GENERATOR, "generation.id", "must be daena-landmass"));
+        return Err(fail(
+            CODE_GENERATOR,
+            "generation.id",
+            "must be daena-landmass",
+        ));
     }
     if object.get("version").and_then(Value::as_u64) != Some(1) {
         return Err(fail(
@@ -861,7 +1141,10 @@ pub fn validate_generation(value: &Value) -> Result<(), CoreError> {
             "must be 1",
         ));
     }
-    let seed = object.get("seed").and_then(Value::as_u64).ok_or_else(|| fail(CODE_GENERATOR, "generation.seed", "must be a uint32"))?;
+    let seed = object
+        .get("seed")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| fail(CODE_GENERATOR, "generation.seed", "must be a uint32"))?;
     if seed > u64::from(u32::MAX) {
         return Err(fail(CODE_GENERATOR, "generation.seed", "must be a uint32"));
     }
@@ -874,53 +1157,144 @@ pub fn validate_generation(value: &Value) -> Result<(), CoreError> {
     let roughness = settings.get("coastlineRoughness").and_then(Value::as_str);
     let islands = settings.get("islandFrequency").and_then(Value::as_str);
     if !matches!(land, Some(15..=70)) {
-        return Err(fail(CODE_GENERATOR, "generation.settings.landPercent", "must be an integer 15..=70"));
+        return Err(fail(
+            CODE_GENERATOR,
+            "generation.settings.landPercent",
+            "must be an integer 15..=70",
+        ));
     }
     if !matches!(continents, Some(1..=8)) {
-        return Err(fail(CODE_GENERATOR, "generation.settings.continentCount", "must be an integer 1..=8"));
+        return Err(fail(
+            CODE_GENERATOR,
+            "generation.settings.continentCount",
+            "must be an integer 1..=8",
+        ));
     }
     if !matches!(roughness, Some("low" | "medium" | "high")) {
-        return Err(fail(CODE_GENERATOR, "generation.settings.coastlineRoughness", "must be low, medium, or high"));
+        return Err(fail(
+            CODE_GENERATOR,
+            "generation.settings.coastlineRoughness",
+            "must be low, medium, or high",
+        ));
     }
     if !matches!(islands, Some("none" | "low" | "medium" | "high")) {
-        return Err(fail(CODE_GENERATOR, "generation.settings.islandFrequency", "must be none, low, medium, or high"));
+        return Err(fail(
+            CODE_GENERATOR,
+            "generation.settings.islandFrequency",
+            "must be none, low, medium, or high",
+        ));
     }
     let allowed = BTreeSet::from(["id", "version", "seed", "settings"]);
     if object.keys().any(|key| !allowed.contains(key.as_str())) {
-        return Err(fail(CODE_GENERATOR, "generation", "contains unknown members"));
+        return Err(fail(
+            CODE_GENERATOR,
+            "generation",
+            "contains unknown members",
+        ));
     }
-    let setting_keys = BTreeSet::from(["landPercent", "continentCount", "coastlineRoughness", "islandFrequency"]);
-    if settings.keys().any(|key| !setting_keys.contains(key.as_str())) {
-        return Err(fail(CODE_GENERATOR, "generation.settings", "contains unknown members"));
+    let setting_keys = BTreeSet::from([
+        "landPercent",
+        "continentCount",
+        "coastlineRoughness",
+        "islandFrequency",
+    ]);
+    if settings
+        .keys()
+        .any(|key| !setting_keys.contains(key.as_str()))
+    {
+        return Err(fail(
+            CODE_GENERATOR,
+            "generation.settings",
+            "contains unknown members",
+        ));
     }
     Ok(())
 }
 
 pub fn validate_vector_style(style: &Value) -> Result<(), CoreError> {
-    let object = style
-        .as_object()
-        .ok_or_else(|| fail(CODE_SOURCE_INVALID, "style", "vector style must be an object"))?;
-    let required = ["fill", "fillOpacity", "stroke", "strokeWidth", "pointRadius"];
+    let object = style.as_object().ok_or_else(|| {
+        fail(
+            CODE_SOURCE_INVALID,
+            "style",
+            "vector style must be an object",
+        )
+    })?;
+    let required = [
+        "fill",
+        "fillOpacity",
+        "stroke",
+        "strokeWidth",
+        "pointRadius",
+    ];
     if object.len() != required.len() || required.iter().any(|key| !object.contains_key(*key)) {
-        return Err(fail(CODE_SOURCE_INVALID, "style", "vector style must contain fill, fillOpacity, stroke, strokeWidth, and pointRadius"));
+        return Err(fail(
+            CODE_SOURCE_INVALID,
+            "style",
+            "vector style must contain fill, fillOpacity, stroke, strokeWidth, and pointRadius",
+        ));
     }
     for key in ["fill", "stroke"] {
-        let color = object.get(key).and_then(Value::as_str).ok_or_else(|| fail(CODE_SOURCE_INVALID, key, "must be a hex color"))?;
-        if !color.starts_with('#') || color.len() != 7 || !color[1..].chars().all(|ch| ch.is_ascii_hexdigit()) {
+        let color = object
+            .get(key)
+            .and_then(Value::as_str)
+            .ok_or_else(|| fail(CODE_SOURCE_INVALID, key, "must be a hex color"))?;
+        if !color.starts_with('#')
+            || color.len() != 7
+            || !color[1..].chars().all(|ch| ch.is_ascii_hexdigit())
+        {
             return Err(fail(CODE_SOURCE_INVALID, key, "must match #RRGGBB"));
         }
     }
-    let fill_opacity = object.get("fillOpacity").and_then(Value::as_f64).ok_or_else(|| fail(CODE_SOURCE_INVALID, "fillOpacity", "must be a finite number"))?;
+    let fill_opacity = object
+        .get("fillOpacity")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| {
+            fail(
+                CODE_SOURCE_INVALID,
+                "fillOpacity",
+                "must be a finite number",
+            )
+        })?;
     if !fill_opacity.is_finite() || !(0.0..=1.0).contains(&fill_opacity) {
-        return Err(fail(CODE_SOURCE_INVALID, "fillOpacity", "must be finite in [0, 1]"));
+        return Err(fail(
+            CODE_SOURCE_INVALID,
+            "fillOpacity",
+            "must be finite in [0, 1]",
+        ));
     }
-    let stroke_width = object.get("strokeWidth").and_then(Value::as_f64).ok_or_else(|| fail(CODE_SOURCE_INVALID, "strokeWidth", "must be a finite number"))?;
+    let stroke_width = object
+        .get("strokeWidth")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| {
+            fail(
+                CODE_SOURCE_INVALID,
+                "strokeWidth",
+                "must be a finite number",
+            )
+        })?;
     if !stroke_width.is_finite() || !(0.0..=32.0).contains(&stroke_width) {
-        return Err(fail(CODE_SOURCE_INVALID, "strokeWidth", "must be finite in [0, 32]"));
+        return Err(fail(
+            CODE_SOURCE_INVALID,
+            "strokeWidth",
+            "must be finite in [0, 32]",
+        ));
     }
-    let point_radius = object.get("pointRadius").and_then(Value::as_f64).ok_or_else(|| fail(CODE_SOURCE_INVALID, "pointRadius", "must be a finite number"))?;
+    let point_radius = object
+        .get("pointRadius")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| {
+            fail(
+                CODE_SOURCE_INVALID,
+                "pointRadius",
+                "must be a finite number",
+            )
+        })?;
     if !point_radius.is_finite() || !(1.0..=64.0).contains(&point_radius) {
-        return Err(fail(CODE_SOURCE_INVALID, "pointRadius", "must be finite in [1, 64]"));
+        return Err(fail(
+            CODE_SOURCE_INVALID,
+            "pointRadius",
+            "must be finite in [1, 64]",
+        ));
     }
     Ok(())
 }
@@ -951,7 +1325,9 @@ mod tests {
         let second = canonicalize_committed(&first, &BTreeSet::new()).unwrap();
         assert_eq!(first, second);
         assert_eq!(first.last().copied(), Some(b'\n'));
-        assert!(std::str::from_utf8(&first).unwrap().contains("\"type\":\"FeatureCollection\""));
+        assert!(std::str::from_utf8(&first)
+            .unwrap()
+            .contains("\"type\":\"FeatureCollection\""));
         let expected = concat!(
             "{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\",\"id\":\"018f89ec-25fc-7816-8b47-6f80905f2801\",",
             "\"properties\":{\"daenaLayerId\":\"base\",\"kind\":\"land\",\"name\":null},",
@@ -963,7 +1339,10 @@ mod tests {
     #[test]
     fn rejects_duplicate_keys_and_antimeridian() {
         let duplicate = br#"{"type":"FeatureCollection","type":"FeatureCollection","features":[]}"#;
-        assert!(parse_strict_json(duplicate).unwrap_err().to_string().contains(CODE_SOURCE_INVALID));
+        assert!(parse_strict_json(duplicate)
+            .unwrap_err()
+            .to_string()
+            .contains(CODE_SOURCE_INVALID));
         let crossing = serde_json::json!({
             "type": "FeatureCollection",
             "features": [{
@@ -973,9 +1352,10 @@ mod tests {
                 "geometry": {"type":"Polygon","coordinates":[[[170.0,-1.0],[-170.0,-1.0],[-170.0,1.0],[170.0,1.0],[170.0,-1.0]]]}
             }]
         });
-        let error = canonicalize_committed(&serde_json::to_vec(&crossing).unwrap(), &BTreeSet::new())
-            .unwrap_err()
-            .to_string();
+        let error =
+            canonicalize_committed(&serde_json::to_vec(&crossing).unwrap(), &BTreeSet::new())
+                .unwrap_err()
+                .to_string();
         assert!(error.contains(CODE_ANTIMERIDIAN), "{error}");
     }
 
@@ -1002,13 +1382,19 @@ mod tests {
 
     #[test]
     fn rebuild_rejects_noncanonical_bytes() {
-        let canonical = canonicalize_committed(&serde_json::to_vec(&square()).unwrap(), &BTreeSet::new()).unwrap();
+        let canonical =
+            canonicalize_committed(&serde_json::to_vec(&square()).unwrap(), &BTreeSet::new())
+                .unwrap();
         let mut dirty = canonical.clone();
         dirty.pop();
         dirty.extend_from_slice(b" \n");
-        let error = require_canonical_bytes(Path::new("assets/maps/map.geojson"), &dirty, &BTreeSet::new())
-            .unwrap_err()
-            .to_string();
+        let error = require_canonical_bytes(
+            Path::new("assets/maps/map.geojson"),
+            &dirty,
+            &BTreeSet::new(),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("assets/maps/map.geojson"));
         assert!(error.contains(CODE_SOURCE_INVALID));
     }

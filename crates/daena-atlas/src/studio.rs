@@ -40,9 +40,9 @@ pub const STUDIO_CURRENT_VIEW_EXPORT_WIDTH: u32 = 2048;
 pub const STUDIO_CURRENT_VIEW_EXPORT_MIN_HEIGHT: u32 = 256;
 pub const STUDIO_CURRENT_VIEW_EXPORT_MAX_HEIGHT: u32 = 2048;
 pub const GOLDEN_TILE_Z0_SHA256: &str =
-    "sha256:0d56dfc587e3891d1b0d312f5e22399fe5a381e879acec1a9aa5a29bd77f3720";
+    "sha256:882d34d1bc3a72d227ae2f87e2f697d8d9facbb1a3873b01172ebb27e020de50";
 pub const GOLDEN_TILE_Z8_SHA256: &str =
-    "sha256:beddcae9b5091dad604abaec076b95142019556b96f8081c656b627ef773a5ea";
+    "sha256:7bdbc334f10c15b638c4a6fa86953b1250b1ad6326675a7037ebeea8786c50de";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StudioDiagnostic {
@@ -567,6 +567,7 @@ pub fn render_studio_tile_with_overlays(
                 &scene.style,
                 &request,
                 &scene.visible_water,
+                scene.paint_fields(),
                 lon,
                 lat,
             );
@@ -749,6 +750,7 @@ pub fn render_xyz_region(
                 &scene.style,
                 &request,
                 &scene.visible_water,
+                scene.paint_fields(),
                 lon,
                 lat,
             );
@@ -969,6 +971,7 @@ mod tests {
                     &scene.style,
                     &export_request,
                     &scene.visible_water,
+                    scene.paint_fields(),
                     lon,
                     lat,
                 );
@@ -987,6 +990,7 @@ mod tests {
                     &scene.style,
                     &export_request,
                     &scene.visible_water,
+                    scene.paint_fields(),
                     lon,
                     lat,
                 );
@@ -995,8 +999,7 @@ mod tests {
             }
         }
         let flipped = flip_rgba_vertical(&south_origin, 256, 256).unwrap();
-        let (center_lon, center_lat) =
-            xyz_world_pixel_center(1, 0, 1, 128, 128, 256).unwrap();
+        let (center_lon, center_lat) = xyz_world_pixel_center(1, 0, 1, 128, 128, 256).unwrap();
         let center = pixel_rgba(
             &scene.model,
             &scene.hydrology,
@@ -1004,6 +1007,7 @@ mod tests {
             &scene.style,
             &export_request,
             &scene.visible_water,
+            scene.paint_fields(),
             center_lon,
             center_lat,
         );
@@ -1041,6 +1045,7 @@ mod tests {
                 .normalize()
                 .unwrap(),
             &scene.visible_water,
+            scene.paint_fields(),
             lon_a,
             lat_a,
         );
@@ -1055,6 +1060,7 @@ mod tests {
                 .normalize()
                 .unwrap(),
             &scene.visible_water,
+            scene.paint_fields(),
             lon_a,
             lat_a,
         );
@@ -1313,6 +1319,7 @@ mod tests {
                 .normalize()
                 .unwrap(),
             &scene.visible_water,
+            scene.paint_fields(),
             lon,
             lat,
         );
@@ -1323,6 +1330,7 @@ mod tests {
             &scene.style,
             &export,
             &scene.visible_water,
+            scene.paint_fields(),
             lon,
             lat,
         );
@@ -1334,5 +1342,103 @@ mod tests {
                 .width_px,
             STUDIO_CURRENT_VIEW_EXPORT_WIDTH
         );
+    }
+
+    #[test]
+    fn biome_style_paints_climate_on_land() {
+        let (scene, scene_request) = prepared();
+        let request = scene_request
+            .as_render_request(256)
+            .unwrap()
+            .normalize()
+            .unwrap();
+        let (biome_style, _) = crate::style::load_style(crate::style::BIOME_STYLE_ID).unwrap();
+        let (temperature_style, _) =
+            crate::style::load_style(crate::style::TEMPERATURE_STYLE_ID).unwrap();
+        let (precip_style, _) =
+            crate::style::load_style(crate::style::PRECIPITATION_STYLE_ID).unwrap();
+        let sea = scene.hydrology.sea_level_mm;
+        let grid = scene.model.grid;
+        let mut found = false;
+        for cell in 0..grid.sample_count() {
+            if scene.model.elevations_mm[cell] < sea {
+                continue;
+            }
+            if scene
+                .hydrology
+                .ice_cells
+                .get(cell)
+                .copied()
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            if scene
+                .visible_water
+                .inland
+                .get(cell)
+                .copied()
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let (row, col) = grid.row_col(cell);
+            let lon = crate::detail::lattice_lon_micro(col, grid.width);
+            let lat = crate::detail::lattice_lat_micro(row, grid.height);
+            let sdf_ppm = crate::detail::sample_sdf_ppm(grid, &scene.sdf, lon, lat);
+            if scene.model.refined_at(lon, lat, sea, sdf_ppm) < sea {
+                continue;
+            }
+            let relief = pixel_rgba(
+                &scene.model,
+                &scene.hydrology,
+                &scene.sdf,
+                &scene.style,
+                &request,
+                &scene.visible_water,
+                scene.paint_fields(),
+                lon,
+                lat,
+            );
+            let biome = pixel_rgba(
+                &scene.model,
+                &scene.hydrology,
+                &scene.sdf,
+                &biome_style,
+                &request,
+                &scene.visible_water,
+                scene.paint_fields(),
+                lon,
+                lat,
+            );
+            let temperature = pixel_rgba(
+                &scene.model,
+                &scene.hydrology,
+                &scene.sdf,
+                &temperature_style,
+                &request,
+                &scene.visible_water,
+                scene.paint_fields(),
+                lon,
+                lat,
+            );
+            let rainfall = pixel_rgba(
+                &scene.model,
+                &scene.hydrology,
+                &scene.sdf,
+                &precip_style,
+                &request,
+                &scene.visible_water,
+                scene.paint_fields(),
+                lon,
+                lat,
+            );
+            assert_ne!(relief, biome);
+            assert_ne!(relief, temperature);
+            assert_ne!(relief, rainfall);
+            found = true;
+            break;
+        }
+        assert!(found, "golden fixture had no land sample for biome paint");
     }
 }

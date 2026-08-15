@@ -9,9 +9,15 @@ use serde::{Deserialize, Serialize};
 use crate::detail::domain_key;
 use crate::detail::lattice_sample;
 use crate::drainage::DerivedTributary;
-use crate::projection::ProjectedView;
+use crate::projection::{
+    bilinear_i32, clamp_lat_micro, wrap_lon_micro, ProjectedView, LAT_MICRO_MIN, LAT_MICRO_SPAN,
+    LON_MICRO_MIN, LON_MICRO_SPAN,
+};
 use crate::request::AtlasRenderRequest;
 use crate::style::AtlasStyle;
+
+/// 0.1° interpolated paper cells. Independent per-pixel hashes look like TV static.
+const PAPER_CELL_MICRO: i64 = 100_000;
 
 const FRAME_PX: u32 = 8;
 
@@ -178,7 +184,7 @@ pub fn composite_overlays(
         }
     }
     // Physical-grid coastline polylines are the simulation-cell edges.
-    // Renderer 10 inks the reconstructed shore in `pixel_rgba` instead.
+    // Renderer 11 inks the reconstructed shore in `pixel_rgba` instead.
     if request.layer_enabled("contours") {
         for segment in &hydrology.bathymetry_contours {
             draw_geodesic_segment(
@@ -477,34 +483,104 @@ fn draw_graticule(buffer: &mut [u8], view: ProjectedView, rgb: [u8; 3]) {
     }
 }
 
+fn paper_unit_ppm(
+    key: &[u8; 32],
+    lon_micro: i32,
+    lat_micro: i32,
+    octave: u32,
+    cell_micro: i64,
+) -> i32 {
+    let cell_micro = cell_micro.max(1);
+    let lon_cells = (LON_MICRO_SPAN / cell_micro).max(1) as u32;
+    let lat_cells = (LAT_MICRO_SPAN / cell_micro).max(1) as u32;
+    let lon_pos = (i64::from(wrap_lon_micro(i64::from(lon_micro))) - i64::from(LON_MICRO_MIN))
+        .rem_euclid(LON_MICRO_SPAN);
+    let lat_pos = (i64::from(clamp_lat_micro(i64::from(lat_micro))) - i64::from(LAT_MICRO_MIN))
+        .clamp(0, LAT_MICRO_SPAN - 1);
+    let i = (lon_pos / cell_micro) as u32 % lon_cells;
+    let j = ((lat_pos / cell_micro) as u32).min(lat_cells.saturating_sub(1));
+    let ni = (i + 1) % lon_cells;
+    let nj = (j + 1).min(lat_cells.saturating_sub(1));
+    let fx = ((lon_pos.rem_euclid(cell_micro)) * 1_000_000 / cell_micro) as u32;
+    let fy = ((lat_pos.rem_euclid(cell_micro)) * 1_000_000 / cell_micro) as u32;
+    let corner = |ii: u32, jj: u32| -> i32 {
+        ((lattice_sample(key, ii, jj, octave) >> 11) % 1_000_001) as i32
+    };
+    bilinear_i32(
+        corner(i, j),
+        corner(ni, j),
+        corner(i, nj),
+        corner(ni, nj),
+        fx,
+        fy,
+    )
+}
+
+fn paper_grain_delta(key: &[u8; 32], lon_micro: i32, lat_micro: i32, strength_ppm: u32) -> i32 {
+    let fine = paper_unit_ppm(key, lon_micro, lat_micro, 0, PAPER_CELL_MICRO);
+    let coarse = paper_unit_ppm(key, lon_micro, lat_micro, 1, PAPER_CELL_MICRO * 4);
+    let unit = (fine * 6 + coarse * 4) / 10;
+    let signed = i64::from(unit) - 500_000;
+    (signed * i64::from(strength_ppm) * 255 / 1_000_000 / 1_000_000) as i32
+}
+
 fn apply_paper_grain(
     buffer: &mut [u8],
     request: &AtlasRenderRequest,
     style: &AtlasStyle,
     identity: &[u8],
 ) {
+    let view = request.view().unwrap_or(ProjectedView {
+        projection: request.projection,
+        extent: request.extent,
+        width: request.width_px,
+        height: request.height_px,
+    });
     let key = domain_key(
         identity,
         1,
         request.variant,
-        &format!(
-            "paper-grain\0{}\0{}\0{}x{}",
-            style.id, style.version, request.width_px, request.height_px
-        ),
+        &format!("paper-grain\0{}\0{}", style.id, style.version),
     );
     let width = request.width_px;
     let height = request.height_px;
     let strength = style.paper_grain_ppm;
     for y in 0..height {
         for x in 0..width {
-            let sample = lattice_sample(&key, x, y, 0);
-            let unit = (sample >> 11) as u32 % 1_000_001;
-            let delta = ((i64::from(unit) - 500_000) * i64::from(strength) / 1_000_000) as i32;
+            let (lon, lat) = view.pixel_center(x, y);
+            let delta = paper_grain_delta(&key, lon, lat, strength);
             let offset = (y as usize * width as usize + x as usize) * 4;
             for channel in 0..3 {
-                let value = i32::from(buffer[offset + channel]) + delta / 8;
+                let value = i32::from(buffer[offset + channel]) + delta;
                 buffer[offset + channel] = value.clamp(0, 255) as u8;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::detail::domain_key;
+
+    #[test]
+    fn antique_paper_grain_stays_within_8bit_ppm() {
+        let key = domain_key(b"fixture", 1, 0, "paper-grain\0daena-atlas-antique\01");
+        let strength = 90_000;
+        let mut max_abs = 0i32;
+        let mut nearby_jump = 0i32;
+        for lon in (-150_000_000..=150_000_000).step_by(7_000_000) {
+            for lat in (-70_000_000..=70_000_000).step_by(7_000_000) {
+                let delta = paper_grain_delta(&key, lon, lat, strength);
+                max_abs = max_abs.max(delta.abs());
+                let neighbor = paper_grain_delta(&key, lon.saturating_add(20_000), lat, strength);
+                nearby_jump = nearby_jump.max((delta - neighbor).abs());
+            }
+        }
+        assert!(max_abs <= 12, "grain clipped into static: max {max_abs}");
+        assert!(
+            nearby_jump <= 4,
+            "grain is per-sample hash, not paper: jump {nearby_jump}"
+        );
     }
 }

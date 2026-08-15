@@ -1042,6 +1042,11 @@ mod tests {
         assert_eq!(supported.formats, vec!["png", "svg", "pdf"]);
         assert!(supported.styles.contains(&"daena-atlas-relief".into()));
         assert!(supported.styles.contains(&"daena-atlas-political".into()));
+        assert!(supported.styles.contains(&"daena-atlas-biome".into()));
+        assert!(supported.styles.contains(&"daena-atlas-temperature".into()));
+        assert!(supported.styles.contains(&"daena-atlas-precipitation".into()));
+        assert!(supported.styles.contains(&"daena-atlas-bathymetry".into()));
+        assert!(supported.styles.contains(&"daena-atlas-hydrology".into()));
         assert!(supported.supports_studio);
         assert_eq!(supported.studio_max_zoom, 8);
         assert_eq!(supported.studio_tile_size, 256);

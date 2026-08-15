@@ -1,14 +1,14 @@
 {
-  "id": "daena-atlas-relief",
+  "id": "daena-atlas-biome",
   "version": 1,
-  "title": "Physical relief",
+  "title": "Biome atlas",
   "fontId": "daena-atlas-bitmap-5x7",
   "paperGrainPpm": 0,
   "oceanDeep": [12, 42, 78],
   "oceanShallow": [46, 110, 148],
-  "landLow": [126, 158, 92],
-  "landHigh": [196, 176, 132],
-  "landPeak": [236, 236, 228],
+  "landLow": [168, 186, 92],
+  "landHigh": [46, 120, 62],
+  "landPeak": [214, 178, 96],
   "lake": [54, 108, 148],
   "ice": [236, 244, 252],
   "river": [36, 82, 122],
@@ -23,5 +23,5 @@
   "biomeArid": [214, 178, 96],
   "biomeGrassland": [168, 186, 92],
   "biomeForest": [46, 120, 62],
-  "defaultLayerIds": ["ocean", "relief", "ice", "lakes", "rivers", "coastlines", "contours", "graticule", "frame"]
+  "defaultLayerIds": ["ocean", "relief", "ice", "lakes", "rivers", "coastlines", "labels", "frame"]
 }

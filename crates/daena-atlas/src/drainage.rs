@@ -164,7 +164,7 @@ mod tests {
         )
         .unwrap();
         for tributary in &scene.drainage.tributaries {
-            assert!(tributary.id.starts_with("atlas:tributary:v5:"));
+            assert!(tributary.id.starts_with("atlas:tributary:v6:"));
             assert!(tributary.path.len() >= 2);
             for point in &tributary.path {
                 let cell = nearest_cell(scene.hydrology.grid, point[0], point[1]);

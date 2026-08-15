@@ -19,5 +19,9 @@
   "background": [16, 24, 36],
   "political": [176, 48, 48],
   "labelInk": [24, 24, 28],
+  "biomeTundra": [196, 196, 188],
+  "biomeArid": [214, 198, 156],
+  "biomeGrassland": [214, 206, 178],
+  "biomeForest": [186, 196, 164],
   "defaultLayerIds": ["ocean", "relief", "lakes", "rivers", "coastlines", "labels", "graticule", "frame"]
 }

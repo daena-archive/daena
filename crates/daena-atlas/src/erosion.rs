@@ -1,6 +1,9 @@
 //! Multi-scale fluvial, thermal, and deposition processes used during
 //! hierarchical amplification and after the finest lattice exists.
 
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+
 use daena_physical::Grid;
 
 use crate::detail::{
@@ -13,6 +16,7 @@ pub const REFINED_DRAINAGE_DOMAIN: &str = "refined-drainage";
 pub const MULTI_SCALE_EROSION_DOMAIN: &str = "multi-scale-erosion";
 pub const MAX_EROSION_STEP_MM: i32 = 18_000;
 pub const HIERARCHICAL_EROSION_STEP_MM: i32 = 8_000;
+pub const HIERARCHICAL_FILL_MM: i32 = 720_000;
 pub const EROSION_SCALES: [u32; 3] = [4, 2, 1];
 pub const HIERARCHICAL_SCALES: [u32; 1] = [1];
 pub const THERMAL_SLOPE_PPM: i32 = 180_000;
@@ -33,6 +37,64 @@ pub const DIRS: [(i32, i32); 8] = [
 
 pub fn lattice_index(width: u32, i: u32, j: u32) -> usize {
     j as usize * width as usize + i as usize
+}
+
+pub fn priority_fill_pits(
+    width: u32,
+    height: u32,
+    source_mm: &[i32],
+    protected: &[bool],
+    sea_level_mm: i32,
+    max_fill_mm: i32,
+    check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
+) -> Result<Vec<i32>, AtlasError> {
+    let count = source_mm.len();
+    let mut routing = source_mm.to_vec();
+    let mut visited = vec![false; count];
+    let mut queue = BinaryHeap::new();
+    for index in 0..count {
+        if index % CANCELLATION_STRIDE == 0 {
+            check_cancelled()?;
+        }
+        if source_mm[index] < sea_level_mm || protected[index] {
+            visited[index] = true;
+            queue.push((Reverse(source_mm[index]), Reverse(index)));
+        }
+    }
+    if queue.is_empty() {
+        return Ok(routing);
+    }
+    while let Some((Reverse(level), Reverse(index))) = queue.pop() {
+        let j = (index as u32) / width;
+        let i = (index as u32) % width;
+        if j as usize % CANCELLATION_STRIDE == 0 {
+            check_cancelled()?;
+        }
+        for dir in DIRS {
+            let Some((_, _, neighbor)) = neighbor_at(width, height, i, j, dir) else {
+                continue;
+            };
+            if visited[neighbor] {
+                continue;
+            }
+            visited[neighbor] = true;
+            let nj = (neighbor as u32) / width;
+            let polar = nj == 0 || nj + 1 == height;
+            if !protected[neighbor] && !polar {
+                let raised = routing[neighbor].max(level);
+                let capped = source_mm[neighbor].saturating_add(max_fill_mm);
+                routing[neighbor] = raised.min(capped);
+            }
+            queue.push((Reverse(routing[neighbor]), Reverse(neighbor)));
+        }
+    }
+    lock_polar_rows(width, height, &mut routing);
+    for index in 0..count {
+        if protected[index] {
+            routing[index] = source_mm[index];
+        }
+    }
+    Ok(routing)
 }
 
 pub fn lock_polar_rows(width: u32, height: u32, field: &mut [i32]) {

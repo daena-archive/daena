@@ -112,10 +112,20 @@ parallel image requests so a rapid pan stays under the 24-wait `503`
 limit; a full queue is retryable and must not replace the viewport with
 a sticky error banner.
 
-## Atlas Studio production algorithm 5 (ADR 0046)
+## Atlas Studio production algorithm 6 (ADR 0047)
 
-Renderer `10`. Detail algorithm `5` and derived drainage `5`. Golden Studio
+Renderer `11`. Detail algorithm `6` and derived drainage `6`. Golden Studio
 tiles on the same `64 x 32` source.
+
+| Target | Work | SHA-256 |
+| ------ | ---- | ------- |
+| Darwin 25.6 | Studio tile `z=0 / x=0 / y=0` scale `1` | `sha256:882d34d1bc3a72d227ae2f87e2f697d8d9facbb1a3873b01172ebb27e020de50` |
+| Darwin 25.6 | Studio tile `z=8 / x=120 / y=90` scale `1` | `sha256:7bdbc334f10c15b638c4a6fa86953b1250b1ad6326675a7037ebeea8786c50de` |
+| Darwin 25.6 | static preview `2048 x 1024` | `sha256:PENDING` |
+| Darwin 25.6 | named export `4096 x 2048` | `sha256:PENDING` |
+| Darwin 25.6 | named export `8192 x 4096` | `sha256:PENDING` |
+
+Historical algorithm `5` (ADR 0046) hashes remain below for provenance only.
 
 | Target | Work | SHA-256 |
 | ------ | ---- | ------- |

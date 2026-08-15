@@ -44,7 +44,8 @@ fn domain_prefix(algorithm_version: u32) -> &'static [u8] {
         2 => b"daena-atlas-detail-v2\0",
         3 => b"daena-atlas-detail-v3\0",
         4 => b"daena-atlas-detail-v4\0",
-        _ => b"daena-atlas-detail-v5\0",
+        5 => b"daena-atlas-detail-v5\0",
+        _ => b"daena-atlas-detail-v6\0",
     }
 }
 
@@ -303,7 +304,7 @@ mod tests {
             key.iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>(),
-            "067d6bee8d7e4cbc3257618473a18027b74bb3221bf8d8fc0546a606fbe03f85"
+            "7ca397a6cdc2ad13e7b42b821e8d6796c0a523bcb54837aa46970bf7d860d31a"
         );
         assert_ne!(lattice_sample(&key, 3, 5, 0), lattice_sample(&key, 4, 5, 0));
         assert_ne!(

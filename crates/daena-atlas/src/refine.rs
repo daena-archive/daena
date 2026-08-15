@@ -13,9 +13,9 @@ use crate::detail::{
     domain_key, lattice_lat_micro, lattice_lon_micro, lattice_sample, nearest_cell, sample_sdf_ppm,
 };
 use crate::erosion::{
-    apply_scale_erosion, lattice_index, lock_polar_rows, neighbor_at, DIRS, EROSION_SCALES,
-    FAN_SLOPE_PPM, FLOODPLAIN_SLOPE_PPM, MAX_EROSION_STEP_MM, MULTI_SCALE_EROSION_DOMAIN, NO_FLOW,
-    ScaleErosion,
+    apply_scale_erosion, lattice_index, lock_polar_rows, neighbor_at, ScaleErosion, DIRS,
+    EROSION_SCALES, FAN_SLOPE_PPM, FLOODPLAIN_SLOPE_PPM, MAX_EROSION_STEP_MM,
+    MULTI_SCALE_EROSION_DOMAIN, NO_FLOW,
 };
 use crate::request::DetailLevel;
 use crate::{AtlasError, ATLAS_DERIVED_DRAINAGE_VERSION, ATLAS_DETAIL_ALGORITHM_VERSION};
@@ -729,20 +729,17 @@ fn extract_deposition(
             if watershed == OCEAN {
                 continue;
             }
-            let kind = if slope_ppm < i64::from(FAN_SLOPE_PPM)
-                && accumulation[index] >= 12
-                && deposited
-            {
-                DepositionKind::Fan
-            } else if slope_ppm < i64::from(FLOODPLAIN_SLOPE_PPM) && accumulation[index] >= 24 {
-                DepositionKind::Floodplain
-            } else {
-                continue;
-            };
-            if features
-                .iter()
-                .any(|feature: &DepositionFeature| feature.kind == kind && feature.lattice_index == index)
-            {
+            let kind =
+                if slope_ppm < i64::from(FAN_SLOPE_PPM) && accumulation[index] >= 12 && deposited {
+                    DepositionKind::Fan
+                } else if slope_ppm < i64::from(FLOODPLAIN_SLOPE_PPM) && accumulation[index] >= 24 {
+                    DepositionKind::Floodplain
+                } else {
+                    continue;
+                };
+            if features.iter().any(|feature: &DepositionFeature| {
+                feature.kind == kind && feature.lattice_index == index
+            }) {
                 continue;
             }
             features.push(DepositionFeature {
@@ -1306,11 +1303,11 @@ mod tests {
         assert_ne!(drainage, erosion);
         assert_eq!(
             hex(&drainage),
-            "2e60d91ade34ccba1861d5203c1ff005817988fcf5ad95e161edcdac5a98538f"
+            "867e35855be95b7b3b764b79137382fac9ff554c30a6e4172a9447fd9acff647"
         );
         assert_eq!(
             hex(&erosion),
-            "78a8e7078d0383d240712061087e20d811305a3648b5c5f438eb3d08e24e4501"
+            "7dcb0108ea912942485d3205661f5adf0042acc13227427806513aa7fd58d2f2"
         );
     }
 
@@ -1335,7 +1332,7 @@ mod tests {
         }
         assert!(refined.worked_mm.len() * 4 <= 2_000_000);
         assert_eq!(refined.version, ATLAS_DERIVED_DRAINAGE_VERSION);
-        assert_eq!(ATLAS_DERIVED_DRAINAGE_VERSION, 5);
+        assert_eq!(ATLAS_DERIVED_DRAINAGE_VERSION, 6);
         for (index, protected) in refined.protected.iter().enumerate() {
             if *protected {
                 assert_eq!(refined.filled_mm[index], refined.source_mm[index]);
@@ -1362,7 +1359,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         for tributary in &refined.tributaries {
-            assert!(tributary.id.starts_with("atlas:tributary:v5:"));
+            assert!(tributary.id.starts_with("atlas:tributary:v6:"));
             assert!(tributary.path.len() >= 3);
             for point in &tributary.path {
                 let cell = nearest_cell(hydrology.grid, point[0], point[1]);
@@ -1375,7 +1372,7 @@ mod tests {
         assert!(!refined.tributaries.is_empty());
         assert!(!refined.valleys.is_empty());
         for feature in &refined.deposition {
-            assert!(feature.id.starts_with("atlas:deposition:v5:"));
+            assert!(feature.id.starts_with("atlas:deposition:v6:"));
         }
         let river_ids = hydrology
             .rivers
@@ -1388,7 +1385,7 @@ mod tests {
             );
         }
         for valley in &refined.valleys {
-            assert!(valley.id.starts_with("atlas:valley:v5:"));
+            assert!(valley.id.starts_with("atlas:valley:v6:"));
             let cell = nearest_cell(hydrology.grid, valley.lon_micro, valley.lat_micro);
             if hydrology.watershed_id[cell] != OCEAN {
                 assert_eq!(hydrology.watershed_id[cell], valley.watershed_id);
@@ -1445,7 +1442,10 @@ mod tests {
                 if let Some((ni, nj, neighbor)) =
                     neighbor_at(width, refined.lattice_height, i, j, dir)
                 {
-                    if j == 0 || j + 1 == refined.lattice_height || nj == 0 || nj + 1 == refined.lattice_height
+                    if j == 0
+                        || j + 1 == refined.lattice_height
+                        || nj == 0
+                        || nj + 1 == refined.lattice_height
                     {
                         continue;
                     }
@@ -1465,7 +1465,7 @@ mod tests {
         }
         assert_eq!(
             hex(&topology_fingerprint(&model)),
-            "65ca2a0bf35762e6e840b36f9c5bf8ed014a6194b388be75988b17b08bd42b2d"
+            "5d19806fbbdb317307de903d1a2c2da1683d43f139a3263a2c6a5240ce1a1da5"
         );
         let rebuilt =
             build_refined_hydrology(&model, &controls, &hydrology, &sdf, &identity, &mut cancel)
@@ -1475,7 +1475,7 @@ mod tests {
         assert_eq!(refined.valleys, rebuilt.valleys);
         assert_eq!(
             hex(&hydrology_fingerprint(&refined)),
-            "a02e22789c4be0ecd00b5cfe8a3a77369dfac156aa5254601dcaec269578c49f"
+            "3d921037ab634d2c59cb8674a6727eff85c0f9a3e066cc0444b49bb5dd70cc7f"
         );
         for j in [0, refined.lattice_height - 1] {
             let pole = refined.worked_mm[lattice_index(refined.lattice_width, 0, j)];

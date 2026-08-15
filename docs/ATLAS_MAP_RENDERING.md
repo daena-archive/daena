@@ -235,10 +235,11 @@ execution order, thread count, and historical year. These exclusions keep a
 ridge, inlet irregularity, or optional derived tributary in the same world
 location across formats, resolutions, styles, tiles, and epochs.
 
-Style-only effects use separate domains. For example, antique paper grain may
-depend on style version, variant, dimensions, and paper-space coordinates. It
-must never influence coastline, relief, drainage, label identity, or any other
-geographic result.
+Style-only effects use separate domains. Antique paper grain is interpolated
+on a 0.1° world lattice from style id/version and variant. It must never
+influence coastline, relief, drainage, label identity, or any other
+geographic result. Per-pixel hash grain is forbidden: it reads as static and
+breaks tile seams.
 
 Do not use `Math.random`, process-random hash keys, iteration-order-dependent
 PRNG streams, platform fonts, GPU shader randomness, wall-clock time, or random
@@ -788,8 +789,14 @@ arbitrary fonts, executable expressions, or unbounded filter graphs.
 Ship at least two materially distinct styles in the first usable iteration so
 style selection is a real feature:
 
-- `daena-atlas-relief`: clean physical/topographic atlas; and
-- `daena-atlas-antique`: restrained antique-paper cartography.
+- `daena-atlas-relief`: clean physical/topographic atlas;
+- `daena-atlas-biome`: climate-class cover (ice, tundra, arid, grassland, forest);
+- `daena-atlas-temperature`: land temperature ramp from the epoch climate field;
+- `daena-atlas-precipitation`: land rainfall ramp from the epoch climate field;
+- `daena-atlas-bathymetry`: ocean-led hypsometry with muted land;
+- `daena-atlas-hydrology`: muted land with rivers, lakes, and watersheds;
+- `daena-atlas-antique`: restrained antique-paper cartography; and
+- `daena-atlas-political`: authored/semantic territories.
 
 A political style belongs in the iteration that composes authored/semantic
 territories. User or plugin style packs are deferred until the schema,

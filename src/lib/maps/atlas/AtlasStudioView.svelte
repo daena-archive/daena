@@ -126,6 +126,29 @@ function derivedExplanation(hit: AtlasStudioInspectHit) {
   return "Authored or semantic map feature from the captured project snapshot.";
 }
 
+function styleLabel(id: string) {
+  switch (id) {
+    case "daena-atlas-relief":
+      return "Elevation";
+    case "daena-atlas-biome":
+      return "Biomes";
+    case "daena-atlas-temperature":
+      return "Temperature";
+    case "daena-atlas-precipitation":
+      return "Rainfall";
+    case "daena-atlas-bathymetry":
+      return "Bathymetry";
+    case "daena-atlas-hydrology":
+      return "Hydrology";
+    case "daena-atlas-antique":
+      return "Antique";
+    case "daena-atlas-political":
+      return "Political";
+    default:
+      return id;
+  }
+}
+
 function currentViewExportHeight(west: number, south: number, east: number, north: number, widthPx: number) {
   const latSpan = Math.max(1, north - south);
   let lonSpan = (east - west + 360_000_000) % 360_000_000;
@@ -138,7 +161,7 @@ function studioRequest() {
     schemaVersion: 1,
     mapEntityId: mapId,
     offsetYears,
-    algorithmVersion: 5,
+    algorithmVersion: 6,
     level: "detailed" as const,
     variant: 0,
     styleId,
@@ -343,7 +366,7 @@ function currentViewExport(): AtlasRenderRequest | null {
   return {
     schemaVersion: 1,
     offsetYears,
-    algorithmVersion: 5,
+    algorithmVersion: 6,
     level: "detailed",
     variant: 0,
     styleId,
@@ -537,7 +560,7 @@ onDestroy(() => {
         Style
         <select bind:value={styleId} onchange={() => scheduleSession()}>
           {#each capabilities?.styles ?? [] as id}
-            <option value={id}>{id}</option>
+            <option value={id}>{styleLabel(id)}</option>
           {/each}
         </select>
       </label>
@@ -587,7 +610,7 @@ onDestroy(() => {
       <section class="provenance" aria-label="Atlas provenance">
         <strong>Provenance</strong>
         <p>The Physical Map is canonical. Atlas geography is derived, deterministic, and disposable.</p>
-        <p>Released products: detail algorithm 5 · drainage 5 · renderer 10.</p>
+        <p>Released products: detail algorithm 6 · drainage 6 · renderer 11.</p>
         <p>Regenerate cache deletes only validated files under the project Atlas cache. Canonical maps, presets, and checkpoints stay unchanged.</p>
       </section>
       {#if confirmCache}

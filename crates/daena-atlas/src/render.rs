@@ -5,7 +5,10 @@ use crate::detail::{sample_sdf_ppm, AtlasDetailModel};
 use crate::overlay::composite_overlays;
 use crate::projection::wrap_lon_micro;
 use crate::request::{AtlasRenderRequest, TILE_HALO, TILE_SIZE};
-use crate::style::{apply_shade, hypsometric, mix_rgb, AtlasStyle};
+use crate::style::{
+    apply_shade, biome_fill, hypsometric, mix_rgb, precipitation_fill, temperature_fill,
+    AtlasStyle, BIOME_STYLE_ID, PRECIPITATION_STYLE_ID, TEMPERATURE_STYLE_ID,
+};
 use crate::{AtlasError, AtlasPhase, AtlasProgress};
 
 /// Isolated sinks smaller than this stay land so one-cell puddles do not
@@ -36,6 +39,13 @@ fn cardinal_neighbors(width: u32, height: u32, index: usize) -> [Option<usize>; 
         None
     };
     [Some(left), Some(right), north, south]
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PaintFields<'a> {
+    pub climate_class: &'a [i32],
+    pub temperature_centi_c: &'a [i32],
+    pub precipitation_mm: &'a [i32],
 }
 
 fn flood_component(
@@ -160,8 +170,10 @@ fn nearest_cell(grid: Grid, lon_micro: i32, lat_micro: i32) -> usize {
 }
 
 fn shade_ppm(model: &AtlasDetailModel, lon: i32, lat: i32, sea: i32, sdf: &[i32]) -> u32 {
-    let delta_lon = (360_000_000i64 / i64::from(model.lattice_width.max(1))) as i32;
-    let delta_lat = (180_000_000i64 / i64::from(model.lattice_height.max(1))) as i32;
+    let cell_lon = (360_000_000i64 / i64::from(model.lattice_width.max(1))) as i32;
+    let cell_lat = (180_000_000i64 / i64::from(model.lattice_height.max(1))) as i32;
+    let delta_lon = (cell_lon / 4).max(20_000);
+    let delta_lat = (cell_lat / 4).max(20_000);
     let sample = |lon, lat| {
         let sdf_ppm = sample_sdf_ppm(model.grid, sdf, lon, lat);
         i64::from(model.refined_at(lon, lat, sea, sdf_ppm))
@@ -178,17 +190,17 @@ fn shade_ppm(model: &AtlasDetailModel, lon: i32, lat: i32, sea: i32, sdf: &[i32]
     );
     let nx = west - east;
     let ny = south - north;
-    let nz = 72_000_i64;
+    let nz = 220_000_i64;
     let mag = nx
         .unsigned_abs()
         .saturating_add(ny.unsigned_abs())
         .saturating_add(nz.unsigned_abs())
         .max(1);
     let lit = nx
-        .saturating_mul(5)
-        .saturating_add(ny.saturating_mul(6))
+        .saturating_mul(2)
+        .saturating_add(ny.saturating_mul(3))
         .saturating_add(nz.saturating_mul(8));
-    ((lit + mag as i64) * 500_000 / mag as i64).clamp(320_000, 1_000_000) as u32
+    ((lit + mag as i64) * 500_000 / mag as i64).clamp(420_000, 1_000_000) as u32
 }
 
 pub(crate) fn pixel_rgba(
@@ -198,6 +210,7 @@ pub(crate) fn pixel_rgba(
     style: &AtlasStyle,
     request: &AtlasRenderRequest,
     water: &VisibleWater,
+    paint: PaintFields<'_>,
     lon: i32,
     lat: i32,
 ) -> [u8; 4] {
@@ -205,7 +218,15 @@ pub(crate) fn pixel_rgba(
     let sdf_ppm = sample_sdf_ppm(model.grid, sdf, lon, lat);
     let elevation = model.refined_at(lon, lat, sea, sdf_ppm);
     let cell = nearest_cell(model.grid, lon, lat);
-    let shade = shade_ppm(model, lon, lat, sea, sdf);
+    let thematic = matches!(
+        style.id.as_str(),
+        BIOME_STYLE_ID | TEMPERATURE_STYLE_ID | PRECIPITATION_STYLE_ID
+    );
+    let shade = if thematic {
+        shade_ppm(model, lon, lat, sea, sdf).max(780_000)
+    } else {
+        shade_ppm(model, lon, lat, sea, sdf)
+    };
     if request.layer_enabled("ice") && hydrology.ice_cells.get(cell).copied().unwrap_or(false) {
         return apply_shade(style.ice, shade.max(700_000));
     }
@@ -231,7 +252,28 @@ pub(crate) fn pixel_rgba(
         ];
     }
     let painted = if land { elevation.max(sea) } else { elevation };
-    let mut rgb = hypsometric(style, painted, sea);
+    let mut rgb = if land && style.id == BIOME_STYLE_ID {
+        biome_fill(
+            style,
+            paint
+                .climate_class
+                .get(cell)
+                .copied()
+                .unwrap_or(crate::control::CLIMATE_CLASS_GRASSLAND),
+        )
+    } else if land && style.id == TEMPERATURE_STYLE_ID {
+        temperature_fill(
+            style,
+            paint.temperature_centi_c.get(cell).copied().unwrap_or(0),
+        )
+    } else if land && style.id == PRECIPITATION_STYLE_ID {
+        precipitation_fill(
+            style,
+            paint.precipitation_mm.get(cell).copied().unwrap_or(0),
+        )
+    } else {
+        hypsometric(style, painted, sea)
+    };
     if request.layer_enabled("coastlines") {
         let band = elevation.saturating_sub(sea).unsigned_abs();
         if band < 28_000 {
@@ -254,6 +296,7 @@ pub fn render_rgba(
     tributaries: &[crate::drainage::DerivedTributary],
     tectonics: &daena_physical::tectonics::TectonicWorld,
     water: &VisibleWater,
+    paint: PaintFields<'_>,
     progress: &mut dyn AtlasProgress,
 ) -> Result<Vec<u8>, AtlasError> {
     let view = request.view()?;
@@ -287,7 +330,9 @@ pub fn render_rgba(
                 let x = tile.x + local_x;
                 let y = tile.y + local_y;
                 let (lon, lat) = view.pixel_center(x, y);
-                let rgba = pixel_rgba(model, hydrology, sdf, style, request, water, lon, lat);
+                let rgba = pixel_rgba(
+                    model, hydrology, sdf, style, request, water, paint, lon, lat,
+                );
                 let offset = ((y as usize) * width as usize + x as usize) * 4;
                 buffer[offset..offset + 4].copy_from_slice(&rgba);
             }

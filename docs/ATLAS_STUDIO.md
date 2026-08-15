@@ -87,11 +87,12 @@ numbers and file locations may advance.
 
 - The accepted physical source remains a `384 x 192` canonical simulation grid.
 - `crates/daena-atlas` already provides a pure Rust renderer with request schema
-  `1`, detail algorithm `5`, derived drainage `5`, renderer `10`, seed policy
-  `1`, and provenance schema `1` (ADR 0046).
+  `1`, detail algorithm `6`, derived drainage `6`, renderer `11`, seed policy
+  `1`, and provenance schema `1` (ADR 0047).
 - The current renderer supports whole-world and regional equirectangular views,
-  regional Web Mercator, deterministic relief and antique styles, a political
-  style, authored/semantic overlays, labels, atlas-only minor tributaries, and
+  regional Web Mercator, deterministic relief, biome, temperature, rainfall,
+  bathymetry, hydrology, antique, and political styles, authored/semantic
+  overlays, labels, atlas-only minor tributaries, and
   PNG, self-contained SVG, and single-page PDF output. JPEG is not currently an
   approved format.
 - `crates/daena-core/src/maps/atlas.rs` owns provider-neutral capability
@@ -205,8 +206,8 @@ Atlas should remain a focused Rust terrain/cartography pipeline rather than adop
 ## Research References for Terrain Versions
 
 These papers are architectural and algorithmic references, not permission to
-copy research code or change a released Atlas product in place. Algorithm `5`
-and drainage `5` (ADR 0046) are the current production implementations of the
+copy research code or change a released Atlas product in place. Algorithm `6`
+and drainage `6` (ADR 0047) are the current production implementations of the
 ideas below. Closing a remaining gap still requires a new version, conservation
 and topology metrics, license review, and an ADR. Reference implementations
 stay test or research inputs unless their license and production suitability
@@ -222,13 +223,13 @@ to the Physical Map → Atlas relationship.
 - [DOI 10.1007/s00371-020-01923-4](https://doi.org/10.1007/s00371-020-01923-4)
 - [Reference implementation](https://github.com/Arches-Team/Real-Time-Hyper-Amplification-of-Planets)
 
-**In algorithm `5`:** hierarchical subdivision (`f/4` → `f/2` → `f`) with
-control-field transfer; plains carry tens of metres of residual and mountain
-influence can add up to `540` m; divide-tree orometry synthesizes `920` m
-ridges and `680` m valleys (mean-removed per canonical cell so macro
-elevation stays put); coastline reconstruction from algorithm `4` is
-retained. Residuals are epoch-dependent. Production-grid lattice sizes stay
-inside the `96 MiB` in-process budget.
+**In algorithm `6`:** hierarchical subdivision (`f/4` → `f/2` → `f`) with
+interpolated (not per-cell) residual grain of about `8`–`96` m; pit fill so
+noise does not become isolated sinks; divide-tree orometry paints *ridge and
+valley paths* (`780` m / `520` m, `8`-cell falloff) plus plains drainage
+carving; coastline reconstruction from algorithm `4` is retained. Residuals
+are epoch-dependent. Production-grid lattice sizes stay inside the `96 MiB`
+in-process budget.
 
 **Still later:** GPU / real-time path.
 
@@ -261,12 +262,14 @@ mountain generation instead of generic mountain noise.
 - [ACM DOI 10.1145/3355089.3356535](https://dl.acm.org/doi/10.1145/3355089.3356535)
 - [Reference implementation](https://github.com/oargudo/orometry-terrains)
 
-**In algorithm `3`:** a divide tree over every Physical Map mountain system
-(connected mountain-influence components); at most 256 features and 12 peaks
-per system (peaks, saddles, ridges, secondary ridges, valleys, foothills);
-IDs `atlas:orometry:v3:{kind}:{lattice-index}`. The tree synthesizes
-elevation (ridge raise / valley cut) rather than only labeling residual
-maxima. Features do not replace canonical rivers or watersheds.
+**In algorithm `6`:** a divide tree over every Physical Map mountain system
+(connected mountain-influence components); at most 768 features and 48 peaks
+per system with minimum peak spacing of 6 lattice steps; IDs
+`atlas:orometry:v6:{kind}:{lattice-index}`. Saddles record the peak-to-peak
+ascent paths and those polylines are the ridge seeds (not isotropic blobs
+around isolated points). Valleys follow steepest descent from saddles and
+high-accumulation drainage. Features do not replace canonical rivers or
+watersheds.
 
 **Still later:** richer orometric statistics (prominence/isolation histograms)
 conditioned on named mountain-range archetypes.

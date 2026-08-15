@@ -105,6 +105,11 @@ try {
     "daena-atlas-relief.v1.json",
     "daena-atlas-antique.v1.json",
     "daena-atlas-political.v1.json",
+    "daena-atlas-biome.v1.json",
+    "daena-atlas-temperature.v1.json",
+    "daena-atlas-precipitation.v1.json",
+    "daena-atlas-bathymetry.v1.json",
+    "daena-atlas-hydrology.v1.json",
   ]) {
     const style = readFileSync(join(root, "docs/maps/atlas/styles", name), "utf8");
     assert.equal(style.toLowerCase().includes("http://"), false);
@@ -160,7 +165,7 @@ try {
   assert.equal(preview.hash, again.hash);
   assert.equal(
     preview.hash,
-    "sha256:0d958ced1e7e583b4ebef17d4fb0fd62317b4f25710143dce529e0dfd785f24a",
+    "sha256:b655429504134b8e6469b421052eb4ace8ad48dd9771bf292e84c00d6c46f188",
   );
   const mid = render(4096, 2048, exportPath);
   const max = render(8192, 4096, maxPath);
@@ -188,6 +193,31 @@ try {
   });
   assert.equal(antique.summary.styleId, "daena-atlas-antique");
   assert.notEqual(present.hash, antique.hash);
+  const biome = render(256, 128, join(temp, "atlas-biome.png"), {
+    args: ["--style", "daena-atlas-biome"],
+  });
+  assert.equal(biome.summary.styleId, "daena-atlas-biome");
+  assert.notEqual(present.hash, biome.hash);
+  const temperature = render(256, 128, join(temp, "atlas-temperature.png"), {
+    args: ["--style", "daena-atlas-temperature"],
+  });
+  assert.equal(temperature.summary.styleId, "daena-atlas-temperature");
+  assert.notEqual(present.hash, temperature.hash);
+  const rainfall = render(256, 128, join(temp, "atlas-precipitation.png"), {
+    args: ["--style", "daena-atlas-precipitation"],
+  });
+  assert.equal(rainfall.summary.styleId, "daena-atlas-precipitation");
+  assert.notEqual(biome.hash, rainfall.hash);
+  const bathymetry = render(256, 128, join(temp, "atlas-bathymetry.png"), {
+    args: ["--style", "daena-atlas-bathymetry"],
+  });
+  assert.equal(bathymetry.summary.styleId, "daena-atlas-bathymetry");
+  assert.notEqual(present.hash, bathymetry.hash);
+  const hydrology = render(256, 128, join(temp, "atlas-hydrology.png"), {
+    args: ["--style", "daena-atlas-hydrology"],
+  });
+  assert.equal(hydrology.summary.styleId, "daena-atlas-hydrology");
+  assert.notEqual(present.hash, hydrology.hash);
 
   const region = render(128, 64, join(temp, "atlas-region.png"), {
     args: ["--west", "0", "--south", "0", "--east", "90", "--north", "45"],
@@ -227,7 +257,7 @@ try {
   assert.equal(cold.hash, warm.hash);
   assert.equal(cold.summary.artifactCache, "miss");
   assert.equal(warm.summary.artifactCache, "hit");
-  assert.equal(cold.summary.rendererVersion, 10);
+  assert.equal(cold.summary.rendererVersion, 11);
   assert.ok(cold.summary.tributaryCount >= 0);
   const adr = readFileSync(join(root, "docs/adr/0036-atlas-rendering-iteration-4.md"), "utf8");
   assert.match(adr, /atlas-only/);
@@ -276,17 +306,18 @@ try {
   assert.match(studioView, /calendar-year/);
   assert.equal(studioView.includes("getCanvas"), false);
   assert.equal(studioView.includes("new Date"), false);
-  assert.equal(studioView.includes("algorithmVersion: 5"), true);
+  assert.equal(studioView.includes("algorithmVersion: 6"), true);
   assert.equal(studioView.includes("algorithmVersion: 1"), false);
   assert.equal(studioView.includes("algorithmVersion: 2"), false);
   assert.equal(studioView.includes("algorithmVersion: 3"), false);
   assert.equal(studioView.includes("algorithmVersion: 4"), false);
+  assert.equal(studioView.includes("algorithmVersion: 5"), false);
   assert.equal(studioView.includes("tributary:v2"), false);
   assert.equal(studioView.includes("valley:v2"), false);
   assert.match(studioView, /Skip to map/);
   assert.match(studioView, /aria-keyshortcuts/);
   assert.match(studioView, /atlas\.studio\.stale/);
-  assert.match(studioView, /detail algorithm 5/);
+  assert.match(studioView, /detail algorithm 6/);
   assert.match(studioView, /Regenerate disposable Atlas cache/);
   assert.match(studioView, /Atlas-only derived drainage/);
   assert.match(studioView, /currentViewExportHeight/);
@@ -314,12 +345,28 @@ try {
   assert.match(productionV5, /Renderer \| `10`/);
   assert.match(productionV5, /daena-atlas-detail-v5/);
   assert.match(productionV5, /920/);
-  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 5/);
-  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 5/);
-  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_RENDERER_VERSION: u32 = 10/);
+  const productionV6 = readFileSync(join(root, "docs/adr/0047-atlas-production-algorithm-6.md"), "utf8");
+  assert.match(productionV6, /Detail algorithm \| `6`/);
+  assert.match(productionV6, /Derived drainage \| `6`/);
+  assert.match(productionV6, /Renderer \| `11`/);
+  assert.match(productionV6, /daena-atlas-detail-v6/);
+  assert.match(productionV6, /780/);
+  const productionBiome = readFileSync(join(root, "docs/adr/0048-atlas-biome-style.md"), "utf8");
+  assert.match(productionBiome, /daena-atlas-biome/);
+  assert.match(productionBiome, /biomeForest/);
+  const productionThematic = readFileSync(join(root, "docs/adr/0049-atlas-thematic-styles.md"), "utf8");
+  assert.match(productionThematic, /daena-atlas-temperature/);
+  assert.match(productionThematic, /daena-atlas-precipitation/);
+  assert.match(productionThematic, /daena-atlas-bathymetry/);
+  assert.match(productionThematic, /daena-atlas-hydrology/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 6/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 6/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_RENDERER_VERSION: u32 = 11/);
   assert.match(readFileSync(join(root, "crates/daena-atlas/src/amplify.rs"), "utf8"), /synthesize_coastline/);
-  assert.match(readFileSync(join(root, "crates/daena-atlas/src/amplify.rs"), "utf8"), /RIDGE_SYNTHESIS_MM: i32 = 920_000/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/amplify.rs"), "utf8"), /RIDGE_SYNTHESIS_MM: i32 = 780_000/);
   assert.match(readFileSync(join(root, "crates/daena-atlas/src/amplify.rs"), "utf8"), /SecondaryRidge/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/amplify.rs"), "utf8"), /follow_ascent/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/erosion.rs"), "utf8"), /priority_fill_pits/);
   assert.match(readFileSync(join(root, "crates/daena-atlas/src/refine.rs"), "utf8"), /DepositionKind/);
   assert.match(readFileSync(join(root, "crates/daena-atlas/src/erosion.rs"), "utf8"), /apply_scale_erosion/);
 
@@ -327,7 +374,17 @@ try {
     preview: { ...preview.summary, sha256: preview.hash, peakResidentBytes: preview.peakResidentBytes },
     export4k: { ...mid.summary, sha256: mid.hash, peakResidentBytes: mid.peakResidentBytes },
     export8k: { ...max.summary, sha256: max.hash, peakResidentBytes: max.peakResidentBytes },
-    epochs: { past: past.hash, present: present.hash, future: future.hash, antique: antique.hash },
+    epochs: {
+      past: past.hash,
+      present: present.hash,
+      future: future.hash,
+      antique: antique.hash,
+      biome: biome.hash,
+      temperature: temperature.hash,
+      rainfall: rainfall.hash,
+      bathymetry: bathymetry.hash,
+      hydrology: hydrology.hash,
+    },
     cache: {
       coldMs: cold.summary.renderMs,
       warmMs: warm.summary.renderMs,

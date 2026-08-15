@@ -28,6 +28,29 @@ const PRESETS = [
   { label: "Print 8K", width: 8192, height: 4096 },
 ] as const;
 
+function styleLabel(id: string) {
+  switch (id) {
+    case "daena-atlas-relief":
+      return "Elevation";
+    case "daena-atlas-biome":
+      return "Biomes";
+    case "daena-atlas-temperature":
+      return "Temperature";
+    case "daena-atlas-precipitation":
+      return "Rainfall";
+    case "daena-atlas-bathymetry":
+      return "Bathymetry";
+    case "daena-atlas-hydrology":
+      return "Hydrology";
+    case "daena-atlas-antique":
+      return "Antique";
+    case "daena-atlas-political":
+      return "Political";
+    default:
+      return id;
+  }
+}
+
 let capabilities = $state<AtlasRenderCapabilities | null>(null);
 let styleId = $state("daena-atlas-relief");
 let widthPx = $state(2048);
@@ -79,7 +102,7 @@ function request(width: number, height: number): AtlasRenderRequest {
   return {
     schemaVersion: 1,
     offsetYears,
-    algorithmVersion: 5,
+    algorithmVersion: 6,
     level: "detailed",
     variant: 0,
     styleId,
@@ -202,7 +225,7 @@ async function savePreset() {
         timeKind === "calendar-year"
           ? { kind: "calendar-year", authoredYear }
           : { kind: "physical-offset-year", offsetYears },
-      detail: { algorithmVersion: 5, level: "detailed", variant: 0 },
+      detail: { algorithmVersion: 6, level: "detailed", variant: 0 },
       style: { id: styleId, version: 1 },
       activeLayerIds: layers.filter((layer) => layer.enabled).map((layer) => layer.id),
       viewport: { kind: "world", projection: "equirectangular" },
@@ -330,7 +353,7 @@ onDestroy(() => {
     Style
     <select bind:value={styleId} onchange={() => schedulePreview()}>
       {#each capabilities?.styles ?? [] as id}
-        <option value={id}>{id}</option>
+        <option value={id}>{styleLabel(id)}</option>
       {/each}
     </select>
   </label>

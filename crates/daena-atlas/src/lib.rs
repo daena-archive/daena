@@ -24,10 +24,10 @@ pub mod style;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const ATLAS_REQUEST_SCHEMA_VERSION: u32 = 1;
-pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 5;
-pub const ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 5;
+pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 6;
+pub const ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 6;
 pub const ATLAS_SEED_POLICY_VERSION: u32 = 1;
-pub const ATLAS_RENDERER_VERSION: u32 = 10;
+pub const ATLAS_RENDERER_VERSION: u32 = 11;
 pub const ATLAS_PROVENANCE_SCHEMA_VERSION: u32 = 1;
 pub const SPIKE_STYLE_ID: &str = "daena-atlas-relief-spike";
 
@@ -222,8 +222,21 @@ pub struct AtlasPreparedScene {
     pub drainage: drainage::DerivedDrainage,
     pub tectonics: daena_physical::tectonics::TectonicWorld,
     pub visible_water: render::VisibleWater,
+    pub climate_class: Vec<i32>,
+    pub temperature_centi_c: Vec<i32>,
+    pub precipitation_mm: Vec<i32>,
     pub residual_cache: cache::CacheLookup,
     pub drainage_cache: cache::CacheLookup,
+}
+
+impl AtlasPreparedScene {
+    pub fn paint_fields(&self) -> render::PaintFields<'_> {
+        render::PaintFields {
+            climate_class: &self.climate_class,
+            temperature_centi_c: &self.temperature_centi_c,
+            precipitation_mm: &self.precipitation_mm,
+        }
+    }
 }
 
 fn drainage_from_refined(refined: &refine::RefinedHydrology) -> drainage::DerivedDrainage {
@@ -317,7 +330,7 @@ pub fn prepare_from_source(
         &historical.hydrology,
     )?;
     let residual_key = cache::cache_key(&[
-        b"atlas-cache-residual-v5",
+        b"atlas-cache-residual-v6",
         identity,
         &ATLAS_DETAIL_ALGORITHM_VERSION.to_le_bytes(),
         &request.variant.to_le_bytes(),
@@ -419,7 +432,7 @@ pub fn prepare_from_source(
         )?
     };
     let drainage_key = cache::cache_key(&[
-        b"atlas-cache-drainage-v5",
+        b"atlas-cache-drainage-v6",
         identity,
         &ATLAS_DERIVED_DRAINAGE_VERSION.to_le_bytes(),
         &request.variant.to_le_bytes(),
@@ -521,6 +534,9 @@ pub fn prepare_from_source(
         drainage,
         tectonics: world,
         visible_water,
+        climate_class: controls.climate_class,
+        temperature_centi_c: controls.temperature_centi_c,
+        precipitation_mm: controls.precipitation_mm,
         residual_cache,
         drainage_cache,
     })
@@ -621,6 +637,7 @@ pub fn render_from_source_cached(
         &scene.drainage.tributaries,
         &scene.tectonics,
         &scene.visible_water,
+        scene.paint_fields(),
         progress,
     )?;
     let mut provenance = provenance::AtlasRenderProvenanceV1::for_request(
@@ -1019,7 +1036,7 @@ mod tests {
             [0, 0, 1, 1]
         );
         assert_eq!(pdf.rgba, region_render.rgba);
-        assert_eq!(pdf.provenance.renderer_version, 10);
+        assert_eq!(pdf.provenance.renderer_version, 11);
         assert!(region_render.tributary_count > 0 || globe_render.tributary_count > 0);
     }
 

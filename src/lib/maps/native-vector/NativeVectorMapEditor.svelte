@@ -1,6 +1,15 @@
 <script lang="ts">
 import { onMount, tick } from "svelte";
-import { project, type Asset, type Entity, type FieldValue } from "$lib/project/client";
+import { listen } from "@tauri-apps/api/event";
+import {
+  project,
+  PHYSICAL_HISTORICAL_PROGRESS_EVENT,
+  type Asset,
+  type Entity,
+  type FieldValue,
+  type PhysicalHistoricalProgress,
+  type PhysicalHistoricalProducts,
+} from "$lib/project/client";
 import { VECTOR_MAX_LAYERS, type MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
 import NativeVectorGenerator from "./NativeVectorGenerator.svelte";
 import {
@@ -84,8 +93,17 @@ let background = $state<{
   coordinates?: ImageOverlayCoordinates;
 } | null>(null);
 let fullscreen = $state(false);
-let physicalMap = false;
+let physicalMap = $state(false);
 let immutablePhysicalLayerIds = $state<Set<string>>(new Set());
+let epochOffsetYears = $state(0);
+let appliedEpochOffsetYears = $state(0);
+let epochBusy = $state(false);
+let epochNotice = $state("");
+let epochPhase = $state("");
+let epochProgress = $state<{ completed: number; total: number } | null>(null);
+let activeEpochRequestId = "";
+let epochRequest = 0;
+let epochTimer: ReturnType<typeof setTimeout> | undefined;
 
 const listedLayers = $derived(
   [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id)),
@@ -216,6 +234,77 @@ function destroyEditor() {
   editor = null;
 }
 
+function formatEpoch(offset: number): string {
+  if (offset === 0) return "Reference epoch";
+  return `${offset > 0 ? "+" : ""}${offset.toLocaleString()} years`;
+}
+
+function handleHistoricalProgress(progress: PhysicalHistoricalProgress) {
+  if (progress.mapEntityId !== mapId || progress.requestId !== activeEpochRequestId) return;
+  epochPhase = progress.phase;
+  epochProgress = { completed: progress.completed, total: progress.total };
+}
+
+function applyHistoricalProducts(products: PhysicalHistoricalProducts) {
+  const authoredDraft = draft.features.filter(
+    (feature) => !immutablePhysicalLayerIds.has(feature.properties.daenaLayerId),
+  );
+  const authoredLoaded = loaded.features.filter(
+    (feature) => !immutablePhysicalLayerIds.has(feature.properties.daenaLayerId),
+  );
+  const physical = parseVectorCollection(new TextEncoder().encode(products.geojson));
+  draft = cloneCollection({ type: "FeatureCollection", features: [...physical.features, ...authoredDraft] });
+  loaded = cloneCollection({ type: "FeatureCollection", features: [...physical.features, ...authoredLoaded] });
+  if (background?.url) URL.revokeObjectURL(background.url);
+  background = {
+    url: "",
+    canvas: physicalHillshadeCanvas(products.hydrology),
+    width: products.hydrology.width,
+    height: products.hydrology.height,
+    coordinates: physicalWorldOverlayCoordinates(),
+  };
+  epochOffsetYears = products.epochOffsetYears;
+  appliedEpochOffsetYears = products.epochOffsetYears;
+}
+
+async function loadPhysicalEpoch(offset: number) {
+  if (!mapId || !physicalMap) return;
+  const request = ++epochRequest;
+  const requestId = crypto.randomUUID();
+  activeEpochRequestId = requestId;
+  epochBusy = true;
+  epochPhase = "Starting historical derivation";
+  epochProgress = { completed: 0, total: 1 };
+  epochNotice = "Deriving climate, water, and geography…";
+  try {
+    const products = await project.physicalMapDerivedEpoch(mapId, offset, requestId);
+    if (request !== epochRequest) return;
+    applyHistoricalProducts(products);
+    await tick();
+    mountEditor();
+    epochNotice = `Showing ${formatEpoch(products.epochOffsetYears)} · deterministic derived playback`;
+    epochPhase = "";
+    epochProgress = null;
+  } catch (cause) {
+    if (request !== epochRequest) return;
+    epochOffsetYears = appliedEpochOffsetYears;
+    epochPhase = "";
+    epochProgress = null;
+    epochNotice = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    if (request === epochRequest) epochBusy = false;
+  }
+}
+
+function scheduleEpoch(offset: number) {
+  epochOffsetYears = offset;
+  if (epochTimer) clearTimeout(epochTimer);
+  epochTimer = setTimeout(() => {
+    epochTimer = undefined;
+    void loadPhysicalEpoch(offset);
+  }, 180);
+}
+
 function mountEditor() {
   if (!host) return;
   destroyEditor();
@@ -268,6 +357,10 @@ function mountEditor() {
 
 async function load() {
   if (!mapId) return;
+  epochRequest += 1;
+  epochBusy = false;
+  epochPhase = "";
+  epochProgress = null;
   busy = true;
   try {
     const fields = await project.listFields(mapId);
@@ -295,6 +388,8 @@ async function load() {
     const bytes = await project.readAssetBytes(source.id);
     const collection = parseVectorCollection(bytes);
     if (physicalMap) {
+      epochOffsetYears = 0;
+      appliedEpochOffsetYears = 0;
       immutablePhysicalLayerIds = new Set([
         "base",
         "ocean",
@@ -310,20 +405,30 @@ async function load() {
         "watersheds",
         "islands",
       ]);
-      const physical = parseVectorCollection(new TextEncoder().encode(await project.physicalMapDerivedGeoJson(mapId)));
+      const requestId = crypto.randomUUID();
+      activeEpochRequestId = requestId;
+      epochBusy = true;
+      epochPhase = "Starting historical derivation";
+      epochProgress = { completed: 0, total: 1 };
+      const historical = await project.physicalMapDerivedEpoch(mapId, 0, requestId);
+      const physical = parseVectorCollection(new TextEncoder().encode(historical.geojson));
       const combined = { type: "FeatureCollection" as const, features: [...physical.features, ...collection.features] };
       draft = cloneCollection(combined);
       loaded = cloneCollection(combined);
-      const products = await project.physicalMapDerivedHydrology(mapId);
+      epochNotice = `Showing ${formatEpoch(historical.epochOffsetYears)} · deterministic derived playback`;
       background = {
         url: "",
-        canvas: physicalHillshadeCanvas(products),
-        width: products.width,
-        height: products.height,
+        canvas: physicalHillshadeCanvas(historical.hydrology),
+        width: historical.hydrology.width,
+        height: historical.hydrology.height,
         coordinates: physicalWorldOverlayCoordinates(),
       };
+      epochBusy = false;
+      epochPhase = "";
+      epochProgress = null;
     } else {
       immutablePhysicalLayerIds = new Set();
+      epochNotice = "";
       draft = cloneCollection(collection);
       loaded = cloneCollection(collection);
     }
@@ -371,6 +476,9 @@ async function load() {
     publish("error", { message: editorState.diagnostic });
   } finally {
     busy = false;
+    epochBusy = false;
+    epochPhase = "";
+    epochProgress = null;
   }
 }
 
@@ -596,12 +704,31 @@ function onKey(event: KeyboardEvent) {
 
 onMount(() => {
   if (!mapId) return;
+  let mounted = true;
+  let unlistenHistoricalProgress: (() => void) | null = null;
   registerNativeVectorSession({ save, isDirty, teardown: () => editor?.dispose() });
   window.addEventListener("keydown", onKey);
-  void load();
+  void listen<PhysicalHistoricalProgress>(PHYSICAL_HISTORICAL_PROGRESS_EVENT, (event) => {
+    handleHistoricalProgress(event.payload);
+  })
+    .then((unlisten) => {
+      if (!mounted) {
+        unlisten();
+        return;
+      }
+      unlistenHistoricalProgress = unlisten;
+      void load();
+    })
+    .catch(() => {
+      if (mounted) void load();
+    });
   return () => {
+    mounted = false;
     window.removeEventListener("keydown", onKey);
+    unlistenHistoricalProgress?.();
     destroyEditor();
+    epochRequest += 1;
+    if (epochTimer) clearTimeout(epochTimer);
     if (background?.url) URL.revokeObjectURL(background.url);
     registerNativeVectorSession(null);
   };
@@ -736,6 +863,27 @@ onMount(() => {
     {/if}
     {#if notice}
       <p class="hint" role="status">{notice}</p>
+    {/if}
+    {#if physicalMap}
+      <div class="epoch-control" aria-label="Historical climate time">
+        <label for="physical-epoch">World time</label>
+        <input
+          id="physical-epoch"
+          type="range"
+          min="-100000"
+          max="100000"
+          step="1"
+          value={epochOffsetYears}
+          disabled={busy}
+          oninput={(event) => scheduleEpoch(Number(event.currentTarget.value))} />
+        <output for="physical-epoch">{formatEpoch(epochOffsetYears)}</output>
+        {#if epochBusy}
+          <span role="status">
+            {epochPhase || "Deriving…"}{#if epochProgress} · {epochProgress.completed}/{epochProgress.total}{/if}
+          </span>
+        {/if}
+        {#if epochNotice}<small>{epochNotice}</small>{/if}
+      </div>
     {/if}
     <div class="editor-body">
       <aside aria-label="Vector layers">
@@ -965,6 +1113,30 @@ button:disabled {
   flex: 1 1 auto;
   grid-template-columns: 260px minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
+}
+.epoch-control {
+  display: grid;
+  grid-template-columns: auto minmax(160px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid #405047;
+  background: #1b2822;
+  color: #d8e3d9;
+  font-size: 12px;
+}
+.epoch-control input {
+  min-width: 0;
+  accent-color: #d5ab6c;
+}
+.epoch-control output {
+  min-width: 118px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.epoch-control small {
+  grid-column: 2 / -1;
+  color: #aebdb1;
 }
 aside {
   display: flex;

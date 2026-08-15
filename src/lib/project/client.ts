@@ -237,6 +237,61 @@ export interface PhysicalHydrologyProducts {
     islandCount: number;
   };
 }
+export interface PhysicalHistoricalProducts {
+  cacheKey: string;
+  sourceHash: string;
+  epochOffsetYears: number;
+  normalizedEpoch: number;
+  chronology: PhysicalEpochMapping;
+  geojson: string;
+  climate: PhysicalClimateProducts;
+  hydrology: PhysicalHydrologyProducts;
+  derivedHashes: {
+    canonicalSource: string;
+    finalElevation: string;
+    tectonics: string;
+    geography: string;
+    climate: string;
+    hydrology: string;
+  };
+  forcing: {
+    version: number;
+    temperatureAmplitudeCentiC: number;
+    periodYears: number;
+    phaseOffsetYears: number;
+    landIceAmplitudePpm: number;
+    iceResponseYears: number;
+    thermalExpansionPpmPerDegreeC: number;
+  };
+  history: {
+    derivationVersion: number;
+    epochOffsetYears: number;
+    normalizedEpoch: number;
+    temperatureOffsetCentiC: number;
+    laggedTemperatureOffsetCentiC: number;
+    landIceEquilibriumM3: number;
+    landIceM3: number;
+    thermalExpansionM3: number;
+    effectiveOceanWaterM3: number;
+    conservedWaterM3: number;
+    balanceErrorM3: number;
+    seaLevelMm: number;
+  };
+}
+export interface PhysicalEpochMapping {
+  contractVersion: 1;
+  kind: "physical-offset-years";
+  reference: "accepted-source";
+  epochOffsetYears: number;
+}
+export interface PhysicalHistoricalProgress {
+  mapEntityId: string;
+  requestId: string;
+  phase: string;
+  completed: number;
+  total: number;
+}
+export const PHYSICAL_HISTORICAL_PROGRESS_EVENT = "physical-historical-progress";
 export interface PhysicalGenerationInput {
   seed: number;
   retryIndex: number;
@@ -714,6 +769,13 @@ export const project = {
     invoke<PhysicalEvolutionProducts>("project_physical_derived_evolution", { mapEntityId }),
   physicalMapDerivedHydrology: (mapEntityId: string) =>
     invoke<PhysicalHydrologyProducts>("project_physical_derived_hydrology", { mapEntityId }),
+  physicalMapDerivedEpoch: (mapEntityId: string, epochOffsetYears: number, requestId = crypto.randomUUID()) =>
+    invoke<PhysicalHistoricalProducts>("project_physical_derived_epoch", {
+      mapEntityId,
+      epochOffsetYears,
+      requestId,
+    }),
+  physicalMapClearEpochCache: () => invoke<void>("project_physical_clear_epoch_cache"),
   readAssetBytes: (assetId: string) => invoke<number[]>("project_read_asset_bytes", { assetId }),
   createRasterLayer: (mapEntityId: string, name: string, expectedRevision: string, options?: MutationOptions) =>
     invoke<RasterLayerChange>("project_create_raster_layer", {

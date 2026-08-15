@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -47,6 +47,12 @@ type SharedPhysicalJobs = Arc<Mutex<PhysicalJobManager>>;
 type SharedSettings = Arc<Mutex<SettingsStore>>;
 const READ_CONNECTION_POOL_CAPACITY: usize = 4;
 const PHYSICAL_JOB_TTL: Duration = Duration::from_secs(15 * 60);
+const HISTORICAL_CACHE_CAPACITY: usize = 16;
+static HISTORICAL_EPOCH_CACHE: OnceLock<Mutex<BTreeMap<String, serde_json::Value>>> =
+    OnceLock::new();
+static HISTORICAL_EPOCH_REQUESTS: OnceLock<Mutex<BTreeMap<String, Arc<AtomicU64>>>> =
+    OnceLock::new();
+const PHYSICAL_HISTORICAL_PROGRESS_EVENT: &str = "physical-historical-progress";
 
 fn new_shared_core() -> SharedCore {
     Arc::new(Mutex::new(Arc::new(ProjectSession {
@@ -169,6 +175,88 @@ struct PhysicalProgress {
     jobs: SharedPhysicalJobs,
     job_id: String,
     cancel: Arc<AtomicBool>,
+}
+
+struct HistoricalProgress {
+    generation: Arc<AtomicU64>,
+    expected: u64,
+    reporter: Option<HistoricalProgressReporter>,
+}
+
+#[derive(Clone)]
+struct HistoricalProgressReporter {
+    app: tauri::AppHandle,
+    map_entity_id: String,
+    request_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoricalProgressEvent {
+    map_entity_id: String,
+    request_id: String,
+    phase: String,
+    completed: u32,
+    total: u32,
+}
+
+impl HistoricalProgress {
+    fn cancellation_only(generation: Arc<AtomicU64>, expected: u64) -> Self {
+        Self {
+            generation,
+            expected,
+            reporter: None,
+        }
+    }
+
+    fn with_reporter(
+        generation: Arc<AtomicU64>,
+        expected: u64,
+        app: tauri::AppHandle,
+        map_entity_id: String,
+        request_id: String,
+    ) -> Self {
+        Self {
+            generation,
+            expected,
+            reporter: Some(HistoricalProgressReporter {
+                app,
+                map_entity_id,
+                request_id,
+            }),
+        }
+    }
+}
+
+impl daena_physical_spike::ProgressSink for HistoricalProgress {
+    fn report(
+        &mut self,
+        phase: daena_physical_spike::ProgressPhase,
+        completed: u32,
+        total: u32,
+    ) -> Result<(), daena_physical_spike::PhysicalError> {
+        self.check_cancelled()?;
+        if let Some(reporter) = &self.reporter {
+            let _ = reporter.app.emit(
+                PHYSICAL_HISTORICAL_PROGRESS_EVENT,
+                HistoricalProgressEvent {
+                    map_entity_id: reporter.map_entity_id.clone(),
+                    request_id: reporter.request_id.clone(),
+                    phase: phase.label().into(),
+                    completed,
+                    total,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn check_cancelled(&self) -> Result<(), daena_physical_spike::PhysicalError> {
+        if self.generation.load(Ordering::Acquire) != self.expected {
+            return Err(daena_physical_spike::PhysicalError::Cancelled);
+        }
+        Ok(())
+    }
 }
 
 impl daena_physical_spike::ProgressSink for PhysicalProgress {
@@ -6994,6 +7082,11 @@ async fn project_physical_generate(
         };
         match outcome {
             Ok(world) => {
+                let historical_forcing =
+                    daena_physical_spike::history::HistoricalForcingParameters::default_for(
+                        input.seed,
+                        input.retry_index,
+                    );
                 let generation = serde_json::json!({
                     "id": daena_core::maps::PHYSICAL_GENERATOR_ID,
                     "version": daena_core::maps::PHYSICAL_GENERATOR_VERSION,
@@ -7010,6 +7103,15 @@ async fn project_physical_generate(
                         "tectonicActivityPpm": world.tectonics.settings.tectonic_activity_ppm,
                         "islandActivityPpm": world.tectonics.settings.island_activity_ppm,
                         "evolutionPreset": evolution_preset.as_str(),
+                        "historicalForcing": {
+                            "version": historical_forcing.version,
+                            "temperatureAmplitudeCentiC": historical_forcing.temperature_amplitude_centi_c,
+                            "periodYears": historical_forcing.period_years,
+                            "phaseOffsetYears": historical_forcing.phase_offset_years,
+                            "landIceAmplitudePpm": historical_forcing.land_ice_amplitude_ppm,
+                            "iceResponseYears": historical_forcing.ice_response_years,
+                            "thermalExpansionPpmPerDegreeC": historical_forcing.thermal_expansion_ppm_per_degree_c,
+                        },
                     }
                 });
                 job.status.state = "completed".into();
@@ -7268,6 +7370,128 @@ fn physical_hydrology_products(
     })
 }
 
+fn historical_forcing_from_generation(
+    generation: &serde_json::Value,
+    seed: u32,
+    retry_index: u32,
+) -> Result<daena_physical_spike::history::HistoricalForcingParameters, String> {
+    let Some(value) = generation
+        .get("settings")
+        .and_then(|settings| settings.get("historicalForcing"))
+    else {
+        return Ok(
+            daena_physical_spike::history::HistoricalForcingParameters::default_for(
+                seed,
+                retry_index,
+            ),
+        );
+    };
+    let settings: daena_core::maps::HistoricalForcingSettings =
+        serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+    let parameters = daena_physical_spike::history::HistoricalForcingParameters {
+        version: settings.version,
+        temperature_amplitude_centi_c: settings.temperature_amplitude_centi_c,
+        period_years: settings.period_years,
+        phase_offset_years: settings.phase_offset_years,
+        land_ice_amplitude_ppm: settings.land_ice_amplitude_ppm,
+        ice_response_years: settings.ice_response_years,
+        thermal_expansion_ppm_per_degree_c: settings.thermal_expansion_ppm_per_degree_c,
+    };
+    parameters.validate().map_err(|error| error.to_string())?;
+    Ok(parameters)
+}
+
+fn historical_forcing_products(
+    parameters: daena_physical_spike::history::HistoricalForcingParameters,
+) -> serde_json::Value {
+    serde_json::json!({
+        "version": parameters.version,
+        "temperatureAmplitudeCentiC": parameters.temperature_amplitude_centi_c,
+        "periodYears": parameters.period_years,
+        "phaseOffsetYears": parameters.phase_offset_years,
+        "landIceAmplitudePpm": parameters.land_ice_amplitude_ppm,
+        "iceResponseYears": parameters.ice_response_years,
+        "thermalExpansionPpmPerDegreeC": parameters.thermal_expansion_ppm_per_degree_c,
+    })
+}
+
+fn historical_epoch_cache() -> &'static Mutex<BTreeMap<String, serde_json::Value>> {
+    HISTORICAL_EPOCH_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn clear_historical_epoch_cache() -> Result<(), String> {
+    if let Some(requests) = HISTORICAL_EPOCH_REQUESTS.get() {
+        for generation in requests
+            .lock()
+            .map_err(|_| "historical request state is unavailable".to_string())?
+            .values()
+        {
+            generation.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+    historical_epoch_cache()
+        .lock()
+        .map_err(|_| "historical cache is unavailable".to_string())?
+        .clear();
+    Ok(())
+}
+
+fn historical_cache_key(
+    source_hash: &str,
+    forcing: daena_physical_spike::history::HistoricalForcingParameters,
+    normalized_epoch: i64,
+) -> String {
+    format!(
+        "{source_hash}|history-v{}|epoch:{normalized_epoch}|forcing:{}:{}:{}:{}:{}:{}:{}",
+        daena_physical_spike::history::HISTORICAL_DERIVATION_VERSION,
+        forcing.version,
+        forcing.temperature_amplitude_centi_c,
+        forcing.period_years,
+        forcing.phase_offset_years,
+        forcing.land_ice_amplitude_ppm,
+        forcing.ice_response_years,
+        forcing.thermal_expansion_ppm_per_degree_c,
+    )
+}
+
+fn hash_json_value(value: &serde_json::Value) -> String {
+    let bytes = serde_json::to_vec(value).expect("JSON values used for hashes are serializable");
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+fn historical_derived_hashes(
+    world: &daena_physical_spike::tectonics::TectonicWorld,
+    source_hash: &str,
+    geojson: &str,
+    climate: &serde_json::Value,
+    hydrology: &serde_json::Value,
+) -> serde_json::Value {
+    let field = world.physical_field();
+    let elevation = serde_json::to_value(field.elevations_mm)
+        .expect("elevation fields used for hashes are serializable");
+    serde_json::json!({
+        "canonicalSource": source_hash,
+        "finalElevation": hash_json_value(&elevation),
+        "tectonics": source_hash,
+        "geography": format!("sha256:{:x}", Sha256::digest(geojson.as_bytes())),
+        "climate": hash_json_value(climate),
+        "hydrology": hash_json_value(hydrology),
+    })
+}
+
+fn begin_historical_epoch_request(map_entity_id: &str) -> Result<(Arc<AtomicU64>, u64), String> {
+    let requests = HISTORICAL_EPOCH_REQUESTS.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut requests = requests
+        .lock()
+        .map_err(|_| "historical request state is unavailable".to_string())?;
+    let generation = requests
+        .entry(map_entity_id.to_string())
+        .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+        .clone();
+    let expected = generation.fetch_add(1, Ordering::AcqRel).saturating_add(1);
+    Ok((generation, expected))
+}
+
 fn derive_reopened_hydrology(
     world: &daena_physical_spike::tectonics::TectonicWorld,
     generation: &serde_json::Value,
@@ -7321,6 +7545,86 @@ fn derive_reopened_hydrology(
         .map_err(|error| format!("maps.physical: {error}"))?;
     let geojson = daena_physical_spike::merge_geojson_features_for_host(&diagnostic, &water)?;
     Ok((geojson, hydrology))
+}
+
+fn derive_reopened_historical(
+    world: &daena_physical_spike::tectonics::TectonicWorld,
+    generation: &serde_json::Value,
+    reference_water_inventory_m3: u64,
+    epoch_offset_years: i64,
+    progress: &mut dyn daena_physical_spike::ProgressSink,
+) -> Result<
+    (
+        daena_physical_spike::history::HistoricalWorld,
+        daena_physical_spike::history::HistoricalForcingParameters,
+        String,
+    ),
+    String,
+> {
+    let parameters = historical_forcing_from_generation(generation, world.seed, world.retry_index)?;
+    let field = world.physical_field();
+    let historical = daena_physical_spike::history::derive_historical_world(
+        &field,
+        reference_water_inventory_m3,
+        Some(&world.crust_by_cell),
+        parameters,
+        epoch_offset_years,
+        progress,
+    )
+    .map_err(|error| format!("maps.physical: {error}"))?;
+    let diagnostic = daena_physical_spike::tectonics::to_diagnostic_geojson(world)
+        .map_err(|error| format!("maps.physical: {error}"))?;
+    let water = daena_physical_spike::hydrology::to_geojson(&historical.hydrology)
+        .map_err(|error| format!("maps.physical: {error}"))?;
+    let geojson = daena_physical_spike::merge_geojson_features_for_host(&diagnostic, &water)?;
+    Ok((historical, parameters, geojson))
+}
+
+fn historical_response(
+    world: &daena_physical_spike::tectonics::TectonicWorld,
+    source_hash: &str,
+    cache_key: String,
+    epoch_offset_years: i64,
+    normalized_epoch: i64,
+    historical: &daena_physical_spike::history::HistoricalWorld,
+    parameters: daena_physical_spike::history::HistoricalForcingParameters,
+    geojson: String,
+) -> serde_json::Value {
+    let climate = physical_climate_products(&historical.climate);
+    let hydrology = physical_hydrology_products(&historical.hydrology);
+    let derived_hashes =
+        historical_derived_hashes(world, source_hash, &geojson, &climate, &hydrology);
+    serde_json::json!({
+        "cacheKey": cache_key,
+        "sourceHash": source_hash,
+        "epochOffsetYears": epoch_offset_years,
+        "normalizedEpoch": normalized_epoch,
+        "chronology": {
+            "contractVersion": 1,
+            "kind": "physical-offset-years",
+            "reference": "accepted-source",
+            "epochOffsetYears": epoch_offset_years,
+        },
+        "geojson": geojson,
+        "climate": climate,
+        "hydrology": hydrology,
+        "derivedHashes": derived_hashes,
+        "forcing": historical_forcing_products(parameters),
+        "history": {
+            "derivationVersion": historical.metrics.derivation_version,
+            "epochOffsetYears": historical.metrics.epoch_offset_years,
+            "normalizedEpoch": historical.metrics.normalized_epoch,
+            "temperatureOffsetCentiC": historical.metrics.temperature_offset_centi_c,
+            "laggedTemperatureOffsetCentiC": historical.metrics.lagged_temperature_offset_centi_c,
+            "landIceEquilibriumM3": historical.metrics.land_ice_equilibrium_m3,
+            "landIceM3": historical.metrics.land_ice_m3,
+            "thermalExpansionM3": historical.metrics.thermal_expansion_m3,
+            "effectiveOceanWaterM3": historical.metrics.effective_ocean_water_m3,
+            "conservedWaterM3": historical.metrics.conserved_water_m3,
+            "balanceErrorM3": historical.metrics.balance_error_m3,
+            "seaLevelMm": historical.metrics.sea_level_mm,
+        },
+    })
 }
 
 #[tauri::command]
@@ -7685,6 +7989,93 @@ async fn project_physical_derived_hydrology(
         Ok(physical_hydrology_products(&hydrology))
     })
     .await
+}
+
+#[tauri::command]
+async fn project_physical_derived_epoch(
+    state: tauri::State<'_, SharedCore>,
+    app: tauri::AppHandle,
+    map_entity_id: String,
+    epoch_offset_years: i64,
+    request_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let (request_generation, expected_generation) = begin_historical_epoch_request(&map_entity_id)?;
+    let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    with_read_project(state, move |project| {
+        let descriptor = project
+            .list_fields(map_entity_id.clone())?
+            .into_iter()
+            .find(|field| field.namespace == daena_core::maps::MAP_NAMESPACE && field.key == "map")
+            .ok_or_else(|| CoreError::Validation("maps:map descriptor is missing".into()))?;
+        let source_id = descriptor
+            .value
+            .get("sourceAssetId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| CoreError::Validation("maps: sourceAssetId is missing".into()))?;
+        let generation =
+            descriptor.value.get("generation").cloned().ok_or_else(|| {
+                CoreError::Validation("maps: physical generation is missing".into())
+            })?;
+        let bytes = project.asset_bytes(source_id.to_string())?;
+        let (world, report) = daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        let forcing =
+            historical_forcing_from_generation(&generation, world.seed, world.retry_index)
+                .map_err(CoreError::Validation)?;
+        let normalized_epoch =
+            daena_physical_spike::history::normalize_epoch_offset(epoch_offset_years)
+                .map_err(|error| CoreError::Validation(error.to_string()))?;
+        let source_hash = format!("sha256:{:x}", Sha256::digest(&bytes));
+        let cache_key = historical_cache_key(&source_hash, forcing, normalized_epoch);
+        {
+            let cache = historical_epoch_cache()
+                .lock()
+                .map_err(|_| CoreError::Validation("historical cache is unavailable".into()))?;
+            if let Some(value) = cache.get(&cache_key) {
+                return Ok(value.clone());
+            }
+        }
+        let (historical, parameters, geojson) = derive_reopened_historical(
+            &world,
+            &generation,
+            report.reference_water_inventory_m3,
+            normalized_epoch,
+            &mut HistoricalProgress::with_reporter(
+                request_generation,
+                expected_generation,
+                app,
+                map_entity_id.clone(),
+                request_id,
+            ),
+        )
+        .map_err(CoreError::Validation)?;
+        let value = historical_response(
+            &world,
+            &source_hash,
+            cache_key.clone(),
+            epoch_offset_years,
+            normalized_epoch,
+            &historical,
+            parameters,
+            geojson,
+        );
+        let mut cache = historical_epoch_cache()
+            .lock()
+            .map_err(|_| CoreError::Validation("historical cache is unavailable".into()))?;
+        while cache.len() >= HISTORICAL_CACHE_CAPACITY {
+            let Some(oldest) = cache.keys().next().cloned() else {
+                break;
+            };
+            cache.remove(&oldest);
+        }
+        cache.insert(cache_key, value.clone());
+        Ok(value)
+    })
+    .await
+}
+
+#[tauri::command]
+fn project_physical_clear_epoch_cache() -> Result<(), String> {
+    clear_historical_epoch_cache()
 }
 
 #[tauri::command]
@@ -8197,6 +8588,8 @@ pub fn run() {
             project_physical_derived_climate,
             project_physical_derived_evolution,
             project_physical_derived_hydrology,
+            project_physical_derived_epoch,
+            project_physical_clear_epoch_cache,
             project_read_asset_bytes,
             project_create_raster_layer,
             project_create_semantic_layer,

@@ -133,6 +133,24 @@ pub struct VectorMapGenerationSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+pub struct HistoricalForcingSettings {
+    pub version: u16,
+    #[serde(rename = "temperatureAmplitudeCentiC")]
+    pub temperature_amplitude_centi_c: i32,
+    #[serde(rename = "periodYears")]
+    pub period_years: i64,
+    #[serde(rename = "phaseOffsetYears")]
+    pub phase_offset_years: i64,
+    #[serde(rename = "landIceAmplitudePpm")]
+    pub land_ice_amplitude_ppm: u32,
+    #[serde(rename = "iceResponseYears")]
+    pub ice_response_years: i64,
+    #[serde(rename = "thermalExpansionPpmPerDegreeC")]
+    pub thermal_expansion_ppm_per_degree_c: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct PhysicalMapGenerationSettings {
     pub width: u32,
     pub height: u32,
@@ -155,6 +173,12 @@ pub struct PhysicalMapGenerationSettings {
         default = "default_physical_evolution_preset"
     )]
     pub evolution_preset: String,
+    #[serde(
+        rename = "historicalForcing",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub historical_forcing: Option<HistoricalForcingSettings>,
 }
 
 fn default_physical_evolution_preset() -> String {

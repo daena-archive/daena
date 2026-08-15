@@ -2,6 +2,7 @@ use super::{MapGeneration, MapGenerationSettings, PhysicalMapGenerationSettings}
 use crate::error::CoreError;
 use daena_physical_spike::{
     decode_source,
+    history::HistoricalForcingParameters,
     tectonics::{TectonicSettings, TectonicWorld},
     validate_field_report,
 };
@@ -95,6 +96,19 @@ pub fn validate_generation(value: &Value) -> Result<PhysicalMapGenerationSetting
     .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?;
     daena_physical_spike::evolution::EvolutionPreset::parse(&settings.evolution_preset)
         .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?;
+    if let Some(forcing) = &settings.historical_forcing {
+        HistoricalForcingParameters {
+            version: forcing.version,
+            temperature_amplitude_centi_c: forcing.temperature_amplitude_centi_c,
+            period_years: forcing.period_years,
+            phase_offset_years: forcing.phase_offset_years,
+            land_ice_amplitude_ppm: forcing.land_ice_amplitude_ppm,
+            ice_response_years: forcing.ice_response_years,
+            thermal_expansion_ppm_per_degree_c: forcing.thermal_expansion_ppm_per_degree_c,
+        }
+        .validate()
+        .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?;
+    }
     Ok(settings)
 }
 
@@ -145,4 +159,61 @@ pub fn validate_source(
         ));
     }
     Ok((parsed, report))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn generation(forcing: Option<Value>) -> Value {
+        let mut settings = serde_json::json!({
+            "width": 8,
+            "height": 4,
+            "radiusMetres": daena_physical_spike::DEFAULT_RADIUS_METRES,
+            "targetLandFractionPpm": 300_000,
+            "referenceWaterInventoryM3": 1_000_000,
+            "plateCount": 8,
+            "continentalPlateCount": 4,
+            "tectonicActivityPpm": 600_000,
+            "islandActivityPpm": 300_000,
+            "evolutionPreset": "mature",
+        });
+        if let Some(forcing) = forcing {
+            settings
+                .as_object_mut()
+                .unwrap()
+                .insert("historicalForcing".into(), forcing);
+        }
+        serde_json::json!({
+            "id": super::super::PHYSICAL_GENERATOR_ID,
+            "version": super::super::PHYSICAL_GENERATOR_VERSION,
+            "seed": 831_429,
+            "retryIndex": 0,
+            "settings": settings,
+        })
+    }
+
+    fn forcing() -> Value {
+        let parameters = HistoricalForcingParameters::default_for(831_429, 0);
+        serde_json::json!({
+            "version": parameters.version,
+            "temperatureAmplitudeCentiC": parameters.temperature_amplitude_centi_c,
+            "periodYears": parameters.period_years,
+            "phaseOffsetYears": parameters.phase_offset_years,
+            "landIceAmplitudePpm": parameters.land_ice_amplitude_ppm,
+            "iceResponseYears": parameters.ice_response_years,
+            "thermalExpansionPpmPerDegreeC": parameters.thermal_expansion_ppm_per_degree_c,
+        })
+    }
+
+    #[test]
+    fn historical_forcing_is_persisted_as_validated_optional_metadata() {
+        let validated = validate_generation(&generation(Some(forcing()))).unwrap();
+        assert!(validated.historical_forcing.is_some());
+        assert!(validate_generation(&generation(None)).is_ok());
+
+        let mut invalid = forcing();
+        invalid["version"] = serde_json::json!(99);
+        assert!(validate_generation(&generation(Some(invalid))).is_err());
+    }
 }

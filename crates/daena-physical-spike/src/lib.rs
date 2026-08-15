@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod climate;
 pub mod evolution;
+pub mod history;
 pub mod hydrology;
 pub mod tectonics;
 
@@ -396,6 +397,7 @@ pub enum SeedDomain {
     Erosion,
     Hydrology,
     Hazards,
+    HistoricalClimate,
 }
 
 impl SeedDomain {
@@ -410,6 +412,7 @@ impl SeedDomain {
             Self::Erosion => 0x6572_6f73_696f_0007,
             Self::Hydrology => 0x6879_6472_6f00_0008,
             Self::Hazards => 0x6861_7a61_7264_0009,
+            Self::HistoricalClimate => 0x6869_7374_6f72_0010,
         }
     }
 }
@@ -914,6 +917,7 @@ mod tests {
             SeedDomain::Erosion,
             SeedDomain::Hydrology,
             SeedDomain::Hazards,
+            SeedDomain::HistoricalClimate,
         ];
         for (index, domain) in domains.iter().copied().enumerate() {
             assert!(domains

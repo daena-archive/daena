@@ -164,6 +164,130 @@ fn reopened_physical_hydrology_matches_the_generated_fixture() {
 }
 
 #[test]
+fn reopened_historical_products_preserve_terrain_and_report_water_balance() {
+    let settings = daena_physical_spike::GenerationSettings {
+        width: 8,
+        height: 4,
+        radius_metres: daena_physical_spike::DEFAULT_RADIUS_METRES,
+        target_land_fraction_ppm: 300_000,
+    };
+    let mut progress = daena_physical_spike::NoopProgress;
+    let generated =
+        daena_physical_spike::generate_world(settings, 831_429, 0, &mut progress).unwrap();
+    let before = generated.tectonics.physical_field();
+    let generation = serde_json::json!({"settings": {"evolutionPreset": "mature"}});
+    let parameters =
+        daena_physical_spike::history::HistoricalForcingParameters::default_for(831_429, 0);
+    let mut history_progress = daena_physical_spike::NoopProgress;
+    let (historical, persisted, geojson) = derive_reopened_historical(
+        &generated.tectonics,
+        &generation,
+        generated.report.reference_water_inventory_m3,
+        parameters.period_years / 4,
+        &mut history_progress,
+    )
+    .unwrap();
+    assert_eq!(persisted, parameters);
+    assert!(!geojson.is_empty());
+    assert_eq!(generated.tectonics.physical_field(), before);
+    assert!(historical.hydrology.metrics.converged);
+    assert!(historical.metrics.balance_error_m3 <= historical.hydrology.metrics.tolerance_m3);
+    let source = daena_physical_spike::tectonics::encode_source_v2(&generated.tectonics).unwrap();
+    let source_hash = format!("sha256:{:x}", Sha256::digest(&source));
+    let cache_key =
+        historical_cache_key(&source_hash, persisted, historical.metrics.normalized_epoch);
+    let response = historical_response(
+        &generated.tectonics,
+        &source_hash,
+        cache_key,
+        historical.metrics.epoch_offset_years,
+        historical.metrics.normalized_epoch,
+        &historical,
+        persisted,
+        geojson.clone(),
+    );
+    assert_eq!(response["derivedHashes"]["canonicalSource"], source_hash);
+    assert_eq!(response["derivedHashes"]["tectonics"], source_hash);
+    let cache_key = response["cacheKey"].as_str().unwrap();
+    assert!(cache_key.contains(&source_hash));
+    assert!(cache_key.contains("history-v1"));
+    assert!(cache_key.contains(&format!("epoch:{}", historical.metrics.normalized_epoch)));
+    assert_eq!(response["chronology"]["contractVersion"], 1);
+    assert_eq!(response["chronology"]["kind"], "physical-offset-years");
+    assert_eq!(response["chronology"]["reference"], "accepted-source");
+    assert_eq!(
+        response["derivedHashes"]["geography"]
+            .as_str()
+            .unwrap()
+            .len(),
+        71
+    );
+    let repeated = historical_response(
+        &generated.tectonics,
+        response["sourceHash"].as_str().unwrap(),
+        response["cacheKey"].as_str().unwrap().to_string(),
+        historical.metrics.epoch_offset_years,
+        historical.metrics.normalized_epoch,
+        &historical,
+        persisted,
+        geojson,
+    );
+    assert_eq!(response["derivedHashes"], repeated["derivedHashes"]);
+    let mut cold_progress = daena_physical_spike::NoopProgress;
+    let (cold, cold_parameters, cold_geojson) = derive_reopened_historical(
+        &generated.tectonics,
+        &generation,
+        generated.report.reference_water_inventory_m3,
+        -persisted.period_years / 4,
+        &mut cold_progress,
+    )
+    .unwrap();
+    let cold_response = historical_response(
+        &generated.tectonics,
+        &source_hash,
+        historical_cache_key(&source_hash, cold_parameters, cold.metrics.normalized_epoch),
+        cold.metrics.epoch_offset_years,
+        cold.metrics.normalized_epoch,
+        &cold,
+        cold_parameters,
+        cold_geojson,
+    );
+    assert_eq!(
+        response["derivedHashes"]["finalElevation"],
+        cold_response["derivedHashes"]["finalElevation"]
+    );
+    assert_eq!(
+        response["derivedHashes"]["tectonics"],
+        cold_response["derivedHashes"]["tectonics"]
+    );
+    assert!(
+        cold_response["history"]["landIceM3"].as_u64().unwrap()
+            > response["history"]["landIceM3"].as_u64().unwrap()
+    );
+}
+
+#[test]
+fn clearing_historical_cache_is_disposable_and_does_not_touch_sources() {
+    historical_epoch_cache().lock().unwrap().insert(
+        "test-cache-entry".into(),
+        serde_json::json!({"derived": true}),
+    );
+    clear_historical_epoch_cache().unwrap();
+    assert!(historical_epoch_cache().lock().unwrap().is_empty());
+}
+
+#[test]
+fn superseded_historical_requests_cancel_at_progress_checkpoints() {
+    let generation = Arc::new(AtomicU64::new(1));
+    let progress = HistoricalProgress::cancellation_only(generation.clone(), 1);
+    generation.store(2, Ordering::Release);
+    assert!(matches!(
+        daena_physical_spike::ProgressSink::check_cancelled(&progress),
+        Err(daena_physical_spike::PhysicalError::Cancelled)
+    ));
+}
+
+#[test]
 fn stopping_project_watcher_releases_resources_without_joining() {
     let (stop, _receiver) = mpsc::channel();
     let watcher = Arc::new(Mutex::new(ProjectWatcher {

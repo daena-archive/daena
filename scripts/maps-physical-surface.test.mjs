@@ -28,6 +28,16 @@ for (const required of [
   assert.ok(source.includes(required) || native.includes(required), `physical surface contract is missing ${required}`);
 }
 
+for (const required of ["PHYSICAL_HISTORICAL_PROGRESS_EVENT", "epochPhase", "epochProgress", "PhysicalHistoricalProgress"]) {
+  assert.ok(native.includes(required), `native historical playback is missing ${required}`);
+}
+for (const required of ["PhysicalHistoricalProgress", "requestId", "physical-historical-progress"]) {
+  assert.ok(client.includes(required), `physical client progress contract is missing ${required}`);
+}
+for (const required of ["HistoricalProgressEvent", "physical-historical-progress", "with_reporter"]) {
+  assert.ok(host.includes(required), `physical host progress contract is missing ${required}`);
+}
+
 assert.match(
   source,
   /status\.state === "running" \|\| status\.state === "cancelling"/,

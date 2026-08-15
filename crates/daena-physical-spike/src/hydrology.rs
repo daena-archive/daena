@@ -384,7 +384,7 @@ fn volume_for_depths(grid: Grid, field: &PhysicalField, cells: &[usize], level_m
         .fold(0u64, u64::saturating_add)
 }
 
-fn ocean_volume(field: &PhysicalField, sea_level_mm: i32) -> u64 {
+pub fn ocean_volume(field: &PhysicalField, sea_level_mm: i32) -> u64 {
     field
         .elevations_mm
         .iter()
@@ -396,7 +396,7 @@ fn ocean_volume(field: &PhysicalField, sea_level_mm: i32) -> u64 {
         .fold(0u64, u64::saturating_add)
 }
 
-fn ocean_area(field: &PhysicalField, sea_level_mm: i32) -> f64 {
+pub fn ocean_area(field: &PhysicalField, sea_level_mm: i32) -> f64 {
     field
         .elevations_mm
         .iter()
@@ -408,6 +408,44 @@ fn ocean_area(field: &PhysicalField, sea_level_mm: i32) -> f64 {
 
 fn tolerance_m3(total: u64) -> u64 {
     ((u128::from(total) * u128::from(WATER_BALANCE_TOLERANCE_PPM) / 1_000_000).max(1)) as u64
+}
+
+/// Choose the bounded sea level whose ocean volume is nearest to an inventory.
+///
+/// This helper is intentionally independent of inland storage. Historical
+/// derivation uses it only to select the immutable terrain's initial basin
+/// topology before the existing inland/ocean fixed-point solve runs.
+pub fn solve_ocean_level_for_inventory(
+    field: &PhysicalField,
+    inventory_m3: u64,
+) -> Result<i32, PhysicalError> {
+    field.validate().map_err(PhysicalError::InvalidSource)?;
+    let mut candidates = field.elevations_mm.clone();
+    let minimum = field.elevations_mm.iter().copied().min().ok_or_else(|| {
+        PhysicalError::coded(
+            PhysicalErrorCode::GeometryInvalid,
+            "ocean-level solve requires at least one elevation sample",
+        )
+    })?;
+    let maximum = field.elevations_mm.iter().copied().max().ok_or_else(|| {
+        PhysicalError::coded(
+            PhysicalErrorCode::GeometryInvalid,
+            "ocean-level solve requires at least one elevation sample",
+        )
+    })?;
+    candidates.push(minimum.saturating_sub(1));
+    candidates.push(maximum.saturating_add(1));
+    candidates.sort_unstable();
+    candidates.dedup();
+    candidates
+        .into_iter()
+        .min_by_key(|level| (ocean_volume(field, *level).abs_diff(inventory_m3), *level))
+        .ok_or_else(|| {
+            PhysicalError::coded(
+                PhysicalErrorCode::GeometryInvalid,
+                "ocean-level solve produced no candidates",
+            )
+        })
 }
 
 fn downhill_destination(field: &PhysicalField, cell: usize) -> Option<usize> {

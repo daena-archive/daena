@@ -532,6 +532,17 @@ reference epoch. Integration with Timeline must use Daena's shared calendar and
 date-precision contract; it may not invent missing month/day/time components or
 hardcode JavaScript timestamp semantics.
 
+Iteration 6 implements this contract as a versioned `historicalForcing` object
+inside accepted physical generation metadata and an integer `epochOffsetYears`
+derived-product command. The API accepts offsets through ±10,000,000 years;
+the current native control intentionally exposes the narrower ±100,000-year
+usability range. Historical derivation emits correlated phase/counter events
+for the native UI, while a cache hit may complete without phase events. The
+native editor loads physical maps through exact epoch-zero replay; the
+standalone physical preview retains its separate GeoJSON/hydrology commands.
+The current native control is intentionally physical years only; it does not
+silently reinterpret or fabricate shared Timeline date components.
+
 ### Hazards and materialized history
 
 Earthquake hazard combines a background rate with boundary type, relative plate
@@ -1072,6 +1083,13 @@ lakes, topologically valid rivers, and final derived coastline/bathymetry.
 
 ## Iteration 6: historical climate and geographic playback
 
+Status: implemented. See ADR 0020. The current implementation
+persists deterministic forcing parameters, derives lagged land ice and bounded
+thermal expansion from immutable final terrain, exposes cache-keyed epoch
+products, and adds the accepted-map integer-years control. The response carries
+an explicit physical-offset chronology mapping; it does not implicitly invent
+shared Timeline date components.
+
 ### Goal
 
 Make meaningful geographic history from climate-driven water redistribution
@@ -1091,8 +1109,8 @@ while keeping tectonic structure and final terrain fixed.
    normalized epoch. Stale/missing cache entries recompute; cache invalidation
    never rewrites the source.
 5. Add a time control with debounced/cancellable derivation and truthful
-   progress. Preserve integer physical offsets and integrate with shared Daena
-   chronology only through an explicit mapping contract.
+   phase/counter progress. Preserve integer physical offsets and integrate with
+   shared Daena chronology only through an explicit mapping contract.
 6. Validate monotonic water responses, hysteresis from ice lag, land-bridge and
    shelf exposure, island connectivity changes, and stable terrain/tectonic
    hashes across epochs.

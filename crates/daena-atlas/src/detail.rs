@@ -10,8 +10,8 @@ use crate::projection::{
 use crate::request::DetailLevel;
 use crate::AtlasError;
 
-pub const COASTAL_ENVELOPE_PPM: u32 = 350_000;
-pub const MAX_RESIDUAL_MM: i32 = 1_200;
+pub const COASTAL_ENVELOPE_PPM: u32 = 500_000;
+pub const MAX_RESIDUAL_MM: i32 = 720_000;
 const CANCELLATION_STRIDE: usize = 4_096;
 
 #[derive(Debug, Clone)]
@@ -38,8 +38,14 @@ fn push_u32(bytes: &mut Vec<u8>, value: u32) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
 
-fn domain_prefix(_algorithm_version: u32) -> &'static [u8] {
-    b"daena-atlas-detail-v2\0"
+fn domain_prefix(algorithm_version: u32) -> &'static [u8] {
+    match algorithm_version {
+        1 => b"daena-atlas-detail-v1\0",
+        2 => b"daena-atlas-detail-v2\0",
+        3 => b"daena-atlas-detail-v3\0",
+        4 => b"daena-atlas-detail-v4\0",
+        _ => b"daena-atlas-detail-v5\0",
+    }
 }
 
 pub fn domain_key(identity: &[u8], algorithm_version: u32, variant: u32, domain: &str) -> [u8; 32] {
@@ -297,7 +303,7 @@ mod tests {
             key.iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>(),
-            "1501efd4684e5f49c9983a78f7f167b9d87c673f0fb3379739545b19e9c3f9ff"
+            "067d6bee8d7e4cbc3257618473a18027b74bb3221bf8d8fc0546a606fbe03f85"
         );
         assert_ne!(lattice_sample(&key, 3, 5, 0), lattice_sample(&key, 4, 5, 0));
         assert_ne!(
@@ -390,6 +396,10 @@ mod tests {
             for i in 0..model.lattice_width {
                 let lon = lattice_lon_micro(i, model.lattice_width);
                 let lat = lattice_lat_micro(j, model.lattice_height);
+                let sdf_ppm = sample_sdf_ppm(model.grid, &sdf, lon, lat);
+                if sdf_ppm.unsigned_abs() <= COASTAL_ENVELOPE_PPM {
+                    continue;
+                }
                 let cell = nearest_cell(model.grid, lon, lat);
                 sums[cell] += i64::from(
                     model.residual_mm[j as usize * model.lattice_width as usize + i as usize],

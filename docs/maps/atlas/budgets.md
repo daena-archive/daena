@@ -112,10 +112,40 @@ parallel image requests so a rapid pan stays under the 24-wait `503`
 limit; a full queue is retryable and must not replace the viewport with
 a sticky error banner.
 
-## Atlas Studio production algorithm 2 (ADR 0043)
+## Atlas Studio production algorithm 5 (ADR 0046)
 
-Renderer `7`. Detail algorithm `2` and derived drainage `2`. Golden Studio
-tiles on the same `64 x 32` source:
+Renderer `10`. Detail algorithm `5` and derived drainage `5`. Golden Studio
+tiles on the same `64 x 32` source.
+
+| Target | Work | SHA-256 |
+| ------ | ---- | ------- |
+| Darwin 25.6 | Studio tile `z=0 / x=0 / y=0` scale `1` | `sha256:0d56dfc587e3891d1b0d312f5e22399fe5a381e879acec1a9aa5a29bd77f3720` |
+| Darwin 25.6 | Studio tile `z=8 / x=120 / y=90` scale `1` | `sha256:beddcae9b5091dad604abaec076b95142019556b96f8081c656b627ef773a5ea` |
+| Darwin 25.6 | static preview `2048 x 1024` | `sha256:0d958ced1e7e583b4ebef17d4fb0fd62317b4f25710143dce529e0dfd785f24a` |
+| Darwin 25.6 | named export `4096 x 2048` | `sha256:6fe887d7c170510a5d1d911e9f363b50a019c8702b2cd62606215c0eeee7e8e4` |
+| Darwin 25.6 | named export `8192 x 4096` | `sha256:5e38181c08bb550bfb538b07cce05b50217ef9d70fbbf59306d11b8c789d30a5` |
+
+Historical algorithm `4` (ADR 0045) hashes remain below for provenance only.
+
+| Target | Work | SHA-256 |
+| ------ | ---- | ------- |
+| Darwin 25.6 | Studio tile `z=0 / x=0 / y=0` scale `1` | `sha256:a42f94e0fadfa0405351f7a41bb4f563bf0e91b2b4e9d7fc7fe96b009500cae4` |
+| Darwin 25.6 | Studio tile `z=8 / x=120 / y=90` scale `1` | `sha256:3aa9eaec65aafe86446f77cfa0020c6a9a188042af77543b2149aec8722412fc` |
+| Darwin 25.6 | static preview `2048 x 1024` | `sha256:33d8783617efe4b33a058e1b45d222922f049a54ce78fb76f15f48973617658d` |
+| Darwin 25.6 | named export `4096 x 2048` | `sha256:2dff37ce9b194a86b397a05f8c6bfa9d568a8524575ccc505e2c4d0267ceae25` |
+| Darwin 25.6 | named export `8192 x 4096` | `sha256:dd6e4decf67b9667a256e7b71faa9c8550592af216f252500054e01884567799` |
+
+Historical algorithm `3` (ADR 0044) hashes remain below for provenance only.
+
+| Target | Work | SHA-256 |
+| ------ | ---- | ------- |
+| Darwin 25.6 | Studio tile `z=0 / x=0 / y=0` scale `1` | `sha256:35061d4eae8215954c495fb6f6a8b7898873d6e5ebcb44621baafb65ad4c1eee` |
+| Darwin 25.6 | Studio tile `z=8 / x=120 / y=90` scale `1` | `sha256:51ee1d895222db24a2dd1a586a3b6f49c5873f077e90228226efe548fdb7923f` |
+| Darwin 25.6 | static preview `2048 x 1024` | `sha256:a2abf173808aeb9da880aee86252de43e5db5f8987f0c3f02269f4e78fed3796` |
+| Darwin 25.6 | named export `4096 x 2048` | `sha256:fab4919c3756336baff07cc1c6d3dcafc4e5485f81470f8121245e20870da366` |
+| Darwin 25.6 | named export `8192 x 4096` | `sha256:3cec5e0f37c5cf8c22412d4d2c5302d999926e10f9fad3b701c19cb5cb88bac2` |
+
+Historical algorithm `2` (ADR 0043) hashes remain below for provenance only.
 
 | Target | Work | PNG bytes | SHA-256 |
 | ------ | ---- | --------: | ------- |

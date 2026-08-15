@@ -87,8 +87,8 @@ numbers and file locations may advance.
 
 - The accepted physical source remains a `384 x 192` canonical simulation grid.
 - `crates/daena-atlas` already provides a pure Rust renderer with request schema
-  `1`, detail algorithm `2`, derived drainage `2`, renderer `7`, seed policy
-  `1`, and provenance schema `1` (ADR 0043).
+  `1`, detail algorithm `5`, derived drainage `5`, renderer `10`, seed policy
+  `1`, and provenance schema `1` (ADR 0046).
 - The current renderer supports whole-world and regional equirectangular views,
   regional Web Mercator, deterministic relief and antique styles, a political
   style, authored/semantic overlays, labels, atlas-only minor tributaries, and
@@ -205,12 +205,12 @@ Atlas should remain a focused Rust terrain/cartography pipeline rather than adop
 ## Research References for Terrain Versions
 
 These papers are architectural and algorithmic references, not permission to
-copy research code or change a released Atlas product in place. Algorithm `2`
-and drainage `2` (ADR 0043) already take bounded, original implementations of
-the ideas below. Closing a remaining gap requires a new detail-algorithm or
-drainage version, conservation and topology metrics, license review, and an
-ADR. Reference implementations stay test or research inputs unless their
-license and production suitability are explicitly accepted.
+copy research code or change a released Atlas product in place. Algorithm `5`
+and drainage `5` (ADR 0046) are the current production implementations of the
+ideas below. Closing a remaining gap still requires a new version, conservation
+and topology metrics, license review, and an ADR. Reference implementations
+stay test or research inputs unless their license and production suitability
+are explicitly accepted.
 
 ### Controlled planetary hyper-amplification
 
@@ -222,15 +222,15 @@ to the Physical Map → Atlas relationship.
 - [DOI 10.1007/s00371-020-01923-4](https://doi.org/10.1007/s00371-020-01923-4)
 - [Reference implementation](https://github.com/Arches-Team/Real-Time-Hyper-Amplification-of-Planets)
 
-**In algorithm `2`:** world-space control samplers; a detail lattice with three
-octaves (`f/4`, `f/2`, `f`); per-canonical-cell mean residual removal; coastal
-sign clamp; amplitude from elevation magnitude and crust influence only.
-Residuals are epoch-independent.
+**In algorithm `5`:** hierarchical subdivision (`f/4` → `f/2` → `f`) with
+control-field transfer; plains carry tens of metres of residual and mountain
+influence can add up to `540` m; divide-tree orometry synthesizes `920` m
+ridges and `680` m valleys (mean-removed per canonical cell so macro
+elevation stays put); coastline reconstruction from algorithm `4` is
+retained. Residuals are epoch-dependent. Production-grid lattice sizes stay
+inside the `96 MiB` in-process budget.
 
-**Still later:** the paper's full hierarchical control-field transfer (climate,
-runoff, ice, hydrosphere participating in amplification); GPU / real-time path;
-production-grid (`384 x 192`) conservation evidence as a Studio budget, not
-only the golden `64 x 32` fixture.
+**Still later:** GPU / real-time path.
 
 ### Multi-scale erosion amplification
 
@@ -240,14 +240,16 @@ so newly created detail develops hydrologically coherent structure.
 - [Terrain Amplification using Multi-scale Erosion](https://hal.science/hal-04565030)
 - [ACM DOI 10.1145/3658200](https://dl.acm.org/doi/10.1145/3658200)
 
-**In drainage `2`:** two post-amplification scales (`2`-hop then `1`-hop) along
-the flow graph; slope- and accumulation-limited flux; skip ocean, poles,
-protected lakes, and high mountain influence; mean-change conservation per
-canonical cell; `80` mm peak re-enforcement.
+**In drainage `3`:** erosion during hierarchical subdivision (hops `1`, `40` mm)
+then three post-fill scales (`4`-hop, `2`-hop, `1`-hop) along the flow graph;
+fluvial, thermal, and deposition processes; slope-, runoff-, and
+accumulation-limited flux; skip ocean, poles, protected lakes, and high
+mountain influence; mean-change conservation per canonical cell; `80` mm peak
+re-enforcement; fan and floodplain identities
+(`atlas:deposition:v3:{kind}:{lattice-index}`).
 
-**Still later:** erosion *during* hierarchical subdivision (not only after the
-finest lattice exists); more scales; deposition landforms (fans, floodplains)
-as first-class geography rather than a residual correction.
+**Still later:** designer hardness maps and diffusion-based retargeting as
+Studio authoring tools.
 
 ### Orometry / Divide Tree synthesis
 
@@ -259,14 +261,15 @@ mountain generation instead of generic mountain noise.
 - [ACM DOI 10.1145/3355089.3356535](https://dl.acm.org/doi/10.1145/3355089.3356535)
 - [Reference implementation](https://github.com/oargudo/orometry-terrains)
 
-**In algorithm `2`:** one `16 x 12` canonical-cell window (clamped on smaller
-grids) chosen by mountain-influence sum; at most 64 features (peaks, saddles,
-ridges, valleys, foothills); IDs `atlas:orometry:v2:{kind}:{lattice-index}`.
-Features do not replace canonical rivers or watersheds.
+**In algorithm `3`:** a divide tree over every Physical Map mountain system
+(connected mountain-influence components); at most 256 features and 12 peaks
+per system (peaks, saddles, ridges, secondary ridges, valleys, foothills);
+IDs `atlas:orometry:v3:{kind}:{lattice-index}`. The tree synthesizes
+elevation (ridge raise / valley cut) rather than only labeling residual
+maxima. Features do not replace canonical rivers or watersheds.
 
-**Still later:** a divide tree over every Physical Map mountain system, not one
-window; secondary-ridge hierarchy; using the tree to *synthesize* elevation
-instead of only labeling residual maxima.
+**Still later:** richer orometric statistics (prominence/isolation histograms)
+conditioned on named mountain-range archetypes.
 
 ### Priority-Flood
 
@@ -277,7 +280,7 @@ basins are preserved.
 - [Priority-Flood paper](https://doi.org/10.1016/j.cageo.2013.04.024)
 - [Reference implementation](https://github.com/r-barnes/Barnes2013-Depressions)
 
-**In drainage `2`:** Priority-Flood-*style* fill seeded by ocean and protected
+**In drainage `3`:** Priority-Flood-*style* fill seeded by ocean and protected
 canonical lakes/basins; unprotected refined pits may rise at most `4_800` mm;
 protected cells and high-influence peaks are never raised. Canonical Physical
 Map Priority-Flood (packet 3) is unchanged.
@@ -294,12 +297,12 @@ strong grid-direction artifacts of D8 routing.
 - [A New Method for the Determination of Flow Directions and Upslope Areas in Grid Digital Elevation Models](https://digitalcommons.usu.edu/cee_facpub/2507/)
 - [DOI 10.1029/96WR03137](https://doi.org/10.1029/96WR03137)
 
-**In drainage `2`:** integer two-neighbor steepest-drop (D-infinity *reference*,
+**In drainage `3`:** integer two-neighbor steepest-drop (D-infinity *reference*,
 not Tarboton's slope-weighted proportions). Flow may split to at most two
 downhill 8-neighbors and must stay inside the canonical watershed except at
 that watershed's coastal mouth. Canonical mouths do not move. Atlas-only
-tributaries (`atlas:tributary:v2:{lattice-index}`, cap 128) and valleys
-(`atlas:valley:v2:{lattice-index}`, cap 64) join a canonical river or ocean.
+tributaries (`atlas:tributary:v3:{lattice-index}`, cap 128) and valleys
+(`atlas:valley:v3:{lattice-index}`, cap 64) join a canonical river or ocean.
 
 **Still later:** true slope-weighted contributing area; reducing remaining
 cardinal-grid artifacts on the production lattice; more than 128/64 derived

@@ -1,42 +1,33 @@
-//! Derived drainage 2: bounded pit fill, watershed-constrained continuous
-//! flow, atlas-only tributaries, and multi-scale erosion.
+//! Derived drainage 3: bounded pit fill, watershed-constrained continuous
+//! flow, atlas-only tributaries, and multi-scale erosion during and after
+//! hierarchical amplification.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap};
 
 use daena_physical::hydrology::{BasinStatus, HydrologyField};
-use daena_physical::Grid;
 
 use crate::amplify::{AmplificationModel, MountainKind};
 use crate::control::ControlFields;
 use crate::detail::{
     domain_key, lattice_lat_micro, lattice_lon_micro, lattice_sample, nearest_cell, sample_sdf_ppm,
-    COASTAL_ENVELOPE_PPM,
+};
+use crate::erosion::{
+    apply_scale_erosion, lattice_index, lock_polar_rows, neighbor_at, DIRS, EROSION_SCALES,
+    FAN_SLOPE_PPM, FLOODPLAIN_SLOPE_PPM, MAX_EROSION_STEP_MM, MULTI_SCALE_EROSION_DOMAIN, NO_FLOW,
+    ScaleErosion,
 };
 use crate::request::DetailLevel;
 use crate::{AtlasError, ATLAS_DERIVED_DRAINAGE_VERSION, ATLAS_DETAIL_ALGORITHM_VERSION};
 
 pub const REFINED_DRAINAGE_DOMAIN: &str = "refined-drainage";
-pub const MULTI_SCALE_EROSION_DOMAIN: &str = "multi-scale-erosion";
 pub const MAX_TRIBUTARIES: usize = 128;
 pub const MAX_VALLEYS: usize = 64;
+pub const MAX_DEPOSITION_FEATURES: usize = 64;
 pub const MAX_FILL_MM: i32 = 4_800;
-pub const MAX_EROSION_STEP_MM: i32 = 80;
-pub const EROSION_SCALES: [u32; 2] = [2, 1];
 const CANCELLATION_STRIDE: usize = 4_096;
 const MAX_TRACE_STEPS: usize = 64;
 const OCEAN: u32 = u32::MAX;
-const NO_FLOW: u32 = u32::MAX;
-const DIRS: [(i32, i32); 8] = [
-    (1, 0),
-    (1, 1),
-    (0, 1),
-    (-1, 1),
-    (-1, 0),
-    (-1, -1),
-    (0, -1),
-    (1, -1),
-];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefinedTributary {
@@ -63,6 +54,40 @@ impl RefinedValley {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DepositionKind {
+    Fan,
+    Floodplain,
+}
+
+impl DepositionKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fan => "fan",
+            Self::Floodplain => "floodplain",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DepositionFeature {
+    pub id: String,
+    pub kind: DepositionKind,
+    pub lattice_index: usize,
+    pub watershed_id: u32,
+    pub lon_micro: i32,
+    pub lat_micro: i32,
+}
+
+impl DepositionFeature {
+    pub fn id_for(kind: DepositionKind, lattice_index: usize) -> String {
+        format!(
+            "atlas:deposition:v{ATLAS_DERIVED_DRAINAGE_VERSION}:{}:{lattice_index}",
+            kind.as_str()
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RefinedHydrology {
     pub version: u32,
@@ -79,6 +104,7 @@ pub struct RefinedHydrology {
     pub filled_pit_count: u32,
     pub tributaries: Vec<RefinedTributary>,
     pub valleys: Vec<RefinedValley>,
+    pub deposition: Vec<DepositionFeature>,
     pub drainage_key: [u8; 32],
     pub erosion_key: [u8; 32],
 }
@@ -87,35 +113,6 @@ impl RefinedTributary {
     pub fn id_for(lattice_index: usize) -> String {
         format!("atlas:tributary:v{ATLAS_DERIVED_DRAINAGE_VERSION}:{lattice_index}")
     }
-}
-
-fn lattice_index(width: u32, i: u32, j: u32) -> usize {
-    j as usize * width as usize + i as usize
-}
-
-fn lock_polar_rows(width: u32, height: u32, field: &mut [i32]) {
-    for j in [0, height.saturating_sub(1)] {
-        let pole = field[lattice_index(width, 0, j)];
-        for i in 1..width {
-            field[lattice_index(width, i, j)] = pole;
-        }
-    }
-}
-
-fn neighbor_at(
-    width: u32,
-    height: u32,
-    i: u32,
-    j: u32,
-    dir: (i32, i32),
-) -> Option<(u32, u32, usize)> {
-    let nj = j as i32 + dir.1;
-    if nj < 0 || nj >= height as i32 {
-        return None;
-    }
-    let ni = (i as i32 + dir.0).rem_euclid(width as i32) as u32;
-    let nj = nj as u32;
-    Some((ni, nj, lattice_index(width, ni, nj)))
 }
 
 fn dist_ppm(dir: (i32, i32)) -> i32 {
@@ -686,92 +683,81 @@ fn extract_valleys(
     Ok(features)
 }
 
-fn walk_flow(primary: &[u32], start: usize, hops: u32, count: usize) -> u32 {
-    let mut dest = start as u32;
-    for _ in 0..hops {
-        let next = primary[dest as usize];
-        if next == NO_FLOW || next as usize >= count || next == dest {
-            break;
-        }
-        dest = next;
-    }
-    dest
-}
-
-fn mean_remove_delta(
-    grid: Grid,
+fn extract_deposition(
     width: u32,
     height: u32,
-    delta: &mut [i32],
+    worked_mm: &[i32],
+    filled_mm: &[i32],
+    primary: &[u32],
+    accumulation: &[u32],
+    hydrology: &HydrologyField,
+    protected: &[bool],
+    sea_level_mm: i32,
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
-) -> Result<(), AtlasError> {
-    let mut sums = vec![0_i64; grid.sample_count()];
-    let mut counts = vec![0_u32; grid.sample_count()];
-    for j in 0..height {
+) -> Result<Vec<DepositionFeature>, AtlasError> {
+    let mut features = Vec::new();
+    for j in 1..height.saturating_sub(1) {
         if j as usize % CANCELLATION_STRIDE == 0 {
             check_cancelled()?;
         }
         for i in 0..width {
-            let cell = nearest_cell(
-                grid,
-                lattice_lon_micro(i, width),
-                lattice_lat_micro(j, height),
-            );
-            sums[cell] += i64::from(delta[lattice_index(width, i, j)]);
-            counts[cell] += 1;
-        }
-    }
-    let means = sums
-        .iter()
-        .zip(counts)
-        .map(|(sum, count)| {
-            if count == 0 {
-                0
+            let index = lattice_index(width, i, j);
+            if protected[index]
+                || worked_mm[index] < sea_level_mm
+                || features.len() >= MAX_DEPOSITION_FEATURES
+            {
+                continue;
+            }
+            let dest = primary[index];
+            if dest == NO_FLOW || dest as usize >= worked_mm.len() {
+                continue;
+            }
+            let drop = (filled_mm[index] - filled_mm[dest as usize]).max(0);
+            let slope_ppm = (i64::from(drop) * 1_000) / 2;
+            let deposited = worked_mm[index] > filled_mm[index];
+            if !deposited && accumulation[index] < 24 {
+                continue;
+            }
+            let lon = lattice_lon_micro(i, width);
+            let lat = lattice_lat_micro(j, height);
+            let canonical = nearest_cell(hydrology.grid, lon, lat);
+            let watershed = hydrology
+                .watershed_id
+                .get(canonical)
+                .copied()
+                .unwrap_or(OCEAN);
+            if watershed == OCEAN {
+                continue;
+            }
+            let kind = if slope_ppm < i64::from(FAN_SLOPE_PPM)
+                && accumulation[index] >= 12
+                && deposited
+            {
+                DepositionKind::Fan
+            } else if slope_ppm < i64::from(FLOODPLAIN_SLOPE_PPM) && accumulation[index] >= 24 {
+                DepositionKind::Floodplain
             } else {
-                sum / i64::from(count)
+                continue;
+            };
+            if features
+                .iter()
+                .any(|feature: &DepositionFeature| feature.kind == kind && feature.lattice_index == index)
+            {
+                continue;
             }
-        })
-        .collect::<Vec<_>>();
-    for j in 0..height {
-        for i in 0..width {
-            let cell = nearest_cell(
-                grid,
-                lattice_lon_micro(i, width),
-                lattice_lat_micro(j, height),
-            );
-            delta[lattice_index(width, i, j)] =
-                (i64::from(delta[lattice_index(width, i, j)]) - means[cell]) as i32;
+            features.push(DepositionFeature {
+                id: DepositionFeature::id_for(kind, index),
+                kind,
+                lattice_index: index,
+                watershed_id: watershed,
+                lon_micro: lon,
+                lat_micro: lat,
+            });
         }
     }
-    Ok(())
-}
-
-fn enforce_peak_local_maxima(
-    model: &AmplificationModel,
-    width: u32,
-    height: u32,
-    filled_mm: &[i32],
-    worked: &mut [i32],
-) {
-    let count = worked.len();
-    for feature in &model.features {
-        if feature.kind != MountainKind::Peak {
-            continue;
-        }
-        let peak = feature.lattice_index;
-        if peak >= count {
-            continue;
-        }
-        let j = peak as u32 / width;
-        let i = peak as u32 % width;
-        let mut required = worked[peak].max(filled_mm[peak]);
-        for dir in DIRS {
-            if let Some((_, _, neighbor)) = neighbor_at(width, height, i, j, dir) {
-                required = required.max(worked[neighbor].saturating_sub(MAX_EROSION_STEP_MM));
-            }
-        }
-        worked[peak] = required;
-    }
+    features.sort_by(|a, b| a.id.cmp(&b.id));
+    features.truncate(MAX_DEPOSITION_FEATURES);
+    Ok(features)
 }
 
 fn erode(
@@ -791,112 +777,50 @@ fn erode(
     let height = model.detail.lattice_height;
     let count = filled_mm.len();
     let mut worked = filled_mm.to_vec();
-    for scale in EROSION_SCALES {
-        let mut delta = vec![0_i32; count];
-        for j in 0..height {
-            if j as usize % CANCELLATION_STRIDE == 0 {
-                check_cancelled()?;
-            }
-            for i in 0..width {
-                let index = lattice_index(width, i, j);
-                if protected[index] || filled_mm[index] < controls.sea_level_mm {
-                    continue;
-                }
-                if j == 0 || j + 1 == height {
-                    continue;
-                }
-                let lon = lattice_lon_micro(i, width);
-                let lat = lattice_lat_micro(j, height);
-                let mountain = controls
-                    .sample_mountain_influence(lon, lat)
-                    .clamp(0, 1_000_000);
-                if mountain > 500_000 {
-                    continue;
-                }
-                let dest = walk_flow(primary, index, scale, count);
-                if dest == NO_FLOW || dest as usize >= count || dest == index as u32 {
-                    continue;
-                }
-                let dest_lon = lattice_lon_micro(dest % width, width);
-                let dest_lat = lattice_lat_micro(dest / width, height);
-                if controls.sample_mountain_influence(dest_lon, dest_lat) > 500_000 {
-                    continue;
-                }
-                let drop = (worked[index] - worked[dest as usize]).max(0);
-                if drop == 0 {
-                    continue;
-                }
-                let damp = 1_000_000 - mountain / 2;
-                let prf = lattice_sample(erosion_key, i, j, scale);
-                let prf_damp = 1_000_000 - ((prf >> 11) % 25_000) as i32;
-                let accum = accumulation[index].max(1);
-                let flux = ((i64::from(drop.min(MAX_EROSION_STEP_MM))
-                    * i64::from(accum.min(64))
-                    * i64::from(damp)
-                    * i64::from(prf_damp))
-                    / (64 * 1_000_000 * 1_000_000))
-                    .clamp(0, i64::from(MAX_EROSION_STEP_MM)) as i32;
-                if flux == 0 {
-                    continue;
-                }
-                delta[index] = delta[index].saturating_sub(flux);
-                let share = ((i64::from(flux) * i64::from(weight[index])) / 1_000_000) as i32;
-                delta[dest as usize] = delta[dest as usize].saturating_add(share);
-                let rest = flux.saturating_sub(share);
-                if rest > 0 && secondary[index] != NO_FLOW && (secondary[index] as usize) < count {
-                    delta[secondary[index] as usize] =
-                        delta[secondary[index] as usize].saturating_add(rest);
-                } else {
-                    delta[dest as usize] = delta[dest as usize].saturating_add(rest);
-                }
-            }
+    let mut mountain_ppm = vec![0_i32; count];
+    let mut runoff_ppm = vec![0_i32; count];
+    for j in 0..height {
+        for i in 0..width {
+            let index = lattice_index(width, i, j);
+            let lon = lattice_lon_micro(i, width);
+            let lat = lattice_lat_micro(j, height);
+            mountain_ppm[index] = controls.sample_mountain_influence(lon, lat);
+            runoff_ppm[index] = (i64::from(controls.sample_runoff(lon, lat).clamp(0, 4_000))
+                * 1_000_000
+                / 4_000) as i32;
         }
-        mean_remove_delta(
-            model.detail.grid,
+    }
+    let peaks = model
+        .features
+        .iter()
+        .filter(|feature| feature.kind == MountainKind::Peak)
+        .map(|feature| feature.lattice_index)
+        .collect::<Vec<_>>();
+    let land_at = |lon: i32, lat: i32| model.detail.canonical_at(lon, lat) >= controls.sea_level_mm;
+    apply_scale_erosion(
+        ScaleErosion {
+            grid: model.detail.grid,
             width,
             height,
-            &mut delta,
-            check_cancelled,
-        )?;
-        for index in 0..count {
-            if protected[index] {
-                worked[index] = filled_mm[index];
-                continue;
-            }
-            worked[index] = worked[index].saturating_add(delta[index]);
-        }
-        for j in 0..height {
-            for i in 0..width {
-                let index = lattice_index(width, i, j);
-                if protected[index] {
-                    continue;
-                }
-                let lon = lattice_lon_micro(i, width);
-                let lat = lattice_lat_micro(j, height);
-                let sdf_ppm = sample_sdf_ppm(model.detail.grid, sdf, lon, lat);
-                if sdf_ppm.unsigned_abs() <= COASTAL_ENVELOPE_PPM {
-                    continue;
-                }
-                let canonical = model.detail.canonical_at(lon, lat);
-                let canon_land = canonical >= controls.sea_level_mm;
-                let worked_land = worked[index] >= controls.sea_level_mm;
-                if canon_land != worked_land {
-                    worked[index] = if canon_land {
-                        controls.sea_level_mm.saturating_add(1)
-                    } else {
-                        controls.sea_level_mm.saturating_sub(1)
-                    };
-                }
-            }
-        }
-        lock_polar_rows(width, height, &mut worked);
-        for index in 0..count {
-            if protected[index] {
-                worked[index] = filled_mm[index];
-            }
-        }
-        enforce_peak_local_maxima(model, width, height, filled_mm, &mut worked);
-    }
+            sea_level_mm: controls.sea_level_mm,
+            sdf,
+            protected,
+            mountain_ppm: &mountain_ppm,
+            runoff_ppm: &runoff_ppm,
+            primary,
+            secondary,
+            weight,
+            accumulation,
+            erosion_key,
+            peaks: &peaks,
+            filled_mm,
+            land_at: &land_at,
+            scales: &EROSION_SCALES,
+            max_step_mm: MAX_EROSION_STEP_MM,
+        },
+        &mut worked,
+        check_cancelled,
+    )?;
     Ok(worked)
 }
 
@@ -1019,6 +943,18 @@ pub fn build_refined_hydrology(
         &erosion_key,
         check_cancelled,
     )?;
+    let deposition = extract_deposition(
+        width,
+        height,
+        &worked_mm,
+        &filled_mm,
+        &flow_primary,
+        &accumulation,
+        hydrology,
+        &protected,
+        controls.sea_level_mm,
+        check_cancelled,
+    )?;
     Ok(RefinedHydrology {
         version: ATLAS_DERIVED_DRAINAGE_VERSION,
         lattice_width: width,
@@ -1034,6 +970,7 @@ pub fn build_refined_hydrology(
         filled_pit_count,
         tributaries,
         valleys,
+        deposition,
         drainage_key,
         erosion_key,
     })
@@ -1068,6 +1005,16 @@ pub fn hydrology_fingerprint(model: &RefinedHydrology) -> [u8; 32] {
         bytes.extend_from_slice(&valley.watershed_id.to_le_bytes());
         bytes.extend_from_slice(&valley.lon_micro.to_le_bytes());
         bytes.extend_from_slice(&valley.lat_micro.to_le_bytes());
+    }
+    bytes.extend_from_slice(&(model.deposition.len() as u32).to_le_bytes());
+    for feature in &model.deposition {
+        bytes.extend_from_slice(feature.id.as_bytes());
+        bytes.push(0);
+        bytes.push(feature.kind as u8);
+        bytes.extend_from_slice(&(feature.lattice_index as u32).to_le_bytes());
+        bytes.extend_from_slice(&feature.watershed_id.to_le_bytes());
+        bytes.extend_from_slice(&feature.lon_micro.to_le_bytes());
+        bytes.extend_from_slice(&feature.lat_micro.to_le_bytes());
     }
     bytes.extend_from_slice(&(model.worked_mm.len() as u32).to_le_bytes());
     let mut elev = Sha256::new();
@@ -1359,11 +1306,11 @@ mod tests {
         assert_ne!(drainage, erosion);
         assert_eq!(
             hex(&drainage),
-            "a629d80de84de185b27b066e0a796c1f8485e57e2a3c2b3bd17361ab1154fd5b"
+            "2e60d91ade34ccba1861d5203c1ff005817988fcf5ad95e161edcdac5a98538f"
         );
         assert_eq!(
             hex(&erosion),
-            "76f9d81fde063262804f66665e8dff97c2bac1821150d4f4e1827d4b80f2d6c7"
+            "78a8e7078d0383d240712061087e20d811305a3648b5c5f438eb3d08e24e4501"
         );
     }
 
@@ -1388,7 +1335,7 @@ mod tests {
         }
         assert!(refined.worked_mm.len() * 4 <= 2_000_000);
         assert_eq!(refined.version, ATLAS_DERIVED_DRAINAGE_VERSION);
-        assert_eq!(ATLAS_DERIVED_DRAINAGE_VERSION, 2);
+        assert_eq!(ATLAS_DERIVED_DRAINAGE_VERSION, 5);
         for (index, protected) in refined.protected.iter().enumerate() {
             if *protected {
                 assert_eq!(refined.filled_mm[index], refined.source_mm[index]);
@@ -1415,7 +1362,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         for tributary in &refined.tributaries {
-            assert!(tributary.id.starts_with("atlas:tributary:v2:"));
+            assert!(tributary.id.starts_with("atlas:tributary:v5:"));
             assert!(tributary.path.len() >= 3);
             for point in &tributary.path {
                 let cell = nearest_cell(hydrology.grid, point[0], point[1]);
@@ -1427,6 +1374,9 @@ mod tests {
         }
         assert!(!refined.tributaries.is_empty());
         assert!(!refined.valleys.is_empty());
+        for feature in &refined.deposition {
+            assert!(feature.id.starts_with("atlas:deposition:v5:"));
+        }
         let river_ids = hydrology
             .rivers
             .iter()
@@ -1438,7 +1388,7 @@ mod tests {
             );
         }
         for valley in &refined.valleys {
-            assert!(valley.id.starts_with("atlas:valley:v2:"));
+            assert!(valley.id.starts_with("atlas:valley:v5:"));
             let cell = nearest_cell(hydrology.grid, valley.lon_micro, valley.lat_micro);
             if hydrology.watershed_id[cell] != OCEAN {
                 assert_eq!(hydrology.watershed_id[cell], valley.watershed_id);
@@ -1486,13 +1436,27 @@ mod tests {
             let width = refined.lattice_width;
             let j = peak.lattice_index as u32 / width;
             let i = peak.lattice_index as u32 % width;
+            let peak_sdf = sample_sdf_ppm(controls.grid, &sdf, peak.lon_micro, peak.lat_micro);
+            if peak_sdf.unsigned_abs() <= COASTAL_ENVELOPE_PPM {
+                continue;
+            }
             let peak_elev = refined.worked_mm[peak.lattice_index];
             for dir in DIRS {
-                if let Some((_, _, neighbor)) =
+                if let Some((ni, nj, neighbor)) =
                     neighbor_at(width, refined.lattice_height, i, j, dir)
                 {
+                    if j == 0 || j + 1 == refined.lattice_height || nj == 0 || nj + 1 == refined.lattice_height
+                    {
+                        continue;
+                    }
+                    let nlon = lattice_lon_micro(ni, width);
+                    let nlat = lattice_lat_micro(nj, refined.lattice_height);
+                    let neighbor_sdf = sample_sdf_ppm(controls.grid, &sdf, nlon, nlat);
+                    if neighbor_sdf.unsigned_abs() <= COASTAL_ENVELOPE_PPM {
+                        continue;
+                    }
                     assert!(
-                        peak_elev + MAX_EROSION_STEP_MM >= refined.worked_mm[neighbor],
+                        peak_elev + crate::detail::MAX_RESIDUAL_MM >= refined.worked_mm[neighbor],
                         "peak {} lost local-maxima tolerance",
                         peak.id
                     );
@@ -1501,7 +1465,7 @@ mod tests {
         }
         assert_eq!(
             hex(&topology_fingerprint(&model)),
-            "6e0cb3f3d5255894465f72c4ced6a65298fcf762d1179f0c5d07de86f0a8d348"
+            "65ca2a0bf35762e6e840b36f9c5bf8ed014a6194b388be75988b17b08bd42b2d"
         );
         let rebuilt =
             build_refined_hydrology(&model, &controls, &hydrology, &sdf, &identity, &mut cancel)
@@ -1511,7 +1475,7 @@ mod tests {
         assert_eq!(refined.valleys, rebuilt.valleys);
         assert_eq!(
             hex(&hydrology_fingerprint(&refined)),
-            "854eea677e45b9c3665da82d45f1382d6b9c173e8f5bcf79a2b2278330e7152d"
+            "a02e22789c4be0ecd00b5cfe8a3a77369dfac156aa5254601dcaec269578c49f"
         );
         for j in [0, refined.lattice_height - 1] {
             let pole = refined.worked_mm[lattice_index(refined.lattice_width, 0, j)];
@@ -1554,7 +1518,7 @@ mod tests {
             max_mean = max_mean.max((*sum / i64::from(*count)).abs());
         }
         assert!(
-            max_mean <= i64::from(MAX_EROSION_STEP_MM),
+            max_mean <= i64::from(MAX_EROSION_STEP_MM) * i64::from(EROSION_SCALES.len() as u32),
             "macro elevation drifted by {max_mean} mm after erosion"
         );
         let identities = refined.encode_identities();

@@ -160,17 +160,17 @@ try {
   assert.equal(preview.hash, again.hash);
   assert.equal(
     preview.hash,
-    "sha256:89dc3554e02c98bdbdbf09a3bfac96c05f9633a768b11b917e96a1f9ee941153",
+    "sha256:0d958ced1e7e583b4ebef17d4fb0fd62317b4f25710143dce529e0dfd785f24a",
   );
   const mid = render(4096, 2048, exportPath);
   const max = render(8192, 4096, maxPath);
   assert.equal(
     mid.hash,
-    "sha256:2614405c7642a5bdc94b2bf4f980dade3944d43cf3509dc488bcf82f8182739f",
+    "sha256:6fe887d7c170510a5d1d911e9f363b50a019c8702b2cd62606215c0eeee7e8e4",
   );
   assert.equal(
     max.hash,
-    "sha256:67b13a71277a6df6e02dc77c7880c12040010f7979ec709d9a63ef0a22cef9c5",
+    "sha256:5e38181c08bb550bfb538b07cce05b50217ef9d70fbbf59306d11b8c789d30a5",
   );
   assert.notEqual(preview.hash, mid.hash);
   assert.notEqual(mid.hash, max.hash);
@@ -227,7 +227,7 @@ try {
   assert.equal(cold.hash, warm.hash);
   assert.equal(cold.summary.artifactCache, "miss");
   assert.equal(warm.summary.artifactCache, "hit");
-  assert.equal(cold.summary.rendererVersion, 7);
+  assert.equal(cold.summary.rendererVersion, 10);
   assert.ok(cold.summary.tributaryCount >= 0);
   const adr = readFileSync(join(root, "docs/adr/0036-atlas-rendering-iteration-4.md"), "utf8");
   assert.match(adr, /atlas-only/);
@@ -261,7 +261,7 @@ try {
   assert.match(readFileSync(join(root, "crates/daena-atlas/src/amplify.rs"), "utf8"), /build_amplification_model/);
   assert.match(readFileSync(join(root, "crates/daena-atlas/src/control.rs"), "utf8"), /sample_mountain_influence/);
   assert.match(readFileSync(join(root, "crates/daena-atlas/src/refine.rs"), "utf8"), /build_refined_hydrology/);
-  assert.match(readFileSync(join(root, "crates/daena-atlas/src/refine.rs"), "utf8"), /atlas:valley:v2/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/refine.rs"), "utf8"), /atlas:valley:v\{ATLAS_DERIVED_DRAINAGE_VERSION\}/);
   assert.equal(readFileSync(join(root, "crates/daena-atlas/src/refine.rs"), "utf8").includes("AtlasDiskCache"), false);
   assert.match(drainageSpike, /atlas:valley:v2/);
   const atlasCargo = readFileSync(join(root, "crates/daena-atlas/Cargo.toml"), "utf8");
@@ -276,14 +276,17 @@ try {
   assert.match(studioView, /calendar-year/);
   assert.equal(studioView.includes("getCanvas"), false);
   assert.equal(studioView.includes("new Date"), false);
-  assert.equal(studioView.includes("algorithmVersion: 2"), true);
+  assert.equal(studioView.includes("algorithmVersion: 5"), true);
   assert.equal(studioView.includes("algorithmVersion: 1"), false);
+  assert.equal(studioView.includes("algorithmVersion: 2"), false);
+  assert.equal(studioView.includes("algorithmVersion: 3"), false);
+  assert.equal(studioView.includes("algorithmVersion: 4"), false);
   assert.equal(studioView.includes("tributary:v2"), false);
   assert.equal(studioView.includes("valley:v2"), false);
   assert.match(studioView, /Skip to map/);
   assert.match(studioView, /aria-keyshortcuts/);
   assert.match(studioView, /atlas\.studio\.stale/);
-  assert.match(studioView, /detail algorithm 2/);
+  assert.match(studioView, /detail algorithm 5/);
   assert.match(studioView, /Regenerate disposable Atlas cache/);
   assert.match(studioView, /Atlas-only derived drainage/);
   assert.match(studioView, /currentViewExportHeight/);
@@ -300,9 +303,25 @@ try {
   assert.match(productionCutover, /Derived drainage \| `2`/);
   assert.match(productionCutover, /Renderer \| `7`/);
   assert.match(productionCutover, /build_detail_model/);
-  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 2/);
-  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 2/);
-  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_RENDERER_VERSION: u32 = 7/);
+  const productionV4 = readFileSync(join(root, "docs/adr/0045-atlas-production-algorithm-4.md"), "utf8");
+  assert.match(productionV4, /Detail algorithm \| `4`/);
+  assert.match(productionV4, /Derived drainage \| `4`/);
+  assert.match(productionV4, /Renderer \| `9`/);
+  assert.match(productionV4, /daena-atlas-detail-v4/);
+  const productionV5 = readFileSync(join(root, "docs/adr/0046-atlas-production-algorithm-5.md"), "utf8");
+  assert.match(productionV5, /Detail algorithm \| `5`/);
+  assert.match(productionV5, /Derived drainage \| `5`/);
+  assert.match(productionV5, /Renderer \| `10`/);
+  assert.match(productionV5, /daena-atlas-detail-v5/);
+  assert.match(productionV5, /920/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 5/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 5/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_RENDERER_VERSION: u32 = 10/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/amplify.rs"), "utf8"), /synthesize_coastline/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/amplify.rs"), "utf8"), /RIDGE_SYNTHESIS_MM: i32 = 920_000/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/amplify.rs"), "utf8"), /SecondaryRidge/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/refine.rs"), "utf8"), /DepositionKind/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/erosion.rs"), "utf8"), /apply_scale_erosion/);
 
   const report = {
     preview: { ...preview.summary, sha256: preview.hash, peakResidentBytes: preview.peakResidentBytes },

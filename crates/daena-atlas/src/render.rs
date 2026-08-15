@@ -5,7 +5,7 @@ use crate::detail::{sample_sdf_ppm, AtlasDetailModel};
 use crate::overlay::composite_overlays;
 use crate::projection::wrap_lon_micro;
 use crate::request::{AtlasRenderRequest, TILE_HALO, TILE_SIZE};
-use crate::style::{apply_shade, hypsometric, AtlasStyle};
+use crate::style::{apply_shade, hypsometric, mix_rgb, AtlasStyle};
 use crate::{AtlasError, AtlasPhase, AtlasProgress};
 
 /// Isolated sinks smaller than this stay land so one-cell puddles do not
@@ -178,13 +178,17 @@ fn shade_ppm(model: &AtlasDetailModel, lon: i32, lat: i32, sea: i32, sdf: &[i32]
     );
     let nx = west - east;
     let ny = south - north;
-    let nz = 12_000_i64;
-    let dot = nx
-        .saturating_mul(4)
-        .saturating_add(ny.saturating_mul(5))
+    let nz = 72_000_i64;
+    let mag = nx
+        .unsigned_abs()
+        .saturating_add(ny.unsigned_abs())
+        .saturating_add(nz.unsigned_abs())
+        .max(1);
+    let lit = nx
+        .saturating_mul(5)
+        .saturating_add(ny.saturating_mul(6))
         .saturating_add(nz.saturating_mul(8));
-    let bounded = dot.clamp(3_000_000, 12_000_000);
-    ((bounded - 3_000_000) as u64 * 1_000_000 / 9_000_000) as u32
+    ((lit + mag as i64) * 500_000 / mag as i64).clamp(320_000, 1_000_000) as u32
 }
 
 pub(crate) fn pixel_rgba(
@@ -209,8 +213,7 @@ pub(crate) fn pixel_rgba(
     if request.layer_enabled("lakes") && inland {
         return apply_shade(style.lake, shade);
     }
-    let canon_ocean = water.ocean.get(cell).copied().unwrap_or(false);
-    let land = if canon_ocean { elevation >= sea } else { true };
+    let land = elevation >= sea;
     if land && !request.layer_enabled("relief") {
         return [
             style.background[0],
@@ -228,7 +231,15 @@ pub(crate) fn pixel_rgba(
         ];
     }
     let painted = if land { elevation.max(sea) } else { elevation };
-    apply_shade(hypsometric(style, painted, sea), shade)
+    let mut rgb = hypsometric(style, painted, sea);
+    if request.layer_enabled("coastlines") {
+        let band = elevation.saturating_sub(sea).unsigned_abs();
+        if band < 28_000 {
+            let t = ((28_000 - band) as u64 * 620_000 / 28_000) as u32;
+            rgb = mix_rgb(rgb, style.coast, t);
+        }
+    }
+    apply_shade(rgb, shade)
 }
 
 pub fn render_rgba(

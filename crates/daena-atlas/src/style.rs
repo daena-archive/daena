@@ -153,17 +153,17 @@ pub fn hypsometric(style: &AtlasStyle, elevation_mm: i32, sea_level_mm: i32) -> 
         mix_rgb(style.ocean_shallow, style.ocean_deep, t)
     } else {
         let height = relative.unsigned_abs().min(6_000_000);
-        if height < 1_500_000 {
+        if height < 800_000 {
             mix_rgb(
                 style.land_low,
                 style.land_high,
-                (u64::from(height) * 1_000_000 / 1_500_000) as u32,
+                (u64::from(height) * 1_000_000 / 800_000) as u32,
             )
         } else {
             mix_rgb(
                 style.land_high,
                 style.land_peak,
-                (u64::from(height - 1_500_000) * 1_000_000 / 4_500_000) as u32,
+                (u64::from(height - 800_000) * 1_000_000 / 5_200_000) as u32,
             )
         }
     }

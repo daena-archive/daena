@@ -177,18 +177,8 @@ pub fn composite_overlays(
             }
         }
     }
-    if request.layer_enabled("coastlines") {
-        for segment in &hydrology.coastline_segments {
-            draw_geodesic_segment(
-                buffer,
-                view,
-                segment.first,
-                segment.second,
-                style.coast,
-                900_000,
-            );
-        }
-    }
+    // Physical-grid coastline polylines are the simulation-cell edges.
+    // Renderer 10 inks the reconstructed shore in `pixel_rgba` instead.
     if request.layer_enabled("contours") {
         for segment in &hydrology.bathymetry_contours {
             draw_geodesic_segment(

@@ -79,7 +79,7 @@ function request(width: number, height: number): AtlasRenderRequest {
   return {
     schemaVersion: 1,
     offsetYears,
-    algorithmVersion: 2,
+    algorithmVersion: 5,
     level: "detailed",
     variant: 0,
     styleId,
@@ -202,7 +202,7 @@ async function savePreset() {
         timeKind === "calendar-year"
           ? { kind: "calendar-year", authoredYear }
           : { kind: "physical-offset-year", offsetYears },
-      detail: { algorithmVersion: 2, level: "detailed", variant: 0 },
+      detail: { algorithmVersion: 5, level: "detailed", variant: 0 },
       style: { id: styleId, version: 1 },
       activeLayerIds: layers.filter((layer) => layer.enabled).map((layer) => layer.id),
       viewport: { kind: "world", projection: "equirectangular" },

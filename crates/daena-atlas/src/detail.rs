@@ -39,10 +39,17 @@ fn push_u32(bytes: &mut Vec<u8>, value: u32) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
 
+fn domain_prefix(algorithm_version: u32) -> &'static [u8] {
+    match algorithm_version {
+        crate::ATLAS_DETAIL_ALGORITHM_EXPERIMENTAL_VERSION => b"daena-atlas-detail-v2\0",
+        _ => b"daena-atlas-detail-v1\0",
+    }
+}
+
 pub fn domain_key(identity: &[u8], algorithm_version: u32, variant: u32, domain: &str) -> [u8; 32] {
     let domain_bytes = domain.as_bytes();
     let mut input = Vec::with_capacity(64 + identity.len() + domain_bytes.len());
-    input.extend_from_slice(b"daena-atlas-detail-v1\0");
+    input.extend_from_slice(domain_prefix(algorithm_version));
     push_u32(&mut input, identity.len() as u32);
     input.extend_from_slice(identity);
     push_u32(&mut input, algorithm_version);
@@ -394,6 +401,15 @@ mod tests {
         assert_ne!(
             domain_key(b"identity-fixture", 1, 0, CONTINENTAL_RELIEF_DOMAIN),
             domain_key(b"identity-fixture", 1, 0, "coastal-detail")
+        );
+        assert_ne!(
+            domain_key(b"identity-fixture", 1, 0, CONTINENTAL_RELIEF_DOMAIN),
+            domain_key(
+                b"identity-fixture",
+                crate::ATLAS_DETAIL_ALGORITHM_EXPERIMENTAL_VERSION,
+                0,
+                CONTINENTAL_RELIEF_DOMAIN
+            )
         );
     }
 

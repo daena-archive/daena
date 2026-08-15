@@ -244,6 +244,17 @@ try {
   assert.match(studioComposition, /calendar-year/);
   assert.match(studioComposition, /priority=prefetch/);
   assert.match(studioComposition, /current-view|regional Web Mercator/);
+  const terrainSpike = readFileSync(join(root, "docs/adr/0040-atlas-studio-iteration-3.md"), "utf8");
+  assert.match(terrainSpike, /experimental detail algorithm `2`/);
+  assert.match(terrainSpike, /daena-atlas-detail-v2/);
+  assert.match(terrainSpike, /hierarchical-relief/);
+  assert.match(terrainSpike, /mountain-orometry/);
+  assert.match(terrainSpike, /not listed in capabilities/);
+  assert.match(terrainSpike, /mountain influence|mountain-influence/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/amplify.rs"), "utf8"), /build_amplification_model/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/control.rs"), "utf8"), /sample_mountain_influence/);
+  const atlasCargo = readFileSync(join(root, "crates/daena-atlas/Cargo.toml"), "utf8");
+  assert.equal(atlasCargo.includes("noise-rs") || atlasCargo.includes("geo =") || atlasCargo.includes("image ="), false);
   const studioView = readFileSync(join(root, "src/lib/maps/atlas/AtlasStudioView.svelte"), "utf8");
   assert.match(studioView, /maplibre-gl/);
   assert.match(studioView, /atlasStudioOpen/);
@@ -254,6 +265,7 @@ try {
   assert.match(studioView, /calendar-year/);
   assert.equal(studioView.includes("getCanvas"), false);
   assert.equal(studioView.includes("new Date"), false);
+  assert.equal(studioView.includes("algorithmVersion: 2"), false);
 
   const report = {
     preview: { ...preview.summary, sha256: preview.hash, peakResidentBytes: preview.peakResidentBytes },

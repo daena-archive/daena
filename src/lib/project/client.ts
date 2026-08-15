@@ -315,6 +315,7 @@ export interface PhysicalHistoricalProgress {
 }
 export const PHYSICAL_HISTORICAL_PROGRESS_EVENT = "physical-historical-progress";
 export const ATLAS_PROGRESS_EVENT = "atlas-progress";
+export const ATLAS_STUDIO_PROGRESS_EVENT = "atlas-studio-progress";
 export interface AtlasLayerChoice {
   id: string;
   name: string;
@@ -333,6 +334,9 @@ export interface AtlasRenderCapabilities {
   maxPixelCount: number;
   supportsAuthoredLayers: boolean;
   supportsSemanticLayers: boolean;
+  supportsStudio: boolean;
+  studioMaxZoom: number;
+  studioTileSize: number;
   calendarBinding: {
     schemaVersion: number;
     calendarId: string;
@@ -392,6 +396,42 @@ export interface AtlasJobStatus {
     printWidthInchesMilli: number;
     printHeightInchesMilli: number;
   } | null;
+}
+export interface AtlasStudioSessionRequest {
+  schemaVersion: number;
+  mapEntityId: string;
+  offsetYears: number;
+  algorithmVersion: number;
+  level: "standard" | "detailed" | "print";
+  variant: number;
+  styleId: string;
+  activeLayerIds: string[];
+  projection: string;
+  timeKind: "physical-offset-year" | "calendar-year";
+  authoredYear: number | null;
+}
+export interface AtlasStudioSessionStatus {
+  sessionToken: string;
+  mapEntityId: string;
+  tileUrlTemplate: string;
+  maxZoom: number;
+  tileSize: number;
+  deviceScale: number;
+  capturedContentGeneration: number;
+  currentContentGeneration: number | null;
+  styleId: string;
+  offsetYears: number;
+  projection: string;
+  stage: string;
+  error: string | null;
+  errorCode: string | null;
+}
+export interface AtlasStudioProgress {
+  sessionToken: string;
+  mapEntityId: string;
+  stage: string;
+  completed: number;
+  total: number;
 }
 export interface PhysicalGenerationInput {
   seed: number;
@@ -932,6 +972,16 @@ export const project = {
   atlasJobCancel: (jobId: string) => invoke<AtlasJobStatus>("project_atlas_job_cancel", { jobId }),
   atlasArtifactSave: (jobId: string) => invoke<AtlasJobStatus>("project_atlas_artifact_save", { jobId }),
   atlasArtifactDiscard: (jobId: string) => invoke<AtlasJobStatus>("project_atlas_artifact_discard", { jobId }),
+  atlasStudioOpen: (request: AtlasStudioSessionRequest, deviceScale = 1) =>
+    invoke<AtlasStudioSessionStatus>("project_atlas_studio_open", {
+      input: { request, deviceScale },
+    }),
+  atlasStudioClose: (sessionToken: string) =>
+    invoke<void>("project_atlas_studio_close", { sessionToken }),
+  atlasStudioStatus: (sessionToken: string) =>
+    invoke<AtlasStudioSessionStatus>("project_atlas_studio_status", { sessionToken }),
+  atlasStudioRegenerateCache: () =>
+    invoke<{ deletedEntries: number }>("project_atlas_studio_regenerate_cache"),
   readAssetBytes: (assetId: string) => invoke<number[]>("project_read_asset_bytes", { assetId }),
   createRasterLayer: (mapEntityId: string, name: string, expectedRevision: string, options?: MutationOptions) =>
     invoke<RasterLayerChange>("project_create_raster_layer", {

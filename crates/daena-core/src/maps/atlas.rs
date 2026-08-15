@@ -1,9 +1,14 @@
 //! Atlas capability reporting and immutable snapshot capture.
 
 use daena_atlas::request::{
-    physical_layer_role, AtlasRenderRequest, ResourceEstimate, ATLAS_LAYER_ROLES,
+    physical_layer_role, AtlasRenderRequest, DetailLevel, ResourceEstimate, ATLAS_LAYER_ROLES,
 };
-use daena_atlas::style::bundled_style_ids;
+use daena_atlas::studio::{
+    AtlasStudioSceneRequestV1, ATLAS_STUDIO_SESSION_SCHEMA_VERSION, CODE_STUDIO_REQUEST_INVALID,
+    CODE_STUDIO_UNSUPPORTED, STUDIO_MAX_ZOOM, STUDIO_PROJECTION_ID, STUDIO_SPIKE_LAYER_IDS,
+    STUDIO_TILE_SIZE,
+};
+use daena_atlas::style::{bundled_style_ids, RELIEF_STYLE_ID};
 use daena_physical::history::{
     ForcingComponent, HistoricalForcingParameters, FORCING_COMPONENT_COUNT,
 };
@@ -21,6 +26,7 @@ use super::{
 use crate::error::CoreError;
 use crate::project::ProjectStore;
 use daena_atlas::overlay::AuthoredFeature;
+use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -50,8 +56,153 @@ pub struct AtlasRenderCapabilities {
     pub max_pixel_count: u64,
     pub supports_authored_layers: bool,
     pub supports_semantic_layers: bool,
+    pub supports_studio: bool,
+    pub studio_max_zoom: u32,
+    pub studio_tile_size: u32,
     pub calendar_binding: Option<PhysicalCalendarBinding>,
     pub presets: Vec<AtlasPresetSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AtlasStudioSessionRequestV1 {
+    pub schema_version: u32,
+    pub map_entity_id: String,
+    pub offset_years: i64,
+    pub algorithm_version: u32,
+    pub level: DetailLevel,
+    pub variant: u32,
+    pub style_id: String,
+    pub active_layer_ids: Vec<String>,
+    pub projection: String,
+    pub time_kind: String,
+    pub authored_year: Option<i64>,
+}
+
+impl AtlasStudioSessionRequestV1 {
+    pub fn iteration_1(map_entity_id: impl Into<String>) -> Self {
+        Self {
+            schema_version: ATLAS_STUDIO_SESSION_SCHEMA_VERSION,
+            map_entity_id: map_entity_id.into(),
+            offset_years: 0,
+            algorithm_version: daena_atlas::ATLAS_DETAIL_ALGORITHM_VERSION,
+            level: DetailLevel::Detailed,
+            variant: 0,
+            style_id: RELIEF_STYLE_ID.to_string(),
+            active_layer_ids: STUDIO_SPIKE_LAYER_IDS
+                .iter()
+                .map(|id| (*id).to_string())
+                .collect(),
+            projection: STUDIO_PROJECTION_ID.to_string(),
+            time_kind: "physical-offset-year".into(),
+            authored_year: None,
+        }
+    }
+
+    pub fn normalize(self) -> Result<Self, CoreError> {
+        if self.schema_version != ATLAS_STUDIO_SESSION_SCHEMA_VERSION {
+            return Err(studio_invalid("unsupported atlas studio session schema"));
+        }
+        if self.algorithm_version != daena_atlas::ATLAS_DETAIL_ALGORITHM_VERSION {
+            return Err(studio_invalid("unsupported atlas detail algorithm"));
+        }
+        if self.level != DetailLevel::Detailed {
+            return Err(studio_invalid(
+                "atlas studio iteration 1 requires detailed level",
+            ));
+        }
+        if self.variant != 0 {
+            return Err(studio_invalid(
+                "atlas studio iteration 1 requires variant 0",
+            ));
+        }
+        if self.offset_years != 0 || self.time_kind != "physical-offset-year" {
+            return Err(studio_invalid(
+                "atlas studio iteration 1 uses the reference physical epoch",
+            ));
+        }
+        if self.authored_year.is_some() {
+            return Err(studio_invalid(
+                "atlas studio iteration 1 does not accept authored years",
+            ));
+        }
+        if self.projection != STUDIO_PROJECTION_ID {
+            return Err(studio_invalid(
+                "atlas studio iteration 1 requires web-mercator",
+            ));
+        }
+        if self.style_id != RELIEF_STYLE_ID {
+            return Err(studio_invalid(
+                "atlas studio iteration 1 requires daena-atlas-relief",
+            ));
+        }
+        if Uuid::parse_str(&self.map_entity_id).is_err() {
+            return Err(studio_invalid("atlas studio map entity ID must be a UUID"));
+        }
+        let mut layers = self.active_layer_ids.clone();
+        if layers.is_empty() {
+            layers = STUDIO_SPIKE_LAYER_IDS
+                .iter()
+                .map(|id| (*id).to_string())
+                .collect();
+        }
+        layers.sort();
+        layers.dedup();
+        let allowed = STUDIO_SPIKE_LAYER_IDS
+            .iter()
+            .map(|id| (*id).to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        if layers.iter().any(|id| !allowed.contains(id)) || layers.len() != allowed.len() {
+            return Err(studio_invalid(
+                "atlas studio iteration 1 requires ocean, relief, ice, and lakes",
+            ));
+        }
+        Ok(Self {
+            schema_version: ATLAS_STUDIO_SESSION_SCHEMA_VERSION,
+            map_entity_id: self.map_entity_id,
+            offset_years: 0,
+            algorithm_version: daena_atlas::ATLAS_DETAIL_ALGORITHM_VERSION,
+            level: DetailLevel::Detailed,
+            variant: 0,
+            style_id: RELIEF_STYLE_ID.to_string(),
+            active_layer_ids: layers,
+            projection: STUDIO_PROJECTION_ID.to_string(),
+            time_kind: "physical-offset-year".into(),
+            authored_year: None,
+        })
+    }
+
+    pub fn scene_request(&self) -> AtlasStudioSceneRequestV1 {
+        AtlasStudioSceneRequestV1 {
+            schema_version: ATLAS_STUDIO_SESSION_SCHEMA_VERSION,
+            offset_years: self.offset_years,
+            algorithm_version: self.algorithm_version,
+            level: self.level,
+            variant: self.variant,
+            style_id: self.style_id.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AtlasStudioCapture {
+    pub session: AtlasStudioSessionRequestV1,
+    pub scene: AtlasStudioSceneRequestV1,
+    pub snapshot: AtlasRenderSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AtlasCacheRegenerateResult {
+    pub deleted_entries: u32,
+}
+
+fn studio_invalid(message: impl Into<String>) -> CoreError {
+    CoreError::Validation(format!(
+        "{}: {}",
+        CODE_STUDIO_REQUEST_INVALID,
+        message.into()
+    ))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -179,6 +330,9 @@ pub fn capabilities_for_descriptor(descriptor: &Value, layers: &Value) -> AtlasR
         max_pixel_count: daena_atlas::request::MAX_PIXEL_COUNT,
         supports_authored_layers: false,
         supports_semantic_layers: false,
+        supports_studio: supported,
+        studio_max_zoom: if supported { STUDIO_MAX_ZOOM } else { 0 },
+        studio_tile_size: if supported { STUDIO_TILE_SIZE } else { 0 },
         calendar_binding: None,
         presets: Vec::new(),
     }
@@ -467,6 +621,107 @@ pub fn capture_snapshot(
         diagnostics,
         binding_revision,
     })
+}
+
+pub fn capture_studio_session(
+    project: &ProjectStore,
+    request: AtlasStudioSessionRequestV1,
+) -> Result<AtlasStudioCapture, CoreError> {
+    let capabilities = capabilities_for_map(project, &request.map_entity_id)?;
+    if !capabilities.supported || !capabilities.supports_studio {
+        return Err(CoreError::Validation(format!(
+            "{CODE_STUDIO_UNSUPPORTED}: map provider does not support atlas studio"
+        )));
+    }
+    let session = request.normalize()?;
+    let scene = session
+        .scene_request()
+        .normalize()
+        .map_err(|error| CoreError::Validation(format!("{}: {}", error.code, error.message)))?;
+    let render = scene
+        .as_render_request(STUDIO_TILE_SIZE)
+        .and_then(|request| request.normalize())
+        .map_err(|error| CoreError::Validation(format!("{}: {}", error.code, error.message)))?;
+    let snapshot = capture_snapshot(project, &session.map_entity_id, render)?;
+    Ok(AtlasStudioCapture {
+        session,
+        scene,
+        snapshot,
+    })
+}
+
+pub fn regenerate_atlas_cache(
+    project: &ProjectStore,
+) -> Result<AtlasCacheRegenerateResult, CoreError> {
+    let root = project.info().ok_or(CoreError::ProjectNotOpen)?.root;
+    let cache = atlas_cache_dir(Path::new(&root));
+    if !cache.exists() {
+        return Ok(AtlasCacheRegenerateResult { deleted_entries: 0 });
+    }
+    let meta = fs::symlink_metadata(&cache).map_err(|source| CoreError::Io {
+        operation: "atlas cache regenerate",
+        source,
+    })?;
+    if meta.file_type().is_symlink() {
+        return Err(CoreError::Validation(
+            "atlas.studio.request.invalid: atlas cache root must not be a symlink".into(),
+        ));
+    }
+    if !meta.is_dir() {
+        return Err(CoreError::Validation(
+            "atlas.studio.request.invalid: atlas cache root must be a directory".into(),
+        ));
+    }
+    let expected = atlas_cache_dir(Path::new(&root));
+    if cache != expected {
+        return Err(CoreError::Validation(
+            "atlas.studio.request.invalid: refused to regenerate a foreign cache".into(),
+        ));
+    }
+    let mut deleted = 0_u32;
+    for entry in fs::read_dir(&cache).map_err(|source| CoreError::Io {
+        operation: "atlas cache regenerate",
+        source,
+    })? {
+        let entry = entry.map_err(|source| CoreError::Io {
+            operation: "atlas cache regenerate",
+            source,
+        })?;
+        let path = entry.path();
+        let meta = fs::symlink_metadata(&path).map_err(|source| CoreError::Io {
+            operation: "atlas cache regenerate",
+            source,
+        })?;
+        if meta.file_type().is_symlink() {
+            return Err(CoreError::Validation(
+                "atlas.studio.request.invalid: atlas cache refused a symlink".into(),
+            ));
+        }
+        if !meta.is_file() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !is_atlas_cache_entry_name(&name) {
+            continue;
+        }
+        fs::remove_file(&path).map_err(|source| CoreError::Io {
+            operation: "atlas cache regenerate",
+            source,
+        })?;
+        deleted = deleted.saturating_add(1);
+    }
+    Ok(AtlasCacheRegenerateResult {
+        deleted_entries: deleted,
+    })
+}
+
+fn is_atlas_cache_entry_name(name: &str) -> bool {
+    name == "index.json"
+        || name == "index.json.part"
+        || name.ends_with(".bin")
+        || name.ends_with(".bin.part")
+        || name.ends_with(".json.part")
 }
 
 fn collect_overlays(
@@ -771,6 +1026,10 @@ mod tests {
         assert_eq!(supported.formats, vec!["png", "svg", "pdf"]);
         assert!(supported.styles.contains(&"daena-atlas-relief".into()));
         assert!(supported.styles.contains(&"daena-atlas-political".into()));
+        assert!(supported.supports_studio);
+        assert_eq!(supported.studio_max_zoom, 8);
+        assert_eq!(supported.studio_tile_size, 256);
+        assert!(!capabilities.supports_studio);
     }
 
     #[test]
@@ -869,6 +1128,37 @@ mod tests {
             .unwrap();
         let after = store.content_generation().unwrap();
         assert!(after > snapshot.content_generation);
+        let studio = capture_studio_session(
+            &store,
+            AtlasStudioSessionRequestV1::iteration_1(&accepted.entity.id),
+        )
+        .unwrap();
+        assert_eq!(studio.session.offset_years, 0);
+        assert_eq!(studio.scene.style_id, "daena-atlas-relief");
+        assert_eq!(store.content_generation().unwrap(), after);
+        let mut foreign = AtlasStudioSessionRequestV1::iteration_1(&accepted.entity.id);
+        foreign.style_id = "daena-atlas-antique".into();
+        assert!(foreign.normalize().is_err());
+        let cache = atlas_cache_dir(&root);
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("index.json"), b"{}").unwrap();
+        std::fs::write(cache.join("aa.bin"), b"payload").unwrap();
+        std::fs::write(cache.join("keep-me.txt"), b"no").unwrap();
+        let regenerated = regenerate_atlas_cache(&store).unwrap();
+        assert_eq!(regenerated.deleted_entries, 2);
+        assert!(!cache.join("index.json").exists());
+        assert!(cache.join("keep-me.txt").exists());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn studio_session_rejects_unknown_projection_and_non_reference_epoch() {
+        let mut request =
+            AtlasStudioSessionRequestV1::iteration_1("00000000-0000-4000-8000-000000000001");
+        request.projection = "equirectangular".into();
+        assert!(request.normalize().is_err());
+        request = AtlasStudioSessionRequestV1::iteration_1("00000000-0000-4000-8000-000000000001");
+        request.offset_years = 42;
+        assert!(request.normalize().is_err());
     }
 }

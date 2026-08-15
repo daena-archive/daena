@@ -33,6 +33,7 @@ use tauri::{Emitter, Manager};
 
 mod ai;
 mod atlas_jobs;
+mod atlas_studio;
 mod settings;
 
 use settings::{AppSettings, AppSettingsUpdate, SettingsStore};
@@ -47,6 +48,7 @@ type SharedPluginHost = Arc<Mutex<PluginHost>>;
 type SharedBinaryTransfers = Arc<Mutex<BinaryTransferManager>>;
 type SharedPhysicalJobs = Arc<Mutex<PhysicalJobManager>>;
 type SharedAtlasJobs = Arc<Mutex<crate::atlas_jobs::AtlasJobManager>>;
+type SharedAtlasStudio = Arc<Mutex<crate::atlas_studio::AtlasStudioManager>>;
 type SharedSettings = Arc<Mutex<SettingsStore>>;
 const READ_CONNECTION_POOL_CAPACITY: usize = 4;
 const PHYSICAL_JOB_TTL: Duration = Duration::from_secs(15 * 60);
@@ -57,6 +59,8 @@ static HISTORICAL_EPOCH_REQUESTS: OnceLock<Mutex<BTreeMap<String, Arc<AtomicU64>
     OnceLock::new();
 const PHYSICAL_HISTORICAL_PROGRESS_EVENT: &str = "physical-historical-progress";
 const ATLAS_PROGRESS_EVENT: &str = "atlas-progress";
+const ATLAS_STUDIO_PROGRESS_EVENT: &str = "atlas-studio-progress";
+static ATLAS_STUDIO: OnceLock<SharedAtlasStudio> = OnceLock::new();
 
 fn new_shared_core() -> SharedCore {
     Arc::new(Mutex::new(Arc::new(ProjectSession {
@@ -334,6 +338,9 @@ fn cancel_physical_jobs(jobs: &SharedPhysicalJobs) -> Result<(), String> {
         .cancel_all();
     if let Some(atlas) = ATLAS_JOBS.get() {
         atlas_jobs::cancel_atlas_jobs(atlas)?;
+    }
+    if let Some(studio) = ATLAS_STUDIO.get() {
+        atlas_studio::cancel_atlas_studio(studio)?;
     }
     Ok(())
 }
@@ -8698,6 +8705,10 @@ pub fn run() {
     let physical_jobs = Arc::new(Mutex::new(PhysicalJobManager::default()));
     let atlas_jobs = Arc::new(Mutex::new(atlas_jobs::AtlasJobManager::default()));
     let _ = ATLAS_JOBS.set(atlas_jobs.clone());
+    let atlas_studio = Arc::new(Mutex::new(atlas_studio::AtlasStudioManager::default()));
+    let _ = ATLAS_STUDIO.set(atlas_studio.clone());
+    let protocol_studio = atlas_studio.clone();
+    let protocol_studio_core = core.clone();
     let protocol_ai_runtime = Arc::new(Mutex::new(ai::AiRuntime::default()));
     let startup_plugins = plugins.clone();
     let watcher = Arc::new(Mutex::new(ProjectWatcher::default()));
@@ -8761,6 +8772,19 @@ pub fn run() {
                 &protocol_ai_runtime,
             )
         })
+        .register_asynchronous_uri_scheme_protocol(
+            "atlas-studio",
+            move |ctx, request, responder| {
+                let studio = protocol_studio.clone();
+                let core = protocol_studio_core.clone();
+                let label = ctx.webview_label().to_string();
+                tauri::async_runtime::spawn_blocking(move || {
+                    responder.respond(atlas_studio::protocol_response(
+                        &studio, &core, &request, &label,
+                    ));
+                });
+            },
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(core)
@@ -8768,6 +8792,7 @@ pub fn run() {
         .manage(transfers)
         .manage(physical_jobs)
         .manage(atlas_jobs)
+        .manage(atlas_studio)
         .manage(watcher)
         .manage(ai_runtime)
         .invoke_handler(tauri::generate_handler![
@@ -8900,6 +8925,10 @@ pub fn run() {
             atlas_jobs::project_atlas_job_cancel,
             atlas_jobs::project_atlas_artifact_save,
             atlas_jobs::project_atlas_artifact_discard,
+            atlas_studio::project_atlas_studio_open,
+            atlas_studio::project_atlas_studio_close,
+            atlas_studio::project_atlas_studio_status,
+            atlas_studio::project_atlas_studio_regenerate_cache,
             project_read_asset_bytes,
             project_create_raster_layer,
             project_create_semantic_layer,

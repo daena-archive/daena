@@ -97,6 +97,10 @@ try {
     ["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "--offline", "--lib", "atlas_jobs"],
     { timeout: 180_000 },
   );
+  run(
+    ["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "--offline", "--lib", "atlas_studio"],
+    { timeout: 180_000 },
+  );
   for (const name of [
     "daena-atlas-relief.v1.json",
     "daena-atlas-antique.v1.json",
@@ -118,6 +122,8 @@ try {
   assert.match(panel, /convertFileSrc/);
   const editor = readFileSync(join(root, "src/lib/maps/native-vector/NativeVectorMapEditor.svelte"), "utf8");
   assert.match(editor, /atlasCapabilities/);
+  assert.match(editor, /supportsStudio/);
+  assert.match(editor, /AtlasStudioView/);
   assert.equal(/atlasSupported = descriptor\?\.provider/.test(editor), false);
   run(
     ["test", "--manifest-path", "crates/daena-core/Cargo.toml", "--locked", "--offline", "maps::calendar"],
@@ -228,6 +234,16 @@ try {
   const studioAdr = readFileSync(join(root, "docs/adr/0037-atlas-studio-iteration-0.md"), "utf8");
   assert.match(studioAdr, /Web Mercator XYZ/);
   assert.match(studioAdr, /north-origin/);
+  const studioHost = readFileSync(join(root, "docs/adr/0038-atlas-studio-iteration-1.md"), "utf8");
+  assert.match(studioHost, /AtlasStudioSessionRequestV1/);
+  assert.match(studioHost, /atlas-studio/);
+  assert.match(studioHost, /Access-Control-Allow-Origin|CORS/);
+  const studioView = readFileSync(join(root, "src/lib/maps/atlas/AtlasStudioView.svelte"), "utf8");
+  assert.match(studioView, /maplibre-gl/);
+  assert.match(studioView, /atlasStudioOpen/);
+  assert.match(studioView, /maxParallelImageRequests/);
+  assert.match(studioView, /isTransientTileError/);
+  assert.equal(studioView.includes("getCanvas"), false);
 
   const report = {
     preview: { ...preview.summary, sha256: preview.hash, peakResidentBytes: preview.peakResidentBytes },

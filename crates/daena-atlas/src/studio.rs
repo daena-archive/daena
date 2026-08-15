@@ -28,6 +28,11 @@ pub const CODE_STUDIO_REQUEST_INVALID: &str = "atlas.studio.request.invalid";
 pub const CODE_STUDIO_TILE_INVALID: &str = "atlas.studio.tile.invalid";
 pub const CODE_STUDIO_RESOURCE_LIMIT: &str = "atlas.studio.resource-limit";
 pub const CODE_STUDIO_CANCELLED: &str = "atlas.studio.cancelled";
+pub const CODE_STUDIO_UNSUPPORTED: &str = "atlas.studio.unsupported";
+pub const CODE_STUDIO_STALE: &str = "atlas.studio.stale";
+pub const CODE_STUDIO_EXPIRED: &str = "atlas.studio.expired";
+pub const CODE_STUDIO_TILE_FAILED: &str = "atlas.studio.tile.failed";
+pub const CODE_STUDIO_PROTOCOL_DENIED: &str = "atlas.studio.protocol.denied";
 
 pub const STUDIO_SPIKE_LAYER_IDS: [&str; 4] = ["ocean", "relief", "ice", "lakes"];
 

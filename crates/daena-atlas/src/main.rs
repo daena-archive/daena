@@ -124,6 +124,7 @@ fn main() -> Result<(), String> {
             device_scale: scale,
             request_id: String::new(),
         };
+        let prepare_started = Instant::now();
         let scene = prepare_from_source(
             &source,
             &identity,
@@ -135,8 +136,11 @@ fn main() -> Result<(), String> {
             &mut NoopProgress,
         )
         .map_err(|error| error.to_string())?;
+        let prepare_ms = prepare_started.elapsed().as_secs_f64() * 1000.0;
+        let tile_started = Instant::now();
         let tile = render_studio_tile(&scene, &scene_request, &tile_request, &mut NoopProgress)
             .map_err(|error| error.to_string())?;
+        let tile_ms = tile_started.elapsed().as_secs_f64() * 1000.0;
         let burst = args.iter().any(|arg| arg == "--studio-burst");
         let burst_started = Instant::now();
         let mut burst_tiles = 0u32;
@@ -169,7 +173,7 @@ fn main() -> Result<(), String> {
             fs::write(&path, &tile.png).map_err(|error| error.to_string())?;
         }
         println!(
-            "{{\"width\":{},\"height\":{},\"pngBytes\":{},\"artifactBytes\":{},\"rgbaBytes\":{},\"sourceBytes\":{},\"renderMs\":{:.3},\"burstMs\":{:.3},\"burstTiles\":{},\"sourceSha256\":\"{}\",\"identity\":\"{}\",\"rendererVersion\":{},\"offsetYears\":{},\"styleId\":\"{}\",\"format\":\"png\",\"projection\":\"web-mercator\",\"tributaryCount\":{},\"artifactCache\":\"off\",\"residualCache\":\"{}\",\"drainageCache\":\"{}\",\"studioZ\":{},\"studioX\":{},\"studioY\":{}}}",
+            "{{\"width\":{},\"height\":{},\"pngBytes\":{},\"artifactBytes\":{},\"rgbaBytes\":{},\"sourceBytes\":{},\"renderMs\":{:.3},\"prepareMs\":{:.3},\"tileMs\":{:.3},\"burstMs\":{:.3},\"burstTiles\":{},\"sourceSha256\":\"{}\",\"identity\":\"{}\",\"rendererVersion\":{},\"offsetYears\":{},\"styleId\":\"{}\",\"format\":\"png\",\"projection\":\"web-mercator\",\"tributaryCount\":{},\"artifactCache\":\"off\",\"residualCache\":\"{}\",\"drainageCache\":\"{}\",\"studioZ\":{},\"studioX\":{},\"studioY\":{},\"deviceScale\":{}}}",
             tile.width,
             tile.height,
             tile.png.len(),
@@ -177,6 +181,8 @@ fn main() -> Result<(), String> {
             tile.rgba.len(),
             source.len(),
             elapsed_ms,
+            prepare_ms,
+            tile_ms,
             burst_ms,
             burst_tiles,
             scene.source_sha256,
@@ -190,6 +196,7 @@ fn main() -> Result<(), String> {
             tile.z,
             tile.x,
             tile.y,
+            scale,
         );
         return Ok(());
     }

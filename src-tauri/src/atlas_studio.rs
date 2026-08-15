@@ -1,0 +1,773 @@
+//! Bounded Atlas Studio sessions and application-controlled tile bytes.
+
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use daena_atlas::cache::AtlasDiskCache;
+use daena_atlas::studio::{
+    render_studio_tile, AtlasStudioSceneRequestV1, AtlasStudioTileRequestV1, CODE_STUDIO_CANCELLED,
+    CODE_STUDIO_EXPIRED, CODE_STUDIO_PROTOCOL_DENIED, CODE_STUDIO_RESOURCE_LIMIT,
+    CODE_STUDIO_TILE_FAILED, CODE_STUDIO_TILE_INVALID, STUDIO_MAX_DEVICE_SCALE, STUDIO_MAX_ZOOM,
+    STUDIO_TILE_SIZE,
+};
+use daena_atlas::{
+    prepare_from_source, AtlasError, AtlasPhase, AtlasPreparedScene, AtlasProgress, CancelFlag,
+    FlagProgress,
+};
+use daena_core::maps::atlas::{
+    atlas_cache_dir, capture_studio_session, regenerate_atlas_cache, AtlasCacheRegenerateResult,
+    AtlasStudioSessionRequestV1,
+};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter};
+use uuid::Uuid;
+
+use super::{current_info, with_read_project, SharedCore, ATLAS_STUDIO_PROGRESS_EVENT};
+
+const SESSION_IDLE: Duration = Duration::from_secs(15 * 60);
+const MAX_SESSIONS: usize = 4;
+const MAX_WAITING_TILES: u32 = 24;
+const MAX_TILE_PNG_BYTES: usize = 2 * 1024 * 1024;
+static WAITING_TILES: AtomicU32 = AtomicU32::new(0);
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AtlasStudioSessionStatus {
+    pub session_token: String,
+    pub map_entity_id: String,
+    pub tile_url_template: String,
+    pub max_zoom: u32,
+    pub tile_size: u32,
+    pub device_scale: u32,
+    pub captured_content_generation: i64,
+    pub current_content_generation: Option<i64>,
+    pub style_id: String,
+    pub offset_years: i64,
+    pub projection: String,
+    pub stage: String,
+    pub error: Option<String>,
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AtlasStudioOpenInput {
+    pub request: AtlasStudioSessionRequestV1,
+    pub device_scale: Option<u32>,
+}
+
+struct StudioSession {
+    token: String,
+    project_id: String,
+    map_entity_id: String,
+    scene: AtlasStudioSceneRequestV1,
+    prepared: Arc<AtlasPreparedScene>,
+    captured_content_generation: i64,
+    device_scale: u32,
+    cancel: Arc<CancelFlag>,
+    last_used: Instant,
+    style_id: String,
+    offset_years: i64,
+}
+
+#[derive(Default)]
+pub struct AtlasStudioManager {
+    sessions: BTreeMap<String, StudioSession>,
+    tile_lock: Arc<Mutex<()>>,
+}
+
+impl AtlasStudioManager {
+    fn reap(&mut self) {
+        let now = Instant::now();
+        self.sessions.retain(|_, session| {
+            if session.cancel.is_cancelled() || session.last_used + SESSION_IDLE <= now {
+                session.cancel.cancel();
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    pub fn cancel_all(&mut self) {
+        for session in self.sessions.values() {
+            session.cancel.cancel();
+        }
+        self.sessions.clear();
+    }
+
+    fn cancel_map(&mut self, project_id: &str, map_entity_id: &str) {
+        let doomed = self
+            .sessions
+            .iter()
+            .filter(|(_, session)| {
+                session.project_id == project_id && session.map_entity_id == map_entity_id
+            })
+            .map(|(token, _)| token.clone())
+            .collect::<Vec<_>>();
+        for token in doomed {
+            if let Some(session) = self.sessions.remove(&token) {
+                session.cancel.cancel();
+            }
+        }
+    }
+
+    fn insert(&mut self, session: StudioSession) -> Result<String, String> {
+        self.reap();
+        self.cancel_map(&session.project_id, &session.map_entity_id);
+        while self.sessions.len() >= MAX_SESSIONS {
+            let oldest = self
+                .sessions
+                .iter()
+                .min_by_key(|(_, session)| session.last_used)
+                .map(|(token, _)| token.clone());
+            let Some(token) = oldest else {
+                break;
+            };
+            if let Some(session) = self.sessions.remove(&token) {
+                session.cancel.cancel();
+            }
+        }
+        if self.sessions.len() >= MAX_SESSIONS {
+            return Err(format!(
+                "{CODE_STUDIO_RESOURCE_LIMIT}: atlas studio session limit reached"
+            ));
+        }
+        let token = session.token.clone();
+        self.sessions.insert(token.clone(), session);
+        Ok(token)
+    }
+
+    fn close(&mut self, token: &str) {
+        if let Some(session) = self.sessions.remove(token) {
+            session.cancel.cancel();
+        }
+    }
+
+    fn status(&mut self, token: &str) -> Result<AtlasStudioSessionStatus, String> {
+        self.reap();
+        let session = self
+            .sessions
+            .get(token)
+            .ok_or_else(|| format!("{CODE_STUDIO_EXPIRED}: atlas studio session expired"))?;
+        Ok(status_from(session, None))
+    }
+}
+
+fn status_from(
+    session: &StudioSession,
+    current_generation: Option<i64>,
+) -> AtlasStudioSessionStatus {
+    AtlasStudioSessionStatus {
+        session_token: session.token.clone(),
+        map_entity_id: session.map_entity_id.clone(),
+        tile_url_template: tile_url_template(&session.token, session.device_scale),
+        max_zoom: STUDIO_MAX_ZOOM,
+        tile_size: STUDIO_TILE_SIZE,
+        device_scale: session.device_scale,
+        captured_content_generation: session.captured_content_generation,
+        current_content_generation: current_generation,
+        style_id: session.style_id.clone(),
+        offset_years: session.offset_years,
+        projection: daena_atlas::studio::STUDIO_PROJECTION_ID.to_string(),
+        stage: "ready".into(),
+        error: None,
+        error_code: None,
+    }
+}
+
+pub fn tile_url_template(token: &str, device_scale: u32) -> String {
+    #[cfg(windows)]
+    {
+        format!("http://atlas-studio.localhost/{token}/{{z}}/{{x}}/{{y}}.png?scale={device_scale}")
+    }
+    #[cfg(not(windows))]
+    {
+        format!("atlas-studio://localhost/{token}/{{z}}/{{x}}/{{y}}.png?scale={device_scale}")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedStudioTile {
+    pub token: String,
+    pub z: u32,
+    pub x: u32,
+    pub y: u32,
+    pub device_scale: u32,
+}
+
+pub fn parse_studio_tile_request(
+    request: &tauri::http::Request<Vec<u8>>,
+) -> Result<ParsedStudioTile, AtlasError> {
+    if request.method() != tauri::http::Method::GET {
+        return Err(protocol_denied(
+            "atlas studio protocol accepts GET after OPTIONS preflight",
+        ));
+    }
+    if !request.body().is_empty() {
+        return Err(protocol_denied(
+            "atlas studio protocol rejects a request body",
+        ));
+    }
+    let path = request.uri().path().trim_start_matches('/');
+    if path.contains("..") || path.contains('\\') {
+        return Err(protocol_denied("atlas studio protocol refused a traversal"));
+    }
+    let mut parts = path.split('/');
+    let token = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .ok_or_else(|| protocol_denied("atlas studio protocol requires a session token"))?;
+    Uuid::parse_str(token).map_err(|_| protocol_denied("atlas studio token is invalid"))?;
+    let z = parse_tile_part(parts.next(), "z")?;
+    let x = parse_tile_part(parts.next(), "x")?;
+    let y_png = parts
+        .next()
+        .ok_or_else(|| protocol_denied("atlas studio protocol requires z/x/y.png"))?;
+    if parts.next().is_some() {
+        return Err(protocol_denied(
+            "atlas studio protocol refused extra path segments",
+        ));
+    }
+    let y = y_png
+        .strip_suffix(".png")
+        .ok_or_else(|| protocol_denied("atlas studio protocol serves PNG tiles only"))?;
+    let y = y
+        .parse::<u32>()
+        .map_err(|_| studio_tile_invalid("atlas studio tile y is invalid"))?;
+    let mut device_scale = 1;
+    if let Some(query) = request.uri().query() {
+        for part in query.split('&') {
+            if let Some(value) = part.strip_prefix("scale=") {
+                device_scale = value
+                    .parse::<u32>()
+                    .map_err(|_| studio_tile_invalid("atlas studio device scale must be 1 or 2"))?;
+            } else if !part.is_empty() {
+                return Err(protocol_denied("atlas studio protocol refused a query"));
+            }
+        }
+    }
+    if device_scale == 0 || device_scale > STUDIO_MAX_DEVICE_SCALE {
+        return Err(studio_tile_invalid(
+            "atlas studio device scale must be 1 or 2",
+        ));
+    }
+    if z > STUDIO_MAX_ZOOM {
+        return Err(studio_tile_invalid(
+            "atlas studio zoom exceeds the locked maximum",
+        ));
+    }
+    Ok(ParsedStudioTile {
+        token: token.to_string(),
+        z,
+        x,
+        y,
+        device_scale,
+    })
+}
+
+fn parse_tile_part(part: Option<&str>, label: &str) -> Result<u32, AtlasError> {
+    let part = part
+        .filter(|part| !part.is_empty())
+        .ok_or_else(|| protocol_denied(format!("atlas studio protocol requires {label}")))?;
+    part.parse::<u32>()
+        .map_err(|_| studio_tile_invalid(format!("atlas studio tile {label} is invalid")))
+}
+
+fn protocol_denied(message: impl Into<String>) -> AtlasError {
+    AtlasError::new(CODE_STUDIO_PROTOCOL_DENIED, message)
+}
+
+fn studio_tile_invalid(message: impl Into<String>) -> AtlasError {
+    AtlasError::new(CODE_STUDIO_TILE_INVALID, message)
+}
+
+fn apply_cors(builder: tauri::http::response::Builder) -> tauri::http::response::Builder {
+    builder
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        .header("Access-Control-Allow-Headers", "*")
+}
+
+pub fn protocol_response(
+    studio: &Arc<Mutex<AtlasStudioManager>>,
+    core: &SharedCore,
+    request: &tauri::http::Request<Vec<u8>>,
+    webview_label: &str,
+) -> tauri::http::Response<Vec<u8>> {
+    if webview_label != "main" {
+        return error_response_message(
+            CODE_STUDIO_PROTOCOL_DENIED,
+            "atlas studio protocol is limited to the main window",
+            403,
+        );
+    }
+    if request.method() == tauri::http::Method::OPTIONS {
+        return apply_cors(tauri::http::Response::builder())
+            .status(204)
+            .header("Access-Control-Max-Age", "600")
+            .header("Cache-Control", "no-store")
+            .body(Vec::new())
+            .unwrap_or_else(|_| error_response(CODE_STUDIO_TILE_FAILED, 500));
+    }
+    match serve_studio_tile(studio, core, request) {
+        Ok(png) => apply_cors(tauri::http::Response::builder())
+            .status(200)
+            .header("Content-Type", "image/png")
+            .header("Content-Length", png.len().to_string())
+            .header("X-Content-Type-Options", "nosniff")
+            .header("Cache-Control", "no-store")
+            .body(png)
+            .unwrap_or_else(|_| error_response(CODE_STUDIO_TILE_FAILED, 500)),
+        Err(error) => {
+            let status = match error.code {
+                CODE_STUDIO_PROTOCOL_DENIED => 403,
+                CODE_STUDIO_EXPIRED => 404,
+                CODE_STUDIO_RESOURCE_LIMIT => 503,
+                CODE_STUDIO_CANCELLED => 409,
+                CODE_STUDIO_TILE_INVALID => 400,
+                _ => 500,
+            };
+            error_response_message(error.code, &error.message, status)
+        }
+    }
+}
+
+fn error_response(code: &str, status: u16) -> tauri::http::Response<Vec<u8>> {
+    error_response_message(code, code, status)
+}
+
+fn error_response_message(
+    code: &str,
+    message: &str,
+    status: u16,
+) -> tauri::http::Response<Vec<u8>> {
+    let body = format!("{code}\n").into_bytes();
+    apply_cors(tauri::http::Response::builder())
+        .status(status)
+        .header("Content-Type", "text/plain; charset=utf-8")
+        .header("X-Content-Type-Options", "nosniff")
+        .header("X-Atlas-Studio-Error", code)
+        .header("Cache-Control", "no-store")
+        .body(body)
+        .unwrap_or_else(|_| tauri::http::Response::new(format!("{code}: {message}\n").into_bytes()))
+}
+
+fn serve_studio_tile(
+    studio: &Arc<Mutex<AtlasStudioManager>>,
+    core: &SharedCore,
+    request: &tauri::http::Request<Vec<u8>>,
+) -> Result<Vec<u8>, AtlasError> {
+    let parsed = parse_studio_tile_request(request)?;
+    let waiting = WAITING_TILES.fetch_add(1, Ordering::SeqCst) + 1;
+    if waiting > MAX_WAITING_TILES {
+        WAITING_TILES.fetch_sub(1, Ordering::SeqCst);
+        return Err(AtlasError::new(
+            CODE_STUDIO_RESOURCE_LIMIT,
+            "atlas studio tile queue is full",
+        ));
+    }
+    let tile_lock = {
+        let manager = studio
+            .lock()
+            .map_err(|_| AtlasError::new(CODE_STUDIO_TILE_FAILED, "atlas studio lock poisoned"))?;
+        manager.tile_lock.clone()
+    };
+    let _gate = tile_lock
+        .lock()
+        .map_err(|_| AtlasError::new(CODE_STUDIO_TILE_FAILED, "atlas studio tile lock poisoned"));
+    WAITING_TILES.fetch_sub(1, Ordering::SeqCst);
+    let (prepared, scene, cancel, device_scale) = {
+        let mut manager = studio
+            .lock()
+            .map_err(|_| AtlasError::new(CODE_STUDIO_TILE_FAILED, "atlas studio lock poisoned"))?;
+        manager.reap();
+        let session = manager
+            .sessions
+            .get_mut(&parsed.token)
+            .ok_or_else(|| AtlasError::new(CODE_STUDIO_EXPIRED, "atlas studio session expired"))?;
+        let current_project = current_info(core)
+            .ok()
+            .flatten()
+            .map(|info| info.root)
+            .unwrap_or_default();
+        if current_project != session.project_id {
+            return Err(protocol_denied(
+                "atlas studio token does not match the open project",
+            ));
+        }
+        if session.cancel.is_cancelled() {
+            return Err(AtlasError::new(
+                CODE_STUDIO_EXPIRED,
+                "atlas studio session expired",
+            ));
+        }
+        if parsed.device_scale != session.device_scale {
+            return Err(studio_tile_invalid(
+                "atlas studio device scale does not match the session",
+            ));
+        }
+        session.last_used = Instant::now();
+        (
+            session.prepared.clone(),
+            session.scene.clone(),
+            session.cancel.clone(),
+            session.device_scale,
+        )
+    };
+    let _gate = _gate?;
+    if cancel.is_cancelled() {
+        return Err(AtlasError::new(
+            CODE_STUDIO_CANCELLED,
+            "atlas studio cancelled",
+        ));
+    }
+    let tile = AtlasStudioTileRequestV1 {
+        schema_version: daena_atlas::studio::ATLAS_STUDIO_TILE_SCHEMA_VERSION,
+        z: parsed.z,
+        x: parsed.x,
+        y: parsed.y,
+        tile_size: STUDIO_TILE_SIZE,
+        device_scale,
+        request_id: String::new(),
+    };
+    let mut progress = FlagProgress {
+        flag: cancel.as_ref(),
+    };
+    let rendered =
+        render_studio_tile(&prepared, &scene, &tile, &mut progress).map_err(|error| {
+            if error.code == CODE_STUDIO_CANCELLED
+                || error.code == daena_atlas::CODE_RENDER_CANCELLED
+            {
+                AtlasError::new(CODE_STUDIO_CANCELLED, error.message)
+            } else if error.code == CODE_STUDIO_TILE_INVALID
+                || error.code == CODE_STUDIO_RESOURCE_LIMIT
+            {
+                error
+            } else {
+                AtlasError::new(CODE_STUDIO_TILE_FAILED, error.message)
+            }
+        })?;
+    if rendered.png.len() > MAX_TILE_PNG_BYTES {
+        return Err(AtlasError::new(
+            CODE_STUDIO_RESOURCE_LIMIT,
+            "atlas studio tile exceeded the encoded-byte budget",
+        ));
+    }
+    Ok(rendered.png)
+}
+
+struct SessionProgress {
+    app: AppHandle,
+    token: String,
+    map_entity_id: String,
+}
+
+impl AtlasProgress for SessionProgress {
+    fn report(&mut self, phase: AtlasPhase, completed: u32, total: u32) -> Result<(), AtlasError> {
+        let _ = self.app.emit(
+            ATLAS_STUDIO_PROGRESS_EVENT,
+            serde_json::json!({
+                "sessionToken": self.token,
+                "mapEntityId": self.map_entity_id,
+                "stage": phase.label(),
+                "completed": completed,
+                "total": total,
+            }),
+        );
+        Ok(())
+    }
+}
+
+#[tauri::command]
+pub async fn project_atlas_studio_open(
+    state: tauri::State<'_, SharedCore>,
+    studio: tauri::State<'_, Arc<Mutex<AtlasStudioManager>>>,
+    app: AppHandle,
+    input: AtlasStudioOpenInput,
+) -> Result<AtlasStudioSessionStatus, String> {
+    let project_id = current_info(state.inner())?
+        .ok_or_else(|| "open a project before opening atlas studio".to_string())?
+        .root;
+    let device_scale = input.device_scale.unwrap_or(1);
+    if device_scale == 0 || device_scale > STUDIO_MAX_DEVICE_SCALE {
+        return Err(format!(
+            "{}: atlas studio device scale must be 1 or 2",
+            daena_atlas::studio::CODE_STUDIO_REQUEST_INVALID
+        ));
+    }
+    let capture = with_read_project(state, move |project| {
+        capture_studio_session(project, input.request)
+    })
+    .await?;
+    let token = Uuid::new_v4().to_string();
+    let cache_dir = atlas_cache_dir(Path::new(&project_id));
+    let identity = capture.snapshot.identity.clone();
+    let source = capture.snapshot.source_bytes.clone();
+    let forcing = capture.snapshot.forcing;
+    let render = capture
+        .scene
+        .as_render_request(STUDIO_TILE_SIZE)
+        .and_then(|request| request.normalize())
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    let mut progress = SessionProgress {
+        app,
+        token: token.clone(),
+        map_entity_id: capture.session.map_entity_id.clone(),
+    };
+    let prepared = tauri::async_runtime::spawn_blocking(move || {
+        let cache = AtlasDiskCache::open(&cache_dir).ok();
+        prepare_from_source(
+            &source,
+            identity.as_bytes(),
+            &render,
+            Some(forcing),
+            cache.as_ref(),
+            &mut progress,
+        )
+    })
+    .await
+    .map_err(|error| format!("{CODE_STUDIO_TILE_FAILED}: {error}"))?
+    .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    let session = StudioSession {
+        token: token.clone(),
+        project_id,
+        map_entity_id: capture.session.map_entity_id.clone(),
+        scene: capture.scene,
+        prepared: Arc::new(prepared),
+        captured_content_generation: capture.snapshot.content_generation,
+        device_scale,
+        cancel: Arc::new(CancelFlag::default()),
+        last_used: Instant::now(),
+        style_id: capture.session.style_id.clone(),
+        offset_years: capture.session.offset_years,
+    };
+    let status = status_from(&session, Some(capture.snapshot.content_generation));
+    studio
+        .lock()
+        .map_err(|_| "atlas studio state is unavailable".to_string())?
+        .insert(session)?;
+    Ok(status)
+}
+
+#[tauri::command]
+pub async fn project_atlas_studio_close(
+    studio: tauri::State<'_, Arc<Mutex<AtlasStudioManager>>>,
+    session_token: String,
+) -> Result<(), String> {
+    studio
+        .lock()
+        .map_err(|_| "atlas studio state is unavailable".to_string())?
+        .close(&session_token);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn project_atlas_studio_status(
+    state: tauri::State<'_, SharedCore>,
+    studio: tauri::State<'_, Arc<Mutex<AtlasStudioManager>>>,
+    session_token: String,
+) -> Result<AtlasStudioSessionStatus, String> {
+    let mut status = studio
+        .lock()
+        .map_err(|_| "atlas studio state is unavailable".to_string())?
+        .status(&session_token)?;
+    if let Ok(current) = with_read_project(state, |project| project.content_generation()).await {
+        status.current_content_generation = Some(current);
+        if current > status.captured_content_generation {
+            status.error_code = Some(daena_atlas::studio::CODE_STUDIO_STALE.into());
+            status.error = Some("The project changed after this Atlas session.".into());
+        }
+    }
+    Ok(status)
+}
+
+#[tauri::command]
+pub async fn project_atlas_studio_regenerate_cache(
+    state: tauri::State<'_, SharedCore>,
+) -> Result<AtlasCacheRegenerateResult, String> {
+    with_read_project(state, regenerate_atlas_cache).await
+}
+
+pub fn cancel_atlas_studio(studio: &Arc<Mutex<AtlasStudioManager>>) -> Result<(), String> {
+    studio
+        .lock()
+        .map_err(|_| "atlas studio state is unavailable".to_string())?
+        .cancel_all();
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn get(uri: &str) -> tauri::http::Request<Vec<u8>> {
+        tauri::http::Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Vec::new())
+            .unwrap()
+    }
+
+    #[test]
+    fn tile_url_parser_accepts_png_and_denies_writes_and_traversal() {
+        let token = "00000000-0000-4000-8000-0000000000ab";
+        let parsed = parse_studio_tile_request(&get(&format!(
+            "atlas-studio://localhost/{token}/3/2/1.png?scale=2"
+        )))
+        .unwrap();
+        assert_eq!(parsed.z, 3);
+        assert_eq!(parsed.x, 2);
+        assert_eq!(parsed.y, 1);
+        assert_eq!(parsed.device_scale, 2);
+
+        let post = tauri::http::Request::builder()
+            .method("POST")
+            .uri(format!("atlas-studio://localhost/{token}/0/0/0.png"))
+            .body(Vec::new())
+            .unwrap();
+        assert_eq!(
+            parse_studio_tile_request(&post).unwrap_err().code,
+            CODE_STUDIO_PROTOCOL_DENIED
+        );
+        assert_eq!(
+            parse_studio_tile_request(&get(&format!(
+                "atlas-studio://localhost/{token}/../0/0.png"
+            )))
+            .unwrap_err()
+            .code,
+            CODE_STUDIO_PROTOCOL_DENIED
+        );
+        assert_eq!(
+            parse_studio_tile_request(&get(&format!("atlas-studio://localhost/{token}/0/0/0.svg")))
+                .unwrap_err()
+                .code,
+            CODE_STUDIO_PROTOCOL_DENIED
+        );
+        assert_eq!(
+            parse_studio_tile_request(&get("atlas-studio://localhost/not-a-uuid/0/0/0.png"))
+                .unwrap_err()
+                .code,
+            CODE_STUDIO_PROTOCOL_DENIED
+        );
+    }
+
+    #[test]
+    fn session_registry_caps_and_replaces_per_map() {
+        let mut manager = AtlasStudioManager::default();
+        let settings = daena_physical::GenerationSettings {
+            width: 16,
+            height: 8,
+            radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
+            target_land_fraction_ppm: 300_000,
+        };
+        let world =
+            daena_physical::generate_world(settings, 831_429, 0, &mut daena_physical::NoopProgress)
+                .unwrap();
+        let identity = daena_atlas::spike_identity_from_source(&world.source);
+        let scene = AtlasStudioSceneRequestV1::spike().normalize().unwrap();
+        let request = scene.as_render_request(STUDIO_TILE_SIZE).unwrap();
+        let prepared = Arc::new(
+            prepare_from_source(
+                &world.source,
+                &identity,
+                &request,
+                None,
+                None,
+                &mut daena_atlas::NoopProgress,
+            )
+            .unwrap(),
+        );
+        for index in 0..4 {
+            let token = Uuid::new_v4().to_string();
+            manager
+                .insert(StudioSession {
+                    token,
+                    project_id: format!("/tmp/p{index}"),
+                    map_entity_id: format!("00000000-0000-4000-8000-00000000000{index}"),
+                    scene: scene.clone(),
+                    prepared: prepared.clone(),
+                    captured_content_generation: 1,
+                    device_scale: 1,
+                    cancel: Arc::new(CancelFlag::default()),
+                    last_used: Instant::now(),
+                    style_id: scene.style_id.clone(),
+                    offset_years: 0,
+                })
+                .unwrap();
+        }
+        assert_eq!(manager.sessions.len(), 4);
+        let replacement = Uuid::new_v4().to_string();
+        manager
+            .insert(StudioSession {
+                token: replacement.clone(),
+                project_id: "/tmp/p0".into(),
+                map_entity_id: "00000000-0000-4000-8000-000000000000".into(),
+                scene: scene.clone(),
+                prepared: prepared.clone(),
+                captured_content_generation: 1,
+                device_scale: 1,
+                cancel: Arc::new(CancelFlag::default()),
+                last_used: Instant::now(),
+                style_id: scene.style_id.clone(),
+                offset_years: 0,
+            })
+            .unwrap();
+        assert_eq!(manager.sessions.len(), 4);
+        assert!(manager.sessions.contains_key(&replacement));
+        manager.close(&replacement);
+        assert!(!manager.sessions.contains_key(&replacement));
+        manager.cancel_all();
+        assert!(manager.sessions.is_empty());
+    }
+
+    #[test]
+    fn guessed_token_is_expired_not_a_path_leak() {
+        let studio = Arc::new(Mutex::new(AtlasStudioManager::default()));
+        let core = crate::new_shared_core();
+        let token = "00000000-0000-4000-8000-0000000000cd";
+        let request = get(&format!("atlas-studio://localhost/{token}/0/0/0.png"));
+        let response = protocol_response(&studio, &core, &request, "main");
+        assert_eq!(response.status(), 404);
+        let body = String::from_utf8_lossy(response.body());
+        assert!(body.contains(CODE_STUDIO_EXPIRED));
+        assert!(!body.contains("/Users"));
+        assert!(!body.contains(".daena"));
+        assert_eq!(
+            response.headers().get("Content-Type").unwrap(),
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(
+            response.headers().get("X-Content-Type-Options").unwrap(),
+            "nosniff"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("Access-Control-Allow-Origin")
+                .unwrap(),
+            "*"
+        );
+        let preflight = tauri::http::Request::builder()
+            .method("OPTIONS")
+            .uri(format!("atlas-studio://localhost/{token}/0/0/0.png"))
+            .body(Vec::new())
+            .unwrap();
+        let options = protocol_response(&studio, &core, &preflight, "main");
+        assert_eq!(options.status(), 204);
+        assert_eq!(
+            options
+                .headers()
+                .get("Access-Control-Allow-Origin")
+                .unwrap(),
+            "*"
+        );
+        assert!(options.body().is_empty());
+        let denied = protocol_response(&studio, &core, &request, "plugin:daena.maps");
+        assert_eq!(denied.status(), 403);
+        assert!(String::from_utf8_lossy(denied.body()).contains(CODE_STUDIO_PROTOCOL_DENIED));
+    }
+}

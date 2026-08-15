@@ -44,6 +44,7 @@ import { physicalWorldOverlayCoordinates, type ImageOverlayCoordinates } from ".
 import { paintPhysicalSurface } from "../physical/raster";
 import PhysicalWorldView from "../physical/PhysicalWorldView.svelte";
 import AtlasRenderPanel from "../atlas/AtlasRenderPanel.svelte";
+import AtlasStudioView from "../atlas/AtlasStudioView.svelte";
 
 let {
   mapId,
@@ -113,6 +114,8 @@ let eventRequestId = $state<string | null>(null);
 let eventRequestSignature = $state("");
 let atlasOpen = $state(false);
 let atlasSupported = $state(false);
+let studioOpen = $state(false);
+let studioSupported = $state(false);
 
 const listedLayers = $derived(
   [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id)),
@@ -403,11 +406,15 @@ async function load() {
     physicalMap = descriptor?.provider?.id === "daena-physical";
     atlasSupported = false;
     atlasOpen = false;
+    studioSupported = false;
+    studioOpen = false;
     try {
       const capabilities = await project.atlasCapabilities(mapId);
       atlasSupported = capabilities.supported;
+      studioSupported = capabilities.supportsStudio;
     } catch {
       atlasSupported = false;
+      studioSupported = false;
     }
     if (descriptor?.defaultView?.center) defaultView = { ...defaultView, center: descriptor.defaultView.center };
     if (typeof descriptor?.defaultView?.zoom === "number")
@@ -882,6 +889,16 @@ onMount(() => {
           title={busy ? "Saving…" : dirty ? "Save" : "Saved"}
           disabled={busy || !dirty}
           onclick={() => void save()}>{@render glyph(icons.save)}</button>
+        {#if studioSupported}
+          <button
+            type="button"
+            class="icon-button"
+            class:active={studioOpen}
+            aria-pressed={studioOpen}
+            aria-label="Atlas Studio"
+            title="Atlas Studio"
+            onclick={() => (studioOpen = !studioOpen)}>Studio</button>
+        {/if}
         {#if atlasSupported}
           <button
             type="button"
@@ -1144,9 +1161,13 @@ onMount(() => {
           source. Delete removes the selected feature.
         </p>
       </aside>
-      {#if physicalMap}
+      {#if physicalMap && !studioOpen}
         <div class="canvas" role="img" aria-label="Physical world map">
           <PhysicalWorldView collection={draft} {layers} raster={background?.canvas ?? null} />
+        </div>
+      {:else if studioOpen && mapId}
+        <div class="canvas" role="img" aria-label="Atlas Studio">
+          <AtlasStudioView {mapId} onexport={() => (atlasOpen = true)} />
         </div>
       {:else}
         <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->

@@ -87,4 +87,27 @@ decision.
 | Darwin 25.6 | `z=8` residual/drainage hit | 31 | 6.6 MiB | 263_189 | same 525_016 bytes |
 
 Maximum zoom `8` stays inside an interactive envelope on this host. Overlay
-halo and Tauri protocol serving remain iteration 1.
+halo remains deferred. Iteration 1 serves these tiles through the
+`atlas-studio` protocol from a captured session; it still writes no tile-PNG
+artifact cache.
+
+## Atlas Studio iteration 1 (ADR 0038)
+
+Same host and golden source. The CLI now reports **prepare** and **per-tile**
+time separately. Device scale `2` evaluates `512 x 512` (`262_144` pixel
+samples). Tile workers stay at one global mutex; a 3×3 pan burst is
+therefore serial.
+
+| Target | Work | Duration ms | Peak RSS | PNG bytes | Cache |
+| ------ | ---- | ----------: | -------: | --------: | ----- |
+| Darwin 25.6 | prepare only (before `z=8`) | 21 | — | — | off |
+| Darwin 25.6 | `z=8` tile, scale `1` (`256²`) | 21 | 9.8 MiB | 263_189 | off |
+| Darwin 25.6 | `z=8` tile, scale `2` (`512²`) | 68 | 9.7 MiB | 1_049_685 | off |
+| Darwin 25.6 | scale `2` + 3×3 burst (9 tiles) | 518 burst (first tile 70) | 14.0 MiB | 1_049_685 | off |
+
+Scale `2` is about 3× scale `1` on this host (`68 / 21`), in line with 4×
+samples plus PNG encode. A serialized worker can drain eight in-flight
+scale-`2` tiles in roughly half a second. The UI caps MapLibre at eight
+parallel image requests so a rapid pan stays under the 24-wait `503`
+limit; a full queue is retryable and must not replace the viewport with
+a sticky error banner.

@@ -26,7 +26,7 @@ pub const ATLAS_REQUEST_SCHEMA_VERSION: u32 = 1;
 pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 2;
 pub const ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 2;
 pub const ATLAS_SEED_POLICY_VERSION: u32 = 1;
-pub const ATLAS_RENDERER_VERSION: u32 = 6;
+pub const ATLAS_RENDERER_VERSION: u32 = 7;
 pub const ATLAS_PROVENANCE_SCHEMA_VERSION: u32 = 1;
 pub const SPIKE_STYLE_ID: &str = "daena-atlas-relief-spike";
 
@@ -220,6 +220,7 @@ pub struct AtlasPreparedScene {
     pub sdf: Vec<i32>,
     pub drainage: drainage::DerivedDrainage,
     pub tectonics: daena_physical::tectonics::TectonicWorld,
+    pub visible_water: render::VisibleWater,
     pub residual_cache: cache::CacheLookup,
     pub drainage_cache: cache::CacheLookup,
 }
@@ -499,6 +500,12 @@ pub fn prepare_from_source(
     };
     amplification.detail.bake_absolute_elevation(&worked_mm);
     let model = amplification.detail;
+    let visible_water = render::classify_visible_water(
+        model.grid,
+        &model.elevations_mm,
+        historical.hydrology.sea_level_mm,
+        &historical.hydrology.lake_cells,
+    );
     progress.report(AtlasPhase::RefiningDetail, 1, 1)?;
     Ok(AtlasPreparedScene {
         identity: identity.to_vec(),
@@ -510,6 +517,7 @@ pub fn prepare_from_source(
         sdf,
         drainage,
         tectonics: world,
+        visible_water,
         residual_cache,
         drainage_cache,
     })
@@ -609,6 +617,7 @@ pub fn render_from_source_cached(
         overlays,
         &scene.drainage.tributaries,
         &scene.tectonics,
+        &scene.visible_water,
         progress,
     )?;
     let mut provenance = provenance::AtlasRenderProvenanceV1::for_request(
@@ -1007,7 +1016,7 @@ mod tests {
             [0, 0, 1, 1]
         );
         assert_eq!(pdf.rgba, region_render.rgba);
-        assert_eq!(pdf.provenance.renderer_version, 6);
+        assert_eq!(pdf.provenance.renderer_version, 7);
         assert!(region_render.tributary_count > 0 || globe_render.tributary_count > 0);
     }
 

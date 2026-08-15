@@ -40,9 +40,9 @@ pub const STUDIO_CURRENT_VIEW_EXPORT_WIDTH: u32 = 2048;
 pub const STUDIO_CURRENT_VIEW_EXPORT_MIN_HEIGHT: u32 = 256;
 pub const STUDIO_CURRENT_VIEW_EXPORT_MAX_HEIGHT: u32 = 2048;
 pub const GOLDEN_TILE_Z0_SHA256: &str =
-    "sha256:6ed0b97af9cbd5ff5da06b5846f68a6af1cbe22a2fe6e6932c0c2f54156ef39a";
+    "sha256:f1470dda92854bba7a77b04060d6ffb3e9cf310af7aceef4e0e04bf7de1bdb31";
 pub const GOLDEN_TILE_Z8_SHA256: &str =
-    "sha256:dd1381438ea6c0059d62f9a8322ea649a0a27f6321a3e9a93b83d64e4b20908f";
+    "sha256:95c823f24e20c45d2ed7965a68b8ca349fb5882882c467c8d0ec3c1c399bf989";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StudioDiagnostic {
@@ -566,6 +566,7 @@ pub fn render_studio_tile_with_overlays(
                 &scene.sdf,
                 &scene.style,
                 &request,
+                &scene.visible_water,
                 lon,
                 lat,
             );
@@ -747,6 +748,7 @@ pub fn render_xyz_region(
                 &scene.sdf,
                 &scene.style,
                 &request,
+                &scene.visible_water,
                 lon,
                 lat,
             );
@@ -966,6 +968,7 @@ mod tests {
                     &scene.sdf,
                     &scene.style,
                     &export_request,
+                    &scene.visible_water,
                     lon,
                     lat,
                 );
@@ -1002,6 +1005,7 @@ mod tests {
                 .unwrap()
                 .normalize()
                 .unwrap(),
+            &scene.visible_water,
             lon_a,
             lat_a,
         );
@@ -1015,6 +1019,7 @@ mod tests {
                 .unwrap()
                 .normalize()
                 .unwrap(),
+            &scene.visible_water,
             lon_a,
             lat_a,
         );
@@ -1272,6 +1277,7 @@ mod tests {
                 .unwrap()
                 .normalize()
                 .unwrap(),
+            &scene.visible_water,
             lon,
             lat,
         );
@@ -1281,6 +1287,7 @@ mod tests {
             &scene.sdf,
             &scene.style,
             &export,
+            &scene.visible_water,
             lon,
             lat,
         );

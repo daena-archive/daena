@@ -160,17 +160,17 @@ try {
   assert.equal(preview.hash, again.hash);
   assert.equal(
     preview.hash,
-    "sha256:b77c9fdc9cdb34046547a156fbcb2c4e313a1d4e3acefc5e3e7352041b22eb4a",
+    "sha256:89dc3554e02c98bdbdbf09a3bfac96c05f9633a768b11b917e96a1f9ee941153",
   );
   const mid = render(4096, 2048, exportPath);
   const max = render(8192, 4096, maxPath);
   assert.equal(
     mid.hash,
-    "sha256:fa5bb7832e4649e93cd12104aa9c7704580aa6ff3a029513be7452e9f3af1e4b",
+    "sha256:2614405c7642a5bdc94b2bf4f980dade3944d43cf3509dc488bcf82f8182739f",
   );
   assert.equal(
     max.hash,
-    "sha256:9cd07bc2b8b47edf650a8bcc11733b30b786574701e461cdf8910ac5d79cad96",
+    "sha256:67b13a71277a6df6e02dc77c7880c12040010f7979ec709d9a63ef0a22cef9c5",
   );
   assert.notEqual(preview.hash, mid.hash);
   assert.notEqual(mid.hash, max.hash);
@@ -227,7 +227,7 @@ try {
   assert.equal(cold.hash, warm.hash);
   assert.equal(cold.summary.artifactCache, "miss");
   assert.equal(warm.summary.artifactCache, "hit");
-  assert.equal(cold.summary.rendererVersion, 6);
+  assert.equal(cold.summary.rendererVersion, 7);
   assert.ok(cold.summary.tributaryCount >= 0);
   const adr = readFileSync(join(root, "docs/adr/0036-atlas-rendering-iteration-4.md"), "utf8");
   assert.match(adr, /atlas-only/);
@@ -298,11 +298,11 @@ try {
   const productionCutover = readFileSync(join(root, "docs/adr/0043-atlas-production-algorithm-2.md"), "utf8");
   assert.match(productionCutover, /Detail algorithm \| `2`/);
   assert.match(productionCutover, /Derived drainage \| `2`/);
-  assert.match(productionCutover, /Renderer \| `6`/);
+  assert.match(productionCutover, /Renderer \| `7`/);
   assert.match(productionCutover, /build_detail_model/);
   assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 2/);
   assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 2/);
-  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_RENDERER_VERSION: u32 = 6/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_RENDERER_VERSION: u32 = 7/);
 
   const report = {
     preview: { ...preview.summary, sha256: preview.hash, peakResidentBytes: preview.peakResidentBytes },

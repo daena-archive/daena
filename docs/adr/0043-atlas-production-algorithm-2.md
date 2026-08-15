@@ -22,7 +22,7 @@ and cache keys change. Seed policy version stays `1` with the
 | -------- | ------------ |
 | Detail algorithm | `2` |
 | Derived drainage | `2` |
-| Renderer | `6` |
+| Renderer | `7` |
 | Seed policy | `1` |
 | `AtlasRenderRequest` / Studio `algorithmVersion` | `2` only |
 
@@ -42,13 +42,14 @@ domain. Residual cache keys use `atlas-cache-residual-v2`; drainage
 cache keys use `atlas-cache-drainage-v2` and store tributaries plus
 `worked_mm`. Old version-`1` entries are misses.
 
-Relief-only golden tiles on the `64 x 32` physical source (renderer `6`,
-algorithm `2`, drainage `2`):
+Relief-only golden tiles on the `64 x 32` physical source (renderer `7`,
+algorithm `2`, drainage `2`). Renderer `7` paints inland water with the same
+eight-cell minimum as the Physical Map so one-cell lakes do not speckle land.
 
 | Tile | Device scale | Locked PNG SHA-256 |
 | ---- | ------------ | ------------------ |
-| `z=0 / x=0 / y=0` | `1` | `sha256:6ed0b97af9cbd5ff5da06b5846f68a6af1cbe22a2fe6e6932c0c2f54156ef39a` |
-| `z=8 / x=120 / y=90` | `1` | `sha256:dd1381438ea6c0059d62f9a8322ea649a0a27f6321a3e9a93b83d64e4b20908f` |
+| `z=0 / x=0 / y=0` | `1` | `sha256:f1470dda92854bba7a77b04060d6ffb3e9cf310af7aceef4e0e04bf7de1bdb31` |
+| `z=8 / x=120 / y=90` | `1` | `sha256:95c823f24e20c45d2ed7965a68b8ca349fb5882882c467c8d0ec3c1c399bf989` |
 
 ### 3. Budgets
 

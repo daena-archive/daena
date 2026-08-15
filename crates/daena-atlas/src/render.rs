@@ -8,6 +8,122 @@ use crate::request::{AtlasRenderRequest, TILE_HALO, TILE_SIZE};
 use crate::style::{apply_shade, hypsometric, AtlasStyle};
 use crate::{AtlasError, AtlasPhase, AtlasProgress};
 
+/// Isolated sinks smaller than this stay land so one-cell puddles do not
+/// speckle continents. Matches `MIN_VISIBLE_INLAND_WATER_CELLS` on the
+/// Physical Map raster.
+pub const MIN_VISIBLE_INLAND_WATER_CELLS: usize = 8;
+
+#[derive(Debug, Clone)]
+pub struct VisibleWater {
+    pub ocean: Vec<bool>,
+    pub inland: Vec<bool>,
+}
+
+fn cardinal_neighbors(width: u32, height: u32, index: usize) -> [Option<usize>; 4] {
+    let w = width as usize;
+    let row = index / w;
+    let col = index % w;
+    let left = if col == 0 { index + w - 1 } else { index - 1 };
+    let right = if col + 1 == w {
+        index + 1 - w
+    } else {
+        index + 1
+    };
+    let north = if row > 0 { Some(index - w) } else { None };
+    let south = if row + 1 < height as usize {
+        Some(index + w)
+    } else {
+        None
+    };
+    [Some(left), Some(right), north, south]
+}
+
+fn flood_component(
+    width: u32,
+    height: u32,
+    start: usize,
+    wet: &[bool],
+    seen: &mut [bool],
+) -> Vec<usize> {
+    let mut cells = Vec::new();
+    let mut stack = vec![start];
+    seen[start] = true;
+    while let Some(index) = stack.pop() {
+        cells.push(index);
+        for next in cardinal_neighbors(width, height, index)
+            .into_iter()
+            .flatten()
+        {
+            if seen[next] || !wet[next] {
+                continue;
+            }
+            seen[next] = true;
+            stack.push(next);
+        }
+    }
+    cells
+}
+
+pub fn classify_visible_water(
+    grid: Grid,
+    elevations_mm: &[i32],
+    sea_level_mm: i32,
+    lake_cells: &[bool],
+) -> VisibleWater {
+    let count = grid.sample_count();
+    let mut ocean = vec![false; count];
+    let mut inland = vec![false; count];
+    if count == 0
+        || elevations_mm.len() != count
+        || lake_cells.len() != count
+        || grid.width == 0
+        || grid.height == 0
+    {
+        return VisibleWater { ocean, inland };
+    }
+    let below_sea: Vec<bool> = elevations_mm
+        .iter()
+        .map(|elevation| *elevation < sea_level_mm)
+        .collect();
+    let mut seen = vec![false; count];
+    let mut largest: Vec<usize> = Vec::new();
+    for index in 0..count {
+        if !below_sea[index] || seen[index] {
+            continue;
+        }
+        let cells = flood_component(grid.width, grid.height, index, &below_sea, &mut seen);
+        if cells.len() > largest.len() {
+            largest = cells;
+        }
+    }
+    for cell in &largest {
+        ocean[*cell] = true;
+    }
+    let inland_wet: Vec<bool> = (0..count)
+        .map(|index| {
+            if ocean[index] {
+                false
+            } else {
+                lake_cells[index] || below_sea[index]
+            }
+        })
+        .collect();
+    seen.fill(false);
+    for index in 0..count {
+        if !inland_wet[index] || seen[index] {
+            continue;
+        }
+        let cells = flood_component(grid.width, grid.height, index, &inland_wet, &mut seen);
+        if cells.len() < MIN_VISIBLE_INLAND_WATER_CELLS {
+            continue;
+        }
+        for cell in cells {
+            inland[cell] = true;
+        }
+    }
+    VisibleWater { ocean, inland }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TileRect {
     pub index: u32,
@@ -77,6 +193,7 @@ pub(crate) fn pixel_rgba(
     sdf: &[i32],
     style: &AtlasStyle,
     request: &AtlasRenderRequest,
+    water: &VisibleWater,
     lon: i32,
     lat: i32,
 ) -> [u8; 4] {
@@ -88,10 +205,12 @@ pub(crate) fn pixel_rgba(
     if request.layer_enabled("ice") && hydrology.ice_cells.get(cell).copied().unwrap_or(false) {
         return apply_shade(style.ice, shade.max(700_000));
     }
-    if request.layer_enabled("lakes") && hydrology.lake_cells.get(cell).copied().unwrap_or(false) {
+    let inland = water.inland.get(cell).copied().unwrap_or(false);
+    if request.layer_enabled("lakes") && inland {
         return apply_shade(style.lake, shade);
     }
-    let land = elevation >= sea;
+    let canon_ocean = water.ocean.get(cell).copied().unwrap_or(false);
+    let land = if canon_ocean { elevation >= sea } else { true };
     if land && !request.layer_enabled("relief") {
         return [
             style.background[0],
@@ -108,7 +227,8 @@ pub(crate) fn pixel_rgba(
             255,
         ];
     }
-    apply_shade(hypsometric(style, elevation, sea), shade)
+    let painted = if land { elevation.max(sea) } else { elevation };
+    apply_shade(hypsometric(style, painted, sea), shade)
 }
 
 pub fn render_rgba(
@@ -122,6 +242,7 @@ pub fn render_rgba(
     overlays: &[crate::overlay::AuthoredFeature],
     tributaries: &[crate::drainage::DerivedTributary],
     tectonics: &daena_physical::tectonics::TectonicWorld,
+    water: &VisibleWater,
     progress: &mut dyn AtlasProgress,
 ) -> Result<Vec<u8>, AtlasError> {
     let view = request.view()?;
@@ -155,7 +276,7 @@ pub fn render_rgba(
                 let x = tile.x + local_x;
                 let y = tile.y + local_y;
                 let (lon, lat) = view.pixel_center(x, y);
-                let rgba = pixel_rgba(model, hydrology, sdf, style, request, lon, lat);
+                let rgba = pixel_rgba(model, hydrology, sdf, style, request, water, lon, lat);
                 let offset = ((y as usize) * width as usize + x as usize) * 4;
                 buffer[offset..offset + 4].copy_from_slice(&rgba);
             }
@@ -194,4 +315,55 @@ pub fn shuffled_tile_order(count: u32, seed: u64) -> Vec<u32> {
         order.swap(i, j);
     }
     order
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use daena_physical::Grid;
+
+    fn grid(width: u32, height: u32) -> Grid {
+        Grid {
+            width,
+            height,
+            radius_metres: 6_371_000,
+        }
+    }
+
+    #[test]
+    fn isolated_lake_cells_stay_land() {
+        let grid = grid(8, 8);
+        let mut elevations = vec![1_000; 64];
+        let mut lakes = vec![false; 64];
+        elevations[0] = -1_000;
+        elevations[1] = -1_000;
+        elevations[8] = -1_000;
+        for col in 0..8 {
+            elevations[col] = -4_000;
+        }
+        lakes[20] = true;
+        lakes[21] = true;
+        let water = classify_visible_water(grid, &elevations, 0, &lakes);
+        assert!(water.ocean[1]);
+        assert!(!water.ocean[20]);
+        assert!(!water.inland[20]);
+        assert!(!water.inland[21]);
+    }
+
+    #[test]
+    fn large_inland_lake_remains_visible() {
+        let grid = grid(8, 8);
+        let mut elevations = vec![1_000; 64];
+        let mut lakes = vec![false; 64];
+        for col in 0..8 {
+            elevations[col] = -4_000;
+        }
+        for index in [20, 21, 22, 23, 28, 29, 30, 31] {
+            lakes[index] = true;
+        }
+        let water = classify_visible_water(grid, &elevations, 0, &lakes);
+        assert!(water.inland[20]);
+        assert!(water.inland[31]);
+        assert!(!water.ocean[20]);
+    }
 }

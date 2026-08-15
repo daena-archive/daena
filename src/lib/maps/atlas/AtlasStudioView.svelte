@@ -587,7 +587,7 @@ onDestroy(() => {
       <section class="provenance" aria-label="Atlas provenance">
         <strong>Provenance</strong>
         <p>The Physical Map is canonical. Atlas geography is derived, deterministic, and disposable.</p>
-        <p>Released products: detail algorithm 2 · drainage 2 · renderer 6.</p>
+        <p>Released products: detail algorithm 2 · drainage 2 · renderer 7.</p>
         <p>Regenerate cache deletes only validated files under the project Atlas cache. Canonical maps, presets, and checkpoints stay unchanged.</p>
       </section>
       {#if confirmCache}

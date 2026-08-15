@@ -82,7 +82,8 @@ fn physical_map_acceptance_is_atomic_and_request_idempotent() {
             "plateCount": world.tectonics.settings.plate_count,
             "continentalPlateCount": world.tectonics.settings.continental_plate_count,
             "tectonicActivityPpm": world.tectonics.settings.tectonic_activity_ppm,
-            "islandActivityPpm": world.tectonics.settings.island_activity_ppm
+            "islandActivityPpm": world.tectonics.settings.island_activity_ppm,
+            "hazardDerivationVersion": daena_physical_spike::hazards::HAZARD_DERIVATION_VERSION
         }
     });
     let root = std::env::temp_dir().join(format!("daena-physical-{}", Uuid::new_v4()));
@@ -3844,6 +3845,170 @@ fn create_and_save_entry_enforce_map_field_validation() {
         None,
     );
     assert!(save_err.is_err());
+}
+
+#[test]
+fn entry_batch_is_atomic_idempotent_and_rejects_request_input_reuse() {
+    let root = std::env::temp_dir().join(format!("daena-entry-batch-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let map = store.create_map("Materialization map".into()).unwrap();
+    let map_id = map.id.clone();
+    let request_id = "00000000-0000-4000-8000-000000000042";
+    let input = CreateEntry {
+        name: "Earthquake · year 12 · M 5.100".into(),
+        entity_type: Some(crate::maps::PHYSICAL_EVENT_ENTITY_TYPE.into()),
+        document: Some(CreateEntryDocument {
+            body: "# Earthquake".into(),
+            format: Some("markdown".into()),
+        }),
+        fields: vec![
+            CreateEntryField {
+                namespace: crate::maps::PHYSICAL_EVENT_NAMESPACE.into(),
+                key: "provenance".into(),
+                value: serde_json::json!({"prediction": false}),
+            },
+            CreateEntryField {
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: crate::maps::PHYSICAL_EVENT_CHRONOLOGY_KEY.into(),
+                value: serde_json::json!({
+                    "contractVersion": 1,
+                    "kind": "physical-offset-years",
+                    "reference": "accepted-source",
+                    "startOffsetYears": 12,
+                    "endOffsetYears": 12
+                }),
+            },
+            CreateEntryField {
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "locations".into(),
+                value: serde_json::json!({
+                    "schemaVersion": 1,
+                    "locations": [{
+                        "id": "00000000-0000-4000-8000-000000000043",
+                        "mapEntityId": map.id,
+                        "role": "physical-event",
+                        "label": "Earthquake",
+                        "anchor": {"kind": "point", "point": [0.5, 0.5]},
+                        "validity": {"from": null, "to": null}
+                    }]
+                }),
+            },
+        ],
+        relationships: vec![CreateEntryRelationship {
+            relationship_type: crate::maps::PHYSICAL_EVENT_ON_MAP_RELATIONSHIP.into(),
+            target_ids: vec![map.id.clone()],
+        }],
+    };
+    let first = store
+        .create_entries_with_request(vec![input.clone()], Some(request_id))
+        .unwrap();
+    let replayed = store
+        .create_entries_with_request(vec![input], Some(request_id))
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(replayed.len(), 1);
+    assert_eq!(first[0].id, replayed[0].id);
+    assert_eq!(first[0].revision, replayed[0].revision);
+    assert_eq!(store.map_locations(first[0].id.clone()).unwrap().len(), 1);
+    assert_eq!(
+        store.map_location_projection(map_id.clone()).unwrap().len(),
+        1
+    );
+    assert_eq!(store.list_entities().unwrap().len(), 2);
+
+    let conflict = store.create_entries_with_request(
+        vec![CreateEntry {
+            name: "Different input".into(),
+            entity_type: Some(crate::maps::PHYSICAL_EVENT_ENTITY_TYPE.into()),
+            document: None,
+            fields: vec![],
+            relationships: vec![CreateEntryRelationship {
+                relationship_type: crate::maps::PHYSICAL_EVENT_ON_MAP_RELATIONSHIP.into(),
+                target_ids: vec![map.id.clone()],
+            }],
+        }],
+        Some(request_id),
+    );
+    assert!(
+        matches!(conflict, Err(CoreError::Conflict(message)) if message.contains("different inputs"))
+    );
+    assert_eq!(store.list_entities().unwrap().len(), 2);
+    let invalid = store.create_entries_with_request(
+        vec![CreateEntry {
+            name: "Invalid chronology".into(),
+            entity_type: Some(crate::maps::PHYSICAL_EVENT_ENTITY_TYPE.into()),
+            document: None,
+            fields: vec![CreateEntryField {
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: crate::maps::PHYSICAL_EVENT_CHRONOLOGY_KEY.into(),
+                value: serde_json::json!({
+                    "contractVersion": 1,
+                    "kind": "physical-offset-years",
+                    "reference": "accepted-source",
+                    "startOffsetYears": 2,
+                    "endOffsetYears": 1
+                }),
+            }],
+            relationships: vec![],
+        }],
+        Some("00000000-0000-4000-8000-000000000044"),
+    );
+    assert!(
+        matches!(invalid, Err(CoreError::Validation(message)) if message.contains("cannot be after"))
+    );
+    assert_eq!(store.list_entities().unwrap().len(), 2);
+    let out_of_bounds = store.create_entries_with_request(
+        vec![CreateEntry {
+            name: "Out of bounds chronology".into(),
+            entity_type: Some(crate::maps::PHYSICAL_EVENT_ENTITY_TYPE.into()),
+            document: None,
+            fields: vec![CreateEntryField {
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: crate::maps::PHYSICAL_EVENT_CHRONOLOGY_KEY.into(),
+                value: serde_json::json!({
+                    "contractVersion": 1,
+                    "kind": "physical-offset-years",
+                    "reference": "accepted-source",
+                    "startOffsetYears": 100_001,
+                    "endOffsetYears": 100_001
+                }),
+            }],
+            relationships: vec![],
+        }],
+        Some("00000000-0000-4000-8000-000000000045"),
+    );
+    assert!(
+        matches!(out_of_bounds, Err(CoreError::Validation(message)) if message.contains("within +/-100000"))
+    );
+    assert_eq!(store.list_entities().unwrap().len(), 2);
+    store
+        .flush_checkpoint("persist materialized event")
+        .unwrap();
+    drop(store);
+    std::fs::remove_file(root.join(".daena/index.sqlite")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(rebuilt.list_entities().unwrap().len(), 2);
+    assert_eq!(rebuilt.map_locations(first[0].id.clone()).unwrap().len(), 1);
+    assert_eq!(rebuilt.map_location_projection(map_id).unwrap().len(), 1);
+    assert_eq!(
+        rebuilt
+            .list_relationships(first[0].id.clone())
+            .unwrap()
+            .len(),
+        1
+    );
+    let chronology = rebuilt
+        .list_fields(first[0].id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| {
+            field.namespace == crate::maps::MAP_NAMESPACE
+                && field.key == crate::maps::PHYSICAL_EVENT_CHRONOLOGY_KEY
+        })
+        .unwrap();
+    assert_eq!(chronology.value["startOffsetYears"], 12);
+    drop(rebuilt);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

@@ -350,6 +350,18 @@ export function buildModuleContext(
             revision: field.revision,
           }));
       },
+      listShared: async (entityId: UUID, namespace: string): Promise<FieldRecord[]> => {
+        checkCapability(manifest, "field.read:shared");
+        if (!namespace.trim()) throw new Error("Shared field namespace is required");
+        const fields = await rpc.call<RawField[]>("field.list", { entityId, namespace });
+        return fields.map((field) => ({
+          entityId: toUUID(field.entity_id),
+          namespace: field.namespace,
+          key: field.key,
+          value: field.value,
+          revision: field.revision,
+        }));
+      },
       set: async (entityId: UUID, key: string, value: unknown, options?: MutationOptions) => {
         checkCapability(manifest, "field.write:self");
         const namespace = validateField(manifest, key, value);

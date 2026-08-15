@@ -1,5 +1,5 @@
 import type { Timeline, DataItem, TimelineOptions } from "vis-timeline";
-import type { ModuleContext, DaenaModule } from "../../../module-api/src/index";
+import type { FieldRecord, ModuleContext, DaenaModule } from "../../../module-api/src/index";
 import type { ModuleManifest } from "../../../module-api/src/index";
 import {
   compareCalendarDates,
@@ -28,7 +28,39 @@ type UndatedEvent = {
   fields: Record<string, unknown>;
   locationName?: string;
   participantNames: string[];
+  relativeYear?: number;
 };
+
+type PhysicalChronology = {
+  contractVersion: 1;
+  kind: "physical-offset-years";
+  reference: "accepted-source";
+  startOffsetYears: number;
+  endOffsetYears: number;
+};
+
+function physicalOffset(value: unknown): number | null {
+  if (!value || typeof value !== "object") return null;
+  const chronology = value as Partial<PhysicalChronology>;
+  if (
+    chronology.contractVersion !== 1 ||
+    chronology.kind !== "physical-offset-years" ||
+    chronology.reference !== "accepted-source" ||
+    typeof chronology.startOffsetYears !== "number" ||
+    !Number.isSafeInteger(chronology.startOffsetYears) ||
+    typeof chronology.endOffsetYears !== "number" ||
+    !Number.isSafeInteger(chronology.endOffsetYears) ||
+    chronology.startOffsetYears < -100_000 ||
+    chronology.endOffsetYears > 100_000 ||
+    chronology.startOffsetYears > chronology.endOffsetYears
+  )
+    return null;
+  return chronology.startOffsetYears;
+}
+
+function relativeOffsetLabel(year: number): string {
+  return `${year >= 0 ? "+" : ""}${year} years from accepted source`;
+}
 
 function hslToHex(hue: number, saturation: number, lightness: number) {
   const chroma = (1 - Math.abs(2 * lightness - 1)) * saturation;
@@ -249,7 +281,10 @@ function renderUndatedSelection(details: HTMLElement, event: UndatedEvent, conte
   const name = document.createElement("strong");
   name.textContent = event.entity.name;
   const status = document.createElement("small");
-  status.textContent = "No date yet — add a start or end date to place this event in the chronology.";
+  status.textContent =
+    event.relativeYear === undefined
+      ? "No date yet — add a start or end date to place this event in the chronology."
+      : `Relative chronology: ${relativeOffsetLabel(event.relativeYear)}. It is kept relative rather than converted to a Gregorian date.`;
   const contextText = contextLabel(event);
   if (contextText) {
     const contextLine = document.createElement("small");
@@ -348,12 +383,22 @@ export const timeline: DaenaModule = {
             chart?.destroy();
             chart = null;
             const entityTypes = new Set(context.module.schemas.flatMap((schema) => schema.entityTypes));
-            const entities = (await context.entities.list()).filter(
-              (entity) => entity.type !== null && entityTypes.has(entity.type),
-            );
+            const entities = await context.entities.list();
             const loaded = await Promise.all(
               entities.map(async (entity) => {
                 const fields = await context.fields.list(entity.id);
+                let sharedMapsFields: FieldRecord[] = [];
+                try {
+                  // Shared chronology remains readable when Maps is disabled;
+                  // only the navigation service should disappear with it.
+                  sharedMapsFields = await context.fields.listShared(entity.id, "maps");
+                } catch {
+                  // A project without the optional Maps contract still renders
+                  // ordinary Timeline items instead of failing the projection.
+                }
+                const relativeYear = physicalOffset(
+                  sharedMapsFields.find((field) => field.key === "physicalChronology")?.value,
+                );
                 const relationships = (await context.relationships.list(entity.id)).filter(
                   (relationship) => relationship.type === "occurred_at" || relationship.type === "involves",
                 );
@@ -371,15 +416,17 @@ export const timeline: DaenaModule = {
                   participantNames: relationships
                     .map((relationship, index) => (relationship.type === "involves" ? targets[index]?.name : undefined))
                     .filter((name): name is string => Boolean(name)),
+                  relativeYear,
                 };
               }),
             );
             const dated: TimelineEvent[] = [];
             const undated: UndatedEvent[] = [];
             for (const entry of loaded) {
+              if (!entityTypes.has(entry.entity.type ?? "") && entry.relativeYear === null) continue;
               const start = toJsDate(entry.fields.startsAt) ?? toJsDate(entry.fields.endsAt);
               if (!start) {
-                undated.push(entry);
+                undated.push({ ...entry, relativeYear: entry.relativeYear ?? undefined });
                 continue;
               }
               const end = entry.fields.endsAt ? toJsDate(entry.fields.endsAt) : null;
@@ -409,7 +456,9 @@ export const timeline: DaenaModule = {
             heading.textContent = "Chronology";
             const summary = document.createElement("small");
             summary.textContent =
-              undated.length > 0 ? `${dated.length} placed · ${undated.length} unplaced` : `${dated.length} items`;
+              undated.length > 0
+                ? `${dated.length} placed · ${undated.length} unplaced or relative`
+                : `${dated.length} items`;
             header.append(heading, summary);
             shell.append(style, header);
             let details: HTMLElement | null = null;
@@ -582,13 +631,18 @@ export const timeline: DaenaModule = {
               const note = document.createElement("div");
               note.className = "timeline-undated";
               const label = document.createElement("small");
-              label.textContent = "Unplaced items";
+              label.textContent = undated.some((entry) => entry.relativeYear !== undefined)
+                ? "Unplaced or relative items"
+                : "Unplaced items";
               const list = document.createElement("div");
               list.className = "timeline-undated-list";
               for (const entry of undated) {
                 const button = document.createElement("button");
                 button.type = "button";
-                button.textContent = entry.entity.name;
+                button.textContent =
+                  entry.relativeYear === undefined
+                    ? entry.entity.name
+                    : `${entry.entity.name} · ${relativeOffsetLabel(entry.relativeYear)}`;
                 button.onclick = () => {
                   if (details) renderUndatedSelection(details, entry, context);
                 };

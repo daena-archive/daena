@@ -268,6 +268,7 @@ export interface ModuleContext {
   fields: {
     list(entityId: UUID): Promise<Record<string, unknown>>;
     listRecords(entityId: UUID): Promise<FieldRecord[]>;
+    listShared(entityId: UUID, namespace: string): Promise<FieldRecord[]>;
     set(entityId: UUID, key: string, value: unknown, options?: MutationOptions): Promise<void>;
   };
   records: {

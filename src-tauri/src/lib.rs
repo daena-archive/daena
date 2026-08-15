@@ -12,9 +12,10 @@ use std::time::{Duration, Instant};
 use daena_core::{
     read_json, validate_checkpoint, Asset, AssetFileInput, AssetInput, AssetReplaceInput,
     AuthorityContext, CheckpointHandle, CheckpointManifest, CoreError, CoreService, CreateEntity,
-    Entity, ExternalChangeReport, FieldValue, GitLogEntry, GitPreflight, GitRemote, GitResetResult,
-    GitStatus, GitToolInfo, Migration, Operation, ProjectInfo, ProjectStore, Relationship,
-    RelationshipInput, SaveDocument, SaveEntry,
+    CreateEntry, CreateEntryField, CreateEntryRelationship, Entity, ExternalChangeReport,
+    FieldValue, GitLogEntry, GitPreflight, GitRemote, GitResetResult, GitStatus, GitToolInfo,
+    Migration, Operation, ProjectInfo, ProjectStore, Relationship, RelationshipInput, SaveDocument,
+    SaveEntry,
 };
 use daena_plugin_api::{
     merge_module_manifest, parse_module_overlay, supports_schema_overlay, CommandAction,
@@ -169,6 +170,25 @@ struct PhysicalGenerationInput {
     #[serde(default)]
     evolution_preset: Option<String>,
     settings: PhysicalGenerationSettingsInput,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MaterializedPhysicalEvent {
+    entity_id: String,
+    #[serde(flatten)]
+    event: daena_physical_spike::events::MaterializedEvent,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PhysicalEventMaterializationResult {
+    request_id: String,
+    map_entity_id: String,
+    materialization_version: u16,
+    hazard_derivation_version: u16,
+    prediction: bool,
+    events: Vec<MaterializedPhysicalEvent>,
 }
 
 struct PhysicalProgress {
@@ -7103,6 +7123,7 @@ async fn project_physical_generate(
                         "tectonicActivityPpm": world.tectonics.settings.tectonic_activity_ppm,
                         "islandActivityPpm": world.tectonics.settings.island_activity_ppm,
                         "evolutionPreset": evolution_preset.as_str(),
+                        "hazardDerivationVersion": daena_physical_spike::hazards::HAZARD_DERIVATION_VERSION,
                         "historicalForcing": {
                             "version": historical_forcing.version,
                             "temperatureAmplitudeCentiC": historical_forcing.temperature_amplitude_centi_c,
@@ -7442,8 +7463,9 @@ fn historical_cache_key(
     normalized_epoch: i64,
 ) -> String {
     format!(
-        "{source_hash}|history-v{}|epoch:{normalized_epoch}|forcing:{}:{}:{}:{}:{}:{}:{}",
+        "{source_hash}|history-v{}|hazards-v{}|epoch:{normalized_epoch}|forcing:{}:{}:{}:{}:{}:{}:{}",
         daena_physical_spike::history::HISTORICAL_DERIVATION_VERSION,
+        daena_physical_spike::hazards::HAZARD_DERIVATION_VERSION,
         forcing.version,
         forcing.temperature_amplitude_centi_c,
         forcing.period_years,
@@ -7541,9 +7563,14 @@ fn derive_reopened_hydrology(
     .map_err(|error| format!("maps.physical: {error}"))?;
     let diagnostic = daena_physical_spike::tectonics::to_diagnostic_geojson(world)
         .map_err(|error| format!("maps.physical: {error}"))?;
+    let hazards = daena_physical_spike::hazards::to_geojson(world)
+        .map_err(|error| format!("maps.physical: {error}"))?;
     let water = daena_physical_spike::hydrology::to_geojson(&hydrology)
         .map_err(|error| format!("maps.physical: {error}"))?;
-    let geojson = daena_physical_spike::merge_geojson_features_for_host(&diagnostic, &water)?;
+    let diagnostic_with_hazards =
+        daena_physical_spike::merge_geojson_features_for_host(&diagnostic, &hazards)?;
+    let geojson =
+        daena_physical_spike::merge_geojson_features_for_host(&diagnostic_with_hazards, &water)?;
     Ok((geojson, hydrology))
 }
 
@@ -7574,9 +7601,14 @@ fn derive_reopened_historical(
     .map_err(|error| format!("maps.physical: {error}"))?;
     let diagnostic = daena_physical_spike::tectonics::to_diagnostic_geojson(world)
         .map_err(|error| format!("maps.physical: {error}"))?;
+    let hazards = daena_physical_spike::hazards::to_geojson(world)
+        .map_err(|error| format!("maps.physical: {error}"))?;
     let water = daena_physical_spike::hydrology::to_geojson(&historical.hydrology)
         .map_err(|error| format!("maps.physical: {error}"))?;
-    let geojson = daena_physical_spike::merge_geojson_features_for_host(&diagnostic, &water)?;
+    let diagnostic_with_hazards =
+        daena_physical_spike::merge_geojson_features_for_host(&diagnostic, &hazards)?;
+    let geojson =
+        daena_physical_spike::merge_geojson_features_for_host(&diagnostic_with_hazards, &water)?;
     Ok((historical, parameters, geojson))
 }
 
@@ -7608,6 +7640,11 @@ fn historical_response(
         "geojson": geojson,
         "climate": climate,
         "hydrology": hydrology,
+        "hazards": {
+            "derivationVersion": daena_physical_spike::hazards::HAZARD_DERIVATION_VERSION,
+            "model": "relative-generated-v1",
+            "prediction": false,
+        },
         "derivedHashes": derived_hashes,
         "forcing": historical_forcing_products(parameters),
         "history": {
@@ -8069,6 +8106,192 @@ async fn project_physical_derived_epoch(
         }
         cache.insert(cache_key, value.clone());
         Ok(value)
+    })
+    .await
+}
+
+fn deterministic_event_location_id(request_id: &str, ordinal: u32) -> String {
+    let digest =
+        Sha256::digest(format!("daena-physical-event-location:{request_id}:{ordinal}").as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    // UUIDv4-shaped IDs are accepted by the canonical maps.locations schema;
+    // the bytes remain deterministic for idempotent retries.
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes).to_string()
+}
+
+#[tauri::command]
+async fn project_physical_materialize_events(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    request: daena_physical_spike::events::EventMaterializationRequest,
+    request_id: Option<String>,
+) -> Result<PhysicalEventMaterializationResult, String> {
+    let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let response_map_id = map_entity_id.clone();
+    with_core(state, move |core| {
+        let project = core.project(trusted_shell())?;
+        let provider = project.map_provider_id(&map_entity_id)?;
+        if provider != daena_core::maps::PHYSICAL_PROVIDER {
+            return Err(CoreError::Validation(
+                "natural-event materialization requires a daena-physical map".into(),
+            ));
+        }
+        let descriptor = project
+            .list_fields(map_entity_id.clone())?
+            .into_iter()
+            .find(|field| field.namespace == daena_core::maps::MAP_NAMESPACE && field.key == "map")
+            .ok_or_else(|| CoreError::Validation("maps:map descriptor is missing".into()))?;
+        let source_id = descriptor
+            .value
+            .get("sourceAssetId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| CoreError::Validation("maps: sourceAssetId is missing".into()))?;
+        let generation = descriptor
+            .value
+            .get("generation")
+            .cloned()
+            .ok_or_else(|| CoreError::Validation("maps: physical generation is missing".into()))?;
+        let bytes = project.asset_bytes(source_id.to_string())?;
+        let (world, _) = daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        let hazards = daena_physical_spike::hazards::derive_hazards(&world)
+            .map_err(|error| CoreError::Validation(error.to_string()))?;
+        let events = daena_physical_spike::events::sample_events(&world, &hazards, &request)
+            .map_err(CoreError::Validation)?;
+        let source_hash = format!("sha256:{:x}", Sha256::digest(&bytes));
+        let generator_id = generation
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(daena_physical_spike::GENERATOR_ID)
+            .to_owned();
+        let generator_version = generation
+            .get("version")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(daena_physical_spike::GENERATOR_VERSION as u64);
+        let retry_index = generation
+            .get("retryIndex")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(u64::from(world.retry_index));
+        let entries = events
+            .iter()
+            .map(|event| {
+                let name = format!(
+                    "{} · year {} · M {:.3}",
+                    event.event_kind.label(),
+                    event.year_offset,
+                    f64::from(event.magnitude_milli) / 1_000.0
+                );
+                let location_id = deterministic_event_location_id(&request_id, event.ordinal);
+                let x = (f64::from(event.longitude_microdegrees) / 1_000_000.0 + 180.0) / 360.0;
+                let y = (f64::from(event.latitude_microdegrees) / 1_000_000.0 + 90.0) / 180.0;
+                let provenance = serde_json::json!({
+                    "materializationVersion": daena_physical_spike::events::EVENT_MATERIALIZATION_VERSION,
+                    "hazardDerivationVersion": daena_physical_spike::hazards::HAZARD_DERIVATION_VERSION,
+                    "eventModel": event.event_kind.model_label(),
+                    "eventKind": event.event_kind.label(),
+                    "hazardSeed": request.hazard_seed,
+                    "intervalStartYears": request.interval_start_years,
+                    "intervalEndYears": request.interval_end_years,
+                    "yearOffset": event.year_offset,
+                    "cell": event.cell,
+                    "longitudeMicrodegrees": event.longitude_microdegrees,
+                    "latitudeMicrodegrees": event.latitude_microdegrees,
+                    "magnitudeMilli": event.magnitude_milli,
+                    "hazardPpm": event.hazard_ppm,
+                    "ratePerMillionYearsPpm": event.rate_per_million_years_ppm,
+                    "requestId": request_id,
+                    "materializationKey": format!("{}:{}:{}", event.event_kind.label(), request.hazard_seed, event.ordinal),
+                    "sourceHash": source_hash,
+                    "generatorId": generator_id,
+                    "generatorVersion": generator_version,
+                    "sourceRetryIndex": retry_index,
+                    "prediction": false,
+                });
+                let document = format!(
+                    "# {}\n\n- Relative time offset: {} years\n- Magnitude/index: {:.3}\n- Location: {:.3}°, {:.3}°\n- Model: {}\n- Prediction: no; this is generated relative history.\n",
+                    name,
+                    event.year_offset,
+                    f64::from(event.magnitude_milli) / 1_000.0,
+                    f64::from(event.latitude_microdegrees) / 1_000_000.0,
+                    f64::from(event.longitude_microdegrees) / 1_000_000.0,
+                    event.event_kind.model_label(),
+                );
+                CreateEntry {
+                    name: name.clone(),
+                    entity_type: Some(daena_core::maps::PHYSICAL_EVENT_ENTITY_TYPE.into()),
+                    document: Some(daena_core::CreateEntryDocument {
+                        body: document,
+                        format: Some("markdown".into()),
+                    }),
+                    fields: vec![
+                        CreateEntryField {
+                            namespace: daena_core::maps::PHYSICAL_EVENT_NAMESPACE.into(),
+                            key: "provenance".into(),
+                            value: provenance,
+                        },
+                        CreateEntryField {
+                            namespace: daena_core::maps::PHYSICAL_EVENT_NAMESPACE.into(),
+                            key: "materializationKey".into(),
+                            value: serde_json::json!(format!(
+                                "{}:{}:{}",
+                                event.event_kind.label(),
+                                request.hazard_seed,
+                                event.ordinal
+                            )),
+                        },
+                        CreateEntryField {
+                            namespace: daena_core::maps::MAP_NAMESPACE.into(),
+                            key: daena_core::maps::PHYSICAL_EVENT_CHRONOLOGY_KEY.into(),
+                            value: serde_json::json!({
+                                "contractVersion": 1,
+                                "kind": "physical-offset-years",
+                                "reference": "accepted-source",
+                                "startOffsetYears": event.year_offset,
+                                "endOffsetYears": event.year_offset,
+                            }),
+                        },
+                        CreateEntryField {
+                            namespace: daena_core::maps::MAP_NAMESPACE.into(),
+                            key: "locations".into(),
+                            value: serde_json::json!({
+                                "schemaVersion": 1,
+                                "locations": [{
+                                    "id": location_id,
+                                    "mapEntityId": map_entity_id,
+                                    "role": "physical-event",
+                                    "label": name,
+                                    "anchor": {"kind": "point", "point": [x, y]},
+                                    "validity": {"from": null, "to": null}
+                                }]
+                            }),
+                        },
+                    ],
+                    relationships: vec![CreateEntryRelationship {
+                        relationship_type: daena_core::maps::PHYSICAL_EVENT_ON_MAP_RELATIONSHIP.into(),
+                        target_ids: vec![map_entity_id.clone()],
+                    }],
+                }
+            })
+            .collect::<Vec<_>>();
+        let entities = project.create_entries_with_request(entries, Some(&request_id))?;
+        let materialized = events
+            .into_iter()
+            .zip(entities)
+            .map(|(event, entity)| MaterializedPhysicalEvent {
+                entity_id: entity.id,
+                event,
+            })
+            .collect();
+        Ok(PhysicalEventMaterializationResult {
+            request_id,
+            map_entity_id: response_map_id,
+            materialization_version: daena_physical_spike::events::EVENT_MATERIALIZATION_VERSION,
+            hazard_derivation_version: daena_physical_spike::hazards::HAZARD_DERIVATION_VERSION,
+            prediction: false,
+            events: materialized,
+        })
     })
     .await
 }
@@ -8589,6 +8812,7 @@ pub fn run() {
             project_physical_derived_evolution,
             project_physical_derived_hydrology,
             project_physical_derived_epoch,
+            project_physical_materialize_events,
             project_physical_clear_epoch_cache,
             project_read_asset_bytes,
             project_create_raster_layer,

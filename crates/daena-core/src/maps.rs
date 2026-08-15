@@ -21,6 +21,12 @@ pub const PHYSICAL_MAX_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 pub const DETAIL_MAP_RELATIONSHIP: &str = "daena.maps:detail-map";
 pub const OVERVIEW_MAP_RELATIONSHIP: &str = "daena.maps:overview-map";
 pub const RELATED_MAP_RELATIONSHIP: &str = "daena.maps:related-map";
+/// Stable built-in contract for explicitly materialized physical events.
+pub const PHYSICAL_EVENT_ENTITY_TYPE: &str = "daena.maps:physical-natural-event";
+pub const PHYSICAL_EVENT_NAMESPACE: &str = "maps.physical";
+pub const PHYSICAL_EVENT_CHRONOLOGY_KEY: &str = "physicalChronology";
+pub const PHYSICAL_EVENT_MAX_OFFSET_YEARS: i64 = 100_000;
+pub const PHYSICAL_EVENT_ON_MAP_RELATIONSHIP: &str = "daena.maps:physical-event-on-map";
 
 pub mod image;
 pub mod physical;
@@ -179,6 +185,12 @@ pub struct PhysicalMapGenerationSettings {
         skip_serializing_if = "Option::is_none"
     )]
     pub historical_forcing: Option<HistoricalForcingSettings>,
+    #[serde(
+        rename = "hazardDerivationVersion",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub hazard_derivation_version: Option<u16>,
 }
 
 fn default_physical_evolution_preset() -> String {
@@ -811,6 +823,48 @@ pub fn validate_field(
             return Err(invalid("defaultView.zoom must be finite and positive"));
         }
         (provider.validate_center)(&descriptor.default_view.center)?;
+        Ok(())
+    } else if key == PHYSICAL_EVENT_CHRONOLOGY_KEY {
+        if entity_type.as_deref() != Some(PHYSICAL_EVENT_ENTITY_TYPE) {
+            return Err(invalid(
+                "physical chronology belongs only on a physical natural event",
+            ));
+        }
+        let object = value
+            .as_object()
+            .ok_or_else(|| invalid("physical chronology must be an object"))?;
+        if object.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "contractVersion" | "kind" | "reference" | "startOffsetYears" | "endOffsetYears"
+            )
+        }) {
+            return Err(invalid("physical chronology contains an unknown field"));
+        }
+        if object.get("contractVersion").and_then(Value::as_i64) != Some(1)
+            || object.get("kind").and_then(Value::as_str) != Some("physical-offset-years")
+            || object.get("reference").and_then(Value::as_str) != Some("accepted-source")
+        {
+            return Err(invalid("unsupported physical chronology contract"));
+        }
+        let start = object
+            .get("startOffsetYears")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| invalid("physical chronology startOffsetYears must be an integer"))?;
+        let end = object
+            .get("endOffsetYears")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| invalid("physical chronology endOffsetYears must be an integer"))?;
+        if start < -PHYSICAL_EVENT_MAX_OFFSET_YEARS || end > PHYSICAL_EVENT_MAX_OFFSET_YEARS {
+            return Err(invalid(format!(
+                "physical chronology must stay within +/-{PHYSICAL_EVENT_MAX_OFFSET_YEARS} years"
+            )));
+        }
+        if start > end {
+            return Err(invalid(
+                "physical chronology startOffsetYears cannot be after endOffsetYears",
+            ));
+        }
         Ok(())
     } else if key == "locations" {
         let object = value

@@ -7,7 +7,7 @@
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "sandboxed",
   "entrypoints": { "ui": "dist/ui/index.html", "wasm": "dist/service.wasm" },
-  "capabilities": ["entity.read", "entity.write", "entity.delete", "document.read", "document.write", "field.read:self", "field.write:self", "relationship.read", "relationship.write", "asset.read:self", "asset.register", "search.query", "schema.overlay", "service.provide:daena.timeline.resolve-date@1", "service.call:daena.maps/navigation"],
+  "capabilities": ["entity.read", "entity.write", "entity.delete", "document.read", "document.write", "field.read:self", "field.read:shared", "field.write:self", "relationship.read", "relationship.write", "asset.read:self", "asset.register", "search.query", "schema.overlay", "service.provide:daena.timeline.resolve-date@1", "service.call:daena.maps/navigation"],
   "dependencies": {},
   "namespaces": ["timeline"],
   "schemas": [{

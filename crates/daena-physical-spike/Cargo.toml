@@ -8,6 +8,9 @@ publish = false
 name = "daena_physical_spike"
 path = "src/lib.rs"
 
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
 [[bin]]
 name = "physical-map-spike"
 path = "src/main.rs"

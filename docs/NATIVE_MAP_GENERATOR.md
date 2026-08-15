@@ -1132,11 +1132,24 @@ while keeping tectonic structure and final terrain fixed.
 
 ## Iteration 7: hazards and optional materialized natural history
 
+Status: hazard foundation, bounded event materialization, and the shared
+Timeline/Lore boundary implemented, including canonical chronology validation
+and optional-module degradation. See ADR 0021. Broader story projections are
+explicitly beyond this phase's acceptance gate.
+
 ### Goal
 
 Expose persistent tectonic/volcanic hazards and, only after that field is
 stable, allow explicitly generated natural events to become durable shared
 history.
+
+The current slice derives versioned relative/generated earthquake and volcanic
+hazard fields from accepted boundaries and volcanic centers. It exposes the
+strongest bounded samples as read-only styled layers, preserves the canonical
+physical source, and records the hazard derivation version in reopened/cache
+provenance. Hazard values and rates are model outputs, not real-world
+predictions. An explicit bounded request can now sample and accept durable
+natural events without changing the source or derived hazard cache.
 
 ### Required work
 
@@ -1148,28 +1161,43 @@ history.
 3. Add derived, styled earthquake and volcanic hazard layers with legends that
    describe relative/generated hazard rather than real-world prediction.
 4. Define a reviewed, versioned event-materialization request. Bound the time
-   interval and event count; use a named hazard seed independent from geography.
+   interval to +/-100,000 years and the event count to 128; use the explicitly
+   named `hazardSeed`, independent from the geography seed. Implemented in the
+   physical event contract at version 1.
 5. Sample earthquakes with a Poisson occurrence model and bounded
-   Gutenberg-Richter-style magnitudes. Sample eruptions from persistent rates.
-   Aftershock sequences remain deferred unless separately approved.
+   Gutenberg-Richter-style magnitudes. Sample eruptions from persistent rates
+   with the separate `persistent-rate-v1` model. Aftershock sequences remain
+   deferred unless separately approved.
 6. Commit accepted events as normal revisioned Daena entities/relationships in
-   one idempotent core mutation. Store their generation provenance. Never place
-   them only in a derived cache or inside opaque physical source bytes.
+   one idempotent core mutation. Store source, generator, hazard, request, and
+   model provenance plus canonical `maps.locations` pins. Retries with the
+   same request ID replay the accepted identities; reusing that ID with a
+   different input conflicts. Never place events only in a derived cache or
+   inside opaque physical source bytes.
 7. Integrate Timeline/Lore through public shared contracts and degrade without
-   losing events when either module is disabled.
+   losing events when either module is disabled. Implemented for the shared
+   `maps.physicalChronology` contract: Timeline displays relative events
+   without fabricating Gregorian dates, while Lore continues to consume the
+   normal entity/relationship graph.
 
 ### Exit gate
 
 - Hazard values are finite, deterministic, seam-safe, and respond to controlled
   boundary/volcanic fixtures with the specified qualitative ordering.
 - Hazard layer deletion/rebuild leaves the physical source unchanged.
-- Cancelled or failed event materialization creates no durable event. Retried
-  acceptance is idempotent and a request-ID/input mismatch conflicts.
+- Sampling and validation happen before the single commit boundary, and any
+  failed request leaves no durable event. The commit is atomic and
+  receipt-backed: retries are idempotent and a request-ID/input mismatch
+  conflicts.
 - Materialized events survive restart, module disable/re-enable, clean
   checkpoint rebuild, and later derivation-version changes without being
   regenerated or silently moved.
-- Links to map, Timeline, Lore, and affected shared entities preserve one
-  identity per event and use readable labels in the UI.
+- Map links preserve one identity per event through normal relationships and
+  canonical `maps.locations` pins with readable labels. Timeline/Lore consume
+  the same public entity/field contracts when enabled. Timeline reads the
+  explicitly shared `maps.physicalChronology` field and keeps relative offsets
+  relative; it continues to read that field when Maps navigation is disabled,
+  and no event is owned by or deleted with either optional module.
 
 ## Iteration 8: performance, resilience, and release hardening
 

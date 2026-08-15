@@ -104,6 +104,15 @@ let epochProgress = $state<{ completed: number; total: number } | null>(null);
 let activeEpochRequestId = "";
 let epochRequest = 0;
 let epochTimer: ReturnType<typeof setTimeout> | undefined;
+let eventKind = $state<"earthquake" | "eruption">("earthquake");
+let eventStartYears = $state(-10_000);
+let eventEndYears = $state(10_000);
+let eventMaxEvents = $state(8);
+let eventHazardSeed = $state(7_331);
+let eventBusy = $state(false);
+let eventNotice = $state("");
+let eventRequestId = $state<string | null>(null);
+let eventRequestSignature = $state("");
 
 const listedLayers = $derived(
   [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id)),
@@ -296,6 +305,48 @@ async function loadPhysicalEpoch(offset: number) {
   }
 }
 
+async function materializePhysicalEvents() {
+  if (!mapId || !physicalMap || eventBusy) return;
+  const requestSignature = JSON.stringify([
+    mapId,
+    eventKind,
+    eventStartYears,
+    eventEndYears,
+    eventMaxEvents,
+    eventHazardSeed,
+  ]);
+  if (eventRequestSignature !== requestSignature) {
+    eventRequestId = crypto.randomUUID();
+    eventRequestSignature = requestSignature;
+  }
+  const requestId = eventRequestId ?? crypto.randomUUID();
+  eventRequestId = requestId;
+  eventBusy = true;
+  eventNotice = "Sampling and committing natural events…";
+  try {
+    const result = await project.physicalMaterializeEvents(
+      mapId,
+      {
+        eventKind: eventKind,
+        intervalStartYears: eventStartYears,
+        intervalEndYears: eventEndYears,
+        maxEvents: eventMaxEvents,
+        hazardSeed: eventHazardSeed,
+      },
+      { requestId },
+    );
+    eventNotice = result.events.length
+      ? `Committed ${result.events.length} ${eventKind} event${result.events.length === 1 ? "" : "s"} as durable history.`
+      : "No events sampled for this bounded interval and hazard seed.";
+    eventRequestId = null;
+    eventRequestSignature = "";
+  } catch (cause) {
+    eventNotice = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    eventBusy = false;
+  }
+}
+
 function scheduleEpoch(offset: number) {
   epochOffsetYears = offset;
   if (epochTimer) clearTimeout(epochTimer);
@@ -400,6 +451,8 @@ async function load() {
         "tectonic-boundaries",
         "bathymetry",
         "volcanic-centers",
+        "earthquake-hazard",
+        "volcanic-hazard",
         "lakes",
         "rivers",
         "watersheds",
@@ -879,15 +932,63 @@ onMount(() => {
         <output for="physical-epoch">{formatEpoch(epochOffsetYears)}</output>
         {#if epochBusy}
           <span role="status">
-            {epochPhase || "Deriving…"}{#if epochProgress} · {epochProgress.completed}/{epochProgress.total}{/if}
+            {epochPhase || "Deriving…"}{#if epochProgress}
+              · {epochProgress.completed}/{epochProgress.total}{/if}
           </span>
         {/if}
         {#if epochNotice}<small>{epochNotice}</small>{/if}
+      </div>
+      <div class="event-control" aria-label="Materialize natural history">
+        <strong>Materialize natural history</strong>
+        <label>
+          Event
+          <select bind:value={eventKind} disabled={eventBusy || busy}>
+            <option value="earthquake">Earthquake</option>
+            <option value="eruption">Eruption</option>
+          </select>
+        </label>
+        <label>
+          From (years)
+          <input
+            type="number"
+            min="-100000"
+            max="100000"
+            step="1"
+            bind:value={eventStartYears}
+            disabled={eventBusy || busy} />
+        </label>
+        <label>
+          To (years)
+          <input
+            type="number"
+            min="-100000"
+            max="100000"
+            step="1"
+            bind:value={eventEndYears}
+            disabled={eventBusy || busy} />
+        </label>
+        <label>
+          Max events
+          <input type="number" min="1" max="128" step="1" bind:value={eventMaxEvents} disabled={eventBusy || busy} />
+        </label>
+        <label>
+          Hazard seed
+          <input type="number" min="0" step="1" bind:value={eventHazardSeed} disabled={eventBusy || busy} />
+        </label>
+        <button type="button" disabled={eventBusy || busy} onclick={() => void materializePhysicalEvents()}>
+          {eventBusy ? "Committing…" : "Commit events"}
+        </button>
+        <small
+          >Creates revisioned entities and map links; generated hazards remain read-only and are not predictions.</small>
+        {#if eventNotice}<small role="status">{eventNotice}</small>{/if}
       </div>
     {/if}
     <div class="editor-body">
       <aside aria-label="Vector layers">
         <strong id="vector-layers-heading">Vector layers</strong>
+        {#if physicalMap}
+          <p class="hazard-legend">Hazard layers show relative generated rates; they are not real-world predictions.</p>
+        {/if}
         {#if listedLayers.length === 0}
           <p class="hint">Add a vector layer to draw points, lines, and regions. Base geography stays read-only.</p>
         {/if}
@@ -1138,6 +1239,37 @@ button:disabled {
   grid-column: 2 / -1;
   color: #aebdb1;
 }
+.event-control {
+  display: grid;
+  grid-template-columns: auto repeat(4, minmax(90px, 1fr)) auto;
+  align-items: end;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid #405047;
+  background: #18241f;
+  color: #d8e3d9;
+  font-size: 12px;
+}
+.event-control label {
+  display: grid;
+  gap: 4px;
+  color: #aebdb1;
+  font-size: 11px;
+}
+.event-control input,
+.event-control select {
+  min-width: 0;
+  border: 1px solid #405047;
+  border-radius: 6px;
+  padding: 6px 7px;
+  background: #0f1a16;
+  color: #edf2ec;
+  font: 12px system-ui;
+}
+.event-control small {
+  grid-column: 1 / -1;
+  color: #aebdb1;
+}
 aside {
   display: flex;
   flex-direction: column;
@@ -1146,6 +1278,12 @@ aside {
   overflow: auto;
   border-right: 1px solid #405047;
   background: #202c27;
+}
+.hazard-legend {
+  margin: 0;
+  color: #aebdb1;
+  font-size: 11px;
+  line-height: 1.4;
 }
 .layer-list {
   display: grid;
@@ -1235,6 +1373,16 @@ button:focus-visible {
   .native-vector-editor * {
     transition: none !important;
     animation: none !important;
+  }
+}
+@media (max-width: 900px) {
+  .event-control {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+  .event-control strong,
+  .event-control button,
+  .event-control small {
+    grid-column: 1 / -1;
   }
 }
 </style>

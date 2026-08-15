@@ -14,10 +14,11 @@
   "namespaces": ["maps"],
   "schemas": [{
     "namespace": "maps",
-    "entityTypes": ["daena.maps:map"],
+    "entityTypes": ["daena.maps:map", "daena.maps:physical-natural-event"],
     "fields": [
       { "key": "map", "label": "Map descriptor", "type": "text", "entityTypes": ["daena.maps:map"] },
-      { "key": "locations", "label": "Location references", "type": "text" },
+      { "key": "locations", "label": "Location references", "type": "text", "shared": true },
+      { "key": "physicalChronology", "label": "Physical chronology", "type": "text", "entityTypes": ["daena.maps:physical-natural-event"], "shared": true },
       { "key": "layers", "label": "Semantic layer definitions", "type": "text", "entityTypes": ["daena.maps:map"] },
       { "key": "detailMap", "label": "Detail map", "type": "relationship", "relationshipType": "daena.maps:detail-map", "targetEntityTypes": ["daena.maps:map"] },
       { "key": "overviewMap", "label": "Overview map", "type": "relationship", "relationshipType": "daena.maps:overview-map", "targetEntityTypes": ["daena.maps:map"] },

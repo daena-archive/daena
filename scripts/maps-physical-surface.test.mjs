@@ -7,6 +7,11 @@ const source = readFileSync(resolve(root, "src/lib/maps/physical/PhysicalMapEdit
 const native = readFileSync(resolve(root, "src/lib/maps/native-vector/NativeVectorMapEditor.svelte"), "utf8");
 const client = readFileSync(resolve(root, "src/lib/project/client.ts"), "utf8");
 const host = readFileSync(resolve(root, "src-tauri/src/lib.rs"), "utf8");
+const moduleContext = readFileSync(resolve(root, "src/lib/modules/context.ts"), "utf8");
+const timeline = readFileSync(resolve(root, "packages/modules/timeline/src/index.ts"), "utf8");
+const mapsManifest = readFileSync(resolve(root, "packages/modules/maps/manifest.json"), "utf8");
+const timelineManifest = readFileSync(resolve(root, "packages/modules/timeline/manifest.json"), "utf8");
+const coreMaps = readFileSync(resolve(root, "crates/daena-core/src/maps.rs"), "utf8");
 
 for (const required of [
   "onMount",
@@ -17,6 +22,8 @@ for (const required of [
   'id: "tectonic-boundaries"',
   'id: "bathymetry"',
   'id: "volcanic-centers"',
+  'id: "earthquake-hazard"',
+  'id: "volcanic-hazard"',
   "evolutionPreset",
   "Terrain age",
   "locked: true",
@@ -28,15 +35,64 @@ for (const required of [
   assert.ok(source.includes(required) || native.includes(required), `physical surface contract is missing ${required}`);
 }
 
-for (const required of ["PHYSICAL_HISTORICAL_PROGRESS_EVENT", "epochPhase", "epochProgress", "PhysicalHistoricalProgress"]) {
+for (const required of [
+  "PHYSICAL_HISTORICAL_PROGRESS_EVENT",
+  "epochPhase",
+  "epochProgress",
+  "PhysicalHistoricalProgress",
+]) {
   assert.ok(native.includes(required), `native historical playback is missing ${required}`);
 }
 for (const required of ["PhysicalHistoricalProgress", "requestId", "physical-historical-progress"]) {
   assert.ok(client.includes(required), `physical client progress contract is missing ${required}`);
 }
+for (const required of ["derivationVersion", "relative-generated-v1"]) {
+  assert.ok(client.includes(required), `physical client hazard contract is missing ${required}`);
+}
+for (const required of [
+  "PhysicalEventMaterializationRequest",
+  "physicalMaterializeEvents",
+  "hazardSeed",
+  "PhysicalEventMaterializationResult",
+  "requestId",
+]) {
+  assert.ok(client.includes(required), `physical client event contract is missing ${required}`);
+}
+assert.ok(native.includes("eventRequestId"), "native event materialization must retain its request ID for retries");
 for (const required of ["HistoricalProgressEvent", "physical-historical-progress", "with_reporter"]) {
   assert.ok(host.includes(required), `physical host progress contract is missing ${required}`);
 }
+for (const required of ["hazardDerivationVersion", "HAZARD_DERIVATION_VERSION", "relative-generated-v1"]) {
+  assert.ok(host.includes(required), `physical host hazard contract is missing ${required}`);
+}
+for (const required of [
+  "project_physical_materialize_events",
+  "EVENT_MATERIALIZATION_VERSION",
+  "PHYSICAL_EVENT_ON_MAP_RELATIONSHIP",
+  "create_entries_with_request",
+]) {
+  assert.ok(host.includes(required), `physical host event contract is missing ${required}`);
+}
+for (const required of ["listShared", "field.read:shared"]) {
+  assert.ok(moduleContext.includes(required), `shared field bridge is missing ${required}`);
+}
+assert.match(timeline, /listShared\(entity\.id, "maps"\)/);
+assert.match(timeline, /catch \{/);
+for (const required of [
+  "physicalChronology",
+  "physical-offset-years",
+  "relativeOffsetLabel",
+  "daena.maps/navigation",
+]) {
+  assert.ok(timeline.includes(required), `Timeline physical chronology adapter is missing ${required}`);
+}
+assert.match(mapsManifest, /"key": "physicalChronology"[\s\S]*"shared": true/);
+assert.match(mapsManifest, /daena\.maps:physical-natural-event/);
+assert.match(timelineManifest, /"field\.read:shared"/);
+assert.match(coreMaps, /PHYSICAL_EVENT_CHRONOLOGY_KEY/);
+assert.match(native, /relative generated rates; they are not real-world predictions/);
+assert.match(source, /relative generated rates; they are not real-world predictions/);
+assert.match(host, /PHYSICAL_PROVIDER/);
 
 assert.match(
   source,

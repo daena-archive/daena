@@ -96,10 +96,30 @@ let layers = $state<VectorLayerDefinition[]>([
     style: { fill: "#ef9b4a", fillOpacity: 0.9, stroke: "#8f4c25", strokeWidth: 1, pointRadius: 5 },
   },
   {
+    id: "earthquake-hazard",
+    kind: "vector",
+    name: "Earthquake hazard (generated)",
+    order: 9,
+    defaultVisible: false,
+    locked: true,
+    selector: {},
+    style: { fill: "#c95353", fillOpacity: 0.72, stroke: "#7f2525", strokeWidth: 0.8, pointRadius: 3 },
+  },
+  {
+    id: "volcanic-hazard",
+    kind: "vector",
+    name: "Volcanic hazard (generated)",
+    order: 10,
+    defaultVisible: false,
+    locked: true,
+    selector: {},
+    style: { fill: "#f08a36", fillOpacity: 0.72, stroke: "#8f4c25", strokeWidth: 0.8, pointRadius: 3 },
+  },
+  {
     id: "lakes",
     kind: "vector",
     name: "Lakes",
-    order: 9,
+    order: 11,
     defaultVisible: true,
     locked: true,
     selector: {},
@@ -109,7 +129,7 @@ let layers = $state<VectorLayerDefinition[]>([
     id: "rivers",
     kind: "vector",
     name: "Rivers",
-    order: 10,
+    order: 12,
     defaultVisible: true,
     locked: true,
     selector: {},
@@ -119,7 +139,7 @@ let layers = $state<VectorLayerDefinition[]>([
     id: "watersheds",
     kind: "vector",
     name: "Watersheds",
-    order: 11,
+    order: 13,
     defaultVisible: false,
     locked: true,
     selector: {},
@@ -169,7 +189,7 @@ let layers = $state<VectorLayerDefinition[]>([
     id: "islands",
     kind: "vector",
     name: "Islands",
-    order: 12,
+    order: 14,
     defaultVisible: false,
     locked: true,
     selector: {},
@@ -399,6 +419,8 @@ onMount(() => {
           {layer.name}</label>
       {/each}
     </div>
+    <small class="physical-hazard-legend"
+      >Hazard layers show relative generated rates; they are not real-world predictions.</small>
     <div class="native-vector-map" bind:this={host}></div>
     <footer class="physical-map-actions">
       {#if status?.state === "completed"}
@@ -512,6 +534,13 @@ onMount(() => {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+}
+
+.physical-hazard-legend {
+  display: block;
+  padding: 0.45rem 1rem;
+  color: #b9c4c7;
+  font-size: 0.72rem;
 }
 
 .native-vector-map {

@@ -3715,6 +3715,192 @@ impl ProjectStore {
         })
     }
 
+    /// Creates a group of normal entries, their fields, documents, and
+    /// relationships in one receipt-backed transaction. The batch is used by
+    /// explicit physical-event materialization so a retry cannot create a
+    /// partial history. `CreateEntry` remains the generic input contract; no
+    /// event-specific storage is hidden in the core.
+    pub fn create_entries_with_request(
+        &self,
+        inputs: Vec<CreateEntry>,
+        request_id: Option<&str>,
+    ) -> Result<Vec<Entity>, CoreError> {
+        let input_fingerprint = digest_bytes(
+            &serde_json::to_vec(&inputs)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if let Some(mut entities) = self.committed_mutation_with_fingerprint::<Vec<Entity>>(
+            request_id,
+            Some(&input_fingerprint),
+        )? {
+            self.populate_entity_revisions(&mut entities)?;
+            return Ok(entities);
+        }
+
+        struct PreparedEntry {
+            name: String,
+            entity_type: Option<String>,
+            document: Option<(String, String)>,
+            fields: Vec<(String, String, serde_json::Value, String)>,
+            relationships: Vec<(String, String)>,
+        }
+
+        let mut prepared = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            validate_document_format(
+                input
+                    .document
+                    .as_ref()
+                    .and_then(|document| document.format.as_deref()),
+                self.root.is_some(),
+            )?;
+            if input.name.trim().is_empty() {
+                return Err(CoreError::NotFound("entity name cannot be empty".into()));
+            }
+            let format = input
+                .document
+                .as_ref()
+                .and_then(|document| document.format.as_deref())
+                .unwrap_or("markdown")
+                .to_owned();
+            validate_document_format(Some(&format), false)?;
+            let mut fields = Vec::with_capacity(input.fields.len());
+            for field in input.fields {
+                if field.namespace.trim().is_empty() || field.key.trim().is_empty() {
+                    return Err(CoreError::NotFound(
+                        "field namespace and key are required".into(),
+                    ));
+                }
+                let encoded = encode_field_value(&field.value)?;
+                fields.push((field.namespace, field.key, field.value, encoded));
+            }
+            let mut relationships = Vec::new();
+            for relationship in input.relationships {
+                if relationship.relationship_type.trim().is_empty() {
+                    return Err(CoreError::Validation(
+                        "relationship type cannot be empty".into(),
+                    ));
+                }
+                let mut target_ids = BTreeSet::new();
+                for target_id in relationship.target_ids {
+                    if !target_ids.insert(target_id.clone()) {
+                        return Err(CoreError::Validation(
+                            "duplicate relationship target".into(),
+                        ));
+                    }
+                    let exists: Option<String> = self
+                        .connection
+                        .query_row(
+                            "SELECT id FROM entities WHERE id=?1 AND deleted=0",
+                            params![target_id],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    if exists.is_none() {
+                        return Err(CoreError::NotFound("relationship entity not found".into()));
+                    }
+                    relationships
+                        .push((target_id, relationship.relationship_type.trim().to_owned()));
+                }
+            }
+            prepared.push(PreparedEntry {
+                name: input.name.trim().into(),
+                entity_type: input.entity_type.map(|value| value.trim().to_owned()),
+                document: input
+                    .document
+                    .map(|document| (format.clone(), document.body)),
+                fields,
+                relationships,
+            });
+        }
+
+        let now = chrono_like_now();
+        let mut entities = prepared
+            .iter()
+            .map(|entry| {
+                let id = Uuid::new_v4().to_string();
+                Entity {
+                    id,
+                    name: entry.name.clone(),
+                    entity_type: entry.entity_type.clone(),
+                    deleted: false,
+                    created_at: now.clone(),
+                    updated_at: now.clone(),
+                    revision: String::new(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut map_projection_ids = BTreeSet::new();
+        for entry in &prepared {
+            for (namespace, key, value, _) in &entry.fields {
+                if namespace == crate::maps::MAP_NAMESPACE && key == "locations" {
+                    if let Some(locations) =
+                        value.get("locations").and_then(|value| value.as_array())
+                    {
+                        for location in locations {
+                            if let Some(map_entity_id) =
+                                location.get("mapEntityId").and_then(|value| value.as_str())
+                            {
+                                map_projection_ids.insert(map_entity_id.to_owned());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let result = serde_json::to_value(&entities)?;
+        let request_id = self.request_id(request_id)?;
+        let affected_prefixes = entities
+            .iter()
+            .map(|entity| format!("entities/{}/", entity.id))
+            .collect::<Vec<_>>();
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&result),
+            &affected_prefixes,
+            &input_fingerprint,
+        )?;
+
+        for (entry, entity) in prepared.iter().zip(entities.iter()) {
+            transaction.execute(
+                "INSERT INTO entities(id,name,entity_type,created_at,updated_at) VALUES (?1,?2,?3,?4,?4)",
+                params![entity.id, entry.name, entry.entity_type, now],
+            )?;
+            if let Some((format, body)) = &entry.document {
+                transaction.execute(
+                    "INSERT INTO documents(id,entity_id,format,body,updated_at) VALUES (?1,?2,?3,?4,?5)",
+                    params![Uuid::new_v4().to_string(), entity.id, format, body, now],
+                )?;
+            }
+            for (namespace, key, value, encoded) in &entry.fields {
+                if namespace == crate::maps::MAP_NAMESPACE {
+                    crate::maps::validate_field(&transaction, &entity.id, key, value)?;
+                }
+                transaction.execute(
+                    "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
+                    params![entity.id, namespace, key, encoded],
+                )?;
+            }
+            for (target_id, relationship_type) in &entry.relationships {
+                transaction.execute(
+                    "INSERT INTO relationships(id,source_id,target_id,relationship_type,metadata) VALUES (?1,?2,?3,?4,?5)",
+                    params![Uuid::new_v4().to_string(), entity.id, target_id, relationship_type, "{}"],
+                )?;
+            }
+        }
+        transaction.commit()?;
+        if !map_projection_ids.is_empty() {
+            self.refresh_maps_projection_for_entities(
+                &map_projection_ids.into_iter().collect::<Vec<_>>(),
+            )?;
+        }
+        self.notify_export_worker()?;
+        for entity in &mut entities {
+            entity.revision = self.revision_for_entity(&entity.id)?;
+        }
+        Ok(entities)
+    }
+
     pub fn list_entities(&self) -> Result<Vec<Entity>, CoreError> {
         self.list_entities_where("WHERE deleted=0")
     }

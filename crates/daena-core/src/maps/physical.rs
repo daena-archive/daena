@@ -96,6 +96,14 @@ pub fn validate_generation(value: &Value) -> Result<PhysicalMapGenerationSetting
     .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?;
     daena_physical_spike::evolution::EvolutionPreset::parse(&settings.evolution_preset)
         .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?;
+    if let Some(version) = settings.hazard_derivation_version {
+        if version != daena_physical_spike::hazards::HAZARD_DERIVATION_VERSION {
+            return Err(invalid(
+                CODE_INVALID_GENERATION,
+                format!("unsupported hazardDerivationVersion {version}"),
+            ));
+        }
+    }
     if let Some(forcing) = &settings.historical_forcing {
         HistoricalForcingParameters {
             version: forcing.version,
@@ -177,6 +185,7 @@ mod tests {
             "tectonicActivityPpm": 600_000,
             "islandActivityPpm": 300_000,
             "evolutionPreset": "mature",
+            "hazardDerivationVersion": daena_physical_spike::hazards::HAZARD_DERIVATION_VERSION,
         });
         if let Some(forcing) = forcing {
             settings
@@ -215,5 +224,9 @@ mod tests {
         let mut invalid = forcing();
         invalid["version"] = serde_json::json!(99);
         assert!(validate_generation(&generation(Some(invalid))).is_err());
+
+        let mut invalid_hazard_version = generation(None);
+        invalid_hazard_version["settings"]["hazardDerivationVersion"] = serde_json::json!(99);
+        assert!(validate_generation(&invalid_hazard_version).is_err());
     }
 }

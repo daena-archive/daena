@@ -246,6 +246,11 @@ export interface PhysicalHistoricalProducts {
   geojson: string;
   climate: PhysicalClimateProducts;
   hydrology: PhysicalHydrologyProducts;
+  hazards: {
+    derivationVersion: number;
+    model: "relative-generated-v1";
+    prediction: false;
+  };
   derivedHashes: {
     canonicalSource: string;
     finalElevation: string;
@@ -302,6 +307,34 @@ export interface PhysicalGenerationInput {
     radiusMetres: number;
     targetLandFractionPpm: number;
   };
+}
+export type PhysicalNaturalEventKind = "earthquake" | "eruption";
+export interface PhysicalEventMaterializationRequest {
+  eventKind: PhysicalNaturalEventKind;
+  intervalStartYears: number;
+  intervalEndYears: number;
+  maxEvents: number;
+  hazardSeed: number;
+}
+export interface PhysicalMaterializedEvent {
+  entityId: string;
+  eventKind: PhysicalNaturalEventKind;
+  ordinal: number;
+  yearOffset: number;
+  cell: number;
+  longitudeMicrodegrees: number;
+  latitudeMicrodegrees: number;
+  magnitudeMilli: number;
+  hazardPpm: number;
+  ratePerMillionYearsPpm: number;
+}
+export interface PhysicalEventMaterializationResult {
+  requestId: string;
+  mapEntityId: string;
+  materializationVersion: number;
+  hazardDerivationVersion: number;
+  prediction: false;
+  events: PhysicalMaterializedEvent[];
 }
 export interface VectorLayerDelete {
   layers: FieldValue;
@@ -774,6 +807,16 @@ export const project = {
       mapEntityId,
       epochOffsetYears,
       requestId,
+    }),
+  physicalMaterializeEvents: (
+    mapEntityId: string,
+    input: PhysicalEventMaterializationRequest,
+    options?: MutationOptions,
+  ) =>
+    invoke<PhysicalEventMaterializationResult>("project_physical_materialize_events", {
+      mapEntityId,
+      request: input,
+      requestId: requestId(options),
     }),
   physicalMapClearEpochCache: () => invoke<void>("project_physical_clear_epoch_cache"),
   readAssetBytes: (assetId: string) => invoke<number[]>("project_read_asset_bytes", { assetId }),

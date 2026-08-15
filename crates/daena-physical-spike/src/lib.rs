@@ -8,7 +8,9 @@ use std::fmt::{Display, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod climate;
+pub mod events;
 pub mod evolution;
+pub mod hazards;
 pub mod history;
 pub mod hydrology;
 pub mod tectonics;
@@ -614,10 +616,17 @@ pub fn generate_world_with_evolution(
     progress.report(ProgressPhase::PreparingGeography, 0, 1)?;
     let diagnostic_geojson = tectonics::to_diagnostic_geojson(&tectonics)
         .map_err(|error| PhysicalError::coded(PhysicalErrorCode::GeometryInvalid, error))?;
+    let hazard_geojson = hazards::to_geojson(&tectonics).map_err(|error| {
+        PhysicalError::coded(PhysicalErrorCode::GeometryInvalid, error.to_string())
+    })?;
     let hydrology_geojson = hydrology::to_geojson(&hydrology)
         .map_err(|error| PhysicalError::coded(PhysicalErrorCode::GeometryInvalid, error))?;
-    let derived_geojson = merge_geojson_features_for_host(&diagnostic_geojson, &hydrology_geojson)
-        .map_err(|error| PhysicalError::coded(PhysicalErrorCode::GeometryInvalid, error))?;
+    let diagnostic_with_hazards =
+        merge_geojson_features_for_host(&diagnostic_geojson, &hazard_geojson)
+            .map_err(|error| PhysicalError::coded(PhysicalErrorCode::GeometryInvalid, error))?;
+    let derived_geojson =
+        merge_geojson_features_for_host(&diagnostic_with_hazards, &hydrology_geojson)
+            .map_err(|error| PhysicalError::coded(PhysicalErrorCode::GeometryInvalid, error))?;
     progress.report(ProgressPhase::PreparingGeography, 1, 1)?;
     progress.report(ProgressPhase::ValidatingWorld, 0, 1)?;
     let source = tectonics::encode_source_v2(&tectonics).map_err(PhysicalError::InvalidSource)?;

@@ -49,7 +49,7 @@ try {
   const geojsonBytes = readFileSync(geojsonPath);
   const geojson = JSON.parse(geojsonBytes);
   assert.equal(sha256(source), "sha256:f520abeaf54426178f6c208879341991fe611cd676073d060a844a27a89d7a2e");
-  assert.equal(sha256(geojsonBytes), "sha256:a249eacc26669589c4f899990bcf9691d2eabf98d7383135a9701882051e474b");
+  assert.equal(sha256(geojsonBytes), "sha256:843215193c8a290fd4b26bf313701f594edbb609862581802d646ff029871d5d");
   assert.equal(summary.width, 64);
   assert.equal(summary.height, 32);
   assert.equal(summary.sourceBytes, source.length);
@@ -93,13 +93,13 @@ try {
   assert.equal(maxSummary.width, 384);
   assert.equal(maxSummary.height, 192);
   assert.equal(maxSummary.sourceBytes, 577980);
-  assert.equal(maxSummary.geojsonBytes, 19100480);
-  assert.equal(maxSummary.geojsonFeatures, 64620);
+  assert.equal(maxSummary.geojsonBytes, 15501023);
+  assert.equal(maxSummary.geojsonFeatures, 53729);
   assert.ok(maxSummary.generationMs < 8000, `maximum generation exceeded budget: ${maxSummary.generationMs}ms`);
   assert.equal(sha256(maxSource), "sha256:967e6d39f0816ca6a298f5e165aa5b4676ca803b76473cd0d5940f0da8c8852b");
-  assert.equal(sha256(maxGeojson), "sha256:a5c2b6ebd3a992bb5eed0849bff2cfa43a826687704bcf9112e7aacff37c1c43");
+  assert.equal(sha256(maxGeojson), "sha256:701fc673fc297b44c64788797f73f51f961409047bf400900eec7ae0e6ed033c");
   console.log(
-    `physical map v10 source check passed on ${process.platform}/${process.arch}: default=${source.length}/${geojsonBytes.length} bytes, maximum=${maxSource.length}/${maxGeojson.length} bytes in ${maxSummary.generationMs.toFixed(1)}ms`,
+    `physical map v11 source check passed on ${process.platform}/${process.arch}: default=${source.length}/${geojsonBytes.length} bytes, maximum=${maxSource.length}/${maxGeojson.length} bytes in ${maxSummary.generationMs.toFixed(1)}ms`,
   );
 } finally {
   rmSync(temp, { recursive: true, force: true });

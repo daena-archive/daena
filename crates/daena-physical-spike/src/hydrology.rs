@@ -10,12 +10,13 @@ use std::fmt::Write as _;
 
 use super::{
     climate::ClimateField,
+    contours,
     evolution::{DrainageEdge, DrainageField},
     Grid, PhysicalError, PhysicalErrorCode, PhysicalField, Segment,
 };
 use crate::tectonics::CrustType;
 
-pub const HYDROLOGY_DERIVATION_VERSION: u16 = 3;
+pub const HYDROLOGY_DERIVATION_VERSION: u16 = 4;
 pub const MAX_HYDROLOGY_FEATURES: usize = crate::MAX_GEOJSON_FEATURES;
 pub const WATER_SOLVER_UNDERRELAXATION_PPM: u32 = 1_000_000;
 const MAX_FIXED_POINT_ITERATIONS: u32 = 32;
@@ -724,6 +725,7 @@ fn build_depression_tree(field: &PhysicalField, sea_level_mm: i32) -> Depression
     }
 }
 
+#[cfg(test)]
 fn precipitation_volume(grid: Grid, cell: usize, millimetres: u32) -> u64 {
     (grid.cell_area(grid.row_col(cell).0) * f64::from(millimetres) / 1_000.0)
         .round()
@@ -1205,72 +1207,31 @@ fn hillshade(field: &PhysicalField, cell: usize) -> u32 {
     (illumination * 1_000_000.0).round().clamp(0.0, 1_000_000.0) as u32
 }
 
-fn longitude_micro(grid: Grid, column: u32) -> i32 {
-    (-180_000_000i64 + 360_000_000i64 * i64::from(column) / i64::from(grid.width)) as i32
+fn water_boundary_segments(field: &PhysicalField, water: &[bool]) -> Result<Vec<Segment>, PhysicalError> {
+    let paths = contours::polygons_from_mask(field.grid, water)?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    Ok(contours::segments_from_paths(&paths))
 }
 
-fn latitude_micro(grid: Grid, row: u32) -> i32 {
-    (-90_000_000i64 + 180_000_000i64 * i64::from(row) / i64::from(grid.height)) as i32
-}
-
-fn cell_ring(grid: Grid, cell: usize) -> Vec<[i32; 2]> {
-    let (row, col) = grid.row_col(cell);
-    let west = longitude_micro(grid, col);
-    let east = longitude_micro(grid, col + 1);
-    let south = latitude_micro(grid, row);
-    let north = latitude_micro(grid, row + 1);
-    vec![
-        [west, south],
-        [east, south],
-        [east, north],
-        [west, north],
-        [west, south],
-    ]
-}
-
-fn water_boundary_segments(field: &PhysicalField, water: &[bool]) -> Vec<Segment> {
-    let mut segments = Vec::new();
-    for cell in 0..field.grid.sample_count() {
-        if !water[cell] {
-            continue;
-        }
-        let (row, col) = field.grid.row_col(cell);
-        let west = longitude_micro(field.grid, col);
-        let east = longitude_micro(field.grid, col + 1);
-        let south = latitude_micro(field.grid, row);
-        let north = latitude_micro(field.grid, row + 1);
-        let edges = [
-            [[west, south], [west, north]],
-            [[east, north], [east, south]],
-            [[west, south], [east, south]],
-            [[east, north], [west, north]],
-        ];
-        let neighbors = [
-            field
-                .grid
-                .index(row, (col + field.grid.width - 1) % field.grid.width),
-            field.grid.index(row, (col + 1) % field.grid.width),
-            if row == 0 {
-                cell
-            } else {
-                field.grid.index(row - 1, col)
-            },
-            if row + 1 == field.grid.height {
-                cell
-            } else {
-                field.grid.index(row + 1, col)
-            },
-        ];
-        for (edge, neighbor) in edges.into_iter().zip(neighbors) {
-            if neighbor == cell || !water[neighbor] {
-                segments.push(Segment {
-                    first: edge[0],
-                    second: edge[1],
-                });
-            }
+fn bathymetry_contour_segments(
+    field: &PhysicalField,
+    ocean_mask: &[bool],
+    sea_level_mm: i32,
+) -> Result<Vec<Segment>, PhysicalError> {
+    let mut scalar = vec![-1; field.grid.sample_count()];
+    for (cell, ocean) in ocean_mask.iter().copied().enumerate() {
+        if ocean {
+            scalar[cell] = sea_level_mm.saturating_sub(field.elevations_mm[cell]).max(0);
         }
     }
-    segments
+    let mut contours_out = Vec::new();
+    for threshold in [100_000, 250_000, 500_000] {
+        let paths = contours::isolines_at(field.grid, &scalar, threshold)?;
+        contours_out.extend(contours::segments_from_paths(&paths));
+    }
+    Ok(contours_out)
 }
 
 fn primary_edges(field: &PhysicalField, drainage: &DrainageField) -> Vec<Option<DrainageEdge>> {
@@ -1397,7 +1358,7 @@ fn derive_rivers(
         let mut steps = 0usize;
         let mut ended_at_junction = false;
         loop {
-            path.push(coordinate_for_cell(field.grid, cell));
+            path.push(cell);
             steps += 1;
             let Some(edge) = primary[cell] else {
                 if field.elevations_mm[cell] > field.sea_level_mm && basin_by_cell[cell] == u32::MAX
@@ -1411,7 +1372,7 @@ fn derive_rivers(
                         .filter(|neighbor| field.elevations_mm[*neighbor] <= field.sea_level_mm)
                         .min()
                     {
-                        path.push(coordinate_for_cell(field.grid, outlet));
+                        path.push(outlet);
                         cell = outlet;
                     }
                 }
@@ -1431,12 +1392,12 @@ fn derive_rivers(
                 ));
             }
             if field.elevations_mm[next] <= field.sea_level_mm || lake_cells[next] {
-                path.push(coordinate_for_cell(field.grid, next));
+                path.push(next);
                 cell = next;
                 break;
             }
             if active[next] && incoming[next] > 1 {
-                path.push(coordinate_for_cell(field.grid, next));
+                path.push(next);
                 cell = next;
                 ended_at_junction = true;
                 break;
@@ -1474,7 +1435,14 @@ fn derive_rivers(
                 "river terminates without an ocean or valid endorheic basin",
             ));
         }
-        let simplified = simplify_path(path);
+        let coords = river_coordinates_from_cells(
+            field,
+            &path,
+            destination,
+            lake_cells,
+            basins,
+        )?;
+        let simplified = simplify_path(coords);
         let id = segments.len() as u32;
         segments.push(RiverSegment {
             id,
@@ -1546,10 +1514,13 @@ fn derive_rivers(
                 "overflowing basin spill point has no adjacent destination",
             ));
         };
-        let path = vec![
-            coordinate_for_cell(field.grid, spill_cell),
-            coordinate_for_cell(field.grid, outlet_cell),
-        ];
+        let path = river_coordinates_from_cells(
+            field,
+            &[spill_cell, outlet_cell],
+            destination,
+            lake_cells,
+            basins,
+        )?;
         let id = segments.len() as u32;
         segments.push(RiverSegment {
             id,
@@ -1591,38 +1562,74 @@ fn simplify_path(mut path: Vec<[i32; 2]>) -> Vec<[i32; 2]> {
     simplified
 }
 
-fn polygon_for_cells(grid: Grid, cells: &[usize]) -> Vec<Vec<[i32; 2]>> {
-    let stride = crate::derived_cell_stride(grid);
-    let mut rings = cells
+fn river_coordinates_from_cells(
+    field: &PhysicalField,
+    cells: &[usize],
+    destination: BasinDestination,
+    lake_cells: &[bool],
+    basins: &[Basin],
+) -> Result<Vec<[i32; 2]>, PhysicalError> {
+    let mut coordinates = cells
         .iter()
-        .copied()
-        .filter(|cell| {
-            let (row, col) = grid.row_col(*cell);
-            row % stride == 0 && col % stride == 0
-        })
-        .map(|cell| cell_ring(grid, cell))
+        .map(|cell| coordinate_for_cell(field.grid, *cell))
         .collect::<Vec<_>>();
-    if rings.is_empty() {
-        if let Some(cell) = cells.first().copied() {
-            rings.push(cell_ring(grid, cell));
+    if cells.len() < 2 {
+        return Ok(coordinates);
+    }
+    let from = cells[cells.len() - 2];
+    let to = cells[cells.len() - 1];
+    let should_snap = matches!(destination, BasinDestination::Ocean)
+        || (matches!(destination, BasinDestination::Basin(_))
+            && lake_cells.get(to).copied().unwrap_or(false));
+    if !should_snap {
+        return Ok(coordinates);
+    }
+    let threshold = match destination {
+        BasinDestination::Basin(id) => basins
+            .get(id)
+            .map(|basin| basin.water_level_mm)
+            .unwrap_or(field.sea_level_mm),
+        _ => field.sea_level_mm,
+    };
+    let mut candidates = vec![to];
+    candidates.extend(field.grid.topology().neighbors(from).iter().copied());
+    let snapped = candidates.into_iter().find_map(|neighbor| {
+        contours::interpolate_edge(
+            field.grid,
+            &field.elevations_mm,
+            threshold,
+            from,
+            neighbor,
+        )
+        .ok()
+    });
+    if let Some(point) = snapped {
+        if let Some(last) = coordinates.last_mut() {
+            *last = point;
         }
     }
-    rings
+    Ok(coordinates)
 }
 
-fn polygon_for_mask(grid: Grid, mask: &[bool]) -> Vec<Vec<Vec<[i32; 2]>>> {
-    let stride = crate::derived_cell_stride(grid);
-    mask.iter()
-        .enumerate()
-        .filter(|(cell, included)| {
-            if !**included {
-                return false;
-            }
-            let (row, col) = grid.row_col(*cell);
-            row % stride == 0 && col % stride == 0
-        })
-        .map(|(cell, _)| vec![cell_ring(grid, cell)])
-        .collect()
+fn polygon_for_cells(grid: Grid, cells: &[usize]) -> Result<Vec<Vec<[i32; 2]>>, PhysicalError> {
+    let mut mask = vec![false; grid.sample_count()];
+    for cell in cells {
+        if *cell < mask.len() {
+            mask[*cell] = true;
+        }
+    }
+    let polygons = contours::polygons_from_mask(grid, &mask)?;
+    if polygons.is_empty() {
+        Ok(Vec::new())
+    } else if polygons.len() == 1 {
+        Ok(polygons.into_iter().next().unwrap_or_default())
+    } else {
+        Ok(polygons.into_iter().flatten().collect())
+    }
+}
+
+fn polygon_for_mask(grid: Grid, mask: &[bool]) -> Result<Vec<Vec<Vec<[i32; 2]>>>, PhysicalError> {
+    contours::polygons_from_mask(grid, mask)
 }
 
 fn island_groups(grid: Grid, land_mask: &[bool]) -> (Vec<u32>, Vec<Vec<usize>>) {
@@ -1649,66 +1656,6 @@ fn island_groups(grid: Grid, land_mask: &[bool]) -> (Vec<u32>, Vec<Vec<usize>>) 
         groups.push(cells);
     }
     (island_id, groups)
-}
-
-fn bathymetry_contour_segments(
-    field: &PhysicalField,
-    ocean_mask: &[bool],
-    sea_level_mm: i32,
-) -> Vec<Segment> {
-    let mut contours = Vec::new();
-    let stride = crate::derived_cell_stride(field.grid);
-    for threshold in [100_000, 250_000, 500_000] {
-        for cell in 0..field.grid.sample_count() {
-            let (row, col) = field.grid.row_col(cell);
-            if row % stride != 0 || col % stride != 0 {
-                continue;
-            }
-            if !ocean_mask[cell]
-                || sea_level_mm.saturating_sub(field.elevations_mm[cell]) < threshold
-            {
-                continue;
-            }
-            let west = longitude_micro(field.grid, col);
-            let east = longitude_micro(field.grid, col + 1);
-            let south = latitude_micro(field.grid, row);
-            let north = latitude_micro(field.grid, row + 1);
-            let edges = [
-                [[west, south], [west, north]],
-                [[east, north], [east, south]],
-                [[west, south], [east, south]],
-                [[east, north], [west, north]],
-            ];
-            let neighbors = [
-                field
-                    .grid
-                    .index(row, (col + field.grid.width - 1) % field.grid.width),
-                field.grid.index(row, (col + 1) % field.grid.width),
-                if row == 0 {
-                    cell
-                } else {
-                    field.grid.index(row - 1, col)
-                },
-                if row + 1 == field.grid.height {
-                    cell
-                } else {
-                    field.grid.index(row + 1, col)
-                },
-            ];
-            for (edge, neighbor) in edges.into_iter().zip(neighbors) {
-                if neighbor == cell
-                    || !ocean_mask[neighbor]
-                    || sea_level_mm.saturating_sub(field.elevations_mm[neighbor]) < threshold
-                {
-                    contours.push(Segment {
-                        first: edge[0],
-                        second: edge[1],
-                    });
-                }
-            }
-        }
-    }
-    contours
 }
 
 fn watershed_groups(
@@ -1918,33 +1865,35 @@ pub fn derive_hydrology_with_crust(
         .zip(lake_cells.iter())
         .map(|(ocean, lake)| *ocean || *lake)
         .collect::<Vec<_>>();
-    let coastline_segments = water_boundary_segments(field, &water_mask);
-    let lake_polygons = basins
-        .iter()
-        .filter(|basin| {
-            !ice_cells[basin.minimum_cell]
-                && basin.status != BasinStatus::Merged
-                && basin.water_volume_m3 > 0
-                && basin
-                    .water_level_mm
-                    .saturating_sub(basin.minimum_elevation_mm)
-                    >= MIN_LAKE_DEPTH_MM
-                && basin.water_level_mm > sea_level
-        })
-        .map(|basin| {
-            let cells = tree.subtree_cells[basin.id]
-                .iter()
-                .copied()
-                .filter(|cell| lake_cells[*cell])
-                .collect::<Vec<_>>();
-            polygon_for_cells(field.grid, &cells)
-        })
-        .collect::<Vec<_>>();
+    let coastline_segments = water_boundary_segments(field, &water_mask)?;
+    let mut lake_polygons = Vec::new();
+    for basin in &basins {
+        if ice_cells[basin.minimum_cell]
+            || basin.status == BasinStatus::Merged
+            || basin.water_volume_m3 == 0
+            || basin
+                .water_level_mm
+                .saturating_sub(basin.minimum_elevation_mm)
+                < MIN_LAKE_DEPTH_MM
+            || basin.water_level_mm <= sea_level
+        {
+            continue;
+        }
+        let cells = tree.subtree_cells[basin.id]
+            .iter()
+            .copied()
+            .filter(|cell| lake_cells[*cell])
+            .collect::<Vec<_>>();
+        let rings = polygon_for_cells(field.grid, &cells)?;
+        if !rings.is_empty() {
+            lake_polygons.push(rings);
+        }
+    }
     let (watershed_id, watershed_cells) = watershed_groups(field, drainage, &lake_cells);
-    let watershed_polygons = watershed_cells
-        .iter()
-        .map(|cells| polygon_for_cells(field.grid, cells))
-        .collect::<Vec<_>>();
+    let mut watershed_polygons = Vec::new();
+    for cells in &watershed_cells {
+        watershed_polygons.push(polygon_for_cells(field.grid, cells)?);
+    }
     let shelf_cells = (0..field.grid.sample_count())
         .map(|cell| {
             if !ocean_mask[cell] {
@@ -1960,16 +1909,16 @@ pub fn derive_hydrology_with_crust(
     let land_mask = (0..field.grid.sample_count())
         .map(|cell| field.elevations_mm[cell] > sea_level && !lake_cells[cell])
         .collect::<Vec<_>>();
-    let land_polygons = polygon_for_mask(field.grid, &land_mask);
-    let ice_polygons = polygon_for_mask(field.grid, &ice_cells);
+    let land_polygons = polygon_for_mask(field.grid, &land_mask)?;
+    let ice_polygons = polygon_for_mask(field.grid, &ice_cells)?;
     let (island_id, island_cells) = island_groups(field.grid, &land_mask);
-    let island_polygons = island_cells
-        .iter()
-        .map(|cells| polygon_for_cells(field.grid, cells))
-        .collect::<Vec<_>>();
-    let ocean_polygons = polygon_for_mask(field.grid, &ocean_mask);
-    let shelf_polygons = polygon_for_mask(field.grid, &shelf_cells);
-    let bathymetry_contours = bathymetry_contour_segments(field, &ocean_mask, sea_level);
+    let mut island_polygons = Vec::new();
+    for cells in &island_cells {
+        island_polygons.push(polygon_for_cells(field.grid, cells)?);
+    }
+    let ocean_polygons = contours::extract(field.grid, &field.elevations_mm, sea_level, false)?.polygons;
+    let shelf_polygons = polygon_for_mask(field.grid, &shelf_cells)?;
+    let bathymetry_contours = bathymetry_contour_segments(field, &ocean_mask, sea_level)?;
     let metrics = WaterBalanceMetrics {
         total_water_m3: reference_water_inventory_m3,
         ocean_water_m3: ocean_water,
@@ -2321,6 +2270,24 @@ mod tests {
         assert!(json.contains("watersheds"));
         assert!(json.contains("rivers") || hydrology.rivers.is_empty());
         assert!(json.contains("\"ice\"") || hydrology.ice_polygons.is_empty());
+        for polygon in hydrology
+            .land_polygons
+            .iter()
+            .chain(hydrology.ocean_polygons.iter())
+            .chain(hydrology.island_polygons.iter())
+            .chain(hydrology.lake_polygons.iter())
+        {
+            for ring in polygon {
+                assert!(ring.len() >= 4);
+                assert_eq!(ring.first(), ring.last());
+                for point in ring {
+                    assert!((-180_000_000..=180_000_000).contains(&point[0]));
+                    assert!((-90_000_000..=90_000_000).contains(&point[1]));
+                }
+            }
+        }
+        assert_eq!(hydrology.derivation_version, HYDROLOGY_DERIVATION_VERSION);
+        assert_eq!(crate::contours::CONTOUR_DERIVATION_VERSION, 1);
     }
 
     #[test]

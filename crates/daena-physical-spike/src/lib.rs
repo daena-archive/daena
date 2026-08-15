@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 pub mod climate;
+pub mod contours;
 pub mod events;
 pub mod evolution;
 pub mod hazards;
@@ -45,7 +46,7 @@ pub const CANCELLATION_LATENCY_BUDGET_MS: u128 = 100;
 pub const GENERATION_TIME_BUDGET_MS: u128 = 8_000;
 pub const WORKING_MEMORY_BUDGET_BYTES: usize = 128 * 1024 * 1024;
 pub const GENERATOR_ID: &str = "daena-physical-world";
-pub const GENERATOR_VERSION: u32 = 10;
+pub const GENERATOR_VERSION: u32 = 11;
 
 pub const CODE_GENERATOR_INVALID_SETTINGS: &str = "physical.generator.invalid-settings";
 pub const CODE_GENERATOR_UNSUPPORTED_VERSION: &str = "physical.generator.unsupported-version";
@@ -874,111 +875,60 @@ pub struct Segment {
     pub second: [i32; 2],
 }
 
-fn longitude_micro(grid: &Grid, column: u32) -> i32 {
+pub(crate) fn longitude_micro(grid: &Grid, column: u32) -> i32 {
     (-180_000_000i64 + 360_000_000i64 * i64::from(column) / i64::from(grid.width)) as i32
 }
 
-fn latitude_micro(grid: &Grid, row: u32) -> i32 {
+pub(crate) fn latitude_micro(grid: &Grid, row: u32) -> i32 {
     (-90_000_000i64 + 180_000_000i64 * i64::from(row) / i64::from(grid.height)) as i32
 }
 
-fn edge_segments_for_cell(grid: &Grid, row: u32, col: u32) -> [[[i32; 2]; 2]; 4] {
-    let west = longitude_micro(grid, col);
-    let east = longitude_micro(grid, col + 1);
-    let south = latitude_micro(grid, row);
-    let north = latitude_micro(grid, row + 1);
-    [
-        [[west, south], [west, north]],
-        [[east, north], [east, south]],
-        [[west, south], [east, south]],
-        [[east, north], [west, north]],
-    ]
+pub fn coastline_paths(field: &PhysicalField) -> Result<Vec<Vec<[i32; 2]>>, PhysicalError> {
+    contours::isolines_at(field.grid, &field.elevations_mm, field.sea_level_mm)
 }
 
 pub fn coastline_segments(field: &PhysicalField) -> Vec<Segment> {
-    let grid = field.grid;
-    let mut segments = Vec::new();
-    let is_land = |index: usize| field.elevations_mm[index] > field.sea_level_mm;
-    for row in 0..grid.height {
-        for col in 0..grid.width {
-            let index = grid.index(row, col);
-            if !is_land(index) {
-                continue;
-            }
-            let edges = edge_segments_for_cell(&grid, row, col);
-            let west = grid.index(row, (col + grid.width - 1) % grid.width);
-            let east = grid.index(row, (col + 1) % grid.width);
-            if !is_land(west) {
-                segments.push(Segment {
-                    first: edges[0][0],
-                    second: edges[0][1],
-                });
-            }
-            if !is_land(east) {
-                segments.push(Segment {
-                    first: edges[1][0],
-                    second: edges[1][1],
-                });
-            }
-            if row == 0 {
-                let polar_land = (0..grid.width).all(|polar_col| is_land(grid.index(0, polar_col)));
-                if !polar_land {
-                    segments.push(Segment {
-                        first: edges[2][0],
-                        second: [0, -90_000_000],
-                    });
-                }
-            } else if !is_land(grid.index(row - 1, col)) {
-                segments.push(Segment {
-                    first: edges[2][0],
-                    second: edges[2][1],
-                });
-            }
-            if row + 1 == grid.height {
-                let polar_land = (0..grid.width)
-                    .all(|polar_col| is_land(grid.index(grid.height - 1, polar_col)));
-                if !polar_land {
-                    segments.push(Segment {
-                        first: edges[3][0],
-                        second: [0, 90_000_000],
-                    });
-                }
-            } else if !is_land(grid.index(row + 1, col)) {
-                segments.push(Segment {
-                    first: edges[3][0],
-                    second: edges[3][1],
-                });
-            }
-        }
-    }
-    segments
+    coastline_paths(field)
+        .map(|paths| contours::segments_from_paths(&paths))
+        .unwrap_or_default()
 }
 
 pub fn to_geojson(field: &PhysicalField) -> Result<String, String> {
-    let segments = coastline_segments(field);
-    if segments.len() > MAX_GEOJSON_FEATURES {
+    let paths = coastline_paths(field).map_err(|error| error.to_string())?;
+    if paths.len() > MAX_GEOJSON_FEATURES {
         return Err("derived coastline exceeds the iteration-0 feature budget".into());
     }
     let mut output = String::from(r#"{"type":"FeatureCollection","features":["#);
-    for (index, segment) in segments.iter().enumerate() {
+    for (index, path) in paths.iter().enumerate() {
+        if path.len() < 2 {
+            continue;
+        }
         if index > 0 {
             output.push(',');
         }
-        write!(
-            output,
-            r#"{{"type":"Feature","id":"coastline-{index:05}","properties":{{"daenaLayerId":"base","kind":"custom","name":"physical coastline"}},"geometry":{{"type":"LineString","coordinates":[[{},{}],[{},{}]]}}}}"#,
-            format_micro(segment.first[0]),
-            format_micro(segment.first[1]),
-            format_micro(segment.second[0]),
-            format_micro(segment.second[1]),
-        )
-        .map_err(|_| "failed to format derived GeoJSON".to_string())?;
+        output.push_str(&format!(
+            r#"{{"type":"Feature","id":"coastline-{index:05}","properties":{{"daenaLayerId":"base","kind":"custom","name":"physical coastline"}},"geometry":{{"type":"LineString","coordinates":"#
+        ));
+        output.push('[');
+        for (point_index, point) in path.iter().enumerate() {
+            if point_index > 0 {
+                output.push(',');
+            }
+            write!(
+                output,
+                "[{},{}]",
+                format_micro(point[0]),
+                format_micro(point[1])
+            )
+            .map_err(|_| "failed to format derived GeoJSON".to_string())?;
+        }
+        output.push_str("]}}");
     }
     output.push_str("]}");
     Ok(output)
 }
 
-fn format_micro(value: i32) -> String {
+pub(crate) fn format_micro(value: i32) -> String {
     let mut output = String::new();
     write_micro(&mut output, value);
     output

@@ -109,7 +109,12 @@ assert.match(timelineManifest, /"field\.read:shared"/);
 assert.match(coreMaps, /PHYSICAL_EVENT_CHRONOLOGY_KEY/);
 assert.match(native, /relative generated rates; they are not real-world predictions/);
 assert.match(source, /relative generated rates; they are not real-world predictions/);
-assert.match(host, /PHYSICAL_PROVIDER/);
+assert.ok(
+  readFileSync(resolve(root, "crates/daena-physical-spike/src/contours.rs"), "utf8").includes(
+    "CONTOUR_DERIVATION_VERSION",
+  ),
+  "physical contours must version interpolated geometry",
+);
 
 assert.match(
   source,

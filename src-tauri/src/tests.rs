@@ -121,7 +121,7 @@ fn physical_hydrology_products_expose_current_water_and_renderer_fields() {
     let mut progress = daena_physical::NoopProgress;
     let world = daena_physical::generate_world(settings, 831_429, 0, &mut progress).unwrap();
     let products = physical_hydrology_products(&world.hydrology);
-    assert_eq!(products["derivationVersion"], 3);
+    assert_eq!(products["derivationVersion"], 4);
     for key in [
         "waterLevelMm",
         "lakeLevelMm",
@@ -142,6 +142,25 @@ fn physical_hydrology_products_expose_current_water_and_renderer_fields() {
     assert!(products["metrics"]["toleranceM3"].as_u64().unwrap() > 0);
     assert!(products["metrics"]["watershedCount"].as_u64().unwrap() > 0);
     assert!(products["metrics"]["islandCount"].as_u64().unwrap() > 0);
+    let geojson: serde_json::Value = serde_json::from_str(&world.derived_geojson).unwrap();
+    assert_eq!(geojson["type"], "FeatureCollection");
+    fn walk(value: &serde_json::Value) {
+        if let Some(pair) = value.as_array() {
+            if pair.len() >= 2 && pair[0].is_number() && pair[1].is_number() {
+                let lon = pair[0].as_f64().unwrap();
+                let lat = pair[1].as_f64().unwrap();
+                assert!((-180.0..=180.0).contains(&lon));
+                assert!((-90.0..=90.0).contains(&lat));
+            } else {
+                for item in pair {
+                    walk(item);
+                }
+            }
+        }
+    }
+    for feature in geojson["features"].as_array().unwrap() {
+        walk(&feature["geometry"]["coordinates"]);
+    }
 }
 
 #[test]

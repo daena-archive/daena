@@ -1037,11 +1037,10 @@ criterion.
 
 ## Iteration 5: lakes, rivers, coastlines, and current-world completion
 
-Implementation status (2026-08-15): Packet 4 (ADR 0027) replaced the raw-sink
-hierarchy and frozen-inland ocean loop with a Fill-Spill-Merge depression tree
-and a coupled lake/ocean solve in `hydrology.rs`. Hydrology derivation version
-is `3`. Cell-edge coastline/lake vectors remain Iteration 5 presentation
-geometry until Packet 5.
+Implementation status (2026-08-15): Packet 5 (ADR 0028) replaced per-cell-edge
+coastline, lake, land/ocean, and bathymetric vectors with interpolated marching
+squares in `contours.rs`. Hydrology derivation version is `4`. Remaining
+corrective work is Packet 6 historical forcing smoothness.
 Accepted physical maps also persist a separate empty GeoJSON authored-overlay
 asset and locked physical layer definitions, including `ice`. Authored vector
 edits target that overlay asset only; the signed `.pworld` source cannot be
@@ -1649,6 +1648,9 @@ after cache deletion/rebuild.
 
 #### Packet 5: produce topology-preserving vectors
 
+Status: implemented in `contours.rs` (ADR 0028). Generator version is `11`.
+`HYDROLOGY_DERIVATION_VERSION` is `4`. `CONTOUR_DERIVATION_VERSION` is `1`.
+
 Implement final contouring as a separate derived module; do not mix renderer
 geometry into `hydrology.rs`:
 
@@ -1817,15 +1819,15 @@ hashes may remain unit fixtures but cannot be the sole product-quality gate.
 Packet 2 (ADR 0025) replaced nearest-site ownership, score-threshold crust, and
 lumped relief with a cost-field plate assignment, grouped craton expansion,
 named geodesic relief terms, and Euler-track hotspot chains. Remaining
-corrective work is Packet 5 contour geometry and any later visual
-LOD of tectonic diagnostics, not a return to the Voronoi scaffold.
+corrective work is visual LOD of tectonic diagnostics, not a return to the
+Voronoi scaffold.
 
 #### Packet 3 drainage and stream-power erosion are in place
 
 Packet 3 (ADR 0026) replaced the ADR 0018 logarithmic incision surrogate and
 the four-neighbor drop/distance blend with D-infinity facet routing and
-`K * Q^m * S^n` incision. Remaining drainage work is Packet 5 contour geometry,
-not a return to the v1 surrogate. The locked
+`K * Q^m * S^n` incision. Remaining drainage work is visual corridor
+vectorization at higher resolution, not a return to the v1 surrogate. The locked
 `grid_anisotropy_ppm <= 950,000` value remains a directional-concentration
 proxy; analytic plane/cone/ridge fixtures are the Packet 3 morphology gates.
 
@@ -1834,22 +1836,15 @@ proxy; analytic plane/cone/ridge fixtures are the Packet 3 morphology gates.
 Packet 4 (ADR 0027) replaced the ADR 0019 raw-sink hierarchy, frozen inland
 storage, and 28% precipitation evaporation rule with a Fill-Spill-Merge tree
 and a millimetre-quantized coupled lake/ocean solve. Remaining hydrology work
-is Packet 5 interpolated contours, not a return to downhill-sink basins.
+is Packet 6 historical forcing, not a return to downhill-sink basins.
 
-#### Cell-edge vectors are not final contour geometry
+#### Packet 5 interpolated contours are in place
 
-ADR 0019 explicitly uses per-cell-edge boundaries rather than interpolated
-marching-squares-equivalent isolines. At the feasibility resolution this
-produces block geometry and does not by itself fulfill the intended coastline,
-lake-boundary, bathymetric-contour, and valid land/ocean polygon contracts.
-
-Add seam-safe interpolated contour extraction with an explicit ambiguous-cell
-policy, spherical/pole handling, ring assembly, winding and hole rules, and
-bounded simplification. Coastlines must remain the contour of
-`elevation = sea level`; smoothing may not invent or remove a strait, island,
-lake outlet, or drainage corridor. Validate polygons for closure,
-self-intersection, holes, antimeridian representation, and connectivity before
-feeding MapLibre.
+Packet 5 (ADR 0028) replaced ADR 0019 per-cell-edge presentation geometry with
+seam-safe interpolated marching squares, an asymptotic saddle rule, polar
+triangles, antimeridian splitting, spherical hole ownership, and geodesic
+simplification. Remaining vector work is visual LOD of tectonic diagnostics
+and packaged-native MapLibre inspection, not a return to cell-edge coastlines.
 
 #### Historical climate is a non-smooth single-wave heuristic
 

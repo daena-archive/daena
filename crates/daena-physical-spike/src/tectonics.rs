@@ -2251,6 +2251,22 @@ fn line_geometry(first: [i32; 2], second: [i32; 2]) -> String {
     )
 }
 
+fn path_geometry(path: &[[i32; 2]]) -> String {
+    let mut output = String::from("[");
+    for (index, point) in path.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        output.push_str(&format!(
+            "[{},{}]",
+            super::format_micro(point[0]),
+            super::format_micro(point[1])
+        ));
+    }
+    output.push(']');
+    output
+}
+
 fn diagnostic_feature(
     id: &str,
     layer: &str,
@@ -2402,7 +2418,14 @@ pub fn to_diagnostic_geojson(world: &TectonicWorld) -> Result<String, String> {
         .map_err(|error| format!("invalid tectonic diagnostics: {error}"))?;
     let field = world.physical_field();
     let mut features = DiagnosticWriter::new();
-    for (index, segment) in super::coastline_segments(&field).iter().enumerate() {
+    for (index, path) in super::coastline_paths(&field)
+        .map_err(|error| error.to_string())?
+        .iter()
+        .enumerate()
+    {
+        if path.len() < 2 {
+            continue;
+        }
         add_diagnostic_feature(
             &mut features,
             diagnostic_feature(
@@ -2411,7 +2434,7 @@ pub fn to_diagnostic_geojson(world: &TectonicWorld) -> Result<String, String> {
                 "custom",
                 "physical coastline",
                 "LineString",
-                &line_geometry(segment.first, segment.second),
+                &path_geometry(path),
             ),
         )?;
     }
@@ -2721,12 +2744,14 @@ mod tests {
             })
         }));
         if polar_land.iter().any(|land| *land) && polar_land.iter().any(|land| !*land) {
-            assert!(segments.iter().any(|segment| {
-                segment.first == [0, -90_000_000]
-                    || segment.second == [0, -90_000_000]
-                    || segment.first == [0, 90_000_000]
-                    || segment.second == [0, 90_000_000]
-            }));
+            let south_center = (-90_000_000i64
+                + 180_000_000i64 / i64::from(solved.grid.height * 2)) as i32;
+            assert!(
+                segments.iter().any(|segment| {
+                    segment.first[1] <= south_center || segment.second[1] <= south_center
+                }),
+                "mixed polar land must produce a polar-triangle coastline"
+            );
         }
     }
 

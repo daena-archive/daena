@@ -2315,6 +2315,16 @@ impl ProjectStore {
         &self.database_epoch
     }
 
+    pub fn content_generation(&self) -> Result<i64, CoreError> {
+        self.connection
+            .query_row(
+                "SELECT content_generation FROM runtime_meta WHERE key='runtime'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(CoreError::from)
+    }
+
     pub fn sync_summary(&self) -> Result<SyncSummary, CoreError> {
         let (content, exported, export_error): (i64, i64, Option<String>) = self.connection.query_row(
             "SELECT content_generation,exported_generation,export_error FROM runtime_meta WHERE key='runtime'",

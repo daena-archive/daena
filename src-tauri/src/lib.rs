@@ -32,6 +32,7 @@ use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
 
 mod ai;
+mod atlas_jobs;
 mod settings;
 
 use settings::{AppSettings, AppSettingsUpdate, SettingsStore};
@@ -45,6 +46,7 @@ type SharedCore = Arc<Mutex<Arc<ProjectSession>>>;
 type SharedPluginHost = Arc<Mutex<PluginHost>>;
 type SharedBinaryTransfers = Arc<Mutex<BinaryTransferManager>>;
 type SharedPhysicalJobs = Arc<Mutex<PhysicalJobManager>>;
+type SharedAtlasJobs = Arc<Mutex<crate::atlas_jobs::AtlasJobManager>>;
 type SharedSettings = Arc<Mutex<SettingsStore>>;
 const READ_CONNECTION_POOL_CAPACITY: usize = 4;
 const PHYSICAL_JOB_TTL: Duration = Duration::from_secs(15 * 60);
@@ -54,6 +56,7 @@ static HISTORICAL_EPOCH_CACHE: OnceLock<Mutex<BTreeMap<String, serde_json::Value
 static HISTORICAL_EPOCH_REQUESTS: OnceLock<Mutex<BTreeMap<String, Arc<AtomicU64>>>> =
     OnceLock::new();
 const PHYSICAL_HISTORICAL_PROGRESS_EVENT: &str = "physical-historical-progress";
+const ATLAS_PROGRESS_EVENT: &str = "atlas-progress";
 
 fn new_shared_core() -> SharedCore {
     Arc::new(Mutex::new(Arc::new(ProjectSession {
@@ -329,6 +332,9 @@ fn cancel_physical_jobs(jobs: &SharedPhysicalJobs) -> Result<(), String> {
     jobs.lock()
         .map_err(|_| "physical job state is unavailable".to_string())?
         .cancel_all();
+    if let Some(atlas) = ATLAS_JOBS.get() {
+        atlas_jobs::cancel_atlas_jobs(atlas)?;
+    }
     Ok(())
 }
 
@@ -411,6 +417,7 @@ const PLUGIN_WEBVIEW_ISOLATION_SCRIPT: &str = r#"(function () {
 /// Set during `setup` so the custom protocol handler (which does not receive
 /// an `AppHandle`) can forward plugin state events to the shell.
 static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+static ATLAS_JOBS: OnceLock<SharedAtlasJobs> = OnceLock::new();
 
 #[derive(Default)]
 struct BinaryTransferManager {
@@ -8689,6 +8696,8 @@ pub fn run() {
     let transfers = Arc::new(Mutex::new(BinaryTransferManager::default()));
     let protocol_transfers = transfers.clone();
     let physical_jobs = Arc::new(Mutex::new(PhysicalJobManager::default()));
+    let atlas_jobs = Arc::new(Mutex::new(atlas_jobs::AtlasJobManager::default()));
+    let _ = ATLAS_JOBS.set(atlas_jobs.clone());
     let protocol_ai_runtime = Arc::new(Mutex::new(ai::AiRuntime::default()));
     let startup_plugins = plugins.clone();
     let watcher = Arc::new(Mutex::new(ProjectWatcher::default()));
@@ -8758,6 +8767,7 @@ pub fn run() {
         .manage(plugins)
         .manage(transfers)
         .manage(physical_jobs)
+        .manage(atlas_jobs)
         .manage(watcher)
         .manage(ai_runtime)
         .invoke_handler(tauri::generate_handler![
@@ -8883,6 +8893,13 @@ pub fn run() {
             project_physical_derived_epoch,
             project_physical_materialize_events,
             project_physical_clear_epoch_cache,
+            atlas_jobs::project_atlas_capabilities,
+            atlas_jobs::project_atlas_preview_begin,
+            atlas_jobs::project_atlas_render_begin,
+            atlas_jobs::project_atlas_job_status,
+            atlas_jobs::project_atlas_job_cancel,
+            atlas_jobs::project_atlas_artifact_save,
+            atlas_jobs::project_atlas_artifact_discard,
             project_read_asset_bytes,
             project_create_raster_layer,
             project_create_semantic_layer,

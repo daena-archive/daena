@@ -32,3 +32,15 @@ Repeating the `2048 x 1024` request from the same source produced the same
 PNG bytes. Other CI/desktop targets should record a row before treating encoded
 file bytes as a cross-target guarantee; decoded pixels plus encoder settings
 remain the locked visual contract.
+
+## Renderer version 2 (iteration 1 overlays)
+
+Same host and golden source, relief style with default physical layers. Repeat
+of `2048 x 1024` matched. Encoded bytes differ from renderer 1 because rivers,
+coasts, contours, graticule, and frame are now composited.
+
+| Target | Width | Height | Duration ms | Peak RSS | PNG bytes | SHA-256 |
+| ------ | ----: | -----: | ----------: | -------: | --------: | ------- |
+| Darwin 25.6 | 2048 | 1024 | 321 | 42_156_032 | 8_391_109 | `sha256:a956c3f5bf559cac827c87b1116439d68c2defe76a621f10bdc31f59a03dc626` |
+| Darwin 25.6 | 4096 | 2048 | 1_227 | 143_638_528 | 33_559_877 | `sha256:9af533757d8bed624ed1741ff7e43bfc525013c90a559179e42fe205d12dbd8c` |
+| Darwin 25.6 | 8192 | 4096 | 4_925 | 553_910_272 | 134_232_901 | `sha256:27a379189d8793bf6a489361c5652766837d3fa6d6631b21e0d36d00929508bb` |

@@ -2,9 +2,10 @@ use daena_physical::hydrology::HydrologyField;
 use daena_physical::Grid;
 
 use crate::detail::{sample_sdf_ppm, AtlasDetailModel};
+use crate::overlay::composite_overlays;
 use crate::projection::{pixel_center_lat_micro, pixel_center_lon_micro, wrap_lon_micro};
 use crate::request::{AtlasRenderRequest, TILE_HALO, TILE_SIZE};
-use crate::style::{apply_shade, hypsometric, BACKGROUND, ICE, LAKE};
+use crate::style::{apply_shade, hypsometric, AtlasStyle};
 use crate::{AtlasError, AtlasPhase, AtlasProgress};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +75,8 @@ fn pixel_rgba(
     model: &AtlasDetailModel,
     hydrology: &HydrologyField,
     sdf: &[i32],
+    style: &AtlasStyle,
+    request: &AtlasRenderRequest,
     lon: i32,
     lat: i32,
 ) -> [u8; 4] {
@@ -81,16 +84,31 @@ fn pixel_rgba(
     let sdf_ppm = sample_sdf_ppm(model.grid, sdf, lon, lat);
     let elevation = model.refined_at(lon, lat, sea, sdf_ppm);
     let cell = nearest_cell(model.grid, lon, lat);
-    if hydrology.ice_cells.get(cell).copied().unwrap_or(false) {
-        return apply_shade(ICE, shade_ppm(model, lon, lat, sea, sdf).max(700_000));
+    let shade = shade_ppm(model, lon, lat, sea, sdf);
+    if request.layer_enabled("ice") && hydrology.ice_cells.get(cell).copied().unwrap_or(false) {
+        return apply_shade(style.ice, shade.max(700_000));
     }
-    if hydrology.lake_cells.get(cell).copied().unwrap_or(false) {
-        return apply_shade(LAKE, shade_ppm(model, lon, lat, sea, sdf));
+    if request.layer_enabled("lakes") && hydrology.lake_cells.get(cell).copied().unwrap_or(false) {
+        return apply_shade(style.lake, shade);
     }
-    apply_shade(
-        hypsometric(elevation, sea),
-        shade_ppm(model, lon, lat, sea, sdf),
-    )
+    let land = elevation >= sea;
+    if land && !request.layer_enabled("relief") {
+        return [
+            style.background[0],
+            style.background[1],
+            style.background[2],
+            255,
+        ];
+    }
+    if !land && !request.layer_enabled("ocean") {
+        return [
+            style.background[0],
+            style.background[1],
+            style.background[2],
+            255,
+        ];
+    }
+    apply_shade(hypsometric(style, elevation, sea), shade)
 }
 
 pub fn render_rgba(
@@ -98,6 +116,8 @@ pub fn render_rgba(
     model: &AtlasDetailModel,
     hydrology: &HydrologyField,
     sdf: &[i32],
+    style: &AtlasStyle,
+    identity: &[u8],
     tile_order: &[u32],
     progress: &mut dyn AtlasProgress,
 ) -> Result<Vec<u8>, AtlasError> {
@@ -107,7 +127,13 @@ pub fn render_rgba(
         .checked_mul(height as usize)
         .and_then(|count| count.checked_mul(4))
         .ok_or_else(|| AtlasError::limit("RGBA buffer overflowed"))?;
-    let mut buffer = vec![BACKGROUND[0]; pixels];
+    let mut buffer = vec![style.background[0]; pixels];
+    for index in (0..pixels).step_by(4) {
+        buffer[index] = style.background[0];
+        buffer[index + 1] = style.background[1];
+        buffer[index + 2] = style.background[2];
+        buffer[index + 3] = 255;
+    }
     let tiles = tile_rects(width, height);
     if tile_order.len() != tiles.len() {
         return Err(AtlasError::invalid("tile order does not match tile count"));
@@ -126,13 +152,14 @@ pub fn render_rgba(
                 let y = tile.y + local_y;
                 let lon = pixel_center_lon_micro(x, width);
                 let lat = pixel_center_lat_micro(y, height);
-                let rgba = pixel_rgba(model, hydrology, sdf, lon, lat);
+                let rgba = pixel_rgba(model, hydrology, sdf, style, request, lon, lat);
                 let offset = ((y as usize) * width as usize + x as usize) * 4;
                 buffer[offset..offset + 4].copy_from_slice(&rgba);
             }
         }
     }
     progress.report(AtlasPhase::Rendering, total, total)?;
+    composite_overlays(&mut buffer, request, style, hydrology, identity);
     Ok(buffer)
 }
 

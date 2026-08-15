@@ -21,7 +21,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 daena-physical = { path = "../crates/daena-physical-spike" }
-tauri = { version = "2", features = ["unstable"] }
+tauri = { version = "2", features = ["protocol-asset", "unstable"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
@@ -33,6 +33,7 @@ sha2 = "0.10"
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "rustls"] }
 keyring = { version = "3.6.3", default-features = false, features = ["apple-native", "windows-native", "linux-native"] }
 daena-core = { path = "../crates/daena-core" }
+daena-atlas = { path = "../crates/daena-atlas" }
 daena-ai = { path = "../crates/daena-ai" }
 daena-plugin-api = { path = "../crates/daena-plugin-api" }
 daena-plugin-host = { path = "../crates/daena-plugin-host" }

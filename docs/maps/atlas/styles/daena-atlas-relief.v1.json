@@ -1,0 +1,21 @@
+{
+  "id": "daena-atlas-relief",
+  "version": 1,
+  "title": "Physical relief",
+  "fontId": "daena-atlas-bitmap-5x7",
+  "paperGrainPpm": 0,
+  "oceanDeep": [12, 42, 78],
+  "oceanShallow": [46, 110, 148],
+  "landLow": [126, 158, 92],
+  "landHigh": [196, 176, 132],
+  "landPeak": [236, 236, 228],
+  "lake": [54, 108, 148],
+  "ice": [236, 244, 252],
+  "river": [36, 82, 122],
+  "coast": [28, 36, 42],
+  "contour": [120, 108, 88],
+  "graticule": [210, 214, 208],
+  "frame": [32, 36, 40],
+  "background": [8, 16, 24],
+  "defaultLayerIds": ["ocean", "relief", "ice", "lakes", "rivers", "coastlines", "contours", "graticule", "frame"]
+}

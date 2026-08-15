@@ -1,13 +1,16 @@
 # Atlas rendering licenses
 
-Iteration 0 of Atlas Rendering bundles no fonts, no third-party style packs,
-and no remote assets. The spike renderer uses only:
+The atlas renderer uses only:
 
-- this repository's Apache-2.0 code in `crates/daena-atlas`;
+- this repository's Apache-2.0 code in `crates/daena-atlas` and `crates/daena-core`;
 - `daena-physical` (Apache-2.0, same repository);
-- the `png` crate (`MIT OR Apache-2.0`) as a pinned CPU encoder;
-- `sha2` (`MIT OR Apache-2.0`) for domain keys and source digests;
-- `serde` / `serde_json` (`MIT OR Apache-2.0`) for compact provenance JSON.
+- bundled style JSON under `docs/maps/atlas/styles/` (Apache-2.0);
+- the reserved bitmap font id `daena-atlas-bitmap-5x7` (Apache-2.0, original
+  5×7 glyphs in the renderer; no third-party TTF in iteration 1);
+- the `png` crate (`MIT OR Apache-2.0`);
+- `sha2` (`MIT OR Apache-2.0`);
+- `serde` / `serde_json` (`MIT OR Apache-2.0`).
 
-No runtime URL is requested. Iteration 1 must record bundled font and style
-file licenses before those files are added under `docs/maps/atlas/`.
+No runtime URL is requested. Styles are rejected if they contain `http://`,
+`https://`, `javascript:`, `file:`, `<script`, or `shader`. Iteration 2 must
+record hashed, licensed TTF files before enabling the label shaper.

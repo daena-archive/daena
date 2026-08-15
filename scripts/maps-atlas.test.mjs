@@ -82,6 +82,32 @@ function render(width, height, output, release) {
 
 try {
   run(["test", "--manifest-path", manifest, "--locked", "--offline"], { timeout: 300_000 });
+  run(
+    ["test", "--manifest-path", "crates/daena-core/Cargo.toml", "--locked", "--offline", "maps::atlas"],
+    { timeout: 180_000 },
+  );
+  run(
+    ["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "--offline", "--lib", "atlas_jobs"],
+    { timeout: 180_000 },
+  );
+  for (const name of ["daena-atlas-relief.v1.json", "daena-atlas-antique.v1.json"]) {
+    const style = readFileSync(join(root, "docs/maps/atlas/styles", name), "utf8");
+    assert.equal(style.toLowerCase().includes("http://"), false);
+    assert.equal(style.toLowerCase().includes("https://"), false);
+    assert.equal(style.toLowerCase().includes("javascript"), false);
+    assert.equal(style.toLowerCase().includes("shader"), false);
+    JSON.parse(style);
+  }
+  const licenses = readFileSync(join(root, "docs/maps/atlas/LICENSES.md"), "utf8");
+  assert.match(licenses, /daena-atlas-bitmap-5x7/);
+  assert.match(licenses, /No runtime URL/);
+  const panel = readFileSync(join(root, "src/lib/maps/atlas/AtlasRenderPanel.svelte"), "utf8");
+  assert.equal(panel.includes("maplibre"), false);
+  assert.equal(panel.includes("getCanvas"), false);
+  assert.match(panel, /convertFileSrc/);
+  const editor = readFileSync(join(root, "src/lib/maps/native-vector/NativeVectorMapEditor.svelte"), "utf8");
+  assert.match(editor, /atlasCapabilities/);
+  assert.equal(/atlasSupported = descriptor\?\.provider/.test(editor), false);
   const physical = JSON.parse(
     run(
       [

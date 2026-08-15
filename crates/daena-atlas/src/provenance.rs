@@ -3,7 +3,7 @@ use serde::Serialize;
 use crate::request::AtlasRenderRequest;
 use crate::{
     ATLAS_DETAIL_ALGORITHM_VERSION, ATLAS_PROVENANCE_SCHEMA_VERSION, ATLAS_RENDERER_VERSION,
-    ATLAS_REQUEST_SCHEMA_VERSION, ATLAS_SEED_POLICY_VERSION, SPIKE_STYLE_ID,
+    ATLAS_REQUEST_SCHEMA_VERSION, ATLAS_SEED_POLICY_VERSION,
 };
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -25,13 +25,16 @@ pub struct AtlasRenderProvenanceV1 {
     pub dpi: u32,
     pub format: String,
     pub encoder: String,
+    pub style_hash: String,
+    pub active_layer_ids: Vec<String>,
 }
 
 impl AtlasRenderProvenanceV1 {
-    pub fn spike(
+    pub fn for_request(
         request: &AtlasRenderRequest,
         physical_identity: &[u8],
         source_sha256: &str,
+        style_hash: &str,
     ) -> Self {
         Self {
             schema_version: ATLAS_PROVENANCE_SCHEMA_VERSION,
@@ -39,7 +42,7 @@ impl AtlasRenderProvenanceV1 {
             request_schema_version: ATLAS_REQUEST_SCHEMA_VERSION,
             detail_algorithm_version: ATLAS_DETAIL_ALGORITHM_VERSION,
             seed_policy_version: ATLAS_SEED_POLICY_VERSION,
-            style_id: SPIKE_STYLE_ID.to_string(),
+            style_id: request.style_id.clone(),
             physical_identity: String::from_utf8_lossy(physical_identity).into_owned(),
             source_sha256: source_sha256.to_string(),
             offset_years: request.offset_years,
@@ -51,7 +54,17 @@ impl AtlasRenderProvenanceV1 {
             dpi: request.dpi,
             format: request.format.as_str().to_string(),
             encoder: "png-0.17-fast-nofilter".to_string(),
+            style_hash: style_hash.to_string(),
+            active_layer_ids: request.active_layer_ids.clone(),
         }
+    }
+
+    pub fn spike(
+        request: &AtlasRenderRequest,
+        physical_identity: &[u8],
+        source_sha256: &str,
+    ) -> Self {
+        Self::for_request(request, physical_identity, source_sha256, "sha256:spike")
     }
 
     pub fn compact_json(&self) -> Result<String, crate::AtlasError> {

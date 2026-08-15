@@ -43,6 +43,7 @@ import {
 import { physicalWorldOverlayCoordinates, type ImageOverlayCoordinates } from "./coordinates";
 import { paintPhysicalSurface } from "../physical/raster";
 import PhysicalWorldView from "../physical/PhysicalWorldView.svelte";
+import AtlasRenderPanel from "../atlas/AtlasRenderPanel.svelte";
 
 let {
   mapId,
@@ -110,6 +111,8 @@ let eventBusy = $state(false);
 let eventNotice = $state("");
 let eventRequestId = $state<string | null>(null);
 let eventRequestSignature = $state("");
+let atlasOpen = $state(false);
+let atlasSupported = $state(false);
 
 const listedLayers = $derived(
   [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id)),
@@ -398,6 +401,14 @@ async function load() {
       defaultView?: { center?: [number, number]; zoom?: number };
     };
     physicalMap = descriptor?.provider?.id === "daena-physical";
+    atlasSupported = false;
+    atlasOpen = false;
+    try {
+      const capabilities = await project.atlasCapabilities(mapId);
+      atlasSupported = capabilities.supported;
+    } catch {
+      atlasSupported = false;
+    }
     if (descriptor?.defaultView?.center) defaultView = { ...defaultView, center: descriptor.defaultView.center };
     if (typeof descriptor?.defaultView?.zoom === "number")
       defaultView = { ...defaultView, zoom: descriptor.defaultView.zoom };
@@ -871,6 +882,16 @@ onMount(() => {
           title={busy ? "Saving…" : dirty ? "Save" : "Saved"}
           disabled={busy || !dirty}
           onclick={() => void save()}>{@render glyph(icons.save)}</button>
+        {#if atlasSupported}
+          <button
+            type="button"
+            class="icon-button"
+            class:active={atlasOpen}
+            aria-pressed={atlasOpen}
+            aria-label="Render Atlas Map"
+            title="Render Atlas Map"
+            onclick={() => (atlasOpen = !atlasOpen)}>Atlas</button>
+        {/if}
         <button
           type="button"
           class="icon-button"
@@ -895,6 +916,9 @@ onMount(() => {
     {/if}
     {#if notice}
       <p class="hint" role="status">{notice}</p>
+    {/if}
+    {#if atlasOpen && mapId}
+      <AtlasRenderPanel {mapId} {epochOffsetYears} onclose={() => (atlasOpen = false)} />
     {/if}
     {#if physicalMap}
       <div class="epoch-control" aria-label="Historical climate time">

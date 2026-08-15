@@ -1,3 +1,6 @@
+use serde::{Deserialize, Serialize};
+
+use crate::style::{bundled_style_ids, load_style, resolve_style_id};
 use crate::{
     AtlasError, ATLAS_DETAIL_ALGORITHM_VERSION, ATLAS_REQUEST_SCHEMA_VERSION, SPIKE_STYLE_ID,
 };
@@ -8,7 +11,20 @@ pub const MAX_PIXEL_COUNT: u64 = 33_554_432;
 pub const TILE_SIZE: u32 = 512;
 pub const TILE_HALO: u32 = 0;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub const ATLAS_LAYER_ROLES: [&str; 9] = [
+    "ocean",
+    "relief",
+    "ice",
+    "lakes",
+    "rivers",
+    "coastlines",
+    "contours",
+    "graticule",
+    "frame",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum DetailLevel {
     Standard,
     Detailed,
@@ -44,7 +60,8 @@ impl DetailLevel {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum AtlasFormat {
     Png,
 }
@@ -64,7 +81,8 @@ impl AtlasFormat {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AtlasRenderRequest {
     pub schema_version: u32,
     pub offset_years: i64,
@@ -76,6 +94,8 @@ pub struct AtlasRenderRequest {
     pub height_px: u32,
     pub dpi: u32,
     pub format: AtlasFormat,
+    #[serde(default)]
+    pub active_layer_ids: Vec<String>,
 }
 
 impl AtlasRenderRequest {
@@ -91,21 +111,35 @@ impl AtlasRenderRequest {
             height_px,
             dpi: 300,
             format: AtlasFormat::Png,
+            active_layer_ids: Vec::new(),
         })
     }
 
-    pub fn normalize(self) -> Result<Self, AtlasError> {
+    pub fn layer_enabled(&self, role: &str) -> bool {
+        self.active_layer_ids.iter().any(|id| id == role)
+    }
+
+    pub fn normalize(mut self) -> Result<Self, AtlasError> {
         if self.schema_version != ATLAS_REQUEST_SCHEMA_VERSION {
             return Err(AtlasError::invalid("unsupported atlas request schema"));
         }
         if self.algorithm_version != ATLAS_DETAIL_ALGORITHM_VERSION {
             return Err(AtlasError::invalid("unsupported atlas detail algorithm"));
         }
-        if self.style_id != SPIKE_STYLE_ID {
-            return Err(AtlasError::new(
-                crate::CODE_REQUEST_INVALID,
-                format!("unavailable atlas style: {}", self.style_id),
-            ));
+        let canonical = resolve_style_id(&self.style_id)?;
+        self.style_id = canonical.to_string();
+        let (style, _) = load_style(&self.style_id)?;
+        if self.active_layer_ids.is_empty() {
+            self.active_layer_ids = style.default_layer_ids.clone();
+        }
+        self.active_layer_ids.sort();
+        self.active_layer_ids.dedup();
+        for id in &self.active_layer_ids {
+            if !ATLAS_LAYER_ROLES.contains(&id.as_str()) {
+                return Err(AtlasError::invalid(format!(
+                    "unsupported atlas layer role: {id}"
+                )));
+            }
         }
         if self.width_px == 0 || self.height_px == 0 {
             return Err(AtlasError::invalid("output dimensions must be positive"));
@@ -118,12 +152,19 @@ impl AtlasRenderRequest {
         }
         if u64::from(self.width_px) != u64::from(self.height_px) * 2 {
             return Err(AtlasError::invalid(
-                "iteration-0 atlas output must be whole-world 2:1 equirectangular",
+                "iteration-1 atlas output must be whole-world 2:1 equirectangular",
             ));
         }
         if self.dpi == 0 || self.dpi > 2_400 {
             return Err(AtlasError::invalid("DPI must be between 1 and 2400"));
         }
+        if !(-daena_physical::history::MAX_HISTORICAL_OFFSET_YEARS
+            ..=daena_physical::history::MAX_HISTORICAL_OFFSET_YEARS)
+            .contains(&self.offset_years)
+        {
+            return Err(AtlasError::invalid("physical offset year is out of range"));
+        }
+        let _ = bundled_style_ids();
         Ok(self)
     }
 
@@ -131,6 +172,46 @@ impl AtlasRenderRequest {
         let tiles_x = self.width_px.div_ceil(TILE_SIZE);
         let tiles_y = self.height_px.div_ceil(TILE_SIZE);
         tiles_x.saturating_mul(tiles_y)
+    }
+
+    pub fn estimate(&self) -> ResourceEstimate {
+        let pixels = u64::from(self.width_px) * u64::from(self.height_px);
+        ResourceEstimate {
+            pixel_count: pixels,
+            rgba_bytes: pixels.saturating_mul(4),
+            estimated_png_bytes: pixels.saturating_mul(4),
+            tile_count: u64::from(self.tile_count()),
+            print_width_inches_milli: u64::from(self.width_px) * 1000 / u64::from(self.dpi.max(1)),
+            print_height_inches_milli: u64::from(self.height_px) * 1000
+                / u64::from(self.dpi.max(1)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceEstimate {
+    pub pixel_count: u64,
+    pub rgba_bytes: u64,
+    pub estimated_png_bytes: u64,
+    pub tile_count: u64,
+    pub print_width_inches_milli: u64,
+    pub print_height_inches_milli: u64,
+}
+
+pub fn physical_layer_role(layer_id: &str) -> Option<&'static str> {
+    match layer_id {
+        "ocean" | "bathymetry" | "shelves" => Some("ocean"),
+        "land" | "base" => Some("relief"),
+        "ice" => Some("ice"),
+        "lakes" => Some("lakes"),
+        "rivers" => Some("rivers"),
+        "bathymetric-contours" => Some("contours"),
+        "islands" => Some("coastlines"),
+        other => ATLAS_LAYER_ROLES
+            .iter()
+            .copied()
+            .find(|role| *role == other),
     }
 }
 
@@ -153,5 +234,13 @@ mod tests {
             request.normalize().unwrap_err().code,
             crate::CODE_RESOURCE_LIMIT
         );
+    }
+
+    #[test]
+    fn spike_alias_normalizes_to_relief_style() {
+        let request = AtlasRenderRequest::spike_png(64, 32).unwrap();
+        assert_eq!(request.style_id, crate::style::RELIEF_STYLE_ID);
+        assert!(request.layer_enabled("relief"));
+        assert!(request.estimate().pixel_count == 64 * 32);
     }
 }

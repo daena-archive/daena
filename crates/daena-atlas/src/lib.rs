@@ -6,6 +6,7 @@
 
 pub mod detail;
 pub mod encode;
+pub mod overlay;
 pub mod projection;
 pub mod provenance;
 pub mod render;
@@ -17,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub const ATLAS_REQUEST_SCHEMA_VERSION: u32 = 1;
 pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 1;
 pub const ATLAS_SEED_POLICY_VERSION: u32 = 1;
-pub const ATLAS_RENDERER_VERSION: u32 = 1;
+pub const ATLAS_RENDERER_VERSION: u32 = 2;
 pub const ATLAS_PROVENANCE_SCHEMA_VERSION: u32 = 1;
 pub const SPIKE_STYLE_ID: &str = "daena-atlas-relief-spike";
 
@@ -157,11 +158,13 @@ pub fn render_from_source(
     identity: &[u8],
     request: &request::AtlasRenderRequest,
     tile_order: Option<&[u32]>,
+    forcing: Option<daena_physical::history::HistoricalForcingParameters>,
     progress: &mut dyn AtlasProgress,
 ) -> Result<RenderedAtlas, AtlasError> {
     progress.report(AtlasPhase::Validating, 0, 1)?;
     progress.check_cancelled()?;
     let request = request.clone().normalize()?;
+    let (style, style_raw) = style::load_style(&request.style_id)?;
     let world = daena_physical::decode_source(source_bytes)
         .map_err(|error| AtlasError::new(CODE_SOURCE_INVALID, error))?;
     let field = world.physical_field();
@@ -174,10 +177,12 @@ pub fn render_from_source(
         &field,
         report.reference_water_inventory_m3,
         Some(&world.crust_by_cell),
-        daena_physical::history::HistoricalForcingParameters::default_for(
-            field.seed,
-            field.retry_index,
-        ),
+        forcing.unwrap_or_else(|| {
+            daena_physical::history::HistoricalForcingParameters::default_for(
+                field.seed,
+                field.retry_index,
+            )
+        }),
         request.offset_years,
         &mut daena_physical::NoopProgress,
     )
@@ -212,6 +217,8 @@ pub fn render_from_source(
         &model,
         &historical.hydrology,
         &sdf,
+        &style,
+        identity,
         &order,
         progress,
     )?;
@@ -219,7 +226,12 @@ pub fn render_from_source(
         use sha2::{Digest, Sha256};
         format!("sha256:{:x}", Sha256::digest(source_bytes))
     };
-    let provenance = provenance::AtlasRenderProvenanceV1::spike(&request, identity, &source_sha256);
+    let provenance = provenance::AtlasRenderProvenanceV1::for_request(
+        &request,
+        identity,
+        &source_sha256,
+        &style.content_hash(style_raw),
+    );
     let png = encode::encode_png(&request, &rgba, &provenance, progress)?;
     Ok(RenderedAtlas {
         png,
@@ -263,14 +275,21 @@ mod tests {
         let world = golden_world();
         let identity = spike_identity_from_source(&world.source);
         let request = AtlasRenderRequest::spike_png(1024, 512).unwrap();
-        let forward =
-            render_from_source(&world.source, &identity, &request, None, &mut NoopProgress)
-                .unwrap();
+        let forward = render_from_source(
+            &world.source,
+            &identity,
+            &request,
+            None,
+            None,
+            &mut NoopProgress,
+        )
+        .unwrap();
         let reverse = render_from_source(
             &world.source,
             &identity,
             &request,
             Some(&render::reverse_tile_order(request.tile_count())),
+            None,
             &mut NoopProgress,
         )
         .unwrap();
@@ -279,6 +298,7 @@ mod tests {
             &identity,
             &request,
             Some(&render::shuffled_tile_order(request.tile_count(), 7)),
+            None,
             &mut NoopProgress,
         )
         .unwrap();
@@ -302,6 +322,7 @@ mod tests {
             &identity,
             &AtlasRenderRequest::spike_png(256, 128).unwrap(),
             None,
+            None,
             &mut NoopProgress,
         )
         .unwrap();
@@ -309,6 +330,7 @@ mod tests {
             &world.source,
             &identity,
             &AtlasRenderRequest::spike_png(512, 256).unwrap(),
+            None,
             None,
             &mut NoopProgress,
         )
@@ -345,9 +367,69 @@ mod tests {
             &identity,
             &AtlasRenderRequest::spike_png(64, 32).unwrap(),
             None,
+            None,
             &mut FlagProgress { flag: &flag },
         )
         .unwrap_err();
         assert_eq!(error.code, CODE_RENDER_CANCELLED);
+    }
+
+    #[test]
+    fn style_and_layer_toggles_change_only_declared_stages() {
+        let world = golden_world();
+        let identity = spike_identity_from_source(&world.source);
+        let mut relief = AtlasRenderRequest::spike_png(128, 64).unwrap();
+        let with_layers = render_from_source(
+            &world.source,
+            &identity,
+            &relief,
+            None,
+            None,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        relief.style_id = style::ANTIQUE_STYLE_ID.to_string();
+        let antique = render_from_source(
+            &world.source,
+            &identity,
+            &relief.normalize().unwrap(),
+            None,
+            None,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_ne!(with_layers.rgba, antique.rgba);
+        assert_eq!(antique.provenance.style_id, style::ANTIQUE_STYLE_ID);
+        let mut no_rivers = AtlasRenderRequest::spike_png(128, 64).unwrap();
+        no_rivers.active_layer_ids = vec![
+            "ocean".into(),
+            "relief".into(),
+            "ice".into(),
+            "lakes".into(),
+            "frame".into(),
+        ];
+        let without = render_from_source(
+            &world.source,
+            &identity,
+            &no_rivers.normalize().unwrap(),
+            None,
+            None,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_ne!(with_layers.rgba, without.rgba);
+        let mut cold = AtlasRenderRequest::spike_png(128, 64).unwrap();
+        cold.offset_years = -8_000;
+        let past = render_from_source(
+            &world.source,
+            &identity,
+            &cold.normalize().unwrap(),
+            None,
+            None,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(past.provenance.offset_years, -8_000);
+        assert_ne!(with_layers.rgba, past.rgba);
     }
 }

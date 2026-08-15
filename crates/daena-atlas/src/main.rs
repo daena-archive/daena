@@ -47,7 +47,7 @@ fn main() -> Result<(), String> {
     let identity = spike_identity_from_source(&source);
     let request =
         AtlasRenderRequest::spike_png(width, height).map_err(|error| error.to_string())?;
-    let rendered = render_from_source(&source, &identity, &request, None, &mut NoopProgress)
+    let rendered = render_from_source(&source, &identity, &request, None, None, &mut NoopProgress)
         .map_err(|error| error.to_string())?;
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
     if let Some(path) = output {

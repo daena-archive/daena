@@ -314,6 +314,66 @@ export interface PhysicalHistoricalProgress {
   total: number;
 }
 export const PHYSICAL_HISTORICAL_PROGRESS_EVENT = "physical-historical-progress";
+export const ATLAS_PROGRESS_EVENT = "atlas-progress";
+export interface AtlasLayerChoice {
+  id: string;
+  name: string;
+  role: string;
+  defaultVisible: boolean;
+}
+export interface AtlasRenderCapabilities {
+  supported: boolean;
+  timeModes: string[];
+  projections: string[];
+  formats: string[];
+  styles: string[];
+  layers: AtlasLayerChoice[];
+  maxWidthPx: number;
+  maxHeightPx: number;
+  maxPixelCount: number;
+  supportsAuthoredLayers: boolean;
+  supportsSemanticLayers: boolean;
+}
+export interface AtlasRenderRequest {
+  schemaVersion: number;
+  offsetYears: number;
+  algorithmVersion: number;
+  level: "standard" | "detailed" | "print";
+  variant: number;
+  styleId: string;
+  widthPx: number;
+  heightPx: number;
+  dpi: number;
+  format: "png";
+  activeLayerIds: string[];
+}
+export interface AtlasJobStatus {
+  jobId: string;
+  requestId: string;
+  mapEntityId: string;
+  kind: string;
+  state: string;
+  stage: string;
+  completed: number;
+  total: number;
+  sequence: number;
+  error: string | null;
+  errorCode: string | null;
+  widthPx: number;
+  heightPx: number;
+  previewToken: string | null;
+  capturedContentGeneration: number | null;
+  currentContentGeneration: number | null;
+  provenance: unknown;
+  estimate: {
+    pixelCount: number;
+    rgbaBytes: number;
+    estimatedPngBytes: number;
+    tileCount: number;
+    printWidthInchesMilli: number;
+    printHeightInchesMilli: number;
+  } | null;
+}
 export interface PhysicalGenerationInput {
   seed: number;
   retryIndex: number;
@@ -839,6 +899,20 @@ export const project = {
       requestId: requestId(options),
     }),
   physicalMapClearEpochCache: () => invoke<void>("project_physical_clear_epoch_cache"),
+  atlasCapabilities: (mapEntityId: string) =>
+    invoke<AtlasRenderCapabilities>("project_atlas_capabilities", { mapEntityId }),
+  atlasPreviewBegin: (mapEntityId: string, request: AtlasRenderRequest, requestId = crypto.randomUUID()) =>
+    invoke<AtlasJobStatus>("project_atlas_preview_begin", {
+      input: { mapEntityId, request, requestId },
+    }),
+  atlasRenderBegin: (mapEntityId: string, request: AtlasRenderRequest, requestId = crypto.randomUUID()) =>
+    invoke<AtlasJobStatus>("project_atlas_render_begin", {
+      input: { mapEntityId, request, requestId },
+    }),
+  atlasJobStatus: (jobId: string) => invoke<AtlasJobStatus>("project_atlas_job_status", { jobId }),
+  atlasJobCancel: (jobId: string) => invoke<AtlasJobStatus>("project_atlas_job_cancel", { jobId }),
+  atlasArtifactSave: (jobId: string) => invoke<AtlasJobStatus>("project_atlas_artifact_save", { jobId }),
+  atlasArtifactDiscard: (jobId: string) => invoke<AtlasJobStatus>("project_atlas_artifact_discard", { jobId }),
   readAssetBytes: (assetId: string) => invoke<number[]>("project_read_asset_bytes", { assetId }),
   createRasterLayer: (mapEntityId: string, name: string, expectedRevision: string, options?: MutationOptions) =>
     invoke<RasterLayerChange>("project_create_raster_layer", {

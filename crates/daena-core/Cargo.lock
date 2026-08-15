@@ -117,9 +117,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "daena-atlas"
+version = "0.1.0"
+dependencies = [
+ "daena-physical",
+ "png",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "daena-core"
 version = "0.1.0"
 dependencies = [
+ "daena-atlas",
  "daena-physical",
  "jpeg-decoder",
  "libc",

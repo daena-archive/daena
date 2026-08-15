@@ -1,0 +1,21 @@
+{
+  "id": "daena-atlas-antique",
+  "version": 1,
+  "title": "Antique paper",
+  "fontId": "daena-atlas-bitmap-5x7",
+  "paperGrainPpm": 90000,
+  "oceanDeep": [62, 78, 86],
+  "oceanShallow": [108, 128, 122],
+  "landLow": [168, 148, 104],
+  "landHigh": [186, 156, 108],
+  "landPeak": [214, 196, 158],
+  "lake": [92, 118, 116],
+  "ice": [232, 224, 206],
+  "river": [78, 92, 86],
+  "coast": [72, 52, 36],
+  "contour": [140, 112, 78],
+  "graticule": [128, 108, 82],
+  "frame": [64, 42, 28],
+  "background": [214, 198, 160],
+  "defaultLayerIds": ["ocean", "relief", "ice", "lakes", "rivers", "coastlines", "contours", "graticule", "frame"]
+}

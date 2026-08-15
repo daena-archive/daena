@@ -28,6 +28,7 @@ pub const PHYSICAL_EVENT_CHRONOLOGY_KEY: &str = "physicalChronology";
 pub const PHYSICAL_EVENT_MAX_OFFSET_YEARS: i64 = 100_000;
 pub const PHYSICAL_EVENT_ON_MAP_RELATIONSHIP: &str = "daena.maps:physical-event-on-map";
 
+pub mod atlas;
 pub mod image;
 pub mod physical;
 pub mod vector;

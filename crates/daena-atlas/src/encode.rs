@@ -108,10 +108,7 @@ mod tests {
         assert_eq!(decoded.width, 4);
         assert_eq!(decoded.height, 2);
         assert_eq!(decoded.rgba, rgba);
-        assert!(decoded
-            .comment
-            .unwrap()
-            .contains("daena-atlas-relief-spike"));
+        assert!(decoded.comment.unwrap().contains("daena-atlas-relief"));
         assert!(!String::from_utf8_lossy(&encoded).contains("http"));
     }
 }

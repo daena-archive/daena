@@ -475,7 +475,7 @@ Solve the monotonic volume equation with bounded root finding and explicit
 tolerance/iteration limits.
 
 Current total water is conserved among ocean water, land-based ice, and
-persistent inland water. Hydrology derivation version 2 locks land ice from
+persistent inland water. Hydrology derivation version 3 locks land ice from
 the same inventory before the ocean-level solve. A land cell becomes ice when
 its elevation is above sea level, its temperature is below 0 °C, and its
 precipitation is at least 80 mm/year. Water-equivalent thickness scales with
@@ -486,28 +486,24 @@ remains in (or returns to) the pool. Ice does not flow, does not alter the
 canonical elevation field, and does not interact with land. There is no sea
 ice; ocean cells stay in the ocean reservoir.
 
-Iteration 5 then uses a bounded, one-directional ocean-level fixed-point solve:
-derive basin assignments and inland storage at the initial sea level, skip
-inland storage for basins whose minimum cell is ice, then adjust only ocean
-level against that frozen inland storage plus remaining liquid inventory until
-the declared tolerance is met.
+Iteration 5 / Packet 4 uses one coupled water iteration per epoch: classify
+ocean-connected cells, solve nested basin nodes bottom-up, compute lake
+level/area/storage/overflow, lock land ice from the remaining inventory, then
+bisection-solve ocean level to millimetre quantization. Inland storage and
+ocean connectivity are recomputed when sea level changes.
 
 Flow routing uses D-infinity or another reviewed continuous-direction method;
 basic D8 is not acceptable because it produces visible grid alignment.
 Accumulation weights sum to one, use physical runoff volume, and form an
 acyclic downstream graph.
 
-The final Iteration 5 depression hierarchy is a bounded raw-field equivalent
-of a depression hierarchy, not a full nested Fill-Spill-Merge tree. Each land
-cell traces downhill to a deterministic local sink, and each sink basin uses
-its lowest valid spill edge. The hierarchy records basin minima, spill
-points/elevations, volume-to-spill, parents, and downstream basin/ocean
-destinations. A basin's water balance includes inflow, direct precipitation,
-fixed evaporation equal to 28% of direct precipitation, and outlet discharge.
-Outcomes include dry, endorheic, overflowing, and merged lakes; `merged` means
-that excess outflow is carried into a parent basin, not that basin topologies
-are unioned. Nested sub-depressions that are not represented by separate
-downhill sinks are not emitted as separate lakes.
+The depression hierarchy is a Fill-Spill-Merge tree. Each node records its
+minimum, exclusive cells, spill saddle, parent, children, ocean destination,
+and a volume-versus-level curve from exact spherical cell areas. A parent merge
+occurs only when children reach the shared saddle. Lake evaporation uses open-
+water area, derived temperature, and maritime dryness rather than a fixed
+fraction of precipitation. Outcomes include dry, endorheic, overflowing, and
+merged lakes; `merged` means a child has filled to the parent saddle.
 
 River channels cross a normalized discharge threshold. Their topology obeys:
 
@@ -1041,17 +1037,11 @@ criterion.
 
 ## Iteration 5: lakes, rivers, coastlines, and current-world completion
 
-Implementation status (2026-08-15): the current-world hydrology slice is
-implemented in `daena-physical-spike` under ADR 0019, with land ice added as
-hydrology derivation version 2. It derives a bounded raw-field sink/spill
-hierarchy, bounded basin water balances, land-ice cells locked from the global
-water pool, a conserved ocean-level fixed-point solve against frozen inland
-storage and remaining liquid inventory, primary river channels with Strahler
-order, watershed, lake-entry/junction/spill-outlet river geometry, island,
-lake, and ice geometry, final water-aware coastline, and
-hillshade/bathymetry/slope renderer arrays. These products remain disposable;
-the accepted v2 source is unchanged and the native host re-derives them after
-restart.
+Implementation status (2026-08-15): Packet 4 (ADR 0027) replaced the raw-sink
+hierarchy and frozen-inland ocean loop with a Fill-Spill-Merge depression tree
+and a coupled lake/ocean solve in `hydrology.rs`. Hydrology derivation version
+is `3`. Cell-edge coastline/lake vectors remain Iteration 5 presentation
+geometry until Packet 5.
 Accepted physical maps also persist a separate empty GeoJSON authored-overlay
 asset and locked physical layer definitions, including `ice`. Authored vector
 edits target that overlay asset only; the signed `.pworld` source cannot be
@@ -1608,6 +1598,9 @@ fixture and lock convergence thresholds before replacing generator version 6.
 
 #### Packet 4: implement nested basins and a coupled water solve
 
+Status: implemented in `hydrology.rs` (ADR 0027). Generator version is `10`.
+`HYDROLOGY_DERIVATION_VERSION` is `3`.
+
 Replace the current raw-sink model in `hydrology.rs` with a depression tree and
 one explicit steady-state solver:
 
@@ -1824,40 +1817,24 @@ hashes may remain unit fixtures but cannot be the sole product-quality gate.
 Packet 2 (ADR 0025) replaced nearest-site ownership, score-threshold crust, and
 lumped relief with a cost-field plate assignment, grouped craton expansion,
 named geodesic relief terms, and Euler-track hotspot chains. Remaining
-corrective work is Packet 4 nested-basin water coupling and any later visual
+corrective work is Packet 5 contour geometry and any later visual
 LOD of tectonic diagnostics, not a return to the Voronoi scaffold.
 
 #### Packet 3 drainage and stream-power erosion are in place
 
 Packet 3 (ADR 0026) replaced the ADR 0018 logarithmic incision surrogate and
 the four-neighbor drop/distance blend with D-infinity facet routing and
-`K * Q^m * S^n` incision. Remaining drainage work is Packet 4 nested basins
-and coupled lake/sea-level solve, not a return to the v1 surrogate. The locked
+`K * Q^m * S^n` incision. Remaining drainage work is Packet 5 contour geometry,
+not a return to the v1 surrogate. The locked
 `grid_anisotropy_ppm <= 950,000` value remains a directional-concentration
 proxy; analytic plane/cone/ridge fixtures are the Packet 3 morphology gates.
 
-#### Basin topology and water coupling are intentionally incomplete
+#### Packet 4 nested basins and coupled water are in place
 
-ADR 0019's one-sink-per-downhill-trace hierarchy is not the required nested
-Fill-Spill-Merge-equivalent topology. It can omit nested sub-depressions.
-`merged` currently means forwarding excess water rather than topological basin
-merge. More importantly, inland storage is frozen from the initial sea level
-while only ocean level is iterated. The product specification requires lake
-geometry/storage and sea level to be solved together until stable.
-
-Implement or adopt a bounded nested depression hierarchy that represents
-sub-basins, spill saddles, parent merges, and ocean destinations. During the
-water fixed point, recompute affected lake area, level, storage, and overflow
-when sea level or connected-basin state changes. Prove convergence and
-conservation from more than one initial guess. Fixtures must cover nested
-basins, chained overflow, an endorheic basin, a coastal lake captured by rising
-sea level, and a basin merge/split across historical epochs.
-
-The fixed `28%` of direct precipitation evaporation rule is also only a
-placeholder. Replace it with a bounded water-balance term that responds at
-least to lake area and derived climate, or explicitly narrow the product model
-and label the limitation in the UI. River inflow, precipitation, evaporation,
-storage, and outlet discharge must use compatible physical units.
+Packet 4 (ADR 0027) replaced the ADR 0019 raw-sink hierarchy, frozen inland
+storage, and 28% precipitation evaporation rule with a Fill-Spill-Merge tree
+and a millimetre-quantized coupled lake/ocean solve. Remaining hydrology work
+is Packet 5 interpolated contours, not a return to downhill-sink basins.
 
 #### Cell-edge vectors are not final contour geometry
 

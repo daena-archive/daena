@@ -21,7 +21,7 @@ v2 layout limit.
 
 | Preset | Grid | Wall time | Generator time | Peak RSS | Source | Derived GeoJSON | Features |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Default / maximum | 384 × 192 | 3,829 ms | 3,828.6 ms | not captured* | 577,980 B | 18,611,371 B | 62,743 |
+| Default / maximum | 384 × 192 | 4,098 ms | 4,098.4 ms | not captured* | 577,980 B | 19,100,480 B | 64,620 |
 
 The measured production grid remains below the locked 8 s generation budget,
 the 128 MiB working-memory ceiling, 128 MiB source budget, and 256 MiB

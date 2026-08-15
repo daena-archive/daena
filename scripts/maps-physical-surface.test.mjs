@@ -126,6 +126,7 @@ for (const required of [
   "physicalMapDerivedEvolution",
   "iceCells",
   "iceThicknessMm",
+  "children",
 ]) {
   assert.ok(client.includes(required), `physical client is missing ${required}`);
 }
@@ -138,6 +139,7 @@ for (const required of [
   "runoffVolumeM3PerYear",
   "iceCells",
   "iceThicknessMm",
+  "children",
   "routingElevationMm",
   "fillDepthMm",
   "accumulationM3PerYear",

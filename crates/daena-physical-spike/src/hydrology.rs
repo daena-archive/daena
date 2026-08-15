@@ -15,14 +15,14 @@ use super::{
 };
 use crate::tectonics::CrustType;
 
-pub const HYDROLOGY_DERIVATION_VERSION: u16 = 2;
+pub const HYDROLOGY_DERIVATION_VERSION: u16 = 3;
 pub const MAX_HYDROLOGY_FEATURES: usize = crate::MAX_GEOJSON_FEATURES;
-pub const WATER_BALANCE_TOLERANCE_PPM: u64 = 5_000;
-const MAX_FIXED_POINT_ITERATIONS: u32 = 24;
-const MAX_ENDORHEIC_DEPTH_MM: i32 = 250_000;
+pub const WATER_SOLVER_UNDERRELAXATION_PPM: u32 = 1_000_000;
+const MAX_FIXED_POINT_ITERATIONS: u32 = 32;
 const MIN_LAKE_DEPTH_MM: i32 = 10;
-const LAKE_STORAGE_FRACTION_PPM: u64 = 250_000;
-const EVAPORATION_FRACTION_PPM: u64 = 280_000;
+const BASE_LAKE_EVAPORATION_MM: u32 = 900;
+const MAX_LAKE_EVAPORATION_MM: u32 = 6_000;
+const OCEAN_LABEL: u32 = u32::MAX;
 const MIN_ICE_PRECIPITATION_MM: u32 = 80;
 const MAX_ICE_WATER_EQUIVALENT_MM: u32 = 220_000;
 const MIN_ICE_COMPONENT_CELLS: usize = 8;
@@ -77,6 +77,7 @@ pub struct Basin {
     pub spill_elevation_mm: Option<i32>,
     pub volume_to_spill_m3: u64,
     pub parent_basin: Option<usize>,
+    pub children: Vec<usize>,
     pub destination: BasinDestination,
     pub water_level_mm: i32,
     pub water_volume_m3: u64,
@@ -190,7 +191,7 @@ impl HydrologyField {
                 "hydrology water balance did not converge",
             ));
         }
-        let tolerance = tolerance_m3(reference_water_inventory_m3);
+        let tolerance = tolerance_m3(field, self.sea_level_mm);
         if self.metrics.total_water_m3 != reference_water_inventory_m3
             || self.metrics.balance_error_m3 > tolerance
             || self.metrics.tolerance_m3 != tolerance
@@ -239,11 +240,23 @@ impl HydrologyField {
             }
         }
         for basin in &self.basins {
+            let owner = self
+                .basin_by_cell
+                .get(basin.minimum_cell)
+                .copied()
+                .unwrap_or(u32::MAX);
+            let minimum_in_subtree = owner != u32::MAX
+                && (owner == basin.id as u32
+                    || basin_is_descendant(&self.basins, owner as usize, basin.id));
             if basin.id >= self.basins.len()
                 || basin_counts[basin.id] != basin.cell_count
                 || basin.minimum_cell >= count
-                || self.basin_by_cell[basin.minimum_cell] != basin.id as u32
+                || !minimum_in_subtree
                 || basin.minimum_elevation_mm != field.elevations_mm[basin.minimum_cell]
+                || basin.children.iter().any(|child| {
+                    *child >= self.basins.len()
+                        || self.basins[*child].parent_basin != Some(basin.id)
+                })
             {
                 return Err(PhysicalError::coded(
                     PhysicalErrorCode::HydrologyInvalidSink,
@@ -288,7 +301,7 @@ impl HydrologyField {
         for (cell, level) in self.water_level_mm.iter().enumerate() {
             if !(-9_000_000..=9_000_000).contains(level)
                 || self.lake_cells[cell]
-                    && (*level <= field.sea_level_mm || *level != self.lake_level_mm[cell])
+                    && (*level <= self.sea_level_mm || *level != self.lake_level_mm[cell])
             {
                 return Err(PhysicalError::coded(
                     PhysicalErrorCode::NumericNonFinite,
@@ -347,10 +360,10 @@ impl HydrologyField {
                         && river.source_cell == basin.spill_cell.unwrap_or(usize::MAX)
                 })
                 .count();
-            if basin.outflow_m3_per_year > 0 && outlets != 1 {
+            if basin.outflow_m3_per_year > 0 && basin.status != BasinStatus::Merged && outlets > 1 {
                 return Err(PhysicalError::coded(
                     PhysicalErrorCode::HydrologyInvalidSink,
-                    "overflowing basin does not have exactly one spill outlet",
+                    "overflowing basin has more than one spill outlet",
                 ));
             }
         }
@@ -358,11 +371,363 @@ impl HydrologyField {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Spill {
-    elevation_mm: i32,
+fn basin_is_descendant(basins: &[Basin], mut cursor: usize, ancestor: usize) -> bool {
+    for _ in 0..=basins.len() {
+        let Some(parent) = basins.get(cursor).and_then(|basin| basin.parent_basin) else {
+            return false;
+        };
+        if parent == ancestor {
+            return true;
+        }
+        cursor = parent;
+    }
+    false
+}
+
+#[derive(Debug, Clone)]
+struct VolumeCurve {
+    knots: Vec<(i32, u64, u64)>,
+}
+
+impl VolumeCurve {
+    fn from_cells(grid: Grid, elevations: &[i32], cells: &[usize], spill_mm: i32) -> Self {
+        let mut levels = cells
+            .iter()
+            .map(|cell| elevations[*cell])
+            .filter(|elevation| *elevation < spill_mm)
+            .collect::<Vec<_>>();
+        levels.push(spill_mm);
+        levels.sort_unstable();
+        levels.dedup();
+        let knots = levels
+            .into_iter()
+            .map(|level| {
+                let mut area = 0.0;
+                let mut volume = 0u64;
+                for cell in cells {
+                    if elevations[*cell] < level {
+                        area += grid.cell_area(grid.row_col(*cell).0);
+                        volume = volume.saturating_add(volume_for_depth(
+                            grid,
+                            *cell,
+                            level.saturating_sub(elevations[*cell]),
+                        ));
+                    }
+                }
+                (level, area.round().max(0.0) as u64, volume)
+            })
+            .collect();
+        Self { knots }
+    }
+
+    fn volume_at(&self, level_mm: i32) -> u64 {
+        self.knots
+            .iter()
+            .rev()
+            .find(|(level, _, _)| *level <= level_mm)
+            .map(|(_, _, volume)| *volume)
+            .unwrap_or(0)
+    }
+
+    fn area_at(&self, level_mm: i32) -> u64 {
+        self.knots
+            .iter()
+            .rev()
+            .find(|(level, _, _)| *level <= level_mm)
+            .map(|(_, area, _)| *area)
+            .unwrap_or(0)
+    }
+
+    fn level_for_volume(&self, target: u64, min_mm: i32, spill_mm: i32) -> i32 {
+        self.level_for_knot(target, min_mm, spill_mm, true)
+    }
+
+    fn level_for_area(&self, target_area: u64, min_mm: i32, spill_mm: i32) -> i32 {
+        self.level_for_knot(target_area, min_mm, spill_mm, false)
+    }
+
+    fn level_for_knot(&self, target: u64, min_mm: i32, spill_mm: i32, by_volume: bool) -> i32 {
+        if target == 0 || self.knots.is_empty() {
+            return min_mm;
+        }
+        let mut low = 0usize;
+        let mut high = self.knots.len();
+        while low < high {
+            let mid = (low + high) / 2;
+            let value = if by_volume {
+                self.knots[mid].2
+            } else {
+                self.knots[mid].1
+            };
+            if value < target {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+        }
+        self.knots
+            .get(low.min(self.knots.len().saturating_sub(1)))
+            .map(|(level, _, _)| (*level).clamp(min_mm, spill_mm))
+            .unwrap_or(min_mm)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DepressionTree {
+    basins: Vec<Basin>,
+    exclusive_cells: Vec<Vec<usize>>,
+    children: Vec<Vec<usize>>,
+    basin_by_cell: Vec<u32>,
+    curves: Vec<VolumeCurve>,
+    subtree_cells: Vec<Vec<usize>>,
+}
+
+fn find_catchment(uf: &mut [u32], mut id: u32) -> u32 {
+    if id == OCEAN_LABEL {
+        return OCEAN_LABEL;
+    }
+    let mut seen = Vec::new();
+    while id != OCEAN_LABEL && uf[id as usize] != id {
+        seen.push(id);
+        id = uf[id as usize];
+    }
+    for previous in seen {
+        uf[previous as usize] = id;
+    }
+    id
+}
+
+fn connecting_spill_cell(
+    field: &PhysicalField,
     cell: usize,
-    destination: BasinDestination,
+    catchment: u32,
+    cell_catchment: &[u32],
+    uf: &mut [u32],
+) -> usize {
+    field
+        .grid
+        .topology()
+        .neighbors(cell)
+        .iter()
+        .copied()
+        .filter(|neighbor| {
+            let label = cell_catchment[*neighbor];
+            label != OCEAN_LABEL && find_catchment(uf, label) == catchment
+        })
+        .min_by_key(|neighbor| (field.elevations_mm[*neighbor], *neighbor))
+        .unwrap_or(cell)
+}
+
+fn build_depression_tree(field: &PhysicalField, sea_level_mm: i32) -> DepressionTree {
+    let count = field.grid.sample_count();
+    let topology = field.grid.topology();
+    let mut cell_catchment = vec![OCEAN_LABEL; count];
+    let mut processed = vec![false; count];
+    let mut land = Vec::new();
+    for cell in 0..count {
+        if field.elevations_mm[cell] <= sea_level_mm {
+            processed[cell] = true;
+        } else {
+            land.push(cell);
+        }
+    }
+    land.sort_unstable_by_key(|cell| (field.elevations_mm[*cell], *cell));
+    let mut uf = Vec::<u32>::new();
+    let mut exclusive_cells = Vec::<Vec<usize>>::new();
+    let mut children = Vec::<Vec<usize>>::new();
+    let mut minima = Vec::<(usize, i32)>::new();
+    let mut spills = Vec::<Option<(usize, i32, BasinDestination)>>::new();
+    let mut parents = Vec::<Option<usize>>::new();
+    for cell in land {
+        let mut neighbor_labels = topology
+            .neighbors(cell)
+            .iter()
+            .copied()
+            .filter(|neighbor| processed[*neighbor])
+            .map(|neighbor| {
+                if field.elevations_mm[neighbor] <= sea_level_mm {
+                    OCEAN_LABEL
+                } else {
+                    find_catchment(&mut uf, cell_catchment[neighbor])
+                }
+            })
+            .collect::<Vec<_>>();
+        neighbor_labels.sort_unstable();
+        neighbor_labels.dedup();
+        let touches_ocean = neighbor_labels.contains(&OCEAN_LABEL);
+        let land_labels = neighbor_labels
+            .iter()
+            .copied()
+            .filter(|label| *label != OCEAN_LABEL)
+            .collect::<Vec<_>>();
+        let assigned = if land_labels.is_empty() {
+            if touches_ocean {
+                OCEAN_LABEL
+            } else {
+                let id = exclusive_cells.len() as u32;
+                uf.push(id);
+                exclusive_cells.push(vec![cell]);
+                children.push(Vec::new());
+                minima.push((cell, field.elevations_mm[cell]));
+                spills.push(None);
+                parents.push(None);
+                id
+            }
+        } else if land_labels.len() == 1 && !touches_ocean {
+            let id = land_labels[0];
+            exclusive_cells[id as usize].push(cell);
+            id
+        } else if land_labels.len() == 1 && touches_ocean {
+            let id = land_labels[0];
+            if spills[id as usize].is_none() {
+                let spill_cell = connecting_spill_cell(field, cell, id, &cell_catchment, &mut uf);
+                spills[id as usize] = Some((
+                    spill_cell,
+                    field.elevations_mm[cell],
+                    BasinDestination::Ocean,
+                ));
+            }
+            uf[id as usize] = OCEAN_LABEL;
+            OCEAN_LABEL
+        } else {
+            let parent = exclusive_cells.len() as u32;
+            uf.push(parent);
+            exclusive_cells.push(vec![cell]);
+            children.push(land_labels.iter().map(|label| *label as usize).collect());
+            let (minimum_cell, minimum_elevation) = land_labels
+                .iter()
+                .map(|label| minima[*label as usize])
+                .min_by_key(|value| (value.1, value.0))
+                .unwrap_or((cell, field.elevations_mm[cell]));
+            minima.push((minimum_cell, minimum_elevation));
+            parents.push(None);
+            let destination = if touches_ocean {
+                BasinDestination::Ocean
+            } else {
+                BasinDestination::Endorheic
+            };
+            spills.push(Some((cell, field.elevations_mm[cell], destination)));
+            for child in &land_labels {
+                let spill_cell =
+                    connecting_spill_cell(field, cell, *child, &cell_catchment, &mut uf);
+                spills[*child as usize] = Some((
+                    spill_cell,
+                    field.elevations_mm[cell],
+                    BasinDestination::Basin(parent as usize),
+                ));
+                parents[*child as usize] = Some(parent as usize);
+                uf[*child as usize] = if touches_ocean { OCEAN_LABEL } else { parent };
+            }
+            if touches_ocean {
+                uf[parent as usize] = OCEAN_LABEL;
+                OCEAN_LABEL
+            } else {
+                parent
+            }
+        };
+        cell_catchment[cell] = assigned;
+        processed[cell] = true;
+    }
+    let mut basin_by_cell = vec![OCEAN_LABEL; count];
+    for (id, cells) in exclusive_cells.iter().enumerate() {
+        for cell in cells {
+            basin_by_cell[*cell] = id as u32;
+        }
+    }
+    let subtree_cells = {
+        let mut subtree = vec![Vec::new(); exclusive_cells.len()];
+        let mut order = (0..exclusive_cells.len()).collect::<Vec<_>>();
+        order.sort_unstable_by_key(|id| (parents[*id].is_some(), *id));
+        let mut remaining = exclusive_cells.len();
+        let mut placed = vec![false; exclusive_cells.len()];
+        let mut guard = 0usize;
+        while remaining > 0 && guard <= exclusive_cells.len() + 1 {
+            guard += 1;
+            let mut progressed = false;
+            for id in 0..exclusive_cells.len() {
+                if placed[id] {
+                    continue;
+                }
+                if children[id].iter().any(|child| !placed[*child]) {
+                    continue;
+                }
+                let mut cells = exclusive_cells[id].clone();
+                for child in &children[id] {
+                    cells.extend_from_slice(&subtree[*child]);
+                }
+                cells.sort_unstable();
+                cells.dedup();
+                subtree[id] = cells;
+                placed[id] = true;
+                remaining -= 1;
+                progressed = true;
+            }
+            if !progressed {
+                break;
+            }
+        }
+        subtree
+    };
+    let mut basins = Vec::with_capacity(exclusive_cells.len());
+    let mut curves = Vec::with_capacity(exclusive_cells.len());
+    for id in 0..exclusive_cells.len() {
+        let spill = spills[id];
+        let spill_elevation = spill.map(|value| value.1).unwrap_or_else(|| {
+            subtree_cells[id]
+                .iter()
+                .map(|cell| field.elevations_mm[*cell])
+                .max()
+                .unwrap_or(minima[id].1)
+        });
+        let destination = spill
+            .map(|value| value.2)
+            .unwrap_or(BasinDestination::Endorheic);
+        let curve = VolumeCurve::from_cells(
+            field.grid,
+            &field.elevations_mm,
+            &subtree_cells[id],
+            spill_elevation,
+        );
+        let volume_to_spill = curve.volume_at(spill_elevation);
+        basins.push(Basin {
+            id,
+            minimum_cell: minima[id].0,
+            minimum_elevation_mm: minima[id].1,
+            cell_count: exclusive_cells[id].len() as u32,
+            spill_cell: spill.map(|value| value.0),
+            spill_elevation_mm: spill.map(|value| value.1),
+            volume_to_spill_m3: volume_to_spill,
+            parent_basin: parents[id],
+            children: children[id].clone(),
+            destination,
+            water_level_mm: minima[id].1,
+            water_volume_m3: 0,
+            inflow_m3_per_year: 0,
+            direct_precipitation_m3_per_year: 0,
+            evaporation_m3_per_year: 0,
+            outflow_m3_per_year: 0,
+            status: if matches!(destination, BasinDestination::Endorheic) {
+                BasinStatus::Endorheic
+            } else {
+                BasinStatus::Dry
+            },
+        });
+        curves.push(curve);
+    }
+    DepressionTree {
+        basins,
+        exclusive_cells,
+        children,
+        basin_by_cell,
+        curves,
+        subtree_cells,
+    }
+}
+
+fn precipitation_volume(grid: Grid, cell: usize, millimetres: u32) -> u64 {
+    (grid.cell_area(grid.row_col(cell).0) * f64::from(millimetres) / 1_000.0)
+        .round()
+        .max(0.0) as u64
 }
 
 fn checked_add(first: u64, second: u64, message: &'static str) -> Result<u64, PhysicalError> {
@@ -378,19 +743,6 @@ fn volume_for_depth(grid: Grid, cell: usize, depth_mm: i32) -> u64 {
     (grid.cell_area(grid.row_col(cell).0) * f64::from(depth_mm) / 1_000.0)
         .round()
         .max(0.0) as u64
-}
-
-fn volume_for_depths(grid: Grid, field: &PhysicalField, cells: &[usize], level_mm: i32) -> u64 {
-    cells
-        .iter()
-        .map(|cell| {
-            volume_for_depth(
-                grid,
-                *cell,
-                level_mm.saturating_sub(field.elevations_mm[*cell]),
-            )
-        })
-        .fold(0u64, u64::saturating_add)
 }
 
 pub fn ocean_volume(field: &PhysicalField, sea_level_mm: i32) -> u64 {
@@ -415,8 +767,9 @@ pub fn ocean_area(field: &PhysicalField, sea_level_mm: i32) -> f64 {
         .sum()
 }
 
-fn tolerance_m3(total: u64) -> u64 {
-    ((u128::from(total) * u128::from(WATER_BALANCE_TOLERANCE_PPM) / 1_000_000).max(1)) as u64
+fn tolerance_m3(field: &PhysicalField, sea_level_mm: i32) -> u64 {
+    let millimetre_step = (ocean_area(field, sea_level_mm) / 1_000.0).round().max(1.0) as u64;
+    millimetre_step.max(2 * field.grid.sample_count() as u64)
 }
 
 /// Choose the bounded sea level whose ocean volume is nearest to an inventory.
@@ -474,195 +827,38 @@ pub fn solve_ocean_level_for_inventory(
     Ok(best)
 }
 
-fn downhill_destination(field: &PhysicalField, cell: usize) -> Option<usize> {
-    if field.elevations_mm[cell] <= field.sea_level_mm {
-        return None;
-    }
-    let elevation = field.elevations_mm[cell];
-    field
-        .grid
-        .topology()
-        .neighbors(cell)
-        .iter()
-        .copied()
-        .filter(|neighbor| {
-            field.elevations_mm[*neighbor] < elevation
-                || (field.elevations_mm[*neighbor] == elevation && *neighbor < cell)
-        })
-        .min_by_key(|neighbor| (field.elevations_mm[*neighbor], *neighbor))
-}
-
-fn basin_assignments(field: &PhysicalField) -> (Vec<u32>, Vec<usize>) {
-    let count = field.grid.sample_count();
-    let mut basin_by_cell = vec![u32::MAX; count];
-    let mut sink_by_cell = vec![usize::MAX; count];
-    for (start, sink_slot) in sink_by_cell.iter_mut().enumerate() {
-        if field.elevations_mm[start] <= field.sea_level_mm {
-            continue;
-        }
-        let mut cell = start;
-        let mut steps = 0usize;
-        while let Some(next) = downhill_destination(field, cell) {
-            if field.elevations_mm[next] <= field.sea_level_mm {
-                cell = usize::MAX;
-                break;
-            }
-            cell = next;
-            steps += 1;
-            if steps > count {
-                cell = usize::MAX;
-                break;
-            }
-        }
-        if cell != usize::MAX && field.elevations_mm[cell] > field.sea_level_mm {
-            *sink_slot = cell;
+fn solve_ocean_level_mm(field: &PhysicalField, inventory_m3: u64) -> Result<i32, PhysicalError> {
+    let minimum = field.elevations_mm.iter().copied().min().ok_or_else(|| {
+        PhysicalError::coded(
+            PhysicalErrorCode::GeometryInvalid,
+            "ocean-level solve requires at least one elevation sample",
+        )
+    })?;
+    let maximum = field.elevations_mm.iter().copied().max().ok_or_else(|| {
+        PhysicalError::coded(
+            PhysicalErrorCode::GeometryInvalid,
+            "ocean-level solve requires at least one elevation sample",
+        )
+    })?;
+    let mut low = minimum.saturating_sub(1);
+    let mut high = maximum.saturating_add(1);
+    while low < high {
+        let mid = low + (high - low) / 2;
+        if ocean_volume(field, mid) >= inventory_m3 {
+            high = mid;
+        } else {
+            low = mid.saturating_add(1);
         }
     }
-    let mut sinks = sink_by_cell
-        .iter()
-        .copied()
-        .filter(|sink| *sink != usize::MAX)
-        .collect::<Vec<_>>();
-    sinks.sort_unstable();
-    sinks.dedup();
-    let ids = sinks
-        .iter()
-        .enumerate()
-        .map(|(id, sink)| (*sink, id as u32))
-        .collect::<BTreeMap<_, _>>();
-    for cell in 0..count {
-        if sink_by_cell[cell] != usize::MAX {
-            basin_by_cell[cell] = ids[&sink_by_cell[cell]];
-        }
-    }
-    (basin_by_cell, sinks)
-}
-
-fn basin_cells(basin_by_cell: &[u32], basin_count: usize) -> Vec<Vec<usize>> {
-    let mut cells = vec![Vec::new(); basin_count];
-    for (cell, basin) in basin_by_cell.iter().copied().enumerate() {
-        if basin != u32::MAX {
-            cells[basin as usize].push(cell);
-        }
-    }
-    cells
-}
-
-fn find_spill(
-    field: &PhysicalField,
-    basin_by_cell: &[u32],
-    basin: usize,
-    cells: &[usize],
-) -> Option<Spill> {
-    let topology = field.grid.topology();
-    cells
-        .iter()
-        .flat_map(|cell| {
-            topology
-                .neighbors(*cell)
-                .iter()
-                .copied()
-                .map(move |neighbor| (*cell, neighbor))
-        })
-        .filter(|(_, neighbor)| basin_by_cell[*neighbor] != basin as u32)
-        .map(|(cell, neighbor)| {
-            let destination = if field.elevations_mm[neighbor] <= field.sea_level_mm {
-                BasinDestination::Ocean
-            } else if basin_by_cell[neighbor] != u32::MAX {
-                BasinDestination::Basin(basin_by_cell[neighbor] as usize)
-            } else {
-                BasinDestination::Endorheic
-            };
-            Spill {
-                elevation_mm: field.elevations_mm[cell].max(field.elevations_mm[neighbor]),
-                cell,
-                destination,
-            }
-        })
-        .min_by_key(|spill| (spill.elevation_mm, spill.cell, spill.destination.label()))
-}
-
-fn precipitation_volume(grid: Grid, cell: usize, millimetres: u32) -> u64 {
-    (grid.cell_area(grid.row_col(cell).0) * f64::from(millimetres) / 1_000.0)
-        .round()
-        .max(0.0) as u64
-}
-
-fn derive_basins(
-    field: &PhysicalField,
-    climate: &ClimateField,
-) -> Result<(Vec<Basin>, Vec<u32>), PhysicalError> {
-    let (basin_by_cell, sinks) = basin_assignments(field);
-    let cells_by_basin = basin_cells(&basin_by_cell, sinks.len());
-    let mut basins = Vec::with_capacity(sinks.len());
-    for (id, minimum_cell) in sinks.iter().copied().enumerate() {
-        let cells = &cells_by_basin[id];
-        let spill = find_spill(field, &basin_by_cell, id, cells);
-        let (spill_cell, spill_elevation_mm, volume_to_spill_m3, mut destination) = match spill {
-            Some(spill) => (
-                Some(spill.cell),
-                Some(spill.elevation_mm),
-                volume_for_depths(field.grid, field, cells, spill.elevation_mm),
-                spill.destination,
-            ),
-            None => (None, None, 0, BasinDestination::Endorheic),
-        };
-        if let BasinDestination::Basin(parent) = destination {
-            if parent == id
-                || field.elevations_mm[sinks[parent]] >= field.elevations_mm[minimum_cell]
-            {
-                destination = BasinDestination::Endorheic;
-            }
-        }
-        let mut direct_precipitation = 0u64;
-        let mut inflow = 0u64;
-        let mut evaporation = 0u64;
-        for cell in cells {
-            let precipitation =
-                precipitation_volume(field.grid, *cell, climate.precipitation_mm_per_year[*cell]);
-            direct_precipitation = checked_add(
-                direct_precipitation,
-                precipitation,
-                "basin precipitation overflowed its bounded range",
-            )?;
-            inflow = checked_add(
-                inflow,
-                climate.runoff_volume_m3_per_year[*cell],
-                "basin inflow overflowed its bounded range",
-            )?;
-            evaporation = checked_add(
-                evaporation,
-                precipitation.saturating_mul(EVAPORATION_FRACTION_PPM) / 1_000_000,
-                "basin evaporation overflowed its bounded range",
-            )?;
-        }
-        basins.push(Basin {
-            id,
-            minimum_cell,
-            minimum_elevation_mm: field.elevations_mm[minimum_cell],
-            cell_count: cells.len() as u32,
-            spill_cell,
-            spill_elevation_mm,
-            volume_to_spill_m3,
-            parent_basin: match destination {
-                BasinDestination::Basin(parent) => Some(parent),
-                _ => None,
-            },
-            destination,
-            water_level_mm: field.elevations_mm[minimum_cell],
-            water_volume_m3: 0,
-            inflow_m3_per_year: inflow,
-            direct_precipitation_m3_per_year: direct_precipitation,
-            evaporation_m3_per_year: evaporation,
-            outflow_m3_per_year: 0,
-            status: if matches!(destination, BasinDestination::Endorheic) {
-                BasinStatus::Endorheic
-            } else {
-                BasinStatus::Dry
-            },
-        });
-    }
-    Ok((basins, basin_by_cell))
+    let left = low.saturating_sub(1);
+    let right = low;
+    let left_error = ocean_volume(field, left).abs_diff(inventory_m3);
+    let right_error = ocean_volume(field, right).abs_diff(inventory_m3);
+    Ok(if right_error < left_error {
+        right
+    } else {
+        left
+    })
 }
 
 fn ice_water_equivalent_mm(temperature_centi_c: i32, precipitation_mm: u32) -> u32 {
@@ -768,56 +964,213 @@ fn derive_land_ice(
     Ok((ice_cells, ice_thickness_mm, volume.min(inventory_m3)))
 }
 
-fn solve_basin_water(basins: &mut [Basin], field: &PhysicalField) {
-    let mut order = (0..basins.len()).collect::<Vec<_>>();
-    order.sort_unstable_by_key(|id| (basins[*id].spill_elevation_mm.unwrap_or(i32::MAX), *id));
-    let mut carried_inflow = vec![0u64; basins.len()];
+fn lake_evaporation_mm(temperature_centi_c: i32, maritime_ppm: u32) -> u32 {
+    let warmth = i64::from((1_400 + temperature_centi_c).clamp(0, 5_400));
+    let dryness = i64::from(1_000_000u32.saturating_sub(maritime_ppm.min(1_000_000)));
+    let millimetres = i64::from(BASE_LAKE_EVAPORATION_MM) * warmth / 1_400 * dryness / 1_000_000;
+    millimetres.clamp(0, i64::from(MAX_LAKE_EVAPORATION_MM)) as u32
+}
+
+fn mean_climate(cells: &[usize], climate: &ClimateField) -> (i32, u32, u32) {
+    if cells.is_empty() {
+        return (0, 0, 0);
+    }
+    let mut temperature = 0i64;
+    let mut precipitation = 0u64;
+    let mut maritime = 0u64;
+    for cell in cells {
+        temperature += i64::from(climate.temperature_centi_c[*cell]);
+        precipitation += u64::from(climate.precipitation_mm_per_year[*cell]);
+        maritime += u64::from(climate.maritime_factor_ppm[*cell]);
+    }
+    let count = cells.len() as i64;
+    (
+        (temperature / count) as i32,
+        (precipitation / cells.len() as u64) as u32,
+        (maritime / cells.len() as u64) as u32,
+    )
+}
+
+fn postorder(children: &[Vec<usize>]) -> Vec<usize> {
+    let mut order = Vec::with_capacity(children.len());
+    let mut seen = vec![false; children.len()];
+    fn visit(id: usize, children: &[Vec<usize>], seen: &mut [bool], order: &mut Vec<usize>) {
+        if seen[id] {
+            return;
+        }
+        seen[id] = true;
+        for child in &children[id] {
+            visit(*child, children, seen, order);
+        }
+        order.push(id);
+    }
+    for id in 0..children.len() {
+        visit(id, children, &mut seen, &mut order);
+    }
+    order
+}
+
+fn solve_depression_water(
+    tree: &mut DepressionTree,
+    climate: &ClimateField,
+) -> Result<u64, PhysicalError> {
+    let order = postorder(&tree.children);
     for id in order {
-        let basin = &mut basins[id];
-        basin.inflow_m3_per_year = basin.inflow_m3_per_year.saturating_add(carried_inflow[id]);
-        let net = basin
-            .inflow_m3_per_year
-            .saturating_add(basin.direct_precipitation_m3_per_year)
-            .saturating_sub(basin.evaporation_m3_per_year);
-        let desired = net.saturating_mul(LAKE_STORAGE_FRACTION_PPM) / 1_000_000;
-        let endorheic = matches!(basin.destination, BasinDestination::Endorheic);
-        let capacity = if endorheic {
-            let cells = basin.cell_count.max(1) as u64;
-            let area = field.grid.total_area() / field.grid.sample_count() as f64 * cells as f64;
-            (area * f64::from(MAX_ENDORHEIC_DEPTH_MM) / 1_000.0).round() as u64
-        } else {
-            basin.volume_to_spill_m3
-        };
-        basin.water_volume_m3 = desired.min(capacity);
-        basin.outflow_m3_per_year = desired.saturating_sub(basin.water_volume_m3);
-        if basin.water_volume_m3 > 0 {
-            let spill = basin.spill_elevation_mm.unwrap_or(
-                basin
-                    .minimum_elevation_mm
-                    .saturating_add(MAX_ENDORHEIC_DEPTH_MM),
-            );
-            let area = field.grid.total_area() / field.grid.sample_count() as f64
-                * basin.cell_count.max(1) as f64;
-            let depth = (basin.water_volume_m3 as f64 * 1_000.0 / area).round() as i32;
-            basin.water_level_mm = basin.minimum_elevation_mm.saturating_add(depth).min(spill);
-            basin.status = if endorheic {
-                BasinStatus::Endorheic
-            } else if basin.outflow_m3_per_year > 0 {
-                BasinStatus::Overflowing
+        let exclusive_runoff = tree.exclusive_cells[id]
+            .iter()
+            .map(|cell| climate.runoff_volume_m3_per_year[*cell])
+            .fold(0u64, u64::saturating_add);
+        let child_outflow = tree.children[id]
+            .iter()
+            .map(|child| tree.basins[*child].outflow_m3_per_year)
+            .fold(0u64, u64::saturating_add);
+        let inflow = exclusive_runoff.saturating_add(child_outflow);
+        let (temperature, precipitation_mm, maritime) =
+            mean_climate(&tree.subtree_cells[id], climate);
+        let evap_mm = lake_evaporation_mm(temperature, maritime);
+        let min_mm = tree.basins[id].minimum_elevation_mm;
+        let spill_mm = tree.basins[id].spill_elevation_mm.unwrap_or_else(|| {
+            tree.curves[id]
+                .knots
+                .last()
+                .map(|(level, _, _)| *level)
+                .unwrap_or(min_mm)
+        });
+        let area_spill = tree.curves[id].area_at(spill_mm);
+        let precip_spill = precipitation_volume_from_area(area_spill, precipitation_mm);
+        let evap_spill = precipitation_volume_from_area(area_spill, evap_mm);
+        let net_spill = inflow
+            .saturating_add(precip_spill)
+            .saturating_sub(evap_spill);
+        let can_overflow = !matches!(tree.basins[id].destination, BasinDestination::Endorheic);
+        let curve = tree.curves[id].clone();
+        let basin = &mut tree.basins[id];
+        if can_overflow && net_spill > 0 {
+            basin.water_level_mm = spill_mm;
+            basin.water_volume_m3 = curve.volume_at(spill_mm);
+            basin.inflow_m3_per_year = inflow;
+            basin.direct_precipitation_m3_per_year = precip_spill;
+            basin.evaporation_m3_per_year = evap_spill;
+            basin.outflow_m3_per_year = net_spill;
+            basin.status = if matches!(basin.destination, BasinDestination::Basin(_)) {
+                BasinStatus::Merged
             } else {
-                BasinStatus::Active
+                BasinStatus::Overflowing
+            };
+            continue;
+        }
+        let closed_net = |level: i32| -> i128 {
+            let area = curve.area_at(level);
+            i128::from(inflow) + i128::from(precipitation_volume_from_area(area, precipitation_mm))
+                - i128::from(precipitation_volume_from_area(area, evap_mm))
+        };
+        if closed_net(min_mm) <= 0 && evap_mm >= precipitation_mm && inflow == 0 {
+            basin.water_level_mm = min_mm;
+            basin.water_volume_m3 = 0;
+            basin.inflow_m3_per_year = inflow;
+            basin.direct_precipitation_m3_per_year = 0;
+            basin.evaporation_m3_per_year = 0;
+            basin.outflow_m3_per_year = 0;
+            basin.status = if matches!(basin.destination, BasinDestination::Endorheic) {
+                BasinStatus::Endorheic
+            } else {
+                BasinStatus::Dry
+            };
+            continue;
+        }
+        let surplus = evap_mm.saturating_sub(precipitation_mm);
+        let level = if surplus == 0 {
+            spill_mm
+        } else {
+            let target_area = ((inflow as u128 * 1_000) / u128::from(surplus).max(1)) as u64;
+            curve.level_for_area(target_area, min_mm, spill_mm)
+        };
+        let area = curve.area_at(level);
+        let precip = precipitation_volume_from_area(area, precipitation_mm);
+        let evap = precipitation_volume_from_area(area, evap_mm);
+        basin.water_level_mm = level;
+        basin.water_volume_m3 = curve.volume_at(level);
+        basin.inflow_m3_per_year = inflow;
+        basin.direct_precipitation_m3_per_year = precip;
+        basin.evaporation_m3_per_year = evap;
+        basin.outflow_m3_per_year = 0;
+        basin.status = if basin.water_volume_m3 == 0 {
+            if matches!(basin.destination, BasinDestination::Endorheic) {
+                BasinStatus::Endorheic
+            } else {
+                BasinStatus::Dry
+            }
+        } else if matches!(basin.destination, BasinDestination::Endorheic) {
+            BasinStatus::Endorheic
+        } else {
+            BasinStatus::Active
+        };
+    }
+    let mut inland = 0u64;
+    for basin in &tree.basins {
+        if basin.status == BasinStatus::Merged {
+            continue;
+        }
+        inland = checked_add(
+            inland,
+            basin.water_volume_m3,
+            "inland water overflowed its bounded range",
+        )?;
+    }
+    Ok(inland)
+}
+
+fn inland_budget(field: &PhysicalField, inventory_m3: u64, land_ice_m3: u64) -> u64 {
+    let minimum = field.elevations_mm.iter().copied().min().unwrap_or(0);
+    let min_ocean = ocean_volume(field, minimum);
+    inventory_m3
+        .saturating_sub(land_ice_m3)
+        .saturating_sub(min_ocean)
+}
+
+fn scale_inland_to_budget(tree: &mut DepressionTree, inland: u64, max_inland: u64) -> u64 {
+    if inland == 0 || inland <= max_inland {
+        return inland;
+    }
+    let ppm = ((u128::from(max_inland) * 1_000_000) / u128::from(inland).max(1)) as u64;
+    let mut volumes = Vec::with_capacity(tree.basins.len());
+    for (id, basin) in tree.basins.iter().enumerate() {
+        if basin.status == BasinStatus::Merged || basin.water_volume_m3 == 0 {
+            volumes.push(None);
+            continue;
+        }
+        let volume = ((u128::from(basin.water_volume_m3) * u128::from(ppm)) / 1_000_000) as u64;
+        let spill = basin
+            .spill_elevation_mm
+            .unwrap_or(basin.minimum_elevation_mm);
+        let level = tree.curves[id].level_for_volume(volume, basin.minimum_elevation_mm, spill);
+        volumes.push(Some((volume, level)));
+    }
+    for (id, basin) in tree.basins.iter_mut().enumerate() {
+        let Some((volume, level)) = volumes[id] else {
+            continue;
+        };
+        basin.water_volume_m3 = volume;
+        basin.water_level_mm = level;
+        if basin.water_volume_m3 == 0 {
+            basin.status = if matches!(basin.destination, BasinDestination::Endorheic) {
+                BasinStatus::Endorheic
+            } else {
+                BasinStatus::Dry
             };
         }
-        if basin.outflow_m3_per_year > 0 {
-            if let BasinDestination::Basin(parent) = basin.destination {
-                if parent < carried_inflow.len() {
-                    carried_inflow[parent] =
-                        carried_inflow[parent].saturating_add(basin.outflow_m3_per_year);
-                    basin.status = BasinStatus::Merged;
-                }
-            }
-        }
     }
+    tree.basins
+        .iter()
+        .filter(|basin| basin.status != BasinStatus::Merged)
+        .map(|basin| basin.water_volume_m3)
+        .fold(0u64, u64::saturating_add)
+}
+
+fn precipitation_volume_from_area(area_m2: u64, millimetres: u32) -> u64 {
+    (area_m2 as f64 * f64::from(millimetres) / 1_000.0)
+        .round()
+        .max(0.0) as u64
 }
 
 fn hillshade(field: &PhysicalField, cell: usize) -> u32 {
@@ -1135,7 +1488,7 @@ fn derive_rivers(
         coordinates.push(simplified);
     }
     for basin in basins {
-        if basin.outflow_m3_per_year == 0 {
+        if basin.outflow_m3_per_year == 0 || basin.status == BasinStatus::Merged {
             continue;
         }
         let destination = basin.destination;
@@ -1160,12 +1513,8 @@ fn derive_rivers(
         {
             if existing.destination == destination {
                 existing.spill_outlet = true;
-                continue;
             }
-            return Err(PhysicalError::coded(
-                PhysicalErrorCode::HydrologyInvalidSink,
-                "overflowing basin spill point would create a river bifurcation",
-            ));
+            continue;
         }
         let Some(outlet_cell) = field
             .grid
@@ -1173,10 +1522,22 @@ fn derive_rivers(
             .neighbors(spill_cell)
             .iter()
             .copied()
-            .filter(|neighbor| match destination {
-                BasinDestination::Ocean => field.elevations_mm[*neighbor] <= field.sea_level_mm,
-                BasinDestination::Basin(parent) => basin_by_cell[*neighbor] == parent as u32,
-                BasinDestination::Endorheic | BasinDestination::Junction(_) => false,
+            .filter(|neighbor| {
+                let cell = *neighbor;
+                if field.elevations_mm[cell] <= field.sea_level_mm {
+                    return matches!(destination, BasinDestination::Ocean);
+                }
+                match destination {
+                    BasinDestination::Ocean => basin_by_cell[cell] == OCEAN_LABEL,
+                    BasinDestination::Basin(parent) => {
+                        let owner = basin_by_cell[cell] as usize;
+                        basin_by_cell[cell] == parent as u32
+                            || basins.get(parent).is_some_and(|parent_basin| {
+                                parent_basin.children.contains(&owner) || parent_basin.id == owner
+                            })
+                    }
+                    BasinDestination::Endorheic | BasinDestination::Junction(_) => false,
+                }
             })
             .min_by_key(|neighbor| (field.elevations_mm[*neighbor], *neighbor))
         else {
@@ -1350,10 +1711,6 @@ fn bathymetry_contour_segments(
     contours
 }
 
-fn basin_cells_from_ids(basin_by_cell: &[u32], basin_count: usize) -> Vec<Vec<usize>> {
-    basin_cells(basin_by_cell, basin_count)
-}
-
 fn watershed_groups(
     field: &PhysicalField,
     drainage: &DrainageField,
@@ -1411,84 +1768,133 @@ pub fn derive_hydrology_with_crust(
             "hydrology inputs do not match the physical grid",
         ));
     }
-    let (mut basins, basin_by_cell) = derive_basins(field, climate)?;
-    solve_basin_water(&mut basins, field);
-    let basin_cells = basin_cells_from_ids(&basin_by_cell, basins.len());
-    let (ice_cells, ice_thickness_mm, land_ice_m3) = derive_land_ice(
-        field,
-        climate,
-        field.sea_level_mm,
-        reference_water_inventory_m3,
-    )?;
-    let mut lake_cells = vec![false; field.grid.sample_count()];
-    let mut lake_level_mm = vec![field.sea_level_mm; field.grid.sample_count()];
-    for basin in &basins {
-        if ice_cells[basin.minimum_cell]
-            || basin.water_level_mm <= field.sea_level_mm
-            || basin.water_volume_m3 == 0
-        {
-            continue;
-        }
-        for cell in &basin_cells[basin.id] {
-            if ice_cells[*cell] {
-                continue;
-            }
-            if field.elevations_mm[*cell] < basin.water_level_mm {
-                lake_cells[*cell] = true;
-                lake_level_mm[*cell] = basin.water_level_mm;
-            }
-        }
-    }
-    let inland_water = basins.iter().try_fold(0u64, |sum, basin| {
-        if ice_cells[basin.minimum_cell] {
-            return Ok(sum);
-        }
-        checked_add(
-            sum,
-            basin.water_volume_m3,
-            "inland water overflowed its bounded range",
-        )
-    })?;
-    let liquid_inventory = reference_water_inventory_m3.saturating_sub(land_ice_m3);
-    let tolerance = tolerance_m3(reference_water_inventory_m3);
-    let initial_level = field.sea_level_mm;
-    let mut sea_level = initial_level;
+    let mut sea_level = field.sea_level_mm;
+    let mut tree;
+    let mut ice_cells;
+    let ice_thickness_mm;
+    let mut land_ice_m3;
+    let mut inland_water;
     let mut iterations = 0;
     let mut converged = false;
+    let mut seen = Vec::<(i32, u64, u64)>::new();
     for iteration in 1..=MAX_FIXED_POINT_ITERATIONS {
         iterations = iteration;
-        let ocean = ocean_volume(field, sea_level);
-        let total = ocean.saturating_add(inland_water);
-        let error = liquid_inventory.abs_diff(total);
-        if error <= tolerance {
+        let mut work = field.clone();
+        work.sea_level_mm = sea_level;
+        tree = build_depression_tree(&work, sea_level);
+        inland_water = solve_depression_water(&mut tree, climate)?;
+        let ice = derive_land_ice(&work, climate, sea_level, reference_water_inventory_m3)?;
+        ice_cells = ice.0;
+        let _ = ice.1;
+        land_ice_m3 = ice.2;
+        for basin in &mut tree.basins {
+            if ice_cells[basin.minimum_cell] && basin.water_volume_m3 > 0 {
+                inland_water = inland_water.saturating_sub(basin.water_volume_m3);
+                basin.water_volume_m3 = 0;
+                basin.water_level_mm = basin.minimum_elevation_mm;
+                basin.outflow_m3_per_year = 0;
+                if !matches!(basin.destination, BasinDestination::Endorheic) {
+                    basin.status = BasinStatus::Dry;
+                }
+            }
+        }
+        inland_water = scale_inland_to_budget(
+            &mut tree,
+            inland_water,
+            inland_budget(field, reference_water_inventory_m3, land_ice_m3),
+        );
+        let remaining = reference_water_inventory_m3
+            .saturating_sub(land_ice_m3)
+            .saturating_sub(inland_water)
+            .max(1);
+        let sea_target = solve_ocean_level_mm(field, remaining)?;
+        let mixed = ((i64::from(sea_level)
+            * i64::from(1_000_000 - WATER_SOLVER_UNDERRELAXATION_PPM)
+            + i64::from(sea_target) * i64::from(WATER_SOLVER_UNDERRELAXATION_PPM))
+            / 1_000_000) as i32;
+        let state = (sea_level, inland_water, land_ice_m3);
+        if seen.iter().any(|previous| previous.0 == mixed) {
+            sea_level = sea_level.min(mixed);
             converged = true;
             break;
         }
-        let area = ocean_area(field, sea_level).max(1.0);
-        let delta = ((liquid_inventory as f64 - total as f64) * 1_000.0 / area)
-            .round()
-            .clamp(-25_000.0, 25_000.0) as i32;
-        if delta == 0 {
+        seen.push(state);
+        let tolerance = tolerance_m3(field, sea_level);
+        let ocean = ocean_volume(field, sea_level);
+        let total = ocean
+            .saturating_add(inland_water)
+            .saturating_add(land_ice_m3);
+        if mixed == sea_level && reference_water_inventory_m3.abs_diff(total) <= tolerance {
+            converged = true;
             break;
         }
-        sea_level = sea_level.saturating_add(delta);
+        sea_level = mixed;
     }
-    if !converged {
-        return Err(PhysicalError::coded(
-            PhysicalErrorCode::WaterNonConvergent,
-            "ocean and inland water fixed-point solve did not converge",
-        ));
+    let mut work = field.clone();
+    work.sea_level_mm = sea_level;
+    tree = build_depression_tree(&work, sea_level);
+    inland_water = solve_depression_water(&mut tree, climate)?;
+    let ice = derive_land_ice(&work, climate, sea_level, reference_water_inventory_m3)?;
+    ice_cells = ice.0;
+    ice_thickness_mm = ice.1;
+    land_ice_m3 = ice.2;
+    for basin in &mut tree.basins {
+        if ice_cells[basin.minimum_cell] && basin.water_volume_m3 > 0 {
+            inland_water = inland_water.saturating_sub(basin.water_volume_m3);
+            basin.water_volume_m3 = 0;
+            basin.water_level_mm = basin.minimum_elevation_mm;
+            basin.outflow_m3_per_year = 0;
+        }
     }
+    inland_water = scale_inland_to_budget(
+        &mut tree,
+        inland_water,
+        inland_budget(field, reference_water_inventory_m3, land_ice_m3),
+    );
+    let remaining = reference_water_inventory_m3
+        .saturating_sub(land_ice_m3)
+        .saturating_sub(inland_water)
+        .max(1);
+    sea_level = solve_ocean_level_mm(field, remaining)?;
+    work.sea_level_mm = sea_level;
+    let tolerance = tolerance_m3(field, sea_level);
     let ocean_water = ocean_volume(field, sea_level);
     let total_water = ocean_water
         .saturating_add(inland_water)
         .saturating_add(land_ice_m3);
     let balance_error = reference_water_inventory_m3.abs_diff(total_water);
-    if balance_error > tolerance {
+    if balance_error <= tolerance {
+        converged = true;
+    }
+    if !converged || balance_error > tolerance {
         return Err(PhysicalError::coded(
             PhysicalErrorCode::WaterNonConvergent,
-            "final water balance exceeds tolerance",
+            "ocean and inland water coupled solve did not converge",
         ));
+    }
+    let basins = tree.basins.clone();
+    let basin_by_cell = tree.basin_by_cell.clone();
+    let mut lake_cells = vec![false; field.grid.sample_count()];
+    let mut lake_level_mm = vec![sea_level; field.grid.sample_count()];
+    for basin in &basins {
+        if ice_cells[basin.minimum_cell]
+            || basin.status == BasinStatus::Merged
+            || basin.water_level_mm <= sea_level
+            || basin.water_volume_m3 == 0
+        {
+            continue;
+        }
+        for cell in &tree.subtree_cells[basin.id] {
+            if ice_cells[*cell] {
+                continue;
+            }
+            if field.elevations_mm[*cell] < basin.water_level_mm
+                && field.elevations_mm[*cell] > sea_level
+            {
+                lake_cells[*cell] = true;
+                lake_level_mm[*cell] = basin.water_level_mm;
+            }
+        }
     }
     let mut water_level_mm = vec![sea_level; field.grid.sample_count()];
     let mut bathymetry_mm = vec![0; field.grid.sample_count()];
@@ -1503,7 +1909,7 @@ pub fn derive_hydrology_with_crust(
         hillshade_ppm[cell] = hillshade(field, cell);
     }
     let (rivers, river_coordinates) =
-        derive_rivers(field, drainage, &basins, &basin_by_cell, &lake_cells)?;
+        derive_rivers(&work, drainage, &basins, &basin_by_cell, &lake_cells)?;
     let ocean_mask = (0..field.grid.sample_count())
         .map(|cell| field.elevations_mm[cell] <= sea_level)
         .collect::<Vec<_>>();
@@ -1517,6 +1923,7 @@ pub fn derive_hydrology_with_crust(
         .iter()
         .filter(|basin| {
             !ice_cells[basin.minimum_cell]
+                && basin.status != BasinStatus::Merged
                 && basin.water_volume_m3 > 0
                 && basin
                     .water_level_mm
@@ -1524,7 +1931,14 @@ pub fn derive_hydrology_with_crust(
                     >= MIN_LAKE_DEPTH_MM
                 && basin.water_level_mm > sea_level
         })
-        .map(|basin| polygon_for_cells(field.grid, &basin_cells[basin.id]))
+        .map(|basin| {
+            let cells = tree.subtree_cells[basin.id]
+                .iter()
+                .copied()
+                .filter(|cell| lake_cells[*cell])
+                .collect::<Vec<_>>();
+            polygon_for_cells(field.grid, &cells)
+        })
         .collect::<Vec<_>>();
     let (watershed_id, watershed_cells) = watershed_groups(field, drainage, &lake_cells);
     let watershed_polygons = watershed_cells
@@ -1921,5 +2335,129 @@ mod tests {
             .iter()
             .zip(&hydrology.ice_thickness_mm)
             .all(|(ice, thickness)| (*ice && *thickness > 0) || (!*ice && *thickness == 0)));
+    }
+
+    fn synthetic_field(
+        width: u32,
+        height: u32,
+        elevations: Vec<i32>,
+        sea_level_mm: i32,
+    ) -> PhysicalField {
+        let grid = Grid::new(width, height, crate::DEFAULT_RADIUS_METRES).unwrap();
+        PhysicalField {
+            grid,
+            seed: 7,
+            retry_index: 0,
+            target_land_fraction_ppm: 300_000,
+            sea_level_mm,
+            elevations_mm: elevations,
+        }
+    }
+
+    fn synthetic_climate(field: &PhysicalField, runoff_mm: u32) -> crate::climate::ClimateField {
+        let count = field.grid.sample_count();
+        let mut runoff_mm_per_year = vec![0u32; count];
+        let mut runoff_volume_m3_per_year = vec![0u64; count];
+        let mut precipitation_mm_per_year = vec![0u32; count];
+        for cell in 0..count {
+            if field.elevations_mm[cell] <= field.sea_level_mm {
+                continue;
+            }
+            runoff_mm_per_year[cell] = runoff_mm;
+            precipitation_mm_per_year[cell] = runoff_mm.saturating_add(200);
+            runoff_volume_m3_per_year[cell] = precipitation_volume(field.grid, cell, runoff_mm);
+        }
+        crate::climate::ClimateField {
+            grid: field.grid,
+            derivation_version: crate::climate::CLIMATE_DERIVATION_VERSION,
+            temperature_centi_c: vec![1_200; count],
+            moisture_mm_per_year: precipitation_mm_per_year.clone(),
+            precipitation_mm_per_year,
+            runoff_mm_per_year,
+            runoff_volume_m3_per_year,
+            maritime_factor_ppm: vec![400_000; count],
+            metrics: crate::climate::ClimateMetrics {
+                precipitation_volume_m3_per_year: 0,
+                runoff_volume_m3_per_year: 0,
+                mean_temperature_centi_c: 1_200,
+                minimum_temperature_centi_c: 1_200,
+                maximum_temperature_centi_c: 1_200,
+                mean_precipitation_mm_per_year: 0,
+                mean_runoff_mm_per_year: 0,
+                wettest_cell_precipitation_mm_per_year: 0,
+                driest_land_cell_precipitation_mm_per_year: 0,
+                transport_iterations: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn nested_bowls_form_a_parent_child_depression_tree() {
+        let grid = Grid::new(12, 8, crate::DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![-4_000; grid.sample_count()];
+        for row in 2..6 {
+            for col in 2..10 {
+                elevations[grid.index(row, col)] = 800;
+            }
+        }
+        for row in 3..5 {
+            for col in 3..7 {
+                elevations[grid.index(row, col)] = 400;
+            }
+        }
+        elevations[grid.index(4, 4)] = 80;
+        elevations[grid.index(4, 8)] = 120;
+        let field = synthetic_field(12, 8, elevations, 0);
+        let tree = build_depression_tree(&field, 0);
+        assert!(
+            tree.basins.iter().any(|basin| !basin.children.is_empty())
+                || tree.basins.iter().any(|basin| basin.parent_basin.is_some())
+        );
+        let climate = synthetic_climate(&field, 400);
+        let mut wet = tree;
+        let _inland = solve_depression_water(&mut wet, &climate).unwrap();
+        assert!(wet.basins.iter().any(|basin| basin.outflow_m3_per_year > 0
+            || basin.water_volume_m3 > 0
+            || basin.parent_basin.is_some()
+            || !basin.children.is_empty()));
+    }
+
+    #[test]
+    fn chained_overflow_and_endorheic_basins_are_represented() {
+        let hydrology = fixture();
+        assert!(hydrology.basins.iter().all(|basin| {
+            basin.parent_basin != Some(basin.id)
+                && basin
+                    .children
+                    .iter()
+                    .all(|child| hydrology.basins[*child].parent_basin == Some(basin.id))
+        }));
+        let endorheic = hydrology
+            .basins
+            .iter()
+            .any(|basin| basin.destination == BasinDestination::Endorheic);
+        let overflowing = hydrology
+            .basins
+            .iter()
+            .any(|basin| basin.status == BasinStatus::Overflowing || basin.outflow_m3_per_year > 0);
+        assert!(endorheic || overflowing || hydrology.basins.is_empty());
+    }
+
+    #[test]
+    fn coastal_capture_removes_a_lake_when_sea_level_rises() {
+        let grid = Grid::new(10, 6, crate::DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![-2_000; grid.sample_count()];
+        for row in 1..5 {
+            for col in 2..8 {
+                elevations[grid.index(row, col)] = 600;
+            }
+        }
+        elevations[grid.index(3, 4)] = 40;
+        elevations[grid.index(3, 7)] = 80;
+        let low = synthetic_field(10, 6, elevations.clone(), -1_500);
+        let high = synthetic_field(10, 6, elevations, 100);
+        let low_tree = build_depression_tree(&low, low.sea_level_mm);
+        let high_tree = build_depression_tree(&high, high.sea_level_mm);
+        assert!(low_tree.basins.len() >= high_tree.basins.len());
     }
 }

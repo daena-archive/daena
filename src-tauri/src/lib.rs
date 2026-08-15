@@ -7375,6 +7375,7 @@ fn physical_hydrology_products(
             "spillElevationMm": basin.spill_elevation_mm,
             "volumeToSpillM3": basin.volume_to_spill_m3,
             "parentBasin": basin.parent_basin,
+            "children": basin.children,
             "destination": basin.destination.label(),
             "waterLevelMm": basin.water_level_mm,
             "waterVolumeM3": basin.water_volume_m3,

@@ -208,6 +208,7 @@ export interface PhysicalHydrologyProducts {
     spillElevationMm: number | null;
     volumeToSpillM3: number;
     parentBasin: number | null;
+    children: number[];
     destination: "ocean" | "basin" | "endorheic" | "junction";
     waterLevelMm: number;
     waterVolumeM3: number;

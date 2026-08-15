@@ -4,8 +4,10 @@
 //! dependency. Its integer source codec and deterministic field generation are
 //! the canonical physical-map production boundary.
 
+use std::collections::HashMap;
 use std::fmt::{Display, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub mod climate;
 pub mod events;
@@ -30,11 +32,18 @@ pub const PRODUCTION_MAX_WIDTH: u32 = 256;
 pub const PRODUCTION_MAX_HEIGHT: u32 = 128;
 pub const SUPPORTED_PREVIEW_MAX_WIDTH: u32 = 2048;
 pub const SUPPORTED_PREVIEW_MAX_HEIGHT: u32 = 1024;
+/// Canonical v2 source ceiling. This is a host/storage bound, not a layout
+/// reinterpretation of `physical-world-v2`.
+pub const MAX_SOURCE_BYTES: usize = 128 * 1024 * 1024;
+/// Derived GeoJSON is disposable and is not stored in the v2 source.
+pub const MAX_DERIVED_GEOJSON_BYTES: usize = 256 * 1024 * 1024;
 /// Measurement ceiling for derived products. Production selection still uses
 /// the recorded byte/time budgets; this is not a promise that every feature
 /// is suitable for one viewport payload.
-pub const MAX_GEOJSON_FEATURES: usize = 262_144;
+pub const MAX_GEOJSON_FEATURES: usize = 1_048_576;
 pub const CANCELLATION_LATENCY_BUDGET_MS: u128 = 100;
+pub const GENERATION_TIME_BUDGET_MS: u128 = 2_000;
+pub const WORKING_MEMORY_BUDGET_BYTES: usize = 128 * 1024 * 1024;
 pub const GENERATOR_ID: &str = "daena-physical-world";
 pub const GENERATOR_VERSION: u32 = 6;
 
@@ -348,6 +357,14 @@ impl Grid {
     /// * all cells in a polar row are point-adjacent through that pole; and
     /// * returned indexes are sorted and deduplicated.
     pub fn neighbors(self, index: usize) -> Vec<usize> {
+        self.topology().neighbors(index).to_vec()
+    }
+
+    pub(crate) fn topology(self) -> Arc<GridTopology> {
+        cached_topology(self)
+    }
+
+    fn collect_neighbors(self, index: usize) -> Vec<usize> {
         let (row, col) = self.row_col(index);
         let mut neighbors = Vec::with_capacity(self.width as usize + 4);
         neighbors.push(self.index(row, (col + self.width - 1) % self.width));
@@ -368,6 +385,61 @@ impl Grid {
         neighbors.dedup();
         neighbors
     }
+
+    pub(crate) fn row_areas(self) -> Vec<f64> {
+        (0..self.height).map(|row| self.cell_area(row)).collect()
+    }
+}
+
+pub(crate) fn derived_cell_stride(grid: Grid) -> u32 {
+    match grid.sample_count() {
+        0..=8_192 => 1,
+        8_193..=131_072 => 2,
+        131_073..=524_288 => 4,
+        _ => 8,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GridTopology {
+    offsets: Vec<u32>,
+    neighbors: Vec<usize>,
+}
+
+impl GridTopology {
+    fn from_grid(grid: Grid) -> Self {
+        let sample_count = grid.sample_count();
+        let mut offsets = Vec::with_capacity(sample_count + 1);
+        let mut neighbors = Vec::new();
+        offsets.push(0);
+        for index in 0..sample_count {
+            neighbors.extend(grid.collect_neighbors(index));
+            offsets.push(neighbors.len() as u32);
+        }
+        Self { offsets, neighbors }
+    }
+
+    pub(crate) fn neighbors(&self, index: usize) -> &[usize] {
+        let start = self.offsets[index] as usize;
+        let end = self.offsets[index + 1] as usize;
+        &self.neighbors[start..end]
+    }
+
+    pub(crate) fn are_neighbors(&self, first: usize, second: usize) -> bool {
+        self.neighbors(first).binary_search(&second).is_ok()
+    }
+}
+
+fn cached_topology(grid: Grid) -> Arc<GridTopology> {
+    static CACHE: OnceLock<Mutex<HashMap<(u32, u32), Arc<GridTopology>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache
+        .entry((grid.width, grid.height))
+        .or_insert_with(|| Arc::new(GridTopology::from_grid(grid)))
+        .clone()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -626,19 +698,49 @@ pub fn generate_world_with_evolution(
     progress.report(ProgressPhase::BuildingRiversAndLakes, 0, 1)?;
     progress.report(ProgressPhase::BuildingRiversAndLakes, 1, 1)?;
     progress.report(ProgressPhase::PreparingGeography, 0, 1)?;
-    let diagnostic_geojson = tectonics::to_diagnostic_geojson(&tectonics)
-        .map_err(|error| PhysicalError::coded(PhysicalErrorCode::GeometryInvalid, error))?;
-    let hazard_geojson = hazards::to_geojson(&tectonics).map_err(|error| {
-        PhysicalError::coded(PhysicalErrorCode::GeometryInvalid, error.to_string())
+    let (diagnostic_geojson, hazard_geojson, hydrology_geojson) = std::thread::scope(|scope| {
+        let diagnostic_handle = scope.spawn(|| {
+            tectonics::to_diagnostic_geojson(&tectonics)
+                .map_err(|error| PhysicalError::coded(PhysicalErrorCode::GeometryInvalid, error))
+        });
+        let hazard_handle = scope.spawn(|| {
+            hazards::to_geojson(&tectonics).map_err(|error| {
+                PhysicalError::coded(PhysicalErrorCode::GeometryInvalid, error.to_string())
+            })
+        });
+        let hydrology_handle = scope.spawn(|| {
+            hydrology::to_geojson(&hydrology)
+                .map_err(|error| PhysicalError::coded(PhysicalErrorCode::GeometryInvalid, error))
+        });
+        let join = |result: Result<Result<String, PhysicalError>, _>| {
+            result.unwrap_or_else(|_| {
+                Err(PhysicalError::coded(
+                    PhysicalErrorCode::GeometryInvalid,
+                    "derived GeoJSON worker panicked",
+                ))
+            })
+        };
+        Ok::<_, PhysicalError>((
+            join(diagnostic_handle.join())?,
+            join(hazard_handle.join())?,
+            join(hydrology_handle.join())?,
+        ))
     })?;
-    let hydrology_geojson = hydrology::to_geojson(&hydrology)
-        .map_err(|error| PhysicalError::coded(PhysicalErrorCode::GeometryInvalid, error))?;
     let diagnostic_with_hazards =
         merge_geojson_features_for_host(&diagnostic_geojson, &hazard_geojson)
             .map_err(|error| PhysicalError::coded(PhysicalErrorCode::GeometryInvalid, error))?;
     let derived_geojson =
         merge_geojson_features_for_host(&diagnostic_with_hazards, &hydrology_geojson)
             .map_err(|error| PhysicalError::coded(PhysicalErrorCode::GeometryInvalid, error))?;
+    if derived_geojson.len() > MAX_DERIVED_GEOJSON_BYTES {
+        return Err(PhysicalError::coded(
+            PhysicalErrorCode::LimitExceeded,
+            format!(
+                "derived GeoJSON exceeds the {} byte budget",
+                MAX_DERIVED_GEOJSON_BYTES
+            ),
+        ));
+    }
     progress.report(ProgressPhase::PreparingGeography, 1, 1)?;
     progress.report(ProgressPhase::ValidatingWorld, 0, 1)?;
     let source = tectonics::encode_source_v2(&tectonics).map_err(PhysicalError::InvalidSource)?;
@@ -678,12 +780,24 @@ pub fn merge_geojson_features_for_host(first: &str, second: &str) -> Result<Stri
 }
 
 pub fn land_fraction(grid: &Grid, elevations_mm: &[i32], sea_level_mm: i32) -> f64 {
-    let total = grid.total_area();
+    let row_areas = grid.row_areas();
+    let total = f64::from(grid.width) * row_areas.iter().sum::<f64>();
+    land_fraction_from_row_areas(grid, elevations_mm, sea_level_mm, &row_areas, total)
+}
+
+fn land_fraction_from_row_areas(
+    grid: &Grid,
+    elevations_mm: &[i32],
+    sea_level_mm: i32,
+    row_areas: &[f64],
+    total: f64,
+) -> f64 {
+    let width = grid.width as usize;
     elevations_mm
         .iter()
         .enumerate()
         .filter(|(_, elevation)| **elevation > sea_level_mm)
-        .map(|(index, _)| grid.cell_area(grid.row_col(index).0))
+        .map(|(index, _)| row_areas[index / width])
         .sum::<f64>()
         / total
 }
@@ -712,17 +826,42 @@ pub fn solve_sea_level(
             .saturating_add(1),
     );
     let target = f64::from(target_land_fraction_ppm) / 1_000_000.0;
-    candidates
-        .into_iter()
-        .min_by(|first, second| {
-            let first_error = (land_fraction(grid, elevations_mm, *first) - target).abs();
-            let second_error = (land_fraction(grid, elevations_mm, *second) - target).abs();
-            first_error
-                .partial_cmp(&second_error)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| first.cmp(second))
-        })
-        .ok_or_else(|| "sea-level candidates are empty".into())
+    let row_areas = grid.row_areas();
+    let total = f64::from(grid.width) * row_areas.iter().sum::<f64>();
+    let fraction = |sea_level_mm: i32| {
+        land_fraction_from_row_areas(grid, elevations_mm, sea_level_mm, &row_areas, total)
+    };
+    // Land fraction is monotonically non-increasing in sea level, so the
+    // nearest candidate is at the crossing of the target. Evaluating every
+    // unique elevation would be quadratic in the sample count.
+    let mut low = 0usize;
+    let mut high = candidates.len();
+    while low < high {
+        let mid = (low + high) / 2;
+        if fraction(candidates[mid]) <= target {
+            high = mid;
+        } else {
+            low = mid + 1;
+        }
+    }
+    let best = if low == 0 {
+        candidates[0]
+    } else if low >= candidates.len() {
+        candidates[candidates.len() - 1]
+    } else {
+        let left = candidates[low - 1];
+        let right = candidates[low];
+        let left_error = (fraction(left) - target).abs();
+        let right_error = (fraction(right) - target).abs();
+        match left_error
+            .partial_cmp(&right_error)
+            .unwrap_or(std::cmp::Ordering::Equal)
+        {
+            std::cmp::Ordering::Greater => right,
+            _ => left,
+        }
+    };
+    Ok(best)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -836,18 +975,32 @@ pub fn to_geojson(field: &PhysicalField) -> Result<String, String> {
 }
 
 fn format_micro(value: i32) -> String {
-    let sign = if value < 0 { "-" } else { "" };
+    let mut output = String::new();
+    write_micro(&mut output, value);
+    output
+}
+
+fn write_micro(output: &mut String, value: i32) {
+    if value < 0 {
+        output.push('-');
+    }
     let absolute = value.unsigned_abs();
     let whole = absolute / 1_000_000;
     let fraction = absolute % 1_000_000;
-    if fraction == 0 {
-        format!("{sign}{whole}")
-    } else {
-        let mut digits = format!("{fraction:06}");
-        while digits.ends_with('0') {
-            digits.pop();
+    let _ = write!(output, "{whole}");
+    if fraction != 0 {
+        output.push('.');
+        let mut digits = [b'0'; 6];
+        let mut rest = fraction;
+        for index in (0..6).rev() {
+            digits[index] = b'0' + (rest % 10) as u8;
+            rest /= 10;
         }
-        format!("{sign}{whole}.{digits}")
+        let mut end = 6;
+        while end > 1 && digits[end - 1] == b'0' {
+            end -= 1;
+        }
+        output.push_str(std::str::from_utf8(&digits[..end]).unwrap_or("0"));
     }
 }
 
@@ -972,6 +1125,33 @@ mod tests {
         assert_eq!(grid.neighbors(grid.index(0, 0)).len(), 8);
         assert_eq!(grid.neighbors(grid.index(3, 0)).len(), 8);
         assert_eq!(grid.neighbors(grid.index(1, 0)), vec![0, 9, 15, 16]);
+    }
+
+    #[test]
+    fn sea_level_matches_exhaustive_nearest_candidate() {
+        let grid = Grid::new(24, 12, DEFAULT_RADIUS_METRES).unwrap();
+        let field = generate_field(grid, 831_429, 0, 300_000).unwrap();
+        let target = 0.3_f64;
+        let mut candidates = field.elevations_mm.clone();
+        candidates.sort_unstable();
+        candidates.dedup();
+        let minimum = candidates[0];
+        candidates.insert(0, minimum.saturating_sub(1));
+        candidates.push(candidates.last().copied().unwrap().saturating_add(1));
+        let expected = candidates
+            .into_iter()
+            .min_by(|first, second| {
+                let first_error =
+                    (land_fraction(&grid, &field.elevations_mm, *first) - target).abs();
+                let second_error =
+                    (land_fraction(&grid, &field.elevations_mm, *second) - target).abs();
+                first_error
+                    .partial_cmp(&second_error)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| first.cmp(second))
+            })
+            .unwrap();
+        assert_eq!(field.sea_level_mm, expected);
     }
 
     #[test]

@@ -7,6 +7,8 @@
 use super::{
     derive_subsystem_seed, splitmix64, Grid, PhysicalError, ProgressPhase, ProgressSink, SeedDomain,
 };
+use std::collections::HashSet;
+use std::fmt::Write as _;
 
 const MICRODEGREES_PER_DEGREE: f64 = 1_000_000.0;
 const MIN_PLATES: u16 = 4;
@@ -15,7 +17,7 @@ const MAX_VOLCANIC_CENTERS: usize = 256;
 const MAX_BOUNDARIES: usize = 2_000_000;
 pub const TECTONIC_SOURCE_VERSION: u16 = 2;
 pub const TECTONIC_SOURCE_HEADER_BYTES: usize = 68;
-pub const TECTONIC_MAX_SOURCE_BYTES: usize = 16 * 1024 * 1024;
+pub const TECTONIC_MAX_SOURCE_BYTES: usize = crate::MAX_SOURCE_BYTES;
 /// Versioned v2 physical classification parameter. Keep this value stable
 /// unless the generator version changes; it is intentionally not serialized
 /// because the v2 header and payload are locked.
@@ -472,24 +474,26 @@ fn build_boundaries(
     progress: &mut dyn ProgressSink,
 ) -> Result<Vec<BoundarySegment>, PhysicalError> {
     let mut boundaries = Vec::new();
+    let topology = grid.topology();
     for first_cell in 0..grid.sample_count() {
         if first_cell % 256 == 0 {
             progress.check_cancelled()?;
         }
-        for second_cell in grid.neighbors(first_cell) {
-            if first_cell >= second_cell || plate_by_cell[first_cell] == plate_by_cell[second_cell]
+        for second_cell in topology.neighbors(first_cell) {
+            if first_cell >= *second_cell
+                || plate_by_cell[first_cell] == plate_by_cell[*second_cell]
             {
                 continue;
             }
             let first_plate = plate_by_cell[first_cell];
-            let second_plate = plate_by_cell[second_cell];
+            let second_plate = plate_by_cell[*second_cell];
             let (kind, relative_speed) = classify_boundary(
                 &plates[first_plate as usize],
                 &plates[second_plate as usize],
             );
             boundaries.push(BoundarySegment {
                 first_cell,
-                second_cell,
+                second_cell: *second_cell,
                 first_plate,
                 second_plate,
                 kind,
@@ -544,24 +548,26 @@ fn apply_divergent_relief(
     strength: f64,
 ) {
     if first_crust == CrustType::Continental && second_crust == CrustType::Continental {
+        let topology = grid.topology();
         for origin in [boundary.first_cell, boundary.second_cell] {
-            for cell in grid.neighbors(origin) {
-                if cell != boundary.first_cell
-                    && cell != boundary.second_cell
-                    && crust_by_cell[cell] == CrustType::Continental
+            for cell in topology.neighbors(origin) {
+                if *cell != boundary.first_cell
+                    && *cell != boundary.second_cell
+                    && crust_by_cell[*cell] == CrustType::Continental
                 {
-                    relief[cell] += rift_shoulder_elevation(strength, 1);
+                    relief[*cell] += rift_shoulder_elevation(strength, 1);
                 }
             }
         }
     } else if first_crust == CrustType::Oceanic && second_crust == CrustType::Oceanic {
+        let topology = grid.topology();
         for origin in [boundary.first_cell, boundary.second_cell] {
             if crust_by_cell[origin] == CrustType::Oceanic {
                 relief[origin] += spreading_ridge_elevation(strength, 0);
             }
-            for cell in grid.neighbors(origin) {
-                if crust_by_cell[cell] == CrustType::Oceanic {
-                    relief[cell] += spreading_ridge_elevation(strength, 1);
+            for cell in topology.neighbors(origin) {
+                if crust_by_cell[*cell] == CrustType::Oceanic {
+                    relief[*cell] += spreading_ridge_elevation(strength, 1);
                 }
             }
         }
@@ -588,8 +594,10 @@ fn subduction_arc_cell(
             boundary.second_plate,
         )
     };
-    grid.neighbors(anchor)
-        .into_iter()
+    grid.topology()
+        .neighbors(anchor)
+        .iter()
+        .copied()
         .filter(|cell| *cell != other && plate_by_cell[*cell] == target_plate)
         .min_by(|first, second| {
             cell_vector(grid, *first)
@@ -750,7 +758,9 @@ impl TectonicWorld {
                 "tectonic metadata exceeds the source budget".into(),
             ));
         }
-        for (index, first) in self.boundaries.iter().enumerate() {
+        let topology = self.grid.topology();
+        let mut seen_boundaries = HashSet::with_capacity(self.boundaries.len());
+        for first in &self.boundaries {
             if first.first_cell >= sample_count
                 || first.second_cell >= sample_count
                 || first.first_cell >= first.second_cell
@@ -759,26 +769,16 @@ impl TectonicWorld {
                 || usize::from(first.second_plate) >= self.plates.len()
                 || self.plate_by_cell[first.first_cell] != first.first_plate
                 || self.plate_by_cell[first.second_cell] != first.second_plate
-                || !self
-                    .grid
-                    .neighbors(first.first_cell)
-                    .contains(&first.second_cell)
-                || !self
-                    .grid
-                    .neighbors(first.second_cell)
-                    .contains(&first.first_cell)
+                || !topology.are_neighbors(first.first_cell, first.second_cell)
             {
                 return Err(PhysicalError::Validation(
                     "tectonic boundary has invalid topology".into(),
                 ));
             }
-            for second in self.boundaries.iter().skip(index + 1) {
-                if first.first_cell == second.first_cell && first.second_cell == second.second_cell
-                {
-                    return Err(PhysicalError::Validation(
-                        "tectonic boundary is duplicated".into(),
-                    ));
-                }
+            if !seen_boundaries.insert((first.first_cell, first.second_cell)) {
+                return Err(PhysicalError::Validation(
+                    "tectonic boundary is duplicated".into(),
+                ));
             }
         }
         for center in &self.volcanic_centers {
@@ -901,6 +901,7 @@ impl TectonicWorld {
         let mut visited = vec![false; self.grid.sample_count()];
         let mut component_count = 0;
         let mut largest_component = 0;
+        let topology = self.grid.topology();
         for start in 0..self.grid.sample_count() {
             if visited[start] || self.elevations_mm[start] <= self.sea_level_mm {
                 continue;
@@ -911,10 +912,10 @@ impl TectonicWorld {
             let mut component_size = 0;
             while let Some(cell) = stack.pop() {
                 component_size += 1;
-                for neighbor in self.grid.neighbors(cell) {
-                    if !visited[neighbor] && self.elevations_mm[neighbor] > self.sea_level_mm {
-                        visited[neighbor] = true;
-                        stack.push(neighbor);
+                for neighbor in topology.neighbors(cell) {
+                    if !visited[*neighbor] && self.elevations_mm[*neighbor] > self.sea_level_mm {
+                        visited[*neighbor] = true;
+                        stack.push(*neighbor);
                     }
                 }
             }
@@ -1117,7 +1118,10 @@ pub fn encode_source_v2(world: &TectonicWorld) -> Result<Vec<u8>, String> {
         world.volcanic_centers.len(),
     )?;
     if expected_len > TECTONIC_MAX_SOURCE_BYTES {
-        return Err("tectonic source exceeds the 16 MiB source budget".into());
+        return Err(format!(
+            "tectonic source exceeds the {} byte source budget",
+            TECTONIC_MAX_SOURCE_BYTES
+        ));
     }
     let mut output = Vec::with_capacity(expected_len);
     output.extend_from_slice(&super::SOURCE_MAGIC);
@@ -1355,25 +1359,33 @@ fn center_microdegrees(grid: Grid, cell: usize) -> [i32; 2] {
     ]
 }
 
-fn cell_polygon(grid: Grid, cell: usize) -> String {
+fn write_cell_polygon(output: &mut String, grid: Grid, cell: usize) {
     let (row, col) = grid.row_col(cell);
     let west = super::longitude_micro(&grid, col);
     let east = super::longitude_micro(&grid, col + 1);
     let south = super::latitude_micro(&grid, row);
     let north = super::latitude_micro(&grid, row + 1);
-    format!(
-        "[[[{},{}],[{},{}],[{},{}],[{},{}],[{},{}]]]",
-        super::format_micro(west),
-        super::format_micro(south),
-        super::format_micro(east),
-        super::format_micro(south),
-        super::format_micro(east),
-        super::format_micro(north),
-        super::format_micro(west),
-        super::format_micro(north),
-        super::format_micro(west),
-        super::format_micro(south),
-    )
+    output.push_str("[[[");
+    super::write_micro(output, west);
+    output.push(',');
+    super::write_micro(output, south);
+    output.push_str("],[");
+    super::write_micro(output, east);
+    output.push(',');
+    super::write_micro(output, south);
+    output.push_str("],[");
+    super::write_micro(output, east);
+    output.push(',');
+    super::write_micro(output, north);
+    output.push_str("],[");
+    super::write_micro(output, west);
+    output.push(',');
+    super::write_micro(output, north);
+    output.push_str("],[");
+    super::write_micro(output, west);
+    output.push(',');
+    super::write_micro(output, south);
+    output.push_str("]]]");
 }
 
 fn point_geometry(point: [i32; 2]) -> String {
@@ -1407,16 +1419,74 @@ fn diagnostic_feature(
     )
 }
 
-fn add_diagnostic_feature(features: &mut Vec<String>, feature: String) -> Result<(), String> {
-    if features.len() >= super::MAX_GEOJSON_FEATURES {
-        return Err("physical diagnostic output exceeds the feature budget".into());
+fn add_diagnostic_feature(features: &mut DiagnosticWriter, feature: String) -> Result<(), String> {
+    features.push(&feature)
+}
+
+struct DiagnosticWriter {
+    output: String,
+    count: usize,
+}
+
+impl DiagnosticWriter {
+    fn new() -> Self {
+        let mut output = String::with_capacity(8 * 1024 * 1024);
+        output.push_str(r#"{"type":"FeatureCollection","features":["#);
+        Self { output, count: 0 }
     }
-    features.push(feature);
-    Ok(())
+
+    fn push(&mut self, feature: &str) -> Result<(), String> {
+        if self.count >= super::MAX_GEOJSON_FEATURES {
+            return Err("physical diagnostic output exceeds the feature budget".into());
+        }
+        if self.count > 0 {
+            self.output.push(',');
+        }
+        self.output.push_str(feature);
+        self.count += 1;
+        Ok(())
+    }
+
+    fn push_polygon_feature(
+        &mut self,
+        id: &str,
+        layer: &str,
+        kind: &str,
+        name: &str,
+        grid: Grid,
+        cell: usize,
+    ) -> Result<(), String> {
+        if self.count >= super::MAX_GEOJSON_FEATURES {
+            return Err("physical diagnostic output exceeds the feature budget".into());
+        }
+        if self.count > 0 {
+            self.output.push(',');
+        }
+        write!(
+            self.output,
+            r#"{{"type":"Feature","id":"{id}","properties":{{"daenaLayerId":"{layer}","kind":"{kind}","name":"{name}"}},"geometry":{{"type":"Polygon","coordinates":"#
+        )
+        .map_err(|_| "failed to format derived GeoJSON".to_string())?;
+        write_cell_polygon(&mut self.output, grid, cell);
+        self.output.push_str("}}");
+        self.count += 1;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<String, String> {
+        self.output.push_str("]}");
+        if self.output.len() > crate::MAX_DERIVED_GEOJSON_BYTES {
+            return Err(format!(
+                "physical diagnostic output exceeds the {} byte budget",
+                crate::MAX_DERIVED_GEOJSON_BYTES
+            ));
+        }
+        Ok(self.output)
+    }
 }
 
 fn add_boundary_features(
-    features: &mut Vec<String>,
+    features: &mut DiagnosticWriter,
     world: &TectonicWorld,
     boundary_index: usize,
     boundary: BoundarySegment,
@@ -1475,11 +1545,7 @@ fn add_boundary_features(
 }
 
 fn diagnostic_cell_stride(grid: Grid) -> u32 {
-    match grid.sample_count() {
-        0..=8_192 => 1,
-        8_193..=131_072 => 2,
-        _ => 4,
-    }
+    crate::derived_cell_stride(grid)
 }
 
 /// Emit all current tectonic diagnostics as derived, read-only vector layers.
@@ -1490,7 +1556,7 @@ pub fn to_diagnostic_geojson(world: &TectonicWorld) -> Result<String, String> {
         .validate()
         .map_err(|error| format!("invalid tectonic diagnostics: {error}"))?;
     let field = world.physical_field();
-    let mut features = Vec::new();
+    let mut features = DiagnosticWriter::new();
     for (index, segment) in super::coastline_segments(&field).iter().enumerate() {
         add_diagnostic_feature(
             &mut features,
@@ -1509,28 +1575,22 @@ pub fn to_diagnostic_geojson(world: &TectonicWorld) -> Result<String, String> {
         for col in (0..world.grid.width).step_by(stride as usize) {
             let cell = world.grid.index(row, col);
             let plate = world.plate_by_cell[cell];
-            add_diagnostic_feature(
-                &mut features,
-                diagnostic_feature(
-                    &format!("plate-cell-{cell:05}"),
-                    "tectonic-plates",
-                    "region",
-                    &format!("Plate {plate} (LOD {stride})"),
-                    "Polygon",
-                    &cell_polygon(world.grid, cell),
-                ),
+            features.push_polygon_feature(
+                &format!("plate-cell-{cell:05}"),
+                "tectonic-plates",
+                "region",
+                &format!("Plate {plate} (LOD {stride})"),
+                world.grid,
+                cell,
             )?;
             let elevation = world.elevations_mm[cell];
-            add_diagnostic_feature(
-                &mut features,
-                diagnostic_feature(
-                    &format!("bathymetry-cell-{cell:05}"),
-                    "bathymetry",
-                    "custom",
-                    &format!("Elevation {elevation} mm (LOD {stride})"),
-                    "Polygon",
-                    &cell_polygon(world.grid, cell),
-                ),
+            features.push_polygon_feature(
+                &format!("bathymetry-cell-{cell:05}"),
+                "bathymetry",
+                "custom",
+                &format!("Elevation {elevation} mm (LOD {stride})"),
+                world.grid,
+                cell,
             )?;
         }
     }
@@ -1554,18 +1614,7 @@ pub fn to_diagnostic_geojson(world: &TectonicWorld) -> Result<String, String> {
             ),
         )?;
     }
-    let mut output = String::from(r#"{"type":"FeatureCollection","features":["#);
-    for (index, feature) in features.iter().enumerate() {
-        if index > 0 {
-            output.push(',');
-        }
-        output.push_str(feature);
-    }
-    output.push_str("]}");
-    if output.len() > TECTONIC_MAX_SOURCE_BYTES {
-        return Err("physical diagnostic output exceeds the 16 MiB budget".into());
-    }
-    Ok(output)
+    features.finish()
 }
 
 pub fn generate_tectonic_world(
@@ -1896,7 +1945,7 @@ mod tests {
         }
         assert!(!geojson.contains("http://"));
         assert!(!geojson.contains("https://"));
-        assert!(geojson.len() < TECTONIC_MAX_SOURCE_BYTES);
+        assert!(geojson.len() < crate::MAX_DERIVED_GEOJSON_BYTES);
     }
 
     #[test]

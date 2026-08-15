@@ -4360,8 +4360,9 @@ impl ProjectStore {
         }
         if bytes.len() > crate::maps::PHYSICAL_MAX_SOURCE_BYTES {
             return Err(CoreError::Validation(format!(
-                "{}: source asset exceeds 16 MiB",
-                crate::maps::physical::CODE_INVALID_SOURCE
+                "{}: source asset exceeds {} bytes",
+                crate::maps::physical::CODE_INVALID_SOURCE,
+                crate::maps::PHYSICAL_MAX_SOURCE_BYTES
             )));
         }
         let validated = crate::maps::physical::validate_source(&bytes, &generation)?;

@@ -157,7 +157,10 @@ async function main() {
       const geojsonBytes = readFileSync(geojsonPath).length;
       assert.equal(sourceBytes, run.summary.sourceBytes, `${label} source size mismatch`);
       assert.equal(geojsonBytes, run.summary.geojsonBytes, `${label} derived size mismatch`);
-      assert.ok(run.summary.generationMs < 2_000, `${label} generation exceeded 2 seconds`);
+      assert.ok(
+        run.summary.generationMs < 2_000,
+        `${label} generation exceeded 2 seconds`,
+      );
     }
     console.log(
       JSON.stringify({

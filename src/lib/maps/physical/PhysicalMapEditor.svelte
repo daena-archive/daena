@@ -329,8 +329,8 @@ async function generate() {
       retryIndex: 0,
       evolutionPreset,
       settings: {
-        width: 64,
-        height: 32,
+        width: 256,
+        height: 128,
         radiusMetres: 6_371_000,
         targetLandFractionPpm: 300_000,
       },

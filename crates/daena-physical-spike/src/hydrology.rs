@@ -6,6 +6,7 @@
 //! changing the physical-world-v2 source bytes.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::fmt::Write as _;
 
 use super::{
     climate::ClimateField,
@@ -15,7 +16,7 @@ use super::{
 use crate::tectonics::CrustType;
 
 pub const HYDROLOGY_DERIVATION_VERSION: u16 = 1;
-pub const MAX_HYDROLOGY_FEATURES: usize = 262_144;
+pub const MAX_HYDROLOGY_FEATURES: usize = crate::MAX_GEOJSON_FEATURES;
 pub const WATER_BALANCE_TOLERANCE_PPM: u64 = 5_000;
 const MAX_FIXED_POINT_ITERATIONS: u32 = 24;
 const MAX_ENDORHEIC_DEPTH_MM: i32 = 250_000;
@@ -437,15 +438,32 @@ pub fn solve_ocean_level_for_inventory(
     candidates.push(maximum.saturating_add(1));
     candidates.sort_unstable();
     candidates.dedup();
-    candidates
-        .into_iter()
-        .min_by_key(|level| (ocean_volume(field, *level).abs_diff(inventory_m3), *level))
-        .ok_or_else(|| {
-            PhysicalError::coded(
-                PhysicalErrorCode::GeometryInvalid,
-                "ocean-level solve produced no candidates",
-            )
-        })
+    let mut low = 0usize;
+    let mut high = candidates.len();
+    while low < high {
+        let mid = (low + high) / 2;
+        if ocean_volume(field, candidates[mid]) >= inventory_m3 {
+            high = mid;
+        } else {
+            low = mid + 1;
+        }
+    }
+    let best = if low == 0 {
+        candidates[0]
+    } else if low >= candidates.len() {
+        candidates[candidates.len() - 1]
+    } else {
+        let left = candidates[low - 1];
+        let right = candidates[low];
+        let left_error = ocean_volume(field, left).abs_diff(inventory_m3);
+        let right_error = ocean_volume(field, right).abs_diff(inventory_m3);
+        if right_error < left_error {
+            right
+        } else {
+            left
+        }
+    };
+    Ok(best)
 }
 
 fn downhill_destination(field: &PhysicalField, cell: usize) -> Option<usize> {
@@ -455,8 +473,10 @@ fn downhill_destination(field: &PhysicalField, cell: usize) -> Option<usize> {
     let elevation = field.elevations_mm[cell];
     field
         .grid
+        .topology()
         .neighbors(cell)
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|neighbor| {
             field.elevations_mm[*neighbor] < elevation
                 || (field.elevations_mm[*neighbor] == elevation && *neighbor < cell)
@@ -526,13 +546,14 @@ fn find_spill(
     basin: usize,
     cells: &[usize],
 ) -> Option<Spill> {
+    let topology = field.grid.topology();
     cells
         .iter()
         .flat_map(|cell| {
-            field
-                .grid
+            topology
                 .neighbors(*cell)
-                .into_iter()
+                .iter()
+                .copied()
                 .map(move |neighbor| (*cell, neighbor))
         })
         .filter(|(_, neighbor)| basin_by_cell[*neighbor] != basin as u32)
@@ -691,7 +712,8 @@ fn solve_basin_water(basins: &mut [Basin], field: &PhysicalField) {
 fn hillshade(field: &PhysicalField, cell: usize) -> u32 {
     let elevation = field.elevations_mm[cell];
     let (row, _) = field.grid.row_col(cell);
-    let neighbors = field.grid.neighbors(cell);
+    let topology = field.grid.topology();
+    let neighbors = topology.neighbors(cell);
     let mean = if neighbors.is_empty() {
         elevation
     } else {
@@ -863,25 +885,24 @@ fn derive_rivers(
         }
     }
     let mut order_cache = vec![0u16; count];
-    fn stream_order(
-        cell: usize,
-        active: &[bool],
-        primary: &[Option<DrainageEdge>],
-        cache: &mut [u16],
-    ) -> u16 {
+    let mut parents_of = vec![Vec::<usize>::new(); count];
+    for (parent, edge) in primary.iter().enumerate() {
+        if !active[parent] {
+            continue;
+        }
+        if let Some(edge) = edge {
+            if edge.destination_cell < count && active[edge.destination_cell] {
+                parents_of[edge.destination_cell].push(parent);
+            }
+        }
+    }
+    fn stream_order(cell: usize, parents_of: &[Vec<usize>], cache: &mut [u16]) -> u16 {
         if cache[cell] > 0 {
             return cache[cell];
         }
-        let parents = primary
+        let parents = parents_of[cell]
             .iter()
-            .enumerate()
-            .filter(|(parent, edge)| {
-                active[*parent]
-                    && edge
-                        .map(|edge| edge.destination_cell == cell && active[cell])
-                        .unwrap_or(false)
-            })
-            .map(|(parent, _)| stream_order(parent, active, primary, cache))
+            .map(|parent| stream_order(*parent, parents_of, cache))
             .collect::<Vec<_>>();
         let result = if parents.is_empty() {
             1
@@ -914,8 +935,10 @@ fn derive_rivers(
                 {
                     if let Some(outlet) = field
                         .grid
+                        .topology()
                         .neighbors(cell)
-                        .into_iter()
+                        .iter()
+                        .copied()
                         .filter(|neighbor| field.elevations_mm[*neighbor] <= field.sea_level_mm)
                         .min()
                     {
@@ -988,7 +1011,7 @@ fn derive_rivers(
             id,
             source_cell: start,
             mouth_cell: mouth,
-            strahler_order: stream_order(start, &active, &primary, &mut order_cache),
+            strahler_order: stream_order(start, &parents_of, &mut order_cache),
             destination,
             spill_outlet: false,
             coordinate_count: simplified.len() as u32,
@@ -1030,8 +1053,10 @@ fn derive_rivers(
         }
         let Some(outlet_cell) = field
             .grid
+            .topology()
             .neighbors(spill_cell)
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|neighbor| match destination {
                 BasinDestination::Ocean => field.elevations_mm[*neighbor] <= field.sea_level_mm,
                 BasinDestination::Basin(parent) => basin_by_cell[*neighbor] == parent as u32,
@@ -1090,18 +1115,41 @@ fn simplify_path(mut path: Vec<[i32; 2]>) -> Vec<[i32; 2]> {
 }
 
 fn polygon_for_cells(grid: Grid, cells: &[usize]) -> Vec<Vec<[i32; 2]>> {
-    cells.iter().map(|cell| cell_ring(grid, *cell)).collect()
+    let stride = crate::derived_cell_stride(grid);
+    let mut rings = cells
+        .iter()
+        .copied()
+        .filter(|cell| {
+            let (row, col) = grid.row_col(*cell);
+            row % stride == 0 && col % stride == 0
+        })
+        .map(|cell| cell_ring(grid, cell))
+        .collect::<Vec<_>>();
+    if rings.is_empty() {
+        if let Some(cell) = cells.first().copied() {
+            rings.push(cell_ring(grid, cell));
+        }
+    }
+    rings
 }
 
 fn polygon_for_mask(grid: Grid, mask: &[bool]) -> Vec<Vec<Vec<[i32; 2]>>> {
+    let stride = crate::derived_cell_stride(grid);
     mask.iter()
         .enumerate()
-        .filter(|(_, included)| **included)
+        .filter(|(cell, included)| {
+            if !**included {
+                return false;
+            }
+            let (row, col) = grid.row_col(*cell);
+            row % stride == 0 && col % stride == 0
+        })
         .map(|(cell, _)| vec![cell_ring(grid, cell)])
         .collect()
 }
 
 fn island_groups(grid: Grid, land_mask: &[bool]) -> (Vec<u32>, Vec<Vec<usize>>) {
+    let topology = grid.topology();
     let mut island_id = vec![u32::MAX; grid.sample_count()];
     let mut groups = Vec::new();
     for start in 0..grid.sample_count() {
@@ -1114,10 +1162,10 @@ fn island_groups(grid: Grid, land_mask: &[bool]) -> (Vec<u32>, Vec<Vec<usize>>) 
         let mut cells = Vec::new();
         while let Some(cell) = queue.pop_front() {
             cells.push(cell);
-            for neighbor in grid.neighbors(cell) {
-                if land_mask[neighbor] && island_id[neighbor] == u32::MAX {
-                    island_id[neighbor] = id;
-                    queue.push_back(neighbor);
+            for neighbor in topology.neighbors(cell) {
+                if land_mask[*neighbor] && island_id[*neighbor] == u32::MAX {
+                    island_id[*neighbor] = id;
+                    queue.push_back(*neighbor);
                 }
             }
         }
@@ -1132,14 +1180,18 @@ fn bathymetry_contour_segments(
     sea_level_mm: i32,
 ) -> Vec<Segment> {
     let mut contours = Vec::new();
+    let stride = crate::derived_cell_stride(field.grid);
     for threshold in [100_000, 250_000, 500_000] {
         for cell in 0..field.grid.sample_count() {
+            let (row, col) = field.grid.row_col(cell);
+            if row % stride != 0 || col % stride != 0 {
+                continue;
+            }
             if !ocean_mask[cell]
                 || sea_level_mm.saturating_sub(field.elevations_mm[cell]) < threshold
             {
                 continue;
             }
-            let (row, col) = field.grid.row_col(cell);
             let west = longitude_micro(field.grid, col);
             let east = longitude_micro(field.grid, col + 1);
             let south = latitude_micro(field.grid, row);
@@ -1419,48 +1471,59 @@ pub fn derive_hydrology_with_crust(
 }
 
 fn geometry_string(coordinates: &[[i32; 2]]) -> String {
-    let values = coordinates
-        .iter()
-        .map(|coordinate| {
-            format!(
-                "[{},{}]",
-                coordinate[0] as f64 / 1_000_000.0,
-                coordinate[1] as f64 / 1_000_000.0
-            )
-        })
-        .collect::<Vec<_>>();
-    format!("[{}]", values.join(","))
+    let mut output = String::new();
+    write_geometry(&mut output, coordinates);
+    output
+}
+
+fn write_geometry(output: &mut String, coordinates: &[[i32; 2]]) {
+    output.push('[');
+    for (index, coordinate) in coordinates.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        let _ = write!(
+            output,
+            "[{},{}]",
+            coordinate[0] as f64 / 1_000_000.0,
+            coordinate[1] as f64 / 1_000_000.0
+        );
+    }
+    output.push(']');
 }
 
 fn multi_polygon_from_rings(polygons: &[Vec<[i32; 2]>]) -> String {
-    format!(
-        "[{}]",
-        polygons
-            .iter()
-            .map(|ring| format!("[{}]", geometry_string(ring)))
-            .collect::<Vec<_>>()
-            .join(",")
-    )
+    let mut output = String::from("[");
+    for (index, ring) in polygons.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        output.push('[');
+        write_geometry(&mut output, ring);
+        output.push(']');
+    }
+    output.push(']');
+    output
 }
 
 fn multi_polygon_from_polygons(polygons: &[Vec<Vec<[i32; 2]>>]) -> String {
-    format!(
-        "[{}]",
-        polygons
-            .iter()
-            .map(|polygon| {
-                format!(
-                    "[{}]",
-                    polygon
-                        .iter()
-                        .map(|ring| geometry_string(ring))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",")
-    )
+    let mut output = String::with_capacity(polygons.len().saturating_mul(96).max(2));
+    output.push('[');
+    for (polygon_index, polygon) in polygons.iter().enumerate() {
+        if polygon_index > 0 {
+            output.push(',');
+        }
+        output.push('[');
+        for (ring_index, ring) in polygon.iter().enumerate() {
+            if ring_index > 0 {
+                output.push(',');
+            }
+            write_geometry(&mut output, ring);
+        }
+        output.push(']');
+    }
+    output.push(']');
+    output
 }
 
 fn feature(
@@ -1477,9 +1540,18 @@ fn feature(
 }
 
 pub fn to_geojson(hydrology: &HydrologyField) -> Result<String, String> {
-    let mut features = Vec::new();
+    let mut output = String::with_capacity(8 * 1024 * 1024);
+    output.push_str(r#"{"type":"FeatureCollection","features":["#);
+    let mut feature_count = 0usize;
+    let mut push_feature = |feature: String| {
+        if feature_count > 0 {
+            output.push(',');
+        }
+        output.push_str(&feature);
+        feature_count += 1;
+    };
     for (index, segment) in hydrology.coastline_segments.iter().enumerate() {
-        features.push(feature(
+        push_feature(feature(
             &format!("current-coastline-{index:06}"),
             "base",
             "custom",
@@ -1495,7 +1567,7 @@ pub fn to_geojson(hydrology: &HydrologyField) -> Result<String, String> {
         ("islands", "Islands", &hydrology.island_polygons),
     ] {
         if !polygons.is_empty() {
-            features.push(feature(
+            push_feature(feature(
                 id,
                 id,
                 if id == "ocean" { "custom" } else { "land" },
@@ -1506,7 +1578,7 @@ pub fn to_geojson(hydrology: &HydrologyField) -> Result<String, String> {
         }
     }
     for (index, segment) in hydrology.bathymetry_contours.iter().enumerate() {
-        features.push(feature(
+        push_feature(feature(
             &format!("bathymetry-contour-{index:06}"),
             "bathymetric-contours",
             "route",
@@ -1516,7 +1588,7 @@ pub fn to_geojson(hydrology: &HydrologyField) -> Result<String, String> {
         ));
     }
     for (index, polygons) in hydrology.lake_polygons.iter().enumerate() {
-        features.push(feature(
+        push_feature(feature(
             &format!("lake-{index:06}"),
             "lakes",
             "lake",
@@ -1526,7 +1598,7 @@ pub fn to_geojson(hydrology: &HydrologyField) -> Result<String, String> {
         ));
     }
     for (index, polygons) in hydrology.watershed_polygons.iter().enumerate() {
-        features.push(feature(
+        push_feature(feature(
             &format!("watershed-{index:06}"),
             "watersheds",
             "region",
@@ -1536,7 +1608,7 @@ pub fn to_geojson(hydrology: &HydrologyField) -> Result<String, String> {
         ));
     }
     for (river, coordinates) in hydrology.rivers.iter().zip(&hydrology.river_coordinates) {
-        features.push(feature(
+        push_feature(feature(
             &format!("river-{:06}", river.id),
             "rivers",
             "route",
@@ -1545,13 +1617,17 @@ pub fn to_geojson(hydrology: &HydrologyField) -> Result<String, String> {
             &geometry_string(coordinates),
         ));
     }
-    if features.len() > MAX_HYDROLOGY_FEATURES {
+    if feature_count > MAX_HYDROLOGY_FEATURES {
         return Err("hydrology derived output exceeds the feature budget".into());
     }
-    Ok(format!(
-        "{{\"type\":\"FeatureCollection\",\"features\":[{}]}}",
-        features.join(",")
-    ))
+    output.push_str("]}");
+    if output.len() > crate::MAX_DERIVED_GEOJSON_BYTES {
+        return Err(format!(
+            "hydrology derived output exceeds the {} byte budget",
+            crate::MAX_DERIVED_GEOJSON_BYTES
+        ));
+    }
+    Ok(output)
 }
 
 #[cfg(test)]

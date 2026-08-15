@@ -1,6 +1,6 @@
 # ADR 0023: Native physical-world Packet 1 resolution envelope
 
-- Status: Accepted for the measured Packet 1 envelope
+- Status: Superseded for production envelope and byte ceilings by ADR 0024
 - Date: 2026-08-15
 - Scope: production-resolution selection and derived LOD boundary
 
@@ -50,11 +50,10 @@ feature matrix for repeatable review.
 
 ## Consequences
 
-Canonical terrain is generated once at `256 x 128`. The source remains the
-strict `physical-world-v2` layout and is well below its 16 MiB source limit.
-The larger candidates are not accepted as physical maps. They may be used for
-future preview/LOD experiments, but their derived products must not feed back
-into hydrology or mutate canonical source bytes.
+Canonical terrain was generated once at `256 x 128` under this packet. The
+source remains the strict `physical-world-v2` layout. Production default,
+maximum, and host byte ceilings are superseded by ADR 0024. Derived products
+must not feed back into hydrology or mutate canonical source bytes.
 
 Diagnostic cell layers use deterministic stride-based LOD for grids above the
 small fixture size. This keeps high-resolution diagnostics derived and

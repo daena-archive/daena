@@ -350,7 +350,7 @@ fn begin_current_physical_session(
     }
 }
 
-const MAX_ASSET_TRANSFER_BYTES: usize = 64 * 1024 * 1024;
+const MAX_ASSET_TRANSFER_BYTES: usize = daena_core::maps::PHYSICAL_MAX_SOURCE_BYTES;
 const ASSET_TRANSFER_TTL: Duration = Duration::from_secs(60);
 const BUNDLED_FMG_ARCHIVE: &[u8] = include_bytes!("../plugin-assets/maps/fmg-v1.119.zip");
 

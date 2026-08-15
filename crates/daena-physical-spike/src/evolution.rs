@@ -187,8 +187,8 @@ impl DrainageField {
                         >= self.routing_order[edge.source_cell])
                 || !field
                     .grid
-                    .neighbors(edge.source_cell)
-                    .contains(&edge.destination_cell)
+                    .topology()
+                    .are_neighbors(edge.source_cell, edge.destination_cell)
             {
                 return Err(PhysicalError::coded(
                     PhysicalErrorCode::HydrologyCycle,
@@ -362,6 +362,7 @@ fn priority_flood(field: &PhysicalField) -> Result<(Vec<i32>, Vec<u32>), Physica
     let mut visited = vec![false; sample_count];
     let mut order = vec![u32::MAX; sample_count];
     let mut queue = BinaryHeap::new();
+    let topology = field.grid.topology();
     for (cell, visited_cell) in visited.iter_mut().enumerate() {
         if field.elevations_mm[cell] <= field.sea_level_mm {
             *visited_cell = true;
@@ -381,13 +382,13 @@ fn priority_flood(field: &PhysicalField) -> Result<(Vec<i32>, Vec<u32>), Physica
         }
         order[cell] = next_order;
         next_order = next_order.saturating_add(1);
-        for neighbor in field.grid.neighbors(cell) {
-            if visited[neighbor] {
+        for neighbor in topology.neighbors(cell) {
+            if visited[*neighbor] {
                 continue;
             }
-            visited[neighbor] = true;
-            routing[neighbor] = routing[neighbor].max(level);
-            queue.push((Reverse(routing[neighbor]), Reverse(neighbor)));
+            visited[*neighbor] = true;
+            routing[*neighbor] = routing[*neighbor].max(level);
+            queue.push((Reverse(routing[*neighbor]), Reverse(*neighbor)));
         }
     }
     if order.contains(&u32::MAX) {
@@ -407,8 +408,10 @@ fn normalized_edges(
 ) -> Vec<DrainageEdge> {
     let mut candidates = field
         .grid
+        .topology()
         .neighbors(cell)
-        .into_iter()
+        .iter()
+        .copied()
         .filter_map(|destination| {
             let lower = routing[destination] < routing[cell];
             let plateau = routing[destination] == routing[cell] && order[destination] < order[cell];
@@ -701,14 +704,15 @@ pub fn derive_drainage(
 
 fn uplift_signal(world: &TectonicWorld) -> Vec<u32> {
     let mut signal = vec![0u32; world.grid.sample_count()];
+    let topology = world.grid.topology();
     for boundary in &world.boundaries {
         if boundary.kind != BoundaryKind::Convergent {
             continue;
         }
         for cell in [boundary.first_cell, boundary.second_cell] {
             signal[cell] = signal[cell].max(800_000);
-            for neighbor in world.grid.neighbors(cell) {
-                signal[neighbor] = signal[neighbor].max(450_000);
+            for neighbor in topology.neighbors(cell) {
+                signal[*neighbor] = signal[*neighbor].max(450_000);
             }
         }
     }
@@ -814,6 +818,8 @@ pub fn evolve_terrain(
     settings.validate()?;
     let budget = settings.budget();
     let signal = uplift_signal(tectonics);
+    let topology = before_field.grid.topology();
+    let row_areas = before_field.grid.row_areas();
     let before = before_field.elevations_mm.clone();
     let mut current = before.clone();
     let mut erosion_work_m3 = 0u64;
@@ -846,7 +852,7 @@ pub fn evolve_terrain(
             );
             let uplift =
                 (i64::from(budget.uplift_mm_per_step) * i64::from(signal[cell]) / 1_000_000) as i32;
-            let neighbors = before_field.grid.neighbors(cell);
+            let neighbors = topology.neighbors(cell);
             let average_neighbor = neighbors
                 .iter()
                 .map(|neighbor| f64::from(current[*neighbor]))
@@ -860,19 +866,12 @@ pub fn evolve_terrain(
             let delta =
                 unclamped_delta.clamp(-MAX_RELIEF_LOSS_PER_STEP_MM, MAX_RELIEF_LOSS_PER_STEP_MM);
             max_step_relief_loss_mm = max_step_relief_loss_mm.max(-delta.min(0));
+            let area = row_areas[before_field.grid.row_col(cell).0 as usize];
             if delta < 0 {
-                let volume = f64::from(-delta)
-                    * before_field
-                        .grid
-                        .cell_area(before_field.grid.row_col(cell).0)
-                    / 1_000.0;
+                let volume = f64::from(-delta) * area / 1_000.0;
                 erosion_work_m3 = erosion_work_m3.saturating_add(volume.round().max(0.0) as u64);
             } else {
-                let volume = f64::from(delta)
-                    * before_field
-                        .grid
-                        .cell_area(before_field.grid.row_col(cell).0)
-                    / 1_000.0;
+                let volume = f64::from(delta) * area / 1_000.0;
                 uplift_work_m3 = uplift_work_m3.saturating_add(volume.round().max(0.0) as u64);
             }
             let evolved = i64::from(current[cell]) + i64::from(delta);

@@ -24,6 +24,8 @@ for (const required of [
   'id: "volcanic-centers"',
   'id: "earthquake-hazard"',
   'id: "volcanic-hazard"',
+  "width: 256",
+  "height: 128",
   "evolutionPreset",
   "Terrain age",
   "locked: true",

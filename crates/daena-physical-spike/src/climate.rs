@@ -259,6 +259,7 @@ fn build_geometry(
             "climate derivation requires at least one ocean cell",
         ));
     }
+    let ocean_tree = KdNode::build(&ocean_vectors);
     let maritime_scale_metres = f64::from(settings.maritime_scale_km) * 1_000.0;
     let mut geometry = Vec::with_capacity(field.grid.sample_count());
     for cell in 0..field.grid.sample_count() {
@@ -269,10 +270,7 @@ fn build_geometry(
         let distance = if field.elevations_mm[cell] <= field.sea_level_mm {
             0.0
         } else {
-            ocean_vectors
-                .iter()
-                .map(|ocean| ocean.dot(vector).clamp(-1.0, 1.0).acos())
-                .fold(f64::INFINITY, f64::min)
+            nearest_ocean_distance(&ocean_vectors, ocean_tree.as_deref(), vector)
                 * field.grid.radius_metres as f64
         };
         let maritime_factor = (-distance / maritime_scale_metres).exp();
@@ -288,6 +286,121 @@ fn build_geometry(
         });
     }
     Ok(geometry)
+}
+
+struct KdNode {
+    index: usize,
+    axis: u8,
+    left: Option<Box<KdNode>>,
+    right: Option<Box<KdNode>>,
+}
+
+impl KdNode {
+    fn build(points: &[UnitVector]) -> Option<Box<Self>> {
+        if points.is_empty() {
+            return None;
+        }
+        let mut indices = (0..points.len()).collect::<Vec<_>>();
+        Self::build_from_indices(points, &mut indices, 0)
+    }
+
+    fn build_from_indices(
+        points: &[UnitVector],
+        indices: &mut [usize],
+        depth: usize,
+    ) -> Option<Box<Self>> {
+        if indices.is_empty() {
+            return None;
+        }
+        let axis = (depth % 3) as u8;
+        indices.sort_unstable_by(|first, second| {
+            coord(points[*first], axis)
+                .partial_cmp(&coord(points[*second], axis))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| first.cmp(second))
+        });
+        let mid = indices.len() / 2;
+        Some(Box::new(Self {
+            index: indices[mid],
+            axis,
+            left: Self::build_from_indices(points, &mut indices[..mid], depth + 1),
+            right: Self::build_from_indices(points, &mut indices[mid + 1..], depth + 1),
+        }))
+    }
+
+    fn nearest(
+        &self,
+        points: &[UnitVector],
+        query: UnitVector,
+        best_distance_sq: &mut f64,
+        best_index: &mut usize,
+    ) {
+        let candidate = points[self.index];
+        let distance_sq = chord_squared(candidate, query);
+        if distance_sq < *best_distance_sq
+            || ((distance_sq - *best_distance_sq).abs() <= f64::EPSILON && self.index < *best_index)
+        {
+            *best_distance_sq = distance_sq;
+            *best_index = self.index;
+        }
+        let delta = coord(query, self.axis) - coord(candidate, self.axis);
+        let (first, second) = if delta <= 0.0 {
+            (self.left.as_deref(), self.right.as_deref())
+        } else {
+            (self.right.as_deref(), self.left.as_deref())
+        };
+        if let Some(child) = first {
+            child.nearest(points, query, best_distance_sq, best_index);
+        }
+        if second.is_some() && delta * delta <= *best_distance_sq {
+            if let Some(child) = second {
+                child.nearest(points, query, best_distance_sq, best_index);
+            }
+        }
+    }
+}
+
+fn coord(vector: UnitVector, axis: u8) -> f64 {
+    match axis {
+        0 => vector.x,
+        1 => vector.y,
+        _ => vector.z,
+    }
+}
+
+fn chord_squared(first: UnitVector, second: UnitVector) -> f64 {
+    let dx = first.x - second.x;
+    let dy = first.y - second.y;
+    let dz = first.z - second.z;
+    dx * dx + dy * dy + dz * dz
+}
+
+fn nearest_ocean_distance(
+    ocean_vectors: &[UnitVector],
+    tree: Option<&KdNode>,
+    vector: UnitVector,
+) -> f64 {
+    if ocean_vectors.len() <= 48 {
+        return ocean_vectors
+            .iter()
+            .map(|ocean| ocean.dot(vector).clamp(-1.0, 1.0).acos())
+            .fold(f64::INFINITY, f64::min);
+    }
+    let Some(tree) = tree else {
+        return f64::INFINITY;
+    };
+    let mut best_distance_sq = f64::INFINITY;
+    let mut best_index = 0usize;
+    tree.nearest(
+        ocean_vectors,
+        vector,
+        &mut best_distance_sq,
+        &mut best_index,
+    );
+    ocean_vectors[best_index]
+        .dot(vector)
+        .clamp(-1.0, 1.0)
+        .acos()
 }
 
 fn temperature_field(
@@ -378,15 +491,27 @@ fn transport_moisture(
     // kept below one in total so the wrapped fixed-point pass is contractive.
     let convergence_weight = convergence * 0.5;
     let base_precipitation = f64::from(settings.base_precipitation_ppm) / 1_000_000.0;
-    let mut previous = vec![0.0; field.grid.sample_count()];
-    let mut final_precipitation = vec![0.0; field.grid.sample_count()];
+    let sample_count = field.grid.sample_count();
+    let mut previous = vec![0.0; sample_count];
+    let mut next = vec![0.0; sample_count];
+    let mut precipitation = vec![0.0; sample_count];
+    let mut final_precipitation = vec![0.0; sample_count];
     let mut iterations = 0;
     let mut converged = false;
+    let row_step_metres = (0..field.grid.height)
+        .map(|row| {
+            field
+                .grid
+                .great_circle_distance(
+                    field.grid.center_radians(row, 0),
+                    field.grid.center_radians(row, 1 % field.grid.width.max(1)),
+                )
+                .max(1.0)
+        })
+        .collect::<Vec<_>>();
 
     for iteration in 0..CLIMATE_MAX_TRANSPORT_ITERATIONS {
         progress.check_cancelled()?;
-        let mut next = vec![0.0; field.grid.sample_count()];
-        let mut precipitation = vec![0.0; field.grid.sample_count()];
         let mut maximum_delta = 0.0_f64;
         for row in 0..field.grid.height {
             if row % 4 == 0 {
@@ -395,6 +520,11 @@ fn transport_moisture(
             let direction = wind_direction(row, field.grid.height);
             let adjacent_row = convergence_row(row, field.grid.height);
             let source_factor = band_source_multiplier(climate_seed, row, field.grid.height);
+            let distance = row_step_metres[row as usize];
+            let physical_decay =
+                (-distance / (f64::from(settings.moisture_decay_scale_km) * 1_000.0)).exp();
+            let upstream_weight =
+                (decay_at_scale * physical_decay).clamp(0.0, 0.995) * (1.0 - convergence_weight);
             for offset in 0..field.grid.width {
                 let col = if direction > 0 {
                     offset
@@ -416,17 +546,6 @@ fn transport_moisture(
                 } else {
                     0.0
                 };
-                let distance = field
-                    .grid
-                    .great_circle_distance(
-                        field.grid.center_radians(row, upstream_col),
-                        field.grid.center_radians(row, col),
-                    )
-                    .max(1.0);
-                let physical_decay =
-                    (-distance / (f64::from(settings.moisture_decay_scale_km) * 1_000.0)).exp();
-                let upstream_weight = (decay_at_scale * physical_decay).clamp(0.0, 0.995)
-                    * (1.0 - convergence_weight);
                 let incoming = (ocean_source
                     + previous[upstream] * upstream_weight
                     + previous[adjacent] * convergence_weight)
@@ -444,8 +563,8 @@ fn transport_moisture(
                 maximum_delta = maximum_delta.max((remaining - previous[cell]).abs());
             }
         }
-        previous = next;
-        final_precipitation = precipitation;
+        std::mem::swap(&mut previous, &mut next);
+        final_precipitation.copy_from_slice(&precipitation);
         iterations = iteration + 1;
         if iterations >= CLIMATE_MIN_TRANSPORT_ITERATIONS
             && maximum_delta <= CLIMATE_TRANSPORT_TOLERANCE_MM
@@ -905,5 +1024,37 @@ mod tests {
         );
         feed(&climate.metrics.transport_iterations.to_le_bytes());
         hash
+    }
+
+    #[test]
+    fn nearest_ocean_tree_matches_brute_force_distance() {
+        let grid = Grid::new(64, 32, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![1_000; grid.sample_count()];
+        for cell in 0..grid.sample_count() {
+            if cell % 7 == 0 {
+                elevations[cell] = -500;
+            }
+        }
+        let ocean_vectors = (0..grid.sample_count())
+            .filter(|cell| elevations[*cell] <= 0)
+            .map(|cell| cell_geometry(grid, cell).1)
+            .collect::<Vec<_>>();
+        assert!(ocean_vectors.len() > 48);
+        let tree = KdNode::build(&ocean_vectors);
+        for cell in 0..grid.sample_count() {
+            if elevations[cell] <= 0 {
+                continue;
+            }
+            let vector = cell_geometry(grid, cell).1;
+            let brute = ocean_vectors
+                .iter()
+                .map(|ocean| ocean.dot(vector).clamp(-1.0, 1.0).acos())
+                .fold(f64::INFINITY, f64::min);
+            let accelerated = nearest_ocean_distance(&ocean_vectors, tree.as_deref(), vector);
+            assert!(
+                (brute - accelerated).abs() < 1e-12,
+                "cell {cell}: brute={brute} accelerated={accelerated}"
+            );
+        }
     }
 }

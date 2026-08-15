@@ -112,6 +112,7 @@ fn main() -> Result<(), String> {
             level: request.level,
             variant: request.variant,
             style_id: request.style_id.clone(),
+            active_layer_ids: request.active_layer_ids.clone(),
         }
         .normalize()
         .map_err(|error| error.to_string())?;

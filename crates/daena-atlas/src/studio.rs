@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::overlay::AuthoredFeature;
 use crate::projection::{
     mercator_x_to_lon_micro, mercator_y_to_lat_micro, wrap_lon_micro, AtlasExtent, AtlasProjection,
     WEB_MERCATOR_MAX_LAT_MICRO,
@@ -21,7 +22,7 @@ pub const ATLAS_STUDIO_TILE_SCHEMA_VERSION: u32 = 1;
 pub const STUDIO_TILE_SIZE: u32 = 256;
 pub const STUDIO_MAX_ZOOM: u32 = 8;
 pub const STUDIO_MAX_DEVICE_SCALE: u32 = 2;
-pub const STUDIO_TILE_HALO: u32 = 0;
+pub const STUDIO_TILE_HALO: u32 = 16;
 pub const STUDIO_PROJECTION_ID: &str = crate::projection::WEB_MERCATOR_ID;
 
 pub const CODE_STUDIO_REQUEST_INVALID: &str = "atlas.studio.request.invalid";
@@ -45,6 +46,8 @@ pub struct AtlasStudioSceneRequestV1 {
     pub level: DetailLevel,
     pub variant: u32,
     pub style_id: String,
+    #[serde(default)]
+    pub active_layer_ids: Vec<String>,
 }
 
 impl AtlasStudioSceneRequestV1 {
@@ -56,6 +59,10 @@ impl AtlasStudioSceneRequestV1 {
             level: DetailLevel::Detailed,
             variant: 0,
             style_id: crate::style::RELIEF_STYLE_ID.to_string(),
+            active_layer_ids: STUDIO_SPIKE_LAYER_IDS
+                .iter()
+                .map(|id| (*id).to_string())
+                .collect(),
         }
     }
 
@@ -75,11 +82,22 @@ impl AtlasStudioSceneRequestV1 {
             level: request.level,
             variant: request.variant,
             style_id: request.style_id,
+            active_layer_ids: request.active_layer_ids,
         })
     }
 
     pub fn as_render_request(&self, output_px: u32) -> Result<AtlasRenderRequest, AtlasError> {
-        let mut request = AtlasRenderRequest {
+        let mut layers = self.active_layer_ids.clone();
+        if layers.is_empty() {
+            layers = STUDIO_SPIKE_LAYER_IDS
+                .iter()
+                .map(|id| (*id).to_string())
+                .collect();
+        }
+        layers.retain(|id| id != "frame");
+        layers.sort();
+        layers.dedup();
+        Ok(AtlasRenderRequest {
             schema_version: ATLAS_REQUEST_SCHEMA_VERSION,
             offset_years: self.offset_years,
             algorithm_version: self.algorithm_version,
@@ -93,16 +111,11 @@ impl AtlasStudioSceneRequestV1 {
             projection: AtlasProjection::WebMercator,
             extent: xyz_extent(0, 0, 0)?,
             unlock_aspect: false,
-            active_layer_ids: STUDIO_SPIKE_LAYER_IDS
-                .iter()
-                .map(|id| (*id).to_string())
-                .collect(),
+            active_layer_ids: layers,
             time_kind: "physical-offset-year".into(),
             authored_year: None,
             binding_revision: None,
-        };
-        request.active_layer_ids.sort();
-        Ok(request)
+        })
     }
 }
 
@@ -306,6 +319,55 @@ pub fn xyz_pixel_center(
     Ok((lon, lat))
 }
 
+pub fn xyz_world_pixel_center(
+    z: u32,
+    tile_x: u32,
+    tile_y: u32,
+    px: i32,
+    py: i32,
+    output_px: u32,
+) -> Result<(i32, i32), AtlasError> {
+    let n = tile_count(z)?;
+    let world = u64::from(n)
+        .checked_mul(u64::from(output_px))
+        .ok_or_else(|| {
+            AtlasError::new(
+                CODE_STUDIO_RESOURCE_LIMIT,
+                "atlas studio world pixel overflowed",
+            )
+        })?;
+    if world == 0 {
+        return Err(studio_tile_invalid("atlas studio sample is out of range"));
+    }
+    let gx = (i64::from(tile_x)
+        .saturating_mul(i64::from(output_px))
+        .saturating_add(i64::from(px)))
+    .rem_euclid(world as i64) as u64;
+    let gy = (i64::from(tile_y)
+        .saturating_mul(i64::from(output_px))
+        .saturating_add(i64::from(py)))
+    .clamp(0, world as i64 - 1) as u64;
+    let mx = std::f64::consts::PI * (2.0 * (gx as f64 + 0.5) / world as f64 - 1.0);
+    let my = std::f64::consts::PI * (1.0 - 2.0 * (gy as f64 + 0.5) / world as f64);
+    let lon = mercator_x_to_lon_micro(mx, 0);
+    let lat =
+        mercator_y_to_lat_micro(my).clamp(-WEB_MERCATOR_MAX_LAT_MICRO, WEB_MERCATOR_MAX_LAT_MICRO);
+    Ok((lon, lat))
+}
+
+fn studio_halo(request: &AtlasRenderRequest, overlays: &[AuthoredFeature]) -> u32 {
+    let relief_only = overlays.is_empty()
+        && request
+            .active_layer_ids
+            .iter()
+            .all(|id| matches!(id.as_str(), "ocean" | "relief" | "ice" | "lakes"));
+    if relief_only {
+        0
+    } else {
+        STUDIO_TILE_HALO
+    }
+}
+
 pub fn flip_rgba_vertical(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, AtlasError> {
     let row_bytes = (width as usize)
         .checked_mul(4)
@@ -333,29 +395,51 @@ pub fn render_studio_tile(
     tile: &AtlasStudioTileRequestV1,
     progress: &mut dyn AtlasProgress,
 ) -> Result<RenderedStudioTile, AtlasError> {
+    render_studio_tile_with_overlays(scene, scene_request, tile, &[], progress)
+}
+
+pub fn render_studio_tile_with_overlays(
+    scene: &AtlasPreparedScene,
+    scene_request: &AtlasStudioSceneRequestV1,
+    tile: &AtlasStudioTileRequestV1,
+    overlays: &[AuthoredFeature],
+    progress: &mut dyn AtlasProgress,
+) -> Result<RenderedStudioTile, AtlasError> {
     let tile = tile.clone().normalize()?;
     let scene_request = scene_request.clone().normalize()?;
     let output = tile.output_px()?;
-    let pixels = (output as usize)
-        .checked_mul(output as usize)
-        .and_then(|count| count.checked_mul(4))
-        .ok_or_else(|| {
-            AtlasError::new(CODE_STUDIO_RESOURCE_LIMIT, "studio RGBA buffer overflowed")
-        })?;
     let mut request = scene_request
         .as_render_request(output)
         .and_then(|request| request.normalize())
         .map_err(map_studio_error)?;
     request.extent = xyz_extent(tile.z, tile.x, tile.y)?;
+    let halo = studio_halo(&request, overlays);
+    let expanded = output
+        .checked_add(halo.saturating_mul(2))
+        .ok_or_else(|| AtlasError::new(CODE_STUDIO_RESOURCE_LIMIT, "studio halo overflowed"))?;
+    let pixels = (expanded as usize)
+        .checked_mul(expanded as usize)
+        .and_then(|count| count.checked_mul(4))
+        .ok_or_else(|| {
+            AtlasError::new(CODE_STUDIO_RESOURCE_LIMIT, "studio RGBA buffer overflowed")
+        })?;
     let mut buffer = vec![0_u8; pixels];
-    let total = output;
-    for py in 0..output {
+    let total = expanded;
+    let halo_i = halo as i32;
+    for py in 0..expanded {
         progress
             .report(AtlasPhase::Rendering, py, total)
             .map_err(map_studio_error)?;
         progress.check_cancelled().map_err(map_studio_error)?;
-        for px in 0..output {
-            let (lon, lat) = xyz_pixel_center(tile.z, tile.x, tile.y, px, py, output)?;
+        for px in 0..expanded {
+            let (lon, lat) = xyz_world_pixel_center(
+                tile.z,
+                tile.x,
+                tile.y,
+                px as i32 - halo_i,
+                py as i32 - halo_i,
+                output,
+            )?;
             let rgba = pixel_rgba(
                 &scene.model,
                 &scene.hydrology,
@@ -365,11 +449,89 @@ pub fn render_studio_tile(
                 lon,
                 lat,
             );
-            let offset = (py as usize * output as usize + px as usize) * 4;
+            let offset = (py as usize * expanded as usize + px as usize) * 4;
             buffer[offset..offset + 4].copy_from_slice(&rgba);
         }
     }
     progress.report(AtlasPhase::Rendering, total, total)?;
+    let vector_layers = request
+        .active_layer_ids
+        .iter()
+        .any(|id| !matches!(id.as_str(), "ocean" | "relief" | "ice" | "lakes"));
+    if halo > 0 || !overlays.is_empty() || vector_layers {
+        let (west, north) =
+            xyz_world_pixel_center(tile.z, tile.x, tile.y, -halo_i, -halo_i, output)?;
+        let (east, south) = xyz_world_pixel_center(
+            tile.z,
+            tile.x,
+            tile.y,
+            output as i32 + halo_i - 1,
+            output as i32 + halo_i - 1,
+            output,
+        )?;
+        let mut overlay_request = request.clone();
+        overlay_request.width_px = expanded;
+        overlay_request.height_px = expanded;
+        overlay_request.extent = AtlasExtent {
+            west_lon_micro: west,
+            south_lat_micro: south.min(north - 1),
+            east_lon_micro: east,
+            north_lat_micro: north.max(south + 1),
+        };
+        overlay_request
+            .active_layer_ids
+            .retain(|id| id != "frame" && id != "labels");
+        let mut south_origin = flip_rgba_vertical(&buffer, expanded, expanded)?;
+        crate::overlay::composite_overlays(
+            &mut south_origin,
+            &overlay_request,
+            &scene.style,
+            &scene.hydrology,
+            &scene.tectonics,
+            &scene.identity,
+            overlays,
+            &scene.drainage.tributaries,
+        );
+        buffer = flip_rgba_vertical(&south_origin, expanded, expanded)?;
+        if request.layer_enabled("labels") {
+            let n = tile_count(tile.z)?;
+            let world_px = n.saturating_mul(output);
+            let mut label_source = overlays.to_vec();
+            for tributary in scene.drainage.tributaries.iter().take(32) {
+                if let Some(first) = tributary.path.first() {
+                    label_source.push(AuthoredFeature {
+                        id: tributary.id.clone(),
+                        layer_id: "labels".into(),
+                        kind: "derived-tributary".into(),
+                        label: Some(format!("T{}", tributary.source_cell)),
+                        path: vec![*first],
+                    });
+                }
+            }
+            let origin_x = i64::from(tile.x)
+                .saturating_mul(i64::from(output))
+                .saturating_sub(i64::from(halo)) as i32;
+            let origin_y = i64::from(tile.y)
+                .saturating_mul(i64::from(output))
+                .saturating_sub(i64::from(halo)) as i32;
+            crate::labels::draw_labels_xyz(
+                &mut buffer,
+                &label_source,
+                &scene.style,
+                world_px,
+                origin_x,
+                origin_y,
+                expanded,
+                expanded,
+            );
+        }
+    }
+    if halo > 0 {
+        buffer = crop_halo(&buffer, expanded, output, halo)?;
+        request.width_px = output;
+        request.height_px = output;
+        request.extent = xyz_extent(tile.z, tile.x, tile.y)?;
+    }
     let png = crate::encode::encode_png(
         &request,
         &buffer,
@@ -386,6 +548,30 @@ pub fn render_studio_tile(
         rgba: buffer,
         png,
     })
+}
+
+fn crop_halo(rgba: &[u8], expanded: u32, output: u32, halo: u32) -> Result<Vec<u8>, AtlasError> {
+    let src_row = (expanded as usize)
+        .checked_mul(4)
+        .ok_or_else(|| AtlasError::new(CODE_STUDIO_RESOURCE_LIMIT, "tile row overflowed"))?;
+    let dst_row = (output as usize)
+        .checked_mul(4)
+        .ok_or_else(|| AtlasError::new(CODE_STUDIO_RESOURCE_LIMIT, "tile row overflowed"))?;
+    let mut cropped = vec![
+        0_u8;
+        dst_row
+            .checked_mul(output as usize)
+            .ok_or_else(|| AtlasError::new(
+                CODE_STUDIO_RESOURCE_LIMIT,
+                "tile buffer overflowed"
+            ))?
+    ];
+    for y in 0..output as usize {
+        let src = ((y + halo as usize) * src_row) + halo as usize * 4;
+        let dst = y * dst_row;
+        cropped[dst..dst + dst_row].copy_from_slice(&rgba[src..src + dst_row]);
+    }
+    Ok(cropped)
 }
 
 pub fn render_xyz_region(
@@ -668,7 +854,7 @@ mod tests {
         }
         let flipped = flip_rgba_vertical(&south_origin, 256, 256).unwrap();
         assert_eq!(tile.rgba, flipped);
-        assert_eq!(STUDIO_TILE_HALO, 0);
+        assert_eq!(STUDIO_TILE_HALO, 16);
         assert_eq!(tile.png[0..8], [137, 80, 78, 71, 13, 10, 26, 10]);
     }
 
@@ -839,5 +1025,50 @@ mod tests {
             .sum();
         assert!(cache_bytes > 0);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn vector_layers_change_tile_bytes_and_labels_are_stable() {
+        let (scene, mut scene_request) = prepared();
+        let tile = AtlasStudioTileRequestV1::new(2, 1, 1);
+        let relief = render_studio_tile(&scene, &scene_request, &tile, &mut NoopProgress).unwrap();
+        scene_request.active_layer_ids = ["ocean", "relief", "ice", "lakes", "rivers", "labels"]
+            .iter()
+            .map(|id| (*id).to_string())
+            .collect();
+        let overlay = AuthoredFeature {
+            id: "00000000-0000-4000-8000-0000000000ff".into(),
+            layer_id: "labels".into(),
+            kind: "point".into(),
+            label: Some("PORT".into()),
+            path: vec![[0, 20_000_000]],
+        };
+        let with_vectors = render_studio_tile_with_overlays(
+            &scene,
+            &scene_request,
+            &tile,
+            std::slice::from_ref(&overlay),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_ne!(relief.png, with_vectors.png);
+        let again = render_studio_tile_with_overlays(
+            &scene,
+            &scene_request,
+            &tile,
+            std::slice::from_ref(&overlay),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(with_vectors.png, again.png);
+        let hits = crate::overlay::hit_test_features(
+            std::slice::from_ref(&overlay),
+            0,
+            20_000_000,
+            50_000,
+            8,
+        );
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, overlay.id);
     }
 }

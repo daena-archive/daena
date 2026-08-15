@@ -107,37 +107,46 @@ impl AtlasStudioSessionRequestV1 {
             return Err(studio_invalid("unsupported atlas detail algorithm"));
         }
         if self.level != DetailLevel::Detailed {
-            return Err(studio_invalid(
-                "atlas studio iteration 1 requires detailed level",
-            ));
+            return Err(studio_invalid("atlas studio requires detailed level"));
         }
         if self.variant != 0 {
-            return Err(studio_invalid(
-                "atlas studio iteration 1 requires variant 0",
-            ));
-        }
-        if self.offset_years != 0 || self.time_kind != "physical-offset-year" {
-            return Err(studio_invalid(
-                "atlas studio iteration 1 uses the reference physical epoch",
-            ));
-        }
-        if self.authored_year.is_some() {
-            return Err(studio_invalid(
-                "atlas studio iteration 1 does not accept authored years",
-            ));
+            return Err(studio_invalid("atlas studio requires variant 0"));
         }
         if self.projection != STUDIO_PROJECTION_ID {
-            return Err(studio_invalid(
-                "atlas studio iteration 1 requires web-mercator",
-            ));
+            return Err(studio_invalid("atlas studio requires web-mercator"));
         }
-        if self.style_id != RELIEF_STYLE_ID {
-            return Err(studio_invalid(
-                "atlas studio iteration 1 requires daena-atlas-relief",
-            ));
+        if bundled_style_ids()
+            .iter()
+            .all(|id| *id != self.style_id.as_str())
+            && self.style_id != daena_atlas::SPIKE_STYLE_ID
+        {
+            return Err(studio_invalid("atlas studio style is not bundled"));
         }
         if Uuid::parse_str(&self.map_entity_id).is_err() {
             return Err(studio_invalid("atlas studio map entity ID must be a UUID"));
+        }
+        match self.time_kind.as_str() {
+            "physical-offset-year" => {
+                if self.authored_year.is_some() {
+                    return Err(studio_invalid(
+                        "physical-offset-year studio sessions cannot include authoredYear",
+                    ));
+                }
+                if !(-daena_physical::history::MAX_HISTORICAL_OFFSET_YEARS
+                    ..=daena_physical::history::MAX_HISTORICAL_OFFSET_YEARS)
+                    .contains(&self.offset_years)
+                {
+                    return Err(studio_invalid("atlas studio epoch is out of range"));
+                }
+            }
+            "calendar-year" => {
+                if self.authored_year.is_none() {
+                    return Err(studio_invalid(
+                        "calendar-year studio sessions require authoredYear",
+                    ));
+                }
+            }
+            _ => return Err(studio_invalid("unsupported atlas studio time kind")),
         }
         let mut layers = self.active_layer_ids.clone();
         if layers.is_empty() {
@@ -148,28 +157,31 @@ impl AtlasStudioSessionRequestV1 {
         }
         layers.sort();
         layers.dedup();
-        let allowed = STUDIO_SPIKE_LAYER_IDS
-            .iter()
-            .map(|id| (*id).to_string())
-            .collect::<std::collections::BTreeSet<_>>();
-        if layers.iter().any(|id| !allowed.contains(id)) || layers.len() != allowed.len() {
-            return Err(studio_invalid(
-                "atlas studio iteration 1 requires ocean, relief, ice, and lakes",
-            ));
-        }
         Ok(Self {
             schema_version: ATLAS_STUDIO_SESSION_SCHEMA_VERSION,
             map_entity_id: self.map_entity_id,
-            offset_years: 0,
+            offset_years: self.offset_years,
             algorithm_version: daena_atlas::ATLAS_DETAIL_ALGORITHM_VERSION,
             level: DetailLevel::Detailed,
             variant: 0,
-            style_id: RELIEF_STYLE_ID.to_string(),
+            style_id: self.style_id,
             active_layer_ids: layers,
             projection: STUDIO_PROJECTION_ID.to_string(),
-            time_kind: "physical-offset-year".into(),
-            authored_year: None,
+            time_kind: self.time_kind,
+            authored_year: self.authored_year,
         })
+    }
+
+    pub fn as_render_request(&self) -> Result<AtlasRenderRequest, CoreError> {
+        self.scene_request()
+            .as_render_request(STUDIO_TILE_SIZE)
+            .and_then(|mut request| {
+                request.time_kind = self.time_kind.clone();
+                request.authored_year = self.authored_year;
+                request.offset_years = self.offset_years;
+                request.normalize()
+            })
+            .map_err(|error| CoreError::Validation(format!("{}: {}", error.code, error.message)))
     }
 
     pub fn scene_request(&self) -> AtlasStudioSceneRequestV1 {
@@ -180,6 +192,12 @@ impl AtlasStudioSessionRequestV1 {
             level: self.level,
             variant: self.variant,
             style_id: self.style_id.clone(),
+            active_layer_ids: self
+                .active_layer_ids
+                .iter()
+                .filter(|id| id.as_str() != "frame")
+                .cloned()
+                .collect(),
         }
     }
 }
@@ -634,15 +652,13 @@ pub fn capture_studio_session(
         )));
     }
     let session = request.normalize()?;
-    let scene = session
-        .scene_request()
-        .normalize()
-        .map_err(|error| CoreError::Validation(format!("{}: {}", error.code, error.message)))?;
-    let render = scene
-        .as_render_request(STUDIO_TILE_SIZE)
-        .and_then(|request| request.normalize())
-        .map_err(|error| CoreError::Validation(format!("{}: {}", error.code, error.message)))?;
+    let render = session.as_render_request()?;
     let snapshot = capture_snapshot(project, &session.map_entity_id, render)?;
+    let mut session = session;
+    session.offset_years = snapshot.request.offset_years;
+    session.authored_year = snapshot.request.authored_year;
+    session.time_kind = snapshot.request.time_kind.clone();
+    let scene = session.scene_request();
     Ok(AtlasStudioCapture {
         session,
         scene,
@@ -1138,7 +1154,14 @@ mod tests {
         assert_eq!(store.content_generation().unwrap(), after);
         let mut foreign = AtlasStudioSessionRequestV1::iteration_1(&accepted.entity.id);
         foreign.style_id = "daena-atlas-antique".into();
-        assert!(foreign.normalize().is_err());
+        assert!(foreign.normalize().is_ok());
+        foreign = AtlasStudioSessionRequestV1::iteration_1(&accepted.entity.id);
+        foreign.offset_years = 42;
+        assert_eq!(foreign.normalize().unwrap().offset_years, 42);
+        foreign = AtlasStudioSessionRequestV1::iteration_1(&accepted.entity.id);
+        foreign.time_kind = "calendar-year".into();
+        foreign.authored_year = Some(0);
+        assert!(foreign.normalize().is_ok());
         let cache = atlas_cache_dir(&root);
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::write(cache.join("index.json"), b"{}").unwrap();
@@ -1152,13 +1175,13 @@ mod tests {
     }
 
     #[test]
-    fn studio_session_rejects_unknown_projection_and_non_reference_epoch() {
+    fn studio_session_rejects_unknown_projection_and_keeps_web_mercator() {
         let mut request =
             AtlasStudioSessionRequestV1::iteration_1("00000000-0000-4000-8000-000000000001");
         request.projection = "equirectangular".into();
         assert!(request.normalize().is_err());
         request = AtlasStudioSessionRequestV1::iteration_1("00000000-0000-4000-8000-000000000001");
-        request.offset_years = 42;
+        request.style_id = "not-a-style".into();
         assert!(request.normalize().is_err());
     }
 }

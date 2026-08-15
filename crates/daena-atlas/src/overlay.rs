@@ -360,6 +360,94 @@ pub fn composite_overlays(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverlayHit {
+    pub id: String,
+    pub layer_id: String,
+    pub kind: String,
+    pub label: Option<String>,
+    pub derived: bool,
+}
+
+pub fn hit_test_features(
+    overlays: &[AuthoredFeature],
+    lon_micro: i32,
+    lat_micro: i32,
+    radius_micro: i32,
+    limit: usize,
+) -> Vec<OverlayHit> {
+    let radius = i64::from(radius_micro.max(1));
+    let radius2 = radius.saturating_mul(radius);
+    let mut hits = Vec::new();
+    for feature in overlays {
+        if hits.len() >= limit {
+            break;
+        }
+        if feature_hits(feature, lon_micro, lat_micro, radius2) {
+            hits.push(OverlayHit {
+                id: feature.id.clone(),
+                layer_id: feature.layer_id.clone(),
+                kind: feature.kind.clone(),
+                label: feature.label.clone(),
+                derived: feature.kind == "derived-tributary" || feature.layer_id == "labels",
+            });
+        }
+    }
+    hits
+}
+
+fn feature_hits(feature: &AuthoredFeature, lon: i32, lat: i32, radius2: i64) -> bool {
+    if feature.path.is_empty() {
+        return false;
+    }
+    if feature
+        .path
+        .iter()
+        .any(|point| distance2(point[0], point[1], lon, lat) <= radius2)
+    {
+        return true;
+    }
+    feature
+        .path
+        .windows(2)
+        .any(|window| segment_hits(window[0], window[1], lon, lat, radius2))
+}
+
+fn wrap_dlon(a: i32, b: i32) -> i64 {
+    let mut delta = i64::from(a) - i64::from(b);
+    if delta > 180_000_000 {
+        delta -= 360_000_000;
+    } else if delta < -180_000_000 {
+        delta += 360_000_000;
+    }
+    delta
+}
+
+fn distance2(lon_a: i32, lat_a: i32, lon_b: i32, lat_b: i32) -> i64 {
+    let dlon = wrap_dlon(lon_a, lon_b);
+    let dlat = i64::from(lat_a) - i64::from(lat_b);
+    dlon.saturating_mul(dlon)
+        .saturating_add(dlat.saturating_mul(dlat))
+}
+
+fn segment_hits(a: [i32; 2], b: [i32; 2], lon: i32, lat: i32, radius2: i64) -> bool {
+    let dx = wrap_dlon(b[0], a[0]);
+    let dy = i64::from(b[1]) - i64::from(a[1]);
+    let len2 = dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy));
+    if len2 == 0 {
+        return distance2(a[0], a[1], lon, lat) <= radius2;
+    }
+    let px = wrap_dlon(lon, a[0]);
+    let py = i64::from(lat) - i64::from(a[1]);
+    let mut t = (px.saturating_mul(dx).saturating_add(py.saturating_mul(dy))) * 1_000 / len2;
+    t = t.clamp(0, 1_000);
+    let qx = i64::from(a[0]) + dx * t / 1_000;
+    let qy = i64::from(a[1]) + dy * t / 1_000;
+    let qlon = crate::projection::wrap_lon_micro(qx);
+    distance2(qlon, qy as i32, lon, lat) <= radius2
+}
+
 fn draw_graticule(buffer: &mut [u8], view: ProjectedView, rgb: [u8; 3]) {
     let width = view.width;
     let height = view.height;

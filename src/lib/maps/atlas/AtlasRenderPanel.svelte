@@ -13,10 +13,12 @@ import {
 let {
   mapId,
   epochOffsetYears = 0,
+  seed = null,
   onclose,
 }: {
   mapId: string;
   epochOffsetYears?: number;
+  seed?: AtlasRenderRequest | null;
   onclose?: () => void;
 } = $props();
 
@@ -45,6 +47,27 @@ let unlisten: UnlistenFn | undefined;
 let previewTimer: ReturnType<typeof setTimeout> | undefined;
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let previewRequestId = "";
+let seedProjection = $state<"equirectangular" | "web-mercator">("equirectangular");
+let seedExtent = $state<AtlasRenderRequest["extent"] | null>(null);
+let seedUnlock = $state(false);
+
+function applySeed(next: AtlasRenderRequest | null) {
+  if (!next) return;
+  styleId = next.styleId;
+  widthPx = next.widthPx;
+  heightPx = next.heightPx;
+  dpi = next.dpi;
+  offsetYears = next.offsetYears;
+  timeKind = next.timeKind;
+  if (typeof next.authoredYear === "number") authoredYear = next.authoredYear;
+  const ids = new Set(next.activeLayerIds);
+  if (layers.length > 0) {
+    layers = layers.map((layer) => ({ ...layer, enabled: ids.has(layer.id) }));
+  }
+  seedProjection = next.projection;
+  seedExtent = next.extent;
+  seedUnlock = next.unlockAspect;
+}
 
 function formatEpoch(offset: number) {
   if (offset === 0) return "Reference epoch";
@@ -64,14 +87,14 @@ function request(width: number, height: number): AtlasRenderRequest {
     heightPx: height,
     dpi,
     format: "png",
-    projection: "equirectangular",
-    extent: {
+    projection: seedProjection,
+    extent: seedExtent ?? {
       westLonMicro: -180_000_000,
-      southLatMicro: -90_000_000,
+      southLatMicro: seedProjection === "web-mercator" ? -85_051_129 : -90_000_000,
       eastLonMicro: 180_000_000,
-      northLatMicro: 90_000_000,
+      northLatMicro: seedProjection === "web-mercator" ? 85_051_129 : 90_000_000,
     },
-    unlockAspect: false,
+    unlockAspect: seedUnlock,
     activeLayerIds: layers.filter((layer) => layer.enabled).map((layer) => layer.id),
     timeKind,
     authoredYear: timeKind === "calendar-year" ? authoredYear : null,
@@ -116,6 +139,7 @@ async function loadCapabilities() {
     name: layer.name,
     enabled: layer.defaultVisible,
   }));
+  applySeed(seed);
   schedulePreview();
 }
 
@@ -134,7 +158,7 @@ async function runPreview() {
   busyPreview = true;
   notice = "";
   try {
-    const status = await project.atlasPreviewBegin(mapId, request(2048, 1024), previewRequestId);
+    const status = await project.atlasPreviewBegin(mapId, request(2048, 1024), previewRequestId as `${string}-${string}-${string}-${string}-${string}`);
     applyStatus(status);
   } catch (error) {
     busyPreview = false;
@@ -229,6 +253,7 @@ async function cancel(job: AtlasJobStatus | null) {
 }
 
 onMount(() => {
+  applySeed(seed);
   void loadCapabilities();
   void listen<AtlasJobStatus>(ATLAS_PROGRESS_EVENT, (event) => applyStatus(event.payload)).then((fn) => {
     unlisten = fn;

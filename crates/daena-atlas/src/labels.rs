@@ -108,6 +108,95 @@ pub fn draw_labels(
     omitted
 }
 
+pub fn draw_labels_xyz(
+    buffer: &mut [u8],
+    overlays: &[AuthoredFeature],
+    style: &AtlasStyle,
+    world_px: u32,
+    origin_x: i32,
+    origin_y: i32,
+    width: u32,
+    height: u32,
+) -> u32 {
+    let view = crate::projection::ProjectedView {
+        projection: crate::projection::AtlasProjection::WebMercator,
+        extent: crate::projection::AtlasExtent {
+            west_lon_micro: -180_000_000,
+            south_lat_micro: -crate::projection::WEB_MERCATOR_MAX_LAT_MICRO,
+            east_lon_micro: 180_000_000,
+            north_lat_micro: crate::projection::WEB_MERCATOR_MAX_LAT_MICRO,
+        },
+        width: world_px,
+        height: world_px,
+    };
+    let mut candidates = overlays
+        .iter()
+        .filter_map(|feature| {
+            let label = feature.label.as_deref()?.trim();
+            if label.is_empty() || feature.path.is_empty() {
+                return None;
+            }
+            Some((feature.id.as_str(), label, feature.path[0]))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|a, b| a.0.cmp(b.0));
+    let mut occupied = Vec::new();
+    let mut omitted = 0_u32;
+    let world = world_px as i32;
+    for (id, label, point) in candidates {
+        if occupied.len() >= MAX_LABELS {
+            omitted += 1;
+            continue;
+        }
+        let Some((x, south_y)) = view.project(point[0], point[1]) else {
+            omitted += 1;
+            continue;
+        };
+        let y = world - 1 - south_y - 8;
+        let box_w = (label.chars().count() as i32) * GLYPH_WIDTH;
+        let rect = [x, y, x + box_w, y + GLYPH_HEIGHT];
+        if occupied
+            .iter()
+            .any(|other: &[i32; 4]| intersects(*other, rect))
+        {
+            omitted += 1;
+            let _ = id;
+            continue;
+        }
+        occupied.push(rect);
+        blit_text(
+            buffer,
+            width,
+            height,
+            x - origin_x,
+            y - origin_y,
+            label,
+            style.label_ink,
+        );
+        if x < 8 || x + box_w > world - 8 {
+            blit_text(
+                buffer,
+                width,
+                height,
+                x + world - origin_x,
+                y - origin_y,
+                label,
+                style.label_ink,
+            );
+            blit_text(
+                buffer,
+                width,
+                height,
+                x - world - origin_x,
+                y - origin_y,
+                label,
+                style.label_ink,
+            );
+        }
+    }
+    omitted
+}
+
 fn intersects(a: [i32; 4], b: [i32; 4]) -> bool {
     a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
 }

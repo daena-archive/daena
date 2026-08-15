@@ -9,6 +9,7 @@ import {
   type FieldValue,
   type PhysicalHistoricalProgress,
   type PhysicalHistoricalProducts,
+  type AtlasRenderRequest,
 } from "$lib/project/client";
 import { VECTOR_MAX_LAYERS, type MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
 import NativeVectorGenerator from "./NativeVectorGenerator.svelte";
@@ -116,6 +117,7 @@ let atlasOpen = $state(false);
 let atlasSupported = $state(false);
 let studioOpen = $state(false);
 let studioSupported = $state(false);
+let studioExport = $state<AtlasRenderRequest | null>(null);
 
 const listedLayers = $derived(
   [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id)),
@@ -935,9 +937,9 @@ onMount(() => {
       <p class="hint" role="status">{notice}</p>
     {/if}
     {#if atlasOpen && mapId}
-      <AtlasRenderPanel {mapId} {epochOffsetYears} onclose={() => (atlasOpen = false)} />
+      <AtlasRenderPanel {mapId} {epochOffsetYears} seed={studioExport} onclose={() => (atlasOpen = false)} />
     {/if}
-    {#if physicalMap}
+    {#if physicalMap && !studioOpen}
       <div class="epoch-control" aria-label="Historical climate time">
         <label for="physical-epoch">World time</label>
         <input
@@ -1167,7 +1169,7 @@ onMount(() => {
         </div>
       {:else if studioOpen && mapId}
         <div class="canvas" role="img" aria-label="Atlas Studio">
-          <AtlasStudioView {mapId} onexport={() => (atlasOpen = true)} />
+          <AtlasStudioView {mapId} onexport={(request) => { studioExport = request; atlasOpen = true; }} />
         </div>
       {:else}
         <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->

@@ -8929,6 +8929,7 @@ pub fn run() {
             atlas_studio::project_atlas_studio_close,
             atlas_studio::project_atlas_studio_status,
             atlas_studio::project_atlas_studio_regenerate_cache,
+            atlas_studio::project_atlas_studio_inspect,
             project_read_asset_bytes,
             project_create_raster_layer,
             project_create_semantic_layer,

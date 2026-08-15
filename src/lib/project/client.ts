@@ -421,6 +421,9 @@ export interface AtlasStudioSessionStatus {
   currentContentGeneration: number | null;
   styleId: string;
   offsetYears: number;
+  timeKind: string;
+  authoredYear: number | null;
+  activeLayerIds: string[];
   projection: string;
   stage: string;
   error: string | null;
@@ -432,6 +435,13 @@ export interface AtlasStudioProgress {
   stage: string;
   completed: number;
   total: number;
+}
+export interface AtlasStudioInspectHit {
+  id: string;
+  layerId: string;
+  kind: string;
+  label: string | null;
+  derived: boolean;
 }
 export interface PhysicalGenerationInput {
   seed: number;
@@ -982,6 +992,10 @@ export const project = {
     invoke<AtlasStudioSessionStatus>("project_atlas_studio_status", { sessionToken }),
   atlasStudioRegenerateCache: () =>
     invoke<{ deletedEntries: number }>("project_atlas_studio_regenerate_cache"),
+  atlasStudioInspect: (sessionToken: string, lonMicro: number, latMicro: number, zoom: number) =>
+    invoke<AtlasStudioInspectHit[]>("project_atlas_studio_inspect", {
+      input: { sessionToken, lonMicro, latMicro, zoom },
+    }),
   readAssetBytes: (assetId: string) => invoke<number[]>("project_read_asset_bytes", { assetId }),
   createRasterLayer: (mapEntityId: string, name: string, expectedRevision: string, options?: MutationOptions) =>
     invoke<RasterLayerChange>("project_create_raster_layer", {

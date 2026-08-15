@@ -120,6 +120,7 @@ try {
   assert.equal(panel.includes("maplibre"), false);
   assert.equal(panel.includes("getCanvas"), false);
   assert.match(panel, /convertFileSrc/);
+  assert.match(panel, /seed\?:/);
   const editor = readFileSync(join(root, "src/lib/maps/native-vector/NativeVectorMapEditor.svelte"), "utf8");
   assert.match(editor, /atlasCapabilities/);
   assert.match(editor, /supportsStudio/);
@@ -238,12 +239,21 @@ try {
   assert.match(studioHost, /AtlasStudioSessionRequestV1/);
   assert.match(studioHost, /atlas-studio/);
   assert.match(studioHost, /Access-Control-Allow-Origin|CORS/);
+  const studioComposition = readFileSync(join(root, "docs/adr/0039-atlas-studio-iteration-2.md"), "utf8");
+  assert.match(studioComposition, /AtlasStudioSessionRequestV1/);
+  assert.match(studioComposition, /calendar-year/);
+  assert.match(studioComposition, /priority=prefetch/);
+  assert.match(studioComposition, /current-view|regional Web Mercator/);
   const studioView = readFileSync(join(root, "src/lib/maps/atlas/AtlasStudioView.svelte"), "utf8");
   assert.match(studioView, /maplibre-gl/);
   assert.match(studioView, /atlasStudioOpen/);
-  assert.match(studioView, /maxParallelImageRequests/);
+  assert.match(studioView, /setMaxParallelImageRequests|maxParallelImageRequests/);
   assert.match(studioView, /isTransientTileError/);
+  assert.match(studioView, /atlasStudioInspect/);
+  assert.match(studioView, /priority=prefetch/);
+  assert.match(studioView, /calendar-year/);
   assert.equal(studioView.includes("getCanvas"), false);
+  assert.equal(studioView.includes("new Date"), false);
 
   const report = {
     preview: { ...preview.summary, sha256: preview.hash, peakResidentBytes: preview.peakResidentBytes },

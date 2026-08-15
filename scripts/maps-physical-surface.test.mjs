@@ -115,6 +115,29 @@ assert.ok(
   ),
   "physical contours must version interpolated geometry",
 );
+assert.ok(
+  readFileSync(resolve(root, "crates/daena-physical-spike/src/history.rs"), "utf8").includes(
+    "HISTORICAL_DERIVATION_VERSION: u16 = 2",
+  ),
+  "historical forcing must bump the derivation version for the cosine model",
+);
+for (const required of [
+  "components",
+  "sensitivityPpm",
+  "iceMidpointCentiC",
+  "iceTransitionWidthCentiC",
+  "laggedTemperatureOffsetCentiC",
+  "landIceEquilibriumM3",
+]) {
+  assert.ok(client.includes(required), `physical client historical contract is missing ${required}`);
+}
+assert.ok(host.includes("history-v{}"), "historical cache key must include the derivation version");
+assert.ok(
+  readFileSync(resolve(root, "crates/daena-physical-spike/src/hydrology.rs"), "utf8").includes(
+    "ThermalExpansion",
+  ),
+  "hydrology must accept coupled thermal expansion",
+);
 
 assert.match(
   source,

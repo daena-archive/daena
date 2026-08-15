@@ -86,12 +86,17 @@ fn physical_map_acceptance_is_atomic_and_request_idempotent() {
             "evolutionPreset": "mature",
             "hazardDerivationVersion": daena_physical::hazards::HAZARD_DERIVATION_VERSION,
             "historicalForcing": {
-                "version": 1,
-                "temperatureAmplitudeCentiC": 180,
-                "periodYears": 12000,
-                "phaseOffsetYears": 0,
+                "version": 2,
+                "components": [
+                    { "amplitudeCentiC": 180, "periodYears": 12000, "phaseOffsetYears": 0 },
+                    { "amplitudeCentiC": 90, "periodYears": 4100, "phaseOffsetYears": 200 },
+                    { "amplitudeCentiC": 40, "periodYears": 2300, "phaseOffsetYears": 800 }
+                ],
+                "sensitivityPpm": 1000000,
                 "landIceAmplitudePpm": 24000,
                 "iceResponseYears": 800,
+                "iceMidpointCentiC": 0,
+                "iceTransitionWidthCentiC": 400,
                 "thermalExpansionPpmPerDegreeC": 210
             }
         }

@@ -7131,15 +7131,7 @@ async fn project_physical_generate(
                         "islandActivityPpm": world.tectonics.settings.island_activity_ppm,
                         "evolutionPreset": evolution_preset.as_str(),
                         "hazardDerivationVersion": daena_physical::hazards::HAZARD_DERIVATION_VERSION,
-                        "historicalForcing": {
-                            "version": historical_forcing.version,
-                            "temperatureAmplitudeCentiC": historical_forcing.temperature_amplitude_centi_c,
-                            "periodYears": historical_forcing.period_years,
-                            "phaseOffsetYears": historical_forcing.phase_offset_years,
-                            "landIceAmplitudePpm": historical_forcing.land_ice_amplitude_ppm,
-                            "iceResponseYears": historical_forcing.ice_response_years,
-                            "thermalExpansionPpmPerDegreeC": historical_forcing.thermal_expansion_ppm_per_degree_c,
-                        },
+                        "historicalForcing": historical_forcing_products(historical_forcing),
                     }
                 });
                 let physical_identity =
@@ -7427,13 +7419,33 @@ fn historical_forcing_from_generation(
     };
     let settings: daena_core::maps::HistoricalForcingSettings =
         serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+    if settings.components.len() != daena_physical::history::FORCING_COMPONENT_COUNT {
+        return Err("historicalForcing.components must contain three independent terms".into());
+    }
     let parameters = daena_physical::history::HistoricalForcingParameters {
         version: settings.version,
-        temperature_amplitude_centi_c: settings.temperature_amplitude_centi_c,
-        period_years: settings.period_years,
-        phase_offset_years: settings.phase_offset_years,
+        components: [
+            daena_physical::history::ForcingComponent {
+                amplitude_centi_c: settings.components[0].amplitude_centi_c,
+                period_years: settings.components[0].period_years,
+                phase_offset_years: settings.components[0].phase_offset_years,
+            },
+            daena_physical::history::ForcingComponent {
+                amplitude_centi_c: settings.components[1].amplitude_centi_c,
+                period_years: settings.components[1].period_years,
+                phase_offset_years: settings.components[1].phase_offset_years,
+            },
+            daena_physical::history::ForcingComponent {
+                amplitude_centi_c: settings.components[2].amplitude_centi_c,
+                period_years: settings.components[2].period_years,
+                phase_offset_years: settings.components[2].phase_offset_years,
+            },
+        ],
+        sensitivity_ppm: settings.sensitivity_ppm,
         land_ice_amplitude_ppm: settings.land_ice_amplitude_ppm,
         ice_response_years: settings.ice_response_years,
+        ice_midpoint_centi_c: settings.ice_midpoint_centi_c,
+        ice_transition_width_centi_c: settings.ice_transition_width_centi_c,
         thermal_expansion_ppm_per_degree_c: settings.thermal_expansion_ppm_per_degree_c,
     };
     parameters.validate().map_err(|error| error.to_string())?;
@@ -7445,11 +7457,16 @@ fn historical_forcing_products(
 ) -> serde_json::Value {
     serde_json::json!({
         "version": parameters.version,
-        "temperatureAmplitudeCentiC": parameters.temperature_amplitude_centi_c,
-        "periodYears": parameters.period_years,
-        "phaseOffsetYears": parameters.phase_offset_years,
+        "components": parameters.components.iter().map(|component| serde_json::json!({
+            "amplitudeCentiC": component.amplitude_centi_c,
+            "periodYears": component.period_years,
+            "phaseOffsetYears": component.phase_offset_years,
+        })).collect::<Vec<_>>(),
+        "sensitivityPpm": parameters.sensitivity_ppm,
         "landIceAmplitudePpm": parameters.land_ice_amplitude_ppm,
         "iceResponseYears": parameters.ice_response_years,
+        "iceMidpointCentiC": parameters.ice_midpoint_centi_c,
+        "iceTransitionWidthCentiC": parameters.ice_transition_width_centi_c,
         "thermalExpansionPpmPerDegreeC": parameters.thermal_expansion_ppm_per_degree_c,
     })
 }
@@ -7481,15 +7498,24 @@ fn historical_cache_key(
     normalized_epoch: i64,
 ) -> String {
     format!(
-        "{physical_identity}|history-v{}|hazards-v{}|epoch:{normalized_epoch}|forcing:{}:{}:{}:{}:{}:{}:{}",
+        "{physical_identity}|history-v{}|hazards-v{}|epoch:{normalized_epoch}|forcing:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
         daena_physical::history::HISTORICAL_DERIVATION_VERSION,
         daena_physical::hazards::HAZARD_DERIVATION_VERSION,
         forcing.version,
-        forcing.temperature_amplitude_centi_c,
-        forcing.period_years,
-        forcing.phase_offset_years,
+        forcing.components[0].amplitude_centi_c,
+        forcing.components[0].period_years,
+        forcing.components[0].phase_offset_years,
+        forcing.components[1].amplitude_centi_c,
+        forcing.components[1].period_years,
+        forcing.components[1].phase_offset_years,
+        forcing.components[2].amplitude_centi_c,
+        forcing.components[2].period_years,
+        forcing.components[2].phase_offset_years,
+        forcing.sensitivity_ppm,
         forcing.land_ice_amplitude_ppm,
         forcing.ice_response_years,
+        forcing.ice_midpoint_centi_c,
+        forcing.ice_transition_width_centi_c,
         forcing.thermal_expansion_ppm_per_degree_c,
     )
 }

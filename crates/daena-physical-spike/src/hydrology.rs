@@ -1697,7 +1697,14 @@ pub fn derive_hydrology(
     drainage: &DrainageField,
     reference_water_inventory_m3: u64,
 ) -> Result<HydrologyField, PhysicalError> {
-    derive_hydrology_with_crust(field, climate, drainage, reference_water_inventory_m3, None)
+    derive_hydrology_with_forcing(
+        field,
+        climate,
+        drainage,
+        reference_water_inventory_m3,
+        None,
+        None,
+    )
 }
 
 pub fn derive_hydrology_with_crust(
@@ -1706,6 +1713,49 @@ pub fn derive_hydrology_with_crust(
     drainage: &DrainageField,
     reference_water_inventory_m3: u64,
     crust_by_cell: Option<&[CrustType]>,
+) -> Result<HydrologyField, PhysicalError> {
+    derive_hydrology_with_forcing(
+        field,
+        climate,
+        drainage,
+        reference_water_inventory_m3,
+        crust_by_cell,
+        None,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThermalExpansion {
+    pub ppm_per_degree_c: u32,
+    pub temperature_offset_centi_c: i32,
+}
+
+pub fn thermal_expansion_delta_m3(volume_m3: u64, expansion: ThermalExpansion) -> i64 {
+    const MAX_THERMAL_EXPANSION_FRACTION_PPM: u64 = 50_000;
+    let raw = (i128::from(volume_m3)
+        * i128::from(expansion.temperature_offset_centi_c)
+        * i128::from(expansion.ppm_per_degree_c))
+        / 100_000_000;
+    let bound = (u128::from(volume_m3) * u128::from(MAX_THERMAL_EXPANSION_FRACTION_PPM) / 1_000_000)
+        .min(i128::from(i64::MAX) as u128) as i128;
+    raw.clamp(-bound, bound) as i64
+}
+
+fn geometric_ocean_target(mass_m3: u64, expansion: Option<ThermalExpansion>) -> u64 {
+    let Some(expansion) = expansion else {
+        return mass_m3.max(1);
+    };
+    let delta = thermal_expansion_delta_m3(mass_m3, expansion);
+    (i128::from(mass_m3) + i128::from(delta)).clamp(1, i128::from(u64::MAX)) as u64
+}
+
+pub fn derive_hydrology_with_forcing(
+    field: &PhysicalField,
+    climate: &ClimateField,
+    drainage: &DrainageField,
+    reference_water_inventory_m3: u64,
+    crust_by_cell: Option<&[CrustType]>,
+    thermal_expansion: Option<ThermalExpansion>,
 ) -> Result<HydrologyField, PhysicalError> {
     field.validate().map_err(PhysicalError::InvalidSource)?;
     climate.validate()?;
@@ -1754,7 +1804,7 @@ pub fn derive_hydrology_with_crust(
             .saturating_sub(land_ice_m3)
             .saturating_sub(inland_water)
             .max(1);
-        let sea_target = solve_ocean_level_mm(field, remaining)?;
+        let sea_target = solve_ocean_level_mm(field, geometric_ocean_target(remaining, thermal_expansion))?;
         let mixed = ((i64::from(sea_level)
             * i64::from(1_000_000 - WATER_SOLVER_UNDERRELAXATION_PPM)
             + i64::from(sea_target) * i64::from(WATER_SOLVER_UNDERRELAXATION_PPM))
@@ -1768,9 +1818,13 @@ pub fn derive_hydrology_with_crust(
         seen.push(state);
         let tolerance = tolerance_m3(field, sea_level);
         let ocean = ocean_volume(field, sea_level);
-        let total = ocean
-            .saturating_add(inland_water)
-            .saturating_add(land_ice_m3);
+        let expansion = thermal_expansion
+            .map(|expansion| thermal_expansion_delta_m3(remaining, expansion))
+            .unwrap_or(0);
+        let total = (i128::from(ocean) - i128::from(expansion)
+            + i128::from(inland_water)
+            + i128::from(land_ice_m3))
+        .clamp(0, i128::from(u64::MAX)) as u64;
         if mixed == sea_level && reference_water_inventory_m3.abs_diff(total) <= tolerance {
             converged = true;
             break;
@@ -1802,13 +1856,17 @@ pub fn derive_hydrology_with_crust(
         .saturating_sub(land_ice_m3)
         .saturating_sub(inland_water)
         .max(1);
-    sea_level = solve_ocean_level_mm(field, remaining)?;
+    sea_level = solve_ocean_level_mm(field, geometric_ocean_target(remaining, thermal_expansion))?;
     work.sea_level_mm = sea_level;
     let tolerance = tolerance_m3(field, sea_level);
     let ocean_water = ocean_volume(field, sea_level);
-    let total_water = ocean_water
-        .saturating_add(inland_water)
-        .saturating_add(land_ice_m3);
+    let expansion = thermal_expansion
+        .map(|expansion| thermal_expansion_delta_m3(remaining, expansion))
+        .unwrap_or(0);
+    let total_water = (i128::from(ocean_water) - i128::from(expansion)
+        + i128::from(inland_water)
+        + i128::from(land_ice_m3))
+    .clamp(0, i128::from(u64::MAX)) as u64;
     let balance_error = reference_water_inventory_m3.abs_diff(total_water);
     if balance_error <= tolerance {
         converged = true;

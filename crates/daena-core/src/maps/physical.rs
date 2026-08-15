@@ -101,15 +101,12 @@ pub fn encode_identity_manifest(manifest: &PhysicalIdentityManifestV1) -> Vec<u8
     push_manifest_u64(&mut bytes, manifest.reference_water_inventory_m3);
     push_manifest_string(&mut bytes, &manifest.evolution_preset);
     push_manifest_u16(&mut bytes, manifest.historical_forcing.version);
-    push_manifest_i32(
-        &mut bytes,
-        manifest.historical_forcing.temperature_amplitude_centi_c,
-    );
-    push_manifest_u64(&mut bytes, manifest.historical_forcing.period_years as u64);
-    push_manifest_u64(
-        &mut bytes,
-        manifest.historical_forcing.phase_offset_years as u64,
-    );
+    for component in manifest.historical_forcing.components {
+        push_manifest_i32(&mut bytes, component.amplitude_centi_c);
+        push_manifest_u64(&mut bytes, component.period_years as u64);
+        push_manifest_u64(&mut bytes, component.phase_offset_years as u64);
+    }
+    push_manifest_u32(&mut bytes, manifest.historical_forcing.sensitivity_ppm);
     push_manifest_u32(
         &mut bytes,
         manifest.historical_forcing.land_ice_amplitude_ppm,
@@ -117,6 +114,14 @@ pub fn encode_identity_manifest(manifest: &PhysicalIdentityManifestV1) -> Vec<u8
     push_manifest_u64(
         &mut bytes,
         manifest.historical_forcing.ice_response_years as u64,
+    );
+    push_manifest_i32(
+        &mut bytes,
+        manifest.historical_forcing.ice_midpoint_centi_c,
+    );
+    push_manifest_i32(
+        &mut bytes,
+        manifest.historical_forcing.ice_transition_width_centi_c,
     );
     push_manifest_u32(
         &mut bytes,
@@ -281,6 +286,14 @@ pub fn validate_generation(value: &Value) -> Result<PhysicalMapGenerationSetting
             ));
         }
     }
+    if settings.historical_forcing.components.len()
+        != daena_physical::history::FORCING_COMPONENT_COUNT
+    {
+        return Err(invalid(
+            CODE_INVALID_GENERATION,
+            "historicalForcing.components must contain three independent terms",
+        ));
+    }
     historical_forcing(&settings)
         .validate()
         .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?;
@@ -288,17 +301,52 @@ pub fn validate_generation(value: &Value) -> Result<PhysicalMapGenerationSetting
 }
 
 fn historical_forcing(settings: &PhysicalMapGenerationSettings) -> HistoricalForcingParameters {
+    let components = &settings.historical_forcing.components;
     HistoricalForcingParameters {
         version: settings.historical_forcing.version,
-        temperature_amplitude_centi_c: settings.historical_forcing.temperature_amplitude_centi_c,
-        period_years: settings.historical_forcing.period_years,
-        phase_offset_years: settings.historical_forcing.phase_offset_years,
+        components: [
+            daena_physical::history::ForcingComponent {
+                amplitude_centi_c: components.first().map(|c| c.amplitude_centi_c).unwrap_or(0),
+                period_years: components.first().map(|c| c.period_years).unwrap_or(0),
+                phase_offset_years: components.first().map(|c| c.phase_offset_years).unwrap_or(0),
+            },
+            daena_physical::history::ForcingComponent {
+                amplitude_centi_c: components.get(1).map(|c| c.amplitude_centi_c).unwrap_or(0),
+                period_years: components.get(1).map(|c| c.period_years).unwrap_or(0),
+                phase_offset_years: components.get(1).map(|c| c.phase_offset_years).unwrap_or(0),
+            },
+            daena_physical::history::ForcingComponent {
+                amplitude_centi_c: components.get(2).map(|c| c.amplitude_centi_c).unwrap_or(0),
+                period_years: components.get(2).map(|c| c.period_years).unwrap_or(0),
+                phase_offset_years: components.get(2).map(|c| c.phase_offset_years).unwrap_or(0),
+            },
+        ],
+        sensitivity_ppm: settings.historical_forcing.sensitivity_ppm,
         land_ice_amplitude_ppm: settings.historical_forcing.land_ice_amplitude_ppm,
         ice_response_years: settings.historical_forcing.ice_response_years,
+        ice_midpoint_centi_c: settings.historical_forcing.ice_midpoint_centi_c,
+        ice_transition_width_centi_c: settings.historical_forcing.ice_transition_width_centi_c,
         thermal_expansion_ppm_per_degree_c: settings
             .historical_forcing
             .thermal_expansion_ppm_per_degree_c,
     }
+}
+
+fn forcing_json(parameters: HistoricalForcingParameters) -> Value {
+    serde_json::json!({
+        "version": parameters.version,
+        "components": parameters.components.iter().map(|component| serde_json::json!({
+            "amplitudeCentiC": component.amplitude_centi_c,
+            "periodYears": component.period_years,
+            "phaseOffsetYears": component.phase_offset_years,
+        })).collect::<Vec<_>>(),
+        "sensitivityPpm": parameters.sensitivity_ppm,
+        "landIceAmplitudePpm": parameters.land_ice_amplitude_ppm,
+        "iceResponseYears": parameters.ice_response_years,
+        "iceMidpointCentiC": parameters.ice_midpoint_centi_c,
+        "iceTransitionWidthCentiC": parameters.ice_transition_width_centi_c,
+        "thermalExpansionPpmPerDegreeC": parameters.thermal_expansion_ppm_per_degree_c,
+    })
 }
 
 fn source_mismatch(field: &str) -> CoreError {
@@ -431,16 +479,7 @@ mod tests {
     }
 
     fn forcing() -> Value {
-        let parameters = HistoricalForcingParameters::default_for(831_429, 0);
-        serde_json::json!({
-            "version": parameters.version,
-            "temperatureAmplitudeCentiC": parameters.temperature_amplitude_centi_c,
-            "periodYears": parameters.period_years,
-            "phaseOffsetYears": parameters.phase_offset_years,
-            "landIceAmplitudePpm": parameters.land_ice_amplitude_ppm,
-            "iceResponseYears": parameters.ice_response_years,
-            "thermalExpansionPpmPerDegreeC": parameters.thermal_expansion_ppm_per_degree_c,
-        })
+        forcing_json(HistoricalForcingParameters::default_for(831_429, 0))
     }
 
     fn generated_pair() -> (Vec<u8>, Value) {
@@ -469,15 +508,7 @@ mod tests {
                 "tectonicActivityPpm": world.tectonics.settings.tectonic_activity_ppm,
                 "islandActivityPpm": world.tectonics.settings.island_activity_ppm,
                 "evolutionPreset": "mature",
-                "historicalForcing": {
-                    "version": parameters.version,
-                    "temperatureAmplitudeCentiC": parameters.temperature_amplitude_centi_c,
-                    "periodYears": parameters.period_years,
-                    "phaseOffsetYears": parameters.phase_offset_years,
-                    "landIceAmplitudePpm": parameters.land_ice_amplitude_ppm,
-                    "iceResponseYears": parameters.ice_response_years,
-                    "thermalExpansionPpmPerDegreeC": parameters.thermal_expansion_ppm_per_degree_c,
-                },
+                "historicalForcing": forcing_json(parameters),
             },
         });
         (world.source, generation)
@@ -624,7 +655,13 @@ mod tests {
         changed.evolution_preset = "young".into();
         assert_ne!(base_identity, physical_identity(&changed, &source));
         changed = base.clone();
-        changed.historical_forcing.temperature_amplitude_centi_c += 1;
+        changed.historical_forcing.components[0].amplitude_centi_c += 1;
+        assert_ne!(base_identity, physical_identity(&changed, &source));
+        changed = base.clone();
+        changed.historical_forcing.components[1].period_years += 1;
+        assert_ne!(base_identity, physical_identity(&changed, &source));
+        changed = base.clone();
+        changed.historical_forcing.sensitivity_ppm -= 1_000;
         assert_ne!(base_identity, physical_identity(&changed, &source));
 
         let mut changed_source = source.clone();

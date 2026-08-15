@@ -175,15 +175,9 @@ fn reopened_physical_hydrology_matches_the_generated_fixture() {
     let generated = daena_physical::generate_world(settings, 831_429, 0, &mut progress).unwrap();
     let generation = serde_json::json!({"settings": {
         "evolutionPreset": "mature",
-        "historicalForcing": {
-            "version": 1,
-            "temperatureAmplitudeCentiC": 180,
-            "periodYears": 12000,
-            "phaseOffsetYears": 0,
-            "landIceAmplitudePpm": 24000,
-            "iceResponseYears": 800,
-            "thermalExpansionPpmPerDegreeC": 210
-        }
+        "historicalForcing": historical_forcing_products(
+            daena_physical::history::HistoricalForcingParameters::default_for(831_429, 0)
+        )
     }});
     let (derived_geojson, reopened) = derive_reopened_hydrology(
         &generated.tectonics,
@@ -223,15 +217,7 @@ fn reopened_historical_products_preserve_terrain_and_report_water_balance() {
             "tectonicActivityPpm": generated.tectonics.settings.tectonic_activity_ppm,
             "islandActivityPpm": generated.tectonics.settings.island_activity_ppm,
             "evolutionPreset": "mature",
-            "historicalForcing": {
-                "version": parameters.version,
-                "temperatureAmplitudeCentiC": parameters.temperature_amplitude_centi_c,
-                "periodYears": parameters.period_years,
-                "phaseOffsetYears": parameters.phase_offset_years,
-                "landIceAmplitudePpm": parameters.land_ice_amplitude_ppm,
-                "iceResponseYears": parameters.ice_response_years,
-                "thermalExpansionPpmPerDegreeC": parameters.thermal_expansion_ppm_per_degree_c
-            }
+            "historicalForcing": historical_forcing_products(parameters)
         }
     });
     let mut history_progress = daena_physical::NoopProgress;
@@ -239,7 +225,7 @@ fn reopened_historical_products_preserve_terrain_and_report_water_balance() {
         &generated.tectonics,
         &generation,
         generated.report.reference_water_inventory_m3,
-        parameters.period_years / 4,
+        parameters.period_years() / 4,
         &mut history_progress,
     )
     .unwrap();
@@ -278,7 +264,7 @@ fn reopened_historical_products_preserve_terrain_and_report_water_balance() {
     assert_eq!(response["hazards"]["model"], "relative-generated-v1");
     let cache_key = response["cacheKey"].as_str().unwrap();
     assert!(cache_key.contains(&physical_identity));
-    assert!(cache_key.contains("history-v1"));
+    assert!(cache_key.contains("history-v2"));
     assert!(cache_key.contains("hazards-v2"));
     assert!(cache_key.contains(&format!("epoch:{}", historical.metrics.normalized_epoch)));
     assert_eq!(response["chronology"]["contractVersion"], 1);
@@ -308,7 +294,7 @@ fn reopened_historical_products_preserve_terrain_and_report_water_balance() {
         &generated.tectonics,
         &generation,
         generated.report.reference_water_inventory_m3,
-        -persisted.period_years / 4,
+        -persisted.period_years() / 4,
         &mut cold_progress,
     )
     .unwrap();

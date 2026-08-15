@@ -1037,10 +1037,11 @@ criterion.
 
 ## Iteration 5: lakes, rivers, coastlines, and current-world completion
 
-Implementation status (2026-08-15): Packet 5 (ADR 0028) replaced per-cell-edge
-coastline, lake, land/ocean, and bathymetric vectors with interpolated marching
-squares in `contours.rs`. Hydrology derivation version is `4`. Remaining
-corrective work is Packet 6 historical forcing smoothness.
+Implementation status (2026-08-15): Packet 6 (ADR 0029) replaced the ADR 0020
+triangle wave with a versioned three-component cosine forcing model, lagged ice
+diagnostics, and thermal expansion inside the coupled water solve. Historical
+derivation version is `2`. Remaining corrective work is Packet 7 hazard-rate
+semantics.
 Accepted physical maps also persist a separate empty GeoJSON authored-overlay
 asset and locked physical layer definitions, including `ice`. Authored vector
 edits target that overlay asset only; the signed `.pworld` source cannot be
@@ -1104,10 +1105,11 @@ lakes, topologically valid rivers, and final derived coastline/bathymetry.
 
 ## Iteration 6: historical climate and geographic playback
 
-Status: implemented. See ADR 0020. The current implementation
-persists deterministic forcing parameters, applies a global temperature offset
-to climate, derives cell land ice and bounded thermal expansion from immutable
-final terrain, exposes cache-keyed epoch products, and adds the accepted-map
+Status: implemented. See ADR 0020 and Packet 6 (ADR 0029). The current
+implementation persists three independently derived cosine components, applies
+a global temperature offset to climate with integer trigonometric evaluation,
+derives cell land ice and bounded thermal expansion from immutable final
+terrain, exposes cache-keyed epoch products, and adds the accepted-map
 integer-years control. The response carries an explicit physical-offset
 chronology mapping; it does not implicitly invent shared Timeline date
 components. Native epoch and layer changes keep the current globe camera.
@@ -1681,6 +1683,9 @@ round-trip rendering in the packaged native host.
 
 #### Packet 6: replace historical forcing and ice placeholders
 
+Status: implemented in `history.rs` (ADR 0029). Historical derivation version
+is `2`. Generator version remains `11`.
+
 Hydrology derivation version 2 already locks per-cell land ice from the global
 pool and melts it back above 0 °C. Packet 6 remains about the historical
 forcing *shape* and a coupled lag model, not about reintroducing a scalar that
@@ -1836,7 +1841,7 @@ proxy; analytic plane/cone/ridge fixtures are the Packet 3 morphology gates.
 Packet 4 (ADR 0027) replaced the ADR 0019 raw-sink hierarchy, frozen inland
 storage, and 28% precipitation evaporation rule with a Fill-Spill-Merge tree
 and a millimetre-quantized coupled lake/ocean solve. Remaining hydrology work
-is Packet 6 historical forcing, not a return to downhill-sink basins.
+is Packet 7 hazard-rate semantics, not a return to downhill-sink basins.
 
 #### Packet 5 interpolated contours are in place
 
@@ -1846,22 +1851,16 @@ triangles, antimeridian splitting, spherical hole ownership, and geodesic
 simplification. Remaining vector work is visual LOD of tectonic diagnostics
 and packaged-native MapLibre inspection, not a return to cell-edge coastlines.
 
-#### Historical climate is a non-smooth single-wave heuristic
+#### Packet 6 historical forcing is in place
 
-ADR 0020's bounded triangle wave is deterministic and causally connected to
-climate and therefore to cell land ice, but it is not the product
-specification's smooth low-frequency sum of several long-period oscillations.
-Its corners introduce abrupt forcing derivative changes. Per-cell freeze/thaw
-now locks water from the inventory; the remaining gap is the specified smooth
-multi-component forcing and any explicit lag integration around that climate
-field, not a return to subtracting a logistic scalar before hydrology.
-
-Persist a versioned multi-component smooth forcing model with amplitudes,
-periods, and phases. Keep cell freeze/thaw as the inventory lock. Calculate
-thermal expansion from inventory and temperature change with declared units.
-Add timestep-refinement, phase-boundary continuity, extrema, and long-interval
-conservation tests. The UI must continue to call this generated physical
-chronology, not Earth orbital cycles or a prediction.
+Packet 6 (ADR 0029) replaced ADR 0020's triangle wave with three persisted
+cosine components, integer trigonometric evaluation, a lagged logistic ice
+diagnostic, and thermal expansion inside the coupled water iteration. Cell
+freeze/thaw remains the inventory lock. Remaining chronology work is Timeline
+date-component mapping and packaged-native playback inspection, not a return
+to a single-wave heuristic or pre-hydrology scalar ice subtraction. The UI
+must continue to call this generated physical chronology, not Earth orbital
+cycles or a prediction.
 
 #### Hazard rates need stable physical meaning
 

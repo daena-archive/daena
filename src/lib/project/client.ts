@@ -272,11 +272,16 @@ export interface PhysicalHistoricalProducts {
   };
   forcing: {
     version: number;
-    temperatureAmplitudeCentiC: number;
-    periodYears: number;
-    phaseOffsetYears: number;
+    components: Array<{
+      amplitudeCentiC: number;
+      periodYears: number;
+      phaseOffsetYears: number;
+    }>;
+    sensitivityPpm: number;
     landIceAmplitudePpm: number;
     iceResponseYears: number;
+    iceMidpointCentiC: number;
+    iceTransitionWidthCentiC: number;
     thermalExpansionPpmPerDegreeC: number;
   };
   history: {

@@ -139,18 +139,30 @@ pub struct VectorMapGenerationSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct HistoricalForcingSettings {
-    pub version: u16,
-    #[serde(rename = "temperatureAmplitudeCentiC")]
-    pub temperature_amplitude_centi_c: i32,
+pub struct HistoricalForcingComponentSettings {
+    #[serde(rename = "amplitudeCentiC")]
+    pub amplitude_centi_c: i32,
     #[serde(rename = "periodYears")]
     pub period_years: i64,
     #[serde(rename = "phaseOffsetYears")]
     pub phase_offset_years: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct HistoricalForcingSettings {
+    pub version: u16,
+    pub components: Vec<HistoricalForcingComponentSettings>,
+    #[serde(rename = "sensitivityPpm")]
+    pub sensitivity_ppm: u32,
     #[serde(rename = "landIceAmplitudePpm")]
     pub land_ice_amplitude_ppm: u32,
     #[serde(rename = "iceResponseYears")]
     pub ice_response_years: i64,
+    #[serde(rename = "iceMidpointCentiC")]
+    pub ice_midpoint_centi_c: i32,
+    #[serde(rename = "iceTransitionWidthCentiC")]
+    pub ice_transition_width_centi_c: i32,
     #[serde(rename = "thermalExpansionPpmPerDegreeC")]
     pub thermal_expansion_ppm_per_degree_c: u32,
 }

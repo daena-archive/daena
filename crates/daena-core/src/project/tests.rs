@@ -189,7 +189,7 @@ fn physical_map_acceptance_is_atomic_and_request_idempotent() {
         .into_iter()
         .find(|field| field.key == "layers")
         .unwrap();
-    for layer_id in ["base", "land", "ocean", "lakes", "rivers", "islands"] {
+    for layer_id in ["base", "land", "ocean", "lakes", "rivers", "islands", "ice"] {
         assert_eq!(
             layers.value["layers"]
                 .as_array()

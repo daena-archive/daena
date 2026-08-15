@@ -154,6 +154,7 @@ pub fn is_reserved_layer_id(id: &str) -> bool {
             | "rivers"
             | "watersheds"
             | "islands"
+            | "ice"
     )
 }
 
@@ -176,7 +177,8 @@ pub fn initial_layers_value() -> Value {
             {"id":"lakes","name":"Lakes","order":9,"defaultVisible":true,"locked":true,"selector":{},"style":{"fill":"#4d9ac2","fillOpacity":0.72,"stroke":"#b8e4f5","strokeWidth":1,"pointRadius":2},"kind":"vector"},
             {"id":"rivers","name":"Rivers","order":10,"defaultVisible":true,"locked":true,"selector":{},"style":{"fill":"#71c7e8","fillOpacity":0,"stroke":"#71c7e8","strokeWidth":1.5,"pointRadius":2},"kind":"vector"},
             {"id":"watersheds","name":"Watersheds","order":11,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#9c80d1","fillOpacity":0.08,"stroke":"#bba7e5","strokeWidth":0.45,"pointRadius":2},"kind":"vector"},
-            {"id":"islands","name":"Islands","order":12,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#e0bb78","fillOpacity":0.18,"stroke":"#f0d39b","strokeWidth":0.7,"pointRadius":2},"kind":"vector"}
+            {"id":"islands","name":"Islands","order":12,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#e0bb78","fillOpacity":0.18,"stroke":"#f0d39b","strokeWidth":0.7,"pointRadius":2},"kind":"vector"},
+            {"id":"ice","name":"Ice","order":13,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#e8f2f8","fillOpacity":0.82,"stroke":"#c5d8e6","strokeWidth":0.4,"pointRadius":2},"kind":"vector"}
         ]
     })
 }

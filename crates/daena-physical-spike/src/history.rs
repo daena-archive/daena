@@ -199,26 +199,17 @@ pub fn derive_historical_world(
         -temperature_offset,
         parameters,
     );
-    let land_ice_m3 = land_ice_volume(
-        reference_water_inventory_m3,
-        -lagged_temperature,
-        parameters,
-    );
     let thermal_expansion_m3 =
         thermal_expansion_volume(reference_water_inventory_m3, temperature_offset, parameters);
-    let effective_ocean_water_m3 = (i128::from(reference_water_inventory_m3)
-        - i128::from(land_ice_m3)
+    let effective_inventory_m3 = (i128::from(reference_water_inventory_m3)
         + i128::from(thermal_expansion_m3))
     .clamp(1, i128::from(u64::MAX)) as u64;
 
     progress.report(ProgressPhase::CalculatingClimate, 0, 1)?;
     let initial_sea_level = if normalized_epoch == 0 {
-        // The accepted current world is the persisted reference epoch. Keep
-        // its initial sea level so the existing inland-storage fixed point
-        // reproduces the current derived climate and hydrology exactly.
         field.sea_level_mm
     } else {
-        hydrology::solve_ocean_level_for_inventory(field, effective_ocean_water_m3)?
+        hydrology::solve_ocean_level_for_inventory(field, effective_inventory_m3)?
     };
     let mut epoch_field = field.clone();
     epoch_field.sea_level_mm = initial_sea_level;
@@ -242,12 +233,17 @@ pub fn derive_historical_world(
         &epoch_field,
         &climate,
         &drainage,
-        effective_ocean_water_m3,
+        effective_inventory_m3,
         crust_by_cell,
     )?;
     progress.check_cancelled()?;
     progress.report(ProgressPhase::CalculatingWater, 1, 1)?;
 
+    let land_ice_m3 = hydrology.metrics.land_ice_m3;
+    let effective_ocean_water_m3 = hydrology
+        .metrics
+        .ocean_water_m3
+        .saturating_add(hydrology.metrics.inland_water_m3);
     let conserved = i128::from(hydrology.metrics.ocean_water_m3)
         + i128::from(hydrology.metrics.inland_water_m3)
         + i128::from(land_ice_m3)

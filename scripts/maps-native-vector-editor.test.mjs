@@ -74,7 +74,12 @@ assert.equal(editor.includes("Selected feature"), true);
 assert.equal(editor.includes("reduceVectorEditor"), true);
 assert.equal(editor.includes("Back to map details"), true);
 assert.equal(editor.includes("Full screen"), true);
-assert.equal(runtime.includes("resize()"), true);
+assert.equal(runtime.includes("setBackground"), true);
+assert.equal(runtime.includes("initialView"), true);
+assert.equal(runtime.includes("onViewChange"), true);
+assert.equal(worldView.includes("setBackground"), true);
+assert.equal(worldView.includes("initialView"), true);
+assert.equal(editor.includes("applyHistoricalProducts(products);\n    mountEditor()"), false);
 
 let state = initialVectorEditorState();
 state = reduceVectorEditor(state, { type: "loaded" });

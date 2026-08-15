@@ -35,9 +35,9 @@ The measured release-mode fixture uses seed `831429`, retry index `0`, radius
 | Measure | 384 x 192 result |
 | --- | ---: |
 | Canonical v2 source bytes | 577,352 |
-| Derived GeoJSON bytes | 18,536,366 |
-| Derived feature count | 62,484 |
-| Generation wall time | 1,969 ms |
+| Derived GeoJSON bytes | 18,538,089 |
+| Derived feature count | 62,466 |
+| Generation wall time | 1,930 ms |
 
 ## Consequences
 

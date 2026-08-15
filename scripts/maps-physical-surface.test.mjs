@@ -27,6 +27,7 @@ for (const required of [
   "width: 384",
   "height: 192",
   "paintPhysicalSurface",
+  'id: "ice"',
   "evolutionPreset",
   "Terrain age",
   "locked: true",
@@ -42,6 +43,10 @@ assert.ok(native.includes("PhysicalWorldView"), "saved physical maps must use Ph
 assert.ok(
   readFileSync(resolve(root, "src/lib/maps/physical/PhysicalWorldView.svelte"), "utf8").includes('projection: "globe"'),
   "physical world view must use MapLibre globe projection",
+);
+assert.ok(
+  readFileSync(resolve(root, "src/lib/maps/physical/PhysicalWorldView.svelte"), "utf8").includes("setBackground"),
+  "physical world view must update raster without remounting the globe",
 );
 assert.equal(source.includes("defaultVisible: true"), false, "physical diagnostic layers must start hidden");
 
@@ -118,6 +123,8 @@ for (const required of [
   "PhysicalEvolutionProducts",
   "physicalMapEvolution",
   "physicalMapDerivedEvolution",
+  "iceCells",
+  "iceThicknessMm",
 ]) {
   assert.ok(client.includes(required), `physical client is missing ${required}`);
 }
@@ -128,6 +135,8 @@ for (const required of [
   "project_physical_derived_evolution",
   "temperatureCentiC",
   "runoffVolumeM3PerYear",
+  "iceCells",
+  "iceThicknessMm",
   "routingElevationMm",
   "accumulationM3PerYear",
 ]) {

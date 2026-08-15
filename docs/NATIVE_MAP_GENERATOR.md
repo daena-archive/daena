@@ -58,8 +58,8 @@ the pipeline once with another deterministic seed; it does not generate or
 score a hidden batch of candidates.
 
 The accepted world has one immutable, signed elevation/bathymetry field. Land,
-ocean, coastlines, islands, lakes, rivers, climate, relief, and hazards derive
-from that field and its persisted physical causes. Authored countries,
+ocean, coastlines, islands, lakes, rivers, land ice, climate, relief, and
+hazards derive from that field and its persisted physical causes. Authored countries,
 cultures, settlements, routes, borders, annotations, and entity links remain
 normal Daena layers and shared records above the immutable physical base.
 
@@ -121,7 +121,7 @@ locked as:
   },
   "generation": {
     "id": "daena-physical-world",
-  "version": 6,
+    "version": 6,
     "seed": 831429,
     "retryIndex": 0,
     "settings": {}
@@ -183,7 +183,10 @@ bypasses Rust validation.
 Put the pure model in a Rust crate or module that has no Tauri, SQLite, UI, or
 plugin-host dependency. `daena-core` adapts validated model bytes to normal map
 entities/assets and transactions. `src-tauri` adapts long-running jobs to the
-trusted shell and must run CPU work away from the async/UI thread.
+trusted shell and must run CPU work away from the async/UI thread. Host
+generation and historical derivation run inside `spawn_blocking`. The numeric
+path is sequential; unordered parallel reductions are not used in the canonical
+pipeline.
 
 ### Canonical physical truth and derived presentation
 
@@ -212,13 +215,23 @@ Derived output includes:
 - coastlines, land polygons, islands, and exposed shelves;
 - bathymetric contours, hillshade, slope, and relief;
 - temperature, precipitation, runoff, and climate classes;
-- rivers, lakes, watersheds, and drainage basins; and
+- rivers, lakes, watersheds, and drainage basins;
+- land-ice cells, water-equivalent thickness, and ice polygons; and
 - earthquake and volcanic hazard fields.
 
 MapLibre consumes derived GeoJSON and bounded derived raster products. These
 representations may be cached using the canonical source hash, derivation
 version, and epoch. They are never authoritative and must be safely deletable.
 No physical layer may exist only as a PNG or JPEG.
+
+Physical maps render in MapLibre with `projection: "globe"`. Authored
+`daena-vector` maps remain Web Mercator with `maxPitch: 0`. The physical
+hillshade raster classifies the largest connected below-sea-level component as
+ocean, hides inland water smaller than eight cells so continents do not
+speckle, and paints land ice over remaining land. Diagnostic vector layers,
+including `ice`, start hidden. Changing layer visibility or historical year
+updates GeoJSON and raster sources in place and must not reset camera location
+or zoom.
 
 ### Immutable physical base, editable authored overlays
 
@@ -342,9 +355,10 @@ seed/settings
   -> tectonic deformation and initial signed elevation
   -> initial climate and runoff
   -> erosion and final signed elevation
-  -> water inventory, land ice, inland water, and sea level
+  -> water inventory and reference sea level
   -> depression hierarchy and drainage
-  -> rivers, lakes, coastline, and derived climate
+  -> land ice locked from the global pool, then inland water and ocean level
+  -> rivers, lakes, coastline, and derived climate products
   -> physical validation
   -> temporary result
   -> explicit acceptance
@@ -355,13 +369,11 @@ physical parameters. It never moves plates or changes terrain:
 
 ```text
 climate forcing at t
-  -> temperature
-  -> land ice and thermal expansion
-  -> available ocean water
-  -> sea level
-  -> land/ocean mask
-  -> climate and hydrology
-  -> coastline, rivers, and lakes
+  -> temperature offset and thermal expansion
+  -> climate field (per-cell temperature and precipitation)
+  -> land ice on freezing land cells, subtracted from the global pool
+  -> remaining liquid inventory
+  -> sea level, lakes, rivers, and coastline
 ```
 
 Hazards derive separately from accepted plate boundaries and volcanic centers.
@@ -479,10 +491,22 @@ Solve the monotonic volume equation with bounded root finding and explicit
 tolerance/iteration limits.
 
 Current total water is conserved among ocean water, land-based ice, and
-persistent inland water. Iteration 5 uses a bounded, one-directional
-ocean-level fixed-point solve: derive basin assignments and inland storage at
-the initial sea level, then adjust only ocean level against that frozen inland
-storage until the declared tolerance is met.
+persistent inland water. Hydrology derivation version 2 locks land ice from
+the same inventory before the ocean-level solve. A land cell becomes ice when
+its elevation is above sea level, its temperature is below 0 °C, and its
+precipitation is at least 80 mm/year. Water-equivalent thickness scales with
+coldness and precipitation, is capped, and is dropped for isolated patches
+smaller than eight cells on production-width grids. That volume leaves the
+liquid pool. When the cell is at or above 0 °C, it holds no ice and the water
+remains in (or returns to) the pool. Ice does not flow, does not alter the
+canonical elevation field, and does not interact with land. There is no sea
+ice; ocean cells stay in the ocean reservoir.
+
+Iteration 5 then uses a bounded, one-directional ocean-level fixed-point solve:
+derive basin assignments and inland storage at the initial sea level, skip
+inland storage for basins whose minimum cell is ice, then adjust only ocean
+level against that frozen inland storage plus remaining liquid inventory until
+the declared tolerance is met.
 
 Flow routing uses D-infinity or another reviewed continuous-direction method;
 basic D8 is not acceptable because it produces visible grid alignment.
@@ -521,9 +545,15 @@ Historical sea level derives from smooth, low-frequency climate forcing, not
 from an independently random curve. Persist the oscillation amplitudes,
 periods, and phase offsets or an equivalently sufficient versioned model.
 
-Temperature drives a bounded equilibrium land-ice volume. Ice approaches that
-equilibrium with a configured response lag. Only land ice changes sea level.
-Thermal expansion applies a bounded effective coefficient to ocean volume.
+Each epoch applies a global temperature offset to the climate field, then
+re-derives hydrology. Land ice is the hydrology cell product described above:
+colder climate freezes more land water out of the pool and lowers sea level;
+warmer climate melts it back. Floating sea ice is excluded. Thermal expansion
+applies a bounded effective coefficient to the liquid inventory. The ADR 0020
+logistic `land_ice_equilibrium_m3` value remains a forcing-lag diagnostic; it
+is not subtracted from inventory before hydrology. Reported `land_ice_m3` and
+effective ocean water come from the hydrology solve.
+
 Every epoch then resolves sea level, lake storage, climate, and hydrology from
 the immutable final terrain.
 
@@ -671,6 +701,22 @@ unstable worlds fail rather than emitting corrupted geography.
 Increasing resolution is not an acceptable substitute for a weak algorithm.
 Start at a moderate measured resolution and add a level-of-detail strategy only
 after profiling proves it necessary.
+
+The production lock after ADR 0024 is:
+
+| Bound | Value |
+| --- | ---: |
+| Production grid (default and maximum) | 384 × 192 |
+| Canonical source | 128 MiB |
+| Derived GeoJSON | 256 MiB |
+| Generation wall time | 8 s |
+| Working memory | 128 MiB |
+
+`256 x 128` and `512 x 256` remain supported preview grids. `1024 x 512` and
+`2048 x 1024` remain preview-only. The former 16 MiB host ceiling is not a
+`physical-world-v2` layout constraint and is not retained. Measured fixture
+bytes and hashes live in [`docs/maps/physical-map-budgets.md`](./maps/physical-map-budgets.md)
+and the golden gate.
 
 ## Verification strategy
 
@@ -1013,18 +1059,20 @@ criterion.
 ## Iteration 5: lakes, rivers, coastlines, and current-world completion
 
 Implementation status (2026-08-15): the current-world hydrology slice is
-implemented in `daena-physical-spike` under ADR 0019. It derives a bounded
-raw-field sink/spill hierarchy, bounded basin water balances, a conserved
-ocean-level fixed-point solve against frozen inland storage, primary river
-channels with Strahler order, watershed,
-lake-entry/junction/spill-outlet river geometry, island and lake geometry,
-final water-aware coastline, and
+implemented in `daena-physical-spike` under ADR 0019, with land ice added as
+hydrology derivation version 2. It derives a bounded raw-field sink/spill
+hierarchy, bounded basin water balances, land-ice cells locked from the global
+water pool, a conserved ocean-level fixed-point solve against frozen inland
+storage and remaining liquid inventory, primary river channels with Strahler
+order, watershed, lake-entry/junction/spill-outlet river geometry, island,
+lake, and ice geometry, final water-aware coastline, and
 hillshade/bathymetry/slope renderer arrays. These products remain disposable;
 the accepted v2 source is unchanged and the native host re-derives them after
 restart.
 Accepted physical maps also persist a separate empty GeoJSON authored-overlay
-asset and locked physical layer definitions. Authored vector edits target that
-overlay asset only; the signed `.pworld` source cannot be replaced or edited.
+asset and locked physical layer definitions, including `ice`. Authored vector
+edits target that overlay asset only; the signed `.pworld` source cannot be
+replaced or edited.
 
 ### Goal
 
@@ -1058,7 +1106,8 @@ lakes, topologically valid rivers, and final derived coastline/bathymetry.
    is deterministic and topology-preserving for the represented grid boundary,
    but is not marching-squares isoline contouring.
 6. Derive land/ocean polygons, islands, exposed shelf, bathymetric contours,
-   hillshade, slopes, watersheds, rivers, and lakes as bounded renderer data.
+   hillshade, slopes, watersheds, rivers, lakes, and land ice as bounded
+   renderer data.
 7. Add the physical-layer UI with useful defaults and clear loading/error
    states. Physical layers remain immutable; authored Daena layers render
    above them and continue to use shared anchors/navigation.
@@ -1084,11 +1133,12 @@ lakes, topologically valid rivers, and final derived coastline/bathymetry.
 ## Iteration 6: historical climate and geographic playback
 
 Status: implemented. See ADR 0020. The current implementation
-persists deterministic forcing parameters, derives lagged land ice and bounded
-thermal expansion from immutable final terrain, exposes cache-keyed epoch
-products, and adds the accepted-map integer-years control. The response carries
-an explicit physical-offset chronology mapping; it does not implicitly invent
-shared Timeline date components.
+persists deterministic forcing parameters, applies a global temperature offset
+to climate, derives cell land ice and bounded thermal expansion from immutable
+final terrain, exposes cache-keyed epoch products, and adds the accepted-map
+integer-years control. The response carries an explicit physical-offset
+chronology mapping; it does not implicitly invent shared Timeline date
+components. Native epoch and layer changes keep the current globe camera.
 
 ### Goal
 
@@ -1100,8 +1150,11 @@ while keeping tectonic structure and final terrain fixed.
 1. Generate and persist versioned low-frequency climate-forcing parameters.
    Derive global temperature from physical time offset without claiming Earth
    orbital simulation.
-2. Implement bounded equilibrium land-ice storage, response lag, and ocean
-   thermal expansion. Floating sea ice is excluded from the sea-level reservoir.
+2. Implement bounded land-ice storage from the climate field (freezing land
+   cells lock water from the global pool; thaw returns it) and ocean thermal
+   expansion. Floating sea ice is excluded from the sea-level reservoir.
+   Keep the ADR 0020 logistic volume as a lag diagnostic, not as the inventory
+   subtraction used by hydrology.
 3. At an epoch, solve land ice, available ocean water, inland storage, sea
    level, climate, hydrology, coastline, rivers, and lakes from the immutable
    final terrain.
@@ -1201,10 +1254,10 @@ natural events without changing the source or derived hazard cache.
   `listShared` bridge filters results to fields explicitly declared
   `shared: true` by the owning manifest.
 
-## Product-spec reconciliation after ADRs 0014-0021
+## Product-spec reconciliation after ADRs 0014-0024
 
 This section compares the original native physical-map product specification
-with this plan and the decisions recorded in ADRs 0014 through 0021. It is
+with this plan and the decisions recorded in ADRs 0014 through 0024. It is
 normative for corrective work and Iteration 8. An ADR's `Implemented` status
 means that its bounded slice exists; it does not mean that a feasibility
 surrogate is equivalent to the final product model or that every product exit
@@ -1386,10 +1439,12 @@ green feasibility fixture does not complete the feature.
    drainage outlets before MapLibre receives the result.
 7. **Historical forcing.** Replace the triangle wave with a versioned smooth
    sum of bounded low-frequency components whose amplitudes, periods, and
-   phases are persisted. Use a bounded smooth equilibrium land-ice response,
-   explicit lag integration, and thermal expansion derived from ocean volume
-   and temperature change with declared units. Require timestep-refinement,
-   continuity, hysteresis, extrema, and long-interval conservation gates.
+   phases are persisted. Keep climate-driven cell land ice as the inventory
+   lock. Any additional lag or equilibrium volume is a diagnostic or climate
+   constraint, not a pre-hydrology scalar subtraction. Thermal expansion stays
+   derived from inventory and temperature change with declared units. Require
+   timestep-refinement, continuity, extrema, and long-interval conservation
+   gates.
 8. **Hazard semantics.** Make volcanic origin, activity class, and long-term
    rate either canonical center properties or explicitly versioned derivations
    from all canonical causes. The display cap may sample output but must not
@@ -1434,6 +1489,11 @@ hashes match on supported targets, and no accepted identity field has an
 in-place mutation route.
 
 #### Packet 1: choose physical resolution from feature requirements
+
+Status: production default and maximum are `384 x 192` (ADR 0024). Feature
+fixtures and the four/eight-sample gates in `resolution.rs` are unchanged.
+`256 x 128` and `512 x 256` remain preview candidates; `1024 x 512` and
+`2048 x 1024` remain preview-only.
 
 1. Define fixture features in metres before choosing dimensions: trench
    half-width and arc offset, collision-belt width, rift floor and shoulders,
@@ -1636,6 +1696,11 @@ round-trip rendering in the packaged native host.
 
 #### Packet 6: replace historical forcing and ice placeholders
 
+Hydrology derivation version 2 already locks per-cell land ice from the global
+pool and melts it back above 0 °C. Packet 6 remains about the historical
+forcing *shape* and a coupled lag model, not about reintroducing a scalar that
+subtracts ice before climate.
+
 Implement the physical history model in `history.rs`:
 
 1. Persist at least three independently derived forcing components. For
@@ -1651,7 +1716,9 @@ Implement the physical history model in `history.rs`:
    Bound amplitudes, periods, phases, and total temperature. Use the project's
    deterministic numeric policy; platform-default transcendental drift may not
    change quantized products or supported-target hashes.
-2. Use a smooth bounded equilibrium land-ice response, initially:
+2. Keep cell land ice as the inventory lock. If a lagged equilibrium volume is
+   still required, use a smooth bounded response as a diagnostic or as an
+   additional climate constraint, initially:
 
    ```text
    equilibrium_ice(T) =
@@ -1660,7 +1727,9 @@ Implement the physical history model in `history.rs`:
 
    Integrate first-order lag with a fixed physical timestep or the analytic
    exponential step. Persist all parameters needed to replay it from the
-   reference epoch and bound the integration interval/work.
+   reference epoch and bound the integration interval/work. Do not replace
+   climate-driven cell ice with this scalar, and do not add glacier flow or
+   ice–land mechanical interaction.
 3. Compute thermal expansion with declared SI units:
    `delta_volume = alpha * ocean_volume * delta_temperature`. Use it inside the
    coupled water iteration because ocean volume and sea level are not
@@ -1837,18 +1906,19 @@ feeding MapLibre.
 #### Historical climate is a non-smooth single-wave heuristic
 
 ADR 0020's bounded triangle wave is deterministic and causally connected to
-water storage, but it is not the product specification's smooth low-frequency
-sum of several long-period oscillations. Its corners introduce abrupt forcing
-derivative changes, and the ADR does not establish the specified smooth,
-bounded equilibrium ice response across the full range.
+climate and therefore to cell land ice, but it is not the product
+specification's smooth low-frequency sum of several long-period oscillations.
+Its corners introduce abrupt forcing derivative changes. Per-cell freeze/thaw
+now locks water from the inventory; the remaining gap is the specified smooth
+multi-component forcing and any explicit lag integration around that climate
+field, not a return to subtracting a logistic scalar before hydrology.
 
 Persist a versioned multi-component smooth forcing model with amplitudes,
-periods, and phases; implement a bounded smooth equilibrium land-ice response
-and explicit lag integration; and calculate thermal expansion from ocean
-volume and temperature change with declared units. Add timestep-refinement,
-phase-boundary continuity, hysteresis, extrema, and long-interval conservation
-tests. The UI must continue to call this generated physical chronology, not
-Earth orbital cycles or a prediction.
+periods, and phases. Keep cell freeze/thaw as the inventory lock. Calculate
+thermal expansion from inventory and temperature change with declared units.
+Add timestep-refinement, phase-boundary continuity, extrema, and long-interval
+conservation tests. The UI must continue to call this generated physical
+chronology, not Earth orbital cycles or a prediction.
 
 #### Hazard rates need stable physical meaning
 
@@ -1881,8 +1951,8 @@ Agents should close the reconciliation in this order:
    coupled nested basin/water solve.
 5. Replace cell-edge presentation geometry with topology-preserving
    interpolated contours and polygons.
-6. Upgrade historical forcing, ice response, thermal expansion, and hazard-rate
-   semantics without changing accepted terrain.
+6. Upgrade historical forcing smoothness and any remaining lag diagnostics
+   without changing accepted terrain or replacing cell land ice.
 7. Run full deterministic, recovery, packaged-native, and supported-target
    gates; then update iteration statuses and user documentation with the exact
    remaining approximations.

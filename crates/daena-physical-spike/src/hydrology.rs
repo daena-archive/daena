@@ -15,7 +15,7 @@ use super::{
 };
 use crate::tectonics::CrustType;
 
-pub const HYDROLOGY_DERIVATION_VERSION: u16 = 1;
+pub const HYDROLOGY_DERIVATION_VERSION: u16 = 2;
 pub const MAX_HYDROLOGY_FEATURES: usize = crate::MAX_GEOJSON_FEATURES;
 pub const WATER_BALANCE_TOLERANCE_PPM: u64 = 5_000;
 const MAX_FIXED_POINT_ITERATIONS: u32 = 24;
@@ -23,6 +23,9 @@ const MAX_ENDORHEIC_DEPTH_MM: i32 = 250_000;
 const MIN_LAKE_DEPTH_MM: i32 = 10;
 const LAKE_STORAGE_FRACTION_PPM: u64 = 250_000;
 const EVAPORATION_FRACTION_PPM: u64 = 280_000;
+const MIN_ICE_PRECIPITATION_MM: u32 = 80;
+const MAX_ICE_WATER_EQUIVALENT_MM: u32 = 220_000;
+const MIN_ICE_COMPONENT_CELLS: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BasinDestination {
@@ -131,6 +134,8 @@ pub struct HydrologyField {
     pub watershed_id: Vec<u32>,
     pub basin_by_cell: Vec<u32>,
     pub lake_cells: Vec<bool>,
+    pub ice_cells: Vec<bool>,
+    pub ice_thickness_mm: Vec<u32>,
     pub shelf_cells: Vec<bool>,
     pub island_id: Vec<u32>,
     pub basins: Vec<Basin>,
@@ -143,6 +148,7 @@ pub struct HydrologyField {
     pub ocean_polygons: Vec<Vec<Vec<[i32; 2]>>>,
     pub shelf_polygons: Vec<Vec<Vec<[i32; 2]>>>,
     pub island_polygons: Vec<Vec<Vec<[i32; 2]>>>,
+    pub ice_polygons: Vec<Vec<Vec<[i32; 2]>>>,
     pub bathymetry_contours: Vec<Segment>,
     pub metrics: WaterBalanceMetrics,
 }
@@ -168,6 +174,8 @@ impl HydrologyField {
             || self.watershed_id.len() != count
             || self.basin_by_cell.len() != count
             || self.lake_cells.len() != count
+            || self.ice_cells.len() != count
+            || self.ice_thickness_mm.len() != count
             || self.shelf_cells.len() != count
             || self.island_id.len() != count
         {
@@ -655,6 +663,109 @@ fn derive_basins(
         });
     }
     Ok((basins, basin_by_cell))
+}
+
+fn ice_water_equivalent_mm(temperature_centi_c: i32, precipitation_mm: u32) -> u32 {
+    if temperature_centi_c >= 0 || precipitation_mm < MIN_ICE_PRECIPITATION_MM {
+        return 0;
+    }
+    let cold = u64::from((-temperature_centi_c).clamp(0, 4_000) as u32);
+    let wet = u64::from(precipitation_mm.min(2_500));
+    ((u64::from(MAX_ICE_WATER_EQUIVALENT_MM) * cold * wet) / (4_000 * 2_500)) as u32
+}
+
+fn prune_small_ice(grid: Grid, ice_cells: &mut [bool], ice_thickness_mm: &mut [u32]) {
+    let min_cells = if grid.width >= 128 {
+        MIN_ICE_COMPONENT_CELLS
+    } else {
+        1
+    };
+    let topology = grid.topology();
+    let mut seen = vec![false; grid.sample_count()];
+    for start in 0..grid.sample_count() {
+        if !ice_cells[start] || seen[start] {
+            continue;
+        }
+        let mut stack = vec![start];
+        seen[start] = true;
+        let mut cells = Vec::new();
+        while let Some(cell) = stack.pop() {
+            cells.push(cell);
+            for neighbor in topology.neighbors(cell) {
+                if ice_cells[*neighbor] && !seen[*neighbor] {
+                    seen[*neighbor] = true;
+                    stack.push(*neighbor);
+                }
+            }
+        }
+        if cells.len() < min_cells {
+            for cell in cells {
+                ice_cells[cell] = false;
+                ice_thickness_mm[cell] = 0;
+            }
+        }
+    }
+}
+
+fn derive_land_ice(
+    field: &PhysicalField,
+    climate: &ClimateField,
+    sea_level_mm: i32,
+    inventory_m3: u64,
+) -> Result<(Vec<bool>, Vec<u32>, u64), PhysicalError> {
+    let count = field.grid.sample_count();
+    let mut ice_cells = vec![false; count];
+    let mut ice_thickness_mm = vec![0u32; count];
+    for cell in 0..count {
+        if field.elevations_mm[cell] <= sea_level_mm {
+            continue;
+        }
+        let thickness = ice_water_equivalent_mm(
+            climate.temperature_centi_c[cell],
+            climate.precipitation_mm_per_year[cell],
+        );
+        if thickness == 0 {
+            continue;
+        }
+        ice_cells[cell] = true;
+        ice_thickness_mm[cell] = thickness;
+    }
+    prune_small_ice(field.grid, &mut ice_cells, &mut ice_thickness_mm);
+    let mut volume = 0u64;
+    for cell in 0..count {
+        if !ice_cells[cell] {
+            continue;
+        }
+        let area = field.grid.cell_area(field.grid.row_col(cell).0);
+        let cell_volume = (area * f64::from(ice_thickness_mm[cell]) / 1_000.0)
+            .round()
+            .max(0.0) as u64;
+        volume = checked_add(volume, cell_volume, "land ice overflowed its bounded range")?;
+    }
+    if volume > inventory_m3 && volume > 0 {
+        let keep_ppm = (inventory_m3.saturating_mul(1_000_000) / volume).min(1_000_000);
+        volume = 0;
+        for cell in 0..count {
+            if !ice_cells[cell] {
+                continue;
+            }
+            ice_thickness_mm[cell] =
+                ((u64::from(ice_thickness_mm[cell]) * keep_ppm) / 1_000_000) as u32;
+            if ice_thickness_mm[cell] == 0 {
+                ice_cells[cell] = false;
+                continue;
+            }
+            let area = field.grid.cell_area(field.grid.row_col(cell).0);
+            volume = checked_add(
+                volume,
+                (area * f64::from(ice_thickness_mm[cell]) / 1_000.0)
+                    .round()
+                    .max(0.0) as u64,
+                "scaled land ice overflowed its bounded range",
+            )?;
+        }
+    }
+    Ok((ice_cells, ice_thickness_mm, volume.min(inventory_m3)))
 }
 
 fn solve_basin_water(basins: &mut [Basin], field: &PhysicalField) {
@@ -1303,13 +1414,25 @@ pub fn derive_hydrology_with_crust(
     let (mut basins, basin_by_cell) = derive_basins(field, climate)?;
     solve_basin_water(&mut basins, field);
     let basin_cells = basin_cells_from_ids(&basin_by_cell, basins.len());
+    let (ice_cells, ice_thickness_mm, land_ice_m3) = derive_land_ice(
+        field,
+        climate,
+        field.sea_level_mm,
+        reference_water_inventory_m3,
+    )?;
     let mut lake_cells = vec![false; field.grid.sample_count()];
     let mut lake_level_mm = vec![field.sea_level_mm; field.grid.sample_count()];
     for basin in &basins {
-        if basin.water_level_mm <= field.sea_level_mm || basin.water_volume_m3 == 0 {
+        if ice_cells[basin.minimum_cell]
+            || basin.water_level_mm <= field.sea_level_mm
+            || basin.water_volume_m3 == 0
+        {
             continue;
         }
         for cell in &basin_cells[basin.id] {
+            if ice_cells[*cell] {
+                continue;
+            }
             if field.elevations_mm[*cell] < basin.water_level_mm {
                 lake_cells[*cell] = true;
                 lake_level_mm[*cell] = basin.water_level_mm;
@@ -1317,12 +1440,16 @@ pub fn derive_hydrology_with_crust(
         }
     }
     let inland_water = basins.iter().try_fold(0u64, |sum, basin| {
+        if ice_cells[basin.minimum_cell] {
+            return Ok(sum);
+        }
         checked_add(
             sum,
             basin.water_volume_m3,
             "inland water overflowed its bounded range",
         )
     })?;
+    let liquid_inventory = reference_water_inventory_m3.saturating_sub(land_ice_m3);
     let tolerance = tolerance_m3(reference_water_inventory_m3);
     let initial_level = field.sea_level_mm;
     let mut sea_level = initial_level;
@@ -1332,13 +1459,13 @@ pub fn derive_hydrology_with_crust(
         iterations = iteration;
         let ocean = ocean_volume(field, sea_level);
         let total = ocean.saturating_add(inland_water);
-        let error = reference_water_inventory_m3.abs_diff(total);
+        let error = liquid_inventory.abs_diff(total);
         if error <= tolerance {
             converged = true;
             break;
         }
         let area = ocean_area(field, sea_level).max(1.0);
-        let delta = ((reference_water_inventory_m3 as f64 - total as f64) * 1_000.0 / area)
+        let delta = ((liquid_inventory as f64 - total as f64) * 1_000.0 / area)
             .round()
             .clamp(-25_000.0, 25_000.0) as i32;
         if delta == 0 {
@@ -1353,7 +1480,9 @@ pub fn derive_hydrology_with_crust(
         ));
     }
     let ocean_water = ocean_volume(field, sea_level);
-    let total_water = ocean_water.saturating_add(inland_water);
+    let total_water = ocean_water
+        .saturating_add(inland_water)
+        .saturating_add(land_ice_m3);
     let balance_error = reference_water_inventory_m3.abs_diff(total_water);
     if balance_error > tolerance {
         return Err(PhysicalError::coded(
@@ -1387,7 +1516,8 @@ pub fn derive_hydrology_with_crust(
     let lake_polygons = basins
         .iter()
         .filter(|basin| {
-            basin.water_volume_m3 > 0
+            !ice_cells[basin.minimum_cell]
+                && basin.water_volume_m3 > 0
                 && basin
                     .water_level_mm
                     .saturating_sub(basin.minimum_elevation_mm)
@@ -1417,6 +1547,7 @@ pub fn derive_hydrology_with_crust(
         .map(|cell| field.elevations_mm[cell] > sea_level && !lake_cells[cell])
         .collect::<Vec<_>>();
     let land_polygons = polygon_for_mask(field.grid, &land_mask);
+    let ice_polygons = polygon_for_mask(field.grid, &ice_cells);
     let (island_id, island_cells) = island_groups(field.grid, &land_mask);
     let island_polygons = island_cells
         .iter()
@@ -1429,7 +1560,7 @@ pub fn derive_hydrology_with_crust(
         total_water_m3: reference_water_inventory_m3,
         ocean_water_m3: ocean_water,
         inland_water_m3: inland_water,
-        land_ice_m3: 0,
+        land_ice_m3,
         balance_error_m3: balance_error,
         tolerance_m3: tolerance,
         fixed_point_iterations: iterations,
@@ -1456,6 +1587,8 @@ pub fn derive_hydrology_with_crust(
         watershed_id,
         basin_by_cell,
         lake_cells,
+        ice_cells,
+        ice_thickness_mm,
         shelf_cells,
         island_id,
         basins,
@@ -1468,6 +1601,7 @@ pub fn derive_hydrology_with_crust(
         ocean_polygons,
         shelf_polygons,
         island_polygons,
+        ice_polygons,
         bathymetry_contours,
         metrics,
     };
@@ -1570,12 +1704,17 @@ pub fn to_geojson(hydrology: &HydrologyField) -> Result<String, String> {
         ("ocean", "Ocean", &hydrology.ocean_polygons),
         ("shelves", "Continental shelf", &hydrology.shelf_polygons),
         ("islands", "Islands", &hydrology.island_polygons),
+        ("ice", "Ice", &hydrology.ice_polygons),
     ] {
         if !polygons.is_empty() {
             push_feature(feature(
                 id,
                 id,
-                if id == "ocean" { "custom" } else { "land" },
+                if id == "land" || id == "islands" || id == "shelves" {
+                    "land"
+                } else {
+                    "custom"
+                },
                 name,
                 "MultiPolygon",
                 &multi_polygon_from_polygons(polygons),
@@ -1701,11 +1840,11 @@ mod tests {
         assert!(hydrology.metrics.converged);
         assert!(hydrology.metrics.balance_error_m3 <= hydrology.metrics.tolerance_m3);
         assert!(
-            hydrology
-                .metrics
-                .total_water_m3
-                .abs_diff(hydrology.metrics.ocean_water_m3 + hydrology.metrics.inland_water_m3)
-                <= hydrology.metrics.tolerance_m3
+            hydrology.metrics.total_water_m3.abs_diff(
+                hydrology.metrics.ocean_water_m3
+                    + hydrology.metrics.inland_water_m3
+                    + hydrology.metrics.land_ice_m3,
+            ) <= hydrology.metrics.tolerance_m3
         );
         assert_eq!(hydrology.rivers.len(), hydrology.river_coordinates.len());
         assert!(hydrology
@@ -1748,11 +1887,11 @@ mod tests {
         let second = fixture();
         assert_eq!(first, second);
         assert!(
-            first
-                .metrics
-                .total_water_m3
-                .abs_diff(first.metrics.ocean_water_m3 + first.metrics.inland_water_m3)
-                <= first.metrics.tolerance_m3
+            first.metrics.total_water_m3.abs_diff(
+                first.metrics.ocean_water_m3
+                    + first.metrics.inland_water_m3
+                    + first.metrics.land_ice_m3
+            ) <= first.metrics.tolerance_m3
         );
         assert!(first
             .lake_cells
@@ -1767,5 +1906,20 @@ mod tests {
         let json = to_geojson(&hydrology).unwrap();
         assert!(json.contains("watersheds"));
         assert!(json.contains("rivers") || hydrology.rivers.is_empty());
+        assert!(json.contains("\"ice\"") || hydrology.ice_polygons.is_empty());
+    }
+
+    #[test]
+    fn land_ice_requires_freezing_and_moisture() {
+        assert_eq!(ice_water_equivalent_mm(0, 400), 0);
+        assert_eq!(ice_water_equivalent_mm(-1_200, 40), 0);
+        assert!(ice_water_equivalent_mm(-1_200, 400) > 0);
+        let hydrology = fixture();
+        assert_eq!(hydrology.ice_cells.len(), hydrology.ice_thickness_mm.len());
+        assert!(hydrology
+            .ice_cells
+            .iter()
+            .zip(&hydrology.ice_thickness_mm)
+            .all(|(ice, thickness)| (*ice && *thickness > 0) || (!*ice && *thickness == 0)));
     }
 }

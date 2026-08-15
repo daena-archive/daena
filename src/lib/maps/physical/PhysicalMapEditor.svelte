@@ -190,6 +190,16 @@ let layers = $state<VectorLayerDefinition[]>([
     selector: {},
     style: { fill: "#e0bb78", fillOpacity: 0.18, stroke: "#f0d39b", strokeWidth: 0.7, pointRadius: 2 },
   },
+  {
+    id: "ice",
+    kind: "vector",
+    name: "Ice",
+    order: 15,
+    defaultVisible: false,
+    locked: true,
+    selector: {},
+    style: { fill: "#e8f2f8", fillOpacity: 0.82, stroke: "#c5d8e6", strokeWidth: 0.4, pointRadius: 2 },
+  },
 ]);
 
 function publish(nextStatus: string, detail: unknown = null) {

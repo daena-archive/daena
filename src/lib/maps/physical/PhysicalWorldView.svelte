@@ -4,6 +4,7 @@ import {
   RENDERER_UNAVAILABLE,
   createNativeVectorEditor,
   type NativeVectorEditor,
+  type NativeVectorView,
 } from "../native-vector/runtime";
 import { physicalWorldOverlayCoordinates } from "../native-vector/coordinates";
 import type { VectorFeatureCollection, VectorLayerDefinition } from "../native-vector/types";
@@ -23,10 +24,22 @@ let {
 let host = $state<HTMLDivElement | null>(null);
 let notice = $state("");
 let editor = $state<NativeVectorEditor | null>(null);
+let view = $state<NativeVectorView | null>(null);
+
+function backgroundFrom(canvas: HTMLCanvasElement | null) {
+  return canvas
+    ? {
+        url: "",
+        canvas,
+        width: canvas.width,
+        height: canvas.height,
+        coordinates: physicalWorldOverlayCoordinates(),
+      }
+    : null;
+}
 
 $effect(() => {
   const container = host;
-  const canvas = raster;
   if (!container) return;
   const created = untrack(() =>
     createNativeVectorEditor(container, {
@@ -44,16 +57,12 @@ $effect(() => {
       onDiagnostic(code, detail) {
         if (code === RENDERER_UNAVAILABLE) notice = detail;
       },
-      background: canvas
-        ? {
-            url: "",
-            canvas,
-            width: canvas.width,
-            height: canvas.height,
-            coordinates: physicalWorldOverlayCoordinates(),
-          }
-        : null,
+      background: backgroundFrom(raster),
       projection: "globe",
+      initialView: view,
+      onViewChange(next) {
+        view = next;
+      },
     }),
   );
   if ("error" in created) {
@@ -74,6 +83,10 @@ $effect(() => {
   layers;
   collection;
   current.syncLayers(layers);
+});
+
+$effect(() => {
+  editor?.setBackground(backgroundFrom(raster));
 });
 
 $effect(() => {
@@ -113,4 +126,3 @@ $effect(() => {
   padding: 0.55rem 1rem;
 }
 </style>
-

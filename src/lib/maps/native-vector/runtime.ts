@@ -44,12 +44,28 @@ export function liveNativeVectorEditorCount() {
   return liveEditors.size;
 }
 
+export type NativeVectorBackground = {
+  url: string;
+  width: number;
+  height: number;
+  canvas?: HTMLCanvasElement;
+  coordinates?: ImageOverlayCoordinates;
+};
+
+export type NativeVectorView = {
+  center: [number, number];
+  zoom: number;
+  bearing: number;
+  pitch: number;
+};
+
 export type NativeVectorEditor = {
   workerUrl: string;
   objectUrls: string[];
   setMode: (mode: VectorDrawMode) => void;
   switchLayer: (layerId: string) => void;
   syncLayers: (layers: readonly VectorLayerDefinition[]) => void;
+  setBackground: (background: NativeVectorBackground | null) => void;
   setBackgroundVisible: (visible: boolean) => void;
   applyView: (center: [number, number], zoom: number) => void;
   flush: () => void;
@@ -157,14 +173,10 @@ export function createNativeVectorEditor(
     onDirty?: () => void;
     onDiagnostic?: (code: string, detail: string) => void;
     onSelect?: (feature: VectorFeature | null) => void;
-    background?: {
-      url: string;
-      width: number;
-      height: number;
-      canvas?: HTMLCanvasElement;
-      coordinates?: ImageOverlayCoordinates;
-    } | null;
+    background?: NativeVectorBackground | null;
     projection?: "mercator" | "globe";
+    initialView?: NativeVectorView | null;
+    onViewChange?: (view: NativeVectorView) => void;
   },
 ): NativeVectorEditor | { error: typeof RENDERER_UNAVAILABLE; detail: string } {
   if (!webgl2Available()) {
@@ -187,8 +199,10 @@ export function createNativeVectorEditor(
     map = new maplibregl.Map({
       container,
       style,
-      center: globe ? [0, 0] : [longitude, latitude],
-      zoom: globe ? Math.min(session.zoom, 1.25) : session.zoom,
+      center: session.initialView?.center ?? (globe ? [0, 0] : [longitude, latitude]),
+      zoom: session.initialView?.zoom ?? (globe ? Math.min(session.zoom, 1.25) : session.zoom),
+      bearing: session.initialView?.bearing ?? 0,
+      pitch: session.initialView?.pitch ?? 0,
       renderWorldCopies: false,
       attributionControl: false,
       maxPitch: globe ? 85 : 0,
@@ -216,6 +230,8 @@ export function createNativeVectorEditor(
   let hoveredId: string | number | null = null;
   let mapSelectedId: string | number | null = null;
   let terraSelectedId: string | number | null = null;
+  let currentBackground = session.background ?? null;
+  let backgroundVisible = true;
 
   const styleNotLoaded = (error: unknown) =>
     /style is not done loading/i.test(error instanceof Error ? error.message : String(error));
@@ -277,7 +293,7 @@ export function createNativeVectorEditor(
   };
 
   const applyBackground = () => {
-    const background = session.background;
+    const background = currentBackground;
     if (!background || disposed || map.getSource(IMAGE_SOURCE_ID)) return;
     const coordinates = background.coordinates ?? imageOverlayCoordinates(background.width, background.height);
     if (background.canvas) {
@@ -300,17 +316,45 @@ export function createNativeVectorEditor(
     } else {
       map.addLayer({ id: IMAGE_LAYER_ID, type: "raster", source: IMAGE_SOURCE_ID });
     }
+    map.setLayoutProperty(IMAGE_LAYER_ID, "visibility", backgroundVisible ? "visible" : "none");
+  };
+
+  const replaceBackground = () => {
+    if (map.getLayer(IMAGE_LAYER_ID)) map.removeLayer(IMAGE_LAYER_ID);
+    if (map.getSource(IMAGE_SOURCE_ID)) map.removeSource(IMAGE_SOURCE_ID);
+    applyBackground();
+  };
+
+  const emitView = () => {
+    if (disposed) return;
+    const center = map.getCenter();
+    session.onViewChange?.({
+      center: [center.lng, center.lat],
+      zoom: map.getZoom(),
+      bearing: map.getBearing(),
+      pitch: map.getPitch(),
+    });
   };
 
   const fitContent = () => {
     if (disposed) return;
+    if (session.initialView) {
+      map.jumpTo({
+        center: session.initialView.center,
+        zoom: session.initialView.zoom,
+        bearing: session.initialView.bearing,
+        pitch: session.initialView.pitch,
+      });
+      return;
+    }
     if (session.projection === "globe") {
       map.jumpTo({ center: [0, 0], zoom: 1.25, pitch: 0, bearing: 0 });
       return;
     }
-    if (session.background) {
+    if (currentBackground) {
       const [northWest, northEast, southEast, southWest] =
-        session.background.coordinates ?? imageOverlayCoordinates(session.background.width, session.background.height);
+        currentBackground.coordinates ??
+        imageOverlayCoordinates(currentBackground.width, currentBackground.height);
       map.fitBounds(
         [
           [
@@ -515,6 +559,7 @@ export function createNativeVectorEditor(
   if (map.isStyleLoaded()) onStyleLoad();
   map.on("mousemove", onHover);
   map.on("click", onMapClick);
+  map.on("moveend", emitView);
   map.on("error", (event) => {
     const message = event.error?.message ?? "MapLibre renderer error";
     if (/webgl/i.test(message) || /context/i.test(message)) {
@@ -565,15 +610,25 @@ export function createNativeVectorEditor(
           session.onDiagnostic?.(RENDERER_UNAVAILABLE, "Native vector style must not request remote URLs.");
           return;
         }
-        const existing = map.getStyle()?.layers ?? [];
-        for (const layer of existing) {
-          if (layer.id.startsWith("daena-vector-") && map.getLayer(layer.id)) map.removeLayer(layer.id);
-        }
-        for (const layer of generated.layers) {
-          if (layer.id.startsWith("daena-vector-") && !map.getLayer(layer.id)) {
-            if (map.getLayer("daena-hover-fill")) map.addLayer(layer, "daena-hover-fill");
-            else map.addLayer(layer);
+        const wanted = new Map(
+          generated.layers
+            .filter((layer) => layer.id.startsWith("daena-vector-"))
+            .map((layer) => [layer.id, layer]),
+        );
+        for (const layer of map.getStyle()?.layers ?? []) {
+          if (!layer.id.startsWith("daena-vector-")) continue;
+          const next = wanted.get(layer.id);
+          if (!next) {
+            map.removeLayer(layer.id);
+            continue;
           }
+          const visibility = next.layout && "visibility" in next.layout && next.layout.visibility === "none" ? "none" : "visible";
+          map.setLayoutProperty(layer.id, "visibility", visibility);
+          wanted.delete(layer.id);
+        }
+        for (const layer of wanted.values()) {
+          if (map.getLayer("daena-hover-fill")) map.addLayer(layer, "daena-hover-fill");
+          else map.addLayer(layer);
         }
         const baseVisibility = nativeBaseLayerVisibility(layers);
         if (map.getLayer("daena-base-fill")) {
@@ -585,7 +640,12 @@ export function createNativeVectorEditor(
         applySources(session.activeLayerId);
       });
     },
+    setBackground(background) {
+      currentBackground = background;
+      whenStyleReady(replaceBackground);
+    },
     setBackgroundVisible(visible) {
+      backgroundVisible = visible;
       whenStyleReady(() => {
         if (map.getLayer(IMAGE_LAYER_ID)) {
           map.setLayoutProperty(IMAGE_LAYER_ID, "visibility", visible ? "visible" : "none");
@@ -639,6 +699,7 @@ export function createNativeVectorEditor(
       map.off("style.load", onStyleLoad);
       map.off("mousemove", onHover);
       map.off("click", onMapClick);
+      map.off("moveend", emitView);
       clearFeatureState(hoveredId, "hover");
       clearFeatureState(mapSelectedId, "selected");
       try {

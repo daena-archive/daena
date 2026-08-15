@@ -194,6 +194,8 @@ export interface PhysicalHydrologyProducts {
   watershedId: number[];
   basinByCell: number[];
   lakeCells: boolean[];
+  iceCells: boolean[];
+  iceThicknessMm: number[];
   shelfCells: boolean[];
   islandId: number[];
   basins: Array<{

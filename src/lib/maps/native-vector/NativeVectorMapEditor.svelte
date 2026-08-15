@@ -261,8 +261,6 @@ async function loadPhysicalEpoch(offset: number) {
     const products = await project.physicalMapDerivedEpoch(mapId, offset, requestId);
     if (request !== epochRequest) return;
     applyHistoricalProducts(products);
-    await tick();
-    mountEditor();
     epochNotice = `Showing ${formatEpoch(products.epochOffsetYears)} · deterministic derived playback`;
     epochPhase = "";
     epochProgress = null;
@@ -434,6 +432,7 @@ async function load() {
         "rivers",
         "watersheds",
         "islands",
+        "ice",
       ]);
       layers = layers.map((layer) =>
         immutablePhysicalLayerIds.has(layer.id) ? { ...layer, defaultVisible: false } : layer,

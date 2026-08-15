@@ -7361,6 +7361,8 @@ fn physical_hydrology_products(
         "watershedId": hydrology.watershed_id,
         "basinByCell": hydrology.basin_by_cell,
         "lakeCells": hydrology.lake_cells,
+        "iceCells": hydrology.ice_cells,
+        "iceThicknessMm": hydrology.ice_thickness_mm,
         "shelfCells": hydrology.shelf_cells,
         "islandId": hydrology.island_id,
         "basins": hydrology.basins.iter().map(|basin| serde_json::json!({

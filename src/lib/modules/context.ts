@@ -353,7 +353,11 @@ export function buildModuleContext(
       listShared: async (entityId: UUID, namespace: string): Promise<FieldRecord[]> => {
         checkCapability(manifest, "field.read:shared");
         if (!namespace.trim()) throw new Error("Shared field namespace is required");
-        const fields = await rpc.call<RawField[]>("field.list", { entityId, namespace });
+        const fields = await rpc.call<RawField[]>("field.list", {
+          entityId,
+          namespace,
+          __shared_only: true,
+        });
         return fields.map((field) => ({
           entityId: toUUID(field.entity_id),
           namespace: field.namespace,

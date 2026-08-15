@@ -1197,7 +1197,710 @@ natural events without changing the source or derived hazard cache.
   the same public entity/field contracts when enabled. Timeline reads the
   explicitly shared `maps.physicalChronology` field and keeps relative offsets
   relative; it continues to read that field when Maps navigation is disabled,
-  and no event is owned by or deleted with either optional module.
+  and no event is owned by or deleted with either optional module. The
+  `listShared` bridge filters results to fields explicitly declared
+  `shared: true` by the owning manifest.
+
+## Product-spec reconciliation after ADRs 0014-0021
+
+This section compares the original native physical-map product specification
+with this plan and the decisions recorded in ADRs 0014 through 0021. It is
+normative for corrective work and Iteration 8. An ADR's `Implemented` status
+means that its bounded slice exists; it does not mean that a feasibility
+surrogate is equivalent to the final product model or that every product exit
+gate has passed.
+
+Agents must preserve the distinction between:
+
+- an invariant that already matches the product;
+- a deliberate implementation or architecture choice that still satisfies the
+  product requirement;
+- a meaningful deviation that needs an explicit compatibility or authority
+  decision; and
+- a gross simplification that is useful as scaffolding but must not be
+  presented as completion of the corresponding physical model.
+
+### Invariants that must not regress
+
+The plan and ADRs preserve the defining product invariants:
+
+1. Physical causes precede visible geography. Plates, crust, tectonic
+   deformation, climate, runoff, erosion, water storage, and drainage remain
+   upstream of mountains, coastlines, islands, lakes, rivers, and hazards.
+2. The accepted world has one immutable numeric signed elevation/bathymetry
+   field. Land, ocean, and islands are classifications relative to sea level,
+   not authored base polygons.
+3. Large physical calculations and validation run in deterministic Rust.
+   Frontend code configures jobs and renders derived products; it does not
+   become an alternative canonical generator.
+4. One request presents one world. Bounded deterministic retries repair named
+   hard-invalid states and must never become hidden candidate scoring.
+5. Canonical state and materialized history survive restart and clean
+   checkpoint recovery. Derived climate, hydrology, contours, render arrays,
+   and hazard samples remain disposable.
+6. Longitude wraps, spherical cell area and geodesic distance are used where
+   physical quantities require them, and the pole policy is explicit.
+7. Accepted terrain does not continue tectonic or erosional evolution through
+   historical time. Historical geography changes through climate, land ice,
+   thermal expansion, inland water, and sea level.
+8. Authored overlays and shared Timeline/Lore records remain ordinary Daena
+   data above the physical source. Editing an overlay cannot rewrite the
+   `.pworld` source.
+9. Materialized natural events are durable shared records with stable
+   provenance. They are not cache entries and are not regenerated when a
+   hazard derivation changes.
+
+These are product boundaries, not iteration-specific conveniences. A proposed
+optimization or schema change that weakens one requires product-level review,
+not only a generator-version increment.
+
+### Meaningful deviations requiring an explicit decision
+
+#### Canonical state is split between source bytes and descriptor settings
+
+The product specification requires the generator version, settings, total
+water inventory, climate-history parameters, and physical causes to be
+persisted as canonical physical state. The plan also says that the single
+canonical source asset stores everything needed to define the world. The
+implemented v2 layout documented by ADR 0016 does not include all of that
+state: reference water and historical forcing have been carried in generation
+descriptor settings by ADRs 0015 and 0020.
+
+A descriptor plus its source asset can be a valid composite canonical record,
+but documentation, validation, hashing, export, and recovery must all treat it
+as one indivisible authority. The two possible contracts are retained for
+traceability; the production resolution is recorded immediately below.
+
+- move all physical replay inputs into a new source format and keep the
+  descriptor as an indexed summary; or
+- formally define canonical physical state as the validated descriptor/source
+  pair, include normalized physical settings in the canonical identity hash,
+  and reject any mismatched or incomplete pair atomically.
+
+Agents must not silently copy missing values from current defaults. Tests must
+change one descriptor-carried water or forcing value, prove that the canonical
+identity and derived cache key change, and prove that clean checkpoint recovery
+preserves the exact pair.
+
+### Production resolution
+
+The production contract is the second option above: canonical physical state is
+the validated descriptor/source pair. This is an authority decision, not a
+permission to treat either half as optional.
+
+- The source asset remains the immutable `physical-world-v2` terrain and cause
+  record. Its bytes are not reinterpreted in place.
+- The descriptor is the other half of that record. The identity manifest takes
+  provider/source-format and generator identity from the descriptor, takes
+  grid, radius, terrain, plate/crust, boundary, center, target-land, and
+  reference-sea-level values from decoded source bytes, and takes normalized
+  presets, reference water inventory, and historical forcing from mandatory
+  descriptor generation metadata. Map names, presentation settings, asset IDs,
+  derivation versions, and disposable cache metadata are excluded. Derivation
+  versions belong in cache keys because changing one must not create a
+  different accepted physical world.
+- Every value duplicated in source bytes and descriptor metadata has one
+  declared owner and an exact equality rule. For `physical-world-v2`, decoded
+  source values for schema/adapter version, grid, radius, seed, retry index,
+  target land fraction, and sea level are authoritative; acceptance and reopen
+  reject a descriptor that disagrees. Descriptor-only reference water,
+  normalized presets, and historical forcing are mandatory and may never be
+  supplied from contemporary defaults.
+- Define a versioned `PhysicalIdentityManifestV1` in Rust. Encode it with fixed
+  field order, explicit integer widths, little-endian integers, length-prefixed
+  UTF-8 strings, and no floating-point or map values. Compute:
+
+  ```text
+  SHA-256(
+    "daena-physical-identity-v1\0"
+    + u32_le(manifest byte length)
+    + manifest bytes
+    + u64_le(source byte length)
+    + source bytes
+  )
+  ```
+
+  Do not hash general descriptor JSON, concatenate unframed values, or
+  implement normalization independently in TypeScript.
+- Acceptance validates and commits the pair atomically. Reopen, checkpoint
+  export/import, and clean rebuild validate the same pair before publishing it
+  to callers. Missing, malformed, mismatched, or stale halves are rejected.
+  Derived cache keys use the composite identity plus only the derivation
+  versions and normalized request inputs relevant to that product.
+- Accepted physical settings are immutable. Changing reference water,
+  historical forcing, or another identity field creates a new temporary world
+  and accepted map; it is not an in-place descriptor edit. Recovery retains the
+  last complete accepted pair and never repairs it from current defaults.
+
+The v1 disposition is a separate release blocker. Inventory all portable
+checkpoints and supported pre-release project data. If any accepted v1 source
+can exist, keep a strict read-only v1 adapter that opens and re-derives only
+v1-supported products, or provide an explicit user-approved migration to a new
+map identity while retaining the original bytes. If no accepted v1 data can
+exist, record release and fixture evidence in a superseding ADR and keep a
+typed unsupported-version diagnostic. Do not infer v2 tectonics that v1 never
+stored.
+
+The following production upgrades are release prerequisites. Until each gate
+passes, the implementation must keep its existing model-category label; a
+green feasibility fixture does not complete the feature.
+
+1. **Resolution and level of detail.** Define author-visible resolution tiers
+   from minimum resolvable feature sizes, with explicit source, derived, render,
+   CPU, memory, and cancellation budgets. The supported tier must resolve the
+   controlled trench/arc, rift shoulders, shelf/slope, drainage divide,
+   tributaries, lake/sill, strait, and small-island fixtures. A larger raster
+   is not accepted as the sole remedy; the chosen sampling/LOD strategy must
+   retain seam, pole, and spherical-area correctness.
+2. **Tectonics.** Replace nearest-site-visible plate geometry with deterministic
+   irregularized boundaries and causal crust/relief construction. Craton
+   attraction, unrelated-group repulsion, detached terranes, continental
+   grouping, shelf continuity, and directional hotspot chains must be measured
+   from the cause fields and not inferred from a rendered diagnostic. The
+   morphology and boundary cross-section gates in this section become required
+   production fixtures.
+3. **Drainage and erosion.** Use a bounded, versioned stream-power evaluation
+   with declared units and calibrated `erodibility`, discharge exponent, and
+   slope exponent. Use aspect/facet-based D-infinity routing, or document an
+   equivalent continuous-direction solver with the same rotational behavior.
+   Keep Priority-Flood as a temporary routing surface only; retain real
+   depressions and prove rotational invariance, drainage-angle distribution,
+   basin-shape behavior, and multi-resolution convergence.
+4. **Nested water topology.** Replace downhill-trace single-sink labeling with
+   a nested depression hierarchy containing sub-basins, spill saddles, parent
+   merges, and ocean destinations. `merged` is reserved for a topological merge;
+   forwarding excess to a parent is labeled `overflow` or `spill`.
+5. **Coupled water balance.** Solve inland storage, lake area/level, overflow,
+   river discharge, and ocean level in one bounded fixed-point iteration. A
+   sea-level change must recompute all affected connected basins rather than
+   reuse storage from the initial solve. Use a state-dependent evaporation term
+   based at minimum on lake area and derived climate, with compatible units for
+   precipitation, inflow, evaporation, storage, and outlet discharge. Prove
+   convergence, conservation, and initial-guess independence for nested,
+   chained, endorheic, coastal-capture, and merge/split fixtures.
+6. **Contour and polygon geometry.** Replace cell-edge presentation segments
+   with seam-safe interpolated contour extraction on the spherical grid. Lock
+   the ambiguous-cell rule, pole and antimeridian representation, ring winding,
+   hole ownership, and bounded simplification. Validate closure,
+   self-intersection, connectivity, straits, island/lake preservation, and
+   drainage outlets before MapLibre receives the result.
+7. **Historical forcing.** Replace the triangle wave with a versioned smooth
+   sum of bounded low-frequency components whose amplitudes, periods, and
+   phases are persisted. Use a bounded smooth equilibrium land-ice response,
+   explicit lag integration, and thermal expansion derived from ocean volume
+   and temperature change with declared units. Require timestep-refinement,
+   continuity, hysteresis, extrema, and long-interval conservation gates.
+8. **Hazard semantics.** Make volcanic origin, activity class, and long-term
+   rate either canonical center properties or explicitly versioned derivations
+   from all canonical causes. The display cap may sample output but must not
+   change the hazard field or event distribution. Name the Poisson time unit,
+   account for all materially relevant sources before sampling, preserve the
+   independent hazard seed and accepted-event provenance, and label outputs as
+   fictional generated hazards.
+
+### Executable production-upgrade instructions
+
+The numbered requirements above are outcomes. Agents must execute the following
+work packets in order. Each packet ends at its own gate; do not combine all
+model changes into one unreviewable generator-version bump.
+
+#### Packet 0: promote the pure model and lock identity
+
+1. Promote `crates/daena-physical-spike` to the production physical-model crate
+   before adding more algorithms. The production crate must retain no Tauri,
+   SQLite, Svelte, MapLibre, project-store, or plugin-host dependency. Keep
+   Tauri command adaptation in `src-tauri`, acceptance and identity validation
+   in `daena-core`, and all numeric generation/derivation in the pure crate.
+2. Implement `PhysicalIdentityManifestV1` and its sole encoder in
+   `crates/daena-core/src/maps/physical.rs`. Export the resulting identity to
+   host/client responses as an opaque lowercase SHA-256 string. TypeScript may
+   compare or transmit it but may not recreate it.
+3. Parse source bytes before descriptor validation. Cross-check every duplicate
+   field and reject the pair with a stable field-specific diagnostic. Validate
+   mandatory descriptor-only values without defaults. Use this one validator
+   from generation acceptance, plugin transfer commit, reopen, checkpoint
+   export/import, and clean rebuild.
+4. Add identity fixtures for each individual manifest field, source-byte
+   changes, reordered irrelevant JSON keys, changed names/presentation fields,
+   malformed lengths, missing forcing/water values, duplicate-field mismatch,
+   cache deletion, and checkpoint reconstruction. Relevant physical changes
+   must change the identity; irrelevant presentation changes must not.
+5. Resolve v1 data before changing source format again. A migration may decode
+   and preserve v1, but it may not manufacture absent plate, crust, boundary,
+   or volcanic state and call the result equivalent.
+
+Exit only when all acceptance paths call the same pair validator, exact identity
+hashes match on supported targets, and no accepted identity field has an
+in-place mutation route.
+
+#### Packet 1: choose physical resolution from feature requirements
+
+1. Define fixture features in metres before choosing dimensions: trench
+   half-width and arc offset, collision-belt width, rift floor and shoulders,
+   shelf and slope width, minimum retained strait and island width, lake sill
+   width, drainage-divide width, and minimum displayed tributary catchment.
+   Store these values in a reviewed fixture specification rather than in UI
+   pixels.
+2. Run the same seeds at `256 x 128`, `512 x 256`, `1024 x 512`, and
+   `2048 x 1024`. For each latitude band, calculate physical cell width and
+   require at least four samples across every minimum retained feature and at
+   least eight across a feature whose internal shape is evaluated. A tier that
+   cannot satisfy this rule is preview-only.
+3. Select exactly one production default and one bounded maximum from measured
+   results. Record source bytes, peak live bytes by stage, derived bytes, wall
+   time, cancellation latency, coastline load time, and MapLibre frame/update
+   time on each supported reference target. Do not retain the ADR 0014
+   `128 x 64` maximum as a production maximum merely because it is fast.
+4. Generate canonical terrain once at the selected physical resolution.
+   Lower-resolution previews, raster pyramids, simplified vectors, and viewport
+   products are derived LODs keyed by the composite identity; they are not
+   independently generated worlds and never feed back into hydrology.
+5. Reuse stage buffers and process local kernels in deterministic row bands or
+   tiles. Halo width must be declared per algorithm. Global reductions use a
+   fixed tile order and wide accumulators. Parallel execution may change timing
+   but not bytes, reduction order, or cancellation semantics.
+6. If the selected dimensions, metadata, or random-access requirements exceed
+   the strict v2 layout/budget, define `physical-world-v3`. Use independently
+   bounded, checksummed sections for the field and cause arrays; validate all
+   section offsets and lengths before allocation. Do not loosen v2 limits or
+   reinterpret its header.
+
+The gate requires cross-resolution feature metrics, exact supported-target
+hashes, native rendered seam/pole fixtures, and measured budgets. Visual
+preference alone cannot select the tier.
+
+#### Packet 2: replace the tectonic scaffold
+
+Implement these steps in `tectonics.rs`, keeping each intermediate field
+temporary unless the source schema explicitly persists it:
+
+1. Generate approximately even plate sites, then assign ownership with a
+   spherical multi-source cost field. Irregularize boundaries by adding a
+   named-seed, low-frequency correlated cost perturbation before ownership is
+   finalized; never perturb an extracted boundary afterward. Preserve complete
+   ownership, reciprocal adjacency, longitude wrap, and pole connectivity.
+2. Build explicit shared boundary segments from ownership transitions. Give
+   each segment a stable orientation-independent key. Evaluate both plates'
+   Euler-pole velocities at the segment midpoint, project relative velocity
+   into boundary-normal and tangent components, and classify with versioned
+   thresholds and deterministic tie rules.
+3. Grow continental crust from grouped cratons with a priority expansion whose
+   cost terms are separately measurable: geodesic distance, correlated
+   lithology variation, plate-crossing cost, same-group attraction,
+   other-group repulsion, and occupied-crust cost. Generate detached terranes
+   through their own named seed and bounded area budget. Continental crust must
+   be classified independently of sea level.
+4. Calculate relief as named signed fields, not one opaque noise sum:
+   isostatic/crust baseline, collision uplift, trench subsidence, inland
+   volcanic arc, oceanic arc, ridge/age bathymetry, rift floor, rift shoulders,
+   transform minor relief, hotspot uplift, and restrained detail. Use geodesic
+   distance to the appropriate boundary side and preserve the sign and offset
+   of every contribution in controlled cross-sections.
+5. For hotspots, derive the chain direction from the owning plate's synthetic
+   surface velocity. Place age-ordered seamount centers backward along that
+   trajectory with monotonically decaying activity/relief. Whether a center is
+   an island remains solely `elevation > sea level`.
+6. Persist only the final fields and cause metadata required to reproduce
+   hazards and derive geography. Add a generator/source version when persisted
+   records change; a diagnostic-layer version is insufficient.
+
+Required tests include ownership completeness, adjacency reciprocity, pair
+reversal invariance, no seam/pole discontinuity, non-Voronoi boundary
+morphology, craton-group connectedness and terrane bounds, submerged
+continental shelves, every tectonic cross-section, hotspot age/direction, and
+cause-field-to-final-relief accounting.
+
+#### Packet 3: implement continuous drainage and physical erosion
+
+Implement routing and erosion in `evolution.rs` with explicit SI units:
+
+1. Keep Priority-Flood output separate from real elevation. Record fill depth
+   and flood order. Use ocean cells and legitimate basin outlets as seeds;
+   deterministic index order breaks equal-priority ties.
+2. Compute surface gradient on the local tangent plane using physical
+   east-west and north-south distances. Evaluate the triangular facets around
+   each cell as D-infinity does. Route to the steepest downslope facet and split
+   between its two bounding neighbors by angle. Use a reviewed polar stencil;
+   never use a zero-width longitude distance at a pole.
+3. Quantize each split to integer weights that sum exactly to one million ppm.
+   Send the remainder to the deterministically larger unquantized weight.
+   Plateau routing follows flood order and the resulting graph must be acyclic.
+4. Accumulate local runoff volume in reverse topological order with a wide
+   integer or reviewed fixed-point accumulator. Conservation is exact up to the
+   declared final-unit rounding; no percent-of-world tolerance may hide lost
+   flow.
+5. Evaluate stream-power incision as:
+
+   ```text
+   incision_rate_m_per_year =
+     K * discharge_m3_per_second^m * slope^n
+   ```
+
+   Store `K`, `m`, `n`, uplift rate, diffusivity, timestep, and iteration count
+   in one versioned evolution preset. Convert annual runoff to discharge before
+   applying the equation. Use a deterministic reviewed power implementation
+   and quantize only at declared stage boundaries.
+6. Choose timestep from stability bounds. Limit incision to a declared
+   fraction of local removable relief per step; apply hillslope diffusion under
+   its explicit stability limit; then apply continuing tectonic uplift. Reject
+   non-finite values, negative discharge, unstable steps, and out-of-range
+   terrain instead of clamping an invalid world into acceptance.
+7. Recompute routing, accumulation, and climate/runoff at the documented
+   cadence during evolution. A preset may reduce cadence only after fixtures
+   prove that the approximation does not change drainage topology beyond its
+   locked tolerance.
+
+Rotate analytic planes, cones, ridges, and synthetic watersheds through several
+longitudes and latitudes. Gate on outlet identity, drainage area, angle
+distribution, basin compactness, and incision volume rather than the old
+average-largest-weight proxy. Compare each production tier with its next finer
+fixture and lock convergence thresholds before replacing generator version 6.
+
+#### Packet 4: implement nested basins and a coupled water solve
+
+Replace the current raw-sink model in `hydrology.rs` with a depression tree and
+one explicit steady-state solver:
+
+1. Build a depression hierarchy from real final elevation using
+   Priority-Flood/Fill-Spill-Merge labeling. Every node records its minimum,
+   cell membership or bounded membership representation, spill saddle, spill
+   elevation, parent, children, ocean destination, and cumulative
+   volume-versus-level curve. Preserve equal-saddle tie rules.
+2. Construct each volume curve from exact spherical cell areas and elevation
+   intervals. Lake area and volume at level `h` are evaluated from that curve;
+   a lake may not occupy terrain above `h`. A parent merge occurs only when
+   children reach the shared saddle.
+3. Use one outer state iteration for each current or historical epoch:
+
+   ```text
+   start from bracketed sea level and prior/empty lake state
+   -> classify ocean-connected cells
+   -> derive climate, precipitation, evaporation inputs, and runoff
+   -> route runoff and solve basin nodes bottom-up
+   -> compute lake levels, areas, storage, overflow, and outlet discharge
+   -> compute land ice and thermal expansion for the epoch
+   -> solve ocean level from remaining ocean water by bounded bisection
+   -> rebuild any connectivity changed by the new ocean level
+   -> repeat until sea level, inland storage, and basin states all converge
+   ```
+
+4. Calculate precipitation and evaporation as volumes per timestep:
+   `depth * exact spherical water-surface area`. The production evaporation
+   model must use lake area and derived temperature plus a declared bounded
+   humidity/wind or effective aridity term. Calibrate its coefficients as an
+   empirical model; do not retain a constant fraction of direct precipitation.
+5. Use under-relaxation only as a versioned solver parameter. Detect two-state
+   oscillation and non-convergence. The water residual tolerance must be
+   derived from integer/field quantization and solver tolerance, not a loose
+   percentage selected to pass fixtures.
+6. After convergence, derive river channels from final discharge. Preserve one
+   downstream channel except an explicitly modeled future delta. Lake entries,
+   spill outlets, junctions, endorheic terminals, and ocean mouths must share
+   node identities with the solved basin/drainage graph.
+
+Run the solver from low, high, and prior-epoch initial guesses. Require the same
+final state for nested bowls, chained overflow, endorheic drying, coastal
+capture, saddle merge, lake disappearance, and historical merge/split
+fixtures. Verify reservoir conservation at every iteration and final topology
+after cache deletion/rebuild.
+
+#### Packet 5: produce topology-preserving vectors
+
+Implement final contouring as a separate derived module; do not mix renderer
+geometry into `hydrology.rs`:
+
+1. Add a ghost longitude column copied from column zero and contour each scalar
+   threshold with interpolated marching squares. Use the asymptotic decider for
+   ambiguous `0101`/`1010` cells. Use marching triangles or an equivalent
+   declared cap rule for polar cells.
+2. Interpolate crossings from the underlying scalar values, not cell centers
+   or a post-hoc jitter. Quantize coordinates only after interpolation. Canonical
+   terrain and water levels remain unchanged.
+3. Join segments by stable edge identity, assemble closed rings, unwrap
+   longitude while assembling, then split/wrap antimeridian output according to
+   the locked GeoJSON policy. Assign winding and holes from spherical
+   containment, not planar bounding boxes near the seam or poles.
+4. Derive land, ocean, island, lake, shelf, and bathymetric products from the
+   same threshold topology so adjacent products cannot disagree. Snap a river
+   mouth or lake outlet only to its analytically intersected contour within its
+   final drainage cell; otherwise fail validation.
+5. Simplify in a local geodesic metric with protected vertices for saddles,
+   junctions, entries, exits, mouths, narrow straits, and minimum islands.
+   Reject a simplification that changes component count, hole ownership, or
+   protected connectivity.
+
+Tests must include every marching-squares case, exact-threshold vertices,
+ambiguous saddles, antimeridian rings and holes, polar caps, nested islands and
+lakes, narrow straits, river mouths, self-intersection rejection, and
+round-trip rendering in the packaged native host.
+
+#### Packet 6: replace historical forcing and ice placeholders
+
+Implement the physical history model in `history.rs`:
+
+1. Persist at least three independently derived forcing components. For
+   integer physical time `t`, evaluate:
+
+   ```text
+   forcing(t) = sum(amplitude_i * cos(
+     2 * pi * (t + phase_i) / period_i
+   ))
+   temperature(t) = reference_temperature + sensitivity * forcing(t)
+   ```
+
+   Bound amplitudes, periods, phases, and total temperature. Use the project's
+   deterministic numeric policy; platform-default transcendental drift may not
+   change quantized products or supported-target hashes.
+2. Use a smooth bounded equilibrium land-ice response, initially:
+
+   ```text
+   equilibrium_ice(T) =
+     maximum_land_ice / (1 + exp((T - midpoint) / transition_width))
+   ```
+
+   Integrate first-order lag with a fixed physical timestep or the analytic
+   exponential step. Persist all parameters needed to replay it from the
+   reference epoch and bound the integration interval/work.
+3. Compute thermal expansion with declared SI units:
+   `delta_volume = alpha * ocean_volume * delta_temperature`. Use it inside the
+   coupled water iteration because ocean volume and sea level are not
+   independent.
+4. Re-run climate, drainage, nested lakes, rivers, coastlines, and connectivity
+   at each requested epoch. Plates, crust, volcanic centers, and final terrain
+   hashes must remain unchanged.
+5. Increment the historical derivation version and cache key, not the source
+   format, unless persisted forcing parameters or identity metadata require a
+   new canonical manifest/source contract.
+
+Gate continuity of forcing and its first derivative, bounded extrema,
+timestep refinement, ice lag and hysteresis, thermal-expansion sign, water
+conservation, epoch-zero replay, land bridges, shelf exposure, lake
+merge/split, cancellation, stale-response suppression, and cache rebuild.
+
+#### Packet 7: give hazards and events stable rate semantics
+
+Implement the full field in `hazards.rs` before limiting renderer features:
+
+1. For each boundary segment, calculate an annual generated earthquake rate
+   contribution from its class, relative speed, length/represented area, and
+   geodesic decay. Evaluate all sources, or use a deterministic spatial index
+   with a cutoff whose omitted maximum contribution is below a locked error
+   bound. Never select the strongest display sources before field evaluation.
+2. In the next source format that changes volcanic records, persist a stable
+   center ID, location, tectonic origin, activity class, and long-term generated
+   eruptions-per-model-year rate. For v2, derive those values with one versioned
+   function from existing immutable center/cause data and include that function
+   version in hazard/event provenance.
+3. Keep field resolution and display sampling separate. Select bounded display
+   features only after the complete field and metrics exist. Changing
+   `maxFeatures`, viewport, style, or legend must leave field hashes and event
+   samples unchanged.
+4. Define every event rate as events per physical model year. For interval
+   length `years`, use `lambda = annual_rate * years` in the Poisson model.
+   Sample location from normalized full-field rate mass, then sample earthquake
+   magnitude from the bounded Gutenberg-Richter model or eruption properties
+   from the named volcanic model.
+5. Preserve `hazardSeed` as an explicit materialization input independent from
+   geography. Persist source composite identity, hazard and event model
+   versions, annual local rate, interval, seed, sampled cell/center, and
+   `prediction: false` on every accepted event.
+
+Gate analytic single-source decay, source superposition, spatial-index error,
+boundary reversal, seam/pole behavior, rate-mass conservation, render-cap
+independence, Poisson mean over a fixed ensemble, magnitude-frequency ordering,
+event idempotency, and survival across hazard-version/cache changes.
+
+#### Packet 8: replace surrogate status with release evidence
+
+1. Extend `check:maps:physical` to run source/identity drift checks, pure-model
+   fixtures, property tests, core acceptance/recovery tests, Tauri command
+   tests, and frontend contracts. Keep release benchmarks and packaged-native
+   rendered checks as explicit additional gates where CI cannot exercise them.
+2. Maintain a checked-in fixture manifest containing source/generator/
+   derivation versions, input settings, exact canonical identity and source
+   hashes, invariant metrics, expected topology, and the reason for any golden
+   update. A changed hash without an intentional version/decision is a failure.
+3. Run exact canonical fixtures on macOS arm64, Linux x64, and Windows x64.
+   Derived floating products either quantize to exact cross-target bytes under
+   the numeric policy or are not accepted as deterministic products.
+4. Fuzz strict source sections, identity manifests, descriptor/source
+   mismatches, depression trees, contour assembly, GeoJSON limits, and cache
+   decoders. Add fault injection around temporary output, asset installation,
+   atomic acceptance, receipt replay, checkpoint export, and derived rebuild.
+5. Record product status per packet as `implemented`, `verified on target`, and
+   `product-complete`, with links to evidence. Remove a scaffold/heuristic label
+   only when that packet's complete gate passes.
+
+The implementation order is consequently: canonical pair identity and
+transactional validation; supported resolution/LOD and budgets; tectonic and
+drainage upgrades; nested coupled water; contour/polygon validation; smooth
+historical forcing; and hazard calibration. A change to accepted terrain or
+its interpretation requires a new source format or adapter. A change confined
+to disposable products requires a derivation-version increment and a
+delete/rebuild proof. No step may silently upgrade an accepted world.
+
+### Gross simplifications that remain corrective work
+
+The following choices are acceptable for bounded feasibility slices, but they
+do not yet fulfill the corresponding product behavior.
+
+#### Feasibility resolution is below feature resolution
+
+The `64 x 32` default and `128 x 64` maximum from ADR 0014 place cells hundreds
+of kilometres apart on an Earth-sized world. At that scale, drainage valleys,
+river corridors, lake spill points, continental shelves, volcanic-arc offsets,
+straits, and mountain-belt widths are mostly cell classifications rather than
+resolved geography. Increasing the same raster blindly is not the remedy.
+
+Before release, define an author-visible resolution and level-of-detail
+strategy from minimum resolvable physical features. Benchmark generation,
+source size, derived size, and rendering at that scale. Controlled fixtures
+must resolve, in separate cells or interpolated geometry, a trench/arc pair,
+rift shoulders, a shelf/slope transition, a drainage divide, tributary
+junctions, a lake and sill, a strait, and a small island. Feasibility-grid
+hashes may remain unit fixtures but cannot be the sole product-quality gate.
+
+#### Tectonic structure is still a scaffold
+
+Fibonacci-style plate sites are an acceptable approximately even seed
+distribution, but the ADRs do not demonstrate the required deterministic
+boundary irregularization or prove that final plate geometry has lost the
+visible nearest-site/Voronoi signature. The documented craton growth includes
+geodesic distance and correlated variation but does not yet establish related
+craton attraction, unrelated-group repulsion, detached terranes, or coherent
+continental grouping across plate boundaries. Persistent hotspots are centers;
+the required directional seamount/island-chain behavior is not demonstrated.
+
+Add numeric morphology gates for boundary straightness and junction regularity,
+continental connectedness and fragmentation, shelf continuity, and hotspot
+chain alignment. Add controlled cross-sections that distinguish continental
+collision, oceanic-continent subduction, oceanic-oceanic convergence, rifts,
+ridges, and transforms. A diagnostic layer looking plausible is supporting
+evidence, not proof of the cause chain.
+
+#### Erosion uses a surrogate rather than the specified stream-power model
+
+ADR 0018 correctly identifies its logarithmic bounded incision rule as a v1
+surrogate. It does not implement the specified
+`erodibility * discharge^m * slope^n` model near the documented calibration
+starting points. Likewise, the four-neighbor drop/distance blend is not
+automatically equivalent to aspect-based D-infinity routing, and the
+`grid_anisotropy_ppm` average-largest-weight metric with a `950,000 ppm` limit
+is too weak to establish absence of grid-aligned drainage.
+
+Replace the surrogate with a numerically bounded, versioned stream-power
+evaluation, or obtain a product decision that deliberately changes the model
+after comparative fixtures show equal or better geomorphology. Implement
+aspect/facet-based D-infinity or document and validate an equivalent
+continuous-direction method. Add rotational tests, drainage-angle histograms,
+basin-shape metrics, and multi-resolution convergence checks. Preserve
+Priority-Flood's temporary routing surface and the real depressions.
+
+#### Basin topology and water coupling are intentionally incomplete
+
+ADR 0019's one-sink-per-downhill-trace hierarchy is not the required nested
+Fill-Spill-Merge-equivalent topology. It can omit nested sub-depressions.
+`merged` currently means forwarding excess water rather than topological basin
+merge. More importantly, inland storage is frozen from the initial sea level
+while only ocean level is iterated. The product specification requires lake
+geometry/storage and sea level to be solved together until stable.
+
+Implement or adopt a bounded nested depression hierarchy that represents
+sub-basins, spill saddles, parent merges, and ocean destinations. During the
+water fixed point, recompute affected lake area, level, storage, and overflow
+when sea level or connected-basin state changes. Prove convergence and
+conservation from more than one initial guess. Fixtures must cover nested
+basins, chained overflow, an endorheic basin, a coastal lake captured by rising
+sea level, and a basin merge/split across historical epochs.
+
+The fixed `28%` of direct precipitation evaporation rule is also only a
+placeholder. Replace it with a bounded water-balance term that responds at
+least to lake area and derived climate, or explicitly narrow the product model
+and label the limitation in the UI. River inflow, precipitation, evaporation,
+storage, and outlet discharge must use compatible physical units.
+
+#### Cell-edge vectors are not final contour geometry
+
+ADR 0019 explicitly uses per-cell-edge boundaries rather than interpolated
+marching-squares-equivalent isolines. At the feasibility resolution this
+produces block geometry and does not by itself fulfill the intended coastline,
+lake-boundary, bathymetric-contour, and valid land/ocean polygon contracts.
+
+Add seam-safe interpolated contour extraction with an explicit ambiguous-cell
+policy, spherical/pole handling, ring assembly, winding and hole rules, and
+bounded simplification. Coastlines must remain the contour of
+`elevation = sea level`; smoothing may not invent or remove a strait, island,
+lake outlet, or drainage corridor. Validate polygons for closure,
+self-intersection, holes, antimeridian representation, and connectivity before
+feeding MapLibre.
+
+#### Historical climate is a non-smooth single-wave heuristic
+
+ADR 0020's bounded triangle wave is deterministic and causally connected to
+water storage, but it is not the product specification's smooth low-frequency
+sum of several long-period oscillations. Its corners introduce abrupt forcing
+derivative changes, and the ADR does not establish the specified smooth,
+bounded equilibrium ice response across the full range.
+
+Persist a versioned multi-component smooth forcing model with amplitudes,
+periods, and phases; implement a bounded smooth equilibrium land-ice response
+and explicit lag integration; and calculate thermal expansion from ocean
+volume and temperature change with declared units. Add timestep-refinement,
+phase-boundary continuity, hysteresis, extrema, and long-interval conservation
+tests. The UI must continue to call this generated physical chronology, not
+Earth orbital cycles or a prediction.
+
+#### Hazard rates need stable physical meaning
+
+ADR 0021 exposes normalized generated rates based on a bounded set of strongest
+sources. This is a valid read-only relative-hazard preview, but truncating
+sources and deriving volcanic activity/rates outside the canonical center
+records can make event rates depend on derivation limits rather than the whole
+physical system.
+
+Define whether volcanic origin, activity class, and long-term rate are
+canonical center properties or deterministic versioned derivations from
+canonical causes. Sum or otherwise account for all materially relevant sources
+before display sampling; the display feature cap must not change the hazard
+field or event distribution. Calibrate and name the time unit used by Poisson
+sampling, test rate stability when the render cap changes, and preserve the
+independent `hazardSeed` and all accepted-event provenance. Generated rates
+must remain clearly labelled as fictional model outputs.
+
+### Required corrective sequence for agents
+
+Agents should close the reconciliation in this order:
+
+1. Resolve composite canonical authority and v1 durable-data compatibility
+   before changing another source or generator version.
+2. Establish target feature resolution, product-quality fixtures, budgets, and
+   supported-target evidence before tuning physical coefficients.
+3. Upgrade tectonic morphology, erosion, and continuous-direction drainage
+   before treating downstream lake and river shapes as stable.
+4. Replace the bounded raw-basin and frozen-inland-water approximations with a
+   coupled nested basin/water solve.
+5. Replace cell-edge presentation geometry with topology-preserving
+   interpolated contours and polygons.
+6. Upgrade historical forcing, ice response, thermal expansion, and hazard-rate
+   semantics without changing accepted terrain.
+7. Run full deterministic, recovery, packaged-native, and supported-target
+   gates; then update iteration statuses and user documentation with the exact
+   remaining approximations.
+
+For each correction, write the model classification, equations and units,
+canonical/derived boundary, deterministic traversal and quantization policy,
+failure bounds, migration/version effect, fixture metrics, native-rendered
+evidence, and user-facing wording before implementation. If a correction
+changes accepted canonical bytes or their interpretation, create a new source
+format or adapter as required; never reinterpret `physical-world-v2` in place.
+If it changes only a disposable result, increment the derivation version and
+prove cache deletion/rebuild equivalence.
+
+Users and reviewers should expect labels such as `feasibility scaffold`,
+`procedural heuristic`, `relative generated hazard`, and `physical-year
+offset` until the associated corrective gate passes. Agents must not convert
+an acknowledged approximation into an implied physical claim merely by
+removing that label from the UI or documentation.
 
 ## Iteration 8: performance, resilience, and release hardening
 

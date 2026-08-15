@@ -10,16 +10,22 @@ Integration 7 begins with deterministic derived hazard fields. The accepted
 physical source remains the only canonical physical asset; hazards are
 recomputed from its validated plate boundaries and persistent volcanic
 centers. The source bytes, terrain, plate assignments, boundary
-classifications, and volcanic-center metadata are never modified.
+classifications, and volcanic-center metadata are never modified. Per-center
+origin and activity class remain authoritative in that canonical source;
+derived hazard samples intentionally persist combined hazard/rate values
+rather than duplicating center provenance on every sample.
 
-The hazard derivation is versioned as `HAZARD_DERIVATION_VERSION = 1`. The
+The hazard derivation is versioned as `HAZARD_DERIVATION_VERSION = 2`. The
 earthquake field combines seeded background rate, boundary kind, relative
 boundary speed, and a geodesic exponential distance decay from a bounded set
 of strongest boundary sources. The volcanic field combines seeded background
 rate, divergent/convergent/transform boundary influence, persistent hotspot or
 subduction-center intensity, and geodesic distance decay. The exposed values
 are normalized relative/generated rates in parts per million over a million-
-year model interval; they are not real-world predictions.
+year model interval; they are not real-world predictions. The independent
+background component is keyed by geography seed, not retry index; retries
+change the accepted causal tectonic structure without applying a second
+background shift.
 
 Derived GeoJSON exposes bounded strongest samples in two locked layers:
 `earthquake-hazard` and `volcanic-hazard`. Each feature carries the model
@@ -59,7 +65,9 @@ physical source bytes never own the event records.
 Timeline and Lore are optional consumers of this shared entity/field contract.
 The Maps manifest declares the physical natural-event entity type and shares
 `maps.locations` and `maps.physicalChronology`; the
-module context exposes these through `fields.listShared`. Timeline recognizes
+module context exposes these through `fields.listShared`, whose host bridge
+filters the result to fields explicitly declared `shared: true` by the owning
+manifest. Timeline recognizes
 the versioned physical chronology and shows the event in its relative-items
 surface without converting the offset to a fabricated Gregorian date. Lore
 continues to consume the normal entity and relationship graph. Disabling

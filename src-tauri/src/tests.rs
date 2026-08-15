@@ -216,7 +216,7 @@ fn reopened_historical_products_preserve_terrain_and_report_water_balance() {
     let cache_key = response["cacheKey"].as_str().unwrap();
     assert!(cache_key.contains(&source_hash));
     assert!(cache_key.contains("history-v1"));
-    assert!(cache_key.contains("hazards-v1"));
+    assert!(cache_key.contains("hazards-v2"));
     assert!(cache_key.contains(&format!("epoch:{}", historical.metrics.normalized_epoch)));
     assert_eq!(response["chronology"]["contractVersion"], 1);
     assert_eq!(response["chronology"]["kind"], "physical-offset-years");
@@ -1190,7 +1190,7 @@ fn bundled_workspace_manifests_do_not_declare_duplicate_sidebar_views() {
 }
 
 #[test]
-fn fresh_directory_sync_enables_maps_by_default() {
+fn physical_events_survive_module_lifecycle_and_clean_rebuild() {
     let root = std::env::temp_dir().join(format!("daena-maps-startup-{}", uuid::Uuid::new_v4()));
     let project = ProjectStore::open_directory(&root).unwrap();
     let mut host = bundled_plugin_host(new_shared_core()).unwrap();
@@ -1204,6 +1204,47 @@ fn fresh_directory_sync_enables_maps_by_default() {
         .is_empty());
     assert!(project.is_module_enabled("daena.maps").unwrap());
 
+    let map = project.create_map("Materialization map".into()).unwrap();
+    let event = project
+        .create_entries_with_request(
+            vec![daena_core::CreateEntry {
+                name: "Earthquake · year 12".into(),
+                entity_type: Some(daena_core::maps::PHYSICAL_EVENT_ENTITY_TYPE.into()),
+                document: Some(daena_core::CreateEntryDocument {
+                    body: "# Earthquake".into(),
+                    format: Some("markdown".into()),
+                }),
+                fields: vec![
+                    daena_core::CreateEntryField {
+                        namespace: daena_core::maps::PHYSICAL_EVENT_NAMESPACE.into(),
+                        key: "provenance".into(),
+                        value: serde_json::json!({"prediction": false}),
+                    },
+                    daena_core::CreateEntryField {
+                        namespace: daena_core::maps::MAP_NAMESPACE.into(),
+                        key: daena_core::maps::PHYSICAL_EVENT_CHRONOLOGY_KEY.into(),
+                        value: serde_json::json!({
+                            "contractVersion": 1,
+                            "kind": "physical-offset-years",
+                            "reference": "accepted-source",
+                            "startOffsetYears": 12,
+                            "endOffsetYears": 12
+                        }),
+                    },
+                ],
+                relationships: vec![daena_core::CreateEntryRelationship {
+                    relationship_type: daena_core::maps::PHYSICAL_EVENT_ON_MAP_RELATIONSHIP.into(),
+                    target_ids: vec![map.id.clone()],
+                }],
+            }],
+            Some("00000000-0000-4000-8000-000000000061"),
+        )
+        .unwrap()
+        .remove(0);
+    project
+        .flush_checkpoint("persist physical event lifecycle")
+        .unwrap();
+
     project
         .set_module_enabled("daena.maps".into(), false)
         .unwrap();
@@ -1212,6 +1253,46 @@ fn fresh_directory_sync_enables_maps_by_default() {
         .declarations
         .views(&project_id, "daena.maps")
         .is_empty());
+    assert!(project
+        .list_entities()
+        .unwrap()
+        .iter()
+        .any(|candidate| candidate.id == event.id));
+
+    project
+        .set_module_enabled("daena.maps".into(), true)
+        .unwrap();
+    sync_project_usage(&project, &mut host).unwrap();
+    assert!(!host
+        .declarations
+        .views(&project_id, "daena.maps")
+        .is_empty());
+    drop(project);
+    std::fs::remove_file(root.join(".daena/index.sqlite")).unwrap();
+
+    let reopened = ProjectStore::open_directory(&root).unwrap();
+    assert!(reopened.is_module_enabled("daena.maps").unwrap());
+    assert!(reopened
+        .list_entities()
+        .unwrap()
+        .iter()
+        .any(|candidate| candidate.id == event.id));
+    assert_eq!(reopened.map_locations(event.id.clone()).unwrap().len(), 0);
+    assert_eq!(
+        reopened.list_relationships(event.id.clone()).unwrap().len(),
+        1
+    );
+    assert!(reopened.list_fields(event.id).unwrap().iter().any(|field| {
+        field.namespace == daena_core::maps::MAP_NAMESPACE
+            && field.key == daena_core::maps::PHYSICAL_EVENT_CHRONOLOGY_KEY
+    }));
+    let mut reopened_host = bundled_plugin_host(new_shared_core()).unwrap();
+    sync_project_usage(&reopened, &mut reopened_host).unwrap();
+    assert!(!reopened_host
+        .declarations
+        .views(&project_id, "daena.maps")
+        .is_empty());
+    drop(reopened);
     std::fs::remove_dir_all(root).unwrap();
 }
 

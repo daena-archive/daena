@@ -73,9 +73,10 @@ for (const required of [
 ]) {
   assert.ok(host.includes(required), `physical host event contract is missing ${required}`);
 }
-for (const required of ["listShared", "field.read:shared"]) {
+for (const required of ["listShared", "field.read:shared", "__shared_only"]) {
   assert.ok(moduleContext.includes(required), `shared field bridge is missing ${required}`);
 }
+assert.match(host, /shared_only/);
 assert.match(timeline, /listShared\(entity\.id, "maps"\)/);
 assert.match(timeline, /catch \{/);
 for (const required of [

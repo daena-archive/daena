@@ -3378,11 +3378,15 @@ async fn plugin_rpc(
             .get("namespace")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| "field list payload requires namespace".to_string())?;
+        let shared_only = payload
+            .get("__shared_only")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         let shared_keys = {
             let host = state
                 .lock()
                 .map_err(|_| "plugin host lock poisoned".to_string())?;
-            if host.namespaces.owner(namespace) == Some(plugin_id.as_str()) {
+            if !shared_only && host.namespaces.owner(namespace) == Some(plugin_id.as_str()) {
                 None
             } else {
                 Some(host.namespaces.shared_field_keys(namespace))

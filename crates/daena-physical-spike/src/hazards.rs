@@ -12,7 +12,7 @@ use super::{
     Grid, PhysicalError, PhysicalErrorCode, SeedDomain,
 };
 
-pub const HAZARD_DERIVATION_VERSION: u16 = 1;
+pub const HAZARD_DERIVATION_VERSION: u16 = 2;
 pub const MAX_HAZARD_FEATURES: usize = 512;
 const MAX_DISTANCE_SOURCES: usize = 512;
 const EARTHQUAKE_DISTANCE_SCALE: f64 = 0.18;
@@ -121,8 +121,11 @@ fn bounded_sources(mut sources: Vec<(usize, u32)>) -> Vec<(usize, u32)> {
     sources
 }
 
-fn seeded_background(seed: u32, retry_index: u32, cell: usize, salt: u64) -> u32 {
-    let base = derive_subsystem_seed(seed, retry_index, SeedDomain::Hazards);
+fn seeded_background(seed: u32, _retry_index: u32, cell: usize, salt: u64) -> u32 {
+    // The accepted source identity already carries retry-scoped tectonic
+    // structure. Keep the independent background field stable for a seed so a
+    // retry changes causal structure without adding a second background shift.
+    let base = derive_subsystem_seed(seed, 0, SeedDomain::Hazards);
     15_000 + (splitmix64(base ^ (cell as u64).wrapping_mul(salt)) % 35_001) as u32
 }
 
@@ -392,6 +395,13 @@ mod tests {
     }
 
     #[test]
+    fn background_rates_are_seed_stable_across_retries() {
+        let first = seeded_background(831_429, 0, 7, 0x9e37_79b9);
+        let second = seeded_background(831_429, 1, 7, 0x9e37_79b9);
+        assert_eq!(first, second);
+    }
+
+    #[test]
     fn hazards_are_deterministic_bounded_and_seam_safe() {
         let world = fixture();
         let first = derive_hazards(&world).unwrap();
@@ -409,5 +419,17 @@ mod tests {
         for feature in [geojson.as_str()] {
             assert!(feature.contains("relative-generated-v1"));
         }
+    }
+
+    #[test]
+    fn deleting_and_rebuilding_hazard_layers_does_not_change_source() {
+        let world = fixture();
+        let source_before = crate::encode_source(&world).unwrap();
+        let first = to_geojson(&world).unwrap();
+        let mut disposable_layer = Some(first);
+        assert!(disposable_layer.take().is_some());
+        let rebuilt = to_geojson(&world).unwrap();
+        assert_eq!(rebuilt, to_geojson(&world).unwrap());
+        assert_eq!(crate::encode_source(&world).unwrap(), source_before);
     }
 }

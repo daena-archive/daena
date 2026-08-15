@@ -29,7 +29,7 @@ function run(args, extra = {}) {
   return result.stdout.trim().split("\n").at(-1);
 }
 
-function render(width, height, output, release) {
+function render(width, height, output, extra = {}, release = true) {
   const args = [
     "run",
     "--quiet",
@@ -49,6 +49,7 @@ function render(width, height, output, release) {
     sourcePath,
     "--output",
     output,
+    ...(extra.args ?? []),
   );
   const timeBin = "/usr/bin/time";
   const useTime = existsSync(timeBin);
@@ -133,18 +134,33 @@ try {
   const source = readFileSync(sourcePath);
   assert.equal(sha256(source), "sha256:f520abeaf54426178f6c208879341991fe611cd676073d060a844a27a89d7a2e");
 
-  const preview = render(2048, 1024, previewPath, true);
-  const again = render(2048, 1024, join(temp, "atlas-2048-repeat.png"), true);
+  const preview = render(2048, 1024, previewPath);
+  const again = render(2048, 1024, join(temp, "atlas-2048-repeat.png"));
   assert.equal(preview.hash, again.hash);
-  const mid = render(4096, 2048, exportPath, true);
-  const max = render(8192, 4096, maxPath, true);
+  const mid = render(4096, 2048, exportPath);
+  const max = render(8192, 4096, maxPath);
   assert.notEqual(preview.hash, mid.hash);
   assert.notEqual(mid.hash, max.hash);
+
+  const past = render(256, 128, join(temp, "atlas-past.png"), { args: ["--offset-years", "-8000"] });
+  const present = render(256, 128, join(temp, "atlas-present.png"), { args: ["--offset-years", "0"] });
+  const future = render(256, 128, join(temp, "atlas-future.png"), { args: ["--offset-years", "8000"] });
+  assert.equal(past.summary.offsetYears, -8000);
+  assert.equal(present.summary.offsetYears, 0);
+  assert.equal(future.summary.offsetYears, 8000);
+  assert.notEqual(past.hash, present.hash);
+  assert.notEqual(present.hash, future.hash);
+  const antique = render(256, 128, join(temp, "atlas-antique.png"), {
+    args: ["--style", "daena-atlas-antique"],
+  });
+  assert.equal(antique.summary.styleId, "daena-atlas-antique");
+  assert.notEqual(present.hash, antique.hash);
 
   const report = {
     preview: { ...preview.summary, sha256: preview.hash, peakResidentBytes: preview.peakResidentBytes },
     export4k: { ...mid.summary, sha256: mid.hash, peakResidentBytes: mid.peakResidentBytes },
     export8k: { ...max.summary, sha256: max.hash, peakResidentBytes: max.peakResidentBytes },
+    epochs: { past: past.hash, present: present.hash, future: future.hash, antique: antique.hash },
   };
   writeFileSync(join(temp, "atlas-budgets.json"), `${JSON.stringify(report, null, 2)}\n`);
   console.log(JSON.stringify(report));

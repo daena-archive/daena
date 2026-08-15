@@ -607,4 +607,37 @@ mod tests {
         assert_eq!(fs::read(&dest).unwrap(), b"new-png");
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn locked_destination_fails_cleanly_and_retry_succeeds() {
+        let dir = std::env::temp_dir().join(format!("daena-atlas-lock-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("atlas-map.png");
+        fs::create_dir(&dest).unwrap();
+        let error = install_png_bytes(&dest, b"new-png").unwrap_err();
+        assert!(error.contains("atlas.save.failed"));
+        assert!(dest.is_dir());
+        assert!(!dest.with_extension("png.partial").exists());
+        fs::remove_dir(&dest).unwrap();
+        install_png_bytes(&dest, b"new-png").unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"new-png");
+
+        let parent = dir.join("ro");
+        fs::create_dir(&parent).unwrap();
+        let blocked = parent.join("atlas-map.png");
+        fs::write(&blocked, b"old").unwrap();
+        let mut permissions = fs::metadata(&parent).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o555);
+        fs::set_permissions(&parent, permissions).unwrap();
+        let error = install_png_bytes(&blocked, b"new-png").unwrap_err();
+        assert!(error.contains("atlas.save.failed"));
+        let mut permissions = fs::metadata(&parent).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&parent, permissions).unwrap();
+        assert_eq!(fs::read(&blocked).unwrap(), b"old");
+        install_png_bytes(&blocked, b"new-png").unwrap();
+        assert_eq!(fs::read(&blocked).unwrap(), b"new-png");
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

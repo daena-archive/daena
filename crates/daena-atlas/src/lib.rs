@@ -432,4 +432,114 @@ mod tests {
         assert_eq!(past.provenance.offset_years, -8_000);
         assert_ne!(with_layers.rgba, past.rgba);
     }
+
+    #[test]
+    fn epochs_change_sea_ice_and_hydrology_while_detail_stays_keyed() {
+        let world = golden_world();
+        let identity = spike_identity_from_source(&world.source);
+        let report = &world.report;
+        let forcing = daena_physical::history::HistoricalForcingParameters::default_for(
+            world.field.seed,
+            world.field.retry_index,
+        );
+        let derive = |offset| {
+            daena_physical::history::derive_historical_world(
+                &world.field,
+                report.reference_water_inventory_m3,
+                Some(&world.tectonics.crust_by_cell),
+                forcing.clone(),
+                offset,
+                &mut daena_physical::NoopProgress,
+            )
+            .unwrap()
+        };
+        let present = derive(0);
+        let cold = derive(-8_000);
+        let warm = derive(8_000);
+        assert_ne!(cold.metrics.sea_level_mm, present.metrics.sea_level_mm);
+        assert_ne!(warm.metrics.sea_level_mm, present.metrics.sea_level_mm);
+        assert_ne!(cold.metrics.land_ice_m3, warm.metrics.land_ice_m3);
+        let mut cancel = || Ok(());
+        let model = detail::build_detail_model(
+            world.field.grid,
+            &world.field.elevations_mm,
+            &identity,
+            0,
+            request::DetailLevel::Detailed,
+            &mut cancel,
+        )
+        .unwrap();
+        let sample = model.residual_at(12_345_678, -8_000_000);
+        let mut past = AtlasRenderRequest::spike_png(128, 64).unwrap();
+        past.offset_years = -8_000;
+        let mut future = AtlasRenderRequest::spike_png(128, 64).unwrap();
+        future.offset_years = 8_000;
+        let past = render_from_source(
+            &world.source,
+            &identity,
+            &past.normalize().unwrap(),
+            None,
+            Some(forcing.clone()),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let future = render_from_source(
+            &world.source,
+            &identity,
+            &future.normalize().unwrap(),
+            None,
+            Some(forcing),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(sample, model.residual_at(12_345_678, -8_000_000));
+        assert_ne!(past.rgba, future.rgba);
+        assert_eq!(past.provenance.offset_years, -8_000);
+        assert_eq!(future.provenance.offset_years, 8_000);
+    }
+
+    #[test]
+    fn cancellation_is_honored_at_each_phase() {
+        let world = golden_world();
+        let identity = spike_identity_from_source(&world.source);
+        let request = AtlasRenderRequest::spike_png(64, 32).unwrap();
+        for phase in [
+            AtlasPhase::Validating,
+            AtlasPhase::DerivingEpoch,
+            AtlasPhase::RefiningDetail,
+            AtlasPhase::Rendering,
+            AtlasPhase::Encoding,
+        ] {
+            let mut progress = CancelOnPhase { phase };
+            let error = render_from_source(
+                &world.source,
+                &identity,
+                &request,
+                None,
+                None,
+                &mut progress,
+            )
+            .unwrap_err();
+            assert_eq!(error.code, CODE_RENDER_CANCELLED, "{phase:?}");
+        }
+    }
+
+    struct CancelOnPhase {
+        phase: AtlasPhase,
+    }
+
+    impl AtlasProgress for CancelOnPhase {
+        fn report(
+            &mut self,
+            phase: AtlasPhase,
+            _completed: u32,
+            _total: u32,
+        ) -> Result<(), AtlasError> {
+            if phase == self.phase {
+                Err(AtlasError::cancelled())
+            } else {
+                Ok(())
+            }
+        }
+    }
 }

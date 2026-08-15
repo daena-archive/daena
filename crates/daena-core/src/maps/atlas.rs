@@ -302,4 +302,78 @@ mod tests {
         assert!(supported.styles.contains(&"daena-atlas-relief".into()));
         assert!(supported.styles.contains(&"daena-atlas-antique".into()));
     }
+
+    #[test]
+    fn snapshot_captures_identity_forcing_and_generation_without_mutating() {
+        let settings = daena_physical::GenerationSettings {
+            width: 16,
+            height: 8,
+            radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
+            target_land_fraction_ppm: 300_000,
+        };
+        let world =
+            daena_physical::generate_world(settings, 831_429, 0, &mut daena_physical::NoopProgress)
+                .unwrap();
+        let generation = serde_json::json!({
+            "id": crate::maps::PHYSICAL_GENERATOR_ID,
+            "version": crate::maps::PHYSICAL_GENERATOR_VERSION,
+            "seed": 831429,
+            "retryIndex": 0,
+            "settings": {
+                "width": settings.width,
+                "height": settings.height,
+                "radiusMetres": settings.radius_metres,
+                "targetLandFractionPpm": settings.target_land_fraction_ppm,
+                "referenceWaterInventoryM3": world.report.reference_water_inventory_m3,
+                "plateCount": world.tectonics.settings.plate_count,
+                "continentalPlateCount": world.tectonics.settings.continental_plate_count,
+                "tectonicActivityPpm": world.tectonics.settings.tectonic_activity_ppm,
+                "islandActivityPpm": world.tectonics.settings.island_activity_ppm,
+                "evolutionPreset": "mature",
+                "hazardDerivationVersion": daena_physical::hazards::HAZARD_DERIVATION_VERSION,
+                "historicalForcing": {
+                    "version": 2,
+                    "components": [
+                        { "amplitudeCentiC": 180, "periodYears": 12000, "phaseOffsetYears": 0 },
+                        { "amplitudeCentiC": 90, "periodYears": 4100, "phaseOffsetYears": 200 },
+                        { "amplitudeCentiC": 40, "periodYears": 2300, "phaseOffsetYears": 800 }
+                    ],
+                    "sensitivityPpm": 1000000,
+                    "landIceAmplitudePpm": 24000,
+                    "iceResponseYears": 800,
+                    "iceMidpointCentiC": 0,
+                    "iceTransitionWidthCentiC": 400,
+                    "thermalExpansionPpmPerDegreeC": 210
+                }
+            }
+        });
+        let root = std::env::temp_dir().join(format!("daena-atlas-snap-{}", uuid::Uuid::new_v4()));
+        let store = ProjectStore::open_directory(&root).unwrap();
+        let accepted = store
+            .accept_physical_map(
+                "Atlas snapshot".into(),
+                world.source.clone(),
+                generation,
+                Some("00000000-0000-4000-8000-0000000000aa"),
+            )
+            .unwrap();
+        let before = store.content_generation().unwrap();
+        let snapshot = capture_snapshot(
+            &store,
+            &accepted.entity.id,
+            AtlasRenderRequest::spike_png(64, 32).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(store.content_generation().unwrap(), before);
+        assert_eq!(snapshot.content_generation, before);
+        assert_eq!(snapshot.identity, accepted.physical_identity);
+        assert_eq!(snapshot.forcing.version, 2);
+        assert_eq!(snapshot.forcing.land_ice_amplitude_ppm, 24_000);
+        store
+            .update_entity(accepted.entity.id.clone(), Some("Renamed".into()), None)
+            .unwrap();
+        let after = store.content_generation().unwrap();
+        assert!(after > snapshot.content_generation);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

@@ -28,9 +28,9 @@ Renderer version is `2`. Geographic detail algorithm version remains `1`.
 
 ## Remaining exit-gate evidence
 
-`npm run check:maps:atlas` covers crate tests, core capability dispatch, atomic
-PNG overwrite/symlink refusal, bundled style validation, and release PNG repeat
-hashes for the golden `64 x 32` source. Packaged desktop renders at reference,
-negative, and positive offset years, restart determinism from a captured
-project generation, and host save-dialog overwrite/locked-file confirmation
-still require a Tauri app session before calling Iteration 1 complete.
+`npm run check:maps:atlas` now also renders reference, −8000, and +8000 offset
+years plus antique vs relief on the golden source, and covers cancellation at
+each renderer phase, snapshot generation isolation, and locked/unwritable
+destination failure plus retry. Packaged desktop save-dialog overwrite
+confirmation still requires a Tauri app session; the host already uses the
+native dialog and atomic `.png.partial` replace.

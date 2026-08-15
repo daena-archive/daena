@@ -45,8 +45,17 @@ fn main() -> Result<(), String> {
         world.source
     };
     let identity = spike_identity_from_source(&source);
-    let request =
+    let mut request =
         AtlasRenderRequest::spike_png(width, height).map_err(|error| error.to_string())?;
+    if let Some(offset) = option("--offset-years") {
+        request.offset_years = offset
+            .parse()
+            .map_err(|error| format!("--offset-years must be an integer: {error}"))?;
+    }
+    if let Some(style) = option("--style") {
+        request.style_id = style;
+    }
+    let request = request.normalize().map_err(|error| error.to_string())?;
     let rendered = render_from_source(&source, &identity, &request, None, None, &mut NoopProgress)
         .map_err(|error| error.to_string())?;
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -54,7 +63,7 @@ fn main() -> Result<(), String> {
         fs::write(&path, &rendered.png).map_err(|error| error.to_string())?;
     }
     println!(
-        "{{\"width\":{},\"height\":{},\"pngBytes\":{},\"rgbaBytes\":{},\"sourceBytes\":{},\"renderMs\":{:.3},\"sourceSha256\":\"{}\",\"identity\":\"{}\",\"rendererVersion\":{}}}",
+        "{{\"width\":{},\"height\":{},\"pngBytes\":{},\"rgbaBytes\":{},\"sourceBytes\":{},\"renderMs\":{:.3},\"sourceSha256\":\"{}\",\"identity\":\"{}\",\"rendererVersion\":{},\"offsetYears\":{},\"styleId\":\"{}\"}}",
         rendered.request.width_px,
         rendered.request.height_px,
         rendered.png.len(),
@@ -64,6 +73,8 @@ fn main() -> Result<(), String> {
         rendered.provenance.source_sha256,
         rendered.provenance.physical_identity,
         rendered.provenance.renderer_version,
+        rendered.provenance.offset_years,
+        rendered.provenance.style_id,
     );
     Ok(())
 }

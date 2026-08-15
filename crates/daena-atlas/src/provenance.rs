@@ -1,18 +1,21 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::request::AtlasRenderRequest;
 use crate::{
-    ATLAS_DETAIL_ALGORITHM_VERSION, ATLAS_PROVENANCE_SCHEMA_VERSION, ATLAS_RENDERER_VERSION,
-    ATLAS_REQUEST_SCHEMA_VERSION, ATLAS_SEED_POLICY_VERSION,
+    ATLAS_DERIVED_DRAINAGE_VERSION, ATLAS_DETAIL_ALGORITHM_VERSION,
+    ATLAS_PROVENANCE_SCHEMA_VERSION, ATLAS_RENDERER_VERSION, ATLAS_REQUEST_SCHEMA_VERSION,
+    ATLAS_SEED_POLICY_VERSION,
 };
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AtlasRenderProvenanceV1 {
     pub schema_version: u32,
     pub renderer_version: u32,
     pub request_schema_version: u32,
     pub detail_algorithm_version: u32,
     pub seed_policy_version: u32,
+    #[serde(default)]
+    pub derived_drainage_version: u32,
     pub style_id: String,
     pub physical_identity: String,
     pub source_sha256: String,
@@ -31,6 +34,8 @@ pub struct AtlasRenderProvenanceV1 {
     pub encoder: String,
     pub style_hash: String,
     pub active_layer_ids: Vec<String>,
+    #[serde(default)]
+    pub tributary_count: u32,
 }
 
 impl AtlasRenderProvenanceV1 {
@@ -46,6 +51,7 @@ impl AtlasRenderProvenanceV1 {
             request_schema_version: ATLAS_REQUEST_SCHEMA_VERSION,
             detail_algorithm_version: ATLAS_DETAIL_ALGORITHM_VERSION,
             seed_policy_version: ATLAS_SEED_POLICY_VERSION,
+            derived_drainage_version: ATLAS_DERIVED_DRAINAGE_VERSION,
             style_id: request.style_id.clone(),
             physical_identity: String::from_utf8_lossy(physical_identity).into_owned(),
             source_sha256: source_sha256.to_string(),
@@ -64,6 +70,7 @@ impl AtlasRenderProvenanceV1 {
             encoder: request.format.encoder_id().to_string(),
             style_hash: style_hash.to_string(),
             active_layer_ids: request.active_layer_ids.clone(),
+            tributary_count: 0,
         }
     }
 

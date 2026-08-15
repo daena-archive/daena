@@ -324,6 +324,7 @@ onDestroy(() => {
         {layer.name}
       </label>
     {/each}
+    <p>Rivers include atlas-only minor tributaries. They are not canonical geography and are never promoted automatically.</p>
   </fieldset>
   <label>
     Size

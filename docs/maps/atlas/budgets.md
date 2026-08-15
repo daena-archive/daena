@@ -44,3 +44,19 @@ coasts, contours, graticule, and frame are now composited.
 | Darwin 25.6 | 2048 | 1024 | 321 | 42_156_032 | 8_391_109 | `sha256:a956c3f5bf559cac827c87b1116439d68c2defe76a621f10bdc31f59a03dc626` |
 | Darwin 25.6 | 4096 | 2048 | 1_227 | 143_638_528 | 33_559_877 | `sha256:9af533757d8bed624ed1741ff7e43bfc525013c90a559179e42fe205d12dbd8c` |
 | Darwin 25.6 | 8192 | 4096 | 4_925 | 553_910_272 | 134_232_901 | `sha256:27a379189d8793bf6a489361c5652766837d3fa6d6631b21e0d36d00929508bb` |
+
+## Renderer version 5 (iteration 4 derived drainage and cache)
+
+Same host and golden source. Derived drainage version `1` emits 3 atlas-only
+tributaries on this fixture. Geographic residual version remains `1`. Encoded
+bytes differ from renderer 4 because tributaries are composited on the rivers
+layer.
+
+| Target | Width | Height | Duration ms | PNG bytes | SHA-256 |
+| ------ | ----: | -----: | ----------: | --------: | ------- |
+| Darwin 25.6 | 2048 | 1024 | 358 | 8_391_268 | `sha256:3dc3611aedbea11867da311c4ee8f47b9b045d5a66f1c05e29df288591108f14` |
+| Darwin 25.6 | 4096 | 2048 | 1_345 | 33_560_036 | `sha256:3f542b3f1c7fc51e7c8353b6c816ae597f485c32588ca6aa195daceecf75eb9c` |
+| Darwin 25.6 | 8192 | 4096 | 5_239 | 134_233_060 | `sha256:4c8d4826e856dd46910120839114a25c60f4117eeca698d01904ac834660f1ed` |
+
+Artifact cache on `256 x 128`: cold miss then warm hit, identical PNG. Quota is
+512 MiB / 64 entries / 160 MiB per entry under `.daena/cache/atlas/`.

@@ -4,7 +4,9 @@
 //! dependency. Callers supply validated physical bytes, an opaque physical
 //! identity, and an explicit output sink.
 
+pub mod cache;
 pub mod detail;
+pub mod drainage;
 pub mod encode;
 pub mod labels;
 pub mod overlay;
@@ -18,8 +20,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const ATLAS_REQUEST_SCHEMA_VERSION: u32 = 1;
 pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 1;
+pub const ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 1;
 pub const ATLAS_SEED_POLICY_VERSION: u32 = 1;
-pub const ATLAS_RENDERER_VERSION: u32 = 4;
+pub const ATLAS_RENDERER_VERSION: u32 = 5;
 pub const ATLAS_PROVENANCE_SCHEMA_VERSION: u32 = 1;
 pub const SPIKE_STYLE_ID: &str = "daena-atlas-relief-spike";
 
@@ -163,10 +166,78 @@ pub fn render_from_source(
     overlays: &[overlay::AuthoredFeature],
     progress: &mut dyn AtlasProgress,
 ) -> Result<RenderedAtlas, AtlasError> {
+    render_from_source_cached(
+        source_bytes,
+        identity,
+        request,
+        tile_order,
+        forcing,
+        overlays,
+        None,
+        progress,
+    )
+}
+
+pub fn render_from_source_cached(
+    source_bytes: &[u8],
+    identity: &[u8],
+    request: &request::AtlasRenderRequest,
+    tile_order: Option<&[u32]>,
+    forcing: Option<daena_physical::history::HistoricalForcingParameters>,
+    overlays: &[overlay::AuthoredFeature],
+    cache: Option<&cache::AtlasDiskCache>,
+    progress: &mut dyn AtlasProgress,
+) -> Result<RenderedAtlas, AtlasError> {
     progress.report(AtlasPhase::Validating, 0, 1)?;
     progress.check_cancelled()?;
     let request = request.clone().normalize()?;
     let (style, style_raw) = style::load_style(&request.style_id)?;
+    let style_hash = style.content_hash(style_raw);
+    let source_sha256 = {
+        use sha2::{Digest, Sha256};
+        format!("sha256:{:x}", Sha256::digest(source_bytes))
+    };
+    let overlay_bytes = serde_json::to_vec(overlays).unwrap_or_default();
+    let request_bytes = serde_json::to_vec(&request).unwrap_or_default();
+    let artifact_key = cache::cache_key(&[
+        b"atlas-cache-artifact-v1",
+        identity,
+        source_sha256.as_bytes(),
+        &request_bytes,
+        style_hash.as_bytes(),
+        &overlay_bytes,
+    ]);
+    let mut artifact_cache = cache::CacheLookup::Off;
+    if let Some(cache) = cache {
+        match cache.get(cache::KIND_ARTIFACT, &artifact_key) {
+            cache::CacheLookupResult::Hit(payload) => {
+                if let Ok((png, artifact, provenance_json)) = cache::decode_artifact(&payload) {
+                    if let Ok(provenance) = serde_json::from_str::<
+                        provenance::AtlasRenderProvenanceV1,
+                    >(&provenance_json)
+                    {
+                        let decoded = encode::decode_png(&png)?;
+                        artifact_cache = cache::CacheLookup::Hit;
+                        progress.report(AtlasPhase::Validating, 1, 1)?;
+                        progress.report(AtlasPhase::Encoding, 1, 1)?;
+                        return Ok(RenderedAtlas {
+                            png,
+                            artifact,
+                            rgba: decoded.rgba,
+                            provenance: provenance.clone(),
+                            request,
+                            residual_cache: cache::CacheLookup::Off,
+                            drainage_cache: cache::CacheLookup::Off,
+                            artifact_cache,
+                            tributary_count: provenance.tributary_count,
+                        });
+                    }
+                }
+                artifact_cache = cache::CacheLookup::Miss;
+            }
+            cache::CacheLookupResult::Miss => artifact_cache = cache::CacheLookup::Miss,
+        }
+    }
     let world = daena_physical::decode_source(source_bytes)
         .map_err(|error| AtlasError::new(CODE_SOURCE_INVALID, error))?;
     let field = world.physical_field();
@@ -192,10 +263,151 @@ pub fn render_from_source(
     progress.check_cancelled()?;
     progress.report(AtlasPhase::DerivingEpoch, 1, 1)?;
     progress.report(AtlasPhase::RefiningDetail, 0, 1)?;
-    let model = {
+    let residual_key = cache::cache_key(&[
+        b"atlas-cache-residual-v1",
+        identity,
+        &ATLAS_DETAIL_ALGORITHM_VERSION.to_le_bytes(),
+        &request.variant.to_le_bytes(),
+        request.level.as_str().as_bytes(),
+    ]);
+    let mut residual_cache = cache::CacheLookup::Off;
+    let model = if let Some(cache) = cache {
+        match cache.get(cache::KIND_RESIDUAL, &residual_key) {
+            cache::CacheLookupResult::Hit(payload) => match cache::decode_residual(&payload) {
+                Ok((lattice_width, lattice_height, residual_mm))
+                    if lattice_width
+                        == field
+                            .grid
+                            .width
+                            .saturating_mul(request.level.lattice_factor())
+                        && lattice_height
+                            == field
+                                .grid
+                                .height
+                                .saturating_mul(request.level.lattice_factor()) =>
+                {
+                    residual_cache = cache::CacheLookup::Hit;
+                    detail::AtlasDetailModel {
+                        grid: field.grid,
+                        elevations_mm: field.elevations_mm.clone(),
+                        residual_mm,
+                        lattice_width,
+                        lattice_height,
+                        algorithm_version: ATLAS_DETAIL_ALGORITHM_VERSION,
+                        variant: request.variant,
+                        level: request.level,
+                    }
+                }
+                _ => {
+                    residual_cache = cache::CacheLookup::Miss;
+                    let mut cancelled = || progress.check_cancelled();
+                    let model = detail::build_detail_model(
+                        field.grid,
+                        &field.elevations_mm,
+                        identity,
+                        request.variant,
+                        request.level,
+                        &mut cancelled,
+                    )?;
+                    let _ = cache.put(
+                        cache::KIND_RESIDUAL,
+                        &residual_key,
+                        &cache::encode_residual(
+                            model.lattice_width,
+                            model.lattice_height,
+                            &model.residual_mm,
+                        ),
+                    );
+                    model
+                }
+            },
+            cache::CacheLookupResult::Miss => {
+                residual_cache = cache::CacheLookup::Miss;
+                let mut cancelled = || progress.check_cancelled();
+                let model = detail::build_detail_model(
+                    field.grid,
+                    &field.elevations_mm,
+                    identity,
+                    request.variant,
+                    request.level,
+                    &mut cancelled,
+                )?;
+                let _ = cache.put(
+                    cache::KIND_RESIDUAL,
+                    &residual_key,
+                    &cache::encode_residual(
+                        model.lattice_width,
+                        model.lattice_height,
+                        &model.residual_mm,
+                    ),
+                );
+                model
+            }
+        }
+    } else {
         let mut cancelled = || progress.check_cancelled();
         detail::build_detail_model(
             field.grid,
+            &field.elevations_mm,
+            identity,
+            request.variant,
+            request.level,
+            &mut cancelled,
+        )?
+    };
+    let drainage_key = cache::cache_key(&[
+        b"atlas-cache-drainage-v1",
+        identity,
+        &ATLAS_DERIVED_DRAINAGE_VERSION.to_le_bytes(),
+        &request.variant.to_le_bytes(),
+        request.level.as_str().as_bytes(),
+        &request.offset_years.to_le_bytes(),
+        &historical.hydrology.derivation_version.to_le_bytes(),
+    ]);
+    let mut drainage_cache = cache::CacheLookup::Off;
+    let drainage = if let Some(cache) = cache {
+        match cache.get(cache::KIND_DRAINAGE, &drainage_key) {
+            cache::CacheLookupResult::Hit(payload) => {
+                match drainage::DerivedDrainage::decode(&payload) {
+                    Ok(drainage) => {
+                        drainage_cache = cache::CacheLookup::Hit;
+                        drainage
+                    }
+                    Err(_) => {
+                        drainage_cache = cache::CacheLookup::Miss;
+                        let mut cancelled = || progress.check_cancelled();
+                        let drainage = drainage::derive_minor_tributaries(
+                            &historical.hydrology,
+                            &field.elevations_mm,
+                            identity,
+                            request.variant,
+                            request.level,
+                            &mut cancelled,
+                        )?;
+                        let _ = cache.put(cache::KIND_DRAINAGE, &drainage_key, &drainage.encode());
+                        drainage
+                    }
+                }
+            }
+            cache::CacheLookupResult::Miss => {
+                drainage_cache = cache::CacheLookup::Miss;
+                let mut cancelled = || progress.check_cancelled();
+                let drainage = drainage::derive_minor_tributaries(
+                    &historical.hydrology,
+                    &field.elevations_mm,
+                    identity,
+                    request.variant,
+                    request.level,
+                    &mut cancelled,
+                )?;
+                let _ = cache.put(cache::KIND_DRAINAGE, &drainage_key, &drainage.encode());
+                drainage
+            }
+        }
+    } else {
+        let mut cancelled = || progress.check_cancelled();
+        drainage::derive_minor_tributaries(
+            &historical.hydrology,
             &field.elevations_mm,
             identity,
             request.variant,
@@ -223,26 +435,41 @@ pub fn render_from_source(
         identity,
         &order,
         overlays,
+        &drainage.tributaries,
         progress,
     )?;
-    let source_sha256 = {
-        use sha2::{Digest, Sha256};
-        format!("sha256:{:x}", Sha256::digest(source_bytes))
-    };
-    let provenance = provenance::AtlasRenderProvenanceV1::for_request(
+    let mut provenance = provenance::AtlasRenderProvenanceV1::for_request(
         &request,
         identity,
         &source_sha256,
-        &style.content_hash(style_raw),
+        &style_hash,
     );
+    provenance.derived_drainage_version = ATLAS_DERIVED_DRAINAGE_VERSION;
+    provenance.tributary_count = drainage.tributaries.len() as u32;
     let png = encode::encode_png(&request, &rgba, &provenance, progress)?;
     let artifact = encode::encode_artifact(&request, &rgba, &png, &provenance, progress)?;
+    if let Some(cache) = cache {
+        if let Ok(json) = provenance.compact_json() {
+            let _ = cache.put(
+                cache::KIND_ARTIFACT,
+                &artifact_key,
+                &cache::encode_artifact(&png, &artifact, &json),
+            );
+        }
+        if artifact_cache == cache::CacheLookup::Off {
+            artifact_cache = cache::CacheLookup::Miss;
+        }
+    }
     Ok(RenderedAtlas {
         png,
         artifact,
         rgba,
         provenance,
         request,
+        residual_cache,
+        drainage_cache,
+        artifact_cache,
+        tributary_count: drainage.tributaries.len() as u32,
     })
 }
 
@@ -253,6 +480,10 @@ pub struct RenderedAtlas {
     pub rgba: Vec<u8>,
     pub provenance: provenance::AtlasRenderProvenanceV1,
     pub request: request::AtlasRenderRequest,
+    pub residual_cache: cache::CacheLookup,
+    pub drainage_cache: cache::CacheLookup,
+    pub artifact_cache: cache::CacheLookup,
+    pub tributary_count: u32,
 }
 
 #[cfg(test)]
@@ -625,7 +856,69 @@ mod tests {
             [0, 0, 1, 1]
         );
         assert_eq!(pdf.rgba, region_render.rgba);
-        assert_eq!(pdf.provenance.renderer_version, 4);
+        assert_eq!(pdf.provenance.renderer_version, 5);
+        assert!(region_render.tributary_count > 0 || globe_render.tributary_count > 0);
+    }
+
+    #[test]
+    fn cache_hits_reproduce_pixels_and_ignore_corrupt_entries() {
+        let world = golden_world();
+        let identity = spike_identity_from_source(&world.source);
+        let request = AtlasRenderRequest::spike_png(128, 64).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "daena-atlas-iter4-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cache = cache::AtlasDiskCache::open(&root).unwrap();
+        let cold = render_from_source_cached(
+            &world.source,
+            &identity,
+            &request,
+            None,
+            None,
+            &[],
+            Some(&cache),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(cold.artifact_cache, cache::CacheLookup::Miss);
+        let warm = render_from_source_cached(
+            &world.source,
+            &identity,
+            &request,
+            None,
+            None,
+            &[],
+            Some(&cache),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(warm.artifact_cache, cache::CacheLookup::Hit);
+        assert_eq!(cold.png, warm.png);
+        assert_eq!(cold.rgba, warm.rgba);
+        for entry in std::fs::read_dir(&root).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("bin") {
+                std::fs::write(&path, b"truncated").unwrap();
+            }
+        }
+        let rebuilt = render_from_source_cached(
+            &world.source,
+            &identity,
+            &request,
+            None,
+            None,
+            &[],
+            Some(&cache),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(rebuilt.artifact_cache, cache::CacheLookup::Miss);
+        assert_eq!(rebuilt.png, cold.png);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     struct CancelOnPhase {

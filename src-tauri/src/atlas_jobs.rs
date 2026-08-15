@@ -5,12 +5,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use daena_atlas::cache::AtlasDiskCache;
 use daena_atlas::projection::{AtlasExtent, AtlasProjection};
 use daena_atlas::request::{AtlasFormat, AtlasRenderRequest};
 use daena_atlas::{
-    render_from_source, AtlasPhase, AtlasProgress, CancelFlag, CODE_RENDER_CANCELLED,
+    render_from_source_cached, AtlasPhase, AtlasProgress, CancelFlag, CODE_RENDER_CANCELLED,
 };
-use daena_core::maps::atlas::{capabilities_for_map, capture_snapshot, AtlasRenderSnapshot};
+use daena_core::maps::atlas::{
+    atlas_cache_dir, capabilities_for_map, capture_snapshot, AtlasRenderSnapshot,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
@@ -47,7 +50,6 @@ pub struct AtlasJobStatus {
 }
 
 pub struct AtlasJob {
-    #[allow(dead_code)]
     project_id: String,
     map_entity_id: String,
     kind: String,
@@ -218,13 +220,13 @@ fn spawn_render(
     kind: &'static str,
 ) {
     tauri::async_runtime::spawn_blocking(move || {
-        let cancel = {
+        let (cancel, project_root) = {
             let manager = match jobs.lock() {
                 Ok(manager) => manager,
                 Err(_) => return,
             };
             match manager.jobs.get(&job_id) {
-                Some(job) => job.cancel.clone(),
+                Some(job) => (job.cancel.clone(), job.project_id.clone()),
                 None => return,
             }
         };
@@ -234,13 +236,15 @@ fn spawn_render(
             app: app.clone(),
             sequence: 0,
         };
-        let rendered = render_from_source(
+        let cache = AtlasDiskCache::open(atlas_cache_dir(Path::new(&project_root))).ok();
+        let rendered = render_from_source_cached(
             &snapshot.source_bytes,
             snapshot.identity.as_bytes(),
             &snapshot.request,
             None,
             Some(snapshot.forcing),
             &snapshot.overlays,
+            cache.as_ref(),
             &mut progress,
         );
         let dir = match atlas_dir(&app) {

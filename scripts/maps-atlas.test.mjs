@@ -198,11 +198,34 @@ try {
   assert.equal(pdfBytes.includes(Buffer.from("/URI")), false);
   assert.equal(pdf.summary.format, "pdf");
 
+  const cacheDir = join(temp, "atlas-cache");
+  const cold = render(256, 128, join(temp, "atlas-cache-cold.png"), {
+    args: ["--cache-dir", cacheDir],
+  });
+  const warm = render(256, 128, join(temp, "atlas-cache-warm.png"), {
+    args: ["--cache-dir", cacheDir],
+  });
+  assert.equal(cold.hash, warm.hash);
+  assert.equal(cold.summary.artifactCache, "miss");
+  assert.equal(warm.summary.artifactCache, "hit");
+  assert.equal(cold.summary.rendererVersion, 5);
+  assert.ok(cold.summary.tributaryCount >= 0);
+  const adr = readFileSync(join(root, "docs/adr/0036-atlas-rendering-iteration-4.md"), "utf8");
+  assert.match(adr, /atlas-only/);
+  assert.match(adr, /\.daena\/cache\/atlas/);
+
   const report = {
     preview: { ...preview.summary, sha256: preview.hash, peakResidentBytes: preview.peakResidentBytes },
     export4k: { ...mid.summary, sha256: mid.hash, peakResidentBytes: mid.peakResidentBytes },
     export8k: { ...max.summary, sha256: max.hash, peakResidentBytes: max.peakResidentBytes },
     epochs: { past: past.hash, present: present.hash, future: future.hash, antique: antique.hash },
+    cache: {
+      coldMs: cold.summary.renderMs,
+      warmMs: warm.summary.renderMs,
+      coldCache: cold.summary.artifactCache,
+      warmCache: warm.summary.artifactCache,
+      tributaryCount: cold.summary.tributaryCount,
+    },
   };
   writeFileSync(join(temp, "atlas-budgets.json"), `${JSON.stringify(report, null, 2)}\n`);
   console.log(JSON.stringify(report));

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::detail::domain_key;
 use crate::detail::lattice_sample;
+use crate::drainage::DerivedTributary;
 use crate::projection::ProjectedView;
 use crate::request::AtlasRenderRequest;
 use crate::style::AtlasStyle;
@@ -138,6 +139,7 @@ pub fn composite_overlays(
     hydrology: &HydrologyField,
     identity: &[u8],
     overlays: &[AuthoredFeature],
+    tributaries: &[DerivedTributary],
 ) {
     let view = request.view().unwrap_or(ProjectedView {
         projection: request.projection,
@@ -151,6 +153,11 @@ pub fn composite_overlays(
         for path in &hydrology.river_coordinates {
             for window in path.windows(2) {
                 draw_geodesic_segment(buffer, view, window[0], window[1], style.river, 850_000);
+            }
+        }
+        for tributary in tributaries {
+            for window in tributary.path.windows(2) {
+                draw_geodesic_segment(buffer, view, window[0], window[1], style.river, 550_000);
             }
         }
     }
@@ -213,8 +220,24 @@ pub fn composite_overlays(
             }
         }
     }
+    let mut derived_labels = Vec::new();
     if request.layer_enabled("labels") {
-        omitted_labels = crate::labels::draw_labels(buffer, view, overlays, style);
+        for tributary in tributaries.iter().take(32) {
+            if let Some(first) = tributary.path.first() {
+                derived_labels.push(AuthoredFeature {
+                    id: tributary.id.clone(),
+                    layer_id: "labels".into(),
+                    kind: "derived-tributary".into(),
+                    label: Some(format!("T{}", tributary.source_cell % 1_000)),
+                    path: vec![*first],
+                });
+            }
+        }
+    }
+    let mut label_source = overlays.to_vec();
+    label_source.extend(derived_labels);
+    if request.layer_enabled("labels") {
+        omitted_labels = crate::labels::draw_labels(buffer, view, &label_source, style);
     }
     let _ = omitted_labels;
     if request.layer_enabled("frame") {

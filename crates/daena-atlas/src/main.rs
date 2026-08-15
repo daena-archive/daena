@@ -1,6 +1,7 @@
+use daena_atlas::cache::AtlasDiskCache;
 use daena_atlas::projection::AtlasProjection;
 use daena_atlas::request::{AtlasFormat, AtlasRenderRequest};
-use daena_atlas::{render_from_source, spike_identity_from_source, NoopProgress};
+use daena_atlas::{render_from_source_cached, spike_identity_from_source, NoopProgress};
 use daena_physical::{
     decode_source, generate_world, GenerationSettings, NoopProgress as PhysicalNoop,
     DEFAULT_HEIGHT, DEFAULT_RADIUS_METRES, DEFAULT_WIDTH,
@@ -91,13 +92,18 @@ fn main() -> Result<(), String> {
         request.extent.north_lat_micro = north;
     }
     let request = request.normalize().map_err(|error| error.to_string())?;
-    let rendered = render_from_source(
+    let cache = option("--cache-dir")
+        .map(AtlasDiskCache::open)
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let rendered = render_from_source_cached(
         &source,
         &identity,
         &request,
         None,
         None,
         &[],
+        cache.as_ref(),
         &mut NoopProgress,
     )
     .map_err(|error| error.to_string())?;
@@ -106,7 +112,7 @@ fn main() -> Result<(), String> {
         fs::write(&path, &rendered.artifact).map_err(|error| error.to_string())?;
     }
     println!(
-        "{{\"width\":{},\"height\":{},\"pngBytes\":{},\"artifactBytes\":{},\"rgbaBytes\":{},\"sourceBytes\":{},\"renderMs\":{:.3},\"sourceSha256\":\"{}\",\"identity\":\"{}\",\"rendererVersion\":{},\"offsetYears\":{},\"styleId\":\"{}\",\"format\":\"{}\",\"projection\":\"{}\"}}",
+        "{{\"width\":{},\"height\":{},\"pngBytes\":{},\"artifactBytes\":{},\"rgbaBytes\":{},\"sourceBytes\":{},\"renderMs\":{:.3},\"sourceSha256\":\"{}\",\"identity\":\"{}\",\"rendererVersion\":{},\"offsetYears\":{},\"styleId\":\"{}\",\"format\":\"{}\",\"projection\":\"{}\",\"tributaryCount\":{},\"artifactCache\":\"{}\",\"residualCache\":\"{}\",\"drainageCache\":\"{}\"}}",
         rendered.request.width_px,
         rendered.request.height_px,
         rendered.png.len(),
@@ -121,6 +127,10 @@ fn main() -> Result<(), String> {
         rendered.provenance.style_id,
         rendered.provenance.format,
         rendered.provenance.projection,
+        rendered.tributary_count,
+        rendered.artifact_cache.as_str(),
+        rendered.residual_cache.as_str(),
+        rendered.drainage_cache.as_str(),
     );
     Ok(())
 }

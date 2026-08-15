@@ -21,14 +21,20 @@ use super::{
 use crate::error::CoreError;
 use crate::project::ProjectStore;
 use daena_atlas::overlay::AuthoredFeature;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 pub const CODE_PROVIDER_UNSUPPORTED: &str = daena_atlas::CODE_PROVIDER_UNSUPPORTED;
 pub const CODE_REQUEST_INVALID: &str = daena_atlas::CODE_REQUEST_INVALID;
 pub const CODE_SNAPSHOT_CHANGED: &str = "atlas.snapshot.changed";
 pub const ATLAS_PRESETS_KEY: &str = "atlasPresets";
+pub const ATLAS_CACHE_RELATIVE: &str = ".daena/cache/atlas";
 const MAX_PRESETS: usize = 32;
 const MAX_OVERLAY_FEATURES: usize = 2_048;
+
+pub fn atlas_cache_dir(project_root: &Path) -> PathBuf {
+    project_root.join(ATLAS_CACHE_RELATIVE)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -719,6 +725,16 @@ fn component(value: &super::HistoricalForcingComponentSettings) -> ForcingCompon
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn atlas_cache_lives_under_disposable_daena_cache() {
+        let root = std::path::Path::new("/tmp/example-project");
+        assert_eq!(
+            atlas_cache_dir(root),
+            std::path::Path::new("/tmp/example-project/.daena/cache/atlas")
+        );
+        assert!(ATLAS_CACHE_RELATIVE.starts_with(".daena/cache/"));
+    }
 
     #[test]
     fn unsupported_providers_are_reported_not_inferred_from_names() {

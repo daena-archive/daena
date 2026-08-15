@@ -7,12 +7,8 @@ import {
   type PhysicalHydrologyProducts,
   type PhysicalJobStatus,
 } from "$lib/project/client";
-import { createNativeVectorEditor, type NativeVectorEditor } from "../native-vector/runtime";
-import {
-  PHYSICAL_RASTER_OVERSAMPLE,
-  physicalGridRowForRasterRow,
-  physicalWorldOverlayCoordinates,
-} from "../native-vector/coordinates";
+import { paintPhysicalSurface } from "./raster";
+import PhysicalWorldView from "./PhysicalWorldView.svelte";
 import NativeVectorMapEditor from "../native-vector/NativeVectorMapEditor.svelte";
 import { parseVectorCollection } from "../native-vector/source";
 import {
@@ -33,13 +29,12 @@ let {
   onstate?: (status: string, detail: unknown) => void;
 } = $props();
 
-let host = $state<HTMLDivElement | null>(null);
-let editor: NativeVectorEditor | null = null;
 let name = $state("Physical World");
 let seed = $state(831429);
 let evolutionPreset = $state<"young" | "mature" | "old">("mature");
 let status = $state<PhysicalJobStatus | null>(null);
 let hydrology = $state<PhysicalHydrologyProducts | null>(null);
+let raster = $state<HTMLCanvasElement | null>(null);
 let showHillshade = $state(true);
 let notice = $state("");
 let busy = $state(false);
@@ -50,7 +45,7 @@ let layers = $state<VectorLayerDefinition[]>([
     kind: "vector",
     name: "Physical base",
     order: 0,
-    defaultVisible: true,
+    defaultVisible: false,
     locked: true,
     selector: {},
     style: DEFAULT_VECTOR_LAYER_STYLE,
@@ -90,7 +85,7 @@ let layers = $state<VectorLayerDefinition[]>([
     kind: "vector",
     name: "Volcanic centers",
     order: 8,
-    defaultVisible: true,
+    defaultVisible: false,
     locked: true,
     selector: {},
     style: { fill: "#ef9b4a", fillOpacity: 0.9, stroke: "#8f4c25", strokeWidth: 1, pointRadius: 5 },
@@ -120,7 +115,7 @@ let layers = $state<VectorLayerDefinition[]>([
     kind: "vector",
     name: "Lakes",
     order: 11,
-    defaultVisible: true,
+    defaultVisible: false,
     locked: true,
     selector: {},
     style: { fill: "#4d9ac2", fillOpacity: 0.72, stroke: "#b8e4f5", strokeWidth: 1, pointRadius: 2 },
@@ -130,7 +125,7 @@ let layers = $state<VectorLayerDefinition[]>([
     kind: "vector",
     name: "Rivers",
     order: 12,
-    defaultVisible: true,
+    defaultVisible: false,
     locked: true,
     selector: {},
     style: { fill: "#71c7e8", fillOpacity: 0, stroke: "#71c7e8", strokeWidth: 1.5, pointRadius: 2 },
@@ -150,7 +145,7 @@ let layers = $state<VectorLayerDefinition[]>([
     kind: "vector",
     name: "Ocean",
     order: 1,
-    defaultVisible: true,
+    defaultVisible: false,
     locked: true,
     selector: {},
     style: { fill: "#245c80", fillOpacity: 0.58, stroke: "#397da5", strokeWidth: 0.3, pointRadius: 2 },
@@ -160,7 +155,7 @@ let layers = $state<VectorLayerDefinition[]>([
     kind: "vector",
     name: "Exposed land",
     order: 2,
-    defaultVisible: true,
+    defaultVisible: false,
     locked: true,
     selector: {},
     style: { fill: "#b99b62", fillOpacity: 0.55, stroke: "#d8bd83", strokeWidth: 0.45, pointRadius: 2 },
@@ -207,79 +202,21 @@ function randomSeed() {
   seed = values[0] ?? seed;
 }
 
-function destroyEditor() {
-  editor?.dispose();
-  editor = null;
+function destroyPreview() {
+  raster = null;
 }
 
 function toggleLayer(layerId: string) {
   layers = layers.map((layer) => (layer.id === layerId ? { ...layer, defaultVisible: !layer.defaultVisible } : layer));
-  editor?.syncLayers(layers);
 }
 
-function buildHillshadeCanvas(products: PhysicalHydrologyProducts): HTMLCanvasElement {
-  const canvas = document.createElement("canvas");
-  canvas.width = products.width;
-  canvas.height = products.height * PHYSICAL_RASTER_OVERSAMPLE;
-  const context = canvas.getContext("2d");
-  if (!context) return canvas;
-  const pixels = context.createImageData(canvas.width, canvas.height);
-  for (let canvasRow = 0; canvasRow < canvas.height; canvasRow += 1) {
-    const sourceRow = physicalGridRowForRasterRow(canvasRow, canvas.height, products.height);
-    for (let column = 0; column < products.width; column += 1) {
-      const index = sourceRow * products.width + column;
-      const shade = products.hillshadePpm[index] ?? 500_000;
-      const bathymetry = products.bathymetryMm[index] ?? 0;
-      const offset = (canvasRow * products.width + column) * 4;
-      if (bathymetry > 0) {
-        const depth = Math.min(1, bathymetry / 250_000);
-        pixels.data[offset] = Math.round(38 - depth * 18);
-        pixels.data[offset + 1] = Math.round(104 - depth * 44);
-        pixels.data[offset + 2] = Math.round(145 - depth * 34);
-      } else {
-        const light = Math.round(160 + (shade / 1_000_000) * 70);
-        pixels.data[offset] = Math.min(255, light + 18);
-        pixels.data[offset + 1] = Math.min(255, light + 8);
-        pixels.data[offset + 2] = Math.max(0, light - 34);
-      }
-      pixels.data[offset + 3] = 235;
-    }
-  }
-  context.putImageData(pixels, 0, 0);
-  return canvas;
+function rebuildRaster(products: PhysicalHydrologyProducts | null) {
+  raster = products ? paintPhysicalSurface(products) : null;
 }
 
 async function mountPreview() {
   await tick();
-  if (!host) return;
-  destroyEditor();
-  const created = createNativeVectorEditor(host, {
-    draft: preview,
-    layers,
-    activeLayerId: "base",
-    center: [0.5, 0.5],
-    zoom: 1,
-    setDraft: () => undefined,
-    setActiveLayerId: () => undefined,
-    background: hydrology
-      ? {
-          url: "",
-          canvas: buildHillshadeCanvas(hydrology),
-          width: hydrology.width,
-          height: hydrology.height,
-          coordinates: physicalWorldOverlayCoordinates(),
-        }
-      : null,
-    onDiagnostic: (code, detail) => publish("error", { code, detail }),
-  });
-  if ("error" in created) {
-    notice = `${created.error}: ${created.detail}`;
-    publish("error", created);
-    return;
-  }
-  editor = created;
-  editor.setMode("static");
-  editor.setBackgroundVisible(showHillshade);
+  rebuildRaster(hydrology);
   publish("ready", { preview: true });
 }
 
@@ -322,15 +259,15 @@ async function generate() {
   notice = "";
   hydrology = null;
   preview = { type: "FeatureCollection", features: [] };
-  destroyEditor();
+  destroyPreview();
   try {
     const input: PhysicalGenerationInput = {
       seed,
       retryIndex: 0,
       evolutionPreset,
       settings: {
-        width: 256,
-        height: 128,
+        width: 384,
+        height: 192,
         radiusMetres: 6_371_000,
         targetLandFractionPpm: 300_000,
       },
@@ -372,7 +309,7 @@ onMount(() => {
     if (status?.jobId && busy && (status.state === "running" || status.state === "cancelling")) {
       void project.cancelPhysicalMap(status.jobId);
     }
-    destroyEditor();
+    destroyPreview();
   };
 });
 </script>
@@ -410,10 +347,9 @@ onMount(() => {
           checked={showHillshade}
           onchange={() => {
             showHillshade = !showHillshade;
-            editor?.setBackgroundVisible(showHillshade);
           }} />
         Hillshade</label>
-      {#each layers.filter((layer) => layer.id !== "base") as layer}
+      {#each layers as layer}
         <label
           ><input type="checkbox" checked={layer.defaultVisible} onchange={() => toggleLayer(layer.id)} />
           {layer.name}</label>
@@ -421,7 +357,9 @@ onMount(() => {
     </div>
     <small class="physical-hazard-legend"
       >Hazard layers show relative generated rates; they are not real-world predictions.</small>
-    <div class="native-vector-map" bind:this={host}></div>
+    <div class="native-vector-map">
+      <PhysicalWorldView collection={preview} {layers} {raster} showRaster={showHillshade} />
+    </div>
     <footer class="physical-map-actions">
       {#if status?.state === "completed"}
         <button class="primary-button" type="button" onclick={() => void accept()} disabled={busy}>Accept world</button>
@@ -544,7 +482,9 @@ onMount(() => {
 }
 
 .native-vector-map {
+  display: flex;
   min-height: 360px;
+  min-width: 0;
   flex: 1;
 }
 

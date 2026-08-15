@@ -24,8 +24,9 @@ for (const required of [
   'id: "volcanic-centers"',
   'id: "earthquake-hazard"',
   'id: "volcanic-hazard"',
-  "width: 256",
-  "height: 128",
+  "width: 384",
+  "height: 192",
+  "paintPhysicalSurface",
   "evolutionPreset",
   "Terrain age",
   "locked: true",
@@ -36,6 +37,13 @@ for (const required of [
 ]) {
   assert.ok(source.includes(required) || native.includes(required), `physical surface contract is missing ${required}`);
 }
+assert.ok(source.includes("PhysicalWorldView"), "generate preview must use PhysicalWorldView");
+assert.ok(native.includes("PhysicalWorldView"), "saved physical maps must use PhysicalWorldView");
+assert.ok(
+  readFileSync(resolve(root, "src/lib/maps/physical/PhysicalWorldView.svelte"), "utf8").includes('projection: "globe"'),
+  "physical world view must use MapLibre globe projection",
+);
+assert.equal(source.includes("defaultVisible: true"), false, "physical diagnostic layers must start hidden");
 
 for (const required of [
   "PHYSICAL_HISTORICAL_PROGRESS_EVENT",

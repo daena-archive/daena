@@ -710,30 +710,35 @@ fn solve_basin_water(basins: &mut [Basin], field: &PhysicalField) {
 }
 
 fn hillshade(field: &PhysicalField, cell: usize) -> u32 {
-    let elevation = field.elevations_mm[cell];
-    let (row, _) = field.grid.row_col(cell);
-    let topology = field.grid.topology();
-    let neighbors = topology.neighbors(cell);
-    let mean = if neighbors.is_empty() {
-        elevation
-    } else {
-        neighbors
-            .iter()
-            .map(|neighbor| i64::from(field.elevations_mm[*neighbor]))
-            .sum::<i64>()
-            .saturating_div(neighbors.len() as i64) as i32
+    let (row, col) = field.grid.row_col(cell);
+    let width = field.grid.width as i32;
+    let height = field.grid.height as i32;
+    let sample = |row_offset: i32, col_offset: i32| {
+        let sample_row = (row as i32 + row_offset).clamp(0, height - 1) as u32;
+        let sample_col = ((col as i32 + col_offset).rem_euclid(width)) as u32;
+        f64::from(field.elevations_mm[field.grid.index(sample_row, sample_col)])
     };
-    let gradient = i64::from(elevation)
-        .saturating_sub(i64::from(mean))
-        .unsigned_abs();
-    let latitude_light = (f64::from(row) / f64::from(field.grid.height.max(1))
-        * std::f64::consts::PI)
-        .sin()
-        .abs();
-    (500_000i64
-        .saturating_add((gradient.min(5_000_000) * 400_000 / 5_000_000) as i64)
-        .saturating_add((latitude_light * 100_000.0).round() as i64))
-    .clamp(0, 1_000_000) as u32
+    let z1 = sample(-1, -1);
+    let z2 = sample(-1, 0);
+    let z3 = sample(-1, 1);
+    let z4 = sample(0, -1);
+    let z6 = sample(0, 1);
+    let z7 = sample(1, -1);
+    let z8 = sample(1, 0);
+    let z9 = sample(1, 1);
+    let cell_metres = (std::f64::consts::PI * field.grid.radius_metres as f64
+        / f64::from(field.grid.height.max(1)))
+    .max(1.0);
+    let dzdx = ((z3 + 2.0 * z6 + z9) - (z1 + 2.0 * z4 + z7)) / (8.0 * cell_metres);
+    let dzdy = ((z7 + 2.0 * z8 + z9) - (z1 + 2.0 * z2 + z3)) / (8.0 * cell_metres);
+    let slope = dzdx.hypot(dzdy).atan();
+    let aspect = (-dzdx).atan2(dzdy);
+    let zenith = 45.0_f64.to_radians();
+    let azimuth = 315.0_f64.to_radians();
+    let illumination = (zenith.cos() * slope.cos()
+        + zenith.sin() * slope.sin() * (azimuth - aspect).cos())
+    .clamp(0.0, 1.0);
+    (illumination * 1_000_000.0).round().clamp(0.0, 1_000_000.0) as u32
 }
 
 fn longitude_micro(grid: Grid, column: u32) -> i32 {

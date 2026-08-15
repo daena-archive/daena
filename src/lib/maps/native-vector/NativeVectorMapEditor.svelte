@@ -40,12 +40,9 @@ import {
   type VectorFeatureCollection,
   type VectorLayerDefinition,
 } from "./types";
-import {
-  PHYSICAL_RASTER_OVERSAMPLE,
-  physicalGridRowForRasterRow,
-  physicalWorldOverlayCoordinates,
-  type ImageOverlayCoordinates,
-} from "./coordinates";
+import { physicalWorldOverlayCoordinates, type ImageOverlayCoordinates } from "./coordinates";
+import { paintPhysicalSurface } from "../physical/raster";
+import PhysicalWorldView from "../physical/PhysicalWorldView.svelte";
 
 let {
   mapId,
@@ -199,38 +196,13 @@ function persistedCollection(collection: VectorFeatureCollection): VectorFeature
 function physicalHillshadeCanvas(products: {
   width: number;
   height: number;
+  seaLevelMm: number;
+  waterLevelMm: number[];
   hillshadePpm: number[];
   bathymetryMm: number[];
+  lakeCells?: boolean[];
 }): HTMLCanvasElement {
-  const canvas = document.createElement("canvas");
-  canvas.width = products.width;
-  canvas.height = products.height * PHYSICAL_RASTER_OVERSAMPLE;
-  const context = canvas.getContext("2d");
-  if (!context) return canvas;
-  const pixels = context.createImageData(canvas.width, canvas.height);
-  for (let canvasRow = 0; canvasRow < canvas.height; canvasRow += 1) {
-    const sourceRow = physicalGridRowForRasterRow(canvasRow, canvas.height, products.height);
-    for (let column = 0; column < products.width; column += 1) {
-      const index = sourceRow * products.width + column;
-      const shade = products.hillshadePpm[index] ?? 500_000;
-      const depthMm = products.bathymetryMm[index] ?? 0;
-      const offset = (canvasRow * products.width + column) * 4;
-      if (depthMm > 0) {
-        const depth = Math.min(1, depthMm / 250_000);
-        pixels.data[offset] = Math.round(38 - depth * 18);
-        pixels.data[offset + 1] = Math.round(104 - depth * 44);
-        pixels.data[offset + 2] = Math.round(145 - depth * 34);
-      } else {
-        const light = Math.round(160 + (shade / 1_000_000) * 70);
-        pixels.data[offset] = Math.min(255, light + 18);
-        pixels.data[offset + 1] = Math.min(255, light + 8);
-        pixels.data[offset + 2] = Math.max(0, light - 34);
-      }
-      pixels.data[offset + 3] = 235;
-    }
-  }
-  context.putImageData(pixels, 0, 0);
-  return canvas;
+  return paintPhysicalSurface(products);
 }
 
 function applyLayersField(field: FieldValue) {
@@ -357,6 +329,11 @@ function scheduleEpoch(offset: number) {
 }
 
 function mountEditor() {
+  if (physicalMap) {
+    destroyEditor();
+    publish("ready", { liveEditors: liveNativeVectorEditorCount(), workerUrl: "" });
+    return;
+  }
   if (!host) return;
   destroyEditor();
   const created = createNativeVectorEditor(host, {
@@ -458,6 +435,9 @@ async function load() {
         "watersheds",
         "islands",
       ]);
+      layers = layers.map((layer) =>
+        immutablePhysicalLayerIds.has(layer.id) ? { ...layer, defaultVisible: false } : layer,
+      );
       const requestId = crypto.randomUUID();
       activeEpochRequestId = requestId;
       epochBusy = true;
@@ -1141,15 +1121,21 @@ onMount(() => {
           source. Delete removes the selected feature.
         </p>
       </aside>
-      <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
-      <div
-        class="canvas"
-        class:picking
-        bind:this={host}
-        tabindex="0"
-        role="application"
-        aria-label="Native vector map canvas">
-      </div>
+      {#if physicalMap}
+        <div class="canvas" role="img" aria-label="Physical world map">
+          <PhysicalWorldView collection={draft} {layers} raster={background?.canvas ?? null} />
+        </div>
+      {:else}
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
+        <div
+          class="canvas"
+          class:picking
+          bind:this={host}
+          tabindex="0"
+          role="application"
+          aria-label="Native vector map canvas">
+        </div>
+      {/if}
     </div>
   </section>
 {/if}
@@ -1327,6 +1313,7 @@ aside {
   color: #b8c8bc;
 }
 .canvas {
+  display: flex;
   width: 100%;
   height: 100%;
   min-width: 0;

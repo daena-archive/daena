@@ -9,6 +9,7 @@ import {
   physicalGridRowForRasterRow,
   physicalWorldOverlayCoordinates,
 } from "../src/lib/maps/native-vector/coordinates.ts";
+import { lonLatToEquirectangular } from "../src/lib/maps/physical/equirectangular.ts";
 
 const source = readFileSync(new URL("../src/lib/maps/native-vector/source.ts", import.meta.url), "utf8");
 const style = readFileSync(new URL("../src/lib/maps/native-vector/style.ts", import.meta.url), "utf8");
@@ -42,16 +43,25 @@ assert.equal(editor.includes("return structuredClone(collection)"), false);
 assert.equal(runtime.includes('type: "canvas"'), true);
 assert.equal(runtime.includes("fitBounds"), true);
 assert.equal(runtime.includes("imageOverlayCoordinates"), true);
-assert.equal(editor.includes("PHYSICAL_RASTER_OVERSAMPLE"), true);
-assert.equal(editor.includes("physicalGridRowForRasterRow"), true);
+const raster = readFileSync(new URL("../src/lib/maps/physical/raster.ts", import.meta.url), "utf8");
+const worldView = readFileSync(new URL("../src/lib/maps/physical/PhysicalWorldView.svelte", import.meta.url), "utf8");
+assert.equal(raster.includes("physicalGridRowForRasterRow"), true);
+assert.equal(worldView.includes("createNativeVectorEditor"), true);
+assert.equal(worldView.includes('projection: "globe"'), true);
+assert.equal(worldView.includes("physicalWorldOverlayCoordinates"), true);
 assert.deepEqual(physicalWorldOverlayCoordinates(), [
   [-180, 85.05112878],
   [180, 85.05112878],
   [180, -85.05112878],
   [-180, -85.05112878],
 ]);
+assert.deepEqual(lonLatToEquirectangular(-180, 90), [0, 0]);
+assert.deepEqual(lonLatToEquirectangular(180, -90), [360, 180]);
+assert.deepEqual(lonLatToEquirectangular(0, 0), [180, 90]);
 assert.equal(physicalGridRowForRasterRow(0, 256, 32), 31);
 assert.equal(physicalGridRowForRasterRow(255, 256, 32), 0);
+assert.equal(raster.includes("classifyPhysicalWater"), true);
+assert.equal(raster.includes("MIN_VISIBLE_INLAND_WATER_CELLS"), true);
 assert.equal(runtime.includes("whenStyleReady"), true);
 assert.equal(runtime.includes("style is not done loading"), true);
 assert.equal(editor.includes("importImageMapFile") || editor.includes('start?: "generate" | "import"'), true);

@@ -48,8 +48,8 @@ try {
   const source = readFileSync(sourcePath);
   const geojsonBytes = readFileSync(geojsonPath);
   const geojson = JSON.parse(geojsonBytes);
-  assert.equal(sha256(source), "sha256:f8ca89a55844e63719dcbfda4f8c23bb6877fe54b94e579ae188da5f08b9a5a3");
-  assert.equal(sha256(geojsonBytes), "sha256:f4508d0d798d52abd891631306b8ddb3caa8b8dd37d4b8d1ca090f5bad7a1c2a");
+  assert.equal(sha256(source), "sha256:d0952fe8eb87ef09901c7f8d465f7b093b2e23b108a07748e7477e7f363e9de8");
+  assert.equal(sha256(geojsonBytes), "sha256:1ba902bdb2ffbcf023acd5cd32ef0dbb953745f2d6929fc9790c6e3db1818e8a");
   assert.equal(summary.width, 64);
   assert.equal(summary.height, 32);
   assert.equal(summary.sourceBytes, source.length);
@@ -90,14 +90,14 @@ try {
   );
   const maxSource = readFileSync(maxSourcePath);
   const maxGeojson = readFileSync(maxGeojsonPath);
-  assert.equal(maxSummary.width, 256);
-  assert.equal(maxSummary.height, 128);
-  assert.equal(maxSummary.sourceBytes, 271165);
-  assert.equal(maxSummary.geojsonBytes, 12931757);
-  assert.equal(maxSummary.geojsonFeatures, 47755);
-  assert.ok(maxSummary.generationMs < 2000, `maximum generation exceeded budget: ${maxSummary.generationMs}ms`);
-  assert.equal(sha256(maxSource), "sha256:6f1d5a8a69e4de6095ed5860fea34e054d96fd30c7cfa2ce832208876c18129e");
-  assert.equal(sha256(maxGeojson), "sha256:5560e2f9ceb9991ce0b78565e4ee35193a1c73639a95871416168faff656dea4");
+  assert.equal(maxSummary.width, 384);
+  assert.equal(maxSummary.height, 192);
+  assert.equal(maxSummary.sourceBytes, 577352);
+  assert.equal(maxSummary.geojsonBytes, 18536366);
+  assert.equal(maxSummary.geojsonFeatures, 62484);
+  assert.ok(maxSummary.generationMs < 8000, `maximum generation exceeded budget: ${maxSummary.generationMs}ms`);
+  assert.equal(sha256(maxSource), "sha256:f113f6b96031538d7ade346151cf3b326b88af430bed692629b0d1d85cb75078");
+  assert.equal(sha256(maxGeojson), "sha256:7b213fe49f1a2d8d068a052dd10d7fc9279586fd9776ec21359c24ea938bb375");
   console.log(
     `physical map v6 source check passed on ${process.platform}/${process.arch}: default=${source.length}/${geojsonBytes.length} bytes, maximum=${maxSource.length}/${maxGeojson.length} bytes in ${maxSummary.generationMs.toFixed(1)}ms`,
   );

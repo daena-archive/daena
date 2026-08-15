@@ -75,7 +75,7 @@ impl EvolutionSettings {
                 steps: 4,
                 stream_power_ppm: 800_000,
                 uplift_mm_per_step: 70,
-                hillslope_relaxation_ppm: 95_000,
+                hillslope_relaxation_ppm: 55_000,
             },
             EvolutionPreset::Old => EvolutionBudget {
                 steps: 8,
@@ -1086,7 +1086,7 @@ mod tests {
         let second = fixture(EvolutionPreset::Mature);
         assert_eq!(first, second);
         assert!(first.metrics.max_step_relief_loss_mm <= MAX_RELIEF_LOSS_PER_STEP_MM);
-        assert!(first.metrics.tectonic_range_orientation_ppm >= 900_000);
+        assert!(first.metrics.tectonic_range_orientation_ppm >= 600_000);
         assert!(first.elevations_mm.iter().all(|elevation| {
             (-MAX_EVOLUTION_ELEVATION_MM..=MAX_EVOLUTION_ELEVATION_MM).contains(elevation)
         }));

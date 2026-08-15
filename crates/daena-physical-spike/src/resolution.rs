@@ -20,10 +20,15 @@ pub struct ResolutionCandidate {
     pub tier: ResolutionTier,
 }
 
-pub const RESOLUTION_CANDIDATES: [ResolutionCandidate; 4] = [
+pub const RESOLUTION_CANDIDATES: [ResolutionCandidate; 5] = [
     ResolutionCandidate {
         width: 256,
         height: 128,
+        tier: ResolutionTier::Preview,
+    },
+    ResolutionCandidate {
+        width: 384,
+        height: 192,
         tier: ResolutionTier::ProductionDefault,
     },
     ResolutionCandidate {
@@ -169,11 +174,11 @@ mod tests {
     #[test]
     fn feature_fixture_is_metre_based_and_selected_tiers_meet_sampling_gate() {
         let assessments = assess_all();
-        assert!(assessments[0].production_eligible());
-        assert!(!assessments[1].production_eligible());
+        assert!(!assessments[0].production_eligible());
+        assert!(assessments[1].production_eligible());
         assert!(!assessments[2].production_eligible());
-        assert!(assessments[3].meets_four_sample_gate);
-        assert!(assessments[3].meets_eight_sample_gate);
+        assert!(assessments[4].meets_four_sample_gate);
+        assert!(assessments[4].meets_eight_sample_gate);
         assert!(FEATURE_FIXTURES.retained_strait_width_metres > 0);
         assert!(FEATURE_FIXTURES.internal_shape_width_metres > 0);
     }

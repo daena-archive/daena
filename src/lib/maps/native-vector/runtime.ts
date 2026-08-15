@@ -25,6 +25,7 @@ import {
   BASE_SOURCE_ID,
   IMAGE_LAYER_ID,
   IMAGE_SOURCE_ID,
+  nativeBaseLayerVisibility,
   nativeVectorStyle,
   splitVectorSources,
   styleContainsRemoteUrl,
@@ -163,6 +164,7 @@ export function createNativeVectorEditor(
       canvas?: HTMLCanvasElement;
       coordinates?: ImageOverlayCoordinates;
     } | null;
+    projection?: "mercator" | "globe";
   },
 ): NativeVectorEditor | { error: typeof RENDERER_UNAVAILABLE; detail: string } {
   if (!webgl2Available()) {
@@ -173,23 +175,26 @@ export function createNativeVectorEditor(
   }
 
   const style = nativeVectorStyle(session.layers);
+  if (session.projection === "globe") style.projection = { type: "globe" };
   if (styleContainsRemoteUrl(style)) {
     return { error: RENDERER_UNAVAILABLE, detail: "Native vector style must not request remote URLs." };
   }
 
+  const globe = session.projection === "globe";
   const [longitude, latitude] = normalizedToLonLat(session.center[0], session.center[1]);
   let map: MapLibreMap;
   try {
     map = new maplibregl.Map({
       container,
       style,
-      center: [longitude, latitude],
-      zoom: session.zoom,
+      center: globe ? [0, 0] : [longitude, latitude],
+      zoom: globe ? Math.min(session.zoom, 1.25) : session.zoom,
       renderWorldCopies: false,
       attributionControl: false,
-      maxPitch: 0,
-      pitchWithRotate: false,
+      maxPitch: globe ? 85 : 0,
+      pitchWithRotate: globe,
       fadeDuration: 0,
+      canvasContextAttributes: globe ? { antialias: true } : undefined,
       transformRequest(url) {
         if (/^https?:\/\//i.test(url) && !url.startsWith(globalThis.location.origin)) {
           throw new Error("Native vector maps reject remote tile, glyph, sprite, and telemetry URLs");
@@ -299,6 +304,10 @@ export function createNativeVectorEditor(
 
   const fitContent = () => {
     if (disposed) return;
+    if (session.projection === "globe") {
+      map.jumpTo({ center: [0, 0], zoom: 1.25, pitch: 0, bearing: 0 });
+      return;
+    }
     if (session.background) {
       const [northWest, northEast, southEast, southWest] =
         session.background.coordinates ?? imageOverlayCoordinates(session.background.width, session.background.height);
@@ -565,6 +574,13 @@ export function createNativeVectorEditor(
             if (map.getLayer("daena-hover-fill")) map.addLayer(layer, "daena-hover-fill");
             else map.addLayer(layer);
           }
+        }
+        const baseVisibility = nativeBaseLayerVisibility(layers);
+        if (map.getLayer("daena-base-fill")) {
+          map.setLayoutProperty("daena-base-fill", "visibility", baseVisibility);
+        }
+        if (map.getLayer("daena-base-line")) {
+          map.setLayoutProperty("daena-base-line", "visibility", baseVisibility);
         }
         applySources(session.activeLayerId);
       });

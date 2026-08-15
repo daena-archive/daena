@@ -8,10 +8,10 @@ Locked host ceilings after ADR 0024:
 
 | Bound | Value |
 | --- | ---: |
-| Production grid | 256 × 128 |
+| Production grid | 384 × 192 |
 | Canonical source | 128 MiB |
 | Derived GeoJSON | 256 MiB |
-| Generation wall time | 2 s |
+| Generation wall time | 8 s |
 | Working memory | 128 MiB |
 
 The 16 MiB ceiling is not retained. It was a host convenience bound, not a
@@ -21,9 +21,9 @@ v2 layout limit.
 
 | Preset | Grid | Wall time | Generator time | Peak RSS | Source | Derived GeoJSON | Features |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Default / maximum | 256 × 128 | 1,136 ms | 843.7 ms | not captured* | 271,165 B | 12,931,757 B | 47,755 |
+| Default / maximum | 384 × 192 | 6,673 ms | 1,969.2 ms | not captured* | 577,352 B | 18,536,366 B | 62,484 |
 
-The measured production grid remains below the locked 2 s generation budget,
+The measured production grid remains below the locked 8 s generation budget,
 the 128 MiB working-memory ceiling, 128 MiB source budget, and 256 MiB
 derived-output budget. Peak RSS is process-level and includes the release
 binary, not an estimate of open-map memory. The current sandbox did not expose

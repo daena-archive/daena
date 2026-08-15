@@ -26,10 +26,10 @@ pub const DEFAULT_HEIGHT: u32 = 32;
 pub const DEFAULT_RADIUS_METRES: u64 = 6_371_000;
 pub const MAX_WIDTH: u32 = 128;
 pub const MAX_HEIGHT: u32 = 64;
-pub const PRODUCTION_DEFAULT_WIDTH: u32 = 256;
-pub const PRODUCTION_DEFAULT_HEIGHT: u32 = 128;
-pub const PRODUCTION_MAX_WIDTH: u32 = 256;
-pub const PRODUCTION_MAX_HEIGHT: u32 = 128;
+pub const PRODUCTION_DEFAULT_WIDTH: u32 = 384;
+pub const PRODUCTION_DEFAULT_HEIGHT: u32 = 192;
+pub const PRODUCTION_MAX_WIDTH: u32 = 384;
+pub const PRODUCTION_MAX_HEIGHT: u32 = 192;
 pub const SUPPORTED_PREVIEW_MAX_WIDTH: u32 = 2048;
 pub const SUPPORTED_PREVIEW_MAX_HEIGHT: u32 = 1024;
 /// Canonical v2 source ceiling. This is a host/storage bound, not a layout
@@ -42,7 +42,7 @@ pub const MAX_DERIVED_GEOJSON_BYTES: usize = 256 * 1024 * 1024;
 /// is suitable for one viewport payload.
 pub const MAX_GEOJSON_FEATURES: usize = 1_048_576;
 pub const CANCELLATION_LATENCY_BUDGET_MS: u128 = 100;
-pub const GENERATION_TIME_BUDGET_MS: u128 = 2_000;
+pub const GENERATION_TIME_BUDGET_MS: u128 = 8_000;
 pub const WORKING_MEMORY_BUDGET_BYTES: usize = 128 * 1024 * 1024;
 pub const GENERATOR_ID: &str = "daena-physical-world";
 pub const GENERATOR_VERSION: u32 = 6;

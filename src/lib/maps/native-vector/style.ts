@@ -30,7 +30,13 @@ export function layerFilter(layerId: string): FilterSpecification {
   return ["==", ["get", "daenaLayerId"], layerId];
 }
 
+export function nativeBaseLayerVisibility(layers: readonly VectorLayerDefinition[]): "visible" | "none" {
+  const base = layers.find((layer) => layer.id === BASE_LAYER_ID);
+  return !base || base.defaultVisible ? "visible" : "none";
+}
+
 export function nativeVectorStyle(layers: readonly VectorLayerDefinition[]): StyleSpecification {
+  const baseVisibility = nativeBaseLayerVisibility(layers);
   const style: StyleSpecification = {
     version: 8,
     sources: {
@@ -43,12 +49,14 @@ export function nativeVectorStyle(layers: readonly VectorLayerDefinition[]): Sty
         id: "daena-base-fill",
         type: "fill",
         source: BASE_SOURCE_ID,
+        layout: { visibility: baseVisibility },
         paint: { "fill-color": "#c9a96e", "fill-opacity": 0.92 },
       },
       {
         id: "daena-base-line",
         type: "line",
         source: BASE_SOURCE_ID,
+        layout: { visibility: baseVisibility },
         paint: { "line-color": "#8a7048", "line-width": 1.25 },
       },
     ],

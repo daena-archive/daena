@@ -5,9 +5,10 @@
 //! terrain, climate, hydrology, and hazard products.
 
 use super::{
-    derive_subsystem_seed, splitmix64, Grid, PhysicalError, ProgressPhase, ProgressSink, SeedDomain,
+    derive_subsystem_seed, resolution, splitmix64, Grid, PhysicalError, ProgressPhase,
+    ProgressSink, SeedDomain,
 };
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::fmt::Write as _;
 
 const MICRODEGREES_PER_DEGREE: f64 = 1_000_000.0;
@@ -22,11 +23,13 @@ pub const TECTONIC_MAX_SOURCE_BYTES: usize = crate::MAX_SOURCE_BYTES;
 /// unless the generator version changes; it is intentionally not serialized
 /// because the v2 header and payload are locked.
 pub const RELATIVE_MOTION_THRESHOLD_NANORADIANS_PER_YEAR: f64 = 25_000.0;
-const CRATON_RADIUS_RADIANS: f64 = 0.55;
-const CRATON_SCORE_THRESHOLD: f64 = 0.10;
-const CRATON_VARIATION_AMPLITUDE: f64 = 0.12;
-const RIFT_SHOULDER_FRACTION: f64 = 0.18;
+const CRATON_SCORE_THRESHOLD: f64 = 0.08;
+const CRATON_WARP_AMPLITUDE: f64 = 0.42;
+const CRATON_ANISOTROPY: f64 = 0.34;
+const RIFT_SHOULDER_FRACTION: f64 = 0.22;
 const RIDGE_RELIEF_FRACTION: f64 = 0.55;
+const CONTINENT_COUNT_MIN: usize = 2;
+const CONTINENT_COUNT_MAX: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TectonicSettings {
@@ -178,6 +181,8 @@ struct Vec3 {
 struct CratonSeed {
     center: Vec3,
     variation_axis: Vec3,
+    radius_radians: f64,
+    warp_seed: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -280,9 +285,73 @@ fn cell_vector(grid: Grid, cell: usize) -> Vec3 {
     Vec3::from_lon_lat(longitude, latitude)
 }
 
+fn lattice_hash(seed: u64, x: i32, y: i32, z: i32) -> f64 {
+    let mixed = seed
+        ^ (x as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+        ^ (y as u64).wrapping_mul(0xa076_1d64_78bd_642f)
+        ^ (z as u64).wrapping_mul(0x243f_6a88_85a3_08d3);
+    (splitmix64(mixed) % 1_000_001) as f64 / 1_000_000.0 * 2.0 - 1.0
+}
+
+fn fade(t: f64) -> f64 {
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn value_noise(seed: u64, point: Vec3, frequency: f64) -> f64 {
+    let x = point.x * frequency;
+    let y = point.y * frequency;
+    let z = point.z * frequency;
+    let x0 = x.floor() as i32;
+    let y0 = y.floor() as i32;
+    let z0 = z.floor() as i32;
+    let tx = fade(x - f64::from(x0));
+    let ty = fade(y - f64::from(y0));
+    let tz = fade(z - f64::from(z0));
+    let lerp = |a, b, t| a + (b - a) * t;
+    let c000 = lattice_hash(seed, x0, y0, z0);
+    let c100 = lattice_hash(seed, x0 + 1, y0, z0);
+    let c010 = lattice_hash(seed, x0, y0 + 1, z0);
+    let c110 = lattice_hash(seed, x0 + 1, y0 + 1, z0);
+    let c001 = lattice_hash(seed, x0, y0, z0 + 1);
+    let c101 = lattice_hash(seed, x0 + 1, y0, z0 + 1);
+    let c011 = lattice_hash(seed, x0, y0 + 1, z0 + 1);
+    let c111 = lattice_hash(seed, x0 + 1, y0 + 1, z0 + 1);
+    lerp(
+        lerp(lerp(c000, c100, tx), lerp(c010, c110, tx), ty),
+        lerp(lerp(c001, c101, tx), lerp(c011, c111, tx), ty),
+        tz,
+    )
+}
+
+fn fbm_noise(seed: u64, point: Vec3) -> f64 {
+    let mut sum = 0.0;
+    let mut amplitude = 1.0;
+    let mut frequency = 2.4;
+    let mut norm = 0.0;
+    for octave in 0..4u64 {
+        sum += amplitude
+            * value_noise(
+                seed ^ octave.wrapping_mul(0x9e37_79b9_7f4a_7c15),
+                point,
+                frequency,
+            );
+        norm += amplitude;
+        amplitude *= 0.5;
+        frequency *= 2.07;
+    }
+    if norm == 0.0 {
+        0.0
+    } else {
+        sum / norm
+    }
+}
+
 fn craton_seeds(seed: u32, retry_index: u32, settings: TectonicSettings) -> Vec<CratonSeed> {
     let stage_seed = derive_subsystem_seed(seed, retry_index, SeedDomain::ContinentalCratons);
-    let count = usize::from(settings.continental_plate_count).max(2);
+    let count = (CONTINENT_COUNT_MIN
+        + (splitmix64(stage_seed) as usize % (CONTINENT_COUNT_MAX - CONTINENT_COUNT_MIN + 1)))
+        .min(usize::from(settings.continental_plate_count).max(CONTINENT_COUNT_MIN));
+    let base_radius = if count <= 2 { 0.94 } else { 0.80 };
     let golden_angle = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
     (0..count)
         .map(|id| {
@@ -291,11 +360,23 @@ fn craton_seeds(seed: u32, retry_index: u32, settings: TectonicSettings) -> Vec<
             let jitter = (splitmix64(stage_seed ^ (id as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15))
                 % 1_000_000) as f64
                 / 1_000_000.0
-                * 0.06
-                - 0.03;
+                * 0.18
+                - 0.09;
             let longitude = (id as f64 * golden_angle + jitter).rem_euclid(std::f64::consts::TAU)
                 - std::f64::consts::PI;
-            let center = Vec3::from_lon_lat(longitude, z.clamp(-1.0, 1.0).asin());
+            let latitude_jitter =
+                (splitmix64(stage_seed ^ (id as u64).wrapping_mul(0xbf58_476d_1ce4_e5b9))
+                    % 1_000_000) as f64
+                    / 1_000_000.0
+                    * 0.22
+                    - 0.11;
+            let center = Vec3::from_lon_lat(
+                longitude,
+                (z.clamp(-1.0, 1.0).asin() + latitude_jitter).clamp(
+                    -std::f64::consts::FRAC_PI_2 + 0.05,
+                    std::f64::consts::FRAC_PI_2 - 0.05,
+                ),
+            );
             let variation_seed =
                 splitmix64(stage_seed ^ (id as u64).wrapping_mul(0xa076_1d64_78bd_642f));
             let variation_longitude = (variation_seed as f64 / u64::MAX as f64)
@@ -305,17 +386,25 @@ fn craton_seeds(seed: u32, retry_index: u32, settings: TectonicSettings) -> Vec<
                 - 1.0)
                 .clamp(-1.0, 1.0)
                 .asin();
+            let radius_jitter =
+                (splitmix64(variation_seed) % 1_000_001) as f64 / 1_000_000.0 * 0.16 - 0.08;
             CratonSeed {
                 center,
                 variation_axis: Vec3::from_lon_lat(variation_longitude, variation_latitude),
+                radius_radians: (base_radius + radius_jitter).clamp(0.55, 1.15),
+                warp_seed: splitmix64(variation_seed ^ 0xdead_beef_cafe_f00d),
             }
         })
         .collect()
 }
 
 fn craton_score(vector: Vec3, craton: CratonSeed) -> f64 {
-    let growth = 1.0 - vector.angular_distance(craton.center) / CRATON_RADIUS_RADIANS;
-    growth + vector.dot(craton.variation_axis) * CRATON_VARIATION_AMPLITUDE
+    let dist = vector.angular_distance(craton.center);
+    let warp = fbm_noise(craton.warp_seed, vector);
+    let anisotropy = 1.0 + vector.dot(craton.variation_axis) * CRATON_ANISOTROPY;
+    let radius =
+        (craton.radius_radians * anisotropy * (1.0 + warp * CRATON_WARP_AMPLITUDE)).max(0.18);
+    1.0 - dist / radius
 }
 
 fn crust_for_vector(vector: Vec3, cratons: &[CratonSeed]) -> CrustType {
@@ -369,6 +458,8 @@ fn build_plates(
 
 fn build_crust_by_cell(
     grid: Grid,
+    plates: &[Plate],
+    plate_by_cell: &[u16],
     cratons: &[CratonSeed],
     progress: &mut dyn ProgressSink,
 ) -> Result<Vec<CrustType>, PhysicalError> {
@@ -378,6 +469,15 @@ fn build_crust_by_cell(
             progress.check_cancelled()?;
         }
         crust.push(crust_for_vector(cell_vector(grid, cell), cratons));
+    }
+    for (cell, assigned) in plate_by_cell.iter().enumerate() {
+        let plate = match plates.get(usize::from(*assigned)) {
+            Some(plate) => plate,
+            None => continue,
+        };
+        if plate.crust_type == CrustType::Continental {
+            crust[cell] = CrustType::Continental;
+        }
     }
     Ok(crust)
 }
@@ -504,6 +604,7 @@ fn build_boundaries(
     Ok(boundaries)
 }
 
+#[allow(dead_code)]
 fn boundary_effect(
     boundary: BoundarySegment,
     first_crust: CrustType,
@@ -536,6 +637,46 @@ fn spreading_ridge_elevation(strength: f64, age_steps: u32) -> f64 {
 
 fn rift_shoulder_elevation(strength: f64, age_steps: u32) -> f64 {
     strength * RIFT_SHOULDER_FRACTION / (1.0 + f64::from(age_steps))
+}
+
+fn hops_for_metres(grid: Grid, metres: u64) -> u32 {
+    let cell =
+        resolution::max_cell_width_metres(grid.width, grid.height, grid.radius_metres).max(1);
+    ((metres + cell - 1) / cell).clamp(1, 24) as u32
+}
+
+fn hops_from_sources(grid: Grid, sources: &[usize], max_hops: u32) -> Vec<u32> {
+    let mut dist = vec![u32::MAX; grid.sample_count()];
+    let mut queue = VecDeque::new();
+    for &source in sources {
+        if source >= dist.len() || dist[source] == 0 {
+            continue;
+        }
+        dist[source] = 0;
+        queue.push_back(source);
+    }
+    let topology = grid.topology();
+    while let Some(cell) = queue.pop_front() {
+        let current = dist[cell];
+        if current >= max_hops {
+            continue;
+        }
+        for neighbor in topology.neighbors(cell) {
+            if dist[*neighbor] == u32::MAX {
+                dist[*neighbor] = current + 1;
+                queue.push_back(*neighbor);
+            }
+        }
+    }
+    dist
+}
+
+fn falloff(distance: u32, radius: u32) -> f64 {
+    if distance == u32::MAX || radius == 0 {
+        0.0
+    } else {
+        (1.0 - f64::from(distance) / f64::from(radius).max(1.0)).clamp(0.0, 1.0)
+    }
 }
 
 fn apply_divergent_relief(
@@ -629,30 +770,145 @@ fn build_relief(
     );
     let hotspot_stage_seed =
         derive_subsystem_seed(identity.seed, identity.retry_index, SeedDomain::Hotspots);
+    let land_cells = crust_by_cell
+        .iter()
+        .enumerate()
+        .filter(|(_, crust)| **crust == CrustType::Continental)
+        .map(|(cell, _)| cell)
+        .collect::<Vec<_>>();
+    let ocean_cells = crust_by_cell
+        .iter()
+        .enumerate()
+        .filter(|(_, crust)| **crust == CrustType::Oceanic)
+        .map(|(cell, _)| cell)
+        .collect::<Vec<_>>();
+    let interior_hops = hops_for_metres(grid, 3_500_000);
+    let interior_dist = hops_from_sources(grid, &ocean_cells, interior_hops);
+    let shelf_hops = hops_for_metres(grid, resolution::FEATURE_FIXTURES.shelf_width_metres);
+    let shelf_dist = hops_from_sources(grid, &land_cells, shelf_hops);
+    let max_interior = interior_dist
+        .iter()
+        .copied()
+        .filter(|value| *value != u32::MAX)
+        .max()
+        .unwrap_or(1)
+        .max(1);
     let mut relief = Vec::with_capacity(crust_by_cell.len());
     for (cell, crust) in crust_by_cell.iter().enumerate() {
         if cell % 256 == 0 {
             progress.check_cancelled()?;
         }
-        let baseline = match crust {
-            CrustType::Continental => 1_100_000.0,
-            CrustType::Oceanic => -2_500_000.0,
-        };
         let detail =
             (splitmix64(relief_stage_seed ^ (cell as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15))
                 % 1_000_001) as f64
                 - 500_000.0;
-        relief.push(baseline + detail * 0.45);
+        let baseline = match crust {
+            CrustType::Continental => {
+                let inland = if interior_dist[cell] == u32::MAX {
+                    1.0
+                } else {
+                    f64::from(interior_dist[cell]) / f64::from(max_interior)
+                };
+                350_000.0 + 1_250_000.0 * inland.powf(1.25)
+            }
+            CrustType::Oceanic => {
+                -3_200_000.0 + 1_400_000.0 * falloff(shelf_dist[cell], shelf_hops)
+            }
+        };
+        relief.push(baseline + detail * 0.28);
     }
     progress.check_cancelled()?;
+
+    let collision_sources = boundaries
+        .iter()
+        .filter(|boundary| {
+            boundary.kind == BoundaryKind::Convergent
+                && crust_by_cell[boundary.first_cell] == CrustType::Continental
+                && crust_by_cell[boundary.second_cell] == CrustType::Continental
+        })
+        .flat_map(|boundary| [boundary.first_cell, boundary.second_cell])
+        .collect::<Vec<_>>();
+    let collision_hops = hops_for_metres(
+        grid,
+        resolution::FEATURE_FIXTURES.collision_belt_width_metres,
+    );
+    let collision_dist = hops_from_sources(grid, &collision_sources, collision_hops);
+    for (cell, distance) in collision_dist.iter().copied().enumerate() {
+        let weight = falloff(distance, collision_hops);
+        if weight > 0.0 {
+            relief[cell] += 1_650_000.0 * tectonic_activity * weight * weight;
+        }
+    }
+
+    let rift_sources = boundaries
+        .iter()
+        .filter(|boundary| {
+            boundary.kind == BoundaryKind::Divergent
+                && crust_by_cell[boundary.first_cell] == CrustType::Continental
+                && crust_by_cell[boundary.second_cell] == CrustType::Continental
+        })
+        .flat_map(|boundary| [boundary.first_cell, boundary.second_cell])
+        .collect::<Vec<_>>();
+    let rift_floor_hops =
+        hops_for_metres(grid, resolution::FEATURE_FIXTURES.rift_floor_width_metres);
+    let rift_shoulder_hops = hops_for_metres(
+        grid,
+        resolution::FEATURE_FIXTURES.rift_shoulder_width_metres,
+    );
+    let rift_dist = hops_from_sources(grid, &rift_sources, rift_shoulder_hops);
+    for (cell, distance) in rift_dist.iter().copied().enumerate() {
+        if distance == u32::MAX {
+            continue;
+        }
+        if distance <= rift_floor_hops {
+            relief[cell] -= 1_850_000.0 * tectonic_activity * falloff(distance, rift_floor_hops);
+        } else {
+            relief[cell] += 420_000.0
+                * tectonic_activity
+                * falloff(distance.saturating_sub(rift_floor_hops), rift_shoulder_hops);
+        }
+    }
+
+    let mut arc_sources = Vec::new();
+    let mut trench_sources = Vec::new();
     for boundary in boundaries {
         let first_crust = crust_by_cell[boundary.first_cell];
         let second_crust = crust_by_cell[boundary.second_cell];
-        let (first_effect, second_effect) =
-            boundary_effect(*boundary, first_crust, second_crust, tectonic_activity);
-        relief[boundary.first_cell] += first_effect;
-        relief[boundary.second_cell] += second_effect;
-        if boundary.kind == BoundaryKind::Divergent {
+        if boundary.kind != BoundaryKind::Convergent || first_crust == second_crust {
+            continue;
+        }
+        let (ocean_cell, _continent_cell) = if first_crust == CrustType::Oceanic {
+            (boundary.first_cell, boundary.second_cell)
+        } else {
+            (boundary.second_cell, boundary.first_cell)
+        };
+        trench_sources.push(ocean_cell);
+        arc_sources.push(ocean_cell);
+    }
+    let trench_hops = hops_for_metres(grid, resolution::FEATURE_FIXTURES.trench_half_width_metres);
+    let arc_hops = hops_for_metres(grid, resolution::FEATURE_FIXTURES.trench_arc_offset_metres);
+    let trench_dist = hops_from_sources(grid, &trench_sources, trench_hops);
+    let arc_dist = hops_from_sources(grid, &arc_sources, arc_hops);
+    for (cell, distance) in trench_dist.iter().copied().enumerate() {
+        if crust_by_cell[cell] == CrustType::Oceanic {
+            relief[cell] -= 1_400_000.0 * tectonic_activity * falloff(distance, trench_hops);
+        }
+    }
+    for (cell, distance) in arc_dist.iter().copied().enumerate() {
+        if distance == 0 || distance == u32::MAX || crust_by_cell[cell] != CrustType::Oceanic {
+            continue;
+        }
+        let ring = falloff(distance, arc_hops) * (1.0 - falloff(distance, trench_hops.max(1)));
+        relief[cell] += 2_400_000.0 * tectonic_activity * ring;
+    }
+
+    for boundary in boundaries {
+        let first_crust = crust_by_cell[boundary.first_cell];
+        let second_crust = crust_by_cell[boundary.second_cell];
+        if boundary.kind == BoundaryKind::Divergent
+            && first_crust == CrustType::Oceanic
+            && second_crust == CrustType::Oceanic
+        {
             let strength = (boundary.relative_speed_nanoradians_per_year as f64 * 2.0)
                 .clamp(100_000.0, 1_800_000.0)
                 * tectonic_activity;
@@ -693,7 +949,7 @@ fn build_relief(
             && volcanic_centers.len() < MAX_VOLCANIC_CENTERS
         {
             let cell = subduction_arc_cell(grid, *boundary, plate_by_cell, crust_by_cell);
-            relief[cell] += 350_000.0 * tectonic_activity;
+            relief[cell] += 1_100_000.0 * tectonic_activity;
             volcanic_centers.push(VolcanicCenter {
                 cell,
                 plate: plate_by_cell[cell],
@@ -1638,7 +1894,7 @@ pub fn generate_tectonic_world(
     let cratons = craton_seeds(seed, retry_index, settings);
     let plates = build_plates(grid, seed, retry_index, settings, &cratons);
     let plate_by_cell = assign_plates(grid, &sites, progress)?;
-    let crust_by_cell = build_crust_by_cell(grid, &cratons, progress)?;
+    let crust_by_cell = build_crust_by_cell(grid, &plates, &plate_by_cell, &cratons, progress)?;
     progress.report(ProgressPhase::BuildingTectonicStructure, 1, 3)?;
     let boundaries = build_boundaries(grid, &plates, &plate_by_cell, progress)?;
     progress.report(ProgressPhase::BuildingTectonicStructure, 2, 3)?;

@@ -1,0 +1,62 @@
+use serde::Serialize;
+
+use crate::request::AtlasRenderRequest;
+use crate::{
+    ATLAS_DETAIL_ALGORITHM_VERSION, ATLAS_PROVENANCE_SCHEMA_VERSION, ATLAS_RENDERER_VERSION,
+    ATLAS_REQUEST_SCHEMA_VERSION, ATLAS_SEED_POLICY_VERSION, SPIKE_STYLE_ID,
+};
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct AtlasRenderProvenanceV1 {
+    pub schema_version: u32,
+    pub renderer_version: u32,
+    pub request_schema_version: u32,
+    pub detail_algorithm_version: u32,
+    pub seed_policy_version: u32,
+    pub style_id: String,
+    pub physical_identity: String,
+    pub source_sha256: String,
+    pub offset_years: i64,
+    pub detail_level: String,
+    pub detail_variant: u32,
+    pub projection: String,
+    pub width_px: u32,
+    pub height_px: u32,
+    pub dpi: u32,
+    pub format: String,
+    pub encoder: String,
+}
+
+impl AtlasRenderProvenanceV1 {
+    pub fn spike(
+        request: &AtlasRenderRequest,
+        physical_identity: &[u8],
+        source_sha256: &str,
+    ) -> Self {
+        Self {
+            schema_version: ATLAS_PROVENANCE_SCHEMA_VERSION,
+            renderer_version: ATLAS_RENDERER_VERSION,
+            request_schema_version: ATLAS_REQUEST_SCHEMA_VERSION,
+            detail_algorithm_version: ATLAS_DETAIL_ALGORITHM_VERSION,
+            seed_policy_version: ATLAS_SEED_POLICY_VERSION,
+            style_id: SPIKE_STYLE_ID.to_string(),
+            physical_identity: String::from_utf8_lossy(physical_identity).into_owned(),
+            source_sha256: source_sha256.to_string(),
+            offset_years: request.offset_years,
+            detail_level: request.level.as_str().to_string(),
+            detail_variant: request.variant,
+            projection: "equirectangular".to_string(),
+            width_px: request.width_px,
+            height_px: request.height_px,
+            dpi: request.dpi,
+            format: request.format.as_str().to_string(),
+            encoder: "png-0.17-fast-nofilter".to_string(),
+        }
+    }
+
+    pub fn compact_json(&self) -> Result<String, crate::AtlasError> {
+        serde_json::to_string(self).map_err(|error| {
+            crate::AtlasError::new(crate::CODE_ENCODER_FAILED, format!("provenance: {error}"))
+        })
+    }
+}

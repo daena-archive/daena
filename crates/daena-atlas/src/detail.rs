@@ -8,9 +8,8 @@ use crate::projection::{
     LAT_MICRO_MIN, LAT_MICRO_SPAN, LON_MICRO_MIN, LON_MICRO_SPAN,
 };
 use crate::request::DetailLevel;
-use crate::{AtlasError, ATLAS_DETAIL_ALGORITHM_VERSION};
+use crate::AtlasError;
 
-pub const CONTINENTAL_RELIEF_DOMAIN: &str = "continental-relief";
 pub const COASTAL_ENVELOPE_PPM: u32 = 350_000;
 pub const MAX_RESIDUAL_MM: i32 = 1_200;
 const CANCELLATION_STRIDE: usize = 4_096;
@@ -39,11 +38,8 @@ fn push_u32(bytes: &mut Vec<u8>, value: u32) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
 
-fn domain_prefix(algorithm_version: u32) -> &'static [u8] {
-    match algorithm_version {
-        crate::ATLAS_DETAIL_ALGORITHM_EXPERIMENTAL_VERSION => b"daena-atlas-detail-v2\0",
-        _ => b"daena-atlas-detail-v1\0",
-    }
+fn domain_prefix(_algorithm_version: u32) -> &'static [u8] {
+    b"daena-atlas-detail-v2\0"
 }
 
 pub fn domain_key(identity: &[u8], algorithm_version: u32, variant: u32, domain: &str) -> [u8; 32] {
@@ -68,15 +64,6 @@ pub fn lattice_sample(key: &[u8; 32], lattice_i: u32, lattice_j: u32, octave: u3
             ^ u64::from(octave).wrapping_mul(0x94d0_49bb_1331_11eb)
             ^ k1,
     )
-}
-
-fn signed_unit_mm(sample: u64, amplitude_mm: i32) -> i32 {
-    let unit = (sample >> 11) as i64 % 2_000_001 - 1_000_000;
-    ((unit * i64::from(amplitude_mm)) / 1_000_000) as i32
-}
-
-fn lattice_index(width: u32, i: u32, j: u32) -> usize {
-    j as usize * width as usize + i as usize
 }
 
 pub fn nearest_cell(grid: Grid, lon_micro: i32, lat_micro: i32) -> usize {
@@ -114,113 +101,6 @@ pub(crate) fn lattice_lat_micro(j: u32, lattice_height: u32) -> i32 {
     )
 }
 
-fn amplitude_mm(elevation_mm: i32) -> i32 {
-    let magnitude = elevation_mm.unsigned_abs().min(8_000_000);
-    let scaled = (u64::from(magnitude) * u64::from(MAX_RESIDUAL_MM as u32) / 8_000_000) as i32;
-    scaled.clamp(40, MAX_RESIDUAL_MM)
-}
-
-pub fn build_detail_model(
-    grid: Grid,
-    elevations_mm: &[i32],
-    identity: &[u8],
-    variant: u32,
-    level: DetailLevel,
-    check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
-) -> Result<AtlasDetailModel, AtlasError> {
-    if elevations_mm.len() != grid.sample_count() {
-        return Err(AtlasError::invalid(
-            "elevation sample count does not match the grid",
-        ));
-    }
-    let factor = level.lattice_factor();
-    let lattice_width = grid
-        .width
-        .checked_mul(factor)
-        .ok_or_else(|| AtlasError::limit("atlas lattice width overflowed"))?;
-    let lattice_height = grid
-        .height
-        .checked_mul(factor)
-        .ok_or_else(|| AtlasError::limit("atlas lattice height overflowed"))?;
-    let count = (lattice_width as usize)
-        .checked_mul(lattice_height as usize)
-        .ok_or_else(|| AtlasError::limit("atlas lattice count overflowed"))?;
-    let key = domain_key(
-        identity,
-        ATLAS_DETAIL_ALGORITHM_VERSION,
-        variant,
-        CONTINENTAL_RELIEF_DOMAIN,
-    );
-    let mut residual_mm = vec![0_i32; count];
-    for j in 0..lattice_height {
-        check_cancelled()?;
-        let sample_j = if j == 0 || j + 1 == lattice_height {
-            0
-        } else {
-            j
-        };
-        for i in 0..lattice_width {
-            let sample_i = if j == 0 || j + 1 == lattice_height {
-                0
-            } else {
-                i
-            };
-            let lon = lattice_lon_micro(i, lattice_width);
-            let lat = lattice_lat_micro(j, lattice_height);
-            let elevation = sample_field_mm(grid, elevations_mm, lon, lat);
-            let sample = lattice_sample(&key, sample_i, sample_j, 0);
-            residual_mm[lattice_index(lattice_width, i, j)] =
-                signed_unit_mm(sample, amplitude_mm(elevation));
-        }
-    }
-
-    let mut sums = vec![0_i64; grid.sample_count()];
-    let mut counts = vec![0_u32; grid.sample_count()];
-    for j in 0..lattice_height {
-        for i in 0..lattice_width {
-            let lon = lattice_lon_micro(i, lattice_width);
-            let lat = lattice_lat_micro(j, lattice_height);
-            let cell = nearest_cell(grid, lon, lat);
-            sums[cell] += i64::from(residual_mm[lattice_index(lattice_width, i, j)]);
-            counts[cell] += 1;
-        }
-    }
-    let means = sums
-        .iter()
-        .zip(counts)
-        .map(|(sum, count)| {
-            if count == 0 {
-                0
-            } else {
-                sum / i64::from(count)
-            }
-        })
-        .collect::<Vec<_>>();
-    for j in 0..lattice_height {
-        if j % 8 == 0 {
-            check_cancelled()?;
-        }
-        for i in 0..lattice_width {
-            let lon = lattice_lon_micro(i, lattice_width);
-            let lat = lattice_lat_micro(j, lattice_height);
-            let cell = nearest_cell(grid, lon, lat);
-            let index = lattice_index(lattice_width, i, j);
-            residual_mm[index] = (i64::from(residual_mm[index]) - means[cell]) as i32;
-        }
-    }
-
-    Ok(AtlasDetailModel {
-        grid,
-        elevations_mm: elevations_mm.to_vec(),
-        residual_mm,
-        lattice_width,
-        lattice_height,
-        algorithm_version: ATLAS_DETAIL_ALGORITHM_VERSION,
-        variant,
-        level,
-    })
-}
-
 impl AtlasDetailModel {
     pub fn residual_at(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         let lattice = Grid {
@@ -256,6 +136,24 @@ impl AtlasDetailModel {
             }
         }
         refined
+    }
+
+    pub fn bake_absolute_elevation(&mut self, absolute_mm: &[i32]) {
+        let width = self.lattice_width;
+        let height = self.lattice_height;
+        let count = (width as usize).saturating_mul(height as usize);
+        if absolute_mm.len() != count || self.residual_mm.len() != count {
+            return;
+        }
+        for j in 0..height {
+            for i in 0..width {
+                let index = j as usize * width as usize + i as usize;
+                let lon = lattice_lon_micro(i, width);
+                let lat = lattice_lat_micro(j, height);
+                let canonical = self.canonical_at(lon, lat);
+                self.residual_mm[index] = absolute_mm[index].saturating_sub(canonical);
+            }
+        }
     }
 }
 
@@ -348,6 +246,8 @@ pub fn downsample_mean_mm(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::amplify::build_amplification_model;
+    use crate::control::ControlFields;
     use crate::golden_world;
     use crate::spike_identity_from_source;
     use daena_physical::history::{derive_historical_world, HistoricalForcingParameters};
@@ -356,16 +256,6 @@ mod tests {
     fn model() -> (AtlasDetailModel, i32, Vec<i32>, Vec<u8>) {
         let world = golden_world();
         let identity = spike_identity_from_source(&world.source);
-        let mut cancel = || Ok(());
-        let model = build_detail_model(
-            world.field.grid,
-            &world.field.elevations_mm,
-            &identity,
-            0,
-            DetailLevel::Detailed,
-            &mut cancel,
-        )
-        .unwrap();
         let historical = derive_historical_world(
             &world.field,
             world.report.reference_water_inventory_m3,
@@ -375,6 +265,18 @@ mod tests {
             &mut PhysicalNoop,
         )
         .unwrap();
+        let controls = ControlFields::from_accepted(
+            &world.field,
+            &world.tectonics,
+            &historical.climate,
+            &historical.hydrology,
+        )
+        .unwrap();
+        let mut cancel = || Ok(());
+        let model =
+            build_amplification_model(&controls, &identity, 0, DetailLevel::Detailed, &mut cancel)
+                .unwrap()
+                .detail;
         let sdf = signed_coastal_distance_ppm(
             world.field.grid,
             &world.field.elevations_mm,
@@ -385,30 +287,45 @@ mod tests {
 
     #[test]
     fn named_domain_vectors_are_stable() {
-        let key = domain_key(b"identity-fixture", 1, 0, CONTINENTAL_RELIEF_DOMAIN);
+        let key = domain_key(
+            b"identity-fixture",
+            crate::ATLAS_DETAIL_ALGORITHM_VERSION,
+            0,
+            crate::amplify::HIERARCHICAL_RELIEF_DOMAIN,
+        );
         assert_eq!(
             key.iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>(),
-            "5e89e3294255229f7573a0f1df544141a9e970ac3367d2a31445028b0f93cd93"
+            "1501efd4684e5f49c9983a78f7f167b9d87c673f0fb3379739545b19e9c3f9ff"
         );
-        assert_eq!(lattice_sample(&key, 3, 5, 0), 454_489_354_494_762_333);
         assert_ne!(lattice_sample(&key, 3, 5, 0), lattice_sample(&key, 4, 5, 0));
         assert_ne!(
-            domain_key(b"identity-fixture", 1, 0, CONTINENTAL_RELIEF_DOMAIN),
-            domain_key(b"identity-fixture", 1, 1, CONTINENTAL_RELIEF_DOMAIN)
-        );
-        assert_ne!(
-            domain_key(b"identity-fixture", 1, 0, CONTINENTAL_RELIEF_DOMAIN),
-            domain_key(b"identity-fixture", 1, 0, "coastal-detail")
-        );
-        assert_ne!(
-            domain_key(b"identity-fixture", 1, 0, CONTINENTAL_RELIEF_DOMAIN),
             domain_key(
                 b"identity-fixture",
-                crate::ATLAS_DETAIL_ALGORITHM_EXPERIMENTAL_VERSION,
+                crate::ATLAS_DETAIL_ALGORITHM_VERSION,
                 0,
-                CONTINENTAL_RELIEF_DOMAIN
+                crate::amplify::HIERARCHICAL_RELIEF_DOMAIN
+            ),
+            domain_key(
+                b"identity-fixture",
+                crate::ATLAS_DETAIL_ALGORITHM_VERSION,
+                1,
+                crate::amplify::HIERARCHICAL_RELIEF_DOMAIN
+            )
+        );
+        assert_ne!(
+            domain_key(
+                b"identity-fixture",
+                crate::ATLAS_DETAIL_ALGORITHM_VERSION,
+                0,
+                crate::amplify::HIERARCHICAL_RELIEF_DOMAIN
+            ),
+            domain_key(
+                b"identity-fixture",
+                crate::ATLAS_DETAIL_ALGORITHM_VERSION,
+                0,
+                crate::amplify::MOUNTAIN_OROMETRY_DOMAIN
             )
         );
     }
@@ -428,15 +345,28 @@ mod tests {
             assert_eq!(first, second);
         }
         let mut cancel = || Ok(());
-        let other = build_detail_model(
-            model.grid,
-            &model.elevations_mm,
-            &identity,
-            0,
-            DetailLevel::Standard,
-            &mut cancel,
-        )
-        .unwrap();
+        let other = {
+            let world = golden_world();
+            let historical = derive_historical_world(
+                &world.field,
+                world.report.reference_water_inventory_m3,
+                Some(&world.tectonics.crust_by_cell),
+                HistoricalForcingParameters::default_for(world.field.seed, world.field.retry_index),
+                0,
+                &mut PhysicalNoop,
+            )
+            .unwrap();
+            let controls = ControlFields::from_accepted(
+                &world.field,
+                &world.tectonics,
+                &historical.climate,
+                &historical.hydrology,
+            )
+            .unwrap();
+            build_amplification_model(&controls, &identity, 0, DetailLevel::Standard, &mut cancel)
+                .unwrap()
+                .detail
+        };
         // Different level may change amplitude sampling density, but the PRF
         // at a shared lattice coordinate family stays world-addressed.
         assert_eq!(

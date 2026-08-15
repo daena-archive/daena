@@ -160,17 +160,17 @@ try {
   assert.equal(preview.hash, again.hash);
   assert.equal(
     preview.hash,
-    "sha256:3dc3611aedbea11867da311c4ee8f47b9b045d5a66f1c05e29df288591108f14",
+    "sha256:b77c9fdc9cdb34046547a156fbcb2c4e313a1d4e3acefc5e3e7352041b22eb4a",
   );
   const mid = render(4096, 2048, exportPath);
   const max = render(8192, 4096, maxPath);
   assert.equal(
     mid.hash,
-    "sha256:3f542b3f1c7fc51e7c8353b6c816ae597f485c32588ca6aa195daceecf75eb9c",
+    "sha256:fa5bb7832e4649e93cd12104aa9c7704580aa6ff3a029513be7452e9f3af1e4b",
   );
   assert.equal(
     max.hash,
-    "sha256:4c8d4826e856dd46910120839114a25c60f4117eeca698d01904ac834660f1ed",
+    "sha256:9cd07bc2b8b47edf650a8bcc11733b30b786574701e461cdf8910ac5d79cad96",
   );
   assert.notEqual(preview.hash, mid.hash);
   assert.notEqual(mid.hash, max.hash);
@@ -227,7 +227,7 @@ try {
   assert.equal(cold.hash, warm.hash);
   assert.equal(cold.summary.artifactCache, "miss");
   assert.equal(warm.summary.artifactCache, "hit");
-  assert.equal(cold.summary.rendererVersion, 5);
+  assert.equal(cold.summary.rendererVersion, 6);
   assert.ok(cold.summary.tributaryCount >= 0);
   const adr = readFileSync(join(root, "docs/adr/0036-atlas-rendering-iteration-4.md"), "utf8");
   assert.match(adr, /atlas-only/);
@@ -276,9 +276,33 @@ try {
   assert.match(studioView, /calendar-year/);
   assert.equal(studioView.includes("getCanvas"), false);
   assert.equal(studioView.includes("new Date"), false);
-  assert.equal(studioView.includes("algorithmVersion: 2"), false);
+  assert.equal(studioView.includes("algorithmVersion: 2"), true);
+  assert.equal(studioView.includes("algorithmVersion: 1"), false);
   assert.equal(studioView.includes("tributary:v2"), false);
   assert.equal(studioView.includes("valley:v2"), false);
+  assert.match(studioView, /Skip to map/);
+  assert.match(studioView, /aria-keyshortcuts/);
+  assert.match(studioView, /atlas\.studio\.stale/);
+  assert.match(studioView, /detail algorithm 2/);
+  assert.match(studioView, /Regenerate disposable Atlas cache/);
+  assert.match(studioView, /Atlas-only derived drainage/);
+  assert.match(studioView, /currentViewExportHeight/);
+  const studioRelease = readFileSync(join(root, "docs/adr/0042-atlas-studio-iteration-5.md"), "utf8");
+  assert.match(studioRelease, /release hardening/);
+  assert.match(studioRelease, /current_view_export_request/);
+  assert.match(studioRelease, /GOLDEN_TILE_Z0/);
+  assert.match(studioRelease, /Experimental paths are retained/);
+  assert.match(studioRelease, /deferred/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/studio.rs"), "utf8"), /current_view_export_request/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/studio.rs"), "utf8"), /GOLDEN_TILE_Z0_SHA256/);
+  const productionCutover = readFileSync(join(root, "docs/adr/0043-atlas-production-algorithm-2.md"), "utf8");
+  assert.match(productionCutover, /Detail algorithm \| `2`/);
+  assert.match(productionCutover, /Derived drainage \| `2`/);
+  assert.match(productionCutover, /Renderer \| `6`/);
+  assert.match(productionCutover, /build_detail_model/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 2/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 2/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_RENDERER_VERSION: u32 = 6/);
 
   const report = {
     preview: { ...preview.summary, sha256: preview.hash, peakResidentBytes: preview.peakResidentBytes },

@@ -1,5 +1,4 @@
-//! Experimental detail algorithm 2: hierarchical amplification and bounded
-//! mountain topology. Production requests continue to use algorithm 1.
+//! Detail algorithm 2: hierarchical amplification and bounded mountain topology.
 
 use daena_physical::Grid;
 
@@ -9,7 +8,7 @@ use crate::detail::{
     sample_field_mm, sample_sdf_ppm, AtlasDetailModel, COASTAL_ENVELOPE_PPM, MAX_RESIDUAL_MM,
 };
 use crate::request::DetailLevel;
-use crate::{AtlasError, ATLAS_DETAIL_ALGORITHM_EXPERIMENTAL_VERSION};
+use crate::{AtlasError, ATLAS_DETAIL_ALGORITHM_VERSION};
 
 pub const HIERARCHICAL_RELIEF_DOMAIN: &str = "hierarchical-relief";
 pub const MOUNTAIN_OROMETRY_DOMAIN: &str = "mountain-orometry";
@@ -17,6 +16,13 @@ pub const MOUNTAIN_WINDOW_WIDTH: u32 = 16;
 pub const MOUNTAIN_WINDOW_HEIGHT: u32 = 12;
 pub const MAX_MOUNTAIN_FEATURES: usize = 64;
 const CANCELLATION_STRIDE: usize = 4_096;
+
+fn mountain_window_size(grid: Grid) -> (u32, u32) {
+    (
+        MOUNTAIN_WINDOW_WIDTH.min(grid.width),
+        MOUNTAIN_WINDOW_HEIGHT.min(grid.height),
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -118,7 +124,7 @@ fn build_octave(
         .ok_or_else(|| AtlasError::limit("atlas lattice count overflowed"))?;
     let key = domain_key(
         identity,
-        ATLAS_DETAIL_ALGORITHM_EXPERIMENTAL_VERSION,
+        ATLAS_DETAIL_ALGORITHM_VERSION,
         variant,
         HIERARCHICAL_RELIEF_DOMAIN,
     );
@@ -207,13 +213,14 @@ fn sample_octave(
 pub fn mountain_window_origin(controls: &ControlFields) -> (u32, u32) {
     let mut best_sum = i64::MIN;
     let mut best = (0, 0);
-    let max_row = controls.grid.height.saturating_sub(MOUNTAIN_WINDOW_HEIGHT);
-    let max_col = controls.grid.width.saturating_sub(MOUNTAIN_WINDOW_WIDTH);
+    let (window_w, window_h) = mountain_window_size(controls.grid);
+    let max_row = controls.grid.height.saturating_sub(window_h);
+    let max_col = controls.grid.width.saturating_sub(window_w);
     for row in 0..=max_row {
         for col in 0..=max_col {
             let mut sum = 0_i64;
-            for dr in 0..MOUNTAIN_WINDOW_HEIGHT {
-                for dc in 0..MOUNTAIN_WINDOW_WIDTH {
+            for dr in 0..window_h {
+                for dc in 0..window_w {
                     let cell = controls.grid.index(row + dr, col + dc);
                     sum += i64::from(controls.mountain_influence_ppm[cell]);
                 }
@@ -230,16 +237,17 @@ pub fn mountain_window_origin(controls: &ControlFields) -> (u32, u32) {
 fn in_window(grid: Grid, origin_row: u32, origin_col: u32, lon_micro: i32, lat_micro: i32) -> bool {
     let cell = nearest_cell(grid, lon_micro, lat_micro);
     let (row, col) = grid.row_col(cell);
+    let (window_w, window_h) = mountain_window_size(grid);
     row >= origin_row
-        && row < origin_row + MOUNTAIN_WINDOW_HEIGHT
+        && row < origin_row + window_h
         && col >= origin_col
-        && col < origin_col + MOUNTAIN_WINDOW_WIDTH
+        && col < origin_col + window_w
 }
 
 fn feature_id(kind: MountainKind, index: usize) -> String {
     format!(
         "atlas:orometry:v{}:{}:{index}",
-        ATLAS_DETAIL_ALGORITHM_EXPERIMENTAL_VERSION,
+        ATLAS_DETAIL_ALGORITHM_VERSION,
         kind.as_str()
     )
 }
@@ -587,7 +595,7 @@ pub fn build_amplification_model(
     );
     let orometry_key = domain_key(
         identity,
-        ATLAS_DETAIL_ALGORITHM_EXPERIMENTAL_VERSION,
+        ATLAS_DETAIL_ALGORITHM_VERSION,
         variant,
         MOUNTAIN_OROMETRY_DOMAIN,
     );
@@ -598,7 +606,7 @@ pub fn build_amplification_model(
             residual_mm,
             lattice_width,
             lattice_height,
-            algorithm_version: ATLAS_DETAIL_ALGORITHM_EXPERIMENTAL_VERSION,
+            algorithm_version: crate::ATLAS_DETAIL_ALGORITHM_VERSION,
             variant,
             level,
         },
@@ -607,6 +615,37 @@ pub fn build_amplification_model(
         features,
         orometry_key,
     })
+}
+
+impl AmplificationModel {
+    pub fn from_cached_detail(
+        detail: AtlasDetailModel,
+        controls: &ControlFields,
+        identity: &[u8],
+    ) -> Self {
+        let origin = mountain_window_origin(controls);
+        let features = extract_mountain_features(
+            controls,
+            detail.lattice_width,
+            detail.lattice_height,
+            &detail.residual_mm,
+            origin.0,
+            origin.1,
+        );
+        let orometry_key = domain_key(
+            identity,
+            detail.algorithm_version,
+            detail.variant,
+            MOUNTAIN_OROMETRY_DOMAIN,
+        );
+        Self {
+            detail,
+            mountain_origin_row: origin.0,
+            mountain_origin_col: origin.1,
+            features,
+            orometry_key,
+        }
+    }
 }
 
 pub fn topology_fingerprint(model: &AmplificationModel) -> [u8; 32] {
@@ -756,7 +795,7 @@ mod tests {
         let v1 = domain_key(b"identity-fixture", 1, 0, HIERARCHICAL_RELIEF_DOMAIN);
         let v2 = domain_key(
             b"identity-fixture",
-            ATLAS_DETAIL_ALGORITHM_EXPERIMENTAL_VERSION,
+            ATLAS_DETAIL_ALGORITHM_VERSION,
             0,
             HIERARCHICAL_RELIEF_DOMAIN,
         );
@@ -765,6 +804,30 @@ mod tests {
             "1501efd4684e5f49c9983a78f7f167b9d87c673f0fb3379739545b19e9c3f9ff"
         );
         assert_ne!(v1, v2);
+    }
+
+    #[test]
+    fn mountain_window_clamps_to_grids_smaller_than_nominal_window() {
+        let settings = daena_physical::GenerationSettings {
+            width: 16,
+            height: 8,
+            radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
+            target_land_fraction_ppm: 300_000,
+        };
+        let world =
+            daena_physical::generate_world(settings, 831_429, 0, &mut PhysicalNoop).unwrap();
+        let controls = ControlFields::from_accepted(
+            &world.field,
+            &world.tectonics,
+            &world.climate,
+            &world.hydrology,
+        )
+        .unwrap();
+        assert_eq!(mountain_window_origin(&controls), (0, 0));
+        let identity = spike_identity_from_source(&world.source);
+        let mut cancel = || Ok(());
+        build_amplification_model(&controls, &identity, 0, DetailLevel::Standard, &mut cancel)
+            .unwrap();
     }
 
     #[test]
@@ -778,15 +841,15 @@ mod tests {
                 .unwrap();
         assert!(
             started.elapsed().as_secs() < 5,
-            "standard amplification exceeded the experimental budget"
+            "standard amplification exceeded the 5s budget"
         );
         assert!(
             model.detail.residual_mm.len() * 4 <= 2_000_000,
-            "experimental residual exceeded the in-process byte budget"
+            "residual exceeded the in-process byte budget"
         );
         assert_eq!(
             model.detail.algorithm_version,
-            ATLAS_DETAIL_ALGORITHM_EXPERIMENTAL_VERSION
+            ATLAS_DETAIL_ALGORITHM_VERSION
         );
         assert!(downsample_preserves_sign_outside_envelope(
             &model.detail,
@@ -991,11 +1054,11 @@ mod tests {
         }
         let _ = (sea, sdf, relief.0.ocean_deep, antique.0.ocean_deep);
         let rejected = AtlasRenderRequest {
-            algorithm_version: ATLAS_DETAIL_ALGORITHM_EXPERIMENTAL_VERSION,
+            algorithm_version: 1,
             ..AtlasRenderRequest::spike_png(64, 32).unwrap()
         }
         .normalize();
         assert!(rejected.is_err());
-        assert_eq!(ATLAS_DETAIL_ALGORITHM_VERSION, 1);
+        assert_eq!(ATLAS_DETAIL_ALGORITHM_VERSION, 2);
     }
 }

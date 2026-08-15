@@ -23,12 +23,10 @@ pub mod style;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const ATLAS_REQUEST_SCHEMA_VERSION: u32 = 1;
-pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 1;
-pub const ATLAS_DETAIL_ALGORITHM_EXPERIMENTAL_VERSION: u32 = 2;
-pub const ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 1;
-pub const ATLAS_DERIVED_DRAINAGE_EXPERIMENTAL_VERSION: u32 = 2;
+pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 2;
+pub const ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 2;
 pub const ATLAS_SEED_POLICY_VERSION: u32 = 1;
-pub const ATLAS_RENDERER_VERSION: u32 = 5;
+pub const ATLAS_RENDERER_VERSION: u32 = 6;
 pub const ATLAS_PROVENANCE_SCHEMA_VERSION: u32 = 1;
 pub const SPIKE_STYLE_ID: &str = "daena-atlas-relief-spike";
 
@@ -226,6 +224,42 @@ pub struct AtlasPreparedScene {
     pub drainage_cache: cache::CacheLookup,
 }
 
+fn drainage_from_refined(refined: &refine::RefinedHydrology) -> drainage::DerivedDrainage {
+    drainage::DerivedDrainage {
+        version: ATLAS_DERIVED_DRAINAGE_VERSION,
+        tributaries: refined
+            .tributaries
+            .iter()
+            .map(|tributary| drainage::DerivedTributary {
+                id: tributary.id.clone(),
+                source_cell: tributary.source_index,
+                join_cell: tributary.join_index,
+                parent_river_id: tributary.parent_river_id,
+                watershed_id: tributary.watershed_id,
+                path: tributary.path.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn amplification_from_controls(
+    field: &daena_physical::PhysicalField,
+    world: &daena_physical::tectonics::TectonicWorld,
+    historical: &daena_physical::history::HistoricalWorld,
+    identity: &[u8],
+    variant: u32,
+    level: request::DetailLevel,
+    check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
+) -> Result<amplify::AmplificationModel, AtlasError> {
+    let controls = control::ControlFields::from_accepted(
+        field,
+        world,
+        &historical.climate,
+        &historical.hydrology,
+    )?;
+    amplify::build_amplification_model(&controls, identity, variant, level, check_cancelled)
+}
+
 pub fn prepare_from_source(
     source_bytes: &[u8],
     identity: &[u8],
@@ -269,8 +303,19 @@ pub fn prepare_from_source(
     progress.check_cancelled()?;
     progress.report(AtlasPhase::DerivingEpoch, 1, 1)?;
     progress.report(AtlasPhase::RefiningDetail, 0, 1)?;
+    let sdf = detail::signed_coastal_distance_ppm(
+        field.grid,
+        &field.elevations_mm,
+        historical.metrics.sea_level_mm,
+    );
+    let controls = control::ControlFields::from_accepted(
+        &field,
+        &world,
+        &historical.climate,
+        &historical.hydrology,
+    )?;
     let residual_key = cache::cache_key(&[
-        b"atlas-cache-residual-v1",
+        b"atlas-cache-residual-v2",
         identity,
         &ATLAS_DETAIL_ALGORITHM_VERSION.to_le_bytes(),
         &request.variant.to_le_bytes(),
@@ -279,39 +324,43 @@ pub fn prepare_from_source(
         &field.grid.height.to_le_bytes(),
     ]);
     let mut residual_cache = cache::CacheLookup::Off;
-    let model = if let Some(cache) = cache {
+    let expected_width = field
+        .grid
+        .width
+        .saturating_mul(request.level.lattice_factor());
+    let expected_height = field
+        .grid
+        .height
+        .saturating_mul(request.level.lattice_factor());
+    let mut amplification = if let Some(cache) = cache {
         match cache.get(cache::KIND_RESIDUAL, &residual_key) {
             cache::CacheLookupResult::Hit(payload) => match cache::decode_residual(&payload) {
                 Ok((lattice_width, lattice_height, residual_mm))
-                    if lattice_width
-                        == field
-                            .grid
-                            .width
-                            .saturating_mul(request.level.lattice_factor())
-                        && lattice_height
-                            == field
-                                .grid
-                                .height
-                                .saturating_mul(request.level.lattice_factor()) =>
+                    if lattice_width == expected_width && lattice_height == expected_height =>
                 {
                     residual_cache = cache::CacheLookup::Hit;
-                    detail::AtlasDetailModel {
-                        grid: field.grid,
-                        elevations_mm: field.elevations_mm.clone(),
-                        residual_mm,
-                        lattice_width,
-                        lattice_height,
-                        algorithm_version: ATLAS_DETAIL_ALGORITHM_VERSION,
-                        variant: request.variant,
-                        level: request.level,
-                    }
+                    amplify::AmplificationModel::from_cached_detail(
+                        detail::AtlasDetailModel {
+                            grid: field.grid,
+                            elevations_mm: field.elevations_mm.clone(),
+                            residual_mm,
+                            lattice_width,
+                            lattice_height,
+                            algorithm_version: ATLAS_DETAIL_ALGORITHM_VERSION,
+                            variant: request.variant,
+                            level: request.level,
+                        },
+                        &controls,
+                        identity,
+                    )
                 }
                 _ => {
                     residual_cache = cache::CacheLookup::Miss;
                     let mut cancelled = || progress.check_cancelled();
-                    let model = detail::build_detail_model(
-                        field.grid,
-                        &field.elevations_mm,
+                    let model = amplification_from_controls(
+                        &field,
+                        &world,
+                        &historical,
                         identity,
                         request.variant,
                         request.level,
@@ -321,9 +370,9 @@ pub fn prepare_from_source(
                         cache::KIND_RESIDUAL,
                         &residual_key,
                         &cache::encode_residual(
-                            model.lattice_width,
-                            model.lattice_height,
-                            &model.residual_mm,
+                            model.detail.lattice_width,
+                            model.detail.lattice_height,
+                            &model.detail.residual_mm,
                         ),
                     );
                     model
@@ -332,9 +381,10 @@ pub fn prepare_from_source(
             cache::CacheLookupResult::Miss => {
                 residual_cache = cache::CacheLookup::Miss;
                 let mut cancelled = || progress.check_cancelled();
-                let model = detail::build_detail_model(
-                    field.grid,
-                    &field.elevations_mm,
+                let model = amplification_from_controls(
+                    &field,
+                    &world,
+                    &historical,
                     identity,
                     request.variant,
                     request.level,
@@ -344,9 +394,9 @@ pub fn prepare_from_source(
                     cache::KIND_RESIDUAL,
                     &residual_key,
                     &cache::encode_residual(
-                        model.lattice_width,
-                        model.lattice_height,
-                        &model.residual_mm,
+                        model.detail.lattice_width,
+                        model.detail.lattice_height,
+                        &model.detail.residual_mm,
                     ),
                 );
                 model
@@ -354,9 +404,10 @@ pub fn prepare_from_source(
         }
     } else {
         let mut cancelled = || progress.check_cancelled();
-        detail::build_detail_model(
-            field.grid,
-            &field.elevations_mm,
+        amplification_from_controls(
+            &field,
+            &world,
+            &historical,
             identity,
             request.variant,
             request.level,
@@ -364,7 +415,7 @@ pub fn prepare_from_source(
         )?
     };
     let drainage_key = cache::cache_key(&[
-        b"atlas-cache-drainage-v1",
+        b"atlas-cache-drainage-v2",
         identity,
         &ATLAS_DERIVED_DRAINAGE_VERSION.to_le_bytes(),
         &request.variant.to_le_bytes(),
@@ -374,61 +425,80 @@ pub fn prepare_from_source(
         &forcing_fingerprint,
     ]);
     let mut drainage_cache = cache::CacheLookup::Off;
-    let drainage = if let Some(cache) = cache {
+    let (drainage, worked_mm) = if let Some(cache) = cache {
         match cache.get(cache::KIND_DRAINAGE, &drainage_key) {
             cache::CacheLookupResult::Hit(payload) => {
-                match drainage::DerivedDrainage::decode(&payload) {
-                    Ok(drainage) => {
+                match drainage::DerivedDrainage::decode_product(&payload) {
+                    Ok((drainage, width, height, worked_mm))
+                        if width == amplification.detail.lattice_width
+                            && height == amplification.detail.lattice_height =>
+                    {
                         drainage_cache = cache::CacheLookup::Hit;
-                        drainage
+                        (drainage, worked_mm)
                     }
-                    Err(_) => {
+                    _ => {
                         drainage_cache = cache::CacheLookup::Miss;
                         let mut cancelled = || progress.check_cancelled();
-                        let drainage = drainage::derive_minor_tributaries(
+                        let refined = refine::build_refined_hydrology(
+                            &amplification,
+                            &controls,
                             &historical.hydrology,
-                            &field.elevations_mm,
+                            &sdf,
                             identity,
-                            request.variant,
-                            request.level,
                             &mut cancelled,
                         )?;
-                        let _ = cache.put(cache::KIND_DRAINAGE, &drainage_key, &drainage.encode());
-                        drainage
+                        let drainage = drainage_from_refined(&refined);
+                        let _ = cache.put(
+                            cache::KIND_DRAINAGE,
+                            &drainage_key,
+                            &drainage.encode_product(
+                                refined.lattice_width,
+                                refined.lattice_height,
+                                &refined.worked_mm,
+                            ),
+                        );
+                        (drainage, refined.worked_mm)
                     }
                 }
             }
             cache::CacheLookupResult::Miss => {
                 drainage_cache = cache::CacheLookup::Miss;
                 let mut cancelled = || progress.check_cancelled();
-                let drainage = drainage::derive_minor_tributaries(
+                let refined = refine::build_refined_hydrology(
+                    &amplification,
+                    &controls,
                     &historical.hydrology,
-                    &field.elevations_mm,
+                    &sdf,
                     identity,
-                    request.variant,
-                    request.level,
                     &mut cancelled,
                 )?;
-                let _ = cache.put(cache::KIND_DRAINAGE, &drainage_key, &drainage.encode());
-                drainage
+                let drainage = drainage_from_refined(&refined);
+                let _ = cache.put(
+                    cache::KIND_DRAINAGE,
+                    &drainage_key,
+                    &drainage.encode_product(
+                        refined.lattice_width,
+                        refined.lattice_height,
+                        &refined.worked_mm,
+                    ),
+                );
+                (drainage, refined.worked_mm)
             }
         }
     } else {
         let mut cancelled = || progress.check_cancelled();
-        drainage::derive_minor_tributaries(
+        let refined = refine::build_refined_hydrology(
+            &amplification,
+            &controls,
             &historical.hydrology,
-            &field.elevations_mm,
+            &sdf,
             identity,
-            request.variant,
-            request.level,
             &mut cancelled,
-        )?
+        )?;
+        (drainage_from_refined(&refined), refined.worked_mm)
     };
-    let sdf = detail::signed_coastal_distance_ppm(
-        field.grid,
-        &field.elevations_mm,
-        historical.metrics.sea_level_mm,
-    );
+    amplification.detail.bake_absolute_elevation(&worked_mm);
+    let model = amplification.detail;
     progress.report(AtlasPhase::RefiningDetail, 1, 1)?;
     Ok(AtlasPreparedScene {
         identity: identity.to_vec(),
@@ -680,23 +750,13 @@ mod tests {
             &mut NoopProgress,
         )
         .unwrap();
-        let mut cancel = || Ok(());
-        let model = detail::build_detail_model(
-            world.field.grid,
-            &world.field.elevations_mm,
-            &identity,
-            0,
-            request::DetailLevel::Detailed,
-            &mut cancel,
-        )
-        .unwrap();
-        assert_eq!(
-            model.residual_at(12_345_678, -8_000_000),
-            model.residual_at(12_345_678, -8_000_000)
-        );
         assert_eq!(
             small.provenance.detail_algorithm_version,
-            large.provenance.detail_algorithm_version
+            ATLAS_DETAIL_ALGORITHM_VERSION
+        );
+        assert_eq!(
+            large.provenance.derived_drainage_version,
+            ATLAS_DERIVED_DRAINAGE_VERSION
         );
         assert_ne!(small.png, large.png);
     }
@@ -809,17 +869,6 @@ mod tests {
         assert_ne!(cold.metrics.sea_level_mm, present.metrics.sea_level_mm);
         assert_ne!(warm.metrics.sea_level_mm, present.metrics.sea_level_mm);
         assert_ne!(cold.metrics.land_ice_m3, warm.metrics.land_ice_m3);
-        let mut cancel = || Ok(());
-        let model = detail::build_detail_model(
-            world.field.grid,
-            &world.field.elevations_mm,
-            &identity,
-            0,
-            request::DetailLevel::Detailed,
-            &mut cancel,
-        )
-        .unwrap();
-        let sample = model.residual_at(12_345_678, -8_000_000);
         let mut past = AtlasRenderRequest::spike_png(128, 64).unwrap();
         past.offset_years = -8_000;
         let mut future = AtlasRenderRequest::spike_png(128, 64).unwrap();
@@ -844,7 +893,6 @@ mod tests {
             &mut NoopProgress,
         )
         .unwrap();
-        assert_eq!(sample, model.residual_at(12_345_678, -8_000_000));
         assert_ne!(past.rgba, future.rgba);
         assert_eq!(past.provenance.offset_years, -8_000);
         assert_eq!(future.provenance.offset_years, 8_000);
@@ -959,7 +1007,7 @@ mod tests {
             [0, 0, 1, 1]
         );
         assert_eq!(pdf.rgba, region_render.rgba);
-        assert_eq!(pdf.provenance.renderer_version, 5);
+        assert_eq!(pdf.provenance.renderer_version, 6);
         assert!(region_render.tributary_count > 0 || globe_render.tributary_count > 0);
     }
 

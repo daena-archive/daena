@@ -40,6 +40,8 @@ let timeKind = $state<"physical-offset-year" | "calendar-year">("physical-offset
 let authoredYear = $state(1);
 let layers = $state<Array<{ id: string; name: string; enabled: boolean }>>([]);
 let hits = $state<AtlasStudioInspectHit[]>([]);
+let confirmCache = $state(false);
+let showHelp = $state(false);
 let unlisten: UnlistenFn | undefined;
 let map: MapLibreMap | null = null;
 let opening = false;
@@ -60,12 +62,83 @@ function formatEpoch(offset: number) {
   return `${offset} years after reference`;
 }
 
+function prefersReducedMotion() {
+  return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+const STUDIO_DIAGNOSTICS: Record<string, { title: string; action: string }> = {
+  "atlas.studio.request.invalid": {
+    title: "This Atlas Studio request is not valid.",
+    action: "Refresh Atlas and use a supported style, epoch, and layer set.",
+  },
+  "atlas.studio.tile.invalid": {
+    title: "That map tile request is not valid.",
+    action: "Pan or zoom back into the supported range, then retry.",
+  },
+  "atlas.studio.resource-limit": {
+    title: "Atlas Studio is busy or at a resource limit.",
+    action: "Wait for visible tiles; a full queue is retryable and is not a sticky error.",
+  },
+  "atlas.studio.cancelled": {
+    title: "Atlas work was cancelled.",
+    action: "Refresh Atlas if the map is still open.",
+  },
+  "atlas.studio.unsupported": {
+    title: "Atlas Studio is not available for this map.",
+    action: "Enable Maps and open an accepted physical map.",
+  },
+  "atlas.studio.stale": {
+    title: "The project changed after this Atlas session.",
+    action: "Refresh Atlas to capture the current generation.",
+  },
+  "atlas.studio.expired": {
+    title: "This Atlas session expired.",
+    action: "Refresh Atlas to open a new session.",
+  },
+  "atlas.studio.tile.failed": {
+    title: "Atlas Studio failed to draw a tile.",
+    action: "Retry. If it continues, regenerate the disposable cache.",
+  },
+  "atlas.studio.protocol.denied": {
+    title: "Atlas Studio refused that tile request.",
+    action: "Refresh Atlas. Do not paste file paths into the map.",
+  },
+};
+
+function explainStudioError(raw: string) {
+  const code = raw.split(":")[0]?.trim() ?? "";
+  const mapped = STUDIO_DIAGNOSTICS[code];
+  if (mapped) return { code, ...mapped };
+  return {
+    code: code.startsWith("atlas.studio.") ? code : "atlas.studio.failed",
+    title: raw || "Atlas Studio could not complete that action.",
+    action: "Retry. If it continues, Refresh Atlas or regenerate the disposable cache.",
+  };
+}
+
+function derivedExplanation(hit: AtlasStudioInspectHit) {
+  if (hit.kind === "derived-tributary") {
+    return "Atlas-only derived drainage. It is not canonical Physical Map data and cannot be edited or promoted from Studio.";
+  }
+  if (hit.derived) {
+    return "Presentation overlay from the captured Atlas snapshot. It is not a Physical Map edit.";
+  }
+  return "Authored or semantic map feature from the captured project snapshot.";
+}
+
+function currentViewExportHeight(west: number, south: number, east: number, north: number, widthPx: number) {
+  const latSpan = Math.max(1, north - south);
+  let lonSpan = (east - west + 360_000_000) % 360_000_000;
+  if (lonSpan === 0) lonSpan = 360_000_000;
+  return Math.max(256, Math.min(2048, Math.round((widthPx * latSpan) / Math.max(1, lonSpan))));
+}
+
 function studioRequest() {
   return {
     schemaVersion: 1,
     mapEntityId: mapId,
     offsetYears,
-    algorithmVersion: 1,
+    algorithmVersion: 2,
     level: "detailed" as const,
     variant: 0,
     styleId,
@@ -185,6 +258,7 @@ function mountMap(
       renderWorldCopies: true,
       attributionControl: false,
       fadeDuration: 0,
+      keyboard: true,
       transformRequest(url) {
         if (!tileUrlAllowed(url, status.sessionToken)) {
           throw new Error("Atlas Studio rejects remote tile, glyph, sprite, and telemetry URLs");
@@ -202,16 +276,7 @@ function mountMap(
     cursor = `${event.lngLat.lng.toFixed(4)}°, ${event.lngLat.lat.toFixed(4)}°`;
   });
   map.on("click", (event) => {
-    const token = session?.sessionToken;
-    if (!token || !map) return;
-    void project
-      .atlasStudioInspect(token, toMicro(event.lngLat.lng), toMicro(event.lngLat.lat), Math.floor(map.getZoom()))
-      .then((next) => {
-        hits = next;
-      })
-      .catch(() => {
-        hits = [];
-      });
+    inspectAt(event.lngLat.lng, event.lngLat.lat);
   });
   map.on("moveend", () => schedulePrefetch(status));
   map.on("idle", () => {
@@ -274,14 +339,11 @@ function currentViewExport(): AtlasRenderRequest | null {
   const south = Math.max(-85_051_129, toMicro(bounds.getSouth()));
   const north = Math.min(85_051_129, toMicro(bounds.getNorth()));
   const widthPx = 2048;
-  const heightPx = Math.max(
-    256,
-    Math.min(2048, Math.round((widthPx * Math.max(1, north - south)) / Math.max(1, ((east - west + 360_000_000) % 360_000_000) || 360_000_000))),
-  );
+  const heightPx = currentViewExportHeight(west, south, east, north, widthPx);
   return {
     schemaVersion: 1,
     offsetYears,
-    algorithmVersion: 1,
+    algorithmVersion: 2,
     level: "detailed",
     variant: 0,
     styleId,
@@ -306,12 +368,60 @@ function currentViewExport(): AtlasRenderRequest | null {
 
 async function regenerate() {
   error = "";
+  confirmCache = false;
   stage = "Regenerating cache…";
   try {
     await project.atlasStudioRegenerateCache();
     await openSession();
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
+  }
+}
+
+function inspectAt(lng: number, lat: number) {
+  const token = session?.sessionToken;
+  if (!token || !map) return;
+  void project
+    .atlasStudioInspect(token, toMicro(lng), toMicro(lat), Math.floor(map.getZoom()))
+    .then((next) => {
+      hits = next;
+    })
+    .catch(() => {
+      hits = [];
+    });
+}
+
+function onViewportKey(event: KeyboardEvent) {
+  if (!map) return;
+  const reduced = prefersReducedMotion();
+  const animate = !reduced;
+  if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "ArrowUp" || event.key === "ArrowDown") {
+    event.preventDefault();
+    const step = event.shiftKey ? 120 : 48;
+    const dx = event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0;
+    const dy = event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0;
+    map.panBy([dx, dy], { animate, duration: reduced ? 0 : 200 });
+  } else if (event.key === "+" || event.key === "=") {
+    event.preventDefault();
+    map.zoomIn({ animate, duration: reduced ? 0 : 200 });
+  } else if (event.key === "-" || event.key === "_") {
+    event.preventDefault();
+    map.zoomOut({ animate, duration: reduced ? 0 : 200 });
+  } else if (event.key === "0" || event.key === "Home") {
+    event.preventDefault();
+    map.jumpTo({ center: [0, 20], zoom: 1 });
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    const center = map.getCenter();
+    inspectAt(center.lng, center.lat);
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    hits = [];
+  } else if (event.key === "?" || event.key.toLowerCase() === "h") {
+    if (!event.metaKey && !event.ctrlKey) {
+      event.preventDefault();
+      showHelp = !showHelp;
+    }
   }
 }
 
@@ -391,6 +501,7 @@ onDestroy(() => {
 </script>
 
 <section class="studio" aria-label="Atlas Studio">
+  <a class="skip" href="#atlas-studio-map">Skip to map</a>
   <header>
     <div>
       <strong>Atlas Studio</strong>
@@ -399,13 +510,14 @@ onDestroy(() => {
     <div class="actions">
       <output aria-live="polite">{cursor}</output>
       <button type="button" onclick={() => void openSession()}>Refresh Atlas</button>
-      <button type="button" onclick={() => void regenerate()}>Regenerate cache</button>
+      <button type="button" onclick={() => (confirmCache = true)}>Regenerate cache</button>
       <button
         type="button"
         onclick={() => {
           const request = currentViewExport();
           if (request) onexport?.(request);
         }}>Export</button>
+      <button type="button" aria-expanded={showHelp} onclick={() => (showHelp = !showHelp)}>Keyboard help</button>
     </div>
   </header>
   <div class="body">
@@ -472,6 +584,34 @@ onDestroy(() => {
           </label>
         {/each}
       </fieldset>
+      <section class="provenance" aria-label="Atlas provenance">
+        <strong>Provenance</strong>
+        <p>The Physical Map is canonical. Atlas geography is derived, deterministic, and disposable.</p>
+        <p>Released products: detail algorithm 2 · drainage 2 · renderer 6.</p>
+        <p>Regenerate cache deletes only validated files under the project Atlas cache. Canonical maps, presets, and checkpoints stay unchanged.</p>
+      </section>
+      {#if confirmCache}
+        <div class="confirm" role="alertdialog" aria-labelledby="atlas-cache-title" aria-describedby="atlas-cache-copy">
+          <strong id="atlas-cache-title">Regenerate disposable Atlas cache?</strong>
+          <p id="atlas-cache-copy">This removes derived Atlas cache files only. It does not change canonical project files.</p>
+          <div class="actions">
+            <button type="button" onclick={() => void regenerate()}>Regenerate now</button>
+            <button type="button" onclick={() => (confirmCache = false)}>Cancel</button>
+          </div>
+        </div>
+      {/if}
+      {#if showHelp}
+        <section class="help" aria-label="Keyboard shortcuts">
+          <strong>Keyboard</strong>
+          <ul>
+            <li>Arrows pan (Shift for a larger step)</li>
+            <li>+ / − zoom</li>
+            <li>Home or 0 resets the view</li>
+            <li>Enter inspects the map center</li>
+            <li>Escape clears inspection</li>
+          </ul>
+        </section>
+      {/if}
       {#if hits.length > 0}
         <div class="inspect" role="region" aria-label="Feature inspection">
           <strong>Inspect</strong>
@@ -479,6 +619,7 @@ onDestroy(() => {
             <p>
               <span>{hit.label ?? hit.id}</span>
               <small>{hit.kind}{hit.derived ? " · derived" : ""}</small>
+              <small>{derivedExplanation(hit)}</small>
             </p>
           {/each}
         </div>
@@ -486,25 +627,39 @@ onDestroy(() => {
     </aside>
     <div class="frame">
       {#if error}
+        {@const diagnostic = explainStudioError(error)}
         <p class="error" role="alert">
-          {error}
+          <strong>{diagnostic.title}</strong>
+          <span>{diagnostic.action}</span>
+          {#if diagnostic.code}<code>{diagnostic.code}</code>{/if}
           <button type="button" onclick={() => void openSession()}>Retry</button>
         </p>
       {:else if stale}
+        {@const diagnostic = explainStudioError(stale.includes("atlas.studio.stale") ? stale : `atlas.studio.stale: ${stale}`)}
         <p class="stale" role="status">
-          {stale}
+          <strong>{diagnostic.title}</strong>
+          <span>{diagnostic.action}</span>
           <button type="button" onclick={() => void openSession()}>Refresh Atlas</button>
         </p>
       {:else if loading}
         <p class="loading" role="status">{stage}</p>
       {/if}
-      <div class="viewport" bind:this={host} role="application" aria-label="Atlas Studio map"></div>
+      <div
+        class="viewport"
+        id="atlas-studio-map"
+        bind:this={host}
+        role="application"
+        tabindex="0"
+        aria-label="Atlas Studio map"
+        aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown + - Home Enter Escape"
+        onkeydown={onViewportKey}></div>
     </div>
   </div>
 </section>
 
 <style>
 .studio {
+  position: relative;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
@@ -611,10 +766,14 @@ button {
   padding: 8px 12px;
   font: 12px/1.4 system-ui;
   pointer-events: none;
+  display: grid;
+  gap: 4px;
+  max-width: min(420px, calc(100% - 24px));
 }
 .error button,
 .stale button {
   pointer-events: auto;
+  justify-self: start;
 }
 .error {
   color: #f5a49c;
@@ -622,6 +781,53 @@ button {
 .stale,
 .loading {
   color: #d5ab6c;
+}
+.error code,
+.stale code {
+  font: 11px/1.3 ui-monospace, monospace;
+  color: #b8c8bc;
+}
+.skip {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  z-index: 3;
+  transform: translateY(-200%);
+  padding: 6px 10px;
+  background: #edf2ec;
+  color: #0f1a16;
+  font: 700 12px system-ui;
+  border-radius: 6px;
+}
+.skip:focus {
+  transform: none;
+}
+.provenance,
+.help,
+.confirm {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid #405047;
+  border-radius: 8px;
+}
+.provenance p,
+.help li,
+.confirm p {
+  margin: 0;
+  color: #b8c8bc;
+}
+.help ul {
+  margin: 0;
+  padding-left: 1.2em;
+}
+button:focus-visible,
+a:focus-visible,
+select:focus-visible,
+input:focus-visible,
+.viewport:focus-visible {
+  outline: 2px solid #edf2ec;
+  outline-offset: 2px;
 }
 @media (prefers-reduced-motion: reduce) {
   .studio,

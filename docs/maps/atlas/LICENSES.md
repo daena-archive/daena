@@ -11,9 +11,11 @@ The atlas renderer uses only:
 - `sha2` (`MIT OR Apache-2.0`);
 - `serde` / `serde_json` (`MIT OR Apache-2.0`).
 
-Iteration 3's experimental detail algorithm `2` and iteration 4's experimental
-drainage `2` add no crates. `noise-rs`, `geo`, and `image` remain unused.
+Iteration 3–5 experimental spikes are now the released detail algorithm `2`
+and drainage `2` (ADR 0043). No extra crates were added. `noise-rs`, `geo`,
+and `image` remain unused.
 
 No runtime URL is requested. Styles are rejected if they contain `http://`,
-`https://`, `javascript:`, `file:`, `<script`, or `shader`. Iteration 2 must
-record hashed, licensed TTF files before enabling the label shaper.
+`https://`, `javascript:`, `file:`, `<script`, or `shader`. Labels use the
+bundled `daena-atlas-bitmap-5x7` glyphs; hashed TTF files are not required
+for the released Studio.

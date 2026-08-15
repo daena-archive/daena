@@ -1,6 +1,5 @@
-//! Experimental drainage version 2: bounded pit fill, watershed-constrained
-//! continuous flow, atlas-only tributaries, and multi-scale erosion.
-//! Production derived drainage continues to use version 1.
+//! Derived drainage 2: bounded pit fill, watershed-constrained continuous
+//! flow, atlas-only tributaries, and multi-scale erosion.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap};
@@ -15,15 +14,12 @@ use crate::detail::{
     COASTAL_ENVELOPE_PPM,
 };
 use crate::request::DetailLevel;
-use crate::{
-    AtlasError, ATLAS_DERIVED_DRAINAGE_EXPERIMENTAL_VERSION,
-    ATLAS_DETAIL_ALGORITHM_EXPERIMENTAL_VERSION,
-};
+use crate::{AtlasError, ATLAS_DERIVED_DRAINAGE_VERSION, ATLAS_DETAIL_ALGORITHM_VERSION};
 
 pub const REFINED_DRAINAGE_DOMAIN: &str = "refined-drainage";
 pub const MULTI_SCALE_EROSION_DOMAIN: &str = "multi-scale-erosion";
-pub const MAX_EXPERIMENTAL_TRIBUTARIES: usize = 128;
-pub const MAX_EXPERIMENTAL_VALLEYS: usize = 64;
+pub const MAX_TRIBUTARIES: usize = 128;
+pub const MAX_VALLEYS: usize = 64;
 pub const MAX_FILL_MM: i32 = 4_800;
 pub const MAX_EROSION_STEP_MM: i32 = 80;
 pub const EROSION_SCALES: [u32; 2] = [2, 1];
@@ -43,7 +39,7 @@ const DIRS: [(i32, i32); 8] = [
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExperimentalTributary {
+pub struct RefinedTributary {
     pub id: String,
     pub source_index: usize,
     pub join_index: usize,
@@ -53,7 +49,7 @@ pub struct ExperimentalTributary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExperimentalValley {
+pub struct RefinedValley {
     pub id: String,
     pub lattice_index: usize,
     pub watershed_id: u32,
@@ -61,9 +57,9 @@ pub struct ExperimentalValley {
     pub lat_micro: i32,
 }
 
-impl ExperimentalValley {
+impl RefinedValley {
     pub fn id_for(lattice_index: usize) -> String {
-        format!("atlas:valley:v{ATLAS_DERIVED_DRAINAGE_EXPERIMENTAL_VERSION}:{lattice_index}")
+        format!("atlas:valley:v{ATLAS_DERIVED_DRAINAGE_VERSION}:{lattice_index}")
     }
 }
 
@@ -81,15 +77,15 @@ pub struct RefinedHydrology {
     pub accumulation: Vec<u32>,
     pub protected: Vec<bool>,
     pub filled_pit_count: u32,
-    pub tributaries: Vec<ExperimentalTributary>,
-    pub valleys: Vec<ExperimentalValley>,
+    pub tributaries: Vec<RefinedTributary>,
+    pub valleys: Vec<RefinedValley>,
     pub drainage_key: [u8; 32],
     pub erosion_key: [u8; 32],
 }
 
-impl ExperimentalTributary {
+impl RefinedTributary {
     pub fn id_for(lattice_index: usize) -> String {
-        format!("atlas:tributary:v{ATLAS_DERIVED_DRAINAGE_EXPERIMENTAL_VERSION}:{lattice_index}")
+        format!("atlas:tributary:v{ATLAS_DERIVED_DRAINAGE_VERSION}:{lattice_index}")
     }
 }
 
@@ -106,7 +102,13 @@ fn lock_polar_rows(width: u32, height: u32, field: &mut [i32]) {
     }
 }
 
-fn neighbor_at(width: u32, height: u32, i: u32, j: u32, dir: (i32, i32)) -> Option<(u32, u32, usize)> {
+fn neighbor_at(
+    width: u32,
+    height: u32,
+    i: u32,
+    j: u32,
+    dir: (i32, i32),
+) -> Option<(u32, u32, usize)> {
     let nj = j as i32 + dir.1;
     if nj < 0 || nj >= height as i32 {
         return None;
@@ -143,7 +145,11 @@ fn is_wet_basin(hydrology: &HydrologyField, cell: usize) -> bool {
 
 fn is_protected(hydrology: &HydrologyField, cell: usize) -> bool {
     hydrology.lake_cells.get(cell).copied() == Some(true)
-        || hydrology.lake_level_mm.get(cell).copied().unwrap_or(i32::MIN)
+        || hydrology
+            .lake_level_mm
+            .get(cell)
+            .copied()
+            .unwrap_or(i32::MIN)
             > hydrology.sea_level_mm
         || is_wet_basin(hydrology, cell)
 }
@@ -153,7 +159,11 @@ fn river_occupancy(hydrology: &HydrologyField) -> (BTreeSet<usize>, Vec<u32>) {
     let mut cells = BTreeSet::new();
     let mut river_at = vec![0_u32; count];
     for (index, path) in hydrology.river_coordinates.iter().enumerate() {
-        let id = hydrology.rivers.get(index).map(|river| river.id).unwrap_or(0);
+        let id = hydrology
+            .rivers
+            .get(index)
+            .map(|river| river.id)
+            .unwrap_or(0);
         for point in path {
             let cell = nearest_cell(hydrology.grid, point[0], point[1]);
             cells.insert(cell);
@@ -203,7 +213,12 @@ fn canonical_is_coastal(hydrology: &HydrologyField, elevations_mm: &[i32], cell:
     }
     hydrology.grid.neighbors(cell).into_iter().any(|neighbor| {
         elevations_mm.get(neighbor).copied().unwrap_or(i32::MIN) < hydrology.sea_level_mm
-            || hydrology.watershed_id.get(neighbor).copied().unwrap_or(OCEAN) == OCEAN
+            || hydrology
+                .watershed_id
+                .get(neighbor)
+                .copied()
+                .unwrap_or(OCEAN)
+                == OCEAN
     })
 }
 
@@ -232,7 +247,8 @@ fn build_source_surface(
             let lon = lattice_lon_micro(i, width);
             let lat = lattice_lat_micro(j, height);
             let sdf_ppm = sample_sdf_ppm(model.detail.grid, sdf, lon, lat);
-            source[lattice_index(width, i, j)] = model.detail.refined_at(lon, lat, sea_level_mm, sdf_ppm);
+            source[lattice_index(width, i, j)] =
+                model.detail.refined_at(lon, lat, sea_level_mm, sdf_ppm);
         }
     }
     lock_polar_rows(width, height, &mut source);
@@ -262,7 +278,7 @@ fn priority_fill(
     }
     if queue.is_empty() {
         return Err(AtlasError::limit(
-            "experimental pit fill has no ocean or protected outlet",
+            "pit fill has no ocean or protected outlet",
         ));
     }
     while let Some((Reverse(level), Reverse(index))) = queue.pop() {
@@ -350,7 +366,11 @@ fn assign_flow(
             let lon = lattice_lon_micro(i, width);
             let lat = lattice_lat_micro(j, height);
             let canonical = nearest_cell(hydrology.grid, lon, lat);
-            let watershed = hydrology.watershed_id.get(canonical).copied().unwrap_or(OCEAN);
+            let watershed = hydrology
+                .watershed_id
+                .get(canonical)
+                .copied()
+                .unwrap_or(OCEAN);
             if watershed == OCEAN {
                 continue;
             }
@@ -377,7 +397,8 @@ fn assign_flow(
                 ) {
                     continue;
                 }
-                let slope = ((i64::from(filled_mm[index]) - i64::from(filled_mm[neighbor])) * 1_000)
+                let slope = ((i64::from(filled_mm[index]) - i64::from(filled_mm[neighbor]))
+                    * 1_000)
                     / i64::from(dist_ppm(dir));
                 candidates[dir_index] = Some((neighbor as u32, slope));
                 if slope > best_slope || (slope == best_slope && (neighbor as u32) < best_neighbor)
@@ -487,7 +508,7 @@ fn extract_tributaries(
     level: DetailLevel,
     drainage_key: &[u8; 32],
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
-) -> Result<Vec<ExperimentalTributary>, AtlasError> {
+) -> Result<Vec<RefinedTributary>, AtlasError> {
     let threshold = accum_threshold(level);
     let count = filled_mm.len();
     let mut channel = vec![false; count];
@@ -495,10 +516,15 @@ fn extract_tributaries(
         if index % CANCELLATION_STRIDE == 0 {
             check_cancelled()?;
         }
-        let jitter = (lattice_sample(drainage_key, (index as u32) % width, (index as u32) / width, 0)
-            >> 11) as u32
+        let jitter = (lattice_sample(
+            drainage_key,
+            (index as u32) % width,
+            (index as u32) / width,
+            0,
+        ) >> 11) as u32
             % 3;
-        if filled_mm[index] >= sea_level_mm && accumulation[index] >= threshold.saturating_sub(jitter)
+        if filled_mm[index] >= sea_level_mm
+            && accumulation[index] >= threshold.saturating_sub(jitter)
         {
             channel[index] = true;
         }
@@ -510,14 +536,19 @@ fn extract_tributaries(
             if index % CANCELLATION_STRIDE == 0 {
                 check_cancelled()?;
             }
-            if !channel[index] || features.len() >= MAX_EXPERIMENTAL_TRIBUTARIES {
+            if !channel[index] || features.len() >= MAX_TRIBUTARIES {
                 continue;
             }
             let lon = lattice_lon_micro(i, width);
             let lat = lattice_lat_micro(j, height);
             let canonical = nearest_cell(hydrology.grid, lon, lat);
             if river_cells.contains(&canonical)
-                || hydrology.watershed_id.get(canonical).copied().unwrap_or(OCEAN) == OCEAN
+                || hydrology
+                    .watershed_id
+                    .get(canonical)
+                    .copied()
+                    .unwrap_or(OCEAN)
+                    == OCEAN
             {
                 continue;
             }
@@ -568,8 +599,8 @@ fn extract_tributaries(
             if path.len() < 3 {
                 continue;
             }
-            features.push(ExperimentalTributary {
-                id: ExperimentalTributary::id_for(index),
+            features.push(RefinedTributary {
+                id: RefinedTributary::id_for(index),
                 source_index: index,
                 join_index: join,
                 parent_river_id,
@@ -579,7 +610,7 @@ fn extract_tributaries(
         }
     }
     features.sort_by(|a, b| a.id.cmp(&b.id));
-    features.truncate(MAX_EXPERIMENTAL_TRIBUTARIES);
+    features.truncate(MAX_TRIBUTARIES);
     Ok(features)
 }
 
@@ -596,7 +627,7 @@ fn extract_valleys(
     level: DetailLevel,
     drainage_key: &[u8; 32],
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
-) -> Result<Vec<ExperimentalValley>, AtlasError> {
+) -> Result<Vec<RefinedValley>, AtlasError> {
     let threshold = accum_threshold(level).saturating_div(2).max(4);
     let mut features = Vec::new();
     for j in 1..height.saturating_sub(1) {
@@ -609,14 +640,18 @@ fn extract_valleys(
             if protected[index]
                 || filled_mm[index] < sea_level_mm
                 || accumulation[index] < threshold.saturating_sub(jitter)
-                || features.len() >= MAX_EXPERIMENTAL_VALLEYS
+                || features.len() >= MAX_VALLEYS
             {
                 continue;
             }
             let lon = lattice_lon_micro(i, width);
             let lat = lattice_lat_micro(j, height);
             let canonical = nearest_cell(hydrology.grid, lon, lat);
-            let watershed = hydrology.watershed_id.get(canonical).copied().unwrap_or(OCEAN);
+            let watershed = hydrology
+                .watershed_id
+                .get(canonical)
+                .copied()
+                .unwrap_or(OCEAN);
             if watershed == OCEAN || river_cells.contains(&canonical) {
                 continue;
             }
@@ -637,8 +672,8 @@ fn extract_valleys(
             if !valley_bottom {
                 continue;
             }
-            features.push(ExperimentalValley {
-                id: ExperimentalValley::id_for(index),
+            features.push(RefinedValley {
+                id: RefinedValley::id_for(index),
                 lattice_index: index,
                 watershed_id: watershed,
                 lon_micro: lon,
@@ -647,7 +682,7 @@ fn extract_valleys(
         }
     }
     features.sort_by(|a, b| a.id.cmp(&b.id));
-    features.truncate(MAX_EXPERIMENTAL_VALLEYS);
+    features.truncate(MAX_VALLEYS);
     Ok(features)
 }
 
@@ -677,7 +712,11 @@ fn mean_remove_delta(
             check_cancelled()?;
         }
         for i in 0..width {
-            let cell = nearest_cell(grid, lattice_lon_micro(i, width), lattice_lat_micro(j, height));
+            let cell = nearest_cell(
+                grid,
+                lattice_lon_micro(i, width),
+                lattice_lat_micro(j, height),
+            );
             sums[cell] += i64::from(delta[lattice_index(width, i, j)]);
             counts[cell] += 1;
         }
@@ -695,7 +734,11 @@ fn mean_remove_delta(
         .collect::<Vec<_>>();
     for j in 0..height {
         for i in 0..width {
-            let cell = nearest_cell(grid, lattice_lon_micro(i, width), lattice_lat_micro(j, height));
+            let cell = nearest_cell(
+                grid,
+                lattice_lon_micro(i, width),
+                lattice_lat_micro(j, height),
+            );
             delta[lattice_index(width, i, j)] =
                 (i64::from(delta[lattice_index(width, i, j)]) - means[cell]) as i32;
         }
@@ -808,7 +851,13 @@ fn erode(
                 }
             }
         }
-        mean_remove_delta(model.detail.grid, width, height, &mut delta, check_cancelled)?;
+        mean_remove_delta(
+            model.detail.grid,
+            width,
+            height,
+            &mut delta,
+            check_cancelled,
+        )?;
         for index in 0..count {
             if protected[index] {
                 worked[index] = filled_mm[index];
@@ -864,21 +913,21 @@ pub fn build_refined_hydrology(
     let height = model.detail.lattice_height;
     let count = (width as usize)
         .checked_mul(height as usize)
-        .ok_or_else(|| AtlasError::limit("experimental lattice count overflowed"))?;
-    if count * 4 > 2_000_000 {
+        .ok_or_else(|| AtlasError::limit("lattice count overflowed"))?;
+    if count * 4 > 96 * 1024 * 1024 {
         return Err(AtlasError::limit(
-            "experimental refined lattice exceeded the in-process byte budget",
+            "refined lattice exceeded the in-process byte budget",
         ));
     }
     let drainage_key = domain_key(
         identity,
-        ATLAS_DETAIL_ALGORITHM_EXPERIMENTAL_VERSION,
+        ATLAS_DETAIL_ALGORITHM_VERSION,
         model.detail.variant,
         REFINED_DRAINAGE_DOMAIN,
     );
     let erosion_key = domain_key(
         identity,
-        ATLAS_DETAIL_ALGORITHM_EXPERIMENTAL_VERSION,
+        ATLAS_DETAIL_ALGORITHM_VERSION,
         model.detail.variant,
         MULTI_SCALE_EROSION_DOMAIN,
     );
@@ -893,7 +942,12 @@ pub fn build_refined_hydrology(
             let lat = lattice_lat_micro(j, height);
             let cell = nearest_cell(controls.grid, lon, lat);
             protected[lattice_index(width, i, j)] = is_protected(hydrology, cell)
-                && controls.mountain_influence_ppm.get(cell).copied().unwrap_or(0) <= 0;
+                && controls
+                    .mountain_influence_ppm
+                    .get(cell)
+                    .copied()
+                    .unwrap_or(0)
+                    <= 0;
         }
     }
     let (filled_mm, filled_pit_count) = priority_fill(
@@ -966,7 +1020,7 @@ pub fn build_refined_hydrology(
         check_cancelled,
     )?;
     Ok(RefinedHydrology {
-        version: ATLAS_DERIVED_DRAINAGE_EXPERIMENTAL_VERSION,
+        version: ATLAS_DERIVED_DRAINAGE_VERSION,
         lattice_width: width,
         lattice_height: height,
         source_mm,
@@ -1050,17 +1104,17 @@ impl RefinedHydrology {
         bytes
     }
 
-    pub fn decode_identities(bytes: &[u8]) -> Result<(Vec<ExperimentalTributary>, Vec<ExperimentalValley>), AtlasError> {
+    pub fn decode_identities(
+        bytes: &[u8],
+    ) -> Result<(Vec<RefinedTributary>, Vec<RefinedValley>), AtlasError> {
         let mut offset = 0;
         let version = read_u32(bytes, &mut offset)?;
-        if version != ATLAS_DERIVED_DRAINAGE_EXPERIMENTAL_VERSION {
-            return Err(AtlasError::invalid(
-                "experimental drainage identity version mismatch",
-            ));
+        if version != ATLAS_DERIVED_DRAINAGE_VERSION {
+            return Err(AtlasError::invalid("drainage identity version mismatch"));
         }
         let tributary_count = read_u32(bytes, &mut offset)? as usize;
-        if tributary_count > MAX_EXPERIMENTAL_TRIBUTARIES {
-            return Err(AtlasError::limit("experimental tributary cache is over budget"));
+        if tributary_count > MAX_TRIBUTARIES {
+            return Err(AtlasError::limit("tributary cache is over budget"));
         }
         let mut tributaries = Vec::with_capacity(tributary_count);
         for _ in 0..tributary_count {
@@ -1070,7 +1124,7 @@ impl RefinedHydrology {
             let watershed_id = read_u32(bytes, &mut offset)?;
             let path_len = read_u32(bytes, &mut offset)? as usize;
             if path_len > MAX_TRACE_STEPS + 1 {
-                return Err(AtlasError::limit("experimental tributary path is over budget"));
+                return Err(AtlasError::limit("tributary path is over budget"));
             }
             let mut path = Vec::with_capacity(path_len);
             for _ in 0..path_len {
@@ -1078,8 +1132,8 @@ impl RefinedHydrology {
                 let lat = read_i32(bytes, &mut offset)?;
                 path.push([lon, lat]);
             }
-            tributaries.push(ExperimentalTributary {
-                id: ExperimentalTributary::id_for(source_index),
+            tributaries.push(RefinedTributary {
+                id: RefinedTributary::id_for(source_index),
                 source_index,
                 join_index,
                 parent_river_id,
@@ -1088,8 +1142,8 @@ impl RefinedHydrology {
             });
         }
         let valley_count = read_u32(bytes, &mut offset)? as usize;
-        if valley_count > MAX_EXPERIMENTAL_VALLEYS {
-            return Err(AtlasError::limit("experimental valley cache is over budget"));
+        if valley_count > MAX_VALLEYS {
+            return Err(AtlasError::limit("valley cache is over budget"));
         }
         let mut valleys = Vec::with_capacity(valley_count);
         for _ in 0..valley_count {
@@ -1097,8 +1151,8 @@ impl RefinedHydrology {
             let watershed_id = read_u32(bytes, &mut offset)?;
             let lon_micro = read_i32(bytes, &mut offset)?;
             let lat_micro = read_i32(bytes, &mut offset)?;
-            valleys.push(ExperimentalValley {
-                id: ExperimentalValley::id_for(lattice_index),
+            valleys.push(RefinedValley {
+                id: RefinedValley::id_for(lattice_index),
                 lattice_index,
                 watershed_id,
                 lon_micro,
@@ -1107,7 +1161,7 @@ impl RefinedHydrology {
         }
         if offset != bytes.len() {
             return Err(AtlasError::invalid(
-                "experimental drainage identity cache has trailing bytes",
+                "drainage identity cache has trailing bytes",
             ));
         }
         Ok((tributaries, valleys))
@@ -1118,7 +1172,7 @@ fn read_u32(bytes: &[u8], offset: &mut usize) -> Result<u32, AtlasError> {
     let end = offset.saturating_add(4);
     let slice = bytes
         .get(*offset..end)
-        .ok_or_else(|| AtlasError::invalid("experimental drainage identity cache is truncated"))?;
+        .ok_or_else(|| AtlasError::invalid("drainage identity cache is truncated"))?;
     *offset = end;
     Ok(u32::from_le_bytes(slice.try_into().expect("u32")))
 }
@@ -1148,7 +1202,13 @@ pub fn flow_stays_in_watershed(
             if dest == NO_FLOW {
                 continue;
             }
-            if model.filled_mm.get(dest as usize).copied().unwrap_or(sea_level_mm) < sea_level_mm {
+            if model
+                .filled_mm
+                .get(dest as usize)
+                .copied()
+                .unwrap_or(sea_level_mm)
+                < sea_level_mm
+            {
                 continue;
             }
             let dlon = lattice_lon_micro(dest % width, width);
@@ -1173,7 +1233,8 @@ mod tests {
     use crate::cache::{decode_residual, encode_residual};
     use crate::control::ControlFields;
     use crate::detail::{
-        domain_key, sample_field_mm, sample_sdf_ppm, signed_coastal_distance_ppm, COASTAL_ENVELOPE_PPM,
+        domain_key, sample_field_mm, sample_sdf_ppm, signed_coastal_distance_ppm,
+        COASTAL_ENVELOPE_PPM,
     };
     use crate::drainage::DerivedDrainage;
     use crate::golden_world;
@@ -1219,7 +1280,13 @@ mod tests {
         }
     }
 
-    fn fixture() -> (AmplificationModel, ControlFields, HydrologyField, Vec<i32>, Vec<u8>) {
+    fn fixture() -> (
+        AmplificationModel,
+        ControlFields,
+        HydrologyField,
+        Vec<i32>,
+        Vec<u8>,
+    ) {
         let world = golden_world();
         let identity = spike_identity_from_source(&world.source);
         let historical = derive_historical_world(
@@ -1247,13 +1314,7 @@ mod tests {
         let model =
             build_amplification_model(&controls, &identity, 0, DetailLevel::Standard, &mut cancel)
                 .unwrap();
-        (
-            model,
-            controls,
-            world.hydrology.clone(),
-            sdf,
-            identity,
-        )
+        (model, controls, world.hydrology.clone(), sdf, identity)
     }
 
     #[test]
@@ -1283,13 +1344,13 @@ mod tests {
     fn experimental_domains_are_isolated_from_version_one() {
         let drainage = domain_key(
             b"identity-fixture",
-            ATLAS_DETAIL_ALGORITHM_EXPERIMENTAL_VERSION,
+            ATLAS_DETAIL_ALGORITHM_VERSION,
             0,
             REFINED_DRAINAGE_DOMAIN,
         );
         let erosion = domain_key(
             b"identity-fixture",
-            ATLAS_DETAIL_ALGORITHM_EXPERIMENTAL_VERSION,
+            ATLAS_DETAIL_ALGORITHM_VERSION,
             0,
             MULTI_SCALE_EROSION_DOMAIN,
         );
@@ -1317,7 +1378,7 @@ mod tests {
                 .unwrap();
         assert!(
             started.elapsed().as_secs() < 5,
-            "standard refinement exceeded the experimental budget"
+            "standard refinement exceeded the 5s budget"
         );
         if let Some(rss) = peak_resident_bytes() {
             assert!(
@@ -1326,8 +1387,8 @@ mod tests {
             );
         }
         assert!(refined.worked_mm.len() * 4 <= 2_000_000);
-        assert_eq!(refined.version, ATLAS_DERIVED_DRAINAGE_EXPERIMENTAL_VERSION);
-        assert_eq!(ATLAS_DERIVED_DRAINAGE_VERSION, 1);
+        assert_eq!(refined.version, ATLAS_DERIVED_DRAINAGE_VERSION);
+        assert_eq!(ATLAS_DERIVED_DRAINAGE_VERSION, 2);
         for (index, protected) in refined.protected.iter().enumerate() {
             if *protected {
                 assert_eq!(refined.filled_mm[index], refined.source_mm[index]);
@@ -1354,9 +1415,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         for tributary in &refined.tributaries {
-            assert!(tributary
-                .id
-                .starts_with("atlas:tributary:v2:"));
+            assert!(tributary.id.starts_with("atlas:tributary:v2:"));
             assert!(tributary.path.len() >= 3);
             for point in &tributary.path {
                 let cell = nearest_cell(hydrology.grid, point[0], point[1]);
@@ -1392,8 +1451,9 @@ mod tests {
             .collect::<BTreeSet<_>>();
         for index in 0..refined.flow_primary.len() {
             let dest = refined.flow_primary[index];
-            if dest == NO_FLOW || refined.filled_mm.get(dest as usize).copied().unwrap_or(0)
-                < controls.sea_level_mm
+            if dest == NO_FLOW
+                || refined.filled_mm.get(dest as usize).copied().unwrap_or(0)
+                    < controls.sea_level_mm
             {
                 continue;
             }
@@ -1428,7 +1488,8 @@ mod tests {
             let i = peak.lattice_index as u32 % width;
             let peak_elev = refined.worked_mm[peak.lattice_index];
             for dir in DIRS {
-                if let Some((_, _, neighbor)) = neighbor_at(width, refined.lattice_height, i, j, dir)
+                if let Some((_, _, neighbor)) =
+                    neighbor_at(width, refined.lattice_height, i, j, dir)
                 {
                     assert!(
                         peak_elev + MAX_EROSION_STEP_MM >= refined.worked_mm[neighbor],
@@ -1503,11 +1564,12 @@ mod tests {
         assert!(DerivedDrainage::decode(&identities).is_err());
         let pixels = encode_residual(width, height, &refined.worked_mm);
         let (pw, ph, decoded_pixels) = decode_residual(&pixels).unwrap();
-        assert_eq!((pw, ph, decoded_pixels), (width, height, refined.worked_mm.clone()));
-        let cache_dir = std::env::temp_dir().join(format!(
-            "daena-atlas-refine-iter4-{}",
-            std::process::id()
-        ));
+        assert_eq!(
+            (pw, ph, decoded_pixels),
+            (width, height, refined.worked_mm.clone())
+        );
+        let cache_dir =
+            std::env::temp_dir().join(format!("daena-atlas-refine-iter4-{}", std::process::id()));
         let _ = fs::remove_dir_all(&cache_dir);
         fs::create_dir_all(&cache_dir).unwrap();
         fs::write(cache_dir.join("identities.bin"), &identities).unwrap();
@@ -1531,10 +1593,13 @@ mod tests {
                 sample_field_mm(lattice, &refined.worked_mm, 0, 0),
                 sample_field_mm(lattice, &refined.worked_mm, 12_345_678, -8_000_000)
             ),
-            (sample_field_mm(lattice, &rebuilt.worked_mm, 0, 0), sample_field_mm(lattice, &rebuilt.worked_mm, 12_345_678, -8_000_000))
+            (
+                sample_field_mm(lattice, &rebuilt.worked_mm, 0, 0),
+                sample_field_mm(lattice, &rebuilt.worked_mm, 12_345_678, -8_000_000)
+            )
         );
         let rejected = AtlasRenderRequest {
-            algorithm_version: ATLAS_DETAIL_ALGORITHM_EXPERIMENTAL_VERSION,
+            algorithm_version: 1,
             ..AtlasRenderRequest::spike_png(64, 32).unwrap()
         }
         .normalize();

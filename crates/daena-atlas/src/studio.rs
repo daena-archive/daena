@@ -36,6 +36,93 @@ pub const CODE_STUDIO_TILE_FAILED: &str = "atlas.studio.tile.failed";
 pub const CODE_STUDIO_PROTOCOL_DENIED: &str = "atlas.studio.protocol.denied";
 
 pub const STUDIO_SPIKE_LAYER_IDS: [&str; 4] = ["ocean", "relief", "ice", "lakes"];
+pub const STUDIO_CURRENT_VIEW_EXPORT_WIDTH: u32 = 2048;
+pub const STUDIO_CURRENT_VIEW_EXPORT_MIN_HEIGHT: u32 = 256;
+pub const STUDIO_CURRENT_VIEW_EXPORT_MAX_HEIGHT: u32 = 2048;
+pub const GOLDEN_TILE_Z0_SHA256: &str =
+    "sha256:6ed0b97af9cbd5ff5da06b5846f68a6af1cbe22a2fe6e6932c0c2f54156ef39a";
+pub const GOLDEN_TILE_Z8_SHA256: &str =
+    "sha256:dd1381438ea6c0059d62f9a8322ea649a0a27f6321a3e9a93b83d64e4b20908f";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StudioDiagnostic {
+    pub code: &'static str,
+    pub title: &'static str,
+    pub action: &'static str,
+}
+
+pub fn explain_studio_code(code: &str) -> StudioDiagnostic {
+    match code {
+        CODE_STUDIO_REQUEST_INVALID => StudioDiagnostic {
+            code: CODE_STUDIO_REQUEST_INVALID,
+            title: "This Atlas Studio request is not valid.",
+            action: "Refresh Atlas and use a supported style, epoch, and layer set.",
+        },
+        CODE_STUDIO_TILE_INVALID => StudioDiagnostic {
+            code: CODE_STUDIO_TILE_INVALID,
+            title: "That map tile request is not valid.",
+            action: "Pan or zoom back into the supported range, then retry.",
+        },
+        CODE_STUDIO_RESOURCE_LIMIT => StudioDiagnostic {
+            code: CODE_STUDIO_RESOURCE_LIMIT,
+            title: "Atlas Studio is busy or at a resource limit.",
+            action: "Wait for visible tiles; a full queue is retryable and is not a sticky error.",
+        },
+        CODE_STUDIO_CANCELLED => StudioDiagnostic {
+            code: CODE_STUDIO_CANCELLED,
+            title: "Atlas work was cancelled.",
+            action: "Refresh Atlas if the map is still open.",
+        },
+        CODE_STUDIO_UNSUPPORTED => StudioDiagnostic {
+            code: CODE_STUDIO_UNSUPPORTED,
+            title: "Atlas Studio is not available for this map.",
+            action: "Enable Maps and open an accepted physical map.",
+        },
+        CODE_STUDIO_STALE => StudioDiagnostic {
+            code: CODE_STUDIO_STALE,
+            title: "The project changed after this Atlas session.",
+            action: "Refresh Atlas to capture the current generation.",
+        },
+        CODE_STUDIO_EXPIRED => StudioDiagnostic {
+            code: CODE_STUDIO_EXPIRED,
+            title: "This Atlas session expired.",
+            action: "Refresh Atlas to open a new session.",
+        },
+        CODE_STUDIO_TILE_FAILED => StudioDiagnostic {
+            code: CODE_STUDIO_TILE_FAILED,
+            title: "Atlas Studio failed to draw a tile.",
+            action: "Retry. If it continues, regenerate the disposable cache.",
+        },
+        CODE_STUDIO_PROTOCOL_DENIED => StudioDiagnostic {
+            code: CODE_STUDIO_PROTOCOL_DENIED,
+            title: "Atlas Studio refused that tile request.",
+            action: "Refresh Atlas. Do not paste file paths into the map.",
+        },
+        _ => StudioDiagnostic {
+            code: "atlas.studio.failed",
+            title: "Atlas Studio could not complete that action.",
+            action: "Retry. If it continues, Refresh Atlas or regenerate the disposable cache.",
+        },
+    }
+}
+
+pub fn parse_studio_error(raw: &str) -> StudioDiagnostic {
+    let code = raw
+        .split_once(':')
+        .map(|(code, _)| code.trim())
+        .unwrap_or(raw.trim());
+    explain_studio_code(code)
+}
+
+pub fn derived_feature_explanation(kind: &str, derived: bool) -> &'static str {
+    if kind == "derived-tributary" {
+        "Atlas-only derived drainage. It is not canonical Physical Map data and cannot be edited or promoted from Studio."
+    } else if derived {
+        "Presentation overlay from the captured Atlas snapshot. It is not a Physical Map edit."
+    } else {
+        "Authored or semantic map feature from the captured project snapshot."
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -277,6 +364,39 @@ pub fn xyz_extent(z: u32, x: u32, y: u32) -> Result<AtlasExtent, AtlasError> {
         .validate(AtlasProjection::WebMercator)
         .map_err(map_studio_error)?;
     Ok(extent)
+}
+
+pub fn current_view_export_height(extent: AtlasExtent, width_px: u32) -> u32 {
+    let lat_span = (i64::from(extent.north_lat_micro) - i64::from(extent.south_lat_micro)).max(1);
+    let mut lon_span = (i64::from(extent.east_lon_micro) - i64::from(extent.west_lon_micro)
+        + 360_000_000)
+        .rem_euclid(360_000_000);
+    if lon_span == 0 {
+        lon_span = 360_000_000;
+    }
+    let rounded = ((i128::from(width_px) * i128::from(lat_span) + i128::from(lon_span) / 2)
+        / i128::from(lon_span)) as u32;
+    rounded.clamp(
+        STUDIO_CURRENT_VIEW_EXPORT_MIN_HEIGHT,
+        STUDIO_CURRENT_VIEW_EXPORT_MAX_HEIGHT,
+    )
+}
+
+pub fn current_view_export_request(
+    scene: &AtlasStudioSceneRequestV1,
+    extent: AtlasExtent,
+    width_px: u32,
+) -> Result<AtlasRenderRequest, AtlasError> {
+    let scene = scene.clone().normalize()?;
+    let height_px = current_view_export_height(extent, width_px);
+    let mut request = scene.as_render_request(width_px.max(1))?;
+    request.width_px = width_px.max(1);
+    request.height_px = height_px;
+    request.extent = extent;
+    request.unlock_aspect = true;
+    request.projection = AtlasProjection::WebMercator;
+    request.format = AtlasFormat::Png;
+    request.normalize().map_err(map_studio_error)
 }
 
 pub fn xyz_pixel_center(
@@ -659,6 +779,7 @@ mod tests {
     use super::*;
     use crate::projection::{mercator_y, ProjectedView};
     use crate::{golden_world, prepare_from_source, spike_identity_from_source, NoopProgress};
+    use sha2::{Digest, Sha256};
 
     fn prepared() -> (AtlasPreparedScene, AtlasStudioSceneRequestV1) {
         let world = golden_world();
@@ -1070,5 +1191,106 @@ mod tests {
         );
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, overlay.id);
+    }
+
+    fn png_sha256(png: &[u8]) -> String {
+        format!("sha256:{:x}", Sha256::digest(png))
+    }
+
+    #[test]
+    fn diagnostics_cover_locked_studio_codes() {
+        for code in [
+            CODE_STUDIO_REQUEST_INVALID,
+            CODE_STUDIO_TILE_INVALID,
+            CODE_STUDIO_RESOURCE_LIMIT,
+            CODE_STUDIO_CANCELLED,
+            CODE_STUDIO_UNSUPPORTED,
+            CODE_STUDIO_STALE,
+            CODE_STUDIO_EXPIRED,
+            CODE_STUDIO_TILE_FAILED,
+            CODE_STUDIO_PROTOCOL_DENIED,
+        ] {
+            let explained = explain_studio_code(code);
+            assert_eq!(explained.code, code);
+            assert!(!explained.title.is_empty());
+            assert!(!explained.action.contains('/'));
+            assert!(!explained.action.to_lowercase().contains("sql"));
+            let parsed = parse_studio_error(&format!("{code}: extra detail"));
+            assert_eq!(parsed.code, code);
+        }
+        assert_eq!(
+            derived_feature_explanation("derived-tributary", true)
+                .contains("canonical Physical Map"),
+            true
+        );
+        assert_eq!(
+            derived_feature_explanation("point", false).contains("Authored"),
+            true
+        );
+    }
+
+    #[test]
+    fn golden_relief_tiles_and_current_view_export_share_world_samples() {
+        let (scene, scene_request) = prepared();
+        let z0 = render_studio_tile(
+            &scene,
+            &scene_request,
+            &AtlasStudioTileRequestV1::new(0, 0, 0),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let z8 = render_studio_tile(
+            &scene,
+            &scene_request,
+            &AtlasStudioTileRequestV1::new(8, 120, 90),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(png_sha256(&z0.png), GOLDEN_TILE_Z0_SHA256);
+        assert_eq!(png_sha256(&z8.png), GOLDEN_TILE_Z8_SHA256);
+        assert_eq!(z0.png.len(), 263_359);
+        assert_eq!(z8.png.len(), 263_191);
+
+        let tile = AtlasStudioTileRequestV1::new(1, 0, 1);
+        let rendered =
+            render_studio_tile(&scene, &scene_request, &tile, &mut NoopProgress).unwrap();
+        let extent = xyz_extent(1, 0, 1).unwrap();
+        let export = current_view_export_request(&scene_request, extent, 256).unwrap();
+        assert!(export.unlock_aspect);
+        assert_eq!(export.projection, AtlasProjection::WebMercator);
+        assert_eq!(export.algorithm_version, ATLAS_DETAIL_ALGORITHM_VERSION);
+        assert_eq!(export.width_px, 256);
+        assert_eq!(export.height_px, current_view_export_height(extent, 256));
+        let (lon, lat) = xyz_pixel_center(1, 0, 1, 128, 128, 256).unwrap();
+        let studio_sample = pixel_rgba(
+            &scene.model,
+            &scene.hydrology,
+            &scene.sdf,
+            &scene.style,
+            &scene_request
+                .as_render_request(256)
+                .unwrap()
+                .normalize()
+                .unwrap(),
+            lon,
+            lat,
+        );
+        let export_sample = pixel_rgba(
+            &scene.model,
+            &scene.hydrology,
+            &scene.sdf,
+            &scene.style,
+            &export,
+            lon,
+            lat,
+        );
+        assert_eq!(studio_sample, export_sample);
+        assert_eq!(rendered.width, 256);
+        assert_eq!(
+            current_view_export_request(&scene_request, extent, STUDIO_CURRENT_VIEW_EXPORT_WIDTH)
+                .unwrap()
+                .width_px,
+            STUDIO_CURRENT_VIEW_EXPORT_WIDTH
+        );
     }
 }

@@ -111,3 +111,16 @@ scale-`2` tiles in roughly half a second. The UI caps MapLibre at eight
 parallel image requests so a rapid pan stays under the 24-wait `503`
 limit; a full queue is retryable and must not replace the viewport with
 a sticky error banner.
+
+## Atlas Studio production algorithm 2 (ADR 0043)
+
+Renderer `6`. Detail algorithm `2` and derived drainage `2`. Golden Studio
+tiles on the same `64 x 32` source:
+
+| Target | Work | PNG bytes | SHA-256 |
+| ------ | ---- | --------: | ------- |
+| Darwin 25.6 | Studio tile `z=0 / x=0 / y=0` scale `1` | 263_359 | `sha256:6ed0b97af9cbd5ff5da06b5846f68a6af1cbe22a2fe6e6932c0c2f54156ef39a` |
+| Darwin 25.6 | Studio tile `z=8 / x=120 / y=90` scale `1` | 263_191 | `sha256:dd1381438ea6c0059d62f9a8322ea649a0a27f6321a3e9a93b83d64e4b20908f` |
+| Darwin 25.6 | static preview `2048 x 1024` | 8_391_270 | `sha256:b77c9fdc9cdb34046547a156fbcb2c4e313a1d4e3acefc5e3e7352041b22eb4a` |
+| Darwin 25.6 | named export `4096 x 2048` | 33_560_038 | `sha256:fa5bb7832e4649e93cd12104aa9c7704580aa6ff3a029513be7452e9f3af1e4b` |
+| Darwin 25.6 | named export `8192 x 4096` | 134_233_062 | `sha256:9cd07bc2b8b47edf650a8bcc11733b30b786574701e461cdf8910ac5d79cad96` |

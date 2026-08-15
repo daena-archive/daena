@@ -87,8 +87,8 @@ numbers and file locations may advance.
 
 - The accepted physical source remains a `384 x 192` canonical simulation grid.
 - `crates/daena-atlas` already provides a pure Rust renderer with request schema
-  `1`, detail algorithm `1`, derived drainage `1`, renderer `5`, seed policy
-  `1`, and provenance schema `1`.
+  `1`, detail algorithm `2`, derived drainage `2`, renderer `6`, seed policy
+  `1`, and provenance schema `1` (ADR 0043).
 - The current renderer supports whole-world and regional equirectangular views,
   regional Web Mercator, deterministic relief and antique styles, a political
   style, authored/semantic overlays, labels, atlas-only minor tributaries, and
@@ -205,7 +205,7 @@ Atlas should remain a focused Rust terrain/cartography pipeline rather than adop
 ## Research References for Later Terrain Versions
 
 These papers are architectural and algorithmic references, not permission to
-copy research code or change Atlas detail algorithm `1`. Before incorporating a
+copy research code or change Atlas detail algorithm `2` in place. Before incorporating a
 technique, an agent must verify the paper and implementation license, isolate a
 small reproducible spike, define conservation and topology metrics, and assign a
 new version to every changed deterministic product. Reference implementations

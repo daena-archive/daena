@@ -439,41 +439,25 @@ distance and fixed traversal/convergence rules.
 Local runoff is precipitation times an effective runoff coefficient. Runoff
 volume multiplies local runoff by exact cell area.
 
-Terrain evolution is specified conceptually by a stream-power-style model:
+Terrain evolution evaluates a versioned stream-power model in SI units
+(ADR 0026):
 
 ```text
-incision = erodibility * discharge^m * slope^n
-new terrain = old terrain + limited active uplift - incision
-              + hillslope relaxation
+discharge_m3_per_second = runoff_m3_per_year / 31,557,600
+incision_rate_m_per_year = K * discharge_m3_per_second^m * slope^n
 ```
 
-Initial calibration begins near `m = 0.5` and `n = 1.0`, but these are
-versioned empirical parameters, not literal constants of nature. Iteration 4
-does not evaluate that power law literally. Its versioned bounded v1 surrogate
-uses accumulated runoff volume as discharge and applies:
+`K`, `m = 0.5`, `n = 1.0`, uplift rate, diffusivity, timestep, step count, and
+climate cadence live in the Young/Mature/Old evolution preset. Incision is
+limited to a declared fraction of local removable relief and the locked
+per-step relief-loss bound. Hillslope diffusion is explicit under its CFL
+scaler; continuing tectonic uplift is applied last. `Young`, `Mature`, and
+`Old` select coherent duration and persistence; they are not literal
+geological ages.
 
-```text
-discharge_scale = clamp(
-  ln(1 + discharge_m3_per_year) / ln(1 + 1,000,000,000), 0, 1
-)
-slope_scale = slope_ppm / 1,000,000
-incision_mm = round(
-  (stream_power_ppm / 1,000,000) * 30,000
-  * discharge_scale * slope_scale
-)
-```
-
-This preserves a bounded monotonic response to discharge and slope; it is not
-a calibrated `discharge^0.5 * slope^1.0` evaluation. `stream_power_ppm` and
-the evolution budgets are versioned empirical controls. Replacing this
-surrogate with a literal power law requires a new derivation decision and
-version. `Young`, `Mature`, and `Old` settings select coherent iteration
-counts, relaxation, and tectonic persistence; they are not literal geological
-ages.
-
-For erosion routing, use Priority-Flood or an equivalent algorithm to build a
-temporary drainage-compatible surface. Never overwrite real depressions in
-the canonical elevation field.
+Routing uses Priority-Flood to build a temporary drainage-compatible surface
+and D-infinity facet splits on the local tangent plane. Real depressions in
+the canonical elevation field are never overwritten.
 
 ### Water inventory, sea level, and hydrology
 
@@ -986,18 +970,17 @@ runoff and later terrain evolution.
 
 ## Iteration 4: terrain evolution and drainage
 
-Implementation status (2026-08-15): the bounded terrain-evolution and drainage
-slice is implemented in `daena-physical-spike` under ADR 0018. Priority-Flood
-routing, normalized continuous-direction edges, conserved accumulation,
-stream-power incision, tectonic uplift, and hillslope relaxation are derived
-before the final sea-level solve. The evolved signed elevation field is the
-canonical v2 elevation payload; routing, accumulation, and before/after
-products remain disposable and are exposed by the trusted native host for both
-temporary and reopened accepted maps.
+Implementation status (2026-08-15): Packet 3 (ADR 0026) replaced the Iteration 4
+logarithmic incision surrogate and four-neighbor blend with D-infinity routing
+and SI stream-power incision in `evolution.rs`. Priority-Flood remains a
+temporary surface; fill depth and flood order are recorded. The evolved signed
+elevation field is the canonical v2 elevation payload; routing, accumulation,
+fill depth, and before/after products remain disposable.
 
-The Iteration 4 gate is covered by 31 pure-Rust tests, 62 Tauri tests, the
-exact v8 source/coastline golden matrix workflow, and the release benchmark
-recorded in `docs/maps/physical-map-budgets.md`.
+The Iteration 4 / Packet 3 gate is covered by the `daena-physical-spike`
+evolution fixtures, Tauri evolution-product tests, the exact v9 source/coastline
+golden matrix workflow, and the release benchmark recorded in
+`docs/maps/physical-map-budgets.md`.
 
 ### Goal
 
@@ -1576,6 +1559,9 @@ cause-field-to-final-relief accounting.
 
 #### Packet 3: implement continuous drainage and physical erosion
 
+Status: implemented in `evolution.rs` (ADR 0026). Generator version is `9`.
+`EVOLUTION_DERIVATION_VERSION` is `2`.
+
 Implement routing and erosion in `evolution.rs` with explicit SI units:
 
 1. Keep Priority-Flood output separate from real elevation. Record fill depth
@@ -1838,26 +1824,17 @@ hashes may remain unit fixtures but cannot be the sole product-quality gate.
 Packet 2 (ADR 0025) replaced nearest-site ownership, score-threshold crust, and
 lumped relief with a cost-field plate assignment, grouped craton expansion,
 named geodesic relief terms, and Euler-track hotspot chains. Remaining
-corrective work is Packet 3+ drainage/erosion coupling and any later visual
+corrective work is Packet 4 nested-basin water coupling and any later visual
 LOD of tectonic diagnostics, not a return to the Voronoi scaffold.
 
-#### Erosion uses a surrogate rather than the specified stream-power model
+#### Packet 3 drainage and stream-power erosion are in place
 
-ADR 0018 correctly identifies its logarithmic bounded incision rule as a v1
-surrogate. It does not implement the specified
-`erodibility * discharge^m * slope^n` model near the documented calibration
-starting points. Likewise, the four-neighbor drop/distance blend is not
-automatically equivalent to aspect-based D-infinity routing, and the
-`grid_anisotropy_ppm` average-largest-weight metric with a `950,000 ppm` limit
-is too weak to establish absence of grid-aligned drainage.
-
-Replace the surrogate with a numerically bounded, versioned stream-power
-evaluation, or obtain a product decision that deliberately changes the model
-after comparative fixtures show equal or better geomorphology. Implement
-aspect/facet-based D-infinity or document and validate an equivalent
-continuous-direction method. Add rotational tests, drainage-angle histograms,
-basin-shape metrics, and multi-resolution convergence checks. Preserve
-Priority-Flood's temporary routing surface and the real depressions.
+Packet 3 (ADR 0026) replaced the ADR 0018 logarithmic incision surrogate and
+the four-neighbor drop/distance blend with D-infinity facet routing and
+`K * Q^m * S^n` incision. Remaining drainage work is Packet 4 nested basins
+and coupled lake/sea-level solve, not a return to the v1 surrogate. The locked
+`grid_anisotropy_ppm <= 950,000` value remains a directional-concentration
+proxy; analytic plane/cone/ridge fixtures are the Packet 3 morphology gates.
 
 #### Basin topology and water coupling are intentionally incomplete
 

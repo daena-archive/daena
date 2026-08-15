@@ -148,6 +148,7 @@ export interface PhysicalEvolutionProducts {
   beforeElevationsMm: number[];
   elevationsMm: number[];
   routingElevationMm: number[];
+  fillDepthMm: number[];
   slopePpm: number[];
   accumulationM3PerYear: number[];
   outletCells: number[];

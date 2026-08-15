@@ -91,12 +91,13 @@ fn physical_evolution_products_expose_routing_and_before_after_fields() {
     let mut progress = daena_physical::NoopProgress;
     let world = daena_physical::generate_world(settings, 831_429, 0, &mut progress).unwrap();
     let products = physical_evolution_products(&world.evolution);
-    assert_eq!(products["derivationVersion"], 1);
+    assert_eq!(products["derivationVersion"], 2);
     assert_eq!(products["preset"], "mature");
     for key in [
         "beforeElevationsMm",
         "elevationsMm",
         "routingElevationMm",
+        "fillDepthMm",
         "slopePpm",
         "accumulationM3PerYear",
     ] {

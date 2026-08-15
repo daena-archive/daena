@@ -139,6 +139,7 @@ for (const required of [
   "iceCells",
   "iceThicknessMm",
   "routingElevationMm",
+  "fillDepthMm",
   "accumulationM3PerYear",
 ]) {
   assert.ok(host.includes(required), `physical host is missing ${required}`);

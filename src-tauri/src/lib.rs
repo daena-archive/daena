@@ -7310,6 +7310,7 @@ fn physical_evolution_products(
         "beforeElevationsMm": evolution.before_elevations_mm,
         "elevationsMm": evolution.elevations_mm,
         "routingElevationMm": evolution.drainage.routing_elevation_mm,
+        "fillDepthMm": evolution.drainage.fill_depth_mm,
         "slopePpm": evolution.drainage.slope_ppm,
         "accumulationM3PerYear": evolution.drainage.accumulation_m3_per_year,
         "outletCells": evolution.drainage.outlet_cells,

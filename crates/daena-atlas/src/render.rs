@@ -3,7 +3,7 @@ use daena_physical::Grid;
 
 use crate::detail::{sample_sdf_ppm, AtlasDetailModel};
 use crate::overlay::composite_overlays;
-use crate::projection::{pixel_center_lat_micro, pixel_center_lon_micro, wrap_lon_micro};
+use crate::projection::wrap_lon_micro;
 use crate::request::{AtlasRenderRequest, TILE_HALO, TILE_SIZE};
 use crate::style::{apply_shade, hypsometric, AtlasStyle};
 use crate::{AtlasError, AtlasPhase, AtlasProgress};
@@ -122,8 +122,9 @@ pub fn render_rgba(
     overlays: &[crate::overlay::AuthoredFeature],
     progress: &mut dyn AtlasProgress,
 ) -> Result<Vec<u8>, AtlasError> {
-    let width = request.width_px;
-    let height = request.height_px;
+    let view = request.view()?;
+    let width = view.width;
+    let height = view.height;
     let pixels = (width as usize)
         .checked_mul(height as usize)
         .and_then(|count| count.checked_mul(4))
@@ -151,8 +152,7 @@ pub fn render_rgba(
             for local_x in 0..tile.width {
                 let x = tile.x + local_x;
                 let y = tile.y + local_y;
-                let lon = pixel_center_lon_micro(x, width);
-                let lat = pixel_center_lat_micro(y, height);
+                let (lon, lat) = view.pixel_center(x, y);
                 let rgba = pixel_rgba(model, hydrology, sdf, style, request, lon, lat);
                 let offset = ((y as usize) * width as usize + x as usize) * 4;
                 buffer[offset..offset + 4].copy_from_slice(&rgba);

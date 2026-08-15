@@ -142,12 +142,12 @@ pub fn capabilities_for_descriptor(descriptor: &Value, layers: &Value) -> AtlasR
             Vec::new()
         },
         projections: if supported {
-            vec!["equirectangular".into()]
+            vec!["equirectangular".into(), "web-mercator".into()]
         } else {
             Vec::new()
         },
         formats: if supported {
-            vec!["png".into()]
+            vec!["png".into(), "svg".into(), "pdf".into()]
         } else {
             Vec::new()
         },
@@ -274,10 +274,13 @@ pub fn validate_presets(value: &Value) -> Result<(), CoreError> {
             .get("output")
             .and_then(Value::as_object)
             .ok_or_else(|| CoreError::Validation("atlas preset output is required".into()))?;
-        if output.get("format").and_then(Value::as_str) != Some("png") {
-            return Err(CoreError::Validation(
-                "atlas presets currently support png only".into(),
-            ));
+        match output.get("format").and_then(Value::as_str) {
+            Some("png" | "svg" | "pdf") => {}
+            _ => {
+                return Err(CoreError::Validation(
+                    "atlas presets support png, svg, or pdf".into(),
+                ));
+            }
         }
     }
     Ok(())
@@ -737,7 +740,7 @@ mod tests {
         });
         let supported = capabilities_for_descriptor(&physical, &serde_json::json!({"layers": []}));
         assert!(supported.supported);
-        assert_eq!(supported.formats, vec!["png"]);
+        assert_eq!(supported.formats, vec!["png", "svg", "pdf"]);
         assert!(supported.styles.contains(&"daena-atlas-relief".into()));
         assert!(supported.styles.contains(&"daena-atlas-political".into()));
     }

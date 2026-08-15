@@ -46,7 +46,7 @@ pub const CANCELLATION_LATENCY_BUDGET_MS: u128 = 100;
 pub const GENERATION_TIME_BUDGET_MS: u128 = 8_000;
 pub const WORKING_MEMORY_BUDGET_BYTES: usize = 128 * 1024 * 1024;
 pub const GENERATOR_ID: &str = "daena-physical-world";
-pub const GENERATOR_VERSION: u32 = 11;
+pub const GENERATOR_VERSION: u32 = 12;
 
 pub const CODE_GENERATOR_INVALID_SETTINGS: &str = "physical.generator.invalid-settings";
 pub const CODE_GENERATOR_UNSUPPORTED_VERSION: &str = "physical.generator.unsupported-version";
@@ -487,6 +487,8 @@ pub enum SeedDomain {
     HistoricalClimate,
     PlateBoundaryCost,
     DetachedTerranes,
+    PlateReshape,
+    PlateTransformSlip,
 }
 
 impl SeedDomain {
@@ -504,6 +506,8 @@ impl SeedDomain {
             Self::HistoricalClimate => 0x6869_7374_6f72_0010,
             Self::PlateBoundaryCost => 0x706c_6163_6f73_0011,
             Self::DetachedTerranes => 0x7465_7272_616e_0012,
+            Self::PlateReshape => 0x7265_7368_6170_0013,
+            Self::PlateTransformSlip => 0x7472_616e_736c_0014,
         }
     }
 }
@@ -1048,6 +1052,8 @@ mod tests {
             SeedDomain::HistoricalClimate,
             SeedDomain::PlateBoundaryCost,
             SeedDomain::DetachedTerranes,
+            SeedDomain::PlateReshape,
+            SeedDomain::PlateTransformSlip,
         ];
         for (index, domain) in domains.iter().copied().enumerate() {
             assert!(domains

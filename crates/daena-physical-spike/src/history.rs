@@ -193,8 +193,7 @@ pub fn temperature_offset_centi_c(
     epoch_offset_years: i64,
     parameters: HistoricalForcingParameters,
 ) -> i32 {
-    forcing_centi_c(epoch_offset_years, parameters)
-        .saturating_sub(forcing_centi_c(0, parameters))
+    forcing_centi_c(epoch_offset_years, parameters).saturating_sub(forcing_centi_c(0, parameters))
 }
 
 fn exp_neg_ppm(x_ppm: u64) -> u64 {
@@ -244,7 +243,9 @@ fn lagged_temperature_offset_with_step(
     if parameters.ice_response_years == 0 {
         return temperature_offset_centi_c(epoch_offset_years, parameters);
     }
-    let step = requested_step.abs().clamp(1, parameters.ice_response_years.max(1));
+    let step = requested_step
+        .abs()
+        .clamp(1, parameters.ice_response_years.max(1));
     let steps = (epoch_offset_years.abs() / step).clamp(1, MAX_LAG_STEPS);
     let signed_step = if epoch_offset_years > 0 { step } else { -step };
     let decay =
@@ -276,10 +277,9 @@ fn scaled_volume(reference: u64, first_ppm: u64, second_ppm: u64) -> u64 {
 
 fn logistic_ppm(temperature_centi_c: i32, parameters: HistoricalForcingParameters) -> u64 {
     let width = i64::from(parameters.ice_transition_width_centi_c).max(1);
-    let argument_ppm = ((i64::from(temperature_centi_c)
-        - i64::from(parameters.ice_midpoint_centi_c))
-        * 1_000_000)
-        / width;
+    let argument_ppm =
+        ((i64::from(temperature_centi_c) - i64::from(parameters.ice_midpoint_centi_c)) * 1_000_000)
+            / width;
     if argument_ppm >= 20_000_000 {
         return 0;
     }
@@ -529,12 +529,15 @@ mod tests {
         let falling = lagged_temperature_offset_centi_c(-warm_epoch.abs(), parameters);
         assert_ne!(rising, falling);
         assert!(
-            land_ice_volume(1_000_000_000, temperature_offset_centi_c(cold_epoch, parameters), parameters)
-                > land_ice_volume(
-                    1_000_000_000,
-                    temperature_offset_centi_c(warm_epoch, parameters),
-                    parameters
-                )
+            land_ice_volume(
+                1_000_000_000,
+                temperature_offset_centi_c(cold_epoch, parameters),
+                parameters
+            ) > land_ice_volume(
+                1_000_000_000,
+                temperature_offset_centi_c(warm_epoch, parameters),
+                parameters
+            )
         );
     }
 

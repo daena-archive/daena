@@ -3,6 +3,7 @@
 use sha2::{Digest, Sha256};
 
 use crate::overlay::AuthoredFeature;
+use crate::projection::ProjectedView;
 use crate::style::AtlasStyle;
 
 const GLYPH_WIDTH: i32 = 6;
@@ -62,11 +63,12 @@ pub fn font_hash() -> String {
 
 pub fn draw_labels(
     buffer: &mut [u8],
-    width: u32,
-    height: u32,
+    view: ProjectedView,
     overlays: &[AuthoredFeature],
     style: &AtlasStyle,
 ) -> u32 {
+    let width = view.width;
+    let height = view.height;
     let mut candidates = overlays
         .iter()
         .filter_map(|feature| {
@@ -85,8 +87,11 @@ pub fn draw_labels(
             omitted += 1;
             continue;
         }
-        let x = crate::overlay::lon_to_x(point[0], width);
-        let y = crate::overlay::lat_to_y(point[1], height) - 8;
+        let Some((x, y)) = view.project(point[0], point[1]) else {
+            omitted += 1;
+            continue;
+        };
+        let y = y - 8;
         let box_w = (label.chars().count() as i32) * GLYPH_WIDTH;
         let rect = [x, y, x + box_w, y + GLYPH_HEIGHT];
         if occupied

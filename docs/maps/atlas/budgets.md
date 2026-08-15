@@ -2,7 +2,7 @@
 
 Proposal values from ADR 0031. Measurements below are from a release
 `atlas-map` build on Darwin 25.6 (2026-08-15) consuming the physical golden
-`64 x 32` source (`sha256:f520abeaf54426178f6c208879341991fe611cd676073d060a844a27a89d7a2e`).
+`64 x 32` source (`sha256:6e9a13df19859f2f0d6978526abf60d20354c23e3ba6c5acd22360e510f429c2`).
 Temporary bytes equal the encoded PNG; the spike writes no `.daena` cache.
 
 | Item | Proposal | Measured status |

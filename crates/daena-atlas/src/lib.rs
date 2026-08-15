@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub const ATLAS_REQUEST_SCHEMA_VERSION: u32 = 1;
 pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 1;
 pub const ATLAS_SEED_POLICY_VERSION: u32 = 1;
-pub const ATLAS_RENDERER_VERSION: u32 = 3;
+pub const ATLAS_RENDERER_VERSION: u32 = 4;
 pub const ATLAS_PROVENANCE_SCHEMA_VERSION: u32 = 1;
 pub const SPIKE_STYLE_ID: &str = "daena-atlas-relief-spike";
 
@@ -236,8 +236,10 @@ pub fn render_from_source(
         &style.content_hash(style_raw),
     );
     let png = encode::encode_png(&request, &rgba, &provenance, progress)?;
+    let artifact = encode::encode_artifact(&request, &rgba, &png, &provenance, progress)?;
     Ok(RenderedAtlas {
         png,
+        artifact,
         rgba,
         provenance,
         request,
@@ -247,6 +249,7 @@ pub fn render_from_source(
 #[derive(Debug, Clone)]
 pub struct RenderedAtlas {
     pub png: Vec<u8>,
+    pub artifact: Vec<u8>,
     pub rgba: Vec<u8>,
     pub provenance: provenance::AtlasRenderProvenanceV1,
     pub request: request::AtlasRenderRequest,
@@ -538,6 +541,91 @@ mod tests {
             .unwrap_err();
             assert_eq!(error.code, CODE_RENDER_CANCELLED, "{phase:?}");
         }
+    }
+
+    #[test]
+    fn regional_extent_samples_the_same_world_location() {
+        let world = golden_world();
+        let identity = spike_identity_from_source(&world.source);
+        let mut globe = AtlasRenderRequest::spike_png(64, 32).unwrap();
+        globe.active_layer_ids = vec![
+            "ocean".into(),
+            "relief".into(),
+            "ice".into(),
+            "lakes".into(),
+        ];
+        let globe = globe.normalize().unwrap();
+        let globe_render = render_from_source(
+            &world.source,
+            &identity,
+            &globe,
+            None,
+            None,
+            &[],
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let (lon, lat) = globe.view().unwrap().pixel_center(40, 20);
+        let mut region = globe.clone();
+        region.width_px = 1;
+        region.height_px = 1;
+        region.extent = crate::projection::AtlasExtent {
+            west_lon_micro: lon - 1_000_000,
+            south_lat_micro: lat - 1_000_000,
+            east_lon_micro: lon + 1_000_000,
+            north_lat_micro: lat + 1_000_000,
+        };
+        let region = region.normalize().unwrap();
+        let region_render = render_from_source(
+            &world.source,
+            &identity,
+            &region,
+            None,
+            None,
+            &[],
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let globe_offset = (20usize * 64 + 40) * 4;
+        assert_eq!(
+            &region_render.rgba[..4],
+            &globe_render.rgba[globe_offset..globe_offset + 4]
+        );
+        let mut svg = region.clone();
+        svg.format = crate::request::AtlasFormat::Svg;
+        let svg = render_from_source(
+            &world.source,
+            &identity,
+            &svg.normalize().unwrap(),
+            None,
+            None,
+            &[],
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert!(String::from_utf8(svg.artifact)
+            .unwrap()
+            .contains("data:image/png;base64,"));
+        assert_eq!(svg.rgba, region_render.rgba);
+        let mut pdf = region.clone();
+        pdf.format = crate::request::AtlasFormat::Pdf;
+        pdf.dpi = 72;
+        let pdf = render_from_source(
+            &world.source,
+            &identity,
+            &pdf.normalize().unwrap(),
+            None,
+            None,
+            &[],
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(
+            encode::parse_pdf_media_box(&pdf.artifact).unwrap(),
+            [0, 0, 1, 1]
+        );
+        assert_eq!(pdf.rgba, region_render.rgba);
+        assert_eq!(pdf.provenance.renderer_version, 4);
     }
 
     struct CancelOnPhase {

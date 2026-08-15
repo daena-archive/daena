@@ -202,11 +202,13 @@ pub fn sample_events(
             ^ u64::from(ordinal).wrapping_mul(0x9e37_79b9_7f4a_7c15);
         let cell = sample_cell(rates, mass, event_seed ^ 0x6c6f_6361_7469_6f6e);
         let point = center_microdegrees(world.grid, cell);
-        let year =
-            request.interval_start_years + (splitmix64(event_seed ^ 0x7469_6d65) % interval_length) as i64;
+        let year = request.interval_start_years
+            + (splitmix64(event_seed ^ 0x7469_6d65) % interval_length) as i64;
         let magnitude_milli = match request.event_kind {
             NaturalEventKind::Earthquake => earthquake_magnitude_milli(event_seed ^ 0x4551),
-            NaturalEventKind::Eruption => eruption_magnitude_milli(rates[cell], event_seed ^ 0x4552),
+            NaturalEventKind::Eruption => {
+                eruption_magnitude_milli(rates[cell], event_seed ^ 0x4552)
+            }
         };
         let sampled_center_id = match request.event_kind {
             NaturalEventKind::Eruption => {
@@ -261,7 +263,12 @@ mod tests {
         (world, hazards)
     }
 
-    fn request(kind: NaturalEventKind, years: i64, seed: u64, max_events: u32) -> EventMaterializationRequest {
+    fn request(
+        kind: NaturalEventKind,
+        years: i64,
+        seed: u64,
+        max_events: u32,
+    ) -> EventMaterializationRequest {
         EventMaterializationRequest {
             event_kind: kind,
             interval_start_years: 0,
@@ -319,7 +326,10 @@ mod tests {
             hazard_seed: 7_331,
         };
         let events = sample_events(&world, &hazards, &request).unwrap();
-        assert_eq!(NaturalEventKind::Eruption.model_label(), "persistent-rate-v2");
+        assert_eq!(
+            NaturalEventKind::Eruption.model_label(),
+            "persistent-rate-v2"
+        );
         assert!(events.iter().all(|event| {
             event.event_kind == NaturalEventKind::Eruption
                 && event.magnitude_milli >= 1_000

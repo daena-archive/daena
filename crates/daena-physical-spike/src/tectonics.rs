@@ -28,7 +28,14 @@ const CRATON_WARP_AMPLITUDE: f64 = 0.42;
 const CRATON_ANISOTROPY: f64 = 0.34;
 const RIFT_SHOULDER_FRACTION: f64 = 0.22;
 const RIDGE_RELIEF_FRACTION: f64 = 0.55;
-const BOUNDARY_COST_PERTURBATION_PPM: i64 = 220_000;
+const BOUNDARY_COST_PERTURBATION_PPM: i64 = 480_000;
+const BOUNDARY_WAVE_COST_PPM: i64 = 280_000;
+const FAULT_FOLLOW_PPM: i64 = 420_000;
+const PLATE_RESHAPE_FRACTION_PPM: u32 = 280_000;
+const MIN_SHATTER_CELLS: usize = 12;
+const TRANSFORM_COUPLE_PAIR_DIVISOR: usize = 6;
+const TRANSFORM_SLIP_MIN_HOPS: usize = 2;
+const TRANSFORM_SLIP_EXTRA_HOPS: u64 = 3;
 const CONTINENTAL_AREA_TARGET_PPM: u32 = 450_000;
 const TERRANE_AREA_BUDGET_PPM: u32 = 40_000;
 const LITHOLOGY_COST_PPM: i64 = 180_000;
@@ -467,9 +474,20 @@ fn fbm_noise(seed: u64, point: Vec3) -> f64 {
     }
 }
 
-fn low_frequency_noise(seed: u64, point: Vec3) -> f64 {
-    value_noise(seed, point, 1.05) * 0.72
-        + value_noise(seed ^ 0x9e37_79b9_7f4a_7c15, point, 2.0) * 0.28
+fn boundary_step_cost(grid: Grid, cost_seed: u64, cell: usize, neighbor: usize) -> i64 {
+    let midpoint = cell_midpoint(grid, cell, neighbor);
+    let perturbation =
+        (fbm_noise(cost_seed, midpoint) * BOUNDARY_COST_PERTURBATION_PPM as f64).round() as i64;
+    let wave = (value_noise(cost_seed ^ 0x51ed_a11e_5a17_0001, midpoint, 6.1)
+        * BOUNDARY_WAVE_COST_PPM as f64)
+        .round() as i64;
+    let fault = fbm_noise(cost_seed ^ 0xfa17_15ed_0000_0002, midpoint).abs();
+    let fault_follow = (((0.16 - fault).max(0.0) / 0.16) * FAULT_FOLLOW_PPM as f64).round() as i64;
+    let combined = (perturbation + wave + fault_follow).clamp(
+        -(BOUNDARY_COST_PERTURBATION_PPM + BOUNDARY_WAVE_COST_PPM),
+        BOUNDARY_COST_PERTURBATION_PPM + BOUNDARY_WAVE_COST_PPM + FAULT_FOLLOW_PPM,
+    );
+    edge_length_mm(grid, cell, neighbor).saturating_mul(1_000_000 + combined) / 1_000_000
 }
 
 fn continent_layout(seed: u32, retry_index: u32, settings: TectonicSettings) -> ContinentLayout {
@@ -646,31 +664,46 @@ fn bind_cratons_to_plates(cratons: &mut [CratonSeed], grid: Grid, plate_by_cell:
     }
 }
 
+fn plate_rotation(identity: GenerationIdentity, id: u16) -> (i32, i32, i64) {
+    let axis_stage_seed = derive_subsystem_seed(
+        identity.seed,
+        identity.retry_index,
+        SeedDomain::RotationAxes,
+    );
+    let axis_seed = splitmix64(axis_stage_seed ^ u64::from(id).wrapping_mul(0xa076_1d64_78bd_642f));
+    let axis_longitude =
+        (axis_seed as f64 / u64::MAX as f64) * std::f64::consts::TAU - std::f64::consts::PI;
+    let axis_latitude = (((axis_seed >> 32) as f64 / u32::MAX as f64) * 2.0 - 1.0)
+        .clamp(-1.0, 1.0)
+        .asin();
+    let speed = 200_000 + (splitmix64(axis_seed) % 1_000_001) as i64;
+    (
+        microdegrees(axis_longitude.to_degrees()),
+        microdegrees(axis_latitude.to_degrees()),
+        speed,
+    )
+}
+
+fn plate_from_site(id: u16, seed_cell: usize, site: Vec3, identity: GenerationIdentity) -> Plate {
+    let (axis_longitude, axis_latitude, speed) = plate_rotation(identity, id);
+    Plate {
+        id,
+        seed_cell,
+        site_longitude_microdegrees: microdegrees(site.y.atan2(site.x).to_degrees()),
+        site_latitude_microdegrees: microdegrees(site.z.asin().to_degrees()),
+        rotation_axis_longitude_microdegrees: axis_longitude,
+        rotation_axis_latitude_microdegrees: axis_latitude,
+        angular_speed_nanoradians_per_year: speed,
+        crust_type: CrustType::Oceanic,
+    }
+}
+
 fn build_plates(grid: Grid, seed: u32, retry_index: u32, settings: TectonicSettings) -> Vec<Plate> {
+    let identity = GenerationIdentity { seed, retry_index };
     (0..settings.plate_count)
         .map(|id| {
             let site = plate_site(grid, seed, retry_index, id, settings.plate_count);
-            let axis_stage_seed =
-                derive_subsystem_seed(seed, retry_index, SeedDomain::RotationAxes);
-            let axis_seed =
-                splitmix64(axis_stage_seed ^ u64::from(id).wrapping_mul(0xa076_1d64_78bd_642f));
-            let axis_longitude =
-                (axis_seed as f64 / u64::MAX as f64) * std::f64::consts::TAU - std::f64::consts::PI;
-            let axis_latitude = (((axis_seed >> 32) as f64 / u32::MAX as f64) * 2.0 - 1.0)
-                .clamp(-1.0, 1.0)
-                .asin();
-            let speed = 200_000 + (splitmix64(axis_seed) % 1_000_001) as i64;
-            let seed_cell = nearest_cell(grid, site);
-            Plate {
-                id,
-                seed_cell,
-                site_longitude_microdegrees: microdegrees(site.y.atan2(site.x).to_degrees()),
-                site_latitude_microdegrees: microdegrees(site.z.asin().to_degrees()),
-                rotation_axis_longitude_microdegrees: microdegrees(axis_longitude.to_degrees()),
-                rotation_axis_latitude_microdegrees: microdegrees(axis_latitude.to_degrees()),
-                angular_speed_nanoradians_per_year: speed,
-                crust_type: CrustType::Oceanic,
-            }
+            plate_from_site(id, nearest_cell(grid, site), site, identity)
         })
         .collect()
 }
@@ -779,22 +812,8 @@ fn assign_plates(
         best_cost[cell] = cost;
         owner[cell] = plate;
         for neighbor in topology.neighbors(cell) {
-            let perturbation =
-                (low_frequency_noise(cost_seed, cell_midpoint(grid, cell, *neighbor))
-                    * BOUNDARY_COST_PERTURBATION_PPM as f64)
-                    .round() as i64;
-            let step = edge_length_mm(grid, cell, *neighbor).saturating_mul(
-                1_000_000
-                    + perturbation.clamp(
-                        -BOUNDARY_COST_PERTURBATION_PPM,
-                        BOUNDARY_COST_PERTURBATION_PPM,
-                    ),
-            ) / 1_000_000;
-            heap.push(Reverse((
-                cost.saturating_add(step.max(1)),
-                *neighbor,
-                plate,
-            )));
+            let step = boundary_step_cost(grid, cost_seed, cell, *neighbor).max(1);
+            heap.push(Reverse((cost.saturating_add(step), *neighbor, plate)));
         }
     }
     for (cell, assigned) in owner.iter_mut().enumerate() {
@@ -803,6 +822,469 @@ fn assign_plates(
         }
     }
     Ok(owner)
+}
+
+fn reshape_event_count(plate_count: usize) -> usize {
+    if plate_count < 4 {
+        return 0;
+    }
+    let proposed = (plate_count * PLATE_RESHAPE_FRACTION_PPM as usize / 1_000_000).max(1);
+    proposed.min(plate_count.saturating_sub(2) / 2)
+}
+
+fn adjacent_plate_pairs(grid: Grid, plate_by_cell: &[u16]) -> Vec<(u16, u16)> {
+    let mut seen = HashSet::new();
+    let topology = grid.topology();
+    for cell in 0..grid.sample_count() {
+        let plate = plate_by_cell[cell];
+        for neighbor in topology.neighbors(cell) {
+            let other = plate_by_cell[*neighbor];
+            if other == plate {
+                continue;
+            }
+            let key = if plate < other {
+                (plate, other)
+            } else {
+                (other, plate)
+            };
+            seen.insert(key);
+        }
+    }
+    let mut pairs: Vec<(u16, u16)> = seen.into_iter().collect();
+    pairs.sort_unstable();
+    pairs
+}
+
+fn plate_cells(plate_by_cell: &[u16], plate: u16) -> Vec<usize> {
+    plate_by_cell
+        .iter()
+        .enumerate()
+        .filter(|(_, assigned)| **assigned == plate)
+        .map(|(cell, _)| cell)
+        .collect()
+}
+
+fn pick_shatter_seed(grid: Grid, cells: &[usize], parent_seed: usize, rng: u64) -> Option<usize> {
+    if cells.len() < MIN_SHATTER_CELLS {
+        return None;
+    }
+    let parent_vec = cell_vector(grid, parent_seed);
+    let mut ranked: Vec<(i64, usize)> = cells
+        .iter()
+        .copied()
+        .map(|cell| {
+            let distance = (cell_vector(grid, cell).angular_distance(parent_vec) * 1_000_000_000.0)
+                .round() as i64;
+            (distance, cell)
+        })
+        .collect();
+    ranked.sort_unstable();
+    let start = ranked.len() / 3;
+    let span = ranked.len() - start;
+    if span == 0 {
+        return None;
+    }
+    let chosen = ranked[start + (rng as usize % span)].1;
+    if chosen == parent_seed {
+        None
+    } else {
+        Some(chosen)
+    }
+}
+
+fn shatter_plate(
+    grid: Grid,
+    plate_by_cell: &mut [u16],
+    parent: u16,
+    shard: u16,
+    parent_seed: usize,
+    shard_seed: usize,
+    identity: GenerationIdentity,
+    progress: &mut dyn ProgressSink,
+) -> Result<(), PhysicalError> {
+    let cost_seed = derive_subsystem_seed(
+        identity.seed,
+        identity.retry_index,
+        SeedDomain::PlateBoundaryCost,
+    ) ^ u64::from(shard).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    let in_parent: Vec<bool> = plate_by_cell.iter().map(|plate| *plate == parent).collect();
+    let topology = grid.topology();
+    let mut best_cost = vec![i64::MAX; grid.sample_count()];
+    let mut owner = vec![u16::MAX; grid.sample_count()];
+    let mut heap = BinaryHeap::new();
+    heap.push(Reverse((0_i64, parent_seed, parent)));
+    heap.push(Reverse((0_i64, shard_seed, shard)));
+    let mut visits = 0u32;
+    while let Some(Reverse((cost, cell, plate))) = heap.pop() {
+        visits += 1;
+        if visits % 512 == 0 {
+            progress.check_cancelled()?;
+        }
+        if !in_parent[cell] {
+            continue;
+        }
+        if cost > best_cost[cell] {
+            continue;
+        }
+        if cost == best_cost[cell] && plate >= owner[cell] {
+            continue;
+        }
+        best_cost[cell] = cost;
+        owner[cell] = plate;
+        for neighbor in topology.neighbors(cell) {
+            if !in_parent[*neighbor] {
+                continue;
+            }
+            let step = boundary_step_cost(grid, cost_seed, cell, *neighbor).max(1);
+            heap.push(Reverse((cost.saturating_add(step), *neighbor, plate)));
+        }
+    }
+    for (cell, assigned) in owner.iter().enumerate() {
+        if *assigned == shard {
+            plate_by_cell[cell] = shard;
+        }
+    }
+    Ok(())
+}
+
+fn merge_plate(plate_by_cell: &mut [u16], keep: u16, absorb: u16) {
+    for plate in plate_by_cell.iter_mut() {
+        if *plate == absorb {
+            *plate = keep;
+        }
+    }
+}
+
+fn plate_centroid(grid: Grid, plate_by_cell: &[u16], plate: u16) -> Vec3 {
+    let mut sum = Vec3 {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
+    let mut count = 0.0;
+    for (cell, assigned) in plate_by_cell.iter().enumerate() {
+        if *assigned == plate {
+            sum = sum.add(cell_vector(grid, cell));
+            count += 1.0;
+        }
+    }
+    if count == 0.0 {
+        Vec3 {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        }
+    } else {
+        sum.scale(1.0 / count).normalize()
+    }
+}
+
+fn compact_plates(
+    grid: Grid,
+    plates: &[Plate],
+    plate_by_cell: &mut [u16],
+    identity: GenerationIdentity,
+) -> Vec<Plate> {
+    let mut max_id = 0usize;
+    for plate in plate_by_cell.iter() {
+        max_id = max_id.max(usize::from(*plate));
+    }
+    let mut present = vec![false; max_id + 1];
+    for plate in plate_by_cell.iter() {
+        present[usize::from(*plate)] = true;
+    }
+    let mut remap = vec![u16::MAX; present.len()];
+    let mut next_id = 0u16;
+    for (old, is_present) in present.iter().copied().enumerate() {
+        if is_present {
+            remap[old] = next_id;
+            next_id += 1;
+        }
+    }
+    for plate in plate_by_cell.iter_mut() {
+        *plate = remap[usize::from(*plate)];
+    }
+    let mut rebuilt = Vec::with_capacity(usize::from(next_id));
+    for (old, is_present) in present.iter().copied().enumerate() {
+        if !is_present {
+            continue;
+        }
+        let id = remap[old];
+        let centroid = plate_centroid(grid, plate_by_cell, id);
+        let seed_cell = nearest_cell(grid, centroid);
+        let site = cell_vector(grid, seed_cell);
+        let (axis_longitude, axis_latitude, speed) = if old < plates.len() {
+            (
+                plates[old].rotation_axis_longitude_microdegrees,
+                plates[old].rotation_axis_latitude_microdegrees,
+                plates[old].angular_speed_nanoradians_per_year,
+            )
+        } else {
+            plate_rotation(identity, id)
+        };
+        rebuilt.push(Plate {
+            id,
+            seed_cell,
+            site_longitude_microdegrees: microdegrees(site.y.atan2(site.x).to_degrees()),
+            site_latitude_microdegrees: microdegrees(site.z.asin().to_degrees()),
+            rotation_axis_longitude_microdegrees: axis_longitude,
+            rotation_axis_latitude_microdegrees: axis_latitude,
+            angular_speed_nanoradians_per_year: speed,
+            crust_type: CrustType::Oceanic,
+        });
+    }
+    rebuilt
+}
+
+fn couple_transform_pairs(
+    plates: &mut [Plate],
+    grid: Grid,
+    plate_by_cell: &[u16],
+    identity: GenerationIdentity,
+) -> Vec<(u16, u16)> {
+    let seed = derive_subsystem_seed(
+        identity.seed,
+        identity.retry_index,
+        SeedDomain::PlateTransformSlip,
+    );
+    let mut pairs = adjacent_plate_pairs(grid, plate_by_cell);
+    pairs.sort_by_key(|(first, second)| {
+        splitmix64(
+            seed ^ u64::from(*first).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ u64::from(*second),
+        )
+    });
+    let budget = (plates.len() / TRANSFORM_COUPLE_PAIR_DIVISOR).max(1);
+    let mut coupled = vec![false; plates.len()];
+    let mut selected = Vec::new();
+    for (first, second) in pairs {
+        if selected.len() >= budget {
+            break;
+        }
+        let first_index = usize::from(first);
+        let second_index = usize::from(second);
+        if first_index >= plates.len()
+            || second_index >= plates.len()
+            || coupled[first_index]
+            || coupled[second_index]
+        {
+            continue;
+        }
+        plates[second_index].rotation_axis_longitude_microdegrees =
+            plates[first_index].rotation_axis_longitude_microdegrees;
+        plates[second_index].rotation_axis_latitude_microdegrees =
+            plates[first_index].rotation_axis_latitude_microdegrees;
+        let delta = 80_000 + (splitmix64(seed ^ u64::from(second)) % 420_001) as i64;
+        plates[second_index].angular_speed_nanoradians_per_year =
+            (plates[first_index].angular_speed_nanoradians_per_year + delta)
+                .clamp(200_000, 1_800_000);
+        coupled[first_index] = true;
+        coupled[second_index] = true;
+        selected.push((first, second));
+    }
+    selected
+}
+
+fn walk_direction(grid: Grid, start: usize, direction: Vec3, hops: usize) -> usize {
+    let topology = grid.topology();
+    let mut cell = start;
+    for _ in 0..hops {
+        let origin = cell_vector(grid, cell);
+        let mut best = cell;
+        let mut best_dot = f64::NEG_INFINITY;
+        for neighbor in topology.neighbors(cell) {
+            let step = cell_vector(grid, *neighbor)
+                .subtract(origin)
+                .reject(origin)
+                .normalize();
+            let alignment = step.dot(direction);
+            if alignment > best_dot {
+                best_dot = alignment;
+                best = *neighbor;
+            }
+        }
+        if best == cell {
+            break;
+        }
+        cell = best;
+    }
+    cell
+}
+
+fn contact_band(
+    grid: Grid,
+    plate_by_cell: &[u16],
+    first: u16,
+    second: u16,
+    width: usize,
+) -> Vec<usize> {
+    let topology = grid.topology();
+    let mut distance = vec![-1i16; grid.sample_count()];
+    let mut queue = Vec::new();
+    for cell in 0..grid.sample_count() {
+        let plate = plate_by_cell[cell];
+        if plate != first && plate != second {
+            continue;
+        }
+        let touches = topology.neighbors(cell).iter().any(|neighbor| {
+            let other = plate_by_cell[*neighbor];
+            (plate == first && other == second) || (plate == second && other == first)
+        });
+        if touches {
+            distance[cell] = 0;
+            queue.push(cell);
+        }
+    }
+    let mut cursor = 0usize;
+    while cursor < queue.len() {
+        let cell = queue[cursor];
+        cursor += 1;
+        if distance[cell] as usize >= width {
+            continue;
+        }
+        for neighbor in topology.neighbors(cell) {
+            let plate = plate_by_cell[*neighbor];
+            if (plate != first && plate != second) || distance[*neighbor] != -1 {
+                continue;
+            }
+            distance[*neighbor] = distance[cell] + 1;
+            queue.push(*neighbor);
+        }
+    }
+    queue
+}
+
+fn plate_present(plate_by_cell: &[u16], plate: u16) -> bool {
+    plate_by_cell.iter().any(|assigned| *assigned == plate)
+}
+
+fn apply_transform_slip(
+    grid: Grid,
+    plates: &[Plate],
+    plate_by_cell: &mut [u16],
+    pairs: &[(u16, u16)],
+    identity: GenerationIdentity,
+    progress: &mut dyn ProgressSink,
+) -> Result<(), PhysicalError> {
+    let seed = derive_subsystem_seed(
+        identity.seed,
+        identity.retry_index,
+        SeedDomain::PlateTransformSlip,
+    );
+    for &(first, second) in pairs {
+        progress.check_cancelled()?;
+        let hops = TRANSFORM_SLIP_MIN_HOPS
+            + (splitmix64(
+                seed ^ u64::from(first).wrapping_mul(0xa076_1d64_78bd_642f) ^ u64::from(second),
+            ) % TRANSFORM_SLIP_EXTRA_HOPS) as usize;
+        let axis = plate_axis(&plates[usize::from(first)]);
+        let band = contact_band(grid, plate_by_cell, first, second, hops + 1);
+        let previous = plate_by_cell.to_vec();
+        let mut next = previous.clone();
+        for cell in band {
+            let flow = axis.cross(cell_vector(grid, cell));
+            if flow.dot(flow) < 1e-12 {
+                continue;
+            }
+            let source = walk_direction(grid, cell, flow.normalize().scale(-1.0), hops);
+            let source_plate = previous[source];
+            if source_plate == first || source_plate == second {
+                next[cell] = source_plate;
+            }
+        }
+        if plate_present(&next, first) && plate_present(&next, second) {
+            plate_by_cell.copy_from_slice(&next);
+        }
+    }
+    Ok(())
+}
+
+fn diversify_plates(
+    grid: Grid,
+    mut plates: Vec<Plate>,
+    plate_by_cell: &mut [u16],
+    identity: GenerationIdentity,
+    progress: &mut dyn ProgressSink,
+) -> Result<Vec<Plate>, PhysicalError> {
+    let reshape_seed = derive_subsystem_seed(
+        identity.seed,
+        identity.retry_index,
+        SeedDomain::PlateReshape,
+    );
+    let event_count = reshape_event_count(plates.len());
+    let mut plate_order: Vec<u16> = (0..plates.len() as u16).collect();
+    plate_order.sort_by_key(|id| splitmix64(reshape_seed ^ u64::from(*id)));
+    let mut shatter_parents = Vec::new();
+    for id in &plate_order {
+        if shatter_parents.len() >= event_count {
+            break;
+        }
+        if plate_cells(plate_by_cell, *id).len() >= MIN_SHATTER_CELLS {
+            shatter_parents.push(*id);
+        }
+    }
+    let shatter_set: HashSet<u16> = shatter_parents.iter().copied().collect();
+    let mut merge_pairs = Vec::new();
+    let mut used = shatter_set.clone();
+    for (first, second) in adjacent_plate_pairs(grid, plate_by_cell) {
+        if merge_pairs.len() >= shatter_parents.len() {
+            break;
+        }
+        if used.contains(&first) || used.contains(&second) {
+            continue;
+        }
+        merge_pairs.push((first, second));
+        used.insert(first);
+        used.insert(second);
+    }
+    let merge_budget = merge_pairs.len();
+    let mut next_id = plates.len() as u16;
+    let mut shattered = 0usize;
+    for parent in shatter_parents {
+        if shattered >= merge_budget {
+            break;
+        }
+        let parent_cells = plate_cells(plate_by_cell, parent);
+        let rng = splitmix64(reshape_seed ^ 0x5a11_e000 ^ u64::from(parent));
+        let Some(shard_seed) = pick_shatter_seed(
+            grid,
+            &parent_cells,
+            plates[usize::from(parent)].seed_cell,
+            rng,
+        ) else {
+            continue;
+        };
+        let shard_id = next_id;
+        next_id = next_id.saturating_add(1);
+        let shard_site = cell_vector(grid, shard_seed);
+        plates.push(plate_from_site(shard_id, shard_seed, shard_site, identity));
+        shatter_plate(
+            grid,
+            plate_by_cell,
+            parent,
+            shard_id,
+            plates[usize::from(parent)].seed_cell,
+            shard_seed,
+            identity,
+            progress,
+        )?;
+        if plate_present(plate_by_cell, shard_id) {
+            shattered += 1;
+        }
+    }
+    for (keep, absorb) in merge_pairs.into_iter().take(shattered) {
+        merge_plate(plate_by_cell, keep, absorb);
+    }
+    plates = compact_plates(grid, &plates, plate_by_cell, identity);
+    let transform_pairs = couple_transform_pairs(&mut plates, grid, plate_by_cell, identity);
+    apply_transform_slip(
+        grid,
+        &plates,
+        plate_by_cell,
+        &transform_pairs,
+        identity,
+        progress,
+    )?;
+    Ok(compact_plates(grid, &plates, plate_by_cell, identity))
 }
 
 fn crust_cost_delta(
@@ -2494,6 +2976,7 @@ pub fn generate_tectonic_world(
     progress: &mut dyn ProgressSink,
 ) -> Result<TectonicWorld, PhysicalError> {
     settings.validate()?;
+    let mut settings = settings;
     if !(1..1_000_000).contains(&target_land_fraction_ppm) {
         return Err(PhysicalError::InvalidSettings(
             "target land fraction must be between zero and one".into(),
@@ -2505,7 +2988,12 @@ pub fn generate_tectonic_world(
         .map(|id| plate_site(grid, seed, retry_index, id, settings.plate_count))
         .collect::<Vec<_>>();
     let mut plates = build_plates(grid, seed, retry_index, settings);
-    let plate_by_cell = assign_plates(grid, &sites, identity, progress)?;
+    let mut plate_by_cell = assign_plates(grid, &sites, identity, progress)?;
+    plates = diversify_plates(grid, plates, &mut plate_by_cell, identity, progress)?;
+    settings.plate_count = plates.len() as u16;
+    if settings.continental_plate_count > settings.plate_count {
+        settings.continental_plate_count = settings.plate_count.max(1);
+    }
     let layout = continent_layout(seed, retry_index, settings);
     let stage_seed = derive_subsystem_seed(seed, retry_index, SeedDomain::ContinentalCratons);
     let mut cratons = craton_seeds(&layout, stage_seed);
@@ -2744,8 +3232,8 @@ mod tests {
             })
         }));
         if polar_land.iter().any(|land| *land) && polar_land.iter().any(|land| !*land) {
-            let south_center = (-90_000_000i64
-                + 180_000_000i64 / i64::from(solved.grid.height * 2)) as i32;
+            let south_center =
+                (-90_000_000i64 + 180_000_000i64 / i64::from(solved.grid.height * 2)) as i32;
             assert!(
                 segments.iter().any(|segment| {
                     segment.first[1] <= south_center || segment.second[1] <= south_center
@@ -2918,14 +3406,17 @@ mod tests {
     #[test]
     fn plate_boundaries_are_not_nearest_site_voronoi() {
         let world = fixture();
-        let sites = (0..world.settings.plate_count)
-            .map(|id| {
-                plate_site(
-                    world.grid,
-                    world.seed,
-                    world.retry_index,
-                    id,
-                    world.settings.plate_count,
+        let sites = world
+            .plates
+            .iter()
+            .map(|plate| {
+                Vec3::from_lon_lat(
+                    f64::from(plate.site_longitude_microdegrees) / MICRODEGREES_PER_DEGREE
+                        * std::f64::consts::PI
+                        / 180.0,
+                    f64::from(plate.site_latitude_microdegrees) / MICRODEGREES_PER_DEGREE
+                        * std::f64::consts::PI
+                        / 180.0,
                 )
             })
             .collect::<Vec<_>>();
@@ -2938,6 +3429,78 @@ mod tests {
         assert!(
             disagree * 20 > world.grid.sample_count(),
             "cost-field ownership must irregularize Voronoi sites, disagree={disagree}"
+        );
+    }
+
+    #[test]
+    fn plates_have_uneven_areas_after_merge_and_shatter() {
+        let world = fixture();
+        let metrics = world.metrics().unwrap();
+        assert!(
+            u64::from(metrics.plate_area_p95_ppm) * 1_000
+                >= u64::from(metrics.plate_area_p05_ppm) * 2_000,
+            "plate area p95={} should be at least 2x p05={}",
+            metrics.plate_area_p95_ppm,
+            metrics.plate_area_p05_ppm
+        );
+    }
+
+    #[test]
+    fn transform_slip_leaves_material_transform_boundaries() {
+        let world = fixture();
+        let metrics = world.metrics().unwrap();
+        assert!(metrics.transform_boundary_count > 0);
+        assert!(
+            metrics.transform_boundary_count * 8
+                >= metrics.convergent_boundary_count + metrics.divergent_boundary_count,
+            "transform={} convergent={} divergent={}",
+            metrics.transform_boundary_count,
+            metrics.convergent_boundary_count,
+            metrics.divergent_boundary_count
+        );
+    }
+
+    #[test]
+    fn plate_contacts_bend_instead_of_running_straight() {
+        let world = fixture();
+        let mut by_pair: HashMap<(u16, u16), Vec<(usize, usize)>> = HashMap::new();
+        for boundary in &world.boundaries {
+            by_pair
+                .entry((boundary.first_plate, boundary.second_plate))
+                .or_default()
+                .push((boundary.first_cell, boundary.second_cell));
+        }
+        let mut bent = 0u32;
+        let mut compared = 0u32;
+        for segments in by_pair.values() {
+            for (index, (first_a, second_a)) in segments.iter().enumerate() {
+                let dir_a = cell_vector(world.grid, *second_a)
+                    .subtract(cell_vector(world.grid, *first_a))
+                    .reject(cell_midpoint(world.grid, *first_a, *second_a))
+                    .normalize();
+                for (first_b, second_b) in segments.iter().skip(index + 1) {
+                    if *first_a != *first_b
+                        && *first_a != *second_b
+                        && *second_a != *first_b
+                        && *second_a != *second_b
+                    {
+                        continue;
+                    }
+                    let dir_b = cell_vector(world.grid, *second_b)
+                        .subtract(cell_vector(world.grid, *first_b))
+                        .reject(cell_midpoint(world.grid, *first_b, *second_b))
+                        .normalize();
+                    compared += 1;
+                    if dir_a.dot(dir_b).abs() < 0.92 {
+                        bent += 1;
+                    }
+                }
+            }
+        }
+        assert!(compared > 0, "plate contacts must have adjacent segments");
+        assert!(
+            bent * 4 >= compared,
+            "plate contacts must change heading, bent={bent} compared={compared}"
         );
     }
 

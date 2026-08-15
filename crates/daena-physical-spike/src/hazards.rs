@@ -140,7 +140,9 @@ fn geodesic_decay_ppm(distance_m: f64, scale_m: f64) -> u64 {
     if scale_m <= 0.0 {
         return 0;
     }
-    let x_ppm = (distance_m / scale_m * 1_000_000.0).round().clamp(0.0, 20_000_000.0) as u64;
+    let x_ppm = (distance_m / scale_m * 1_000_000.0)
+        .round()
+        .clamp(0.0, 20_000_000.0) as u64;
     exp_neg_ppm(x_ppm)
 }
 
@@ -154,7 +156,8 @@ fn acos_micro_radians(dot: f64) -> u64 {
         }
         values
     });
-    let index = ((dot.clamp(-1.0, 1.0) * 10_000.0).round() as i32 + 10_000).clamp(0, 20_000) as usize;
+    let index =
+        ((dot.clamp(-1.0, 1.0) * 10_000.0).round() as i32 + 10_000).clamp(0, 20_000) as usize;
     u64::from(table[index])
 }
 
@@ -214,11 +217,14 @@ fn geodesic_midpoint(first: (f64, f64), second: (f64, f64)) -> (f64, f64) {
     let z = lat1.sin() + lat2.sin();
     let hyp = (x * x + y * y).sqrt();
     if hyp < f64::EPSILON {
-        return (0.0, if z >= 0.0 {
-            std::f64::consts::FRAC_PI_2
-        } else {
-            -std::f64::consts::FRAC_PI_2
-        });
+        return (
+            0.0,
+            if z >= 0.0 {
+                std::f64::consts::FRAC_PI_2
+            } else {
+                -std::f64::consts::FRAC_PI_2
+            },
+        );
     }
     (y.atan2(x), z.atan2(hyp))
 }
@@ -619,10 +625,34 @@ mod tests {
         let mut first = vec![0u64; points.len()];
         let mut second = vec![0u64; points.len()];
         let mut both = vec![0u64; points.len()];
-        apply_source(&xyz, &mut first, points[0], 4_000, EARTHQUAKE_DISTANCE_SCALE_PPM);
-        apply_source(&xyz, &mut second, points[10], 3_000, EARTHQUAKE_DISTANCE_SCALE_PPM);
-        apply_source(&xyz, &mut both, points[0], 4_000, EARTHQUAKE_DISTANCE_SCALE_PPM);
-        apply_source(&xyz, &mut both, points[10], 3_000, EARTHQUAKE_DISTANCE_SCALE_PPM);
+        apply_source(
+            &xyz,
+            &mut first,
+            points[0],
+            4_000,
+            EARTHQUAKE_DISTANCE_SCALE_PPM,
+        );
+        apply_source(
+            &xyz,
+            &mut second,
+            points[10],
+            3_000,
+            EARTHQUAKE_DISTANCE_SCALE_PPM,
+        );
+        apply_source(
+            &xyz,
+            &mut both,
+            points[0],
+            4_000,
+            EARTHQUAKE_DISTANCE_SCALE_PPM,
+        );
+        apply_source(
+            &xyz,
+            &mut both,
+            points[10],
+            3_000,
+            EARTHQUAKE_DISTANCE_SCALE_PPM,
+        );
         for cell in 0..points.len() {
             assert_eq!(both[cell], first[cell].saturating_add(second[cell]));
         }
@@ -639,8 +669,20 @@ mod tests {
         let xyz = cell_xyz(&points);
         let mut west = vec![0u64; points.len()];
         let mut east = vec![0u64; points.len()];
-        apply_source(&xyz, &mut west, points[0], 5_000, EARTHQUAKE_DISTANCE_SCALE_PPM);
-        apply_source(&xyz, &mut east, points[7], 5_000, EARTHQUAKE_DISTANCE_SCALE_PPM);
+        apply_source(
+            &xyz,
+            &mut west,
+            points[0],
+            5_000,
+            EARTHQUAKE_DISTANCE_SCALE_PPM,
+        );
+        apply_source(
+            &xyz,
+            &mut east,
+            points[7],
+            5_000,
+            EARTHQUAKE_DISTANCE_SCALE_PPM,
+        );
         assert!(west[1] > 0 && east[6] > 0);
         assert_eq!(west[0], east[7]);
     }
@@ -713,7 +755,9 @@ mod tests {
         }
         let subduction = derive_hazards(&subduction_centers).unwrap();
         let hotspots = derive_hazards(&hotspot_centers).unwrap();
-        assert!(subduction.metrics.volcanic_rate_mass_nano > hotspots.metrics.volcanic_rate_mass_nano);
+        assert!(
+            subduction.metrics.volcanic_rate_mass_nano > hotspots.metrics.volcanic_rate_mass_nano
+        );
     }
 
     #[test]
@@ -756,7 +800,10 @@ mod tests {
         let second = derive_hazards(&world).unwrap();
         assert_eq!(first, second);
         first.validate(world.grid).unwrap();
-        assert_eq!(first.metrics.boundary_source_count, world.boundaries.len() as u32);
+        assert_eq!(
+            first.metrics.boundary_source_count,
+            world.boundaries.len() as u32
+        );
         assert!(first.metrics.earthquake_max_ppm >= first.metrics.earthquake_mean_ppm);
         assert!(first.metrics.volcanic_max_ppm >= first.metrics.volcanic_mean_ppm);
         let geojson = to_geojson(&world).unwrap();

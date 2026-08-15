@@ -12,6 +12,7 @@ path = "src/lib.rs"
 [dependencies]
 daena-physical = { path = "../daena-physical-spike" }
 png = "0.17.16"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -1,6 +1,6 @@
-use daena_atlas::{
-    render_from_source, request::AtlasRenderRequest, spike_identity_from_source, NoopProgress,
-};
+use daena_atlas::projection::AtlasProjection;
+use daena_atlas::request::{AtlasFormat, AtlasRenderRequest};
+use daena_atlas::{render_from_source, spike_identity_from_source, NoopProgress};
 use daena_physical::{
     decode_source, generate_world, GenerationSettings, NoopProgress as PhysicalNoop,
     DEFAULT_HEIGHT, DEFAULT_RADIUS_METRES, DEFAULT_WIDTH,
@@ -22,6 +22,15 @@ fn main() -> Result<(), String> {
                 value
                     .parse::<u32>()
                     .map_err(|error| format!("{name} must be an unsigned integer: {error}"))
+            })
+            .transpose()
+    };
+    let parse_f64 = |name: &str| {
+        option(name)
+            .map(|value| {
+                value
+                    .parse::<f64>()
+                    .map_err(|error| format!("{name} must be a number: {error}"))
             })
             .transpose()
     };
@@ -55,6 +64,32 @@ fn main() -> Result<(), String> {
     if let Some(style) = option("--style") {
         request.style_id = style;
     }
+    if let Some(format) = option("--format") {
+        request.format = AtlasFormat::parse(&format).map_err(|error| error.to_string())?;
+    }
+    if let Some(projection) = option("--projection") {
+        request.projection =
+            AtlasProjection::parse(&projection).map_err(|error| error.to_string())?;
+    }
+    if let Some(dpi) = parse_u32("--dpi")? {
+        request.dpi = dpi;
+    }
+    request.unlock_aspect = args.iter().any(|arg| arg == "--unlock-aspect");
+    let degrees = |name: &str| -> Result<Option<i32>, String> {
+        Ok(parse_f64(name)?.map(|value| (value * 1_000_000.0).round() as i32))
+    };
+    if let Some(west) = degrees("--west")? {
+        request.extent.west_lon_micro = west;
+    }
+    if let Some(south) = degrees("--south")? {
+        request.extent.south_lat_micro = south;
+    }
+    if let Some(east) = degrees("--east")? {
+        request.extent.east_lon_micro = east;
+    }
+    if let Some(north) = degrees("--north")? {
+        request.extent.north_lat_micro = north;
+    }
     let request = request.normalize().map_err(|error| error.to_string())?;
     let rendered = render_from_source(
         &source,
@@ -68,13 +103,14 @@ fn main() -> Result<(), String> {
     .map_err(|error| error.to_string())?;
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
     if let Some(path) = output {
-        fs::write(&path, &rendered.png).map_err(|error| error.to_string())?;
+        fs::write(&path, &rendered.artifact).map_err(|error| error.to_string())?;
     }
     println!(
-        "{{\"width\":{},\"height\":{},\"pngBytes\":{},\"rgbaBytes\":{},\"sourceBytes\":{},\"renderMs\":{:.3},\"sourceSha256\":\"{}\",\"identity\":\"{}\",\"rendererVersion\":{},\"offsetYears\":{},\"styleId\":\"{}\"}}",
+        "{{\"width\":{},\"height\":{},\"pngBytes\":{},\"artifactBytes\":{},\"rgbaBytes\":{},\"sourceBytes\":{},\"renderMs\":{:.3},\"sourceSha256\":\"{}\",\"identity\":\"{}\",\"rendererVersion\":{},\"offsetYears\":{},\"styleId\":\"{}\",\"format\":\"{}\",\"projection\":\"{}\"}}",
         rendered.request.width_px,
         rendered.request.height_px,
         rendered.png.len(),
+        rendered.artifact.len(),
         rendered.rgba.len(),
         source.len(),
         elapsed_ms,
@@ -83,6 +119,8 @@ fn main() -> Result<(), String> {
         rendered.provenance.renderer_version,
         rendered.provenance.offset_years,
         rendered.provenance.style_id,
+        rendered.provenance.format,
+        rendered.provenance.projection,
     );
     Ok(())
 }

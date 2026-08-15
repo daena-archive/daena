@@ -14,7 +14,7 @@ The locked matrix is:
 | `windows-2025` | Windows x64 (`win32/x64`) |
 
 The gate is [`.github/workflows/maps-physical-golden.yml`](../../.github/workflows/maps-physical-golden.yml).
-A platform is not supported until its matrix job passes the exact v11 source
+A platform is not supported until its matrix job passes the exact v12 source
 and coastline hashes. Approximate matches do not pass. New targets require a
 deliberate matrix change and a reviewed fixture result; no target silently
 inherits support from another platform. The matrix pins Rust `1.97.1` so a

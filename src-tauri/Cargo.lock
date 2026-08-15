@@ -947,6 +947,7 @@ name = "daena-atlas"
 version = "0.1.0"
 dependencies = [
  "daena-physical",
+ "flate2",
  "png 0.17.16",
  "serde",
  "serde_json",

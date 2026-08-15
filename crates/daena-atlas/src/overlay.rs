@@ -6,9 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::detail::domain_key;
 use crate::detail::lattice_sample;
-use crate::projection::{
-    clamp_lat_micro, wrap_lon_micro, LAT_MICRO_MIN, LAT_MICRO_SPAN, LON_MICRO_MIN, LON_MICRO_SPAN,
-};
+use crate::projection::ProjectedView;
 use crate::request::AtlasRenderRequest;
 use crate::style::AtlasStyle;
 
@@ -25,13 +23,31 @@ pub struct AuthoredFeature {
 }
 
 pub fn lon_to_x(lon_micro: i32, width: u32) -> i32 {
-    let wrapped = wrap_lon_micro(i64::from(lon_micro));
-    ((i64::from(wrapped) - i64::from(LON_MICRO_MIN)) * i64::from(width) / LON_MICRO_SPAN) as i32
+    crate::projection::ProjectedView {
+        projection: crate::projection::AtlasProjection::Equirectangular,
+        extent: crate::projection::AtlasExtent::world(),
+        width,
+        height: 1,
+    }
+    .project(lon_micro, 0)
+    .map(|(x, _)| x)
+    .unwrap_or(0)
 }
 
 pub fn lat_to_y(lat_micro: i32, height: u32) -> i32 {
-    let lat = clamp_lat_micro(i64::from(lat_micro));
-    ((i64::from(lat) - i64::from(LAT_MICRO_MIN)) * i64::from(height) / LAT_MICRO_SPAN) as i32
+    crate::projection::ProjectedView {
+        projection: crate::projection::AtlasProjection::Equirectangular,
+        extent: crate::projection::AtlasExtent::world(),
+        width: 1,
+        height,
+    }
+    .project(0, lat_micro)
+    .map(|(_, y)| y)
+    .unwrap_or(0)
+}
+
+fn project_point(view: ProjectedView, lon_micro: i32, lat_micro: i32) -> Option<(i32, i32)> {
+    view.project(lon_micro, lat_micro)
 }
 
 pub(crate) fn put_pixel(
@@ -91,17 +107,20 @@ fn draw_segment(
 
 fn draw_geodesic_segment(
     buffer: &mut [u8],
-    width: u32,
-    height: u32,
+    view: ProjectedView,
     a: [i32; 2],
     b: [i32; 2],
     rgb: [u8; 3],
     alpha_ppm: u32,
 ) {
-    let x0 = lon_to_x(a[0], width);
-    let y0 = lat_to_y(a[1], height);
-    let x1 = lon_to_x(b[0], width);
-    let y1 = lat_to_y(b[1], height);
+    let Some((x0, y0)) = project_point(view, a[0], a[1]) else {
+        return;
+    };
+    let Some((x1, y1)) = project_point(view, b[0], b[1]) else {
+        return;
+    };
+    let width = view.width;
+    let height = view.height;
     if (x1 - x0).abs() > width as i32 / 2 {
         let edge = if x0 < x1 { 0 } else { width as i32 };
         let other = if x0 < x1 { width as i32 } else { 0 };
@@ -120,20 +139,18 @@ pub fn composite_overlays(
     identity: &[u8],
     overlays: &[AuthoredFeature],
 ) {
-    let width = request.width_px;
-    let height = request.height_px;
+    let view = request.view().unwrap_or(ProjectedView {
+        projection: request.projection,
+        extent: request.extent,
+        width: request.width_px,
+        height: request.height_px,
+    });
+    let width = view.width;
+    let height = view.height;
     if request.layer_enabled("rivers") {
         for path in &hydrology.river_coordinates {
             for window in path.windows(2) {
-                draw_geodesic_segment(
-                    buffer,
-                    width,
-                    height,
-                    window[0],
-                    window[1],
-                    style.river,
-                    850_000,
-                );
+                draw_geodesic_segment(buffer, view, window[0], window[1], style.river, 850_000);
             }
         }
     }
@@ -141,8 +158,7 @@ pub fn composite_overlays(
         for segment in &hydrology.coastline_segments {
             draw_geodesic_segment(
                 buffer,
-                width,
-                height,
+                view,
                 segment.first,
                 segment.second,
                 style.coast,
@@ -154,8 +170,7 @@ pub fn composite_overlays(
         for segment in &hydrology.bathymetry_contours {
             draw_geodesic_segment(
                 buffer,
-                width,
-                height,
+                view,
                 segment.first,
                 segment.second,
                 style.contour,
@@ -164,14 +179,19 @@ pub fn composite_overlays(
         }
     }
     if request.layer_enabled("graticule") {
-        draw_graticule(buffer, width, height, style.graticule);
+        draw_graticule(buffer, view, style.graticule);
     }
     let mut omitted_labels = 0_u32;
     for feature in overlays {
         if !request.layer_enabled(&feature.layer_id) && feature.kind != "semantic" {
             continue;
         }
-        if feature.kind == "semantic" && !request.active_layer_ids.iter().any(|id| id == &feature.layer_id) {
+        if feature.kind == "semantic"
+            && !request
+                .active_layer_ids
+                .iter()
+                .any(|id| id == &feature.layer_id)
+        {
             continue;
         }
         let color = if feature.kind == "semantic" {
@@ -182,27 +202,19 @@ pub fn composite_overlays(
         match feature.path.len() {
             0 => {}
             1 => {
-                let x = lon_to_x(feature.path[0][0], width);
-                let y = lat_to_y(feature.path[0][1], height);
-                put_pixel(buffer, width, height, x, y, color, 1_000_000);
+                if let Some((x, y)) = project_point(view, feature.path[0][0], feature.path[0][1]) {
+                    put_pixel(buffer, width, height, x, y, color, 1_000_000);
+                }
             }
             _ => {
                 for window in feature.path.windows(2) {
-                    draw_geodesic_segment(
-                        buffer,
-                        width,
-                        height,
-                        window[0],
-                        window[1],
-                        color,
-                        900_000,
-                    );
+                    draw_geodesic_segment(buffer, view, window[0], window[1], color, 900_000);
                 }
             }
         }
     }
     if request.layer_enabled("labels") {
-        omitted_labels = crate::labels::draw_labels(buffer, width, height, overlays, style);
+        omitted_labels = crate::labels::draw_labels(buffer, view, overlays, style);
     }
     let _ = omitted_labels;
     if request.layer_enabled("frame") {
@@ -256,9 +268,15 @@ pub fn composite_overlays(
     }
 }
 
-fn draw_graticule(buffer: &mut [u8], width: u32, height: u32, rgb: [u8; 3]) {
+fn draw_graticule(buffer: &mut [u8], view: ProjectedView, rgb: [u8; 3]) {
+    let width = view.width;
+    let height = view.height;
+    let mid_lat = view.extent.south_lat_micro + (view.extent.lat_span_micro() / 2) as i32;
+    let mid_lon = view.extent.central_meridian_micro();
     for lon in (-180..=180).step_by(30) {
-        let x = lon_to_x(lon * 1_000_000, width);
+        let Some((x, _)) = project_point(view, lon * 1_000_000, mid_lat) else {
+            continue;
+        };
         draw_segment(
             buffer,
             width,
@@ -272,7 +290,9 @@ fn draw_graticule(buffer: &mut [u8], width: u32, height: u32, rgb: [u8; 3]) {
         );
     }
     for lat in (-90..=90).step_by(30) {
-        let y = lat_to_y(lat * 1_000_000, height);
+        let Some((_, y)) = project_point(view, mid_lon, lat * 1_000_000) else {
+            continue;
+        };
         draw_segment(
             buffer,
             width,

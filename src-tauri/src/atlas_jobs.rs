@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use daena_atlas::request::AtlasRenderRequest;
+use daena_atlas::projection::{AtlasExtent, AtlasProjection};
+use daena_atlas::request::{AtlasFormat, AtlasRenderRequest};
 use daena_atlas::{
     render_from_source, AtlasPhase, AtlasProgress, CancelFlag, CODE_RENDER_CANCELLED,
 };
@@ -102,6 +103,10 @@ pub struct AtlasBeginInput {
 }
 
 fn install_png_bytes(dest: &Path, bytes: &[u8]) -> Result<(), String> {
+    install_artifact_bytes(dest, bytes, "png")
+}
+
+fn install_artifact_bytes(dest: &Path, bytes: &[u8], ext: &str) -> Result<(), String> {
     if dest
         .symlink_metadata()
         .map(|meta| meta.file_type().is_symlink())
@@ -109,7 +114,7 @@ fn install_png_bytes(dest: &Path, bytes: &[u8]) -> Result<(), String> {
     {
         return Err("atlas.save.failed: refused to follow a symlink".into());
     }
-    let partial = dest.with_extension("png.partial");
+    let partial = dest.with_extension(format!("{ext}.partial"));
     if partial
         .symlink_metadata()
         .map(|meta| meta.file_type().is_symlink())
@@ -264,7 +269,17 @@ fn spawn_render(
                 return;
             }
         };
-        let path = dir.join(format!("{job_id}.png"));
+        let ext = if kind == "preview" {
+            "png"
+        } else {
+            rendered.request.format.as_str()
+        };
+        let bytes = if kind == "preview" {
+            &rendered.png
+        } else {
+            &rendered.artifact
+        };
+        let path = dir.join(format!("{job_id}.{ext}"));
         if cancel.is_cancelled() {
             if let Ok(mut manager) = jobs.lock() {
                 if let Some(job) = manager.jobs.get_mut(&job_id) {
@@ -274,7 +289,7 @@ fn spawn_render(
             }
             return;
         }
-        if let Err(error) = fs::write(&path, &rendered.png) {
+        if let Err(error) = fs::write(&path, bytes) {
             if let Ok(mut manager) = jobs.lock() {
                 if let Some(job) = manager.jobs.get_mut(&job_id) {
                     fail_status(
@@ -365,9 +380,13 @@ async fn begin_job(
         .ok_or_else(|| "open a project before rendering an atlas map".to_string())?
         .root;
     if kind == "preview" {
+        input.request.format = AtlasFormat::Png;
         input.request.width_px = input.request.width_px.min(PREVIEW_MAX_WIDTH);
         input.request.height_px = input.request.height_px.min(PREVIEW_MAX_HEIGHT);
-        if input.request.width_px != input.request.height_px.saturating_mul(2) {
+        if input.request.projection == AtlasProjection::Equirectangular
+            && input.request.extent == AtlasExtent::world()
+            && input.request.width_px != input.request.height_px.saturating_mul(2)
+        {
             input.request.height_px = input.request.width_px / 2;
         }
     }
@@ -529,17 +548,26 @@ pub async fn project_atlas_artifact_save(
         )
     };
     let bytes = fs::read(&artifact).map_err(|error| format!("atlas.save.failed: {error}"))?;
+    let ext = artifact
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("png");
+    let (filter_name, file_name) = match ext {
+        "svg" => ("SVG map", "atlas-map.svg"),
+        "pdf" => ("PDF map", "atlas-map.pdf"),
+        _ => ("PNG image", "atlas-map.png"),
+    };
     let destination = app
         .dialog()
         .file()
-        .add_filter("PNG image", &["png"])
-        .set_file_name("atlas-map.png")
+        .add_filter(filter_name, &[ext])
+        .set_file_name(file_name)
         .blocking_save_file();
     let Some(file) = destination else {
         return Ok(status);
     };
     let dest = file.into_path().map_err(|error| error.to_string())?;
-    install_png_bytes(&dest, &bytes)?;
+    install_artifact_bytes(&dest, &bytes, ext)?;
     let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
     status.state = "saved".into();
     status.stage = "saved".into();

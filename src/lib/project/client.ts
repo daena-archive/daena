@@ -352,7 +352,15 @@ export interface AtlasRenderRequest {
   widthPx: number;
   heightPx: number;
   dpi: number;
-  format: "png";
+  format: "png" | "svg" | "pdf";
+  projection: "equirectangular" | "web-mercator";
+  extent: {
+    westLonMicro: number;
+    southLatMicro: number;
+    eastLonMicro: number;
+    northLatMicro: number;
+  };
+  unlockAspect: boolean;
   activeLayerIds: string[];
   timeKind: "physical-offset-year" | "calendar-year";
   authoredYear: number | null;

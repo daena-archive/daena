@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::projection::{AtlasExtent, AtlasProjection, ProjectedView};
 use crate::style::{bundled_style_ids, load_style, resolve_style_id};
 use crate::{
     AtlasError, ATLAS_DETAIL_ALGORITHM_VERSION, ATLAS_REQUEST_SCHEMA_VERSION, SPIKE_STYLE_ID,
@@ -69,12 +70,16 @@ impl DetailLevel {
 #[serde(rename_all = "camelCase")]
 pub enum AtlasFormat {
     Png,
+    Svg,
+    Pdf,
 }
 
 impl AtlasFormat {
     pub fn parse(value: &str) -> Result<Self, AtlasError> {
         match value {
             "png" => Ok(Self::Png),
+            "svg" => Ok(Self::Svg),
+            "pdf" => Ok(Self::Pdf),
             other => Err(AtlasError::invalid(format!(
                 "unsupported atlas format: {other}"
             ))),
@@ -82,8 +87,28 @@ impl AtlasFormat {
     }
 
     pub const fn as_str(self) -> &'static str {
-        "png"
+        match self {
+            Self::Png => "png",
+            Self::Svg => "svg",
+            Self::Pdf => "pdf",
+        }
     }
+
+    pub const fn encoder_id(self) -> &'static str {
+        match self {
+            Self::Png => "png-0.17-fast-nofilter",
+            Self::Svg => "svg-1-embedded-png",
+            Self::Pdf => "pdf-1.4-flate-rgb",
+        }
+    }
+}
+
+fn default_projection() -> AtlasProjection {
+    AtlasProjection::Equirectangular
+}
+
+fn default_extent() -> AtlasExtent {
+    AtlasExtent::world()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +124,12 @@ pub struct AtlasRenderRequest {
     pub height_px: u32,
     pub dpi: u32,
     pub format: AtlasFormat,
+    #[serde(default = "default_projection")]
+    pub projection: AtlasProjection,
+    #[serde(default = "default_extent")]
+    pub extent: AtlasExtent,
+    #[serde(default)]
+    pub unlock_aspect: bool,
     #[serde(default)]
     pub active_layer_ids: Vec<String>,
     #[serde(default = "default_time_kind")]
@@ -122,6 +153,9 @@ impl AtlasRenderRequest {
             height_px,
             dpi: 300,
             format: AtlasFormat::Png,
+            projection: default_projection(),
+            extent: default_extent(),
+            unlock_aspect: false,
             active_layer_ids: Vec::new(),
             time_kind: default_time_kind(),
             authored_year: None,
@@ -131,6 +165,10 @@ impl AtlasRenderRequest {
 
     pub fn layer_enabled(&self, role: &str) -> bool {
         self.active_layer_ids.iter().any(|id| id == role)
+    }
+
+    pub fn view(&self) -> Result<ProjectedView, AtlasError> {
+        ProjectedView::new(self.projection, self.extent, self.width_px, self.height_px)
     }
 
     pub fn normalize(mut self) -> Result<Self, AtlasError> {
@@ -170,10 +208,19 @@ impl AtlasRenderRequest {
         if pixels > MAX_PIXEL_COUNT {
             return Err(AtlasError::limit("output exceeds the atlas pixel budget"));
         }
-        if u64::from(self.width_px) != u64::from(self.height_px) * 2 {
-            return Err(AtlasError::invalid(
-                "iteration-1 atlas output must be whole-world 2:1 equirectangular",
-            ));
+        self.extent.validate(self.projection)?;
+        let view = ProjectedView::new(self.projection, self.extent, self.width_px, self.height_px)?;
+        if !self.unlock_aspect {
+            let (num, den) = view.aspect_num_den();
+            let expected_width = ((u128::from(self.height_px) * num + den / 2) / den.max(1)) as u32;
+            let expected_height = ((u128::from(self.width_px) * den + num / 2) / num.max(1)) as u32;
+            if self.width_px.abs_diff(expected_width) > 1
+                && self.height_px.abs_diff(expected_height) > 1
+            {
+                return Err(AtlasError::invalid(
+                    "output aspect must match the projected extent unless unlockAspect is set",
+                ));
+            }
         }
         if self.dpi == 0 || self.dpi > 2_400 {
             return Err(AtlasError::invalid("DPI must be between 1 and 2400"));
@@ -256,11 +303,23 @@ mod tests {
     #[test]
     fn rejects_non_two_to_one_and_over_budget_dimensions() {
         let mut request = AtlasRenderRequest::spike_png(64, 32).unwrap();
-        request.width_px = 65;
+        request.width_px = 80;
         assert_eq!(
             request.normalize().unwrap_err().code,
             crate::CODE_REQUEST_INVALID
         );
+        request = AtlasRenderRequest::spike_png(64, 32).unwrap();
+        request.extent.west_lon_micro = 0;
+        request.extent.east_lon_micro = 10_000_000;
+        request.extent.south_lat_micro = 0;
+        request.extent.north_lat_micro = 10_000_000;
+        assert_eq!(
+            request.clone().normalize().unwrap_err().code,
+            crate::CODE_REQUEST_INVALID
+        );
+        request.width_px = 32;
+        request.height_px = 32;
+        request.normalize().unwrap();
         request = AtlasRenderRequest::spike_png(64, 32).unwrap();
         request.width_px = 16_384;
         request.height_px = 8_192;

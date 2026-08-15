@@ -371,7 +371,9 @@ fn polar_segments(
         let along = EdgeKey::horizontal(row, col);
         let code = (pole_inside as u8) | ((inside(v0) as u8) << 1) | ((inside(v1) as u8) << 2);
         let pole_a = || {
-            radial_crossing(grid, radial_a, pole_value, v0, threshold, col, pole_lat, row)
+            radial_crossing(
+                grid, radial_a, pole_value, v0, threshold, col, pole_lat, row,
+            )
         };
         let pole_b = || {
             radial_crossing(
@@ -461,8 +463,13 @@ fn radial_crossing(
     Some(Crossing {
         key,
         lon_micro: cell[0],
-        lat_micro: interpolate(i64::from(pole_lat), cell[1], pole_value, cell_value, threshold)
-            as i32,
+        lat_micro: interpolate(
+            i64::from(pole_lat),
+            cell[1],
+            pole_value,
+            cell_value,
+            threshold,
+        ) as i32,
         protected: true,
     })
 }
@@ -532,7 +539,12 @@ fn assemble(grid: Grid, segments: Vec<RawSegment>) -> Result<ContourTopology, Ph
                 }
             }
         } else if coords.len() >= 2 {
-            opens.push(coords.into_iter().map(|point| quantize_point(point[0], point[1])).collect());
+            opens.push(
+                coords
+                    .into_iter()
+                    .map(|point| quantize_point(point[0], point[1]))
+                    .collect(),
+            );
         }
     }
     let polygons = assign_holes(grid, rings)?;
@@ -543,10 +555,7 @@ fn assemble(grid: Grid, segments: Vec<RawSegment>) -> Result<ContourTopology, Ph
         }
     }
     isolines.sort();
-    Ok(ContourTopology {
-        isolines,
-        polygons,
-    })
+    Ok(ContourTopology { isolines, polygons })
 }
 
 fn assign_holes(
@@ -679,7 +688,11 @@ fn cut_ring(ring: &[[i32; 2]]) -> Vec<Vec<[i32; 2]>> {
             };
             let t_den = b[0] - a[0];
             let lat = a[1] + divide_round((b[1] - a[1]) * t_num, t_den);
-            let seam = if a[0] < b[0] { 180_000_000 } else { -180_000_000 };
+            let seam = if a[0] < b[0] {
+                180_000_000
+            } else {
+                -180_000_000
+            };
             current.push(quantize_point(seam, lat));
             let mut next = vec![quantize_point(-seam, lat)];
             next.push(quantize_point(b[0], b[1]));
@@ -740,7 +753,8 @@ fn simplify_closed(
         .iter()
         .map(|point| quantize_point(point[0], point[1]))
         .collect::<Vec<_>>();
-    let epsilon = equatorial_cell_metres(grid) * f64::from(SIMPLIFY_CELL_FRACTION_PPM) / 1_000_000.0;
+    let epsilon =
+        equatorial_cell_metres(grid) * f64::from(SIMPLIFY_CELL_FRACTION_PPM) / 1_000_000.0;
     let simplified = douglas_peucker(grid, &quantized, &protected, epsilon);
     if simplified.len() < MIN_RING_VERTICES {
         return Some(quantized);
@@ -796,7 +810,8 @@ fn douglas_peucker(
                 best_index = index;
             }
         }
-        if best > epsilon || (start + 1..end).any(|index| protected.contains(&index) && !keep[index])
+        if best > epsilon
+            || (start + 1..end).any(|index| protected.contains(&index) && !keep[index])
         {
             if best > epsilon {
                 keep[best_index] = true;
@@ -819,12 +834,7 @@ fn douglas_peucker(
         .collect()
 }
 
-fn perpendicular_metres(
-    grid: Grid,
-    first: (f64, f64),
-    last: (f64, f64),
-    point: (f64, f64),
-) -> f64 {
+fn perpendicular_metres(grid: Grid, first: (f64, f64), last: (f64, f64), point: (f64, f64)) -> f64 {
     let ab = grid.great_circle_distance(first, last).max(1.0);
     let ap = grid.great_circle_distance(first, point);
     let bp = grid.great_circle_distance(last, point);
@@ -834,7 +844,10 @@ fn perpendicular_metres(
 }
 
 fn component_signature(ring: &[[i32; 2]]) -> (usize, i32) {
-    (ring.len().saturating_sub(1), signed_ring_area(ring).signum() as i32)
+    (
+        ring.len().saturating_sub(1),
+        signed_ring_area(ring).signum() as i32,
+    )
 }
 
 fn reject_self_intersection(ring: &[[i32; 2]]) -> Result<(), PhysicalError> {
@@ -876,7 +889,12 @@ fn segments_intersect(a: [i32; 2], b: [i32; 2], c: [i32; 2], d: [i32; 2]) -> boo
     let o2 = orient(a, b, d);
     let o3 = orient(c, d, a);
     let o4 = orient(c, d, b);
-    o1.signum() != o2.signum() && o3.signum() != o4.signum() && o1 != 0 && o2 != 0 && o3 != 0 && o4 != 0
+    o1.signum() != o2.signum()
+        && o3.signum() != o4.signum()
+        && o1 != 0
+        && o2 != 0
+        && o3 != 0
+        && o4 != 0
 }
 
 fn ring_contains(grid: Grid, outer: &[[i32; 2]], inner: &[[i32; 2]]) -> bool {
@@ -945,8 +963,8 @@ fn center_micro(grid: Grid, row: u32, col: u32) -> [i64; 2] {
     let lon = -180_000_000i64
         + 360_000_000i64 * (i64::from(wrapped) * 2 + 1) / i64::from(grid.width * 2)
         + extra;
-    let lat = -90_000_000i64
-        + 180_000_000i64 * (i64::from(row) * 2 + 1) / i64::from(grid.height * 2);
+    let lat =
+        -90_000_000i64 + 180_000_000i64 * (i64::from(row) * 2 + 1) / i64::from(grid.height * 2);
     [lon, lat]
 }
 
@@ -1088,7 +1106,11 @@ mod tests {
                 .count();
             assert!(
                 local >= expected[code as usize]
-                    || topology.isolines.iter().map(|path| path.len().saturating_sub(1)).sum::<usize>()
+                    || topology
+                        .isolines
+                        .iter()
+                        .map(|path| path.len().saturating_sub(1))
+                        .sum::<usize>()
                         >= expected[code as usize],
                 "case {code} produced {local} local segments"
             );
@@ -1101,14 +1123,8 @@ mod tests {
         let mut values = fill(mesh, -4);
         set(&mut values, mesh, 2, 2, 0);
         set(&mut values, mesh, 2, 3, 8);
-        let crossing = interpolate_edge(
-            mesh,
-            &values,
-            0,
-            mesh.index(2, 2),
-            mesh.index(2, 3),
-        )
-        .unwrap();
+        let crossing =
+            interpolate_edge(mesh, &values, 0, mesh.index(2, 2), mesh.index(2, 3)).unwrap();
         let start = [
             center_micro(mesh, 2, 2)[0] as i32,
             center_micro(mesh, 2, 2)[1] as i32,
@@ -1208,7 +1224,8 @@ mod tests {
         let mut values = fill(mesh, -5);
         set(&mut values, mesh, 3, 3, 12);
         set(&mut values, mesh, 3, 2, 9);
-        let snapped = interpolate_edge(mesh, &values, 0, mesh.index(3, 3), mesh.index(3, 4)).unwrap();
+        let snapped =
+            interpolate_edge(mesh, &values, 0, mesh.index(3, 3), mesh.index(3, 4)).unwrap();
         assert!((-180_000_000..=180_000_000).contains(&snapped[0]));
         let land_only = interpolate_edge(mesh, &values, 0, mesh.index(3, 3), mesh.index(3, 2));
         assert!(land_only.is_err());
@@ -1216,13 +1233,7 @@ mod tests {
 
     #[test]
     fn self_intersection_is_rejected() {
-        let bowtie = vec![
-            [0, 0],
-            [10_000, 10_000],
-            [0, 10_000],
-            [10_000, 0],
-            [0, 0],
-        ];
+        let bowtie = vec![[0, 0], [10_000, 10_000], [0, 10_000], [10_000, 0], [0, 0]];
         assert!(reject_self_intersection(&bowtie).is_err());
     }
 }

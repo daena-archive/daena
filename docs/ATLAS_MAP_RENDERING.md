@@ -79,7 +79,7 @@ versions and file locations may advance:
 - `daena-physical` is a normal `daena.maps:map` provider. The current provider
   tuple is adapter version `2` and source format `physical-world-v2`.
 - `crates/daena-core/src/maps.rs` currently declares physical generator version
-  `11`; the physical source container reports source version `2`.
+  `12`; the physical source container reports source version `2`.
 - Production physical sources are currently bounded to `384 x 192` samples in
   `crates/daena-physical-spike/src/lib.rs`.
 - The source contains numeric physical truth and persisted causes. Current and

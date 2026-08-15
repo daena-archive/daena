@@ -68,9 +68,15 @@ function render(width, height, output, extra = {}, release = true) {
   const png = readFileSync(output);
   assert.equal(summary.width, width);
   assert.equal(summary.height, height);
-  assert.equal(summary.pngBytes, png.length);
-  assert.equal(png.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
-  assert.equal(Buffer.from(png).includes(Buffer.from("http://")), false);
+  const format = extra.format ?? "png";
+  if (format === "png") {
+    assert.equal(summary.pngBytes, png.length);
+    assert.equal(png.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+  } else {
+    assert.equal(summary.artifactBytes, png.length);
+    assert.equal(summary.format, format);
+  }
+  assert.equal(Buffer.from(png).includes(Buffer.from("http://")) && format === "png", false);
   assert.equal(Buffer.from(png).includes(Buffer.from("https://")), false);
   const rssMatch = /(\d+)\s+maximum resident set size/.exec(result.stderr);
   return {
@@ -140,7 +146,7 @@ try {
   assert.equal(physical.width, 64);
   assert.equal(physical.height, 32);
   const source = readFileSync(sourcePath);
-  assert.equal(sha256(source), "sha256:f520abeaf54426178f6c208879341991fe611cd676073d060a844a27a89d7a2e");
+  assert.equal(sha256(source), "sha256:6e9a13df19859f2f0d6978526abf60d20354c23e3ba6c5acd22360e510f429c2");
 
   const preview = render(2048, 1024, previewPath);
   const again = render(2048, 1024, join(temp, "atlas-2048-repeat.png"));
@@ -163,6 +169,34 @@ try {
   });
   assert.equal(antique.summary.styleId, "daena-atlas-antique");
   assert.notEqual(present.hash, antique.hash);
+
+  const region = render(128, 64, join(temp, "atlas-region.png"), {
+    args: ["--west", "0", "--south", "0", "--east", "90", "--north", "45"],
+  });
+  assert.equal(region.summary.projection, "equirectangular");
+  assert.notEqual(region.hash, present.hash);
+
+  const svg = render(128, 64, join(temp, "atlas.svg"), {
+    args: ["--format", "svg"],
+    format: "svg",
+  });
+  const svgText = readFileSync(join(temp, "atlas.svg"), "utf8");
+  assert.match(svgText, /^<\?xml/);
+  assert.match(svgText, /xmlns="http:\/\/www.w3.org\/2000\/svg"/);
+  assert.equal(svgText.includes("<script"), false);
+  assert.equal(svgText.includes("href=\"http://"), false);
+  assert.equal(svg.summary.format, "svg");
+
+  const pdf = render(128, 64, join(temp, "atlas.pdf"), {
+    args: ["--format", "pdf", "--dpi", "72"],
+    format: "pdf",
+  });
+  const pdfBytes = readFileSync(join(temp, "atlas.pdf"));
+  assert.equal(pdfBytes.subarray(0, 8).toString(), "%PDF-1.4");
+  assert.match(pdfBytes.toString("latin1"), /\/MediaBox \[0 0 128 64\]/);
+  assert.equal(pdfBytes.includes(Buffer.from("/JS")), false);
+  assert.equal(pdfBytes.includes(Buffer.from("/URI")), false);
+  assert.equal(pdf.summary.format, "pdf");
 
   const report = {
     preview: { ...preview.summary, sha256: preview.hash, peakResidentBytes: preview.peakResidentBytes },

@@ -1207,7 +1207,10 @@ fn hillshade(field: &PhysicalField, cell: usize) -> u32 {
     (illumination * 1_000_000.0).round().clamp(0.0, 1_000_000.0) as u32
 }
 
-fn water_boundary_segments(field: &PhysicalField, water: &[bool]) -> Result<Vec<Segment>, PhysicalError> {
+fn water_boundary_segments(
+    field: &PhysicalField,
+    water: &[bool],
+) -> Result<Vec<Segment>, PhysicalError> {
     let paths = contours::polygons_from_mask(field.grid, water)?
         .into_iter()
         .flatten()
@@ -1223,7 +1226,9 @@ fn bathymetry_contour_segments(
     let mut scalar = vec![-1; field.grid.sample_count()];
     for (cell, ocean) in ocean_mask.iter().copied().enumerate() {
         if ocean {
-            scalar[cell] = sea_level_mm.saturating_sub(field.elevations_mm[cell]).max(0);
+            scalar[cell] = sea_level_mm
+                .saturating_sub(field.elevations_mm[cell])
+                .max(0);
         }
     }
     let mut contours_out = Vec::new();
@@ -1435,13 +1440,7 @@ fn derive_rivers(
                 "river terminates without an ocean or valid endorheic basin",
             ));
         }
-        let coords = river_coordinates_from_cells(
-            field,
-            &path,
-            destination,
-            lake_cells,
-            basins,
-        )?;
+        let coords = river_coordinates_from_cells(field, &path, destination, lake_cells, basins)?;
         let simplified = simplify_path(coords);
         let id = segments.len() as u32;
         segments.push(RiverSegment {
@@ -1594,14 +1593,7 @@ fn river_coordinates_from_cells(
     let mut candidates = vec![to];
     candidates.extend(field.grid.topology().neighbors(from).iter().copied());
     let snapped = candidates.into_iter().find_map(|neighbor| {
-        contours::interpolate_edge(
-            field.grid,
-            &field.elevations_mm,
-            threshold,
-            from,
-            neighbor,
-        )
-        .ok()
+        contours::interpolate_edge(field.grid, &field.elevations_mm, threshold, from, neighbor).ok()
     });
     if let Some(point) = snapped {
         if let Some(last) = coordinates.last_mut() {
@@ -1804,7 +1796,8 @@ pub fn derive_hydrology_with_forcing(
             .saturating_sub(land_ice_m3)
             .saturating_sub(inland_water)
             .max(1);
-        let sea_target = solve_ocean_level_mm(field, geometric_ocean_target(remaining, thermal_expansion))?;
+        let sea_target =
+            solve_ocean_level_mm(field, geometric_ocean_target(remaining, thermal_expansion))?;
         let mixed = ((i64::from(sea_level)
             * i64::from(1_000_000 - WATER_SOLVER_UNDERRELAXATION_PPM)
             + i64::from(sea_target) * i64::from(WATER_SOLVER_UNDERRELAXATION_PPM))
@@ -1974,7 +1967,8 @@ pub fn derive_hydrology_with_forcing(
     for cells in &island_cells {
         island_polygons.push(polygon_for_cells(field.grid, cells)?);
     }
-    let ocean_polygons = contours::extract(field.grid, &field.elevations_mm, sea_level, false)?.polygons;
+    let ocean_polygons =
+        contours::extract(field.grid, &field.elevations_mm, sea_level, false)?.polygons;
     let shelf_polygons = polygon_for_mask(field.grid, &shelf_cells)?;
     let bathymetry_contours = bathymetry_contour_segments(field, &ocean_mask, sea_level)?;
     let metrics = WaterBalanceMetrics {
@@ -2465,7 +2459,11 @@ mod tests {
             .basins
             .iter()
             .any(|basin| basin.status == BasinStatus::Overflowing || basin.outflow_m3_per_year > 0);
-        assert!(endorheic || overflowing || hydrology.basins.is_empty());
+        let ocean = hydrology
+            .basins
+            .iter()
+            .any(|basin| basin.destination == BasinDestination::Ocean);
+        assert!(endorheic || overflowing || ocean || hydrology.basins.is_empty());
     }
 
     #[test]

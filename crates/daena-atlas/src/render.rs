@@ -121,6 +121,7 @@ pub fn render_rgba(
     tile_order: &[u32],
     overlays: &[crate::overlay::AuthoredFeature],
     tributaries: &[crate::drainage::DerivedTributary],
+    tectonics: &daena_physical::tectonics::TectonicWorld,
     progress: &mut dyn AtlasProgress,
 ) -> Result<Vec<u8>, AtlasError> {
     let view = request.view()?;
@@ -166,6 +167,7 @@ pub fn render_rgba(
         request,
         style,
         hydrology,
+        tectonics,
         identity,
         overlays,
         tributaries,

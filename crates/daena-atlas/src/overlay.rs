@@ -1,6 +1,8 @@
 //! Vector overlays, graticule, frame, and style-only paper grain.
 
 use daena_physical::hydrology::HydrologyField;
+use daena_physical::tectonics::TectonicWorld;
+use daena_physical::Grid;
 
 use serde::{Deserialize, Serialize};
 
@@ -49,6 +51,19 @@ pub fn lat_to_y(lat_micro: i32, height: u32) -> i32 {
 
 fn project_point(view: ProjectedView, lon_micro: i32, lat_micro: i32) -> Option<(i32, i32)> {
     view.project(lon_micro, lat_micro)
+}
+
+fn cell_center(grid: Grid, cell: usize) -> [i32; 2] {
+    if cell >= grid.sample_count() {
+        return [0, 0];
+    }
+    let (row, col) = grid.row_col(cell);
+    [
+        (-180_000_000i64 + 360_000_000i64 * (i64::from(col) * 2 + 1) / i64::from(grid.width * 2))
+            as i32,
+        (-90_000_000i64 + 180_000_000i64 * (i64::from(row) * 2 + 1) / i64::from(grid.height * 2))
+            as i32,
+    ]
 }
 
 pub(crate) fn put_pixel(
@@ -137,6 +152,7 @@ pub fn composite_overlays(
     request: &AtlasRenderRequest,
     style: &AtlasStyle,
     hydrology: &HydrologyField,
+    tectonics: &TectonicWorld,
     identity: &[u8],
     overlays: &[AuthoredFeature],
     tributaries: &[DerivedTributary],
@@ -185,6 +201,59 @@ pub fn composite_overlays(
             );
         }
     }
+    if request.layer_enabled("watersheds") {
+        for polygons in &hydrology.watershed_polygons {
+            for ring in polygons {
+                for window in ring.windows(2) {
+                    draw_geodesic_segment(
+                        buffer,
+                        view,
+                        window[0],
+                        window[1],
+                        style.contour,
+                        280_000,
+                    );
+                }
+            }
+        }
+    }
+    if request.layer_enabled("tectonic-plates") || request.layer_enabled("tectonic-boundaries") {
+        let alpha = if request.layer_enabled("tectonic-boundaries") {
+            850_000
+        } else {
+            420_000
+        };
+        for boundary in &tectonics.boundaries {
+            draw_geodesic_segment(
+                buffer,
+                view,
+                cell_center(tectonics.grid, boundary.first_cell),
+                cell_center(tectonics.grid, boundary.second_cell),
+                style.political,
+                alpha,
+            );
+        }
+    }
+    if request.layer_enabled("volcanic-centers") {
+        for center in &tectonics.volcanic_centers {
+            let point = cell_center(tectonics.grid, center.cell);
+            if let Some((x, y)) = project_point(view, point[0], point[1]) {
+                for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        put_pixel(
+                            buffer,
+                            width,
+                            height,
+                            x + dx,
+                            y + dy,
+                            style.political,
+                            1_000_000,
+                        );
+                    }
+                }
+            }
+        }
+    }
     if request.layer_enabled("graticule") {
         draw_graticule(buffer, view, style.graticule);
     }
@@ -228,7 +297,7 @@ pub fn composite_overlays(
                     id: tributary.id.clone(),
                     layer_id: "labels".into(),
                     kind: "derived-tributary".into(),
-                    label: Some(format!("T{}", tributary.source_cell % 1_000)),
+                    label: Some(format!("T{}", tributary.source_cell)),
                     path: vec![*first],
                 });
             }

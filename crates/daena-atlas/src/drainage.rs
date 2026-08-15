@@ -171,19 +171,16 @@ fn land_ok(
         && (allow_river || hydrology.lake_cells.get(cell).copied() != Some(true))
 }
 
-fn parent_for_cell(per_river: &[Vec<usize>], cell: usize) -> Option<u32> {
-    per_river
-        .iter()
-        .enumerate()
-        .find(|(_, cells)| cells.contains(&cell))
-        .map(|(index, _)| index as u32)
-}
-
-fn nearest_river_cell(grid: Grid, river_cells: &BTreeSet<usize>, cell: usize) -> Option<usize> {
+fn nearest_river_cell(
+    hydrology: &HydrologyField,
+    river_cells: &BTreeSet<usize>,
+    cell: usize,
+) -> Option<usize> {
     river_cells
         .iter()
         .copied()
-        .min_by_key(|river| (cell_distance(grid, cell, *river), *river))
+        .filter(|river| same_partition(hydrology, *river, cell))
+        .min_by_key(|river| (cell_distance(hydrology.grid, cell, *river), *river))
 }
 
 fn trace_to_nearest(
@@ -193,7 +190,7 @@ fn trace_to_nearest(
     start: usize,
 ) -> Option<(usize, Vec<usize>)> {
     let grid = hydrology.grid;
-    let target = nearest_river_cell(grid, river_cells, start)?;
+    let target = nearest_river_cell(hydrology, river_cells, start)?;
     let mut path = vec![start];
     let mut seen = BTreeSet::from([start]);
     let mut current = start;
@@ -303,7 +300,15 @@ pub fn derive_minor_tributaries(
         {
             continue;
         }
-        let Some(parent_river_id) = parent_for_cell(&per_river, join) else {
+        let Some(parent_river_id) = per_river.iter().enumerate().find_map(|(index, cells)| {
+            cells.contains(&join).then(|| {
+                hydrology
+                    .rivers
+                    .get(index)
+                    .map(|river| river.id)
+                    .unwrap_or(index as u32)
+            })
+        }) else {
             continue;
         };
         tributaries.push(DerivedTributary {

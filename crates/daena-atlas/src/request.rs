@@ -12,7 +12,7 @@ pub const MAX_PIXEL_COUNT: u64 = 33_554_432;
 pub const TILE_SIZE: u32 = 512;
 pub const TILE_HALO: u32 = 0;
 
-pub const ATLAS_LAYER_ROLES: [&str; 10] = [
+pub const ATLAS_LAYER_ROLES: [&str; 14] = [
     "ocean",
     "relief",
     "ice",
@@ -20,6 +20,10 @@ pub const ATLAS_LAYER_ROLES: [&str; 10] = [
     "rivers",
     "coastlines",
     "contours",
+    "tectonic-plates",
+    "tectonic-boundaries",
+    "volcanic-centers",
+    "watersheds",
     "graticule",
     "frame",
     "labels",
@@ -186,13 +190,21 @@ impl AtlasRenderRequest {
         }
         self.active_layer_ids.sort();
         self.active_layer_ids.dedup();
+        let mut mapped = Vec::with_capacity(self.active_layer_ids.len());
         for id in &self.active_layer_ids {
-            if !ATLAS_LAYER_ROLES.contains(&id.as_str()) && !looks_like_uuid(id) {
+            if looks_like_uuid(id) || ATLAS_LAYER_ROLES.contains(&id.as_str()) {
+                mapped.push(id.clone());
+            } else if let Some(role) = physical_layer_role(id) {
+                mapped.push(role.to_string());
+            } else {
                 return Err(AtlasError::invalid(format!(
                     "unsupported atlas layer role: {id}"
                 )));
             }
         }
+        mapped.sort();
+        mapped.dedup();
+        self.active_layer_ids = mapped;
         if !matches!(
             self.time_kind.as_str(),
             "physical-offset-year" | "calendar-year"
@@ -275,7 +287,10 @@ pub fn physical_layer_role(layer_id: &str) -> Option<&'static str> {
         "rivers" => Some("rivers"),
         "bathymetric-contours" => Some("contours"),
         "islands" => Some("coastlines"),
-        "labels" => Some("labels"),
+        "tectonic-plates" => Some("tectonic-plates"),
+        "tectonic-boundaries" => Some("tectonic-boundaries"),
+        "volcanic-centers" => Some("volcanic-centers"),
+        "watersheds" => Some("watersheds"),
         other => ATLAS_LAYER_ROLES
             .iter()
             .copied()
@@ -335,5 +350,23 @@ mod tests {
         assert_eq!(request.style_id, crate::style::RELIEF_STYLE_ID);
         assert!(request.layer_enabled("relief"));
         assert!(request.estimate().pixel_count == 64 * 32);
+    }
+
+    #[test]
+    fn physical_diagnostic_layer_ids_normalize() {
+        let mut request = AtlasRenderRequest::spike_png(64, 32).unwrap();
+        request.active_layer_ids = vec![
+            "tectonic-boundaries".into(),
+            "tectonic-plates".into(),
+            "volcanic-centers".into(),
+            "watersheds".into(),
+            "land".into(),
+        ];
+        let request = request.normalize().unwrap();
+        assert!(request.layer_enabled("tectonic-boundaries"));
+        assert!(request.layer_enabled("tectonic-plates"));
+        assert!(request.layer_enabled("volcanic-centers"));
+        assert!(request.layer_enabled("watersheds"));
+        assert!(request.layer_enabled("relief"));
     }
 }

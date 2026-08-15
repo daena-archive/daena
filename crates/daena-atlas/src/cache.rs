@@ -1,9 +1,10 @@
 //! Explicit-directory atlas disk cache. Callers supply the root; this module
 //! does not discover project paths.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
@@ -62,11 +63,27 @@ pub struct AtlasDiskCache {
     max_entry_bytes: u64,
     max_entries: u32,
     index: Mutex<CacheIndex>,
+    io_lock: Arc<Mutex<()>>,
+}
+
+fn root_lock(root: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    let locks = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = locks
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    map.entry(root.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
 }
 
 impl AtlasDiskCache {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, AtlasError> {
         let root = root.into();
+        let io_lock = root_lock(&root);
+        let _guard = io_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         fs::create_dir_all(&root).map_err(|error| {
             AtlasError::new(crate::CODE_RENDER_FAILED, format!("atlas cache: {error}"))
         })?;
@@ -98,6 +115,7 @@ impl AtlasDiskCache {
                 ),
                 entries: index.entries,
             }),
+            io_lock: io_lock.clone(),
         };
         cache.evict()?;
         Ok(cache)
@@ -120,6 +138,10 @@ impl AtlasDiskCache {
     }
 
     pub fn get(&self, kind: u16, key: &[u8; 32]) -> CacheLookupResult {
+        let _guard = self
+            .io_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let hex = hex_key(key);
         let path = self.root.join(format!("{hex}.bin"));
         match read_entry(&path, kind, key) {
@@ -129,15 +151,21 @@ impl AtlasDiskCache {
                 CacheLookupResult::Hit(payload)
             }
             Err(_) => {
-                let _ = fs::remove_file(&path);
-                self.drop_entry(&hex);
-                let _ = self.persist_index();
+                if path.exists() {
+                    let _ = fs::remove_file(&path);
+                    self.drop_entry(&hex);
+                    let _ = self.persist_index();
+                }
                 CacheLookupResult::Miss
             }
         }
     }
 
     pub fn put(&self, kind: u16, key: &[u8; 32], payload: &[u8]) -> Result<(), AtlasError> {
+        let _guard = self
+            .io_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if payload.len() as u64 > self.max_entry_bytes {
             return Ok(());
         }
@@ -337,7 +365,10 @@ pub fn decode_residual(bytes: &[u8]) -> Result<(u32, u32, Vec<i32>), AtlasError>
     let lattice_width = u32::from_le_bytes(bytes[0..4].try_into().expect("u32"));
     let lattice_height = u32::from_le_bytes(bytes[4..8].try_into().expect("u32"));
     let count = u32::from_le_bytes(bytes[8..12].try_into().expect("u32")) as usize;
-    if bytes.len() != 12 + count * 4 {
+    let expected = (lattice_width as usize)
+        .checked_mul(lattice_height as usize)
+        .ok_or_else(|| AtlasError::limit("residual lattice overflowed"))?;
+    if count != expected || bytes.len() != 12 + count * 4 {
         return Err(AtlasError::invalid("residual cache length mismatch"));
     }
     let mut residual = Vec::with_capacity(count);

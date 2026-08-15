@@ -178,6 +178,33 @@ pub fn render_from_source(
     )
 }
 
+fn fingerprint_forcing(
+    forcing: Option<&daena_physical::history::HistoricalForcingParameters>,
+) -> Vec<u8> {
+    let Some(forcing) = forcing else {
+        return b"forcing-default".to_vec();
+    };
+    let mut bytes = b"forcing-explicit".to_vec();
+    bytes.extend_from_slice(&forcing.version.to_le_bytes());
+    for component in &forcing.components {
+        bytes.extend_from_slice(&component.amplitude_centi_c.to_le_bytes());
+        bytes.extend_from_slice(&component.period_years.to_le_bytes());
+        bytes.extend_from_slice(&component.phase_offset_years.to_le_bytes());
+    }
+    bytes.extend_from_slice(&forcing.sensitivity_ppm.to_le_bytes());
+    bytes.extend_from_slice(&forcing.land_ice_amplitude_ppm.to_le_bytes());
+    bytes.extend_from_slice(&forcing.ice_response_years.to_le_bytes());
+    bytes.extend_from_slice(&forcing.ice_midpoint_centi_c.to_le_bytes());
+    bytes.extend_from_slice(&forcing.ice_transition_width_centi_c.to_le_bytes());
+    bytes.extend_from_slice(&forcing.thermal_expansion_ppm_per_degree_c.to_le_bytes());
+    bytes
+}
+
+fn cache_json(value: &(impl serde::Serialize + ?Sized)) -> Result<Vec<u8>, AtlasError> {
+    serde_json::to_vec(value)
+        .map_err(|error| AtlasError::new(CODE_RENDER_FAILED, format!("atlas cache key: {error}")))
+}
+
 pub fn render_from_source_cached(
     source_bytes: &[u8],
     identity: &[u8],
@@ -197,8 +224,9 @@ pub fn render_from_source_cached(
         use sha2::{Digest, Sha256};
         format!("sha256:{:x}", Sha256::digest(source_bytes))
     };
-    let overlay_bytes = serde_json::to_vec(overlays).unwrap_or_default();
-    let request_bytes = serde_json::to_vec(&request).unwrap_or_default();
+    let overlay_bytes = cache_json(overlays)?;
+    let request_bytes = cache_json(&request)?;
+    let forcing_fingerprint = fingerprint_forcing(forcing.as_ref());
     let artifact_key = cache::cache_key(&[
         b"atlas-cache-artifact-v1",
         identity,
@@ -206,32 +234,48 @@ pub fn render_from_source_cached(
         &request_bytes,
         style_hash.as_bytes(),
         &overlay_bytes,
+        &ATLAS_RENDERER_VERSION.to_le_bytes(),
+        &ATLAS_DETAIL_ALGORITHM_VERSION.to_le_bytes(),
+        &ATLAS_DERIVED_DRAINAGE_VERSION.to_le_bytes(),
+        &forcing_fingerprint,
     ]);
     let mut artifact_cache = cache::CacheLookup::Off;
     if let Some(cache) = cache {
+        progress.check_cancelled()?;
         match cache.get(cache::KIND_ARTIFACT, &artifact_key) {
             cache::CacheLookupResult::Hit(payload) => {
-                if let Ok((png, artifact, provenance_json)) = cache::decode_artifact(&payload) {
-                    if let Ok(provenance) = serde_json::from_str::<
-                        provenance::AtlasRenderProvenanceV1,
-                    >(&provenance_json)
-                    {
-                        let decoded = encode::decode_png(&png)?;
-                        artifact_cache = cache::CacheLookup::Hit;
-                        progress.report(AtlasPhase::Validating, 1, 1)?;
-                        progress.report(AtlasPhase::Encoding, 1, 1)?;
-                        return Ok(RenderedAtlas {
-                            png,
-                            artifact,
-                            rgba: decoded.rgba,
-                            provenance: provenance.clone(),
-                            request,
-                            residual_cache: cache::CacheLookup::Off,
-                            drainage_cache: cache::CacheLookup::Off,
-                            artifact_cache,
-                            tributary_count: provenance.tributary_count,
-                        });
-                    }
+                let usable = cache::decode_artifact(&payload).ok().and_then(
+                    |(png, artifact, provenance_json)| {
+                        let provenance =
+                            serde_json::from_str::<provenance::AtlasRenderProvenanceV1>(
+                                &provenance_json,
+                            )
+                            .ok()?;
+                        let decoded = encode::decode_png(&png).ok()?;
+                        if provenance.renderer_version != ATLAS_RENDERER_VERSION
+                            || decoded.width != request.width_px
+                            || decoded.height != request.height_px
+                        {
+                            return None;
+                        }
+                        Some((png, artifact, provenance, decoded.rgba))
+                    },
+                );
+                if let Some((png, artifact, provenance, rgba)) = usable {
+                    artifact_cache = cache::CacheLookup::Hit;
+                    progress.report(AtlasPhase::Validating, 1, 1)?;
+                    progress.report(AtlasPhase::Encoding, 1, 1)?;
+                    return Ok(RenderedAtlas {
+                        png,
+                        artifact,
+                        rgba,
+                        provenance: provenance.clone(),
+                        request,
+                        residual_cache: cache::CacheLookup::Off,
+                        drainage_cache: cache::CacheLookup::Off,
+                        artifact_cache,
+                        tributary_count: provenance.tributary_count,
+                    });
                 }
                 artifact_cache = cache::CacheLookup::Miss;
             }
@@ -269,6 +313,8 @@ pub fn render_from_source_cached(
         &ATLAS_DETAIL_ALGORITHM_VERSION.to_le_bytes(),
         &request.variant.to_le_bytes(),
         request.level.as_str().as_bytes(),
+        &field.grid.width.to_le_bytes(),
+        &field.grid.height.to_le_bytes(),
     ]);
     let mut residual_cache = cache::CacheLookup::Off;
     let model = if let Some(cache) = cache {
@@ -363,6 +409,7 @@ pub fn render_from_source_cached(
         request.level.as_str().as_bytes(),
         &request.offset_years.to_le_bytes(),
         &historical.hydrology.derivation_version.to_le_bytes(),
+        &forcing_fingerprint,
     ]);
     let mut drainage_cache = cache::CacheLookup::Off;
     let drainage = if let Some(cache) = cache {
@@ -436,6 +483,7 @@ pub fn render_from_source_cached(
         &order,
         overlays,
         &drainage.tributaries,
+        &world,
         progress,
     )?;
     let mut provenance = provenance::AtlasRenderProvenanceV1::for_request(
@@ -918,6 +966,51 @@ mod tests {
         .unwrap();
         assert_eq!(rebuilt.artifact_cache, cache::CacheLookup::Miss);
         assert_eq!(rebuilt.png, cold.png);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn artifact_cache_does_not_reuse_a_different_historical_forcing() {
+        let world = golden_world();
+        let identity = spike_identity_from_source(&world.source);
+        let request = AtlasRenderRequest::spike_png(128, 64).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "daena-atlas-forcing-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cache = cache::AtlasDiskCache::open(&root).unwrap();
+        let forcing_a = daena_physical::history::HistoricalForcingParameters::default_for(
+            world.field.seed,
+            world.field.retry_index,
+        );
+        let mut forcing_b = forcing_a;
+        forcing_b.land_ice_amplitude_ppm = forcing_a.land_ice_amplitude_ppm.saturating_add(80_000);
+        let _first = render_from_source_cached(
+            &world.source,
+            &identity,
+            &request,
+            None,
+            Some(forcing_a),
+            &[],
+            Some(&cache),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let second = render_from_source_cached(
+            &world.source,
+            &identity,
+            &request,
+            None,
+            Some(forcing_b),
+            &[],
+            Some(&cache),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(second.artifact_cache, cache::CacheLookup::Miss);
         let _ = std::fs::remove_dir_all(root);
     }
 

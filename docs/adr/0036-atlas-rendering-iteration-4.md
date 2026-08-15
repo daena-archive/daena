@@ -44,9 +44,12 @@ from the caller; it does not discover project roots. Entries are:
 Writes use a sibling `.part` file and rename, refuse symlinks, and store
 `DAENAATL` headers with payload SHA-256. Truncated, wrong-version, or
 checksum-mismatched files are misses: they cannot crash a render or alter
-pixels. LRU eviction keeps the directory within 512 MiB, 64 entries, and
-160 MiB per entry. Deleting the cache must not change source, preset, or
-checkpoint bytes.
+pixels. Artifact and drainage keys include renderer/drainage versions and a
+historical forcing fingerprint so a different climate forcing cannot reuse
+pixels. Residual keys include canonical grid size. LRU eviction keeps the
+directory within 512 MiB, 64 entries, and 160 MiB per entry. In-process jobs
+sharing a cache directory are serialized. Deleting the cache must not change
+source, preset, or checkpoint bytes.
 
 ## Consequences
 

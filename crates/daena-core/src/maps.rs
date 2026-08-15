@@ -2,7 +2,7 @@ use crate::error::CoreError;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use uuid::Uuid;
 
@@ -191,6 +191,12 @@ pub struct MapDescriptor {
     pub provider: ProviderDescriptor,
     #[serde(rename = "sourceAssetId")]
     pub source_asset_id: Option<String>,
+    #[serde(
+        rename = "authoredSourceAssetId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub authored_source_asset_id: Option<String>,
     #[serde(rename = "previewAssetId")]
     pub preview_asset_id: Option<String>,
     #[serde(rename = "defaultView")]
@@ -754,6 +760,23 @@ pub fn validate_field(
                 }
             }
         }
+        if provider.kind == ProviderKind::Physical {
+            let authored_source_asset_id = descriptor
+                .authored_source_asset_id
+                .as_deref()
+                .ok_or_else(|| invalid("daena-physical maps require authoredSourceAssetId"))?;
+            let (_, mime_type) = owned_map_asset(
+                connection,
+                entity_id,
+                authored_source_asset_id,
+                "authoredSourceAssetId",
+            )?;
+            if mime_type != VECTOR_MIME {
+                return Err(invalid(format!(
+                    "authoredSourceAssetId MIME type must be {VECTOR_MIME}"
+                )));
+            }
+        }
         if let Some(preview) = &descriptor.preview_asset_id {
             let (_, mime_type) = owned_map_asset(connection, entity_id, preview, "previewAssetId")?;
             if let Some(validate_preview_mime) = provider.preview_mime_validator {
@@ -836,12 +859,55 @@ pub fn validate_field(
         let mut raster_count = 0usize;
         let mut semantic_count = 0usize;
         let mut vector_count = 0usize;
+        let physical_map = connection
+            .query_row(
+                "SELECT json_extract(value, '$.provider.id') FROM entity_fields WHERE entity_id=?1 AND namespace=?2 AND key='map'",
+                [entity_id, MAP_NAMESPACE],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+            .as_deref()
+            == Some(PHYSICAL_PROVIDER);
+        let physical_layers = if physical_map {
+            physical::initial_layers_value()
+                .get("layers")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let physical_layer_by_id = physical_layers
+            .iter()
+            .filter_map(|layer| {
+                layer
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(|id| (id, layer))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut seen_physical_layers = BTreeSet::new();
         for layer in layers {
             let layer: LayerDefinition = serde_json::from_value(layer.clone())
                 .map_err(|_| invalid("layer definition is invalid"))?;
-            uuid(layer.id(), "layer.id")?;
+            if !physical_map || !physical::is_reserved_layer_id(layer.id()) {
+                uuid(layer.id(), "layer.id")?;
+            }
             if !ids.insert(layer.id().to_owned()) {
                 return Err(invalid("layer IDs must be unique"));
+            }
+            if let Some(expected) = physical_layer_by_id.get(layer.id()) {
+                let actual = serde_json::to_value(&layer)
+                    .map_err(|_| invalid("layer definition is invalid"))?;
+                for key in ["id", "name", "order", "kind", "locked", "selector", "style"] {
+                    if actual.get(key) != expected.get(key) {
+                        return Err(invalid("physical layer definitions are immutable"));
+                    }
+                }
+                if !seen_physical_layers.insert(layer.id().to_owned()) {
+                    return Err(invalid("physical layer IDs must be unique"));
+                }
             }
             if !sort_keys.insert((layer.sort_key().0, layer.id().to_owned())) {
                 return Err(invalid("layer order is not deterministic"));
@@ -902,6 +968,11 @@ pub fn validate_field(
                 }
             }
         }
+        if physical_map && seen_physical_layers.len() != physical_layer_by_id.len() {
+            return Err(invalid(
+                "physical maps must retain all locked physical layers",
+            ));
+        }
         Ok(())
     } else {
         Ok(())
@@ -940,6 +1011,31 @@ pub fn validate_image_map_content(
                     serde_json::to_value(generation).map_err(|error| invalid(error.to_string()))?;
                 let bytes = load_asset(source_id)?;
                 physical::validate_source(&bytes, &generation)?;
+                let authored_source_id = descriptor
+                    .authored_source_asset_id
+                    .as_deref()
+                    .ok_or_else(|| invalid("daena-physical maps require authoredSourceAssetId"))?;
+                let authored_bytes = load_asset(authored_source_id)?;
+                let layers_value: Option<Value> = connection
+                    .query_row(
+                        "SELECT value FROM entity_fields WHERE entity_id=?1 AND namespace=?2 AND key='layers'",
+                        [&entity_id, MAP_NAMESPACE],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+                    .map(|raw: String| serde_json::from_str(&raw))
+                    .transpose()
+                    .map_err(|error| invalid(error.to_string()))?;
+                let known = layers_value
+                    .as_ref()
+                    .map(vector::layer_ids_from_layers_field)
+                    .unwrap_or_default();
+                let canonical = vector::require_canonical_bytes(
+                    Path::new("assets/maps/map.geojson"),
+                    &authored_bytes,
+                    &known,
+                )?;
+                validate_physical_authored_source_bytes(&canonical)?;
             }
             ProviderKind::Vector => {
                 let source_id = descriptor
@@ -1007,6 +1103,28 @@ pub fn validate_image_map_content(
             let bytes = load_asset(raster_id)?;
             validate_raster_png(&bytes, *width, *height)?;
         }
+    }
+    Ok(())
+}
+
+pub fn validate_physical_authored_source_bytes(bytes: &[u8]) -> Result<(), CoreError> {
+    let collection: Value = serde_json::from_slice(bytes)
+        .map_err(|error| invalid(format!("physical authored source is invalid: {error}")))?;
+    let reserved = collection
+        .get("features")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|feature| {
+            feature
+                .pointer("/properties/daenaLayerId")
+                .and_then(Value::as_str)
+        })
+        .any(physical::is_reserved_layer_id);
+    if reserved {
+        return Err(CoreError::Validation(
+            "maps: physical layers are immutable".into(),
+        ));
     }
     Ok(())
 }

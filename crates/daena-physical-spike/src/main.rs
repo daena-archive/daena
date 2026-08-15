@@ -1,6 +1,6 @@
 use daena_physical_spike::{
-    decode_source, generate_world, land_fraction, to_geojson, GenerationSettings, NoopProgress,
-    DEFAULT_HEIGHT, DEFAULT_RADIUS_METRES, DEFAULT_WIDTH, MAX_HEIGHT, MAX_WIDTH,
+    decode_source, generate_world, land_fraction, GenerationSettings, NoopProgress, DEFAULT_HEIGHT,
+    DEFAULT_RADIUS_METRES, DEFAULT_WIDTH, MAX_HEIGHT, MAX_WIDTH,
 };
 use std::env;
 use std::fs;
@@ -31,15 +31,15 @@ fn main() -> Result<(), String> {
     let mut progress = NoopProgress;
     let world =
         generate_world(settings, 831_429, 0, &mut progress).map_err(|error| error.to_string())?;
-    let field = world.field;
     let generation_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let source = world.source;
+    let field = &world.field;
+    let source = &world.source;
     let geojson_started = Instant::now();
-    let geojson = to_geojson(&field)?;
+    let geojson = world.derived_geojson.clone();
     let geojson_ms = geojson_started.elapsed().as_secs_f64() * 1000.0;
-    decode_source(&source)?;
+    decode_source(source)?;
     if let Some(path) = source_path {
-        fs::write(path, &source).map_err(|error| error.to_string())?;
+        fs::write(path, source).map_err(|error| error.to_string())?;
     }
     if let Some(path) = emit_path {
         fs::write(path, geojson.as_bytes()).map_err(|error| error.to_string())?;

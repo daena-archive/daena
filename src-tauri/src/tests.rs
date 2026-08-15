@@ -110,6 +110,60 @@ fn physical_evolution_products_expose_routing_and_before_after_fields() {
 }
 
 #[test]
+fn physical_hydrology_products_expose_current_water_and_renderer_fields() {
+    let settings = daena_physical_spike::GenerationSettings {
+        width: 8,
+        height: 4,
+        radius_metres: daena_physical_spike::DEFAULT_RADIUS_METRES,
+        target_land_fraction_ppm: 300_000,
+    };
+    let mut progress = daena_physical_spike::NoopProgress;
+    let world = daena_physical_spike::generate_world(settings, 831_429, 0, &mut progress).unwrap();
+    let products = physical_hydrology_products(&world.hydrology);
+    assert_eq!(products["derivationVersion"], 1);
+    for key in [
+        "waterLevelMm",
+        "lakeLevelMm",
+        "hillshadePpm",
+        "bathymetryMm",
+        "watershedId",
+        "lakeCells",
+        "islandId",
+    ] {
+        assert_eq!(
+            products[key].as_array().unwrap().len(),
+            settings.width as usize * settings.height as usize
+        );
+    }
+    assert_eq!(products["metrics"]["converged"], true);
+    assert!(products["metrics"]["toleranceM3"].as_u64().unwrap() > 0);
+    assert!(products["metrics"]["watershedCount"].as_u64().unwrap() > 0);
+    assert!(products["metrics"]["islandCount"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn reopened_physical_hydrology_matches_the_generated_fixture() {
+    let settings = daena_physical_spike::GenerationSettings {
+        width: 8,
+        height: 4,
+        radius_metres: daena_physical_spike::DEFAULT_RADIUS_METRES,
+        target_land_fraction_ppm: 300_000,
+    };
+    let mut progress = daena_physical_spike::NoopProgress;
+    let generated =
+        daena_physical_spike::generate_world(settings, 831_429, 0, &mut progress).unwrap();
+    let generation = serde_json::json!({"settings": {"evolutionPreset": "mature"}});
+    let (derived_geojson, reopened) = derive_reopened_hydrology(
+        &generated.tectonics,
+        &generation,
+        generated.report.reference_water_inventory_m3,
+    )
+    .unwrap();
+    assert_eq!(derived_geojson, generated.derived_geojson);
+    assert_eq!(reopened, generated.hydrology);
+}
+
+#[test]
 fn stopping_project_watcher_releases_resources_without_joining() {
     let (stop, _receiver) = mpsc::channel();
     let watcher = Arc::new(Mutex::new(ProjectWatcher {

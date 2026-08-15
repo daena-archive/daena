@@ -120,6 +120,83 @@ fn physical_map_acceptance_is_atomic_and_request_idempotent() {
         crate::maps::PHYSICAL_PROVIDER
     );
     assert_eq!(descriptor.value["sourceAssetId"], accepted.source.id);
+    let authored_source_id = descriptor.value["authoredSourceAssetId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(authored_source_id, accepted.source.id);
+    assert_eq!(
+        store.asset_bytes(authored_source_id.clone()).unwrap(),
+        crate::maps::vector::empty_canonical_bytes()
+    );
+    let layers = store
+        .list_fields(accepted.entity.id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "layers")
+        .unwrap();
+    for layer_id in ["base", "land", "ocean", "lakes", "rivers", "islands"] {
+        assert_eq!(
+            layers.value["layers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|layer| layer["id"] == layer_id)
+                .and_then(|layer| layer["locked"].as_bool()),
+            Some(true)
+        );
+    }
+    assert!(matches!(
+        store.update_map_layer(
+            accepted.entity.id.clone(),
+            "land".into(),
+            RasterLayerUpdate {
+                name: Some("tampered".into()),
+                order: None,
+                default_visible: None,
+                opacity: None,
+                locked: None,
+                style: None,
+                selector: None,
+            },
+            &layers.revision,
+            None,
+        ),
+        Err(CoreError::Validation(message)) if message.contains("physical layers are immutable")
+    ));
+    let mut tampered_layers = layers.clone();
+    tampered_layers.value["layers"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|layer| layer["id"] == "land")
+        .unwrap()["name"] = serde_json::json!("tampered");
+    assert!(matches!(
+        store.set_field(tampered_layers),
+        Err(CoreError::Validation(message)) if message.contains("physical layer definitions are immutable")
+    ));
+    let authored_base_feature = serde_json::to_vec(&serde_json::json!({
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "id": "00000000-0000-4000-8000-000000000002",
+            "properties": {"daenaLayerId": "base", "kind": "land", "name": null},
+            "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]}
+        }]
+    }))
+    .unwrap();
+    let authored_revision = store.asset(authored_source_id.clone()).unwrap().revision;
+    let authored_hash = format!("sha256:{:x}", Sha256::digest(&authored_base_feature));
+    assert!(matches!(
+        store.replace_vector_source(
+            authored_source_id.clone(),
+            authored_base_feature,
+            authored_hash,
+            &authored_revision,
+            None,
+        ),
+        Err(CoreError::Validation(message)) if message.contains("physical layers are immutable")
+    ));
     assert!(matches!(
         store.accept_physical_map(
             "Different name".into(),
@@ -137,6 +214,10 @@ fn physical_map_acceptance_is_atomic_and_request_idempotent() {
     assert_eq!(
         rebuilt.asset_bytes(accepted.source.id.clone()).unwrap(),
         world.source
+    );
+    assert_eq!(
+        rebuilt.asset_bytes(authored_source_id).unwrap(),
+        crate::maps::vector::empty_canonical_bytes()
     );
     drop(rebuilt);
     std::fs::remove_dir_all(root).unwrap();

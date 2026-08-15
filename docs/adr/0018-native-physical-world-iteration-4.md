@@ -63,5 +63,6 @@ budgets. The physical source and diagnostic GeoJSON golden hashes were
 intentionally refreshed for generator version 6 because final elevation now
 includes the locked Mature evolution budget.
 
-Final lakes, river vectorization, basin water balance, and native raster layer
-presentation remain Iteration 5 work.
+Final current-world lakes, river vectorization, basin water balance, and native
+raster layer presentation are implemented under ADR 0019. Historical climate,
+land ice, and epoch playback remain Iteration 6 work.

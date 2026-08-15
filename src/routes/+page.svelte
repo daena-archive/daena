@@ -815,7 +815,7 @@ async function openPluginView(item: PluginNavigationItem) {
       const descriptor = mapField?.value as { provider?: { id?: string } } | undefined;
       mapsEditorMode =
         descriptor?.provider?.id === "daena-physical"
-          ? "physical"
+          ? "vector"
           : descriptor?.provider?.id === "daena-vector"
             ? "vector"
             : "fmg";
@@ -4085,7 +4085,7 @@ onMount(() => {
                         savedMapsCache = null;
                         selected = map;
                         mapsEditorKey = map.id;
-                        mapsEditorMode = "physical";
+                        mapsEditorMode = "vector";
                         await loadSelectedState(map);
                       }}
                       oncancel={() => {

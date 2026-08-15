@@ -30,7 +30,7 @@ import {
   styleContainsRemoteUrl,
 } from "./style";
 import { drawModeForGeometry, kindForDrawMode, simplifyFreehandGeometry } from "./geometry";
-import { imageOverlayCoordinates, normalizedToLonLat } from "./coordinates";
+import { imageOverlayCoordinates, normalizedToLonLat, type ImageOverlayCoordinates } from "./coordinates";
 
 if (typeof maplibregl.setWorkerUrl === "function") maplibregl.setWorkerUrl(workerUrl);
 
@@ -49,6 +49,7 @@ export type NativeVectorEditor = {
   setMode: (mode: VectorDrawMode) => void;
   switchLayer: (layerId: string) => void;
   syncLayers: (layers: readonly VectorLayerDefinition[]) => void;
+  setBackgroundVisible: (visible: boolean) => void;
   applyView: (center: [number, number], zoom: number) => void;
   flush: () => void;
   deleteSelection: () => void;
@@ -155,7 +156,13 @@ export function createNativeVectorEditor(
     onDirty?: () => void;
     onDiagnostic?: (code: string, detail: string) => void;
     onSelect?: (feature: VectorFeature | null) => void;
-    background?: { url: string; width: number; height: number; canvas?: HTMLCanvasElement } | null;
+    background?: {
+      url: string;
+      width: number;
+      height: number;
+      canvas?: HTMLCanvasElement;
+      coordinates?: ImageOverlayCoordinates;
+    } | null;
   },
 ): NativeVectorEditor | { error: typeof RENDERER_UNAVAILABLE; detail: string } {
   if (!webgl2Available()) {
@@ -267,11 +274,12 @@ export function createNativeVectorEditor(
   const applyBackground = () => {
     const background = session.background;
     if (!background || disposed || map.getSource(IMAGE_SOURCE_ID)) return;
+    const coordinates = background.coordinates ?? imageOverlayCoordinates(background.width, background.height);
     if (background.canvas) {
       const source: CanvasSourceSpecification = {
         type: "canvas",
         canvas: background.canvas,
-        coordinates: imageOverlayCoordinates(background.width, background.height),
+        coordinates,
         animate: false,
       };
       map.addSource(IMAGE_SOURCE_ID, source);
@@ -279,7 +287,7 @@ export function createNativeVectorEditor(
       map.addSource(IMAGE_SOURCE_ID, {
         type: "image",
         url: background.url,
-        coordinates: imageOverlayCoordinates(background.width, background.height),
+        coordinates,
       });
     }
     if (map.getLayer("daena-base-fill")) {
@@ -292,10 +300,8 @@ export function createNativeVectorEditor(
   const fitContent = () => {
     if (disposed) return;
     if (session.background) {
-      const [northWest, northEast, southEast, southWest] = imageOverlayCoordinates(
-        session.background.width,
-        session.background.height,
-      );
+      const [northWest, northEast, southEast, southWest] =
+        session.background.coordinates ?? imageOverlayCoordinates(session.background.width, session.background.height);
       map.fitBounds(
         [
           [
@@ -561,6 +567,13 @@ export function createNativeVectorEditor(
           }
         }
         applySources(session.activeLayerId);
+      });
+    },
+    setBackgroundVisible(visible) {
+      whenStyleReady(() => {
+        if (map.getLayer(IMAGE_LAYER_ID)) {
+          map.setLayoutProperty(IMAGE_LAYER_ID, "visibility", visible ? "visible" : "none");
+        }
       });
     },
     applyView(center, zoom) {

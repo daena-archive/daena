@@ -862,8 +862,8 @@ hotspots, seamounts, and islands share one physical cause chain.
 Implementation status (2026-08-15): the pure-Rust current-climate/runoff slice
 is implemented in `daena-physical-spike` under ADR 0017. Climate remains a
 derived, disposable field; the locked physical-world-v2 source is unchanged by
-climate derivation. Native climate raster presentation and final hydrology
-remain deferred to the subsequent integration slices.
+climate derivation. Native current-world water and geography are implemented
+under ADR 0019; historical climate remains deferred.
 
 ### Goal
 
@@ -956,6 +956,19 @@ acyclic, physically scaled drainage graph without yet promising final lakes.
   budgets, and show no eight-direction grid signature above the locked metric.
 
 ## Iteration 5: lakes, rivers, coastlines, and current-world completion
+
+Implementation status (2026-08-15): the current-world hydrology slice is
+implemented in `daena-physical-spike` under ADR 0019. It derives a
+depression hierarchy, bounded basin water balances, a conserved ocean/inland
+fixed-point solve, primary river channels with Strahler order, watershed,
+lake-entry/junction/spill-outlet river geometry, island and lake geometry,
+final water-aware coastline, and
+hillshade/bathymetry/slope renderer arrays. These products remain disposable;
+the accepted v2 source is unchanged and the native host re-derives them after
+restart.
+Accepted physical maps also persist a separate empty GeoJSON authored-overlay
+asset and locked physical layer definitions. Authored vector edits target that
+overlay asset only; the signed `.pworld` source cannot be replaced or edited.
 
 ### Goal
 

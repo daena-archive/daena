@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod climate;
 pub mod evolution;
+pub mod hydrology;
 pub mod tectonics;
 
 pub const SOURCE_MAGIC: [u8; 8] = *b"DAENAPW1";
@@ -248,6 +249,7 @@ pub struct GeneratedWorld {
     pub tectonics: tectonics::TectonicWorld,
     pub climate: climate::ClimateField,
     pub evolution: evolution::EvolutionField,
+    pub hydrology: hydrology::HydrologyField,
     pub source: Vec<u8>,
     pub derived_geojson: String,
     pub report: ValidationReport,
@@ -594,14 +596,27 @@ pub fn generate_world_with_evolution(
     let final_drainage = evolution::derive_drainage(&field, &climate)?;
     evolution.replace_drainage(final_drainage);
     evolution.validate_against(&initial_field, &field, &climate)?;
+    let report = validate_field_report(&field)?;
     progress.report(ProgressPhase::CalculatingWater, 0, 1)?;
+    let hydrology = hydrology::derive_hydrology_with_crust(
+        &field,
+        &climate,
+        &evolution.drainage,
+        report.reference_water_inventory_m3,
+        Some(&tectonics.crust_by_cell),
+    )?;
     progress.report(ProgressPhase::CalculatingWater, 1, 1)?;
+    progress.report(ProgressPhase::BuildingRiversAndLakes, 0, 1)?;
+    progress.report(ProgressPhase::BuildingRiversAndLakes, 1, 1)?;
     progress.report(ProgressPhase::PreparingGeography, 0, 1)?;
-    let derived_geojson = tectonics::to_diagnostic_geojson(&tectonics)
+    let diagnostic_geojson = tectonics::to_diagnostic_geojson(&tectonics)
+        .map_err(|error| PhysicalError::coded(PhysicalErrorCode::GeometryInvalid, error))?;
+    let hydrology_geojson = hydrology::to_geojson(&hydrology)
+        .map_err(|error| PhysicalError::coded(PhysicalErrorCode::GeometryInvalid, error))?;
+    let derived_geojson = merge_geojson_features_for_host(&diagnostic_geojson, &hydrology_geojson)
         .map_err(|error| PhysicalError::coded(PhysicalErrorCode::GeometryInvalid, error))?;
     progress.report(ProgressPhase::PreparingGeography, 1, 1)?;
     progress.report(ProgressPhase::ValidatingWorld, 0, 1)?;
-    let report = validate_field_report(&field)?;
     let source = tectonics::encode_source_v2(&tectonics).map_err(PhysicalError::InvalidSource)?;
     progress.report(ProgressPhase::ValidatingWorld, 1, 1)?;
     Ok(GeneratedWorld {
@@ -609,10 +624,33 @@ pub fn generate_world_with_evolution(
         tectonics,
         climate,
         evolution,
+        hydrology,
         source,
         derived_geojson,
         report,
     })
+}
+
+pub fn merge_geojson_features_for_host(first: &str, second: &str) -> Result<String, String> {
+    let first_prefix = r#"{"type":"FeatureCollection","features":["#;
+    let second_prefix = r#"{"type":"FeatureCollection","features":["#;
+    let first_features = first
+        .strip_prefix(first_prefix)
+        .and_then(|value| value.strip_suffix("]}"))
+        .ok_or_else(|| "diagnostic GeoJSON has an invalid feature collection shape".to_string())?;
+    let second_features = second
+        .strip_prefix(second_prefix)
+        .and_then(|value| value.strip_suffix("]}"))
+        .ok_or_else(|| "hydrology GeoJSON has an invalid feature collection shape".to_string())?;
+    let joined = match (first_features.is_empty(), second_features.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => second_features.to_string(),
+        (false, true) => first_features.to_string(),
+        (false, false) => format!("{first_features},{second_features}"),
+    };
+    Ok(format!(
+        r#"{{"type":"FeatureCollection","features":[{joined}]}}"#
+    ))
 }
 
 pub fn land_fraction(grid: &Grid, elevations_mm: &[i32], sea_level_mm: i32) -> f64 {

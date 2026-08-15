@@ -5,6 +5,10 @@ import {
   parseVectorDiagnostic,
   reduceVectorEditor,
 } from "../src/lib/maps/native-vector/editor-state.ts";
+import {
+  physicalGridRowForRasterRow,
+  physicalWorldOverlayCoordinates,
+} from "../src/lib/maps/native-vector/coordinates.ts";
 
 const source = readFileSync(new URL("../src/lib/maps/native-vector/source.ts", import.meta.url), "utf8");
 const style = readFileSync(new URL("../src/lib/maps/native-vector/style.ts", import.meta.url), "utf8");
@@ -38,6 +42,16 @@ assert.equal(editor.includes("return structuredClone(collection)"), false);
 assert.equal(runtime.includes('type: "canvas"'), true);
 assert.equal(runtime.includes("fitBounds"), true);
 assert.equal(runtime.includes("imageOverlayCoordinates"), true);
+assert.equal(editor.includes("PHYSICAL_RASTER_OVERSAMPLE"), true);
+assert.equal(editor.includes("physicalGridRowForRasterRow"), true);
+assert.deepEqual(physicalWorldOverlayCoordinates(), [
+  [-180, 85.05112878],
+  [180, 85.05112878],
+  [180, -85.05112878],
+  [-180, -85.05112878],
+]);
+assert.equal(physicalGridRowForRasterRow(0, 256, 32), 31);
+assert.equal(physicalGridRowForRasterRow(255, 256, 32), 0);
 assert.equal(runtime.includes("whenStyleReady"), true);
 assert.equal(runtime.includes("style is not done loading"), true);
 assert.equal(editor.includes("importImageMapFile") || editor.includes('start?: "generate" | "import"'), true);

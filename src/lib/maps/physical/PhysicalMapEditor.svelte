@@ -1,7 +1,19 @@
 <script lang="ts">
 import { onMount, tick } from "svelte";
-import { project, type Entity, type PhysicalGenerationInput, type PhysicalJobStatus } from "$lib/project/client";
+import {
+  project,
+  type Entity,
+  type PhysicalGenerationInput,
+  type PhysicalHydrologyProducts,
+  type PhysicalJobStatus,
+} from "$lib/project/client";
 import { createNativeVectorEditor, type NativeVectorEditor } from "../native-vector/runtime";
+import {
+  PHYSICAL_RASTER_OVERSAMPLE,
+  physicalGridRowForRasterRow,
+  physicalWorldOverlayCoordinates,
+} from "../native-vector/coordinates";
+import NativeVectorMapEditor from "../native-vector/NativeVectorMapEditor.svelte";
 import { parseVectorCollection } from "../native-vector/source";
 import {
   DEFAULT_VECTOR_LAYER_STYLE,
@@ -27,6 +39,8 @@ let name = $state("Physical World");
 let seed = $state(831429);
 let evolutionPreset = $state<"young" | "mature" | "old">("mature");
 let status = $state<PhysicalJobStatus | null>(null);
+let hydrology = $state<PhysicalHydrologyProducts | null>(null);
+let showHillshade = $state(true);
 let notice = $state("");
 let busy = $state(false);
 let preview = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
@@ -45,7 +59,7 @@ let layers = $state<VectorLayerDefinition[]>([
     id: "tectonic-plates",
     kind: "vector",
     name: "Tectonic plates",
-    order: 1,
+    order: 5,
     defaultVisible: false,
     locked: true,
     selector: {},
@@ -55,7 +69,7 @@ let layers = $state<VectorLayerDefinition[]>([
     id: "tectonic-boundaries",
     kind: "vector",
     name: "Plate boundaries",
-    order: 2,
+    order: 6,
     defaultVisible: false,
     locked: true,
     selector: {},
@@ -65,7 +79,7 @@ let layers = $state<VectorLayerDefinition[]>([
     id: "bathymetry",
     kind: "vector",
     name: "Bathymetry",
-    order: 3,
+    order: 7,
     defaultVisible: false,
     locked: true,
     selector: {},
@@ -75,11 +89,91 @@ let layers = $state<VectorLayerDefinition[]>([
     id: "volcanic-centers",
     kind: "vector",
     name: "Volcanic centers",
-    order: 4,
+    order: 8,
     defaultVisible: true,
     locked: true,
     selector: {},
     style: { fill: "#ef9b4a", fillOpacity: 0.9, stroke: "#8f4c25", strokeWidth: 1, pointRadius: 5 },
+  },
+  {
+    id: "lakes",
+    kind: "vector",
+    name: "Lakes",
+    order: 9,
+    defaultVisible: true,
+    locked: true,
+    selector: {},
+    style: { fill: "#4d9ac2", fillOpacity: 0.72, stroke: "#b8e4f5", strokeWidth: 1, pointRadius: 2 },
+  },
+  {
+    id: "rivers",
+    kind: "vector",
+    name: "Rivers",
+    order: 10,
+    defaultVisible: true,
+    locked: true,
+    selector: {},
+    style: { fill: "#71c7e8", fillOpacity: 0, stroke: "#71c7e8", strokeWidth: 1.5, pointRadius: 2 },
+  },
+  {
+    id: "watersheds",
+    kind: "vector",
+    name: "Watersheds",
+    order: 11,
+    defaultVisible: false,
+    locked: true,
+    selector: {},
+    style: { fill: "#9c80d1", fillOpacity: 0.08, stroke: "#bba7e5", strokeWidth: 0.45, pointRadius: 2 },
+  },
+  {
+    id: "ocean",
+    kind: "vector",
+    name: "Ocean",
+    order: 1,
+    defaultVisible: true,
+    locked: true,
+    selector: {},
+    style: { fill: "#245c80", fillOpacity: 0.58, stroke: "#397da5", strokeWidth: 0.3, pointRadius: 2 },
+  },
+  {
+    id: "land",
+    kind: "vector",
+    name: "Exposed land",
+    order: 2,
+    defaultVisible: true,
+    locked: true,
+    selector: {},
+    style: { fill: "#b99b62", fillOpacity: 0.55, stroke: "#d8bd83", strokeWidth: 0.45, pointRadius: 2 },
+  },
+  {
+    id: "shelves",
+    kind: "vector",
+    name: "Continental shelves",
+    order: 3,
+    defaultVisible: false,
+    locked: true,
+    selector: {},
+    style: { fill: "#4f87a2", fillOpacity: 0.25, stroke: "#8db4c3", strokeWidth: 0.35, pointRadius: 2 },
+  },
+  {
+    id: "bathymetric-contours",
+    kind: "vector",
+    name: "Bathymetric contours",
+    order: 4,
+    defaultVisible: false,
+    locked: true,
+    selector: {},
+    style: { fill: "#78b3ca", fillOpacity: 0, stroke: "#78b3ca", strokeWidth: 0.6, pointRadius: 2 },
+  },
+  {
+    id: "islands",
+    kind: "vector",
+    name: "Islands",
+    order: 12,
+    defaultVisible: false,
+    locked: true,
+    selector: {},
+    style: { fill: "#e0bb78", fillOpacity: 0.18, stroke: "#f0d39b", strokeWidth: 0.7, pointRadius: 2 },
   },
 ]);
 
@@ -103,6 +197,38 @@ function toggleLayer(layerId: string) {
   editor?.syncLayers(layers);
 }
 
+function buildHillshadeCanvas(products: PhysicalHydrologyProducts): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.width = products.width;
+  canvas.height = products.height * PHYSICAL_RASTER_OVERSAMPLE;
+  const context = canvas.getContext("2d");
+  if (!context) return canvas;
+  const pixels = context.createImageData(canvas.width, canvas.height);
+  for (let canvasRow = 0; canvasRow < canvas.height; canvasRow += 1) {
+    const sourceRow = physicalGridRowForRasterRow(canvasRow, canvas.height, products.height);
+    for (let column = 0; column < products.width; column += 1) {
+      const index = sourceRow * products.width + column;
+      const shade = products.hillshadePpm[index] ?? 500_000;
+      const bathymetry = products.bathymetryMm[index] ?? 0;
+      const offset = (canvasRow * products.width + column) * 4;
+      if (bathymetry > 0) {
+        const depth = Math.min(1, bathymetry / 250_000);
+        pixels.data[offset] = Math.round(38 - depth * 18);
+        pixels.data[offset + 1] = Math.round(104 - depth * 44);
+        pixels.data[offset + 2] = Math.round(145 - depth * 34);
+      } else {
+        const light = Math.round(160 + (shade / 1_000_000) * 70);
+        pixels.data[offset] = Math.min(255, light + 18);
+        pixels.data[offset + 1] = Math.min(255, light + 8);
+        pixels.data[offset + 2] = Math.max(0, light - 34);
+      }
+      pixels.data[offset + 3] = 235;
+    }
+  }
+  context.putImageData(pixels, 0, 0);
+  return canvas;
+}
+
 async function mountPreview() {
   await tick();
   if (!host) return;
@@ -115,6 +241,15 @@ async function mountPreview() {
     zoom: 1,
     setDraft: () => undefined,
     setActiveLayerId: () => undefined,
+    background: hydrology
+      ? {
+          url: "",
+          canvas: buildHillshadeCanvas(hydrology),
+          width: hydrology.width,
+          height: hydrology.height,
+          coordinates: physicalWorldOverlayCoordinates(),
+        }
+      : null,
     onDiagnostic: (code, detail) => publish("error", { code, detail }),
   });
   if ("error" in created) {
@@ -124,6 +259,7 @@ async function mountPreview() {
   }
   editor = created;
   editor.setMode("static");
+  editor.setBackgroundVisible(showHillshade);
   publish("ready", { preview: true });
 }
 
@@ -132,6 +268,7 @@ async function loadSavedMap() {
   busy = true;
   try {
     preview = parseVectorCollection(new TextEncoder().encode(await project.physicalMapDerivedGeoJson(mapId)));
+    hydrology = await project.physicalMapDerivedHydrology(mapId);
     await mountPreview();
   } catch (cause) {
     notice = cause instanceof Error ? cause.message : String(cause);
@@ -149,6 +286,7 @@ async function poll(jobId: string) {
   }
   if (status.state === "completed") {
     preview = parseVectorCollection(new TextEncoder().encode(await project.physicalMapPreview(jobId)));
+    hydrology = await project.physicalMapHydrology(jobId);
     await mountPreview();
     publish("preview-ready", { jobId });
   } else if (status.state !== "cancelled") {
@@ -162,6 +300,7 @@ async function generate() {
   if (busy) return;
   busy = true;
   notice = "";
+  hydrology = null;
   preview = { type: "FeatureCollection", features: [] };
   destroyEditor();
   try {
@@ -207,6 +346,7 @@ async function accept() {
 }
 
 onMount(() => {
+  if (mapId) return;
   void loadSavedMap();
   return () => {
     if (status?.jobId && busy && (status.state === "running" || status.state === "cancelling")) {
@@ -218,20 +358,7 @@ onMount(() => {
 </script>
 
 {#if mapId}
-  <section class="native-vector-editor physical-map-editor" aria-label="Physical map">
-    <header>
-      <div><span>PHYSICAL WORLD</span><strong>{busy ? "Rebuilding…" : "Derived from canonical source"}</strong></div>
-      <button class="icon-button" type="button" aria-label="Back to map details" onclick={() => oncancel?.()}>←</button>
-    </header>
-    <div class="physical-layer-controls" aria-label="Physical diagnostic layers">
-      {#each layers.filter((layer) => layer.id !== "base") as layer}
-        <label
-          ><input type="checkbox" checked={layer.defaultVisible} onchange={() => toggleLayer(layer.id)} />
-          {layer.name}</label>
-      {/each}
-    </div>
-    <div class="native-vector-map" bind:this={host}></div>
-  </section>
+  <NativeVectorMapEditor {mapId} {oncancel} {onstate} />
 {:else}
   <section class="native-vector-editor physical-map-editor" aria-label="Generate physical map">
     <header>
@@ -253,10 +380,19 @@ onMount(() => {
       <button class="quiet-button" type="button" onclick={randomSeed} disabled={busy}>Reroll seed</button>
     </div>
     {#if status}<p class="physical-map-progress" role="status">
-        {status.stage} · {status.completed}/{status.total}
+        {status.state === "completed" ? "Preview ready" : `${status.stage} · ${status.completed}/${status.total}`}
       </p>{/if}
     {#if notice}<p class="map-reconcile-notice" role="alert">{notice}</p>{/if}
     <div class="physical-layer-controls" aria-label="Physical diagnostic layers">
+      <label
+        ><input
+          type="checkbox"
+          checked={showHillshade}
+          onchange={() => {
+            showHillshade = !showHillshade;
+            editor?.setBackgroundVisible(showHillshade);
+          }} />
+        Hillshade</label>
       {#each layers.filter((layer) => layer.id !== "base") as layer}
         <label
           ><input type="checkbox" checked={layer.defaultVisible} onchange={() => toggleLayer(layer.id)} />
@@ -330,6 +466,30 @@ onMount(() => {
   background: rgb(255 255 255 / 7%);
   color: inherit;
   padding: 0.45rem 0.55rem;
+}
+
+.physical-map-controls select,
+.physical-map-editor button {
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 0.35rem;
+  font: inherit;
+}
+
+.physical-map-controls select {
+  min-width: 10rem;
+  background: rgb(255 255 255 / 7%);
+  color: inherit;
+  padding: 0.45rem 0.55rem;
+}
+
+.physical-map-editor button {
+  cursor: pointer;
+  padding: 0.45rem 0.7rem;
+}
+
+.physical-map-editor button:disabled {
+  cursor: wait;
+  opacity: 0.55;
 }
 
 .physical-map-progress,

@@ -31,6 +31,12 @@ import {
   type VectorFeatureCollection,
   type VectorLayerDefinition,
 } from "./types";
+import {
+  PHYSICAL_RASTER_OVERSAMPLE,
+  physicalGridRowForRasterRow,
+  physicalWorldOverlayCoordinates,
+  type ImageOverlayCoordinates,
+} from "./coordinates";
 
 let {
   mapId,
@@ -70,8 +76,16 @@ let notice = $state("");
 let renamingId = $state<string | null>(null);
 let selectedFeature = $state<VectorFeature | null>(null);
 let defaultView = $state({ center: [0.5, 0.5] as [number, number], zoom: 1 });
-let background = $state<{ url: string; width: number; height: number; canvas: HTMLCanvasElement } | null>(null);
+let background = $state<{
+  url: string;
+  width: number;
+  height: number;
+  canvas: HTMLCanvasElement;
+  coordinates?: ImageOverlayCoordinates;
+} | null>(null);
 let fullscreen = $state(false);
+let physicalMap = false;
+let immutablePhysicalLayerIds = $state<Set<string>>(new Set());
 
 const listedLayers = $derived(
   [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id)),
@@ -104,7 +118,9 @@ const icons = {
     '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
 } as const;
 const activeLayer = $derived(layers.find((layer) => layer.id === activeLayerId) ?? null);
-const canDraw = $derived(Boolean(activeLayer) && !activeLayer?.locked && !picking);
+const canDraw = $derived(
+  Boolean(activeLayer) && !activeLayer?.locked && !picking && !immutablePhysicalLayerIds.has(activeLayer?.id ?? ""),
+);
 const dirty = $derived(editorState.dirty);
 const diagnostic = $derived(editorState.diagnostic);
 const diagnosticCode = $derived(editorState.diagnosticCode);
@@ -143,6 +159,51 @@ function cloneCollection(collection: VectorFeatureCollection): VectorFeatureColl
   // browser structured-clone algorithm rejects that proxy, while GeoJSON is
   // intentionally JSON-shaped and can be copied safely at this boundary.
   return JSON.parse(JSON.stringify(collection)) as VectorFeatureCollection;
+}
+
+function persistedCollection(collection: VectorFeatureCollection): VectorFeatureCollection {
+  if (!physicalMap) return collection;
+  return {
+    type: "FeatureCollection",
+    features: collection.features.filter((feature) => !immutablePhysicalLayerIds.has(feature.properties.daenaLayerId)),
+  };
+}
+
+function physicalHillshadeCanvas(products: {
+  width: number;
+  height: number;
+  hillshadePpm: number[];
+  bathymetryMm: number[];
+}): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.width = products.width;
+  canvas.height = products.height * PHYSICAL_RASTER_OVERSAMPLE;
+  const context = canvas.getContext("2d");
+  if (!context) return canvas;
+  const pixels = context.createImageData(canvas.width, canvas.height);
+  for (let canvasRow = 0; canvasRow < canvas.height; canvasRow += 1) {
+    const sourceRow = physicalGridRowForRasterRow(canvasRow, canvas.height, products.height);
+    for (let column = 0; column < products.width; column += 1) {
+      const index = sourceRow * products.width + column;
+      const shade = products.hillshadePpm[index] ?? 500_000;
+      const depthMm = products.bathymetryMm[index] ?? 0;
+      const offset = (canvasRow * products.width + column) * 4;
+      if (depthMm > 0) {
+        const depth = Math.min(1, depthMm / 250_000);
+        pixels.data[offset] = Math.round(38 - depth * 18);
+        pixels.data[offset + 1] = Math.round(104 - depth * 44);
+        pixels.data[offset + 2] = Math.round(145 - depth * 34);
+      } else {
+        const light = Math.round(160 + (shade / 1_000_000) * 70);
+        pixels.data[offset] = Math.min(255, light + 18);
+        pixels.data[offset + 1] = Math.min(255, light + 8);
+        pixels.data[offset + 2] = Math.max(0, light - 34);
+      }
+      pixels.data[offset + 3] = 235;
+    }
+  }
+  context.putImageData(pixels, 0, 0);
+  return canvas;
 }
 
 function applyLayersField(field: FieldValue) {
@@ -212,9 +273,12 @@ async function load() {
     const fields = await project.listFields(mapId);
     const descriptorField = fields.find((field) => field.namespace === "maps" && field.key === "map");
     const descriptor = descriptorField?.value as {
+      provider?: { id?: string };
       sourceAssetId?: string;
+      authoredSourceAssetId?: string;
       defaultView?: { center?: [number, number]; zoom?: number };
     };
+    physicalMap = descriptor?.provider?.id === "daena-physical";
     if (descriptor?.defaultView?.center) defaultView = { ...defaultView, center: descriptor.defaultView.center };
     if (typeof descriptor?.defaultView?.zoom === "number")
       defaultView = { ...defaultView, zoom: descriptor.defaultView.zoom };
@@ -222,15 +286,47 @@ async function load() {
     if (!nextLayersField) throw new Error("maps:layers is missing");
     applyLayersField(nextLayersField);
     const assets = await project.listAssets(mapId);
-    const source = assets.find((asset) => asset.id === descriptor?.sourceAssetId);
+    const sourceId = physicalMap ? descriptor?.authoredSourceAssetId : descriptor?.sourceAssetId;
+    const source = assets.find((asset) => asset.id === sourceId);
     if (!source) throw new Error("The vector source asset is missing");
     sourceAsset = source;
-    const bytes = await project.readAssetBytes(source.id);
-    const collection = parseVectorCollection(bytes);
-    draft = cloneCollection(collection);
-    loaded = cloneCollection(collection);
     if (background?.url) URL.revokeObjectURL(background.url);
     background = null;
+    const bytes = await project.readAssetBytes(source.id);
+    const collection = parseVectorCollection(bytes);
+    if (physicalMap) {
+      immutablePhysicalLayerIds = new Set([
+        "base",
+        "ocean",
+        "land",
+        "shelves",
+        "bathymetric-contours",
+        "tectonic-plates",
+        "tectonic-boundaries",
+        "bathymetry",
+        "volcanic-centers",
+        "lakes",
+        "rivers",
+        "watersheds",
+        "islands",
+      ]);
+      const physical = parseVectorCollection(new TextEncoder().encode(await project.physicalMapDerivedGeoJson(mapId)));
+      const combined = { type: "FeatureCollection" as const, features: [...physical.features, ...collection.features] };
+      draft = cloneCollection(combined);
+      loaded = cloneCollection(combined);
+      const products = await project.physicalMapDerivedHydrology(mapId);
+      background = {
+        url: "",
+        canvas: physicalHillshadeCanvas(products),
+        width: products.width,
+        height: products.height,
+        coordinates: physicalWorldOverlayCoordinates(),
+      };
+    } else {
+      immutablePhysicalLayerIds = new Set();
+      draft = cloneCollection(collection);
+      loaded = cloneCollection(collection);
+    }
     const previewId = (descriptorField?.value as { previewAssetId?: string | null } | undefined)?.previewAssetId;
     const preview = previewId ? assets.find((asset) => asset.id === previewId) : null;
     if (preview) {
@@ -288,7 +384,7 @@ async function save() {
   applyEditorEvent({ type: "save-started" });
   try {
     editor?.flush();
-    const bytes = collectionBytes(draft);
+    const bytes = collectionBytes(persistedCollection(draft));
     const hash = await sha256Hex(bytes);
     const replaced = await project.replaceVectorSource(sourceAsset.id, bytes, hash, sourceAsset.revision);
     sourceAsset = replaced.source;
@@ -311,7 +407,7 @@ async function save() {
 async function exportDraft() {
   if (!mapId) return;
   try {
-    recoveryPath = await project.mapsRecoveryExport(mapId, collectionBytes(draft));
+    recoveryPath = await project.mapsRecoveryExport(mapId, collectionBytes(persistedCollection(draft)));
     notice = `Draft exported to ${recoveryPath}`;
   } catch (cause) {
     applyEditorEvent({ type: "save-failed", message: cause instanceof Error ? cause.message : String(cause) });
@@ -378,6 +474,7 @@ async function toggleVisible(layer: VectorLayerDefinition) {
 }
 
 async function toggleLock(layer: VectorLayerDefinition) {
+  if (physicalMap && immutablePhysicalLayerIds.has(layer.id)) return;
   layer.locked = !layer.locked;
   layers = [...layers];
   if (layer.id === activeLayerId) {
@@ -389,6 +486,7 @@ async function toggleLock(layer: VectorLayerDefinition) {
 }
 
 async function renameLayer(layer: VectorLayerDefinition, name: string) {
+  if (physicalMap && immutablePhysicalLayerIds.has(layer.id)) return;
   const trimmed = name.trim();
   renamingId = null;
   if (!trimmed || trimmed === layer.name) return;
@@ -398,6 +496,7 @@ async function renameLayer(layer: VectorLayerDefinition, name: string) {
 }
 
 async function moveLayer(layer: VectorLayerDefinition, direction: -1 | 1) {
+  if (physicalMap && immutablePhysicalLayerIds.has(layer.id)) return;
   const index = listedLayers.findIndex((item) => item.id === layer.id);
   const neighbor = listedLayers[index + direction];
   if (!neighbor) return;
@@ -407,6 +506,7 @@ async function moveLayer(layer: VectorLayerDefinition, direction: -1 | 1) {
 }
 
 async function updateStyle(layer: VectorLayerDefinition, patch: Partial<VectorLayerDefinition["style"]>) {
+  if (physicalMap && immutablePhysicalLayerIds.has(layer.id)) return;
   const style = { ...layer.style, ...patch };
   layer.style = style;
   layers = [...layers];
@@ -415,6 +515,7 @@ async function updateStyle(layer: VectorLayerDefinition, patch: Partial<VectorLa
 }
 
 async function removeLayer(layer: VectorLayerDefinition) {
+  if (physicalMap && immutablePhysicalLayerIds.has(layer.id)) return;
   if (!mapId || !layersField || !sourceAsset) return;
   const savedCount = featureCountForLayer(loaded, layer.id);
   const draftCount = featureCountForLayer(draft, layer.id);
@@ -670,40 +771,42 @@ onMount(() => {
                   title={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
                   onclick={() => void toggleVisible(layer)}
                   >{@render glyph(layer.defaultVisible ? icons.show : icons.hide)}</button>
-                <button
-                  type="button"
-                  class="icon-button"
-                  aria-pressed={layer.locked}
-                  aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
-                  title={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
-                  onclick={() => void toggleLock(layer)}
-                  >{@render glyph(layer.locked ? icons.lock : icons.unlock)}</button>
-                <button
-                  type="button"
-                  class="icon-button"
-                  aria-label={`Rename ${layer.name}`}
-                  title="Rename"
-                  onclick={() => (renamingId = layer.id)}>{@render glyph(icons.rename)}</button>
-                <button
-                  type="button"
-                  class="icon-button"
-                  aria-label={`Move ${layer.name} up`}
-                  title="Up"
-                  onclick={() => void moveLayer(layer, -1)}>{@render glyph(icons.up)}</button>
-                <button
-                  type="button"
-                  class="icon-button"
-                  aria-label={`Move ${layer.name} down`}
-                  title="Down"
-                  onclick={() => void moveLayer(layer, 1)}>{@render glyph(icons.down)}</button>
-                <button
-                  type="button"
-                  class="icon-button"
-                  aria-label={`Delete ${layer.name}`}
-                  title="Delete"
-                  onclick={() => void removeLayer(layer)}>{@render glyph(icons.remove)}</button>
+                {#if !immutablePhysicalLayerIds.has(layer.id)}
+                  <button
+                    type="button"
+                    class="icon-button"
+                    aria-pressed={layer.locked}
+                    aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
+                    title={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
+                    onclick={() => void toggleLock(layer)}
+                    >{@render glyph(layer.locked ? icons.lock : icons.unlock)}</button>
+                  <button
+                    type="button"
+                    class="icon-button"
+                    aria-label={`Rename ${layer.name}`}
+                    title="Rename"
+                    onclick={() => (renamingId = layer.id)}>{@render glyph(icons.rename)}</button>
+                  <button
+                    type="button"
+                    class="icon-button"
+                    aria-label={`Move ${layer.name} up`}
+                    title="Up"
+                    onclick={() => void moveLayer(layer, -1)}>{@render glyph(icons.up)}</button>
+                  <button
+                    type="button"
+                    class="icon-button"
+                    aria-label={`Move ${layer.name} down`}
+                    title="Down"
+                    onclick={() => void moveLayer(layer, 1)}>{@render glyph(icons.down)}</button>
+                  <button
+                    type="button"
+                    class="icon-button"
+                    aria-label={`Delete ${layer.name}`}
+                    title="Delete"
+                    onclick={() => void removeLayer(layer)}>{@render glyph(icons.remove)}</button>
+                {/if}
               </div>
-              {#if layer.id === activeLayerId}
+              {#if layer.id === activeLayerId && !immutablePhysicalLayerIds.has(layer.id)}
                 <div class="style-row">
                   <label>
                     Fill

@@ -4180,13 +4180,25 @@ impl ProjectStore {
         crate::maps::physical::validate_source(&bytes, &generation)?;
         let content_hash = format!("sha256:{:x}", Sha256::digest(&bytes));
         let size = bytes.len() as i64;
+        let authored_bytes = crate::maps::vector::empty_canonical_bytes();
+        let authored_content_hash = format!("sha256:{:x}", Sha256::digest(&authored_bytes));
+        let authored_size = authored_bytes.len() as i64;
         if let Some(root) = self.root.as_deref() {
             store_runtime_asset(root, bytes.as_slice(), Some(&content_hash))?;
         }
         let entity_id = Uuid::new_v4().to_string();
         let asset_id = Uuid::new_v4().to_string();
+        let authored_asset_id = Uuid::new_v4().to_string();
         let now = chrono_like_now();
         let relative_path = format!("assets/maps/{}-world.pworld", Uuid::new_v4());
+        let authored_relative_path = format!("assets/maps/{}-authored.geojson", Uuid::new_v4());
+        if let Some(root) = self.root.as_deref() {
+            store_runtime_asset(
+                root,
+                authored_bytes.as_slice(),
+                Some(&authored_content_hash),
+            )?;
+        }
         let descriptor = serde_json::json!({
             "schemaVersion": 1,
             "provider": {
@@ -4195,11 +4207,12 @@ impl ProjectStore {
                 "sourceFormat": crate::maps::PHYSICAL_SOURCE_FORMAT
             },
             "sourceAssetId": asset_id,
+            "authoredSourceAssetId": authored_asset_id,
             "previewAssetId": null,
             "defaultView": {"center": [0.5, 0.5], "zoom": 1},
             "generation": generation
         });
-        let layers = serde_json::json!({"schemaVersion": 1, "layers": []});
+        let layers = crate::maps::physical::initial_layers_value();
         let entity = Entity {
             id: entity_id.clone(),
             name: name.trim().into(),
@@ -4231,7 +4244,11 @@ impl ProjectStore {
         let transaction = self.begin_mutation_with_fingerprint(
             &request_id,
             Some(&result),
-            &[format!("entities/{entity_id}/"), relative_path.clone()],
+            &[
+                format!("entities/{entity_id}/"),
+                relative_path.clone(),
+                authored_relative_path.clone(),
+            ],
             &input_fingerprint,
         )?;
         transaction.execute(
@@ -4242,8 +4259,11 @@ impl ProjectStore {
             "INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
             params![asset_id, entity_id, crate::maps::MAP_NAMESPACE, crate::maps::PHYSICAL_FILENAME, content_hash, size, crate::maps::PHYSICAL_MIME, relative_path, now],
         )?;
+        transaction.execute(
+            "INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![authored_asset_id, entity_id, crate::maps::MAP_NAMESPACE, crate::maps::VECTOR_FILENAME, authored_content_hash, authored_size, crate::maps::VECTOR_MIME, authored_relative_path, now],
+        )?;
         crate::maps::validate_field(&transaction, &entity_id, "map", &descriptor)?;
-        crate::maps::validate_field(&transaction, &entity_id, "layers", &layers)?;
         transaction.execute(
             "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
             params![
@@ -4253,6 +4273,7 @@ impl ProjectStore {
                 encode_field_value(&descriptor)?
             ],
         )?;
+        crate::maps::validate_field(&transaction, &entity_id, "layers", &layers)?;
         transaction.execute(
             "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
             params![
@@ -4325,6 +4346,21 @@ impl ProjectStore {
         let layers = self.layers_field(&asset.entity_id)?;
         let known = crate::maps::vector::layer_ids_from_layers_field(&layers.value);
         let canonical = crate::maps::vector::canonicalize_committed(&upload_bytes, &known)?;
+        let physical_map = self
+            .list_fields_unchecked(asset.entity_id.clone())?
+            .into_iter()
+            .find(|field| field.namespace == crate::maps::MAP_NAMESPACE && field.key == "map")
+            .and_then(|field| {
+                field
+                    .value
+                    .pointer("/provider/id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|provider| provider == crate::maps::PHYSICAL_PROVIDER)
+            })
+            .unwrap_or(false);
+        if physical_map {
+            crate::maps::validate_physical_authored_source_bytes(&canonical)?;
+        }
         let content_hash = format!("sha256:{:x}", Sha256::digest(&canonical));
         let size = canonical.len() as i64;
         if let Some(root) = self.root.as_deref() {
@@ -4780,7 +4816,8 @@ impl ProjectStore {
             .ok_or_else(|| CoreError::NotFound("map descriptor not found".into()))?;
         let source_id = descriptor
             .value
-            .get("sourceAssetId")
+            .get("authoredSourceAssetId")
+            .or_else(|| descriptor.value.get("sourceAssetId"))
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| CoreError::NotFound("vector source asset not found".into()))?
             .to_owned();
@@ -4808,6 +4845,20 @@ impl ProjectStore {
         if removed.get("kind").and_then(serde_json::Value::as_str) != Some("vector") {
             return Err(CoreError::Validation(
                 "maps: only vector layers can be deleted by this operation".into(),
+            ));
+        }
+        if descriptor
+            .value
+            .pointer("/provider/id")
+            .and_then(serde_json::Value::as_str)
+            == Some(crate::maps::PHYSICAL_PROVIDER)
+            && removed
+                .get("locked")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        {
+            return Err(CoreError::Validation(
+                "maps: physical layers are immutable".into(),
             ));
         }
         let remaining: Vec<_> = layers
@@ -5157,11 +5208,38 @@ impl ProjectStore {
             .and_then(serde_json::Value::as_array)
             .cloned()
             .unwrap_or_default();
+        let physical_map = self
+            .list_fields_unchecked(map_entity_id.clone())?
+            .into_iter()
+            .find(|field| field.namespace == crate::maps::MAP_NAMESPACE && field.key == "map")
+            .and_then(|field| {
+                field
+                    .value
+                    .pointer("/provider/id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|provider| provider == crate::maps::PHYSICAL_PROVIDER)
+            })
+            .unwrap_or(false);
         let Some(layer) = layers.iter_mut().find(|layer| {
             layer.get("id").and_then(serde_json::Value::as_str) == Some(layer_id.as_str())
         }) else {
             return Err(CoreError::NotFound("layer not found".into()));
         };
+        if physical_map
+            && layer
+                .get("locked")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            && (update.name.is_some()
+                || update.order.is_some()
+                || update.locked.is_some()
+                || update.style.is_some()
+                || update.selector.is_some())
+        {
+            return Err(CoreError::Validation(
+                "maps: physical layers are immutable".into(),
+            ));
+        }
         let object = layer
             .as_object_mut()
             .ok_or_else(|| CoreError::Validation("maps: layer definition is invalid".into()))?;
@@ -7108,7 +7186,7 @@ impl ProjectStore {
         transaction
             .execute_batch("DELETE FROM map_projection; DELETE FROM map_location_projection; DELETE FROM map_feature_projection;")?;
         {
-            let mut maps = transaction.prepare("SELECT e.id, json_extract(f.value, '$.provider.id'), json_extract(f.value, '$.sourceAssetId'), a.path, a.content_hash FROM entities e JOIN entity_fields f ON f.entity_id=e.id AND f.namespace=?1 AND f.key='map' LEFT JOIN assets a ON a.id=json_extract(f.value, '$.sourceAssetId') WHERE e.entity_type='daena.maps:map' AND e.deleted=0")?;
+            let mut maps = transaction.prepare("SELECT e.id, json_extract(f.value, '$.provider.id'), json_extract(f.value, '$.sourceAssetId'), a.path, a.content_hash, authored.content_hash FROM entities e JOIN entity_fields f ON f.entity_id=e.id AND f.namespace=?1 AND f.key='map' LEFT JOIN assets a ON a.id=json_extract(f.value, '$.sourceAssetId') LEFT JOIN assets authored ON authored.id=json_extract(f.value, '$.authoredSourceAssetId') WHERE e.entity_type='daena.maps:map' AND e.deleted=0")?;
             let rows = maps.query_map([crate::maps::MAP_NAMESPACE], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -7116,17 +7194,18 @@ impl ProjectStore {
                     row.get::<_, Option<String>>(2)?.unwrap_or_default(),
                     row.get::<_, Option<String>>(3)?,
                     row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
                 ))
             })?;
             for row in rows {
-                let (id, provider, asset, path, hash) = row?;
+                let (id, provider, asset, path, hash, authored_hash) = row?;
                 transaction.execute("INSERT INTO map_projection(map_entity_id,provider,source_asset_id,source_path,source_hash) VALUES (?1,?2,?3,?4,?5)", rusqlite::params![id, provider, asset, path, hash])?;
                 write_vector_feature_projection(
                     &transaction,
                     self.root.as_deref(),
                     &id,
                     &provider,
-                    hash.as_deref(),
+                    authored_hash.as_deref().or(hash.as_deref()),
                 )?;
             }
         }
@@ -7181,11 +7260,11 @@ impl ProjectStore {
                 params![entity_id],
             )?;
             let map = self.connection.query_row(
-                "SELECT e.id,json_extract(f.value,'$.provider.id'),json_extract(f.value,'$.sourceAssetId'),a.path,a.content_hash FROM entities e JOIN entity_fields f ON f.entity_id=e.id AND f.namespace=?1 AND f.key='map' LEFT JOIN assets a ON a.id=json_extract(f.value,'$.sourceAssetId') WHERE e.id=?2 AND e.entity_type='daena.maps:map' AND e.deleted=0",
+                "SELECT e.id,json_extract(f.value,'$.provider.id'),json_extract(f.value,'$.sourceAssetId'),a.path,a.content_hash,authored.content_hash FROM entities e JOIN entity_fields f ON f.entity_id=e.id AND f.namespace=?1 AND f.key='map' LEFT JOIN assets a ON a.id=json_extract(f.value,'$.sourceAssetId') LEFT JOIN assets authored ON authored.id=json_extract(f.value,'$.authoredSourceAssetId') WHERE e.id=?2 AND e.entity_type='daena.maps:map' AND e.deleted=0",
                 params![crate::maps::MAP_NAMESPACE, entity_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?.unwrap_or_default(), row.get::<_, Option<String>>(2)?.unwrap_or_default(), row.get::<_, Option<String>>(3)?, row.get::<_, Option<String>>(4)?)),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?.unwrap_or_default(), row.get::<_, Option<String>>(2)?.unwrap_or_default(), row.get::<_, Option<String>>(3)?, row.get::<_, Option<String>>(4)?, row.get::<_, Option<String>>(5)?)),
             ).optional()?;
-            if let Some((id, provider, asset, path, hash)) = map {
+            if let Some((id, provider, asset, path, hash, authored_hash)) = map {
                 self.connection.execute(
                     "INSERT INTO map_projection(map_entity_id,provider,source_asset_id,source_path,source_hash) VALUES (?1,?2,?3,?4,?5)",
                     params![id, provider, asset, path, hash],
@@ -7195,7 +7274,7 @@ impl ProjectStore {
                     self.root.as_deref(),
                     &id,
                     &provider,
-                    hash.as_deref(),
+                    authored_hash.as_deref().or(hash.as_deref()),
                 )?;
             }
             let mut location_owners = BTreeSet::from([(*entity_id).clone()]);
@@ -8768,7 +8847,7 @@ fn write_vector_feature_projection(
     provider: &str,
     source_hash: Option<&str>,
 ) -> Result<(), CoreError> {
-    if provider != crate::maps::VECTOR_PROVIDER {
+    if provider != crate::maps::VECTOR_PROVIDER && provider != crate::maps::PHYSICAL_PROVIDER {
         return Ok(());
     }
     let Some(hash) = source_hash.filter(|value| !value.is_empty()) else {

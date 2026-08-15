@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 const source = readFileSync(resolve(root, "src/lib/maps/physical/PhysicalMapEditor.svelte"), "utf8");
+const native = readFileSync(resolve(root, "src/lib/maps/native-vector/NativeVectorMapEditor.svelte"), "utf8");
 const client = readFileSync(resolve(root, "src/lib/project/client.ts"), "utf8");
 const host = readFileSync(resolve(root, "src-tauri/src/lib.rs"), "utf8");
 
@@ -19,8 +20,12 @@ for (const required of [
   "evolutionPreset",
   "Terrain age",
   "locked: true",
+  "persistedCollection",
+  "immutablePhysicalLayerIds",
+  "authoredSourceAssetId",
+  "physicalMapDerivedGeoJson",
 ]) {
-  assert.ok(source.includes(required), `physical surface contract is missing ${required}`);
+  assert.ok(source.includes(required) || native.includes(required), `physical surface contract is missing ${required}`);
 }
 
 assert.match(

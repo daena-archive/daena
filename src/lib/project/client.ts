@@ -175,6 +175,68 @@ export interface PhysicalEvolutionProducts {
     tectonicRangeOrientationPpm: number;
   };
 }
+export interface PhysicalHydrologyProducts {
+  derivationVersion: number;
+  width: number;
+  height: number;
+  seaLevelMm: number;
+  waterLevelMm: number[];
+  lakeLevelMm: number[];
+  slopePpm: number[];
+  hillshadePpm: number[];
+  bathymetryMm: number[];
+  watershedId: number[];
+  basinByCell: number[];
+  lakeCells: boolean[];
+  shelfCells: boolean[];
+  islandId: number[];
+  basins: Array<{
+    id: number;
+    minimumCell: number;
+    minimumElevationMm: number;
+    cellCount: number;
+    spillCell: number | null;
+    spillElevationMm: number | null;
+    volumeToSpillM3: number;
+    parentBasin: number | null;
+    destination: "ocean" | "basin" | "endorheic" | "junction";
+    waterLevelMm: number;
+    waterVolumeM3: number;
+    inflowM3PerYear: number;
+    directPrecipitationM3PerYear: number;
+    evaporationM3PerYear: number;
+    outflowM3PerYear: number;
+    status: "dry" | "endorheic" | "active" | "overflowing" | "merged";
+  }>;
+  rivers: Array<{
+    id: number;
+    sourceCell: number;
+    mouthCell: number;
+    strahlerOrder: number;
+    destination: "ocean" | "basin" | "endorheic" | "junction";
+    spillOutlet: boolean;
+    coordinateCount: number;
+  }>;
+  metrics: {
+    totalWaterM3: number;
+    oceanWaterM3: number;
+    inlandWaterM3: number;
+    landIceM3: number;
+    balanceErrorM3: number;
+    toleranceM3: number;
+    fixedPointIterations: number;
+    converged: boolean;
+    lakeCount: number;
+    riverCount: number;
+    watershedCount: number;
+    coastlineSegmentCount: number;
+    landPolygonCount: number;
+    oceanPolygonCount: number;
+    shelfCellCount: number;
+    bathymetryContourCount: number;
+    islandCount: number;
+  };
+}
 export interface PhysicalGenerationInput {
   seed: number;
   retryIndex: number;
@@ -591,6 +653,7 @@ export const project = {
   physicalMapPreview: (jobId: string) => invoke<string>("project_physical_preview", { jobId }),
   physicalMapClimate: (jobId: string) => invoke<PhysicalClimateProducts>("project_physical_climate", { jobId }),
   physicalMapEvolution: (jobId: string) => invoke<PhysicalEvolutionProducts>("project_physical_evolution", { jobId }),
+  physicalMapHydrology: (jobId: string) => invoke<PhysicalHydrologyProducts>("project_physical_hydrology", { jobId }),
   cancelPhysicalMap: (jobId: string) => invoke<PhysicalJobStatus>("project_physical_cancel", { jobId }),
   acceptPhysicalMap: (jobId: string, name: string, options?: MutationOptions) =>
     invoke<{ entity: Entity; source: Asset }>("project_physical_accept", {
@@ -649,6 +712,8 @@ export const project = {
     invoke<PhysicalClimateProducts>("project_physical_derived_climate", { mapEntityId }),
   physicalMapDerivedEvolution: (mapEntityId: string) =>
     invoke<PhysicalEvolutionProducts>("project_physical_derived_evolution", { mapEntityId }),
+  physicalMapDerivedHydrology: (mapEntityId: string) =>
+    invoke<PhysicalHydrologyProducts>("project_physical_derived_hydrology", { mapEntityId }),
   readAssetBytes: (assetId: string) => invoke<number[]>("project_read_asset_bytes", { assetId }),
   createRasterLayer: (mapEntityId: string, name: string, expectedRevision: string, options?: MutationOptions) =>
     invoke<RasterLayerChange>("project_create_raster_layer", {

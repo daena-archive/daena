@@ -71,7 +71,7 @@ fn shade_ppm(model: &AtlasDetailModel, lon: i32, lat: i32, sea: i32, sdf: &[i32]
     ((bounded - 3_000_000) as u64 * 1_000_000 / 9_000_000) as u32
 }
 
-fn pixel_rgba(
+pub(crate) fn pixel_rgba(
     model: &AtlasDetailModel,
     hydrology: &HydrologyField,
     sdf: &[i32],

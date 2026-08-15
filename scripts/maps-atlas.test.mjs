@@ -151,8 +151,20 @@ try {
   const preview = render(2048, 1024, previewPath);
   const again = render(2048, 1024, join(temp, "atlas-2048-repeat.png"));
   assert.equal(preview.hash, again.hash);
+  assert.equal(
+    preview.hash,
+    "sha256:3dc3611aedbea11867da311c4ee8f47b9b045d5a66f1c05e29df288591108f14",
+  );
   const mid = render(4096, 2048, exportPath);
   const max = render(8192, 4096, maxPath);
+  assert.equal(
+    mid.hash,
+    "sha256:3f542b3f1c7fc51e7c8353b6c816ae597f485c32588ca6aa195daceecf75eb9c",
+  );
+  assert.equal(
+    max.hash,
+    "sha256:4c8d4826e856dd46910120839114a25c60f4117eeca698d01904ac834660f1ed",
+  );
   assert.notEqual(preview.hash, mid.hash);
   assert.notEqual(mid.hash, max.hash);
 
@@ -213,6 +225,9 @@ try {
   const adr = readFileSync(join(root, "docs/adr/0036-atlas-rendering-iteration-4.md"), "utf8");
   assert.match(adr, /atlas-only/);
   assert.match(adr, /\.daena\/cache\/atlas/);
+  const studioAdr = readFileSync(join(root, "docs/adr/0037-atlas-studio-iteration-0.md"), "utf8");
+  assert.match(studioAdr, /Web Mercator XYZ/);
+  assert.match(studioAdr, /north-origin/);
 
   const report = {
     preview: { ...preview.summary, sha256: preview.hash, peakResidentBytes: preview.peakResidentBytes },

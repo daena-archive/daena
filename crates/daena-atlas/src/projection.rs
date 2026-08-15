@@ -342,12 +342,12 @@ pub fn bilinear_i32(c00: i32, c10: i32, c01: i32, c11: i32, frac_x: u32, frac_y:
     ((top * iy + bottom * fy) / 1_000_000 / 1_000_000) as i32
 }
 
-fn mercator_x(lon_micro: i32, central_meridian_micro: i32) -> f64 {
+pub(crate) fn mercator_x(lon_micro: i32, central_meridian_micro: i32) -> f64 {
     let dlon = wrap_lon_micro(i64::from(lon_micro) - i64::from(central_meridian_micro));
     std::f64::consts::PI * f64::from(dlon) / 180_000_000.0
 }
 
-fn mercator_y(lat_micro: i32) -> Option<f64> {
+pub(crate) fn mercator_y(lat_micro: i32) -> Option<f64> {
     if lat_micro.abs() > WEB_MERCATOR_MAX_LAT_MICRO {
         return None;
     }
@@ -355,12 +355,12 @@ fn mercator_y(lat_micro: i32) -> Option<f64> {
     Some((std::f64::consts::FRAC_PI_4 + lat / 2.0).tan().ln())
 }
 
-fn mercator_x_to_lon_micro(x: f64, central_meridian_micro: i32) -> i32 {
+pub(crate) fn mercator_x_to_lon_micro(x: f64, central_meridian_micro: i32) -> i32 {
     let dlon = (x / std::f64::consts::PI * 180_000_000.0).round() as i64;
     wrap_lon_micro(dlon + i64::from(central_meridian_micro))
 }
 
-fn mercator_y_to_lat_micro(y: f64) -> i32 {
+pub(crate) fn mercator_y_to_lat_micro(y: f64) -> i32 {
     let lat = y.tanh().asin().to_degrees() * 1_000_000.0;
     clamp_lat_micro(lat.round() as i64)
 }

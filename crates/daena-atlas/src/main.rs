@@ -1,7 +1,12 @@
 use daena_atlas::cache::AtlasDiskCache;
 use daena_atlas::projection::AtlasProjection;
 use daena_atlas::request::{AtlasFormat, AtlasRenderRequest};
-use daena_atlas::{render_from_source_cached, spike_identity_from_source, NoopProgress};
+use daena_atlas::studio::{
+    render_studio_tile, AtlasStudioSceneRequestV1, AtlasStudioTileRequestV1,
+};
+use daena_atlas::{
+    prepare_from_source, render_from_source_cached, spike_identity_from_source, NoopProgress,
+};
 use daena_physical::{
     decode_source, generate_world, GenerationSettings, NoopProgress as PhysicalNoop,
     DEFAULT_HEIGHT, DEFAULT_RADIUS_METRES, DEFAULT_WIDTH,
@@ -96,6 +101,98 @@ fn main() -> Result<(), String> {
         .map(AtlasDiskCache::open)
         .transpose()
         .map_err(|error| error.to_string())?;
+    if let Some(z) = parse_u32("--studio-z")? {
+        let x = parse_u32("--studio-x")?.unwrap_or(0);
+        let y = parse_u32("--studio-y")?.unwrap_or(0);
+        let scale = parse_u32("--studio-scale")?.unwrap_or(1);
+        let scene_request = AtlasStudioSceneRequestV1 {
+            schema_version: daena_atlas::studio::ATLAS_STUDIO_SESSION_SCHEMA_VERSION,
+            offset_years: request.offset_years,
+            algorithm_version: request.algorithm_version,
+            level: request.level,
+            variant: request.variant,
+            style_id: request.style_id.clone(),
+        }
+        .normalize()
+        .map_err(|error| error.to_string())?;
+        let tile_request = AtlasStudioTileRequestV1 {
+            schema_version: daena_atlas::studio::ATLAS_STUDIO_TILE_SCHEMA_VERSION,
+            z,
+            x,
+            y,
+            tile_size: daena_atlas::studio::STUDIO_TILE_SIZE,
+            device_scale: scale,
+            request_id: String::new(),
+        };
+        let scene = prepare_from_source(
+            &source,
+            &identity,
+            &scene_request
+                .as_render_request(daena_atlas::studio::STUDIO_TILE_SIZE)
+                .map_err(|error| error.to_string())?,
+            None,
+            cache.as_ref(),
+            &mut NoopProgress,
+        )
+        .map_err(|error| error.to_string())?;
+        let tile = render_studio_tile(&scene, &scene_request, &tile_request, &mut NoopProgress)
+            .map_err(|error| error.to_string())?;
+        let burst = args.iter().any(|arg| arg == "--studio-burst");
+        let burst_started = Instant::now();
+        let mut burst_tiles = 0u32;
+        if burst {
+            let n = daena_atlas::studio::tile_count(z).map_err(|error| error.to_string())?;
+            burst_tiles = 0;
+            for dy in 0..3u32 {
+                for dx in 0..3u32 {
+                    let tx = x.saturating_add(dx) % n;
+                    let ty = (y.saturating_add(dy)).min(n.saturating_sub(1));
+                    let neighbor = AtlasStudioTileRequestV1 {
+                        schema_version: daena_atlas::studio::ATLAS_STUDIO_TILE_SCHEMA_VERSION,
+                        z,
+                        x: tx,
+                        y: ty,
+                        tile_size: daena_atlas::studio::STUDIO_TILE_SIZE,
+                        device_scale: scale,
+                        request_id: String::new(),
+                    };
+                    let _ =
+                        render_studio_tile(&scene, &scene_request, &neighbor, &mut NoopProgress)
+                            .map_err(|error| error.to_string())?;
+                    burst_tiles += 1;
+                }
+            }
+        }
+        let burst_ms = burst_started.elapsed().as_secs_f64() * 1000.0;
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        if let Some(path) = output {
+            fs::write(&path, &tile.png).map_err(|error| error.to_string())?;
+        }
+        println!(
+            "{{\"width\":{},\"height\":{},\"pngBytes\":{},\"artifactBytes\":{},\"rgbaBytes\":{},\"sourceBytes\":{},\"renderMs\":{:.3},\"burstMs\":{:.3},\"burstTiles\":{},\"sourceSha256\":\"{}\",\"identity\":\"{}\",\"rendererVersion\":{},\"offsetYears\":{},\"styleId\":\"{}\",\"format\":\"png\",\"projection\":\"web-mercator\",\"tributaryCount\":{},\"artifactCache\":\"off\",\"residualCache\":\"{}\",\"drainageCache\":\"{}\",\"studioZ\":{},\"studioX\":{},\"studioY\":{}}}",
+            tile.width,
+            tile.height,
+            tile.png.len(),
+            0,
+            tile.rgba.len(),
+            source.len(),
+            elapsed_ms,
+            burst_ms,
+            burst_tiles,
+            scene.source_sha256,
+            String::from_utf8_lossy(&scene.identity),
+            daena_atlas::ATLAS_RENDERER_VERSION,
+            scene_request.offset_years,
+            scene_request.style_id,
+            scene.drainage.tributaries.len(),
+            scene.residual_cache.as_str(),
+            scene.drainage_cache.as_str(),
+            tile.z,
+            tile.x,
+            tile.y,
+        );
+        return Ok(());
+    }
     let rendered = render_from_source_cached(
         &source,
         &identity,

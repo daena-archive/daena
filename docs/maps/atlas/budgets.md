@@ -60,3 +60,31 @@ layer.
 
 Artifact cache on `256 x 128`: cold miss then warm hit, identical PNG. Quota is
 512 MiB / 64 entries / 160 MiB per entry under `.daena/cache/atlas/`.
+
+## Atlas Studio iteration 0 (ADR 0037)
+
+Same host and golden source. Studio tiles are Web Mercator XYZ, 256 px,
+device scale 1, per-pixel relief layers only. Scene preparation is shared
+with export; each CLI invocation below includes one prepare plus the named
+tile work. Repeating `z=8 / x=120 / y=90` produced the same PNG bytes.
+The `2048 x 1024` export hash above is unchanged after the scene extract
+(`sha256:3dc3611aedbea11867da311c4ee8f47b9b045d5a66f1c05e29df288591108f14`).
+
+Iteration 0 writes **no tile artifact cache**. Warm reuse is the existing
+residual and drainage entries under an explicit cache directory. Those
+entries are 525_016 bytes on this fixture (one residual blob, one drainage
+blob, plus `index.json`). They stay inside the accepted 512 MiB / 64
+entries / 160 MiB-per-entry quota. A later tile-PNG cache is an iteration-1
+decision.
+
+| Target | Work | Duration ms | Peak RSS | PNG bytes | Cache |
+| ------ | ---- | ----------: | -------: | --------: | ----- |
+| Darwin 25.6 | cold tile `z=0` | 39 | — | 263_357 | off |
+| Darwin 25.6 | cold tile `z=4` | 40 | — | 257_100 | off |
+| Darwin 25.6 | cold tile `z=8` | 40 | — | 263_189 | off |
+| Darwin 25.6 | prepare + `z=8` tile + 3×3 burst (9 tiles) | 152 (burst 126) | 6.7 MiB | 263_189 | off |
+| Darwin 25.6 | `z=8` residual/drainage miss | 40 | 6.5 MiB | 263_189 | 525_016 bytes |
+| Darwin 25.6 | `z=8` residual/drainage hit | 31 | 6.6 MiB | 263_189 | same 525_016 bytes |
+
+Maximum zoom `8` stays inside an interactive envelope on this host. Overlay
+halo and Tauri protocol serving remain iteration 1.

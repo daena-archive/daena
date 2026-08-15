@@ -14,6 +14,7 @@ pub mod projection;
 pub mod provenance;
 pub mod render;
 pub mod request;
+pub mod studio;
 pub mod style;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -205,16 +206,29 @@ fn cache_json(value: &(impl serde::Serialize + ?Sized)) -> Result<Vec<u8>, Atlas
         .map_err(|error| AtlasError::new(CODE_RENDER_FAILED, format!("atlas cache key: {error}")))
 }
 
-pub fn render_from_source_cached(
+#[derive(Debug, Clone)]
+pub struct AtlasPreparedScene {
+    pub identity: Vec<u8>,
+    pub source_sha256: String,
+    pub style: style::AtlasStyle,
+    pub style_hash: String,
+    pub model: detail::AtlasDetailModel,
+    pub hydrology: daena_physical::hydrology::HydrologyField,
+    pub sdf: Vec<i32>,
+    pub drainage: drainage::DerivedDrainage,
+    pub tectonics: daena_physical::tectonics::TectonicWorld,
+    pub residual_cache: cache::CacheLookup,
+    pub drainage_cache: cache::CacheLookup,
+}
+
+pub fn prepare_from_source(
     source_bytes: &[u8],
     identity: &[u8],
     request: &request::AtlasRenderRequest,
-    tile_order: Option<&[u32]>,
     forcing: Option<daena_physical::history::HistoricalForcingParameters>,
-    overlays: &[overlay::AuthoredFeature],
     cache: Option<&cache::AtlasDiskCache>,
     progress: &mut dyn AtlasProgress,
-) -> Result<RenderedAtlas, AtlasError> {
+) -> Result<AtlasPreparedScene, AtlasError> {
     progress.report(AtlasPhase::Validating, 0, 1)?;
     progress.check_cancelled()?;
     let request = request.clone().normalize()?;
@@ -224,64 +238,7 @@ pub fn render_from_source_cached(
         use sha2::{Digest, Sha256};
         format!("sha256:{:x}", Sha256::digest(source_bytes))
     };
-    let overlay_bytes = cache_json(overlays)?;
-    let request_bytes = cache_json(&request)?;
     let forcing_fingerprint = fingerprint_forcing(forcing.as_ref());
-    let artifact_key = cache::cache_key(&[
-        b"atlas-cache-artifact-v1",
-        identity,
-        source_sha256.as_bytes(),
-        &request_bytes,
-        style_hash.as_bytes(),
-        &overlay_bytes,
-        &ATLAS_RENDERER_VERSION.to_le_bytes(),
-        &ATLAS_DETAIL_ALGORITHM_VERSION.to_le_bytes(),
-        &ATLAS_DERIVED_DRAINAGE_VERSION.to_le_bytes(),
-        &forcing_fingerprint,
-    ]);
-    let mut artifact_cache = cache::CacheLookup::Off;
-    if let Some(cache) = cache {
-        progress.check_cancelled()?;
-        match cache.get(cache::KIND_ARTIFACT, &artifact_key) {
-            cache::CacheLookupResult::Hit(payload) => {
-                let usable = cache::decode_artifact(&payload).ok().and_then(
-                    |(png, artifact, provenance_json)| {
-                        let provenance =
-                            serde_json::from_str::<provenance::AtlasRenderProvenanceV1>(
-                                &provenance_json,
-                            )
-                            .ok()?;
-                        let decoded = encode::decode_png(&png).ok()?;
-                        if provenance.renderer_version != ATLAS_RENDERER_VERSION
-                            || decoded.width != request.width_px
-                            || decoded.height != request.height_px
-                        {
-                            return None;
-                        }
-                        Some((png, artifact, provenance, decoded.rgba))
-                    },
-                );
-                if let Some((png, artifact, provenance, rgba)) = usable {
-                    artifact_cache = cache::CacheLookup::Hit;
-                    progress.report(AtlasPhase::Validating, 1, 1)?;
-                    progress.report(AtlasPhase::Encoding, 1, 1)?;
-                    return Ok(RenderedAtlas {
-                        png,
-                        artifact,
-                        rgba,
-                        provenance: provenance.clone(),
-                        request,
-                        residual_cache: cache::CacheLookup::Off,
-                        drainage_cache: cache::CacheLookup::Off,
-                        artifact_cache,
-                        tributary_count: provenance.tributary_count,
-                    });
-                }
-                artifact_cache = cache::CacheLookup::Miss;
-            }
-            cache::CacheLookupResult::Miss => artifact_cache = cache::CacheLookup::Miss,
-        }
-    }
     let world = daena_physical::decode_source(source_bytes)
         .map_err(|error| AtlasError::new(CODE_SOURCE_INVALID, error))?;
     let field = world.physical_field();
@@ -468,6 +425,99 @@ pub fn render_from_source_cached(
         historical.metrics.sea_level_mm,
     );
     progress.report(AtlasPhase::RefiningDetail, 1, 1)?;
+    Ok(AtlasPreparedScene {
+        identity: identity.to_vec(),
+        source_sha256,
+        style,
+        style_hash,
+        model,
+        hydrology: historical.hydrology,
+        sdf,
+        drainage,
+        tectonics: world,
+        residual_cache,
+        drainage_cache,
+    })
+}
+
+pub fn render_from_source_cached(
+    source_bytes: &[u8],
+    identity: &[u8],
+    request: &request::AtlasRenderRequest,
+    tile_order: Option<&[u32]>,
+    forcing: Option<daena_physical::history::HistoricalForcingParameters>,
+    overlays: &[overlay::AuthoredFeature],
+    cache: Option<&cache::AtlasDiskCache>,
+    progress: &mut dyn AtlasProgress,
+) -> Result<RenderedAtlas, AtlasError> {
+    progress.report(AtlasPhase::Validating, 0, 1)?;
+    progress.check_cancelled()?;
+    let request = request.clone().normalize()?;
+    let (style, style_raw) = style::load_style(&request.style_id)?;
+    let style_hash = style.content_hash(style_raw);
+    let source_sha256 = {
+        use sha2::{Digest, Sha256};
+        format!("sha256:{:x}", Sha256::digest(source_bytes))
+    };
+    let overlay_bytes = cache_json(overlays)?;
+    let request_bytes = cache_json(&request)?;
+    let forcing_fingerprint = fingerprint_forcing(forcing.as_ref());
+    let artifact_key = cache::cache_key(&[
+        b"atlas-cache-artifact-v1",
+        identity,
+        source_sha256.as_bytes(),
+        &request_bytes,
+        style_hash.as_bytes(),
+        &overlay_bytes,
+        &ATLAS_RENDERER_VERSION.to_le_bytes(),
+        &ATLAS_DETAIL_ALGORITHM_VERSION.to_le_bytes(),
+        &ATLAS_DERIVED_DRAINAGE_VERSION.to_le_bytes(),
+        &forcing_fingerprint,
+    ]);
+    let mut artifact_cache = cache::CacheLookup::Off;
+    if let Some(cache) = cache {
+        progress.check_cancelled()?;
+        match cache.get(cache::KIND_ARTIFACT, &artifact_key) {
+            cache::CacheLookupResult::Hit(payload) => {
+                let usable = cache::decode_artifact(&payload).ok().and_then(
+                    |(png, artifact, provenance_json)| {
+                        let provenance =
+                            serde_json::from_str::<provenance::AtlasRenderProvenanceV1>(
+                                &provenance_json,
+                            )
+                            .ok()?;
+                        let decoded = encode::decode_png(&png).ok()?;
+                        if provenance.renderer_version != ATLAS_RENDERER_VERSION
+                            || decoded.width != request.width_px
+                            || decoded.height != request.height_px
+                        {
+                            return None;
+                        }
+                        Some((png, artifact, provenance, decoded.rgba))
+                    },
+                );
+                if let Some((png, artifact, provenance, rgba)) = usable {
+                    artifact_cache = cache::CacheLookup::Hit;
+                    progress.report(AtlasPhase::Validating, 1, 1)?;
+                    progress.report(AtlasPhase::Encoding, 1, 1)?;
+                    return Ok(RenderedAtlas {
+                        png,
+                        artifact,
+                        rgba,
+                        provenance: provenance.clone(),
+                        request,
+                        residual_cache: cache::CacheLookup::Off,
+                        drainage_cache: cache::CacheLookup::Off,
+                        artifact_cache,
+                        tributary_count: provenance.tributary_count,
+                    });
+                }
+                artifact_cache = cache::CacheLookup::Miss;
+            }
+            cache::CacheLookupResult::Miss => artifact_cache = cache::CacheLookup::Miss,
+        }
+    }
+    let scene = prepare_from_source(source_bytes, identity, &request, forcing, cache, progress)?;
     let tiles = request.tile_count();
     let order = match tile_order {
         Some(order) => order.to_vec(),
@@ -475,15 +525,15 @@ pub fn render_from_source_cached(
     };
     let rgba = render::render_rgba(
         &request,
-        &model,
-        &historical.hydrology,
-        &sdf,
-        &style,
+        &scene.model,
+        &scene.hydrology,
+        &scene.sdf,
+        &scene.style,
         identity,
         &order,
         overlays,
-        &drainage.tributaries,
-        &world,
+        &scene.drainage.tributaries,
+        &scene.tectonics,
         progress,
     )?;
     let mut provenance = provenance::AtlasRenderProvenanceV1::for_request(
@@ -493,7 +543,7 @@ pub fn render_from_source_cached(
         &style_hash,
     );
     provenance.derived_drainage_version = ATLAS_DERIVED_DRAINAGE_VERSION;
-    provenance.tributary_count = drainage.tributaries.len() as u32;
+    provenance.tributary_count = scene.drainage.tributaries.len() as u32;
     let png = encode::encode_png(&request, &rgba, &provenance, progress)?;
     let artifact = encode::encode_artifact(&request, &rgba, &png, &provenance, progress)?;
     if let Some(cache) = cache {
@@ -514,10 +564,10 @@ pub fn render_from_source_cached(
         rgba,
         provenance,
         request,
-        residual_cache,
-        drainage_cache,
+        residual_cache: scene.residual_cache,
+        drainage_cache: scene.drainage_cache,
         artifact_cache,
-        tributary_count: drainage.tributaries.len() as u32,
+        tributary_count: scene.drainage.tributaries.len() as u32,
     })
 }
 

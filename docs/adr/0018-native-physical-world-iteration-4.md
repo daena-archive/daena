@@ -31,11 +31,40 @@ sinks, unnormalized splits, and unaccounted runoff are hard errors with stable
 
 Terrain evolution runs a fixed, versioned budget. `Young`, `Mature`, and `Old`
 map to increasing step counts and stream-power work budgets; they do not
-reinterpret authored historical time. Each step applies bounded stream-power
-incision, boundary/volcano-derived continuing uplift, and hillslope relaxation
-to a millimetre-quantized field. Downward relief loss is capped at
-`25,000 mm` per step, non-finite or out-of-range values fail, and the initial
-tectonic field remains available as a disposable before product.
+reinterpret authored historical time. Each step applies the bounded v1
+stream-power surrogate, boundary/volcano-derived continuing uplift, and
+hillslope relaxation to a millimetre-quantized field. The surrogate uses
+accumulated runoff volume as discharge:
+
+```text
+discharge_scale = clamp(ln(1 + discharge) / ln(1 + 1,000,000,000), 0, 1)
+slope_scale = slope_ppm / 1,000,000
+incision_mm = round(
+  (stream_power_ppm / 1,000,000) * 30,000
+  * discharge_scale * slope_scale
+)
+```
+
+This is deliberately monotonic and bounded; it is not a literal evaluation of
+`erodibility * discharge^m * slope^n` and does not claim calibrated `m` and `n`
+exponents. Downward relief loss is capped at `25,000 mm` per step, non-finite
+or out-of-range values fail, and the initial tectonic field remains available
+as a disposable before product.
+
+The `grid_anisotropy_ppm` diagnostic is also explicitly a proxy. It is the
+integer mean, across routed source cells, of each source's largest normalized
+outgoing edge weight:
+
+```text
+grid_anisotropy_ppm = floor(
+  sum(max(edge.weight_ppm) for each routed source) /
+  routed_source_count
+)
+```
+
+Iteration 4 locks this directional-concentration proxy at `<= 950,000 ppm`.
+It is not a literal eight-direction signature measure; such a measure would
+require a separate diagnostic and decision.
 
 ## Native boundary and lifecycle
 
@@ -51,10 +80,11 @@ cannot rewrite the accepted source.
 The pure-Rust fixtures prove deterministic output, Priority-Flood visitation
 coverage, acyclic reciprocal routing topology, exact normalized splits,
 runoff conservation at ocean outlets, depression preservation, controlled
-slope/discharge response, bounded per-step relief loss, and monotonically
-increasing stream-power work across Young/Mature/Old settings. The evolved
-highland-mask overlap metric preserves tectonic range orientation above the
-locked 900,000 ppm fixture threshold.
+slope/discharge response, bounded per-step relief loss, the locked
+`grid_anisotropy_ppm <= 950,000` directional-concentration proxy, and
+monotonically increasing stream-power work across Young/Mature/Old settings.
+The evolved highland-mask overlap metric preserves tectonic range orientation
+above the locked 900,000 ppm fixture threshold.
 The Tauri fixture proves the product boundary exposes routing, accumulation,
 and before/after arrays without adding them to canonical source data. The
 release benchmark records 1,205.8 ms maximum generation, 21.00 MiB peak RSS,

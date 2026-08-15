@@ -427,7 +427,7 @@ distance and fixed traversal/convergence rules.
 Local runoff is precipitation times an effective runoff coefficient. Runoff
 volume multiplies local runoff by exact cell area.
 
-Terrain evolution uses a bounded stream-power-style model:
+Terrain evolution is specified conceptually by a stream-power-style model:
 
 ```text
 incision = erodibility * discharge^m * slope^n
@@ -436,9 +436,28 @@ new terrain = old terrain + limited active uplift - incision
 ```
 
 Initial calibration begins near `m = 0.5` and `n = 1.0`, but these are
-versioned empirical parameters, not literal constants of nature. `Young`,
-`Mature`, and `Old` settings select coherent iteration counts, relaxation, and
-tectonic persistence; they are not literal geological ages.
+versioned empirical parameters, not literal constants of nature. Iteration 4
+does not evaluate that power law literally. Its versioned bounded v1 surrogate
+uses accumulated runoff volume as discharge and applies:
+
+```text
+discharge_scale = clamp(
+  ln(1 + discharge_m3_per_year) / ln(1 + 1,000,000,000), 0, 1
+)
+slope_scale = slope_ppm / 1,000,000
+incision_mm = round(
+  (stream_power_ppm / 1,000,000) * 30,000
+  * discharge_scale * slope_scale
+)
+```
+
+This preserves a bounded monotonic response to discharge and slope; it is not
+a calibrated `discharge^0.5 * slope^1.0` evaluation. `stream_power_ppm` and
+the evolution budgets are versioned empirical controls. Replacing this
+surrogate with a literal power law requires a new derivation decision and
+version. `Young`, `Mature`, and `Old` settings select coherent iteration
+counts, relaxation, and tectonic persistence; they are not literal geological
+ages.
 
 For erosion routing, use Priority-Flood or an equivalent algorithm to build a
 temporary drainage-compatible surface. Never overwrite real depressions in
@@ -460,19 +479,27 @@ Solve the monotonic volume equation with bounded root finding and explicit
 tolerance/iteration limits.
 
 Current total water is conserved among ocean water, land-based ice, and
-persistent inland water. Lake volume and ocean level may require a bounded
-fixed-point loop: estimate sea level, derive lakes, update inland storage, and
-resolve sea level until the declared tolerance is met.
+persistent inland water. Iteration 5 uses a bounded, one-directional
+ocean-level fixed-point solve: derive basin assignments and inland storage at
+the initial sea level, then adjust only ocean level against that frozen inland
+storage until the declared tolerance is met.
 
 Flow routing uses D-infinity or another reviewed continuous-direction method;
 basic D8 is not acceptable because it produces visible grid alignment.
 Accumulation weights sum to one, use physical runoff volume, and form an
 acyclic downstream graph.
 
-The final depression hierarchy records basin minima, spill points/elevations,
-volume-to-spill, parents, and downstream basin/ocean destinations. A basin's
-water balance includes inflow, direct precipitation, evaporation, and outlet
-discharge. Outcomes include dry, endorheic, overflowing, and merged lakes.
+The final Iteration 5 depression hierarchy is a bounded raw-field equivalent
+of a depression hierarchy, not a full nested Fill-Spill-Merge tree. Each land
+cell traces downhill to a deterministic local sink, and each sink basin uses
+its lowest valid spill edge. The hierarchy records basin minima, spill
+points/elevations, volume-to-spill, parents, and downstream basin/ocean
+destinations. A basin's water balance includes inflow, direct precipitation,
+fixed evaporation equal to 28% of direct precipitation, and outlet discharge.
+Outcomes include dry, endorheic, overflowing, and merged lakes; `merged` means
+that excess outflow is carried into a parent basin, not that basin topologies
+are unioned. Nested sub-depressions that are not represented by separate
+downhill sinks are not emitted as separate lakes.
 
 River channels cross a normalized discharge threshold. Their topology obeys:
 
@@ -941,6 +968,22 @@ acyclic, physically scaled drainage graph without yet promising final lakes.
    products plus metrics for mass/relief change, drainage density, grid
    anisotropy, and convergence.
 
+The Iteration 4 `grid_anisotropy_ppm` value is a locked directional-concentration
+proxy, not a literal eight-direction signature measure. For every routed source
+cell, it takes the largest normalized outgoing edge weight and then averages
+those values with integer division:
+
+```text
+grid_anisotropy_ppm = floor(
+  sum(max(edge.weight_ppm) for each routed source) /
+  routed_source_count
+)
+```
+
+The current gate is `grid_anisotropy_ppm <= 950,000`. A future literal
+eight-direction signature metric would be a separate diagnostic and acceptance
+criterion.
+
 ### Exit gate
 
 - The temporary routing surface is depression-compatible while the real field
@@ -953,14 +996,16 @@ acyclic, physically scaled drainage graph without yet promising final lakes.
 - Young, Mature, and Old fixtures show monotonically increasing erosion metrics
   while retaining tectonic range orientation and finite bounded elevation.
 - Results are deterministic across supported targets, within time/memory
-  budgets, and show no eight-direction grid signature above the locked metric.
+  budgets, and keep the locked directional-concentration proxy at or below
+  `950,000 ppm`.
 
 ## Iteration 5: lakes, rivers, coastlines, and current-world completion
 
 Implementation status (2026-08-15): the current-world hydrology slice is
-implemented in `daena-physical-spike` under ADR 0019. It derives a
-depression hierarchy, bounded basin water balances, a conserved ocean/inland
-fixed-point solve, primary river channels with Strahler order, watershed,
+implemented in `daena-physical-spike` under ADR 0019. It derives a bounded
+raw-field sink/spill hierarchy, bounded basin water balances, a conserved
+ocean-level fixed-point solve against frozen inland storage, primary river
+channels with Strahler order, watershed,
 lake-entry/junction/spill-outlet river geometry, island and lake geometry,
 final water-aware coastline, and
 hillshade/bathymetry/slope renderer arrays. These products remain disposable;
@@ -977,20 +1022,30 @@ lakes, topologically valid rivers, and final derived coastline/bathymetry.
 
 ### Required work
 
-1. Build a Fill-Spill-Merge or equivalent depression hierarchy containing
-   minima, spill points/elevations, volume-to-spill, parents, and downstream
-   destinations.
+1. Build the bounded Iteration 5 depression hierarchy: assign each raw-field
+   land cell by downhill tracing to a deterministic local sink, then select
+   the lowest valid spill edge for each sink basin. Record minima, spill
+   points/elevations, volume-to-spill, parents, and downstream destinations.
+   This is not a full nested Fill-Spill-Merge tree; nested sub-depressions that
+   are not represented by separate downhill sinks are not emitted as separate
+   lakes.
 2. Solve basin water balances from inflow, direct precipitation, evaporation,
-   and outflow. Support dry, endorheic, overflowing, and merged basins.
-3. Couple inland water and ocean volume with a bounded fixed-point solve.
-   Preserve total water within the declared tolerance and fail on
-   non-convergence.
+   and outflow. Use a fixed `28%` evaporation fraction of direct precipitation.
+   Support dry, endorheic, overflowing, and merged basins; `merged` labels
+   carried excess inflow into a parent basin rather than a topological union.
+3. Resolve ocean level with a bounded fixed-point solve against inland storage
+   computed once from the initial sea level. Only ocean level is re-solved;
+   inland basin storage is not recomputed during the loop. Preserve total water
+   within the declared tolerance and fail on non-convergence.
 4. Extract river channels from normalized accumulated discharge. Enforce
    destinations, junctions, lake entry/exit, spill-point outlets, mouths, and
    no ordinary bifurcation. Calculate Strahler order.
 5. Vectorize and simplify rivers within drainage corridors. Extract current
-   coastlines and lake polygons from calculated water levels using wrapped,
-   topology-preserving contouring.
+   coastlines and lake boundaries from calculated water levels using wrapped
+   per-cell-edge boundary extraction. Derive bathymetric contour segments from
+   fixed depth thresholds with the same seam/pole-safe cell-edge method. This
+   is deterministic and topology-preserving for the represented grid boundary,
+   but is not marching-squares isoline contouring.
 6. Derive land/ocean polygons, islands, exposed shelf, bathymetric contours,
    hillshade, slopes, watersheds, rivers, and lakes as bounded renderer data.
 7. Add the physical-layer UI with useful defaults and clear loading/error
@@ -1000,16 +1055,16 @@ lakes, topologically valid rivers, and final derived coastline/bathymetry.
 ### Exit gate
 
 - Water balance satisfies `total = ocean + land ice + inland water` within the
-  locked tolerance, and the fixed-point loop converges within its maximum for
-  every valid fixture.
+  locked tolerance, and the ocean-level fixed-point loop converges within its
+  maximum for every valid fixture without recomputing inland storage.
 - Every lake is level, occupies a valid depression, and has outlet behavior
   consistent with its spill state. Dry and endorheic basins do not acquire
   invented outlets.
 - Every river terminates at ocean, lake, or a legitimate endorheic basin; no
   flow cycle, unexplained split, uphill segment, disconnected outlet, or mouth
   beyond the coastline remains.
-- Coastline, lake, and river geometry is valid, seam-safe, deterministic, and
-  within vector/resource budgets.
+- Coastline, lake, and river cell-edge geometry is valid, seam-safe,
+  deterministic, and within vector/resource budgets.
 - The accepted current world survives restart and clean rebuild with identical
   canonical source and derived-layer hashes.
 - In the native app, physical and authored layers render in the correct order;

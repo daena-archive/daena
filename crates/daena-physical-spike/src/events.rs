@@ -2,16 +2,21 @@
 //!
 //! This module only produces an explicit materialization result. It does not
 //! persist anything and it does not modify the accepted physical source.
+//! Event rates are events per physical model year.
 
 use serde::{Deserialize, Serialize};
 
-use super::{hazards::HazardField, splitmix64, tectonics::TectonicWorld, Grid};
+use super::{
+    hazards::{self, HazardField, RATE_NANO, VOLCANIC_SOURCE_DERIVATION_VERSION},
+    splitmix64,
+    tectonics::TectonicWorld,
+    Grid,
+};
 
-pub const EVENT_MATERIALIZATION_VERSION: u16 = 1;
+pub const EVENT_MATERIALIZATION_VERSION: u16 = 2;
 pub const MAX_INTERVAL_OFFSET_YEARS: i64 = 100_000;
 pub const MAX_EVENTS: u32 = 128;
-const OCCURRENCE_SCALE: f64 = 0.001;
-const MAX_CELL_EXPECTED_EVENTS: f64 = 24.0;
+const MAX_EXPECTED_EVENTS: f64 = 1_024.0;
 const EARTHQUAKE_MIN_MAGNITUDE_MILLI: u32 = 4_000;
 const EARTHQUAKE_MAX_MAGNITUDE_MILLI: u32 = 8_500;
 const GUTENBERG_RICHTER_B_VALUE: f64 = 0.9;
@@ -40,8 +45,8 @@ impl NaturalEventKind {
 
     pub const fn model_label(self) -> &'static str {
         match self {
-            Self::Earthquake => "poisson-gutenberg-richter-v1",
-            Self::Eruption => "persistent-rate-v1",
+            Self::Earthquake => "poisson-gutenberg-richter-v2",
+            Self::Eruption => "persistent-rate-v2",
         }
     }
 }
@@ -91,7 +96,10 @@ pub struct MaterializedEvent {
     pub latitude_microdegrees: i32,
     pub magnitude_milli: u32,
     pub hazard_ppm: u32,
+    pub annual_rate_nano: u64,
     pub rate_per_million_years_ppm: u32,
+    pub sampled_center_id: Option<u32>,
+    pub volcanic_source_derivation_version: u16,
 }
 
 fn uniform_open01(seed: u64) -> f64 {
@@ -99,7 +107,7 @@ fn uniform_open01(seed: u64) -> f64 {
 }
 
 fn poisson(lambda: f64, seed: u64) -> u32 {
-    let lambda = lambda.clamp(0.0, MAX_CELL_EXPECTED_EVENTS);
+    let lambda = lambda.clamp(0.0, MAX_EXPECTED_EVENTS);
     if lambda == 0.0 {
         return 0;
     }
@@ -107,7 +115,7 @@ fn poisson(lambda: f64, seed: u64) -> u32 {
     let mut probability = (-lambda).exp();
     let mut cumulative = probability;
     let mut count = 0u32;
-    while threshold > cumulative && count < (MAX_CELL_EXPECTED_EVENTS as u32 * 2) {
+    while threshold > cumulative && count < (MAX_EXPECTED_EVENTS as u32 * 2) {
         count += 1;
         probability *= lambda / f64::from(count);
         cumulative += probability;
@@ -133,16 +141,31 @@ fn earthquake_magnitude_milli(seed: u64) -> u32 {
     ) as u32
 }
 
-fn eruption_magnitude_milli(rate_ppm: u32, seed: u64) -> u32 {
+fn eruption_magnitude_milli(annual_rate_nano: u64, seed: u64) -> u32 {
     let variability = (splitmix64(seed) % 401) as u32;
-    1_000 + rate_ppm / 2_000 + variability
+    1_000 + (annual_rate_nano / 20).min(2_000) as u32 + variability
 }
 
-/// Samples a bounded set of independent event occurrences. Cells are visited
-/// in descending persistent-rate order, with the cell index as a stable tie
-/// breaker. This makes the cap deterministic while retaining a Poisson draw
-/// per cell. Eruption rates use the same persistent field but do not imply
-/// aftershock or clustered sequences.
+fn sample_cell(rates: &[u64], mass: u64, seed: u64) -> usize {
+    if mass == 0 {
+        return 0;
+    }
+    let mut remaining = (splitmix64(seed) % mass) + 1;
+    for (cell, rate) in rates.iter().enumerate() {
+        if *rate == 0 {
+            continue;
+        }
+        if remaining <= *rate {
+            return cell;
+        }
+        remaining -= *rate;
+    }
+    rates.len().saturating_sub(1)
+}
+
+/// Samples occurrences from the complete annual-rate field. `N ~ Poisson(Λ)`
+/// with `Λ = total_annual_rate * years`, then each location is drawn from the
+/// normalized rate mass. `maxEvents` only truncates the persisted list.
 pub fn sample_events(
     world: &TectonicWorld,
     hazards: &HazardField,
@@ -153,61 +176,69 @@ pub fn sample_events(
         .validate(world.grid)
         .map_err(|error| error.to_string())?;
     let rates = match request.event_kind {
-        NaturalEventKind::Earthquake => &hazards.earthquake_rate_per_million_years_ppm,
-        NaturalEventKind::Eruption => &hazards.eruption_rate_per_million_years_ppm,
+        NaturalEventKind::Earthquake => &hazards.earthquake_annual_rate_nano,
+        NaturalEventKind::Eruption => &hazards.volcanic_annual_rate_nano,
     };
     let hazard_values = match request.event_kind {
         NaturalEventKind::Earthquake => &hazards.earthquake_hazard_ppm,
         NaturalEventKind::Eruption => &hazards.volcanic_hazard_ppm,
     };
-    let mut cells = (0..world.grid.sample_count()).collect::<Vec<_>>();
-    cells.sort_unstable_by_key(|cell| (std::cmp::Reverse(rates[*cell]), *cell));
+    let million_year_rates = match request.event_kind {
+        NaturalEventKind::Earthquake => &hazards.earthquake_rate_per_million_years_ppm,
+        NaturalEventKind::Eruption => &hazards.eruption_rate_per_million_years_ppm,
+    };
     let interval_length = request.interval_length();
-    let mut events = Vec::new();
-
-    for cell in cells {
-        if events.len() >= request.max_events as usize {
-            break;
-        }
-        let lambda =
-            f64::from(rates[cell]) / 1_000_000.0 * interval_length as f64 * OCCURRENCE_SCALE;
-        let count = poisson(
-            lambda,
-            request.hazard_seed
-                ^ request.event_kind.tag()
-                ^ (cell as u64).wrapping_mul(0xd6e8_feb8_6659_fd93),
-        );
-        for ordinal in 0..count {
-            if events.len() >= request.max_events as usize {
-                break;
+    let mass = rates.iter().copied().fold(0u64, u64::saturating_add);
+    let lambda = (mass as f64 / RATE_NANO as f64) * interval_length as f64;
+    let count = poisson(
+        lambda,
+        request.hazard_seed ^ request.event_kind.tag() ^ 0x506f_6973_736f_6e31,
+    )
+    .min(request.max_events);
+    let mut events = Vec::with_capacity(count as usize);
+    for ordinal in 0..count {
+        let event_seed = request.hazard_seed
+            ^ request.event_kind.tag()
+            ^ u64::from(ordinal).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        let cell = sample_cell(rates, mass, event_seed ^ 0x6c6f_6361_7469_6f6e);
+        let point = center_microdegrees(world.grid, cell);
+        let year =
+            request.interval_start_years + (splitmix64(event_seed ^ 0x7469_6d65) % interval_length) as i64;
+        let magnitude_milli = match request.event_kind {
+            NaturalEventKind::Earthquake => earthquake_magnitude_milli(event_seed ^ 0x4551),
+            NaturalEventKind::Eruption => eruption_magnitude_milli(rates[cell], event_seed ^ 0x4552),
+        };
+        let sampled_center_id = match request.event_kind {
+            NaturalEventKind::Eruption => {
+                hazards::nearest_volcanic_source(hazards, cell).map(|source| source.stable_id)
             }
-            let event_seed = request.hazard_seed
-                ^ request.event_kind.tag()
-                ^ (cell as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
-                ^ u64::from(ordinal).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-            let year =
-                request.interval_start_years + (splitmix64(event_seed) % interval_length) as i64;
-            let point = center_microdegrees(world.grid, cell);
-            let magnitude_milli = match request.event_kind {
-                NaturalEventKind::Earthquake => earthquake_magnitude_milli(event_seed ^ 0x4551),
-                NaturalEventKind::Eruption => {
-                    eruption_magnitude_milli(rates[cell], event_seed ^ 0x4552)
-                }
-            };
-            events.push(MaterializedEvent {
-                event_kind: request.event_kind,
-                ordinal: events.len() as u32,
-                year_offset: year,
-                cell: cell as u32,
-                longitude_microdegrees: point[0],
-                latitude_microdegrees: point[1],
-                magnitude_milli,
-                hazard_ppm: hazard_values[cell],
-                rate_per_million_years_ppm: rates[cell],
-            });
-        }
+            NaturalEventKind::Earthquake => None,
+        };
+        events.push(MaterializedEvent {
+            event_kind: request.event_kind,
+            ordinal,
+            year_offset: year,
+            cell: cell as u32,
+            longitude_microdegrees: point[0],
+            latitude_microdegrees: point[1],
+            magnitude_milli,
+            hazard_ppm: hazard_values[cell],
+            annual_rate_nano: rates[cell],
+            rate_per_million_years_ppm: million_year_rates[cell],
+            sampled_center_id,
+            volcanic_source_derivation_version: VOLCANIC_SOURCE_DERIVATION_VERSION,
+        });
     }
     Ok(events)
+}
+
+pub fn expected_lambda(hazards: &HazardField, request: &EventMaterializationRequest) -> f64 {
+    let rates = match request.event_kind {
+        NaturalEventKind::Earthquake => &hazards.earthquake_annual_rate_nano,
+        NaturalEventKind::Eruption => &hazards.volcanic_annual_rate_nano,
+    };
+    let mass = rates.iter().copied().fold(0u64, u64::saturating_add);
+    (mass as f64 / RATE_NANO as f64) * request.interval_length() as f64
 }
 
 #[cfg(test)]
@@ -228,6 +259,16 @@ mod tests {
             .tectonics;
         let hazards = crate::hazards::derive_hazards(&world).unwrap();
         (world, hazards)
+    }
+
+    fn request(kind: NaturalEventKind, years: i64, seed: u64, max_events: u32) -> EventMaterializationRequest {
+        EventMaterializationRequest {
+            event_kind: kind,
+            interval_start_years: 0,
+            interval_end_years: years.saturating_sub(1).max(0),
+            max_events,
+            hazard_seed: seed,
+        }
     }
 
     #[test]
@@ -257,13 +298,13 @@ mod tests {
         let first = sample_events(&world, &hazards, &request).unwrap();
         let second = sample_events(&world, &hazards, &request).unwrap();
         assert_eq!(first, second);
-        assert!(!first.is_empty());
         assert!(first.len() <= MAX_EVENTS as usize);
         assert!(first.iter().all(|event| {
             (-180_000_000..=180_000_000).contains(&event.longitude_microdegrees)
                 && (-90_000_000..=90_000_000).contains(&event.latitude_microdegrees)
                 && (EARTHQUAKE_MIN_MAGNITUDE_MILLI..=EARTHQUAKE_MAX_MAGNITUDE_MILLI)
                     .contains(&event.magnitude_milli)
+                && event.sampled_center_id.is_none()
         }));
     }
 
@@ -278,11 +319,77 @@ mod tests {
             hazard_seed: 7_331,
         };
         let events = sample_events(&world, &hazards, &request).unwrap();
-        assert!(!events.is_empty());
+        assert_eq!(NaturalEventKind::Eruption.model_label(), "persistent-rate-v2");
         assert!(events.iter().all(|event| {
             event.event_kind == NaturalEventKind::Eruption
                 && event.magnitude_milli >= 1_000
-                && event.rate_per_million_years_ppm > 0
+                && event.volcanic_source_derivation_version == VOLCANIC_SOURCE_DERIVATION_VERSION
         }));
+    }
+
+    #[test]
+    fn display_cap_does_not_change_event_samples() {
+        let (world, hazards) = fixture();
+        let request = request(NaturalEventKind::Earthquake, 80_000, 99, 32);
+        let first = sample_events(&world, &hazards, &request).unwrap();
+        let limited = crate::hazards::to_geojson_with_limit(&world, &hazards, 4).unwrap();
+        let second = sample_events(&world, &hazards, &request).unwrap();
+        assert_eq!(first, second);
+        assert!(limited.contains("earthquake-hazard"));
+    }
+
+    #[test]
+    fn poisson_mean_tracks_rate_mass_lambda() {
+        let (world, hazards) = fixture();
+        let request = request(NaturalEventKind::Earthquake, 20_000, 1, MAX_EVENTS);
+        let lambda = expected_lambda(&hazards, &request);
+        assert!(lambda > 0.0);
+        let mut total = 0u64;
+        let ensemble = 48u32;
+        for seed in 0..ensemble {
+            let mut seeded = request.clone();
+            seeded.hazard_seed = u64::from(seed + 11);
+            total += sample_events(&world, &hazards, &seeded).unwrap().len() as u64;
+        }
+        let mean = total as f64 / f64::from(ensemble);
+        assert!((mean - lambda.min(MAX_EVENTS as f64)).abs() < lambda.max(1.0) * 0.75 + 1.5);
+    }
+
+    #[test]
+    fn magnitude_frequency_prefers_smaller_earthquakes() {
+        let (world, hazards) = fixture();
+        let request = EventMaterializationRequest {
+            event_kind: NaturalEventKind::Earthquake,
+            interval_start_years: 0,
+            interval_end_years: 100_000,
+            max_events: MAX_EVENTS,
+            hazard_seed: 17,
+        };
+        let mut small = 0u32;
+        let mut large = 0u32;
+        for seed in 0..24 {
+            let mut seeded = request.clone();
+            seeded.hazard_seed = 100 + seed;
+            for event in sample_events(&world, &hazards, &seeded).unwrap() {
+                if event.magnitude_milli < 5_500 {
+                    small += 1;
+                } else {
+                    large += 1;
+                }
+            }
+        }
+        assert!(small + large > 0);
+        assert!(small >= large);
+    }
+
+    #[test]
+    fn rate_mass_used_for_sampling_matches_the_field() {
+        let (_world, hazards) = fixture();
+        let mass: u64 = hazards
+            .earthquake_annual_rate_nano
+            .iter()
+            .copied()
+            .fold(0u64, u64::saturating_add);
+        assert_eq!(mass, hazards.metrics.earthquake_rate_mass_nano);
     }
 }

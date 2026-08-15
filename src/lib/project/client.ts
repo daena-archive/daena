@@ -260,6 +260,7 @@ export interface PhysicalHistoricalProducts {
   hazards: {
     derivationVersion: number;
     model: "relative-generated-v1";
+    volcanicSourceDerivationVersion: number;
     prediction: false;
   };
   derivedHashes: {
@@ -342,7 +343,10 @@ export interface PhysicalMaterializedEvent {
   latitudeMicrodegrees: number;
   magnitudeMilli: number;
   hazardPpm: number;
+  annualRateNano: number;
   ratePerMillionYearsPpm: number;
+  sampledCenterId: number | null;
+  volcanicSourceDerivationVersion: number;
 }
 export interface PhysicalEventMaterializationResult {
   requestId: string;

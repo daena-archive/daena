@@ -121,6 +121,15 @@ assert.ok(
   ),
   "historical forcing must bump the derivation version for the cosine model",
 );
+assert.ok(
+  readFileSync(resolve(root, "crates/daena-physical-spike/src/hazards.rs"), "utf8").includes(
+    "VOLCANIC_SOURCE_DERIVATION_VERSION",
+  ),
+  "volcanic origin/rate must be a versioned derivation from v2 centers",
+);
+for (const required of ["annualRateNano", "sampledCenterId", "volcanicSourceDerivationVersion"]) {
+  assert.ok(client.includes(required), `physical client event/hazard contract is missing ${required}`);
+}
 for (const required of [
   "components",
   "sensitivityPpm",

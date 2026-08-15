@@ -1037,11 +1037,11 @@ criterion.
 
 ## Iteration 5: lakes, rivers, coastlines, and current-world completion
 
-Implementation status (2026-08-15): Packet 6 (ADR 0029) replaced the ADR 0020
-triangle wave with a versioned three-component cosine forcing model, lagged ice
-diagnostics, and thermal expansion inside the coupled water solve. Historical
-derivation version is `2`. Remaining corrective work is Packet 7 hazard-rate
-semantics.
+Implementation status (2026-08-15): Packet 7 (ADR 0030) replaced truncated
+relative hazard sources with complete annual-rate fields, versioned volcanic
+source derivation, and Poisson sampling from full-field rate mass. Hazard
+derivation version is `3`. Remaining corrective work is Packet 8 release
+evidence.
 Accepted physical maps also persist a separate empty GeoJSON authored-overlay
 asset and locked physical layer definitions, including `ice`. Authored vector
 edits target that overlay asset only; the signed `.pworld` source cannot be
@@ -1159,10 +1159,8 @@ while keeping tectonic structure and final terrain fixed.
 
 ## Iteration 7: hazards and optional materialized natural history
 
-Status: hazard foundation, bounded event materialization, and the shared
-Timeline/Lore boundary implemented, including canonical chronology validation
-and optional-module degradation. See ADR 0021. Broader story projections are
-explicitly beyond this phase's acceptance gate.
+Status: implemented. See ADR 0021 and Packet 7 (ADR 0030). Broader story
+projections are explicitly beyond this phase's acceptance gate.
 
 ### Goal
 
@@ -1170,13 +1168,14 @@ Expose persistent tectonic/volcanic hazards and, only after that field is
 stable, allow explicitly generated natural events to become durable shared
 history.
 
-The current slice derives versioned relative/generated earthquake and volcanic
-hazard fields from accepted boundaries and volcanic centers. It exposes the
-strongest bounded samples as read-only styled layers, preserves the canonical
-physical source, and records the hazard derivation version in reopened/cache
-provenance. Hazard values and rates are model outputs, not real-world
-predictions. An explicit bounded request can now sample and accept durable
-natural events without changing the source or derived hazard cache.
+The current slice derives versioned generated earthquake and volcanic
+annual-rate fields from all accepted boundaries and volcanic causes. It exposes
+the strongest bounded samples as read-only styled layers after the complete
+field exists, preserves the canonical physical source, and records the hazard
+and volcanic-source derivation versions in reopened/cache provenance. Hazard
+values and rates are model outputs, not real-world predictions. An explicit
+bounded request samples durable natural events from the full-field rate mass
+without changing the source or derived hazard cache.
 
 ### Required work
 
@@ -1738,6 +1737,10 @@ merge/split, cancellation, stale-response suppression, and cache rebuild.
 
 #### Packet 7: give hazards and events stable rate semantics
 
+Status: implemented in `hazards.rs` and `events.rs` (ADR 0030). Hazard
+derivation version is `3`. Event materialization version is `2`. Generator
+version remains `11`.
+
 Implement the full field in `hazards.rs` before limiting renderer features:
 
 1. For each boundary segment, calculate an annual generated earthquake rate
@@ -1841,7 +1844,7 @@ proxy; analytic plane/cone/ridge fixtures are the Packet 3 morphology gates.
 Packet 4 (ADR 0027) replaced the ADR 0019 raw-sink hierarchy, frozen inland
 storage, and 28% precipitation evaporation rule with a Fill-Spill-Merge tree
 and a millimetre-quantized coupled lake/ocean solve. Remaining hydrology work
-is Packet 7 hazard-rate semantics, not a return to downhill-sink basins.
+is Packet 8 release evidence, not a return to downhill-sink basins.
 
 #### Packet 5 interpolated contours are in place
 
@@ -1862,22 +1865,15 @@ to a single-wave heuristic or pre-hydrology scalar ice subtraction. The UI
 must continue to call this generated physical chronology, not Earth orbital
 cycles or a prediction.
 
-#### Hazard rates need stable physical meaning
+#### Packet 7 hazard rates are in place
 
-ADR 0021 exposes normalized generated rates based on a bounded set of strongest
-sources. This is a valid read-only relative-hazard preview, but truncating
-sources and deriving volcanic activity/rates outside the canonical center
-records can make event rates depend on derivation limits rather than the whole
-physical system.
-
-Define whether volcanic origin, activity class, and long-term rate are
-canonical center properties or deterministic versioned derivations from
-canonical causes. Sum or otherwise account for all materially relevant sources
-before display sampling; the display feature cap must not change the hazard
-field or event distribution. Calibrate and name the time unit used by Poisson
-sampling, test rate stability when the render cap changes, and preserve the
-independent `hazardSeed` and all accepted-event provenance. Generated rates
-must remain clearly labelled as fictional model outputs.
+Packet 7 (ADR 0030) replaced ADR 0021's truncated strongest-source relative
+field with complete annual generated rates, versioned volcanic source
+derivation from v2 centers and divergent causes, and Poisson sampling from
+full-field rate mass. Display caps no longer change the field or event
+distribution. Remaining hazard work is packaged-native legend inspection and
+Packet 8 evidence, not a return to pre-field source truncation. Generated
+rates must remain clearly labelled as fictional model outputs.
 
 ### Required corrective sequence for agents
 

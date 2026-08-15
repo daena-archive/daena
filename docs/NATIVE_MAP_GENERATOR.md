@@ -996,7 +996,7 @@ products remain disposable and are exposed by the trusted native host for both
 temporary and reopened accepted maps.
 
 The Iteration 4 gate is covered by 31 pure-Rust tests, 62 Tauri tests, the
-exact v6 source/coastline golden matrix workflow, and the release benchmark
+exact v8 source/coastline golden matrix workflow, and the release benchmark
 recorded in `docs/maps/physical-map-budgets.md`.
 
 ### Goal
@@ -1531,6 +1531,10 @@ preference alone cannot select the tier.
 
 #### Packet 2: replace the tectonic scaffold
 
+Status: implemented in `tectonics.rs` (ADR 0025). Generator version is `8`.
+The `physical-world-v2` layout is unchanged. Continent layout (mega, dual, or
+scattered) is drawn from the craton seed.
+
 Implement these steps in `tectonics.rs`, keeping each intermediate field
 temporary unless the source schema explicitly persists it:
 
@@ -1831,21 +1835,11 @@ hashes may remain unit fixtures but cannot be the sole product-quality gate.
 
 #### Tectonic structure is still a scaffold
 
-Fibonacci-style plate sites are an acceptable approximately even seed
-distribution, but the ADRs do not demonstrate the required deterministic
-boundary irregularization or prove that final plate geometry has lost the
-visible nearest-site/Voronoi signature. The documented craton growth includes
-geodesic distance and correlated variation but does not yet establish related
-craton attraction, unrelated-group repulsion, detached terranes, or coherent
-continental grouping across plate boundaries. Persistent hotspots are centers;
-the required directional seamount/island-chain behavior is not demonstrated.
-
-Add numeric morphology gates for boundary straightness and junction regularity,
-continental connectedness and fragmentation, shelf continuity, and hotspot
-chain alignment. Add controlled cross-sections that distinguish continental
-collision, oceanic-continent subduction, oceanic-oceanic convergence, rifts,
-ridges, and transforms. A diagnostic layer looking plausible is supporting
-evidence, not proof of the cause chain.
+Packet 2 (ADR 0025) replaced nearest-site ownership, score-threshold crust, and
+lumped relief with a cost-field plate assignment, grouped craton expansion,
+named geodesic relief terms, and Euler-track hotspot chains. Remaining
+corrective work is Packet 3+ drainage/erosion coupling and any later visual
+LOD of tectonic diagnostics, not a return to the Voronoi scaffold.
 
 #### Erosion uses a surrogate rather than the specified stream-power model
 

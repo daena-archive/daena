@@ -27,6 +27,7 @@ for (const required of [
   "width: 384",
   "height: 192",
   "paintPhysicalSurface",
+  "let seed = $state(nextPhysicalSeed())",
   'id: "ice"',
   "evolutionPreset",
   "Terrain age",

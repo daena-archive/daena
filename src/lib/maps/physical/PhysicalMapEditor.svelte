@@ -29,8 +29,14 @@ let {
   onstate?: (status: string, detail: unknown) => void;
 } = $props();
 
+function nextPhysicalSeed(fallback = 0) {
+  const values = new Uint32Array(1);
+  crypto.getRandomValues(values);
+  return values[0] ?? fallback;
+}
+
 let name = $state("Physical World");
-let seed = $state(831429);
+let seed = $state(nextPhysicalSeed());
 let evolutionPreset = $state<"young" | "mature" | "old">("mature");
 let status = $state<PhysicalJobStatus | null>(null);
 let hydrology = $state<PhysicalHydrologyProducts | null>(null);
@@ -207,9 +213,7 @@ function publish(nextStatus: string, detail: unknown = null) {
 }
 
 function randomSeed() {
-  const values = new Uint32Array(1);
-  crypto.getRandomValues(values);
-  seed = values[0] ?? seed;
+  seed = nextPhysicalSeed(seed);
 }
 
 function destroyPreview() {

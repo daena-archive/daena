@@ -32,6 +32,9 @@ let widthPx = $state(2048);
 let heightPx = $state(1024);
 let dpi = $state(300);
 let offsetYears = $state(epochOffsetYears);
+let timeKind = $state<"physical-offset-year" | "calendar-year">("physical-offset-year");
+let authoredYear = $state(1);
+let presetName = $state("Atlas preset");
 let layers = $state<Array<{ id: string; name: string; enabled: boolean }>>([]);
 let previewJob = $state<AtlasJobStatus | null>(null);
 let exportJob = $state<AtlasJobStatus | null>(null);
@@ -62,6 +65,9 @@ function request(width: number, height: number): AtlasRenderRequest {
     dpi,
     format: "png",
     activeLayerIds: layers.filter((layer) => layer.enabled).map((layer) => layer.id),
+    timeKind,
+    authoredYear: timeKind === "calendar-year" ? authoredYear : null,
+    bindingRevision: null,
   };
 }
 
@@ -94,6 +100,9 @@ async function loadCapabilities() {
     return;
   }
   styleId = capabilities.styles[0] ?? "daena-atlas-relief";
+  if (capabilities.calendarBinding) {
+    authoredYear = capabilities.calendarBinding.calendarReferenceYear;
+  }
   layers = capabilities.layers.map((layer) => ({
     id: layer.id,
     name: layer.name,
@@ -144,6 +153,66 @@ async function saveExport() {
   } catch (error) {
     notice = error instanceof Error ? error.message : String(error);
   }
+}
+
+async function savePreset() {
+  notice = "";
+  try {
+    const fields = await project.listFields(mapId);
+    const current = fields.find((field) => field.namespace === "maps" && field.key === "atlasPresets");
+    const presets = Array.isArray((current?.value as { presets?: unknown[] } | undefined)?.presets)
+      ? ([...(current?.value as { presets: unknown[] }).presets] as Record<string, unknown>[])
+      : [];
+    presets.push({
+      id: crypto.randomUUID(),
+      name: presetName.trim() || "Atlas preset",
+      time:
+        timeKind === "calendar-year"
+          ? { kind: "calendar-year", authoredYear }
+          : { kind: "physical-offset-year", offsetYears },
+      detail: { algorithmVersion: 1, level: "detailed", variant: 0 },
+      style: { id: styleId, version: 1 },
+      activeLayerIds: layers.filter((layer) => layer.enabled).map((layer) => layer.id),
+      viewport: { kind: "world", projection: "equirectangular" },
+      output: { widthPx, heightPx, dpi, format: "png" },
+    });
+    await project.setField({
+      entity_id: mapId,
+      namespace: "maps",
+      key: "atlasPresets",
+      value: { schemaVersion: 1, presets },
+      revision: current?.revision ?? "",
+    });
+    capabilities = await project.atlasCapabilities(mapId);
+    notice = "Saved atlas preset.";
+  } catch (error) {
+    notice = error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function applyPreset(id: string) {
+  const fields = await project.listFields(mapId);
+  const current = fields.find((field) => field.namespace === "maps" && field.key === "atlasPresets");
+  const presets = ((current?.value as { presets?: Array<Record<string, unknown>> } | undefined)?.presets ?? []);
+  const preset = presets.find((item) => item.id === id);
+  if (!preset) return;
+  const time = preset.time as { kind?: string; offsetYears?: number; authoredYear?: number } | undefined;
+  if (time?.kind === "calendar-year" && typeof time.authoredYear === "number") {
+    timeKind = "calendar-year";
+    authoredYear = time.authoredYear;
+  } else if (typeof time?.offsetYears === "number") {
+    timeKind = "physical-offset-year";
+    offsetYears = time.offsetYears;
+  }
+  const style = preset.style as { id?: string } | undefined;
+  if (style?.id) styleId = style.id;
+  const output = preset.output as { widthPx?: number; heightPx?: number; dpi?: number } | undefined;
+  if (typeof output?.widthPx === "number") widthPx = output.widthPx;
+  if (typeof output?.heightPx === "number") heightPx = output.heightPx;
+  if (typeof output?.dpi === "number") dpi = output.dpi;
+  const ids = new Set((preset.activeLayerIds as string[] | undefined) ?? []);
+  layers = layers.map((layer) => ({ ...layer, enabled: ids.has(layer.id) }));
+  schedulePreview();
 }
 
 async function cancel(job: AtlasJobStatus | null) {
@@ -198,6 +267,32 @@ onDestroy(() => {
       oninput={() => schedulePreview()} />
     <output>{formatEpoch(offsetYears)}</output>
   </label>
+  {#if capabilities?.timeModes.includes("calendar-year")}
+    <label>
+      Time mode
+      <select bind:value={timeKind} onchange={() => schedulePreview()}>
+        <option value="physical-offset-year">Physical offset</option>
+        <option value="calendar-year">Authored year</option>
+      </select>
+    </label>
+    {#if timeKind === "calendar-year"}
+      <label>
+        Authored year
+        <input type="number" bind:value={authoredYear} oninput={() => schedulePreview()} />
+      </label>
+    {/if}
+  {/if}
+  {#if (capabilities?.presets.length ?? 0) > 0}
+    <label>
+      Preset
+      <select onchange={(event) => void applyPreset(event.currentTarget.value)}>
+        <option value="">Apply a saved preset</option>
+        {#each capabilities?.presets ?? [] as preset}
+          <option value={preset.id}>{preset.name}</option>
+        {/each}
+      </select>
+    </label>
+  {/if}
   <label>
     Style
     <select bind:value={styleId} onchange={() => schedulePreview()}>
@@ -249,6 +344,8 @@ onDestroy(() => {
     <button type="button" class="primary" onclick={() => void runExport()}>Render</button>
     <button type="button" onclick={() => void cancel(exportJob ?? previewJob)}>Cancel render</button>
     <button type="button" disabled={exportJob?.state !== "ready-to-save"} onclick={() => void saveExport()}>Save</button>
+    <input bind:value={presetName} aria-label="Preset name" />
+    <button type="button" onclick={() => void savePreset()}>Save preset</button>
     <button type="button" onclick={() => onclose?.()}>Close</button>
   </div>
 </section>

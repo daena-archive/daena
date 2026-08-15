@@ -1,0 +1,23 @@
+{
+  "id": "daena-atlas-political",
+  "version": 1,
+  "title": "Political atlas",
+  "fontId": "daena-atlas-bitmap-5x7",
+  "paperGrainPpm": 0,
+  "oceanDeep": [18, 48, 92],
+  "oceanShallow": [62, 118, 168],
+  "landLow": [214, 206, 178],
+  "landHigh": [198, 176, 132],
+  "landPeak": [236, 228, 204],
+  "lake": [72, 124, 164],
+  "ice": [236, 244, 252],
+  "river": [48, 92, 132],
+  "coast": [36, 40, 48],
+  "contour": [148, 132, 108],
+  "graticule": [180, 188, 196],
+  "frame": [28, 32, 40],
+  "background": [16, 24, 36],
+  "political": [176, 48, 48],
+  "labelInk": [24, 24, 28],
+  "defaultLayerIds": ["ocean", "relief", "lakes", "rivers", "coastlines", "labels", "graticule", "frame"]
+}

@@ -29,6 +29,7 @@ pub const PHYSICAL_EVENT_MAX_OFFSET_YEARS: i64 = 100_000;
 pub const PHYSICAL_EVENT_ON_MAP_RELATIONSHIP: &str = "daena.maps:physical-event-on-map";
 
 pub mod atlas;
+pub mod calendar;
 pub mod image;
 pub mod physical;
 pub mod vector;
@@ -1054,6 +1055,18 @@ pub fn validate_field(
             ));
         }
         Ok(())
+    } else if key == calendar::PHYSICAL_CALENDAR_BINDING_KEY {
+        if entity_type.as_deref() != Some(MAP_ENTITY_TYPE) {
+            return Err(invalid(
+                "physical calendar binding belongs only on a map entity",
+            ));
+        }
+        atlas::validate_calendar_binding(value)
+    } else if key == atlas::ATLAS_PRESETS_KEY {
+        if entity_type.as_deref() != Some(MAP_ENTITY_TYPE) {
+            return Err(invalid("atlas presets belong only on a map entity"));
+        }
+        atlas::validate_presets(value)
     } else {
         Ok(())
     }

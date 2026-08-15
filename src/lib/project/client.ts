@@ -333,6 +333,14 @@ export interface AtlasRenderCapabilities {
   maxPixelCount: number;
   supportsAuthoredLayers: boolean;
   supportsSemanticLayers: boolean;
+  calendarBinding: {
+    schemaVersion: number;
+    calendarId: string;
+    calendarReferenceYear: number;
+    physicalOffsetAtReference: number;
+    hasYearZero: boolean;
+  } | null;
+  presets: Array<{ id: string; name: string }>;
 }
 export interface AtlasRenderRequest {
   schemaVersion: number;
@@ -346,6 +354,9 @@ export interface AtlasRenderRequest {
   dpi: number;
   format: "png";
   activeLayerIds: string[];
+  timeKind: "physical-offset-year" | "calendar-year";
+  authoredYear: number | null;
+  bindingRevision: string | null;
 }
 export interface AtlasJobStatus {
   jobId: string;

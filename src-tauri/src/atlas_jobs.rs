@@ -235,6 +235,7 @@ fn spawn_render(
             &snapshot.request,
             None,
             Some(snapshot.forcing),
+            &snapshot.overlays,
             &mut progress,
         );
         let dir = match atlas_dir(&app) {

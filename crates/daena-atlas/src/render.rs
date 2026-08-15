@@ -119,6 +119,7 @@ pub fn render_rgba(
     style: &AtlasStyle,
     identity: &[u8],
     tile_order: &[u32],
+    overlays: &[crate::overlay::AuthoredFeature],
     progress: &mut dyn AtlasProgress,
 ) -> Result<Vec<u8>, AtlasError> {
     let width = request.width_px;
@@ -159,7 +160,7 @@ pub fn render_rgba(
         }
     }
     progress.report(AtlasPhase::Rendering, total, total)?;
-    composite_overlays(&mut buffer, request, style, hydrology, identity);
+    composite_overlays(&mut buffer, request, style, hydrology, identity, overlays);
     Ok(buffer)
 }
 

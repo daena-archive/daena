@@ -17,5 +17,7 @@
   "graticule": [128, 108, 82],
   "frame": [64, 42, 28],
   "background": [214, 198, 160],
+  "political": [112, 48, 36],
+  "labelInk": [64, 36, 24],
   "defaultLayerIds": ["ocean", "relief", "ice", "lakes", "rivers", "coastlines", "contours", "graticule", "frame"]
 }

@@ -2,6 +2,8 @@
 
 use daena_physical::hydrology::HydrologyField;
 
+use serde::{Deserialize, Serialize};
+
 use crate::detail::domain_key;
 use crate::detail::lattice_sample;
 use crate::projection::{
@@ -11,6 +13,16 @@ use crate::request::AtlasRenderRequest;
 use crate::style::AtlasStyle;
 
 const FRAME_PX: u32 = 8;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthoredFeature {
+    pub id: String,
+    pub layer_id: String,
+    pub kind: String,
+    pub label: Option<String>,
+    pub path: Vec<[i32; 2]>,
+}
 
 pub fn lon_to_x(lon_micro: i32, width: u32) -> i32 {
     let wrapped = wrap_lon_micro(i64::from(lon_micro));
@@ -22,7 +34,7 @@ pub fn lat_to_y(lat_micro: i32, height: u32) -> i32 {
     ((i64::from(lat) - i64::from(LAT_MICRO_MIN)) * i64::from(height) / LAT_MICRO_SPAN) as i32
 }
 
-fn put_pixel(
+pub(crate) fn put_pixel(
     buffer: &mut [u8],
     width: u32,
     height: u32,
@@ -106,6 +118,7 @@ pub fn composite_overlays(
     style: &AtlasStyle,
     hydrology: &HydrologyField,
     identity: &[u8],
+    overlays: &[AuthoredFeature],
 ) {
     let width = request.width_px;
     let height = request.height_px;
@@ -153,6 +166,45 @@ pub fn composite_overlays(
     if request.layer_enabled("graticule") {
         draw_graticule(buffer, width, height, style.graticule);
     }
+    let mut omitted_labels = 0_u32;
+    for feature in overlays {
+        if !request.layer_enabled(&feature.layer_id) && feature.kind != "semantic" {
+            continue;
+        }
+        if feature.kind == "semantic" && !request.active_layer_ids.iter().any(|id| id == &feature.layer_id) {
+            continue;
+        }
+        let color = if feature.kind == "semantic" {
+            style.label_ink
+        } else {
+            style.political
+        };
+        match feature.path.len() {
+            0 => {}
+            1 => {
+                let x = lon_to_x(feature.path[0][0], width);
+                let y = lat_to_y(feature.path[0][1], height);
+                put_pixel(buffer, width, height, x, y, color, 1_000_000);
+            }
+            _ => {
+                for window in feature.path.windows(2) {
+                    draw_geodesic_segment(
+                        buffer,
+                        width,
+                        height,
+                        window[0],
+                        window[1],
+                        color,
+                        900_000,
+                    );
+                }
+            }
+        }
+    }
+    if request.layer_enabled("labels") {
+        omitted_labels = crate::labels::draw_labels(buffer, width, height, overlays, style);
+    }
+    let _ = omitted_labels;
     if request.layer_enabled("frame") {
         for x in 0..width {
             for y in 0..FRAME_PX.min(height) {

@@ -11,7 +11,7 @@ pub const MAX_PIXEL_COUNT: u64 = 33_554_432;
 pub const TILE_SIZE: u32 = 512;
 pub const TILE_HALO: u32 = 0;
 
-pub const ATLAS_LAYER_ROLES: [&str; 9] = [
+pub const ATLAS_LAYER_ROLES: [&str; 10] = [
     "ocean",
     "relief",
     "ice",
@@ -21,7 +21,12 @@ pub const ATLAS_LAYER_ROLES: [&str; 9] = [
     "contours",
     "graticule",
     "frame",
+    "labels",
 ];
+
+fn default_time_kind() -> String {
+    "physical-offset-year".into()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -96,6 +101,12 @@ pub struct AtlasRenderRequest {
     pub format: AtlasFormat,
     #[serde(default)]
     pub active_layer_ids: Vec<String>,
+    #[serde(default = "default_time_kind")]
+    pub time_kind: String,
+    #[serde(default)]
+    pub authored_year: Option<i64>,
+    #[serde(default)]
+    pub binding_revision: Option<String>,
 }
 
 impl AtlasRenderRequest {
@@ -112,6 +123,9 @@ impl AtlasRenderRequest {
             dpi: 300,
             format: AtlasFormat::Png,
             active_layer_ids: Vec::new(),
+            time_kind: default_time_kind(),
+            authored_year: None,
+            binding_revision: None,
         })
     }
 
@@ -135,11 +149,17 @@ impl AtlasRenderRequest {
         self.active_layer_ids.sort();
         self.active_layer_ids.dedup();
         for id in &self.active_layer_ids {
-            if !ATLAS_LAYER_ROLES.contains(&id.as_str()) {
+            if !ATLAS_LAYER_ROLES.contains(&id.as_str()) && !looks_like_uuid(id) {
                 return Err(AtlasError::invalid(format!(
                     "unsupported atlas layer role: {id}"
                 )));
             }
+        }
+        if !matches!(
+            self.time_kind.as_str(),
+            "physical-offset-year" | "calendar-year"
+        ) {
+            return Err(AtlasError::invalid("unsupported atlas time kind"));
         }
         if self.width_px == 0 || self.height_px == 0 {
             return Err(AtlasError::invalid("output dimensions must be positive"));
@@ -208,11 +228,25 @@ pub fn physical_layer_role(layer_id: &str) -> Option<&'static str> {
         "rivers" => Some("rivers"),
         "bathymetric-contours" => Some("contours"),
         "islands" => Some("coastlines"),
+        "labels" => Some("labels"),
         other => ATLAS_LAYER_ROLES
             .iter()
             .copied()
             .find(|role| *role == other),
     }
+}
+
+fn looks_like_uuid(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 36
+        && bytes[8] == b'-'
+        && bytes[13] == b'-'
+        && bytes[18] == b'-'
+        && bytes[23] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 8 | 13 | 18 | 23) || byte.is_ascii_hexdigit())
 }
 
 #[cfg(test)]

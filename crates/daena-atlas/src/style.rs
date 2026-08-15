@@ -7,6 +7,7 @@ use crate::{AtlasError, CODE_REQUEST_INVALID};
 
 pub const RELIEF_STYLE_ID: &str = "daena-atlas-relief";
 pub const ANTIQUE_STYLE_ID: &str = "daena-atlas-antique";
+pub const POLITICAL_STYLE_ID: &str = "daena-atlas-political";
 pub const SPIKE_STYLE_ALIAS: &str = crate::SPIKE_STYLE_ID;
 pub const BUNDLED_FONT_ID: &str = "daena-atlas-bitmap-5x7";
 pub const STYLE_VERSION: u32 = 1;
@@ -15,6 +16,8 @@ const RELIEF_JSON: &str =
     include_str!("../../../docs/maps/atlas/styles/daena-atlas-relief.v1.json");
 const ANTIQUE_JSON: &str =
     include_str!("../../../docs/maps/atlas/styles/daena-atlas-antique.v1.json");
+const POLITICAL_JSON: &str =
+    include_str!("../../../docs/maps/atlas/styles/daena-atlas-political.v1.json");
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -37,6 +40,8 @@ pub struct AtlasStyle {
     pub graticule: [u8; 3],
     pub frame: [u8; 3],
     pub background: [u8; 3],
+    pub political: [u8; 3],
+    pub label_ink: [u8; 3],
     pub default_layer_ids: Vec<String>,
 }
 
@@ -46,14 +51,15 @@ impl AtlasStyle {
     }
 }
 
-pub fn bundled_style_ids() -> [&'static str; 2] {
-    [RELIEF_STYLE_ID, ANTIQUE_STYLE_ID]
+pub fn bundled_style_ids() -> [&'static str; 3] {
+    [RELIEF_STYLE_ID, ANTIQUE_STYLE_ID, POLITICAL_STYLE_ID]
 }
 
 pub fn resolve_style_id(id: &str) -> Result<&'static str, AtlasError> {
     match id {
         RELIEF_STYLE_ID | SPIKE_STYLE_ALIAS => Ok(RELIEF_STYLE_ID),
         ANTIQUE_STYLE_ID => Ok(ANTIQUE_STYLE_ID),
+        POLITICAL_STYLE_ID => Ok(POLITICAL_STYLE_ID),
         _ => Err(AtlasError::new(
             CODE_REQUEST_INVALID,
             format!("unavailable atlas style: {id}"),
@@ -66,6 +72,7 @@ pub fn load_style(id: &str) -> Result<(AtlasStyle, &'static str), AtlasError> {
     let raw = match canonical {
         RELIEF_STYLE_ID => RELIEF_JSON,
         ANTIQUE_STYLE_ID => ANTIQUE_JSON,
+        POLITICAL_STYLE_ID => POLITICAL_JSON,
         _ => {
             return Err(AtlasError::new(
                 CODE_REQUEST_INVALID,

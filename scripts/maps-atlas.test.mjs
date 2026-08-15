@@ -91,7 +91,11 @@ try {
     ["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "--offline", "--lib", "atlas_jobs"],
     { timeout: 180_000 },
   );
-  for (const name of ["daena-atlas-relief.v1.json", "daena-atlas-antique.v1.json"]) {
+  for (const name of [
+    "daena-atlas-relief.v1.json",
+    "daena-atlas-antique.v1.json",
+    "daena-atlas-political.v1.json",
+  ]) {
     const style = readFileSync(join(root, "docs/maps/atlas/styles", name), "utf8");
     assert.equal(style.toLowerCase().includes("http://"), false);
     assert.equal(style.toLowerCase().includes("https://"), false);
@@ -109,6 +113,10 @@ try {
   const editor = readFileSync(join(root, "src/lib/maps/native-vector/NativeVectorMapEditor.svelte"), "utf8");
   assert.match(editor, /atlasCapabilities/);
   assert.equal(/atlasSupported = descriptor\?\.provider/.test(editor), false);
+  run(
+    ["test", "--manifest-path", "crates/daena-core/Cargo.toml", "--locked", "--offline", "maps::calendar"],
+    { timeout: 120_000 },
+  );
   const physical = JSON.parse(
     run(
       [

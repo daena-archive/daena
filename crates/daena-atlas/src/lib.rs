@@ -6,6 +6,7 @@
 
 pub mod detail;
 pub mod encode;
+pub mod labels;
 pub mod overlay;
 pub mod projection;
 pub mod provenance;
@@ -18,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub const ATLAS_REQUEST_SCHEMA_VERSION: u32 = 1;
 pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 1;
 pub const ATLAS_SEED_POLICY_VERSION: u32 = 1;
-pub const ATLAS_RENDERER_VERSION: u32 = 2;
+pub const ATLAS_RENDERER_VERSION: u32 = 3;
 pub const ATLAS_PROVENANCE_SCHEMA_VERSION: u32 = 1;
 pub const SPIKE_STYLE_ID: &str = "daena-atlas-relief-spike";
 
@@ -159,6 +160,7 @@ pub fn render_from_source(
     request: &request::AtlasRenderRequest,
     tile_order: Option<&[u32]>,
     forcing: Option<daena_physical::history::HistoricalForcingParameters>,
+    overlays: &[overlay::AuthoredFeature],
     progress: &mut dyn AtlasProgress,
 ) -> Result<RenderedAtlas, AtlasError> {
     progress.report(AtlasPhase::Validating, 0, 1)?;
@@ -220,6 +222,7 @@ pub fn render_from_source(
         &style,
         identity,
         &order,
+        overlays,
         progress,
     )?;
     let source_sha256 = {
@@ -281,6 +284,7 @@ mod tests {
             &request,
             None,
             None,
+            &[],
             &mut NoopProgress,
         )
         .unwrap();
@@ -290,6 +294,7 @@ mod tests {
             &request,
             Some(&render::reverse_tile_order(request.tile_count())),
             None,
+            &[],
             &mut NoopProgress,
         )
         .unwrap();
@@ -299,6 +304,7 @@ mod tests {
             &request,
             Some(&render::shuffled_tile_order(request.tile_count(), 7)),
             None,
+            &[],
             &mut NoopProgress,
         )
         .unwrap();
@@ -323,6 +329,7 @@ mod tests {
             &AtlasRenderRequest::spike_png(256, 128).unwrap(),
             None,
             None,
+            &[],
             &mut NoopProgress,
         )
         .unwrap();
@@ -332,6 +339,7 @@ mod tests {
             &AtlasRenderRequest::spike_png(512, 256).unwrap(),
             None,
             None,
+            &[],
             &mut NoopProgress,
         )
         .unwrap();
@@ -368,6 +376,7 @@ mod tests {
             &AtlasRenderRequest::spike_png(64, 32).unwrap(),
             None,
             None,
+            &[],
             &mut FlagProgress { flag: &flag },
         )
         .unwrap_err();
@@ -385,6 +394,7 @@ mod tests {
             &relief,
             None,
             None,
+            &[],
             &mut NoopProgress,
         )
         .unwrap();
@@ -395,6 +405,7 @@ mod tests {
             &relief.normalize().unwrap(),
             None,
             None,
+            &[],
             &mut NoopProgress,
         )
         .unwrap();
@@ -414,6 +425,7 @@ mod tests {
             &no_rivers.normalize().unwrap(),
             None,
             None,
+            &[],
             &mut NoopProgress,
         )
         .unwrap();
@@ -426,6 +438,7 @@ mod tests {
             &cold.normalize().unwrap(),
             None,
             None,
+            &[],
             &mut NoopProgress,
         )
         .unwrap();
@@ -480,6 +493,7 @@ mod tests {
             &past.normalize().unwrap(),
             None,
             Some(forcing.clone()),
+            &[],
             &mut NoopProgress,
         )
         .unwrap();
@@ -489,6 +503,7 @@ mod tests {
             &future.normalize().unwrap(),
             None,
             Some(forcing),
+            &[],
             &mut NoopProgress,
         )
         .unwrap();
@@ -517,6 +532,7 @@ mod tests {
                 &request,
                 None,
                 None,
+                &[],
                 &mut progress,
             )
             .unwrap_err();

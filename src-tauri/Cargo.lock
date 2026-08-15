@@ -914,7 +914,7 @@ version = "0.1.0"
 dependencies = [
  "daena-ai",
  "daena-core",
- "daena-physical-spike",
+ "daena-physical",
  "daena-plugin-api",
  "daena-plugin-host",
  "keyring",
@@ -945,7 +945,7 @@ dependencies = [
 name = "daena-core"
 version = "0.1.0"
 dependencies = [
- "daena-physical-spike",
+ "daena-physical",
  "jpeg-decoder",
  "libc",
  "png 0.17.16",
@@ -958,7 +958,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "daena-physical-spike"
+name = "daena-physical"
 version = "0.1.0"
 dependencies = [
  "serde",

@@ -21,6 +21,7 @@ fn physical_jobs_are_session_scoped_and_expire() {
                 total: 1,
                 error: None,
                 error_code: None,
+                physical_identity: None,
             },
             result: None,
         },
@@ -38,11 +39,10 @@ fn physical_jobs_are_session_scoped_and_expire() {
 
 #[test]
 fn physical_climate_products_expose_derived_fields_without_source_data() {
-    let grid =
-        daena_physical_spike::Grid::new(8, 4, daena_physical_spike::DEFAULT_RADIUS_METRES).unwrap();
+    let grid = daena_physical::Grid::new(8, 4, daena_physical::DEFAULT_RADIUS_METRES).unwrap();
     let mut elevations = vec![500; grid.sample_count()];
     elevations[0] = -2_000;
-    let field = daena_physical_spike::PhysicalField {
+    let field = daena_physical::PhysicalField {
         grid,
         seed: 831_429,
         retry_index: 0,
@@ -50,10 +50,10 @@ fn physical_climate_products_expose_derived_fields_without_source_data() {
         sea_level_mm: 0,
         elevations_mm: elevations,
     };
-    let mut progress = daena_physical_spike::NoopProgress;
-    let climate = daena_physical_spike::climate::derive_current_climate(
+    let mut progress = daena_physical::NoopProgress;
+    let climate = daena_physical::climate::derive_current_climate(
         &field,
-        daena_physical_spike::climate::ClimateSettings::default_for(grid),
+        daena_physical::climate::ClimateSettings::default_for(grid),
         field.seed,
         field.retry_index,
         &mut progress,
@@ -82,14 +82,14 @@ fn physical_climate_products_expose_derived_fields_without_source_data() {
 
 #[test]
 fn physical_evolution_products_expose_routing_and_before_after_fields() {
-    let settings = daena_physical_spike::GenerationSettings {
+    let settings = daena_physical::GenerationSettings {
         width: 8,
         height: 4,
-        radius_metres: daena_physical_spike::DEFAULT_RADIUS_METRES,
+        radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
         target_land_fraction_ppm: 300_000,
     };
-    let mut progress = daena_physical_spike::NoopProgress;
-    let world = daena_physical_spike::generate_world(settings, 831_429, 0, &mut progress).unwrap();
+    let mut progress = daena_physical::NoopProgress;
+    let world = daena_physical::generate_world(settings, 831_429, 0, &mut progress).unwrap();
     let products = physical_evolution_products(&world.evolution);
     assert_eq!(products["derivationVersion"], 1);
     assert_eq!(products["preset"], "mature");
@@ -111,14 +111,14 @@ fn physical_evolution_products_expose_routing_and_before_after_fields() {
 
 #[test]
 fn physical_hydrology_products_expose_current_water_and_renderer_fields() {
-    let settings = daena_physical_spike::GenerationSettings {
+    let settings = daena_physical::GenerationSettings {
         width: 8,
         height: 4,
-        radius_metres: daena_physical_spike::DEFAULT_RADIUS_METRES,
+        radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
         target_land_fraction_ppm: 300_000,
     };
-    let mut progress = daena_physical_spike::NoopProgress;
-    let world = daena_physical_spike::generate_world(settings, 831_429, 0, &mut progress).unwrap();
+    let mut progress = daena_physical::NoopProgress;
+    let world = daena_physical::generate_world(settings, 831_429, 0, &mut progress).unwrap();
     let products = physical_hydrology_products(&world.hydrology);
     assert_eq!(products["derivationVersion"], 1);
     for key in [
@@ -143,16 +143,26 @@ fn physical_hydrology_products_expose_current_water_and_renderer_fields() {
 
 #[test]
 fn reopened_physical_hydrology_matches_the_generated_fixture() {
-    let settings = daena_physical_spike::GenerationSettings {
+    let settings = daena_physical::GenerationSettings {
         width: 8,
         height: 4,
-        radius_metres: daena_physical_spike::DEFAULT_RADIUS_METRES,
+        radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
         target_land_fraction_ppm: 300_000,
     };
-    let mut progress = daena_physical_spike::NoopProgress;
-    let generated =
-        daena_physical_spike::generate_world(settings, 831_429, 0, &mut progress).unwrap();
-    let generation = serde_json::json!({"settings": {"evolutionPreset": "mature"}});
+    let mut progress = daena_physical::NoopProgress;
+    let generated = daena_physical::generate_world(settings, 831_429, 0, &mut progress).unwrap();
+    let generation = serde_json::json!({"settings": {
+        "evolutionPreset": "mature",
+        "historicalForcing": {
+            "version": 1,
+            "temperatureAmplitudeCentiC": 180,
+            "periodYears": 12000,
+            "phaseOffsetYears": 0,
+            "landIceAmplitudePpm": 24000,
+            "iceResponseYears": 800,
+            "thermalExpansionPpmPerDegreeC": 210
+        }
+    }});
     let (derived_geojson, reopened) = derive_reopened_hydrology(
         &generated.tectonics,
         &generation,
@@ -165,20 +175,44 @@ fn reopened_physical_hydrology_matches_the_generated_fixture() {
 
 #[test]
 fn reopened_historical_products_preserve_terrain_and_report_water_balance() {
-    let settings = daena_physical_spike::GenerationSettings {
+    let settings = daena_physical::GenerationSettings {
         width: 8,
         height: 4,
-        radius_metres: daena_physical_spike::DEFAULT_RADIUS_METRES,
+        radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
         target_land_fraction_ppm: 300_000,
     };
-    let mut progress = daena_physical_spike::NoopProgress;
-    let generated =
-        daena_physical_spike::generate_world(settings, 831_429, 0, &mut progress).unwrap();
+    let mut progress = daena_physical::NoopProgress;
+    let generated = daena_physical::generate_world(settings, 831_429, 0, &mut progress).unwrap();
     let before = generated.tectonics.physical_field();
-    let generation = serde_json::json!({"settings": {"evolutionPreset": "mature"}});
-    let parameters =
-        daena_physical_spike::history::HistoricalForcingParameters::default_for(831_429, 0);
-    let mut history_progress = daena_physical_spike::NoopProgress;
+    let parameters = daena_physical::history::HistoricalForcingParameters::default_for(831_429, 0);
+    let generation = serde_json::json!({
+        "id": daena_core::maps::PHYSICAL_GENERATOR_ID,
+        "version": daena_core::maps::PHYSICAL_GENERATOR_VERSION,
+        "seed": 831_429,
+        "retryIndex": 0,
+        "settings": {
+            "width": settings.width,
+            "height": settings.height,
+            "radiusMetres": settings.radius_metres,
+            "targetLandFractionPpm": settings.target_land_fraction_ppm,
+            "referenceWaterInventoryM3": generated.report.reference_water_inventory_m3,
+            "plateCount": generated.tectonics.settings.plate_count,
+            "continentalPlateCount": generated.tectonics.settings.continental_plate_count,
+            "tectonicActivityPpm": generated.tectonics.settings.tectonic_activity_ppm,
+            "islandActivityPpm": generated.tectonics.settings.island_activity_ppm,
+            "evolutionPreset": "mature",
+            "historicalForcing": {
+                "version": parameters.version,
+                "temperatureAmplitudeCentiC": parameters.temperature_amplitude_centi_c,
+                "periodYears": parameters.period_years,
+                "phaseOffsetYears": parameters.phase_offset_years,
+                "landIceAmplitudePpm": parameters.land_ice_amplitude_ppm,
+                "iceResponseYears": parameters.ice_response_years,
+                "thermalExpansionPpmPerDegreeC": parameters.thermal_expansion_ppm_per_degree_c
+            }
+        }
+    });
+    let mut history_progress = daena_physical::NoopProgress;
     let (historical, persisted, geojson) = derive_reopened_historical(
         &generated.tectonics,
         &generation,
@@ -192,13 +226,20 @@ fn reopened_historical_products_preserve_terrain_and_report_water_balance() {
     assert_eq!(generated.tectonics.physical_field(), before);
     assert!(historical.hydrology.metrics.converged);
     assert!(historical.metrics.balance_error_m3 <= historical.hydrology.metrics.tolerance_m3);
-    let source = daena_physical_spike::tectonics::encode_source_v2(&generated.tectonics).unwrap();
+    let source = daena_physical::tectonics::encode_source_v2(&generated.tectonics).unwrap();
     let source_hash = format!("sha256:{:x}", Sha256::digest(&source));
-    let cache_key =
-        historical_cache_key(&source_hash, persisted, historical.metrics.normalized_epoch);
+    let physical_identity = daena_core::maps::physical::validate_source(&source, &generation)
+        .unwrap()
+        .identity;
+    let cache_key = historical_cache_key(
+        &physical_identity,
+        persisted,
+        historical.metrics.normalized_epoch,
+    );
     let response = historical_response(
         &generated.tectonics,
         &source_hash,
+        &physical_identity,
         cache_key,
         historical.metrics.epoch_offset_years,
         historical.metrics.normalized_epoch,
@@ -210,11 +251,11 @@ fn reopened_historical_products_preserve_terrain_and_report_water_balance() {
     assert_eq!(response["derivedHashes"]["tectonics"], source_hash);
     assert_eq!(
         response["hazards"]["derivationVersion"],
-        daena_physical_spike::hazards::HAZARD_DERIVATION_VERSION
+        daena_physical::hazards::HAZARD_DERIVATION_VERSION
     );
     assert_eq!(response["hazards"]["model"], "relative-generated-v1");
     let cache_key = response["cacheKey"].as_str().unwrap();
-    assert!(cache_key.contains(&source_hash));
+    assert!(cache_key.contains(&physical_identity));
     assert!(cache_key.contains("history-v1"));
     assert!(cache_key.contains("hazards-v2"));
     assert!(cache_key.contains(&format!("epoch:{}", historical.metrics.normalized_epoch)));
@@ -231,6 +272,7 @@ fn reopened_historical_products_preserve_terrain_and_report_water_balance() {
     let repeated = historical_response(
         &generated.tectonics,
         response["sourceHash"].as_str().unwrap(),
+        response["physicalIdentity"].as_str().unwrap(),
         response["cacheKey"].as_str().unwrap().to_string(),
         historical.metrics.epoch_offset_years,
         historical.metrics.normalized_epoch,
@@ -239,7 +281,7 @@ fn reopened_historical_products_preserve_terrain_and_report_water_balance() {
         geojson,
     );
     assert_eq!(response["derivedHashes"], repeated["derivedHashes"]);
-    let mut cold_progress = daena_physical_spike::NoopProgress;
+    let mut cold_progress = daena_physical::NoopProgress;
     let (cold, cold_parameters, cold_geojson) = derive_reopened_historical(
         &generated.tectonics,
         &generation,
@@ -251,7 +293,12 @@ fn reopened_historical_products_preserve_terrain_and_report_water_balance() {
     let cold_response = historical_response(
         &generated.tectonics,
         &source_hash,
-        historical_cache_key(&source_hash, cold_parameters, cold.metrics.normalized_epoch),
+        &physical_identity,
+        historical_cache_key(
+            &physical_identity,
+            cold_parameters,
+            cold.metrics.normalized_epoch,
+        ),
         cold.metrics.epoch_offset_years,
         cold.metrics.normalized_epoch,
         &cold,
@@ -288,8 +335,8 @@ fn superseded_historical_requests_cancel_at_progress_checkpoints() {
     let progress = HistoricalProgress::cancellation_only(generation.clone(), 1);
     generation.store(2, Ordering::Release);
     assert!(matches!(
-        daena_physical_spike::ProgressSink::check_cancelled(&progress),
-        Err(daena_physical_spike::PhysicalError::Cancelled)
+        daena_physical::ProgressSink::check_cancelled(&progress),
+        Err(daena_physical::PhysicalError::Cancelled)
     ));
 }
 

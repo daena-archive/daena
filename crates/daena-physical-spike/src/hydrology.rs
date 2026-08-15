@@ -15,7 +15,7 @@ use super::{
 use crate::tectonics::CrustType;
 
 pub const HYDROLOGY_DERIVATION_VERSION: u16 = 1;
-pub const MAX_HYDROLOGY_FEATURES: usize = 32_768;
+pub const MAX_HYDROLOGY_FEATURES: usize = 262_144;
 pub const WATER_BALANCE_TOLERANCE_PPM: u64 = 5_000;
 const MAX_FIXED_POINT_ITERATIONS: u32 = 24;
 const MAX_ENDORHEIC_DEPTH_MM: i32 = 250_000;

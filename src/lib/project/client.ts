@@ -110,6 +110,12 @@ export interface PhysicalJobStatus {
   total: number;
   error: string | null;
   errorCode: string | null;
+  physicalIdentity: string | null;
+}
+export interface AcceptedPhysicalMap {
+  entity: Entity;
+  source: Asset;
+  physicalIdentity: string;
 }
 export interface PhysicalClimateProducts {
   derivationVersion: number;
@@ -240,6 +246,7 @@ export interface PhysicalHydrologyProducts {
 export interface PhysicalHistoricalProducts {
   cacheKey: string;
   sourceHash: string;
+  physicalIdentity: string;
   epochOffsetYears: number;
   normalizedEpoch: number;
   chronology: PhysicalEpochMapping;
@@ -744,7 +751,7 @@ export const project = {
   physicalMapHydrology: (jobId: string) => invoke<PhysicalHydrologyProducts>("project_physical_hydrology", { jobId }),
   cancelPhysicalMap: (jobId: string) => invoke<PhysicalJobStatus>("project_physical_cancel", { jobId }),
   acceptPhysicalMap: (jobId: string, name: string, options?: MutationOptions) =>
-    invoke<{ entity: Entity; source: Asset }>("project_physical_accept", {
+    invoke<AcceptedPhysicalMap>("project_physical_accept", {
       jobId,
       name,
       requestId: requestId(options),

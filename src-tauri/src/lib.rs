@@ -73,16 +73,18 @@ struct PhysicalJobStatus {
     total: u32,
     error: Option<String>,
     error_code: Option<String>,
+    physical_identity: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 struct PhysicalJobResult {
     source: Vec<u8>,
     generation: serde_json::Value,
+    physical_identity: String,
     derived_geojson: String,
-    climate: daena_physical_spike::climate::ClimateField,
-    evolution: daena_physical_spike::evolution::EvolutionField,
-    hydrology: daena_physical_spike::hydrology::HydrologyField,
+    climate: daena_physical::climate::ClimateField,
+    evolution: daena_physical::evolution::EvolutionField,
+    hydrology: daena_physical::hydrology::HydrologyField,
 }
 
 struct PhysicalJob {
@@ -177,7 +179,7 @@ struct PhysicalGenerationInput {
 struct MaterializedPhysicalEvent {
     entity_id: String,
     #[serde(flatten)]
-    event: daena_physical_spike::events::MaterializedEvent,
+    event: daena_physical::events::MaterializedEvent,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -248,13 +250,13 @@ impl HistoricalProgress {
     }
 }
 
-impl daena_physical_spike::ProgressSink for HistoricalProgress {
+impl daena_physical::ProgressSink for HistoricalProgress {
     fn report(
         &mut self,
-        phase: daena_physical_spike::ProgressPhase,
+        phase: daena_physical::ProgressPhase,
         completed: u32,
         total: u32,
-    ) -> Result<(), daena_physical_spike::PhysicalError> {
+    ) -> Result<(), daena_physical::PhysicalError> {
         self.check_cancelled()?;
         if let Some(reporter) = &self.reporter {
             let _ = reporter.app.emit(
@@ -271,24 +273,24 @@ impl daena_physical_spike::ProgressSink for HistoricalProgress {
         Ok(())
     }
 
-    fn check_cancelled(&self) -> Result<(), daena_physical_spike::PhysicalError> {
+    fn check_cancelled(&self) -> Result<(), daena_physical::PhysicalError> {
         if self.generation.load(Ordering::Acquire) != self.expected {
-            return Err(daena_physical_spike::PhysicalError::Cancelled);
+            return Err(daena_physical::PhysicalError::Cancelled);
         }
         Ok(())
     }
 }
 
-impl daena_physical_spike::ProgressSink for PhysicalProgress {
+impl daena_physical::ProgressSink for PhysicalProgress {
     fn report(
         &mut self,
-        phase: daena_physical_spike::ProgressPhase,
+        phase: daena_physical::ProgressPhase,
         completed: u32,
         total: u32,
-    ) -> Result<(), daena_physical_spike::PhysicalError> {
+    ) -> Result<(), daena_physical::PhysicalError> {
         self.check_cancelled()?;
         let mut manager = self.jobs.lock().map_err(|_| {
-            daena_physical_spike::PhysicalError::Validation("job state is unavailable".into())
+            daena_physical::PhysicalError::Validation("job state is unavailable".into())
         })?;
         manager.reap_expired();
         if let Some(job) = manager.jobs.get_mut(&self.job_id) {
@@ -299,9 +301,9 @@ impl daena_physical_spike::ProgressSink for PhysicalProgress {
         Ok(())
     }
 
-    fn check_cancelled(&self) -> Result<(), daena_physical_spike::PhysicalError> {
+    fn check_cancelled(&self) -> Result<(), daena_physical::PhysicalError> {
         if self.cancel.load(Ordering::Relaxed) {
-            Err(daena_physical_spike::PhysicalError::Cancelled)
+            Err(daena_physical::PhysicalError::Cancelled)
         } else {
             Ok(())
         }
@@ -7043,7 +7045,7 @@ async fn project_physical_generate(
     let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     uuid::Uuid::parse_str(&request_id)
         .map_err(|_| "physical generation request ID must be a UUID".to_string())?;
-    let evolution_preset = daena_physical_spike::evolution::EvolutionPreset::parse(
+    let evolution_preset = daena_physical::evolution::EvolutionPreset::parse(
         input.evolution_preset.as_deref().unwrap_or("mature"),
     )
     .map_err(|error| error.to_string())?;
@@ -7052,13 +7054,14 @@ async fn project_physical_generate(
         job_id: job_id.clone(),
         request_id: request_id.clone(),
         state: "running".into(),
-        stage: daena_physical_spike::ProgressPhase::BuildingTectonicStructure
+        stage: daena_physical::ProgressPhase::BuildingTectonicStructure
             .label()
             .into(),
         completed: 0,
         total: 1,
         error: None,
         error_code: None,
+        physical_identity: None,
     };
     jobs.lock()
         .map_err(|_| "physical job state is unavailable".to_string())?
@@ -7082,17 +7085,17 @@ async fn project_physical_generate(
             job_id: worker_job_id.clone(),
             cancel: cancel.clone(),
         };
-        let settings = daena_physical_spike::GenerationSettings {
+        let settings = daena_physical::GenerationSettings {
             width: input.settings.width,
             height: input.settings.height,
             radius_metres: input.settings.radius_metres,
             target_land_fraction_ppm: input.settings.target_land_fraction_ppm,
         };
-        let outcome = daena_physical_spike::generate_world_with_evolution(
+        let outcome = daena_physical::generate_world_with_evolution(
             settings,
             input.seed,
             input.retry_index,
-            daena_physical_spike::evolution::EvolutionSettings {
+            daena_physical::evolution::EvolutionSettings {
                 preset: evolution_preset,
             },
             &mut progress,
@@ -7107,7 +7110,7 @@ async fn project_physical_generate(
         match outcome {
             Ok(world) => {
                 let historical_forcing =
-                    daena_physical_spike::history::HistoricalForcingParameters::default_for(
+                    daena_physical::history::HistoricalForcingParameters::default_for(
                         input.seed,
                         input.retry_index,
                     );
@@ -7127,7 +7130,7 @@ async fn project_physical_generate(
                         "tectonicActivityPpm": world.tectonics.settings.tectonic_activity_ppm,
                         "islandActivityPpm": world.tectonics.settings.island_activity_ppm,
                         "evolutionPreset": evolution_preset.as_str(),
-                        "hazardDerivationVersion": daena_physical_spike::hazards::HAZARD_DERIVATION_VERSION,
+                        "hazardDerivationVersion": daena_physical::hazards::HAZARD_DERIVATION_VERSION,
                         "historicalForcing": {
                             "version": historical_forcing.version,
                             "temperatureAmplitudeCentiC": historical_forcing.temperature_amplitude_centi_c,
@@ -7139,34 +7142,50 @@ async fn project_physical_generate(
                         },
                     }
                 });
+                let physical_identity =
+                    match daena_core::maps::physical::validate_source(&world.source, &generation) {
+                        Ok(validated) => validated.identity,
+                        Err(error) => {
+                            job.status.state = "failed".into();
+                            job.status.stage = daena_physical::ProgressPhase::ValidatingWorld
+                                .label()
+                                .into();
+                            job.status.error = Some(error.to_string());
+                            job.status.error_code =
+                                Some(daena_core::maps::physical::CODE_INVALID_SOURCE.into());
+                            return;
+                        }
+                    };
                 job.status.state = "completed".into();
-                job.status.stage = daena_physical_spike::ProgressPhase::ValidatingWorld
+                job.status.stage = daena_physical::ProgressPhase::ValidatingWorld
                     .label()
                     .into();
                 job.status.completed = 1;
                 job.status.total = 1;
                 job.status.error = None;
                 job.status.error_code = None;
+                job.status.physical_identity = Some(physical_identity.clone());
                 job.result = Some(PhysicalJobResult {
                     source: world.source,
                     generation,
+                    physical_identity,
                     derived_geojson: world.derived_geojson,
                     climate: world.climate,
                     evolution: world.evolution,
                     hydrology: world.hydrology,
                 });
             }
-            Err(daena_physical_spike::PhysicalError::Cancelled) => {
+            Err(daena_physical::PhysicalError::Cancelled) => {
                 job.status.state = "cancelled".into();
-                job.status.stage = daena_physical_spike::ProgressPhase::ValidatingWorld
+                job.status.stage = daena_physical::ProgressPhase::ValidatingWorld
                     .label()
                     .into();
                 job.status.error = None;
-                job.status.error_code = Some(daena_physical_spike::CODE_GENERATOR_CANCELLED.into());
+                job.status.error_code = Some(daena_physical::CODE_GENERATOR_CANCELLED.into());
             }
             Err(error) => {
                 job.status.state = "failed".into();
-                job.status.stage = daena_physical_spike::ProgressPhase::ValidatingWorld
+                job.status.stage = daena_physical::ProgressPhase::ValidatingWorld
                     .label()
                     .into();
                 job.status.error = Some(error.to_string());
@@ -7254,9 +7273,7 @@ fn project_physical_preview(
         .ok_or_else(|| "physical job preview is not ready".to_string())
 }
 
-fn physical_climate_products(
-    climate: &daena_physical_spike::climate::ClimateField,
-) -> serde_json::Value {
+fn physical_climate_products(climate: &daena_physical::climate::ClimateField) -> serde_json::Value {
     serde_json::json!({
         "derivationVersion": climate.derivation_version,
         "width": climate.grid.width,
@@ -7283,7 +7300,7 @@ fn physical_climate_products(
 }
 
 fn physical_evolution_products(
-    evolution: &daena_physical_spike::evolution::EvolutionField,
+    evolution: &daena_physical::evolution::EvolutionField,
 ) -> serde_json::Value {
     serde_json::json!({
         "derivationVersion": evolution.derivation_version,
@@ -7329,7 +7346,7 @@ fn physical_evolution_products(
 }
 
 fn physical_hydrology_products(
-    hydrology: &daena_physical_spike::hydrology::HydrologyField,
+    hydrology: &daena_physical::hydrology::HydrologyField,
 ) -> serde_json::Value {
     serde_json::json!({
         "derivationVersion": hydrology.derivation_version,
@@ -7397,23 +7414,16 @@ fn physical_hydrology_products(
 
 fn historical_forcing_from_generation(
     generation: &serde_json::Value,
-    seed: u32,
-    retry_index: u32,
-) -> Result<daena_physical_spike::history::HistoricalForcingParameters, String> {
+) -> Result<daena_physical::history::HistoricalForcingParameters, String> {
     let Some(value) = generation
         .get("settings")
         .and_then(|settings| settings.get("historicalForcing"))
     else {
-        return Ok(
-            daena_physical_spike::history::HistoricalForcingParameters::default_for(
-                seed,
-                retry_index,
-            ),
-        );
+        return Err("historicalForcing is required for physical sources".into());
     };
     let settings: daena_core::maps::HistoricalForcingSettings =
         serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
-    let parameters = daena_physical_spike::history::HistoricalForcingParameters {
+    let parameters = daena_physical::history::HistoricalForcingParameters {
         version: settings.version,
         temperature_amplitude_centi_c: settings.temperature_amplitude_centi_c,
         period_years: settings.period_years,
@@ -7427,7 +7437,7 @@ fn historical_forcing_from_generation(
 }
 
 fn historical_forcing_products(
-    parameters: daena_physical_spike::history::HistoricalForcingParameters,
+    parameters: daena_physical::history::HistoricalForcingParameters,
 ) -> serde_json::Value {
     serde_json::json!({
         "version": parameters.version,
@@ -7462,14 +7472,14 @@ fn clear_historical_epoch_cache() -> Result<(), String> {
 }
 
 fn historical_cache_key(
-    source_hash: &str,
-    forcing: daena_physical_spike::history::HistoricalForcingParameters,
+    physical_identity: &str,
+    forcing: daena_physical::history::HistoricalForcingParameters,
     normalized_epoch: i64,
 ) -> String {
     format!(
-        "{source_hash}|history-v{}|hazards-v{}|epoch:{normalized_epoch}|forcing:{}:{}:{}:{}:{}:{}:{}",
-        daena_physical_spike::history::HISTORICAL_DERIVATION_VERSION,
-        daena_physical_spike::hazards::HAZARD_DERIVATION_VERSION,
+        "{physical_identity}|history-v{}|hazards-v{}|epoch:{normalized_epoch}|forcing:{}:{}:{}:{}:{}:{}:{}",
+        daena_physical::history::HISTORICAL_DERIVATION_VERSION,
+        daena_physical::hazards::HAZARD_DERIVATION_VERSION,
         forcing.version,
         forcing.temperature_amplitude_centi_c,
         forcing.period_years,
@@ -7486,7 +7496,7 @@ fn hash_json_value(value: &serde_json::Value) -> String {
 }
 
 fn historical_derived_hashes(
-    world: &daena_physical_spike::tectonics::TectonicWorld,
+    world: &daena_physical::tectonics::TectonicWorld,
     source_hash: &str,
     geojson: &str,
     climate: &serde_json::Value,
@@ -7519,15 +7529,15 @@ fn begin_historical_epoch_request(map_entity_id: &str) -> Result<(Arc<AtomicU64>
 }
 
 fn derive_reopened_hydrology(
-    world: &daena_physical_spike::tectonics::TectonicWorld,
+    world: &daena_physical::tectonics::TectonicWorld,
     generation: &serde_json::Value,
     reference_water_inventory_m3: u64,
-) -> Result<(String, daena_physical_spike::hydrology::HydrologyField), String> {
+) -> Result<(String, daena_physical::hydrology::HydrologyField), String> {
     let field = world.physical_field();
-    let mut progress = daena_physical_spike::NoopProgress;
-    let climate = daena_physical_spike::climate::derive_current_climate(
+    let mut progress = daena_physical::NoopProgress;
+    let climate = daena_physical::climate::derive_current_climate(
         &field,
-        daena_physical_spike::climate::ClimateSettings::default_for(field.grid),
+        daena_physical::climate::ClimateSettings::default_for(field.grid),
         world.seed,
         world.retry_index,
         &mut progress,
@@ -7537,11 +7547,11 @@ fn derive_reopened_hydrology(
         .get("settings")
         .and_then(|settings| settings.get("evolutionPreset"))
         .and_then(serde_json::Value::as_str)
-        .unwrap_or("mature");
-    let preset = daena_physical_spike::evolution::EvolutionPreset::parse(preset)
+        .ok_or_else(|| "evolutionPreset is required for physical sources".to_string())?;
+    let preset = daena_physical::evolution::EvolutionPreset::parse(preset)
         .map_err(|error| error.to_string())?;
-    let mut initial_progress = daena_physical_spike::NoopProgress;
-    let initial_world = daena_physical_spike::tectonics::generate_tectonic_world(
+    let mut initial_progress = daena_physical::NoopProgress;
+    let initial_world = daena_physical::tectonics::generate_tectonic_world(
         world.grid,
         world.settings,
         world.target_land_fraction_ppm,
@@ -7550,14 +7560,14 @@ fn derive_reopened_hydrology(
         &mut initial_progress,
     )
     .map_err(|error| format!("maps.physical: {error}"))?;
-    let evolution = daena_physical_spike::evolution::diagnostics_from_before_after(
+    let evolution = daena_physical::evolution::diagnostics_from_before_after(
         initial_world.elevations_mm,
         &field,
         &climate,
         preset,
     )
     .map_err(|error| format!("maps.physical: {error}"))?;
-    let hydrology = daena_physical_spike::hydrology::derive_hydrology_with_crust(
+    let hydrology = daena_physical::hydrology::derive_hydrology_with_crust(
         &field,
         &climate,
         &evolution.drainage,
@@ -7565,36 +7575,36 @@ fn derive_reopened_hydrology(
         Some(&world.crust_by_cell),
     )
     .map_err(|error| format!("maps.physical: {error}"))?;
-    let diagnostic = daena_physical_spike::tectonics::to_diagnostic_geojson(world)
+    let diagnostic = daena_physical::tectonics::to_diagnostic_geojson(world)
         .map_err(|error| format!("maps.physical: {error}"))?;
-    let hazards = daena_physical_spike::hazards::to_geojson(world)
+    let hazards = daena_physical::hazards::to_geojson(world)
         .map_err(|error| format!("maps.physical: {error}"))?;
-    let water = daena_physical_spike::hydrology::to_geojson(&hydrology)
+    let water = daena_physical::hydrology::to_geojson(&hydrology)
         .map_err(|error| format!("maps.physical: {error}"))?;
     let diagnostic_with_hazards =
-        daena_physical_spike::merge_geojson_features_for_host(&diagnostic, &hazards)?;
+        daena_physical::merge_geojson_features_for_host(&diagnostic, &hazards)?;
     let geojson =
-        daena_physical_spike::merge_geojson_features_for_host(&diagnostic_with_hazards, &water)?;
+        daena_physical::merge_geojson_features_for_host(&diagnostic_with_hazards, &water)?;
     Ok((geojson, hydrology))
 }
 
 fn derive_reopened_historical(
-    world: &daena_physical_spike::tectonics::TectonicWorld,
+    world: &daena_physical::tectonics::TectonicWorld,
     generation: &serde_json::Value,
     reference_water_inventory_m3: u64,
     epoch_offset_years: i64,
-    progress: &mut dyn daena_physical_spike::ProgressSink,
+    progress: &mut dyn daena_physical::ProgressSink,
 ) -> Result<
     (
-        daena_physical_spike::history::HistoricalWorld,
-        daena_physical_spike::history::HistoricalForcingParameters,
+        daena_physical::history::HistoricalWorld,
+        daena_physical::history::HistoricalForcingParameters,
         String,
     ),
     String,
 > {
-    let parameters = historical_forcing_from_generation(generation, world.seed, world.retry_index)?;
+    let parameters = historical_forcing_from_generation(generation)?;
     let field = world.physical_field();
-    let historical = daena_physical_spike::history::derive_historical_world(
+    let historical = daena_physical::history::derive_historical_world(
         &field,
         reference_water_inventory_m3,
         Some(&world.crust_by_cell),
@@ -7603,27 +7613,28 @@ fn derive_reopened_historical(
         progress,
     )
     .map_err(|error| format!("maps.physical: {error}"))?;
-    let diagnostic = daena_physical_spike::tectonics::to_diagnostic_geojson(world)
+    let diagnostic = daena_physical::tectonics::to_diagnostic_geojson(world)
         .map_err(|error| format!("maps.physical: {error}"))?;
-    let hazards = daena_physical_spike::hazards::to_geojson(world)
+    let hazards = daena_physical::hazards::to_geojson(world)
         .map_err(|error| format!("maps.physical: {error}"))?;
-    let water = daena_physical_spike::hydrology::to_geojson(&historical.hydrology)
+    let water = daena_physical::hydrology::to_geojson(&historical.hydrology)
         .map_err(|error| format!("maps.physical: {error}"))?;
     let diagnostic_with_hazards =
-        daena_physical_spike::merge_geojson_features_for_host(&diagnostic, &hazards)?;
+        daena_physical::merge_geojson_features_for_host(&diagnostic, &hazards)?;
     let geojson =
-        daena_physical_spike::merge_geojson_features_for_host(&diagnostic_with_hazards, &water)?;
+        daena_physical::merge_geojson_features_for_host(&diagnostic_with_hazards, &water)?;
     Ok((historical, parameters, geojson))
 }
 
 fn historical_response(
-    world: &daena_physical_spike::tectonics::TectonicWorld,
+    world: &daena_physical::tectonics::TectonicWorld,
     source_hash: &str,
+    physical_identity: &str,
     cache_key: String,
     epoch_offset_years: i64,
     normalized_epoch: i64,
-    historical: &daena_physical_spike::history::HistoricalWorld,
-    parameters: daena_physical_spike::history::HistoricalForcingParameters,
+    historical: &daena_physical::history::HistoricalWorld,
+    parameters: daena_physical::history::HistoricalForcingParameters,
     geojson: String,
 ) -> serde_json::Value {
     let climate = physical_climate_products(&historical.climate);
@@ -7633,6 +7644,7 @@ fn historical_response(
     serde_json::json!({
         "cacheKey": cache_key,
         "sourceHash": source_hash,
+        "physicalIdentity": physical_identity,
         "epochOffsetYears": epoch_offset_years,
         "normalizedEpoch": normalized_epoch,
         "chronology": {
@@ -7645,7 +7657,7 @@ fn historical_response(
         "climate": climate,
         "hydrology": hydrology,
         "hazards": {
-            "derivationVersion": daena_physical_spike::hazards::HAZARD_DERIVATION_VERSION,
+            "derivationVersion": daena_physical::hazards::HAZARD_DERIVATION_VERSION,
             "model": "relative-generated-v1",
             "prediction": false,
         },
@@ -7779,13 +7791,20 @@ async fn project_physical_accept(
             .clone()
             .ok_or_else(|| "physical job result is missing".to_string())?
     };
+    let expected_identity = result.physical_identity.clone();
     let accepted = with_core(state, move |core| {
-        core.project(trusted_shell())?.accept_physical_map(
+        let accepted = core.project(trusted_shell())?.accept_physical_map(
             name,
             result.source,
             result.generation,
             request_id.as_deref(),
-        )
+        )?;
+        if accepted.physical_identity != expected_identity {
+            return Err(CoreError::Validation(
+                "physical identity changed between generation and acceptance".into(),
+            ));
+        }
+        Ok(accepted)
     })
     .await?;
     jobs.lock()
@@ -7895,7 +7914,9 @@ async fn project_physical_derived_geojson(
                 CoreError::Validation("maps: physical generation is missing".into())
             })?;
         let bytes = project.asset_bytes(source_id.to_string())?;
-        let (world, report) = daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        let world = &validated.world;
+        let report = validated.report;
         let (geojson, _) =
             derive_reopened_hydrology(&world, &generation, report.reference_water_inventory_m3)
                 .map_err(CoreError::Validation)?;
@@ -7925,12 +7946,13 @@ async fn project_physical_derived_climate(
                 CoreError::Validation("maps: physical generation is missing".into())
             })?;
         let bytes = project.asset_bytes(source_id.to_string())?;
-        let (world, _) = daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        let world = &validated.world;
         let field = world.physical_field();
-        let mut progress = daena_physical_spike::NoopProgress;
-        let climate = daena_physical_spike::climate::derive_current_climate(
+        let mut progress = daena_physical::NoopProgress;
+        let climate = daena_physical::climate::derive_current_climate(
             &field,
-            daena_physical_spike::climate::ClimateSettings::default_for(field.grid),
+            daena_physical::climate::ClimateSettings::default_for(field.grid),
             world.seed,
             world.retry_index,
             &mut progress,
@@ -7962,26 +7984,29 @@ async fn project_physical_derived_evolution(
                 CoreError::Validation("maps: physical generation is missing".into())
             })?;
         let bytes = project.asset_bytes(source_id.to_string())?;
-        let (world, _) = daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        let world = &validated.world;
         let field = world.physical_field();
         let preset = generation
             .get("settings")
             .and_then(|settings| settings.get("evolutionPreset"))
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("mature");
-        let preset = daena_physical_spike::evolution::EvolutionPreset::parse(preset)
+            .ok_or_else(|| {
+                CoreError::Validation("evolutionPreset is required for physical sources".into())
+            })?;
+        let preset = daena_physical::evolution::EvolutionPreset::parse(preset)
             .map_err(|error| CoreError::Validation(error.to_string()))?;
-        let mut progress = daena_physical_spike::NoopProgress;
-        let climate = daena_physical_spike::climate::derive_current_climate(
+        let mut progress = daena_physical::NoopProgress;
+        let climate = daena_physical::climate::derive_current_climate(
             &field,
-            daena_physical_spike::climate::ClimateSettings::default_for(field.grid),
+            daena_physical::climate::ClimateSettings::default_for(field.grid),
             world.seed,
             world.retry_index,
             &mut progress,
         )
         .map_err(|error| CoreError::Validation(format!("maps.physical: {error}")))?;
-        let mut initial_progress = daena_physical_spike::NoopProgress;
-        let initial_world = daena_physical_spike::tectonics::generate_tectonic_world(
+        let mut initial_progress = daena_physical::NoopProgress;
+        let initial_world = daena_physical::tectonics::generate_tectonic_world(
             world.grid,
             world.settings,
             world.target_land_fraction_ppm,
@@ -7990,7 +8015,7 @@ async fn project_physical_derived_evolution(
             &mut initial_progress,
         )
         .map_err(|error| CoreError::Validation(format!("maps.physical: {error}")))?;
-        let evolution = daena_physical_spike::evolution::diagnostics_from_before_after(
+        let evolution = daena_physical::evolution::diagnostics_from_before_after(
             initial_world.elevations_mm,
             &field,
             &climate,
@@ -8023,7 +8048,9 @@ async fn project_physical_derived_hydrology(
                 CoreError::Validation("maps: physical generation is missing".into())
             })?;
         let bytes = project.asset_bytes(source_id.to_string())?;
-        let (world, report) = daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        let world = &validated.world;
+        let report = validated.report;
         let (_, hydrology) =
             derive_reopened_hydrology(&world, &generation, report.reference_water_inventory_m3)
                 .map_err(CoreError::Validation)?;
@@ -8058,15 +8085,16 @@ async fn project_physical_derived_epoch(
                 CoreError::Validation("maps: physical generation is missing".into())
             })?;
         let bytes = project.asset_bytes(source_id.to_string())?;
-        let (world, report) = daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        let world = &validated.world;
+        let report = validated.report;
+        let physical_identity = validated.identity.clone();
         let forcing =
-            historical_forcing_from_generation(&generation, world.seed, world.retry_index)
-                .map_err(CoreError::Validation)?;
-        let normalized_epoch =
-            daena_physical_spike::history::normalize_epoch_offset(epoch_offset_years)
-                .map_err(|error| CoreError::Validation(error.to_string()))?;
+            historical_forcing_from_generation(&generation).map_err(CoreError::Validation)?;
+        let normalized_epoch = daena_physical::history::normalize_epoch_offset(epoch_offset_years)
+            .map_err(|error| CoreError::Validation(error.to_string()))?;
         let source_hash = format!("sha256:{:x}", Sha256::digest(&bytes));
-        let cache_key = historical_cache_key(&source_hash, forcing, normalized_epoch);
+        let cache_key = historical_cache_key(&physical_identity, forcing, normalized_epoch);
         {
             let cache = historical_epoch_cache()
                 .lock()
@@ -8092,6 +8120,7 @@ async fn project_physical_derived_epoch(
         let value = historical_response(
             &world,
             &source_hash,
+            &physical_identity,
             cache_key.clone(),
             epoch_offset_years,
             normalized_epoch,
@@ -8130,7 +8159,7 @@ fn deterministic_event_location_id(request_id: &str, ordinal: u32) -> String {
 async fn project_physical_materialize_events(
     state: tauri::State<'_, SharedCore>,
     map_entity_id: String,
-    request: daena_physical_spike::events::EventMaterializationRequest,
+    request: daena_physical::events::EventMaterializationRequest,
     request_id: Option<String>,
 ) -> Result<PhysicalEventMaterializationResult, String> {
     let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -8159,21 +8188,22 @@ async fn project_physical_materialize_events(
             .cloned()
             .ok_or_else(|| CoreError::Validation("maps: physical generation is missing".into()))?;
         let bytes = project.asset_bytes(source_id.to_string())?;
-        let (world, _) = daena_core::maps::physical::validate_source(&bytes, &generation)?;
-        let hazards = daena_physical_spike::hazards::derive_hazards(&world)
+        let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        let world = &validated.world;
+        let hazards = daena_physical::hazards::derive_hazards(world)
             .map_err(|error| CoreError::Validation(error.to_string()))?;
-        let events = daena_physical_spike::events::sample_events(&world, &hazards, &request)
+        let events = daena_physical::events::sample_events(&world, &hazards, &request)
             .map_err(CoreError::Validation)?;
         let source_hash = format!("sha256:{:x}", Sha256::digest(&bytes));
         let generator_id = generation
             .get("id")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or(daena_physical_spike::GENERATOR_ID)
+            .unwrap_or(daena_physical::GENERATOR_ID)
             .to_owned();
         let generator_version = generation
             .get("version")
             .and_then(serde_json::Value::as_u64)
-            .unwrap_or(daena_physical_spike::GENERATOR_VERSION as u64);
+            .unwrap_or(daena_physical::GENERATOR_VERSION as u64);
         let retry_index = generation
             .get("retryIndex")
             .and_then(serde_json::Value::as_u64)
@@ -8191,8 +8221,8 @@ async fn project_physical_materialize_events(
                 let x = (f64::from(event.longitude_microdegrees) / 1_000_000.0 + 180.0) / 360.0;
                 let y = (f64::from(event.latitude_microdegrees) / 1_000_000.0 + 90.0) / 180.0;
                 let provenance = serde_json::json!({
-                    "materializationVersion": daena_physical_spike::events::EVENT_MATERIALIZATION_VERSION,
-                    "hazardDerivationVersion": daena_physical_spike::hazards::HAZARD_DERIVATION_VERSION,
+                    "materializationVersion": daena_physical::events::EVENT_MATERIALIZATION_VERSION,
+                    "hazardDerivationVersion": daena_physical::hazards::HAZARD_DERIVATION_VERSION,
                     "eventModel": event.event_kind.model_label(),
                     "eventKind": event.event_kind.label(),
                     "hazardSeed": request.hazard_seed,
@@ -8291,8 +8321,8 @@ async fn project_physical_materialize_events(
         Ok(PhysicalEventMaterializationResult {
             request_id,
             map_entity_id: response_map_id,
-            materialization_version: daena_physical_spike::events::EVENT_MATERIALIZATION_VERSION,
-            hazard_derivation_version: daena_physical_spike::hazards::HAZARD_DERIVATION_VERSION,
+            materialization_version: daena_physical::events::EVENT_MATERIALIZATION_VERSION,
+            hazard_derivation_version: daena_physical::hazards::HAZARD_DERIVATION_VERSION,
             prediction: false,
             events: materialized,
         })

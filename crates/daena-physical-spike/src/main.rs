@@ -1,6 +1,7 @@
-use daena_physical_spike::{
-    decode_source, generate_world, land_fraction, GenerationSettings, NoopProgress, DEFAULT_HEIGHT,
-    DEFAULT_RADIUS_METRES, DEFAULT_WIDTH, MAX_HEIGHT, MAX_WIDTH,
+use daena_physical::{
+    decode_source, generate_world, land_fraction, resolution, GenerationSettings, NoopProgress,
+    DEFAULT_RADIUS_METRES, PRODUCTION_DEFAULT_HEIGHT, PRODUCTION_DEFAULT_WIDTH,
+    PRODUCTION_MAX_HEIGHT, PRODUCTION_MAX_WIDTH,
 };
 use std::env;
 use std::fs;
@@ -8,6 +9,13 @@ use std::time::Instant;
 
 fn main() -> Result<(), String> {
     let args = env::args().skip(1).collect::<Vec<_>>();
+    let option = |name: &str| {
+        args.windows(2)
+            .find(|window| window[0] == name)
+            .map(|window| window[1].parse::<u32>())
+            .transpose()
+            .map_err(|error| format!("{name} must be an unsigned integer: {error}"))
+    };
     let emit_path = args
         .windows(2)
         .find(|window| window[0] == "--geojson")
@@ -16,11 +24,29 @@ fn main() -> Result<(), String> {
         .windows(2)
         .find(|window| window[0] == "--source")
         .map(|window| window[1].clone());
-    let (width, height) = if args.iter().any(|arg| arg == "--max") {
-        (MAX_WIDTH, MAX_HEIGHT)
-    } else {
-        (DEFAULT_WIDTH, DEFAULT_HEIGHT)
-    };
+    let (width, height) =
+        if let (Some(width), Some(height)) = (option("--width")?, option("--height")?) {
+            (width, height)
+        } else if args.iter().any(|arg| arg == "--max") {
+            (PRODUCTION_MAX_WIDTH, PRODUCTION_MAX_HEIGHT)
+        } else {
+            (PRODUCTION_DEFAULT_WIDTH, PRODUCTION_DEFAULT_HEIGHT)
+        };
+    if args.iter().any(|arg| arg == "--resolution-matrix") {
+        for assessment in resolution::assess_all() {
+            println!(
+                "{{\"width\":{},\"height\":{},\"tier\":\"{:?}\",\"cellWidthMetres\":{},\"minimumFeatureSamples\":{},\"internalShapeSamples\":{},\"productionEligibleByFeatures\":{}}}",
+                assessment.candidate.width,
+                assessment.candidate.height,
+                assessment.candidate.tier,
+                assessment.max_cell_width_metres,
+                assessment.minimum_feature_samples,
+                assessment.internal_shape_samples,
+                assessment.production_eligible(),
+            );
+        }
+        return Ok(());
+    }
     let started = Instant::now();
     let settings = GenerationSettings {
         width,

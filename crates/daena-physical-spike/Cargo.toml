@@ -1,16 +1,16 @@
 [package]
-name = "daena-physical-spike"
+name = "daena-physical"
 version = "0.1.0"
 edition = "2021"
 publish = false
 
 [lib]
-name = "daena_physical_spike"
+name = "daena_physical"
 path = "src/lib.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 
 [[bin]]
-name = "physical-map-spike"
+name = "physical-map"
 path = "src/main.rs"

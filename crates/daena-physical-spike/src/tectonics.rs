@@ -1474,6 +1474,14 @@ fn add_boundary_features(
     Ok(())
 }
 
+fn diagnostic_cell_stride(grid: Grid) -> u32 {
+    match grid.sample_count() {
+        0..=8_192 => 1,
+        8_193..=131_072 => 2,
+        _ => 4,
+    }
+}
+
 /// Emit all current tectonic diagnostics as derived, read-only vector layers.
 /// The canonical source remains the v2 binary; this output is disposable and
 /// can be regenerated from it after restart or cache deletion.
@@ -1496,31 +1504,35 @@ pub fn to_diagnostic_geojson(world: &TectonicWorld) -> Result<String, String> {
             ),
         )?;
     }
-    for (cell, plate) in world.plate_by_cell.iter().enumerate() {
-        add_diagnostic_feature(
-            &mut features,
-            diagnostic_feature(
-                &format!("plate-cell-{cell:05}"),
-                "tectonic-plates",
-                "region",
-                &format!("Plate {plate}"),
-                "Polygon",
-                &cell_polygon(world.grid, cell),
-            ),
-        )?;
-    }
-    for (cell, elevation) in world.elevations_mm.iter().enumerate() {
-        add_diagnostic_feature(
-            &mut features,
-            diagnostic_feature(
-                &format!("bathymetry-cell-{cell:05}"),
-                "bathymetry",
-                "custom",
-                &format!("Elevation {elevation} mm"),
-                "Polygon",
-                &cell_polygon(world.grid, cell),
-            ),
-        )?;
+    let stride = diagnostic_cell_stride(world.grid);
+    for row in (0..world.grid.height).step_by(stride as usize) {
+        for col in (0..world.grid.width).step_by(stride as usize) {
+            let cell = world.grid.index(row, col);
+            let plate = world.plate_by_cell[cell];
+            add_diagnostic_feature(
+                &mut features,
+                diagnostic_feature(
+                    &format!("plate-cell-{cell:05}"),
+                    "tectonic-plates",
+                    "region",
+                    &format!("Plate {plate} (LOD {stride})"),
+                    "Polygon",
+                    &cell_polygon(world.grid, cell),
+                ),
+            )?;
+            let elevation = world.elevations_mm[cell];
+            add_diagnostic_feature(
+                &mut features,
+                diagnostic_feature(
+                    &format!("bathymetry-cell-{cell:05}"),
+                    "bathymetry",
+                    "custom",
+                    &format!("Elevation {elevation} mm (LOD {stride})"),
+                    "Polygon",
+                    &cell_polygon(world.grid, cell),
+                ),
+            )?;
+        }
     }
     for (index, boundary) in world.boundaries.iter().copied().enumerate() {
         add_boundary_features(&mut features, world, index, boundary)?;

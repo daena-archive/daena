@@ -13,6 +13,7 @@ pub mod evolution;
 pub mod hazards;
 pub mod history;
 pub mod hydrology;
+pub mod resolution;
 pub mod tectonics;
 
 pub const SOURCE_MAGIC: [u8; 8] = *b"DAENAPW1";
@@ -23,7 +24,16 @@ pub const DEFAULT_HEIGHT: u32 = 32;
 pub const DEFAULT_RADIUS_METRES: u64 = 6_371_000;
 pub const MAX_WIDTH: u32 = 128;
 pub const MAX_HEIGHT: u32 = 64;
-pub const MAX_GEOJSON_FEATURES: usize = 32_768;
+pub const PRODUCTION_DEFAULT_WIDTH: u32 = 256;
+pub const PRODUCTION_DEFAULT_HEIGHT: u32 = 128;
+pub const PRODUCTION_MAX_WIDTH: u32 = 256;
+pub const PRODUCTION_MAX_HEIGHT: u32 = 128;
+pub const SUPPORTED_PREVIEW_MAX_WIDTH: u32 = 2048;
+pub const SUPPORTED_PREVIEW_MAX_HEIGHT: u32 = 1024;
+/// Measurement ceiling for derived products. Production selection still uses
+/// the recorded byte/time budgets; this is not a promise that every feature
+/// is suitable for one viewport payload.
+pub const MAX_GEOJSON_FEATURES: usize = 262_144;
 pub const CANCELLATION_LATENCY_BUDGET_MS: u128 = 100;
 pub const GENERATOR_ID: &str = "daena-physical-world";
 pub const GENERATOR_VERSION: u32 = 6;
@@ -267,8 +277,10 @@ pub struct Grid {
 
 impl Grid {
     pub fn new(width: u32, height: u32, radius_metres: u64) -> Result<Self, String> {
-        if !(4..=MAX_WIDTH).contains(&width) || !(2..=MAX_HEIGHT).contains(&height) {
-            return Err("grid dimensions exceed the iteration-0 bounds".into());
+        if !(4..=SUPPORTED_PREVIEW_MAX_WIDTH).contains(&width)
+            || !(2..=SUPPORTED_PREVIEW_MAX_HEIGHT).contains(&height)
+        {
+            return Err("grid dimensions exceed the supported preview bounds".into());
         }
         if radius_metres == 0 {
             return Err("planet radius must be positive".into());

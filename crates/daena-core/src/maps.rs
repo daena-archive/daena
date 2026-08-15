@@ -174,27 +174,16 @@ pub struct PhysicalMapGenerationSettings {
     pub tectonic_activity_ppm: u32,
     #[serde(rename = "islandActivityPpm")]
     pub island_activity_ppm: u32,
-    #[serde(
-        rename = "evolutionPreset",
-        default = "default_physical_evolution_preset"
-    )]
+    #[serde(rename = "evolutionPreset")]
     pub evolution_preset: String,
-    #[serde(
-        rename = "historicalForcing",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub historical_forcing: Option<HistoricalForcingSettings>,
+    #[serde(rename = "historicalForcing")]
+    pub historical_forcing: HistoricalForcingSettings,
     #[serde(
         rename = "hazardDerivationVersion",
         default,
         skip_serializing_if = "Option::is_none"
     )]
     pub hazard_derivation_version: Option<u16>,
-}
-
-fn default_physical_evolution_preset() -> String {
-    "mature".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

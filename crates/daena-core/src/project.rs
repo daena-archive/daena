@@ -179,9 +179,11 @@ pub struct AcceptedVectorMap {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcceptedPhysicalMap {
     pub entity: Entity,
     pub source: Asset,
+    pub physical_identity: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4341,7 +4343,6 @@ impl ProjectStore {
         generation: serde_json::Value,
         request_id: Option<&str>,
     ) -> Result<AcceptedPhysicalMap, CoreError> {
-        crate::maps::physical::validate_generation(&generation)?;
         let upload_hash = format!("sha256:{:x}", Sha256::digest(&bytes));
         let input_fingerprint = digest_bytes(
             &serde_json::to_vec(&serde_json::json!({
@@ -4363,7 +4364,7 @@ impl ProjectStore {
                 crate::maps::physical::CODE_INVALID_SOURCE
             )));
         }
-        crate::maps::physical::validate_source(&bytes, &generation)?;
+        let validated = crate::maps::physical::validate_source(&bytes, &generation)?;
         let content_hash = format!("sha256:{:x}", Sha256::digest(&bytes));
         let size = bytes.len() as i64;
         let authored_bytes = crate::maps::vector::empty_canonical_bytes();
@@ -4423,6 +4424,7 @@ impl ProjectStore {
         let accepted = AcceptedPhysicalMap {
             entity: entity.clone(),
             source: asset.clone(),
+            physical_identity: validated.identity,
         };
         let request_id = self.request_id(request_id)?;
         let result = serde_json::to_value(&accepted)
@@ -5938,6 +5940,32 @@ impl ProjectStore {
                 "field namespace and key are required".into(),
             ));
         }
+        let current_physical_identity = if field.namespace == crate::maps::MAP_NAMESPACE
+            && field.key == "map"
+        {
+            let current: Option<String> = self
+                .connection
+                .query_row(
+                    "SELECT value FROM entity_fields WHERE entity_id=?1 AND namespace=?2 AND key='map'",
+                    params![field.entity_id, crate::maps::MAP_NAMESPACE],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            current
+                .map(decode_field_value)
+                .filter(|value| {
+                    value
+                        .get("provider")
+                        .and_then(|provider| provider.get("id"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some(crate::maps::PHYSICAL_PROVIDER)
+                })
+                .map(|value| self.physical_identity_for_descriptor(&value))
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
         if field.namespace == crate::maps::MAP_NAMESPACE {
             crate::maps::validate_field(
                 &self.connection,
@@ -5945,6 +5973,20 @@ impl ProjectStore {
                 &field.key,
                 &field.value,
             )?;
+        }
+        if let Some(current_identity) = current_physical_identity {
+            let next_identity = self
+                .physical_identity_for_descriptor(&field.value)?
+                .ok_or_else(|| {
+                    CoreError::Validation(
+                        "physical identity fields are immutable; create a new map".into(),
+                    )
+                })?;
+            if next_identity != current_identity {
+                return Err(CoreError::Validation(
+                    "physical identity fields are immutable; create a new map".into(),
+                ));
+            }
         }
         if !field.revision.is_empty() {
             let current: Option<String> = self
@@ -5986,6 +6028,34 @@ impl ProjectStore {
         self.notify_export_worker()?;
         Ok(())
     }
+
+    fn physical_identity_for_descriptor(
+        &self,
+        descriptor: &serde_json::Value,
+    ) -> Result<Option<String>, CoreError> {
+        if descriptor
+            .get("provider")
+            .and_then(|provider| provider.get("id"))
+            .and_then(serde_json::Value::as_str)
+            != Some(crate::maps::PHYSICAL_PROVIDER)
+        {
+            return Ok(None);
+        }
+        let source_id = descriptor
+            .get("sourceAssetId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                CoreError::Validation("daena-physical maps require sourceAssetId".into())
+            })?;
+        let generation = descriptor.get("generation").ok_or_else(|| {
+            CoreError::Validation("daena-physical maps require generation".into())
+        })?;
+        let bytes = self.asset_bytes(source_id.to_owned())?;
+        Ok(Some(
+            crate::maps::physical::validate_source(&bytes, generation)?.identity,
+        ))
+    }
+
     pub fn list_fields(&self, entity_id: String) -> Result<Vec<FieldValue>, CoreError> {
         self.list_fields_unchecked(entity_id)
     }

@@ -30,6 +30,8 @@ pub struct ControlFields {
     pub lake_level_mm: Vec<i32>,
     pub mountain_influence_ppm: Vec<i32>,
     pub watershed_id: Vec<i32>,
+    pub basin_id: Vec<i32>,
+    pub lake_mask: Vec<i32>,
     pub sea_level_mm: i32,
 }
 
@@ -50,6 +52,8 @@ impl ControlFields {
             || hydrology.water_level_mm.len() != count
             || hydrology.lake_level_mm.len() != count
             || hydrology.watershed_id.len() != count
+            || hydrology.basin_by_cell.len() != count
+            || hydrology.lake_cells.len() != count
         {
             return Err(crate::AtlasError::invalid(
                 "control field sample count does not match the grid",
@@ -62,6 +66,8 @@ impl ControlFields {
         let mut climate_class = Vec::with_capacity(count);
         let mut ice_thickness_mm = Vec::with_capacity(count);
         let mut watershed_id = Vec::with_capacity(count);
+        let mut basin_id = Vec::with_capacity(count);
+        let mut lake_mask = Vec::with_capacity(count);
         for cell in 0..count {
             let continental = tectonics.crust_by_cell[cell] == CrustType::Continental;
             crust_influence_ppm.push(if continental {
@@ -76,6 +82,8 @@ impl ControlFields {
             ice_thickness_mm
                 .push(i32::try_from(hydrology.ice_thickness_mm[cell]).unwrap_or(i32::MAX));
             watershed_id.push(i32::try_from(hydrology.watershed_id[cell]).unwrap_or(i32::MAX));
+            basin_id.push(i32::try_from(hydrology.basin_by_cell[cell]).unwrap_or(i32::MAX));
+            lake_mask.push(i32::from(hydrology.lake_cells[cell]));
             climate_class.push(climate_class_at(
                 hydrology.ice_cells[cell],
                 climate.temperature_centi_c[cell],
@@ -96,6 +104,8 @@ impl ControlFields {
             lake_level_mm: hydrology.lake_level_mm.clone(),
             mountain_influence_ppm: mountain_influence_ppm(tectonics, &field.elevations_mm),
             watershed_id,
+            basin_id,
+            lake_mask,
             sea_level_mm: hydrology.sea_level_mm,
         })
     }
@@ -151,6 +161,14 @@ impl ControlFields {
 
     pub fn sample_watershed_id(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         self.watershed_id[nearest_cell(self.grid, lon_micro, lat_micro)]
+    }
+
+    pub fn sample_basin_id(&self, lon_micro: i32, lat_micro: i32) -> i32 {
+        self.basin_id[nearest_cell(self.grid, lon_micro, lat_micro)]
+    }
+
+    pub fn sample_lake_mask(&self, lon_micro: i32, lat_micro: i32) -> i32 {
+        self.lake_mask[nearest_cell(self.grid, lon_micro, lat_micro)]
     }
 
     pub fn sample_crust_class(&self, lon_micro: i32, lat_micro: i32) -> i32 {
@@ -289,6 +307,8 @@ mod tests {
             controls.sample_sea_level(0, 0),
             controls.sample_climate_class(0, 0),
             controls.sample_watershed_id(0, 0),
+            controls.sample_basin_id(0, 0),
+            controls.sample_lake_mask(0, 0),
             controls.sample_crust_class(0, 0),
         );
         assert_eq!(pole_safe_lat(91_000_000), 90_000_000);
@@ -309,6 +329,14 @@ mod tests {
         assert_eq!(
             controls.sample_climate_class(1_000, 1_000),
             controls.climate_class[cell]
+        );
+        assert_eq!(
+            controls.sample_basin_id(1_000, 1_000),
+            controls.basin_id[cell]
+        );
+        assert_eq!(
+            controls.sample_lake_mask(1_000, 1_000),
+            controls.lake_mask[cell]
         );
     }
 }

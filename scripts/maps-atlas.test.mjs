@@ -251,8 +251,19 @@ try {
   assert.match(terrainSpike, /mountain-orometry/);
   assert.match(terrainSpike, /not listed in capabilities/);
   assert.match(terrainSpike, /mountain influence|mountain-influence/);
+  const drainageSpike = readFileSync(join(root, "docs/adr/0041-atlas-studio-iteration-4.md"), "utf8");
+  assert.match(drainageSpike, /experimental refined drainage/);
+  assert.match(drainageSpike, /refined-drainage/);
+  assert.match(drainageSpike, /multi-scale-erosion/);
+  assert.match(drainageSpike, /atlas:tributary:v2/);
+  assert.match(drainageSpike, /not listed in capabilities/);
+  assert.match(drainageSpike, /Priority-Flood|priority-flood|Priority-Flood-style/);
   assert.match(readFileSync(join(root, "crates/daena-atlas/src/amplify.rs"), "utf8"), /build_amplification_model/);
   assert.match(readFileSync(join(root, "crates/daena-atlas/src/control.rs"), "utf8"), /sample_mountain_influence/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/refine.rs"), "utf8"), /build_refined_hydrology/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/refine.rs"), "utf8"), /atlas:valley:v2/);
+  assert.equal(readFileSync(join(root, "crates/daena-atlas/src/refine.rs"), "utf8").includes("AtlasDiskCache"), false);
+  assert.match(drainageSpike, /atlas:valley:v2/);
   const atlasCargo = readFileSync(join(root, "crates/daena-atlas/Cargo.toml"), "utf8");
   assert.equal(atlasCargo.includes("noise-rs") || atlasCargo.includes("geo =") || atlasCargo.includes("image ="), false);
   const studioView = readFileSync(join(root, "src/lib/maps/atlas/AtlasStudioView.svelte"), "utf8");
@@ -266,6 +277,8 @@ try {
   assert.equal(studioView.includes("getCanvas"), false);
   assert.equal(studioView.includes("new Date"), false);
   assert.equal(studioView.includes("algorithmVersion: 2"), false);
+  assert.equal(studioView.includes("tributary:v2"), false);
+  assert.equal(studioView.includes("valley:v2"), false);
 
   const report = {
     preview: { ...preview.summary, sha256: preview.hash, peakResidentBytes: preview.peakResidentBytes },

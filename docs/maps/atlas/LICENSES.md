@@ -11,8 +11,8 @@ The atlas renderer uses only:
 - `sha2` (`MIT OR Apache-2.0`);
 - `serde` / `serde_json` (`MIT OR Apache-2.0`).
 
-Iteration 3's experimental detail algorithm `2` adds no crates. `noise-rs`,
-`geo`, and `image` remain unused.
+Iteration 3's experimental detail algorithm `2` and iteration 4's experimental
+drainage `2` add no crates. `noise-rs`, `geo`, and `image` remain unused.
 
 No runtime URL is requested. Styles are rejected if they contain `http://`,
 `https://`, `javascript:`, `file:`, `<script`, or `shader`. Iteration 2 must

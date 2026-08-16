@@ -8,11 +8,13 @@ use daena_physical::{
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 
 pub const CODE_INVALID_GENERATION: &str = "physical.generator.invalid-settings";
 pub const CODE_UNSUPPORTED_GENERATOR_VERSION: &str = "physical.generator.unsupported-version";
 pub const CODE_INVALID_SOURCE: &str = "physical.source.invalid";
 pub const CODE_UNSUPPORTED_SOURCE_VERSION: &str = "physical.source.unsupported-version";
+pub const PHYSICAL_DERIVED_CACHE_RELATIVE: &str = ".daena/cache/physical-derived";
 
 /// The validated physical descriptor/source pair exposed to the host.
 ///
@@ -138,6 +140,30 @@ fn physical_identity(manifest: &PhysicalIdentityManifestV1, source_bytes: &[u8])
     push_manifest_u64(&mut input, source_bytes.len() as u64);
     input.extend_from_slice(source_bytes);
     format!("sha256:{:x}", Sha256::digest(input))
+}
+
+pub fn physical_derived_cache_dir(
+    project_root: &Path,
+    identity: &str,
+) -> Result<PathBuf, CoreError> {
+    let Some(hex) = identity.strip_prefix("sha256:") else {
+        return Err(CoreError::Validation(
+            "physical identity is not a sha256 digest".into(),
+        ));
+    };
+    if hex.len() != 64
+        || !hex
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase())
+    {
+        return Err(CoreError::Validation(
+            "physical identity is not a lowercase sha256 digest".into(),
+        ));
+    }
+    Ok(project_root
+        .join(PHYSICAL_DERIVED_CACHE_RELATIVE)
+        .join(format!("sha256-{hex}"))
+        .join(daena_physical::derived_cache::StaticDerivedPhysics::version_dir()))
 }
 
 pub fn is_reserved_layer_id(id: &str) -> bool {
@@ -573,6 +599,19 @@ mod tests {
         assert!(validated.identity[7..]
             .chars()
             .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase()));
+        assert_eq!(
+            physical_derived_cache_dir(
+                std::path::Path::new("/tmp/example-project"),
+                &validated.identity
+            )
+            .unwrap(),
+            std::path::PathBuf::from(format!(
+                "/tmp/example-project/.daena/cache/physical-derived/sha256-{}/{}",
+                &validated.identity[7..],
+                daena_physical::derived_cache::StaticDerivedPhysics::version_dir()
+            ))
+        );
+        assert!(PHYSICAL_DERIVED_CACHE_RELATIVE.starts_with(".daena/cache/"));
 
         let reordered = serde_json::json!({
             "settings": generation["settings"].clone(),

@@ -7564,11 +7564,21 @@ fn begin_historical_epoch_request(map_entity_id: &str) -> Result<(Arc<AtomicU64>
     Ok((generation, expected))
 }
 
+#[cfg(test)]
 fn derive_reopened_hydrology(
     world: &daena_physical::tectonics::TectonicWorld,
     generation: &serde_json::Value,
     reference_water_inventory_m3: u64,
 ) -> Result<(String, daena_physical::hydrology::HydrologyField), String> {
+    let physics = compute_static_derived(world, generation, reference_water_inventory_m3)?;
+    Ok((physics.geojson, physics.hydrology))
+}
+
+fn compute_static_derived(
+    world: &daena_physical::tectonics::TectonicWorld,
+    generation: &serde_json::Value,
+    reference_water_inventory_m3: u64,
+) -> Result<daena_physical::derived_cache::StaticDerivedPhysics, String> {
     let field = world.physical_field();
     let mut progress = daena_physical::NoopProgress;
     let climate = daena_physical::climate::derive_current_climate(
@@ -7621,9 +7631,63 @@ fn derive_reopened_hydrology(
         daena_physical::merge_geojson_features_for_host(&diagnostic, &hazards)?;
     let geojson =
         daena_physical::merge_geojson_features_for_host(&diagnostic_with_hazards, &water)?;
-    Ok((geojson, hydrology))
+    let ocean_curve = daena_physical::hydrology::ocean_volume_curve(&field)
+        .map_err(|error| format!("maps.physical: {error}"))?;
+    Ok(daena_physical::derived_cache::StaticDerivedPhysics {
+        climate,
+        evolution,
+        hydrology,
+        ocean_curve,
+        geojson,
+    })
 }
 
+fn load_or_fill_static_derived(
+    project_root: &str,
+    identity: &str,
+    world: &daena_physical::tectonics::TectonicWorld,
+    generation: &serde_json::Value,
+    reference_water_inventory_m3: u64,
+) -> Result<daena_physical::derived_cache::StaticDerivedPhysics, String> {
+    let cache_dir =
+        daena_core::maps::physical::physical_derived_cache_dir(Path::new(project_root), identity)
+            .map_err(|error| error.to_string())?;
+    if let Some(hit) = daena_physical::derived_cache::load(&cache_dir)
+        .map_err(|error| format!("maps.physical: {error}"))?
+    {
+        return Ok(hit);
+    }
+    let physics = compute_static_derived(world, generation, reference_water_inventory_m3)?;
+    let _ = daena_physical::derived_cache::save(&cache_dir, &physics);
+    Ok(physics)
+}
+
+fn write_static_derived_from_job(
+    project_root: &str,
+    result: &PhysicalJobResult,
+) -> Result<(), String> {
+    let cache_dir = daena_core::maps::physical::physical_derived_cache_dir(
+        Path::new(project_root),
+        &result.physical_identity,
+    )
+    .map_err(|error| error.to_string())?;
+    let world = daena_physical::decode_source(&result.source)?;
+    let ocean_curve = daena_physical::hydrology::ocean_volume_curve(&world.physical_field())
+        .map_err(|error| format!("maps.physical: {error}"))?;
+    daena_physical::derived_cache::save(
+        &cache_dir,
+        &daena_physical::derived_cache::StaticDerivedPhysics {
+            climate: result.climate.clone(),
+            evolution: result.evolution.clone(),
+            hydrology: result.hydrology.clone(),
+            ocean_curve,
+            geojson: result.derived_geojson.clone(),
+        },
+    )
+    .map_err(|error| format!("maps.physical: {error}"))
+}
+
+#[cfg(test)]
 fn derive_reopened_historical(
     world: &daena_physical::tectonics::TectonicWorld,
     generation: &serde_json::Value,
@@ -7649,6 +7713,49 @@ fn derive_reopened_historical(
         progress,
     )
     .map_err(|error| format!("maps.physical: {error}"))?;
+    let diagnostic = daena_physical::tectonics::to_diagnostic_geojson(world)
+        .map_err(|error| format!("maps.physical: {error}"))?;
+    let hazards = daena_physical::hazards::to_geojson(world)
+        .map_err(|error| format!("maps.physical: {error}"))?;
+    let water = daena_physical::hydrology::to_geojson(&historical.hydrology)
+        .map_err(|error| format!("maps.physical: {error}"))?;
+    let diagnostic_with_hazards =
+        daena_physical::merge_geojson_features_for_host(&diagnostic, &hazards)?;
+    let geojson =
+        daena_physical::merge_geojson_features_for_host(&diagnostic_with_hazards, &water)?;
+    Ok((historical, parameters, geojson))
+}
+
+fn derive_reopened_historical_from_static(
+    world: &daena_physical::tectonics::TectonicWorld,
+    generation: &serde_json::Value,
+    reference_water_inventory_m3: u64,
+    epoch_offset_years: i64,
+    static_physics: &daena_physical::derived_cache::StaticDerivedPhysics,
+    progress: &mut dyn daena_physical::ProgressSink,
+) -> Result<
+    (
+        daena_physical::history::HistoricalWorld,
+        daena_physical::history::HistoricalForcingParameters,
+        String,
+    ),
+    String,
+> {
+    let parameters = historical_forcing_from_generation(generation)?;
+    let field = world.physical_field();
+    let historical = daena_physical::history::derive_historical_world_from_static(
+        &field,
+        static_physics,
+        reference_water_inventory_m3,
+        Some(&world.crust_by_cell),
+        parameters,
+        epoch_offset_years,
+        progress,
+    )
+    .map_err(|error| format!("maps.physical: {error}"))?;
+    if epoch_offset_years == 0 {
+        return Ok((historical, parameters, static_physics.geojson.clone()));
+    }
     let diagnostic = daena_physical::tectonics::to_diagnostic_geojson(world)
         .map_err(|error| format!("maps.physical: {error}"))?;
     let hazards = daena_physical::hazards::to_geojson(world)
@@ -7830,6 +7937,7 @@ async fn project_physical_accept(
             .ok_or_else(|| "physical job result is missing".to_string())?
     };
     let expected_identity = result.physical_identity.clone();
+    let _ = write_static_derived_from_job(&project_id, &result);
     let accepted = with_core(state, move |core| {
         let accepted = core.project(trusted_shell())?.accept_physical_map(
             name,
@@ -7955,10 +8063,15 @@ async fn project_physical_derived_geojson(
         let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
         let world = &validated.world;
         let report = validated.report;
-        let (geojson, _) =
-            derive_reopened_hydrology(world, &generation, report.reference_water_inventory_m3)
-                .map_err(CoreError::Validation)?;
-        Ok(geojson)
+        let physics = load_or_fill_static_derived(
+            &project.info().ok_or(CoreError::ProjectNotOpen)?.root,
+            &validated.identity,
+            world,
+            &generation,
+            report.reference_water_inventory_m3,
+        )
+        .map_err(CoreError::Validation)?;
+        Ok(physics.geojson)
     })
     .await
 }
@@ -7986,17 +8099,15 @@ async fn project_physical_derived_climate(
         let bytes = project.asset_bytes(source_id.to_string())?;
         let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
         let world = &validated.world;
-        let field = world.physical_field();
-        let mut progress = daena_physical::NoopProgress;
-        let climate = daena_physical::climate::derive_current_climate(
-            &field,
-            daena_physical::climate::ClimateSettings::default_for(field.grid),
-            world.seed,
-            world.retry_index,
-            &mut progress,
+        let physics = load_or_fill_static_derived(
+            &project.info().ok_or(CoreError::ProjectNotOpen)?.root,
+            &validated.identity,
+            world,
+            &generation,
+            validated.report.reference_water_inventory_m3,
         )
-        .map_err(|error| CoreError::Validation(format!("maps.physical: {error}")))?;
-        Ok(physical_climate_products(&climate))
+        .map_err(CoreError::Validation)?;
+        Ok(physical_climate_products(&physics.climate))
     })
     .await
 }
@@ -8024,43 +8135,15 @@ async fn project_physical_derived_evolution(
         let bytes = project.asset_bytes(source_id.to_string())?;
         let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
         let world = &validated.world;
-        let field = world.physical_field();
-        let preset = generation
-            .get("settings")
-            .and_then(|settings| settings.get("evolutionPreset"))
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| {
-                CoreError::Validation("evolutionPreset is required for physical sources".into())
-            })?;
-        let preset = daena_physical::evolution::EvolutionPreset::parse(preset)
-            .map_err(|error| CoreError::Validation(error.to_string()))?;
-        let mut progress = daena_physical::NoopProgress;
-        let climate = daena_physical::climate::derive_current_climate(
-            &field,
-            daena_physical::climate::ClimateSettings::default_for(field.grid),
-            world.seed,
-            world.retry_index,
-            &mut progress,
+        let physics = load_or_fill_static_derived(
+            &project.info().ok_or(CoreError::ProjectNotOpen)?.root,
+            &validated.identity,
+            world,
+            &generation,
+            validated.report.reference_water_inventory_m3,
         )
-        .map_err(|error| CoreError::Validation(format!("maps.physical: {error}")))?;
-        let mut initial_progress = daena_physical::NoopProgress;
-        let initial_world = daena_physical::tectonics::generate_tectonic_world(
-            world.grid,
-            world.settings,
-            world.target_land_fraction_ppm,
-            world.seed,
-            world.retry_index,
-            &mut initial_progress,
-        )
-        .map_err(|error| CoreError::Validation(format!("maps.physical: {error}")))?;
-        let evolution = daena_physical::evolution::diagnostics_from_before_after(
-            initial_world.elevations_mm,
-            &field,
-            &climate,
-            preset,
-        )
-        .map_err(|error| CoreError::Validation(format!("maps.physical: {error}")))?;
-        Ok(physical_evolution_products(&evolution))
+        .map_err(CoreError::Validation)?;
+        Ok(physical_evolution_products(&physics.evolution))
     })
     .await
 }
@@ -8089,10 +8172,15 @@ async fn project_physical_derived_hydrology(
         let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
         let world = &validated.world;
         let report = validated.report;
-        let (_, hydrology) =
-            derive_reopened_hydrology(world, &generation, report.reference_water_inventory_m3)
-                .map_err(CoreError::Validation)?;
-        Ok(physical_hydrology_products(&hydrology))
+        let physics = load_or_fill_static_derived(
+            &project.info().ok_or(CoreError::ProjectNotOpen)?.root,
+            &validated.identity,
+            world,
+            &generation,
+            report.reference_water_inventory_m3,
+        )
+        .map_err(CoreError::Validation)?;
+        Ok(physical_hydrology_products(&physics.hydrology))
     })
     .await
 }
@@ -8141,11 +8229,20 @@ async fn project_physical_derived_epoch(
                 return Ok(value.clone());
             }
         }
-        let (historical, parameters, geojson) = derive_reopened_historical(
+        let physics = load_or_fill_static_derived(
+            &project.info().ok_or(CoreError::ProjectNotOpen)?.root,
+            &physical_identity,
+            world,
+            &generation,
+            report.reference_water_inventory_m3,
+        )
+        .map_err(CoreError::Validation)?;
+        let (historical, parameters, geojson) = derive_reopened_historical_from_static(
             world,
             &generation,
             report.reference_water_inventory_m3,
             normalized_epoch,
+            &physics,
             &mut HistoricalProgress::with_reporter(
                 request_generation,
                 expected_generation,

@@ -2170,7 +2170,12 @@ fn export_round_trip_preserves_entities_and_documents() {
         .unwrap();
     let target = ProjectStore::in_memory().unwrap();
     let imported = target
-        .import_json_with_mode_and_sync_with_request(&source.export_json().unwrap(), false, true, None)
+        .import_json_with_mode_and_sync_with_request(
+            &source.export_json().unwrap(),
+            false,
+            true,
+            None,
+        )
         .unwrap();
     assert_eq!(imported, 1);
     assert_eq!(target.list_entities().unwrap()[0].name, "Ash Court");
@@ -2546,7 +2551,12 @@ fn assets_and_module_state_survive_export_import() {
         .unwrap();
     let target = ProjectStore::in_memory().unwrap();
     target
-        .import_json_with_mode_and_sync_with_request(&source.export_json().unwrap(), false, true, None)
+        .import_json_with_mode_and_sync_with_request(
+            &source.export_json().unwrap(),
+            false,
+            true,
+            None,
+        )
         .unwrap();
     assert_eq!(target.list_assets(entity.id).unwrap()[0].id, asset.id);
     assert!(!target.is_module_enabled("daena.lore").unwrap());

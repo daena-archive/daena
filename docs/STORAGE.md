@@ -176,6 +176,8 @@ overlay disables packaged builtins and adds custom entity types, fields, and
 templates for that project only. Package manifest defaults remain immutable;
 see [`adr/0012-plugin-schema-overlays.md`](./adr/0012-plugin-schema-overlays.md).
 
-Search indexes, map projections, relationship indexes, and similar structures
-are derived from runtime rows and may be rebuilt without changing the
-portable project.
+Search indexes, map projections, relationship indexes, Atlas render
+intermediates under `.daena/cache/atlas/`, accepted physical-world physics
+under `.daena/cache/physical-derived/`, and similar structures are derived
+from runtime rows or the canonical `.pworld` and may be rebuilt without
+changing the portable project.

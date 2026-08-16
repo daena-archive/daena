@@ -645,8 +645,7 @@ fn build_depression_tree(field: &PhysicalField, sea_level_mm: i32) -> Depression
                 Some(BasinDestination::Ocean)
             );
             if !already_ocean {
-                let spill_cell =
-                    connecting_spill_cell(field, cell, id, &cell_catchment, &mut uf);
+                let spill_cell = connecting_spill_cell(field, cell, id, &cell_catchment, &mut uf);
                 spills[id as usize] = Some((
                     spill_cell,
                     field.elevations_mm[cell],
@@ -844,6 +843,102 @@ fn tolerance_m3(field: &PhysicalField, sea_level_mm: i32) -> u64 {
 /// This helper is intentionally independent of inland storage. Historical
 /// derivation uses it only to select the immutable terrain's initial basin
 /// topology before the existing inland/ocean fixed-point solve runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OceanVolumeSample {
+    pub sea_level_mm: i32,
+    pub ocean_volume_m3: u64,
+}
+
+/// Monotonic `(sea level → ocean volume)` samples for the canonical elevation field.
+///
+/// Built once from the accepted terrain. Historical epochs look up a waterline
+/// here instead of bisecting `ocean_volume` on the grid.
+pub fn ocean_volume_curve(field: &PhysicalField) -> Result<Vec<OceanVolumeSample>, PhysicalError> {
+    field.validate().map_err(PhysicalError::InvalidSource)?;
+    let mut order: Vec<usize> = (0..field.elevations_mm.len()).collect();
+    order.sort_unstable_by_key(|&cell| (field.elevations_mm[cell], cell));
+    let Some((&first, &last)) = order.first().zip(order.last()) else {
+        return Err(PhysicalError::coded(
+            PhysicalErrorCode::GeometryInvalid,
+            "ocean-volume curve requires at least one elevation sample",
+        ));
+    };
+    let minimum = field.elevations_mm[first];
+    let maximum = field.elevations_mm[last];
+    let mut samples = Vec::with_capacity(order.len().saturating_add(2));
+    samples.push(OceanVolumeSample {
+        sea_level_mm: minimum.saturating_sub(1),
+        ocean_volume_m3: 0,
+    });
+    let mut index = 0;
+    let mut sum_area = 0.0;
+    let mut sum_area_elev = 0.0;
+    while index < order.len() {
+        let level = field.elevations_mm[order[index]];
+        while index < order.len() && field.elevations_mm[order[index]] == level {
+            let cell = order[index];
+            let area = field.grid.cell_area(field.grid.row_col(cell).0);
+            sum_area += area;
+            sum_area_elev += area * f64::from(level);
+            index += 1;
+        }
+        let volume = ((sum_area * f64::from(level) - sum_area_elev) / 1_000.0)
+            .round()
+            .max(0.0) as u64;
+        samples.push(OceanVolumeSample {
+            sea_level_mm: level,
+            ocean_volume_m3: volume,
+        });
+    }
+    let top = maximum.saturating_add(1);
+    let top_volume = ((sum_area * f64::from(top) - sum_area_elev) / 1_000.0)
+        .round()
+        .max(0.0) as u64;
+    samples.push(OceanVolumeSample {
+        sea_level_mm: top,
+        ocean_volume_m3: top_volume,
+    });
+    Ok(samples)
+}
+
+pub fn lookup_ocean_level(
+    curve: &[OceanVolumeSample],
+    inventory_m3: u64,
+) -> Result<i32, PhysicalError> {
+    if curve.is_empty() {
+        return Err(PhysicalError::coded(
+            PhysicalErrorCode::GeometryInvalid,
+            "ocean-volume curve is empty",
+        ));
+    }
+    let mut low = 0usize;
+    let mut high = curve.len();
+    while low < high {
+        let mid = (low + high) / 2;
+        if curve[mid].ocean_volume_m3 >= inventory_m3 {
+            high = mid;
+        } else {
+            low = mid + 1;
+        }
+    }
+    let best = if low == 0 {
+        curve[0]
+    } else if low >= curve.len() {
+        curve[curve.len() - 1]
+    } else {
+        let left = curve[low - 1];
+        let right = curve[low];
+        if right.ocean_volume_m3.abs_diff(inventory_m3)
+            < left.ocean_volume_m3.abs_diff(inventory_m3)
+        {
+            right
+        } else {
+            left
+        }
+    };
+    Ok(best.sea_level_mm)
+}
+
 pub fn solve_ocean_level_for_inventory(
     field: &PhysicalField,
     inventory_m3: u64,
@@ -1338,11 +1433,7 @@ fn coordinate_for_cell(grid: Grid, cell: usize) -> [i32; 2] {
     ]
 }
 
-fn nearest_sea_cell(
-    field: &PhysicalField,
-    basin_by_cell: &[u32],
-    start: usize,
-) -> Option<usize> {
+fn nearest_sea_cell(field: &PhysicalField, basin_by_cell: &[u32], start: usize) -> Option<usize> {
     if field.elevations_mm[start] <= field.sea_level_mm {
         return Some(start);
     }
@@ -1653,8 +1744,8 @@ fn derive_rivers(
                 let (nrow, ncol) = field.grid.row_col(*neighbor);
                 let owner = basin_by_cell[*neighbor];
                 let owner_dest = basins.get(owner as usize).map(|item| item.destination);
-                let descendant = owner != OCEAN_LABEL
-                    && basin_is_descendant(basins, owner as usize, basin.id);
+                let descendant =
+                    owner != OCEAN_LABEL && basin_is_descendant(basins, owner as usize, basin.id);
                 let drains = owner != OCEAN_LABEL && basin_drains_to_ocean(basins, owner as usize);
                 eprintln!(
                     "  neighbor={} row={} col={} elev={} owner={} owner_dest={:?} descendant={} drains_ocean={} sea={}",

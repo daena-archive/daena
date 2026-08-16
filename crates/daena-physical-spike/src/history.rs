@@ -7,6 +7,7 @@
 use super::{
     climate::{self, ClimateField, ClimateSettings},
     derive_subsystem_seed,
+    derived_cache::StaticDerivedPhysics,
     evolution::{self, DrainageField},
     hydrology::{self, HydrologyField, ThermalExpansion},
     tectonics::CrustType,
@@ -329,6 +330,46 @@ pub fn derive_historical_world(
     epoch_offset_years: i64,
     progress: &mut dyn ProgressSink,
 ) -> Result<HistoricalWorld, PhysicalError> {
+    derive_historical_world_with_cache(
+        field,
+        None,
+        reference_water_inventory_m3,
+        crust_by_cell,
+        parameters,
+        epoch_offset_years,
+        progress,
+    )
+}
+
+pub fn derive_historical_world_from_static(
+    field: &PhysicalField,
+    static_physics: &StaticDerivedPhysics,
+    reference_water_inventory_m3: u64,
+    crust_by_cell: Option<&[CrustType]>,
+    parameters: HistoricalForcingParameters,
+    epoch_offset_years: i64,
+    progress: &mut dyn ProgressSink,
+) -> Result<HistoricalWorld, PhysicalError> {
+    derive_historical_world_with_cache(
+        field,
+        Some(static_physics),
+        reference_water_inventory_m3,
+        crust_by_cell,
+        parameters,
+        epoch_offset_years,
+        progress,
+    )
+}
+
+fn derive_historical_world_with_cache(
+    field: &PhysicalField,
+    static_physics: Option<&StaticDerivedPhysics>,
+    reference_water_inventory_m3: u64,
+    crust_by_cell: Option<&[CrustType]>,
+    parameters: HistoricalForcingParameters,
+    epoch_offset_years: i64,
+    progress: &mut dyn ProgressSink,
+) -> Result<HistoricalWorld, PhysicalError> {
     field.validate().map_err(PhysicalError::InvalidSource)?;
     parameters.validate()?;
     let normalized_epoch = normalize_epoch_offset(epoch_offset_years)?;
@@ -348,47 +389,72 @@ pub fn derive_historical_world(
     };
 
     progress.report(ProgressPhase::CalculatingClimate, 0, 1)?;
+    let remaining = reference_water_inventory_m3.max(1);
+    let expanded_inventory = (i128::from(remaining)
+        + i128::from(thermal_expansion_volume(
+            remaining,
+            temperature_offset,
+            parameters,
+        )))
+    .clamp(1, i128::from(u64::MAX)) as u64;
     let initial_sea_level = if normalized_epoch == 0 {
         field.sea_level_mm
+    } else if let Some(cache) = static_physics {
+        hydrology::lookup_ocean_level(&cache.ocean_curve, expanded_inventory)?
     } else {
-        let remaining = reference_water_inventory_m3.max(1);
-        hydrology::solve_ocean_level_for_inventory(
-            field,
-            (i128::from(remaining)
-                + i128::from(thermal_expansion_volume(
-                    remaining,
-                    temperature_offset,
-                    parameters,
-                )))
-            .clamp(1, i128::from(u64::MAX)) as u64,
-        )?
+        hydrology::solve_ocean_level_for_inventory(field, expanded_inventory)?
     };
     let mut epoch_field = field.clone();
     epoch_field.sea_level_mm = initial_sea_level;
-    let mut climate_settings = ClimateSettings::default_for(field.grid);
-    climate_settings.global_temperature_centi_c = climate_settings
-        .global_temperature_centi_c
-        .saturating_add(temperature_offset);
-    let climate = climate::derive_current_climate(
-        &epoch_field,
-        climate_settings,
-        field.seed,
-        field.retry_index,
-        progress,
-    )?;
+    let (climate, drainage) = if let Some(cache) = static_physics {
+        (
+            cache
+                .climate
+                .with_global_temperature_offset(temperature_offset),
+            cache.evolution.drainage.clone(),
+        )
+    } else {
+        let mut climate_settings = ClimateSettings::default_for(field.grid);
+        climate_settings.global_temperature_centi_c = climate_settings
+            .global_temperature_centi_c
+            .saturating_add(temperature_offset);
+        let climate = climate::derive_current_climate(
+            &epoch_field,
+            climate_settings,
+            field.seed,
+            field.retry_index,
+            progress,
+        )?;
+        progress.check_cancelled()?;
+        let drainage = evolution::derive_drainage(&epoch_field, &climate)?;
+        (climate, drainage)
+    };
     progress.report(ProgressPhase::CalculatingClimate, 1, 1)?;
     progress.check_cancelled()?;
-    let drainage = evolution::derive_drainage(&epoch_field, &climate)?;
-    progress.check_cancelled()?;
     progress.report(ProgressPhase::CalculatingWater, 0, 1)?;
-    let hydrology = hydrology::derive_hydrology_with_forcing(
-        &epoch_field,
-        &climate,
-        &drainage,
-        reference_water_inventory_m3,
-        crust_by_cell,
-        Some(expansion),
-    )?;
+    let hydrology = if let Some(cache) = static_physics {
+        if normalized_epoch == 0 {
+            cache.hydrology.clone()
+        } else {
+            hydrology::derive_hydrology_with_forcing(
+                &epoch_field,
+                &climate,
+                &drainage,
+                reference_water_inventory_m3,
+                crust_by_cell,
+                Some(expansion),
+            )?
+        }
+    } else {
+        hydrology::derive_hydrology_with_forcing(
+            &epoch_field,
+            &climate,
+            &drainage,
+            reference_water_inventory_m3,
+            crust_by_cell,
+            Some(expansion),
+        )?
+    };
     progress.check_cancelled()?;
     progress.report(ProgressPhase::CalculatingWater, 1, 1)?;
 
@@ -660,5 +726,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(derived, repeated);
+    }
+
+    #[test]
+    fn epoch_zero_from_static_cache_reuses_present_climate_and_hydrology() {
+        let world = fixture();
+        let physics = crate::derived_cache::StaticDerivedPhysics::from_world(&world).unwrap();
+        let parameters =
+            HistoricalForcingParameters::default_for(world.field.seed, world.field.retry_index);
+        let mut progress = NoopProgress;
+        let historical = derive_historical_world_from_static(
+            &world.field,
+            &physics,
+            world.report.reference_water_inventory_m3,
+            Some(&world.tectonics.crust_by_cell),
+            parameters,
+            0,
+            &mut progress,
+        )
+        .unwrap();
+        assert_eq!(historical.climate, world.climate);
+        assert_eq!(historical.drainage, world.evolution.drainage);
+        assert_eq!(historical.hydrology, world.hydrology);
+        assert_eq!(historical.metrics.temperature_offset_centi_c, 0);
+        assert_eq!(
+            historical.metrics.sea_level_mm,
+            world.hydrology.sea_level_mm
+        );
     }
 }

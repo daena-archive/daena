@@ -152,6 +152,40 @@ impl ClimateField {
         Ok(())
     }
 
+    pub fn with_global_temperature_offset(&self, offset_centi_c: i32) -> Self {
+        if offset_centi_c == 0 {
+            return self.clone();
+        }
+        let mut shifted = self.clone();
+        for temperature in &mut shifted.temperature_centi_c {
+            *temperature = temperature.saturating_add(offset_centi_c).clamp(
+                -MAX_CLIMATE_TEMPERATURE_CENTI_C,
+                MAX_CLIMATE_TEMPERATURE_CENTI_C,
+            );
+        }
+        shifted.metrics.mean_temperature_centi_c = shifted
+            .metrics
+            .mean_temperature_centi_c
+            .saturating_add(offset_centi_c)
+            .clamp(
+                -MAX_CLIMATE_TEMPERATURE_CENTI_C,
+                MAX_CLIMATE_TEMPERATURE_CENTI_C,
+            );
+        shifted.metrics.minimum_temperature_centi_c = shifted
+            .temperature_centi_c
+            .iter()
+            .copied()
+            .min()
+            .unwrap_or(shifted.metrics.minimum_temperature_centi_c);
+        shifted.metrics.maximum_temperature_centi_c = shifted
+            .temperature_centi_c
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(shifted.metrics.maximum_temperature_centi_c);
+        shifted
+    }
+
     pub fn validate_against(&self, field: &PhysicalField) -> Result<(), PhysicalError> {
         self.validate()?;
         field.validate().map_err(PhysicalError::InvalidSource)?;

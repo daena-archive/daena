@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 pub mod climate;
 pub mod contours;
+pub mod derived_cache;
 pub mod events;
 pub mod evolution;
 pub mod hazards;

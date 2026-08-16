@@ -54,9 +54,10 @@ fn main() -> Result<(), String> {
         radius_metres: DEFAULT_RADIUS_METRES,
         target_land_fraction_ppm: 300_000,
     };
+    let seed = option("--seed")?.unwrap_or(831_429);
     let mut progress = NoopProgress;
     let world =
-        generate_world(settings, 831_429, 0, &mut progress).map_err(|error| error.to_string())?;
+        generate_world(settings, seed, 0, &mut progress).map_err(|error| error.to_string())?;
     let generation_ms = started.elapsed().as_secs_f64() * 1000.0;
     let field = &world.field;
     let source = &world.source;
@@ -71,9 +72,10 @@ fn main() -> Result<(), String> {
         fs::write(path, geojson.as_bytes()).map_err(|error| error.to_string())?;
     }
     println!(
-        "{{\"width\":{},\"height\":{},\"seaLevelMm\":{},\"landFraction\":{:.12},\"sourceBytes\":{},\"geojsonBytes\":{},\"geojsonFeatures\":{},\"generationMs\":{:.3},\"geojsonMs\":{:.3}}}",
+        "{{\"width\":{},\"height\":{},\"seed\":{},\"seaLevelMm\":{},\"landFraction\":{:.12},\"sourceBytes\":{},\"geojsonBytes\":{},\"geojsonFeatures\":{},\"generationMs\":{:.3},\"geojsonMs\":{:.3}}}",
         field.grid.width,
         field.grid.height,
+        seed,
         field.sea_level_mm,
         land_fraction(&field.grid, &field.elevations_mm, field.sea_level_mm),
         source.len(),

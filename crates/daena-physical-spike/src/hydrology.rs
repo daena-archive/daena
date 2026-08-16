@@ -329,22 +329,25 @@ impl HydrologyField {
                 ));
             }
             if river.spill_outlet {
-                let Some(basin_id) = self.basin_by_cell.get(river.source_cell).copied() else {
-                    return Err(PhysicalError::coded(
-                        PhysicalErrorCode::HydrologyInvalidSink,
-                        "spill outlet source is outside a basin",
-                    ));
-                };
-                let Some(basin) = self.basins.get(basin_id as usize) else {
-                    return Err(PhysicalError::coded(
-                        PhysicalErrorCode::HydrologyInvalidSink,
-                        "spill outlet source points to a missing basin",
-                    ));
-                };
-                if basin.spill_cell != Some(river.source_cell)
-                    || basin.outflow_m3_per_year == 0
-                    || basin.destination != river.destination
-                {
+                let matched = self.basins.iter().any(|basin| {
+                    basin.spill_cell == Some(river.source_cell)
+                        && basin.outflow_m3_per_year > 0
+                        && basin.status != BasinStatus::Merged
+                        && basin.destination == river.destination
+                });
+                if !matched {
+                    let owner = self.basin_by_cell.get(river.source_cell).copied();
+                    eprintln!(
+                        "hydrology spill-mismatch debug: river={} source={} mouth={} dest={:?} owner={:?} owner_spill={:?} owner_outflow={:?} owner_dest={:?}",
+                        river.id,
+                        river.source_cell,
+                        river.mouth_cell,
+                        river.destination,
+                        owner,
+                        owner.and_then(|id| self.basins.get(id as usize).map(|basin| basin.spill_cell)),
+                        owner.and_then(|id| self.basins.get(id as usize).map(|basin| basin.outflow_m3_per_year)),
+                        owner.and_then(|id| self.basins.get(id as usize).map(|basin| basin.destination)),
+                    );
                     return Err(PhysicalError::coded(
                         PhysicalErrorCode::HydrologyInvalidSink,
                         "spill outlet does not match its overflowing basin",
@@ -383,6 +386,54 @@ fn basin_is_descendant(basins: &[Basin], mut cursor: usize, ancestor: usize) -> 
         cursor = parent;
     }
     false
+}
+
+fn basin_drains_to_ocean(basins: &[Basin], mut id: usize) -> bool {
+    for _ in 0..=basins.len() {
+        let Some(basin) = basins.get(id) else {
+            return false;
+        };
+        match basin.destination {
+            BasinDestination::Ocean => return true,
+            BasinDestination::Basin(parent) => id = parent,
+            BasinDestination::Endorheic | BasinDestination::Junction(_) => return false,
+        }
+    }
+    false
+}
+
+fn spill_neighbor_reaches_destination(
+    field: &PhysicalField,
+    basins: &[Basin],
+    basin_by_cell: &[u32],
+    from_basin: usize,
+    destination: BasinDestination,
+    cell: usize,
+) -> bool {
+    match destination {
+        BasinDestination::Ocean => {
+            if field.elevations_mm[cell] <= field.sea_level_mm {
+                return true;
+            }
+            let owner = basin_by_cell[cell];
+            if owner == OCEAN_LABEL {
+                return true;
+            }
+            let owner = owner as usize;
+            if owner == from_basin || basin_is_descendant(basins, owner, from_basin) {
+                return false;
+            }
+            basin_drains_to_ocean(basins, owner)
+        }
+        BasinDestination::Basin(parent) => {
+            let owner = basin_by_cell[cell] as usize;
+            basin_by_cell[cell] == parent as u32
+                || basins.get(parent).is_some_and(|parent_basin| {
+                    parent_basin.children.contains(&owner) || parent_basin.id == owner
+                })
+        }
+        BasinDestination::Endorheic | BasinDestination::Junction(_) => false,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -589,8 +640,13 @@ fn build_depression_tree(field: &PhysicalField, sea_level_mm: i32) -> Depression
             id
         } else if land_labels.len() == 1 && touches_ocean {
             let id = land_labels[0];
-            if spills[id as usize].is_none() {
-                let spill_cell = connecting_spill_cell(field, cell, id, &cell_catchment, &mut uf);
+            let already_ocean = matches!(
+                spills[id as usize].map(|spill| spill.2),
+                Some(BasinDestination::Ocean)
+            );
+            if !already_ocean {
+                let spill_cell =
+                    connecting_spill_cell(field, cell, id, &cell_catchment, &mut uf);
                 spills[id as usize] = Some((
                     spill_cell,
                     field.elevations_mm[cell],
@@ -1282,19 +1338,62 @@ fn coordinate_for_cell(grid: Grid, cell: usize) -> [i32; 2] {
     ]
 }
 
+fn nearest_sea_cell(
+    field: &PhysicalField,
+    basin_by_cell: &[u32],
+    start: usize,
+) -> Option<usize> {
+    if field.elevations_mm[start] <= field.sea_level_mm {
+        return Some(start);
+    }
+    let topology = field.grid.topology();
+    let count = field.grid.sample_count();
+    let mut seen = vec![false; count];
+    let mut queue = VecDeque::from([start]);
+    seen[start] = true;
+    let mut found = Vec::new();
+    while !queue.is_empty() {
+        let layer = queue.len();
+        for _ in 0..layer {
+            let cell = queue.pop_front()?;
+            for neighbor in topology.neighbors(cell) {
+                if seen[*neighbor] {
+                    continue;
+                }
+                seen[*neighbor] = true;
+                if field.elevations_mm[*neighbor] <= field.sea_level_mm {
+                    found.push(*neighbor);
+                    continue;
+                }
+                if basin_by_cell[*neighbor] == OCEAN_LABEL {
+                    queue.push_back(*neighbor);
+                }
+            }
+        }
+        if !found.is_empty() {
+            return found
+                .into_iter()
+                .min_by_key(|cell| (field.elevations_mm[*cell], *cell));
+        }
+    }
+    None
+}
+
 fn destination_for_cell(
     field: &PhysicalField,
     basins: &[Basin],
     basin_by_cell: &[u32],
     cell: usize,
 ) -> BasinDestination {
-    if field.elevations_mm[cell] <= field.sea_level_mm {
+    if field.elevations_mm[cell] <= field.sea_level_mm
+        || basin_by_cell.get(cell).copied() == Some(OCEAN_LABEL)
+    {
         return BasinDestination::Ocean;
     }
     basin_by_cell
         .get(cell)
         .copied()
-        .filter(|basin| *basin != u32::MAX)
+        .filter(|basin| *basin != OCEAN_LABEL)
         .and_then(|basin| basins.get(basin as usize))
         .and_then(|basin| basin.parent_basin.map(BasinDestination::Basin))
         .unwrap_or(BasinDestination::Endorheic)
@@ -1375,19 +1474,14 @@ fn derive_rivers(
             path.push(cell);
             steps += 1;
             let Some(edge) = primary[cell] else {
-                if field.elevations_mm[cell] > field.sea_level_mm && basin_by_cell[cell] == u32::MAX
+                if field.elevations_mm[cell] > field.sea_level_mm
+                    && basin_by_cell[cell] == OCEAN_LABEL
                 {
-                    if let Some(outlet) = field
-                        .grid
-                        .topology()
-                        .neighbors(cell)
-                        .iter()
-                        .copied()
-                        .filter(|neighbor| field.elevations_mm[*neighbor] <= field.sea_level_mm)
-                        .min()
-                    {
-                        path.push(outlet);
-                        cell = outlet;
+                    if let Some(outlet) = nearest_sea_cell(field, basin_by_cell, cell) {
+                        if outlet != cell {
+                            path.push(outlet);
+                            cell = outlet;
+                        }
                     }
                 }
                 break;
@@ -1444,6 +1538,35 @@ fn derive_rivers(
             destination_for_cell(field, basins, basin_by_cell, mouth)
         };
         if matches!(destination, BasinDestination::Endorheic) && basin_by_cell[mouth] == u32::MAX {
+            let (row, col) = field.grid.row_col(mouth);
+            eprintln!(
+                "hydrology river-terminal debug: start={} mouth={} row={} col={} elev={} sea={} lake={} primary={:?} dest={:?} path_len={} ended_at_junction={}",
+                start,
+                mouth,
+                row,
+                col,
+                field.elevations_mm[mouth],
+                field.sea_level_mm,
+                lake_cells[mouth],
+                primary[mouth].map(|edge| edge.destination_cell),
+                destination,
+                path.len(),
+                ended_at_junction,
+            );
+            for neighbor in field.grid.topology().neighbors(mouth) {
+                let (nrow, ncol) = field.grid.row_col(*neighbor);
+                eprintln!(
+                    "  neighbor={} row={} col={} elev={} owner={} sea={} lake={} active={}",
+                    neighbor,
+                    nrow,
+                    ncol,
+                    field.elevations_mm[*neighbor],
+                    basin_by_cell[*neighbor],
+                    field.elevations_mm[*neighbor] <= field.sea_level_mm,
+                    lake_cells[*neighbor],
+                    active[*neighbor],
+                );
+            }
             return Err(PhysicalError::coded(
                 PhysicalErrorCode::HydrologyInvalidSink,
                 "river terminates without an ocean or valid endorheic basin",
@@ -1489,8 +1612,8 @@ fn derive_rivers(
         {
             if existing.destination == destination {
                 existing.spill_outlet = true;
+                continue;
             }
-            continue;
         }
         let Some(outlet_cell) = field
             .grid
@@ -1499,24 +1622,53 @@ fn derive_rivers(
             .iter()
             .copied()
             .filter(|neighbor| {
-                let cell = *neighbor;
-                if field.elevations_mm[cell] <= field.sea_level_mm {
-                    return matches!(destination, BasinDestination::Ocean);
-                }
-                match destination {
-                    BasinDestination::Ocean => basin_by_cell[cell] == OCEAN_LABEL,
-                    BasinDestination::Basin(parent) => {
-                        let owner = basin_by_cell[cell] as usize;
-                        basin_by_cell[cell] == parent as u32
-                            || basins.get(parent).is_some_and(|parent_basin| {
-                                parent_basin.children.contains(&owner) || parent_basin.id == owner
-                            })
-                    }
-                    BasinDestination::Endorheic | BasinDestination::Junction(_) => false,
-                }
+                spill_neighbor_reaches_destination(
+                    field,
+                    basins,
+                    basin_by_cell,
+                    basin.id,
+                    destination,
+                    *neighbor,
+                )
             })
             .min_by_key(|neighbor| (field.elevations_mm[*neighbor], *neighbor))
         else {
+            let (row, col) = field.grid.row_col(spill_cell);
+            eprintln!(
+                "hydrology invalid-sink debug: basin={} status={:?} dest={:?} parent={:?} children={:?} spill_cell={} row={} col={} spill_elev={:?} water_mm={} sea_mm={} basin_label={}",
+                basin.id,
+                basin.status,
+                basin.destination,
+                basin.parent_basin,
+                basin.children,
+                spill_cell,
+                row,
+                col,
+                basin.spill_elevation_mm,
+                basin.water_level_mm,
+                field.sea_level_mm,
+                basin_by_cell[spill_cell],
+            );
+            for neighbor in field.grid.topology().neighbors(spill_cell) {
+                let (nrow, ncol) = field.grid.row_col(*neighbor);
+                let owner = basin_by_cell[*neighbor];
+                let owner_dest = basins.get(owner as usize).map(|item| item.destination);
+                let descendant = owner != OCEAN_LABEL
+                    && basin_is_descendant(basins, owner as usize, basin.id);
+                let drains = owner != OCEAN_LABEL && basin_drains_to_ocean(basins, owner as usize);
+                eprintln!(
+                    "  neighbor={} row={} col={} elev={} owner={} owner_dest={:?} descendant={} drains_ocean={} sea={}",
+                    neighbor,
+                    nrow,
+                    ncol,
+                    field.elevations_mm[*neighbor],
+                    owner,
+                    owner_dest,
+                    descendant,
+                    drains,
+                    field.elevations_mm[*neighbor] <= field.sea_level_mm,
+                );
+            }
             return Err(PhysicalError::coded(
                 PhysicalErrorCode::HydrologyInvalidSink,
                 "overflowing basin spill point has no adjacent destination",
@@ -2434,6 +2586,27 @@ mod tests {
     }
 
     #[test]
+    fn nearest_sea_cell_walks_ocean_labeled_land() {
+        let width = 8;
+        let height = 6;
+        let grid = Grid::new(width, height, crate::DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![400; grid.sample_count()];
+        for col in 0..width {
+            elevations[grid.index(0, col)] = -200;
+        }
+        elevations[grid.index(2, 3)] = 80;
+        elevations[grid.index(1, 3)] = 60;
+        let field = synthetic_field(width, height, elevations, 0);
+        let mut basin_by_cell = vec![0; field.grid.sample_count()];
+        basin_by_cell[grid.index(2, 3)] = OCEAN_LABEL;
+        basin_by_cell[grid.index(1, 3)] = OCEAN_LABEL;
+        let start = grid.index(2, 3);
+        let sea = nearest_sea_cell(&field, &basin_by_cell, start).unwrap();
+        assert!(field.elevations_mm[sea] <= field.sea_level_mm);
+        assert_eq!(sea, grid.index(0, 3));
+    }
+
+    #[test]
     fn nested_bowls_form_a_parent_child_depression_tree() {
         let grid = Grid::new(12, 8, crate::DEFAULT_RADIUS_METRES).unwrap();
         let mut elevations = vec![-4_000; grid.sample_count()];
@@ -2487,6 +2660,113 @@ mod tests {
             .iter()
             .any(|basin| basin.destination == BasinDestination::Ocean);
         assert!(endorheic || overflowing || ocean || hydrology.basins.is_empty());
+    }
+
+    fn empty_drainage(field: &PhysicalField) -> crate::evolution::DrainageField {
+        let count = field.grid.sample_count();
+        crate::evolution::DrainageField {
+            grid: field.grid,
+            derivation_version: crate::evolution::EVOLUTION_DERIVATION_VERSION,
+            routing_elevation_mm: field.elevations_mm.clone(),
+            fill_depth_mm: vec![0; count],
+            routing_order: (0..count as u32).collect(),
+            slope_ppm: vec![0; count],
+            accumulation_m3_per_year: vec![0; count],
+            edges: Vec::new(),
+            outlet_cells: Vec::new(),
+            metrics: crate::evolution::DrainageMetrics {
+                direct_runoff_m3_per_year: 1,
+                routed_runoff_m3_per_year: 0,
+                routed_edge_count: 0,
+                drainage_density_ppm: 0,
+                grid_anisotropy_ppm: 0,
+                convergence_ppm: 0,
+                outlet_count: 0,
+                routing_surface_raise_max_mm: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn endorheic_parent_is_marked_ocean_when_it_later_reaches_the_sea() {
+        let width = 12;
+        let height = 12;
+        let grid = Grid::new(width, height, crate::DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![-500; grid.sample_count()];
+        for row in 3..10 {
+            for col in 2..11 {
+                elevations[grid.index(row, col)] = 800;
+            }
+        }
+        elevations[grid.index(6, 4)] = 40;
+        elevations[grid.index(6, 6)] = 50;
+        elevations[grid.index(6, 5)] = 200;
+        elevations[grid.index(5, 5)] = 250;
+        elevations[grid.index(4, 5)] = 300;
+        elevations[grid.index(3, 5)] = 350;
+        let field = synthetic_field(width, height, elevations, 0);
+        let tree = build_depression_tree(&field, field.sea_level_mm);
+        let parent = tree
+            .basins
+            .iter()
+            .find(|basin| basin.children.len() >= 2)
+            .expect("two inland pits should merge into a parent");
+        assert_eq!(parent.destination, BasinDestination::Ocean);
+        assert!(parent.spill_cell.is_some());
+    }
+
+    #[test]
+    fn ocean_spill_may_enter_an_already_drained_catchment() {
+        let width = 12;
+        let height = 12;
+        let grid = Grid::new(width, height, crate::DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![-500; grid.sample_count()];
+        for row in 3..10 {
+            for col in 2..11 {
+                elevations[grid.index(row, col)] = 800;
+            }
+        }
+        elevations[grid.index(4, 3)] = 40;
+        elevations[grid.index(4, 4)] = 90;
+        elevations[grid.index(4, 5)] = 120;
+        elevations[grid.index(4, 6)] = 150;
+        elevations[grid.index(5, 6)] = 180;
+        elevations[grid.index(3, 3)] = 200;
+        elevations[grid.index(6, 5)] = 50;
+        elevations[grid.index(6, 4)] = 140;
+        elevations[grid.index(7, 5)] = 140;
+        elevations[grid.index(6, 7)] = 55;
+        elevations[grid.index(6, 8)] = 140;
+        elevations[grid.index(7, 7)] = 140;
+        elevations[grid.index(6, 6)] = 350;
+        let field = synthetic_field(width, height, elevations, 0);
+        let mut tree = build_depression_tree(&field, field.sea_level_mm);
+        let climate = synthetic_climate(&field, 800);
+        solve_depression_water(&mut tree, &climate).unwrap();
+        assert!(
+            tree.basins.iter().any(|basin| {
+                basin.status == BasinStatus::Overflowing
+                    && matches!(basin.destination, BasinDestination::Ocean)
+                    && basin.outflow_m3_per_year > 0
+                    && basin.spill_cell == Some(field.grid.index(6, 6))
+            }),
+            "expected an overflowing parent whose spill is the inland ocean-touching saddle"
+        );
+        let drainage = empty_drainage(&field);
+        let lake_cells = vec![false; field.grid.sample_count()];
+        let (rivers, _) = derive_rivers(
+            &field,
+            &drainage,
+            &tree.basins,
+            &tree.basin_by_cell,
+            &lake_cells,
+        )
+        .expect("spill outlet should accept an already ocean-drained neighbor");
+        assert!(rivers.iter().any(|river| {
+            river.spill_outlet
+                && river.source_cell == field.grid.index(6, 6)
+                && river.destination == BasinDestination::Ocean
+        }));
     }
 
     #[test]

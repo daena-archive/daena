@@ -484,6 +484,7 @@ fn polar_segments(
     segments
 }
 
+#[allow(clippy::too_many_arguments)]
 fn edge_crossing(
     grid: Grid,
     key: EdgeKey,
@@ -510,6 +511,7 @@ fn edge_crossing(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn radial_crossing(
     grid: Grid,
     key: EdgeKey,
@@ -555,10 +557,7 @@ fn assemble(grid: Grid, segments: Vec<RawSegment>) -> Result<ContourTopology, Ph
         used[start] = true;
         let mut current_key = segments[start].second.key;
         let start_key = segments[start].first.key;
-        loop {
-            let Some(candidates) = by_edge.get(&current_key) else {
-                break;
-            };
+        while let Some(candidates) = by_edge.get(&current_key) {
             let next = candidates.iter().copied().find(|index| !used[*index]);
             let Some(next) = next else { break };
             used[next] = true;
@@ -650,9 +649,9 @@ fn assign_holes(
         }
     }
     let mut holes: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    for index in 0..rings.len() {
-        if let Some(owner) = parent[index] {
-            holes.entry(owner).or_default().push(index);
+    for (index, owner) in parent.iter().enumerate() {
+        if let Some(owner) = owner {
+            holes.entry(*owner).or_default().push(index);
         }
     }
     let outer_ids = (0..rings.len())
@@ -671,7 +670,7 @@ fn assign_holes(
                 if parent[*child] != Some(outer) {
                     continue;
                 }
-                if parent.iter().any(|item| *item == Some(*child)) {
+                if parent.contains(&Some(*child)) {
                     continue;
                 }
                 let mut hole = rings[*child].clone();
@@ -847,6 +846,7 @@ fn douglas_peucker(
             keep[*index] = true;
         }
     }
+    #[allow(clippy::needless_range_loop)]
     fn visit(
         grid: Grid,
         ring: &[[i32; 2]],
@@ -1318,7 +1318,7 @@ mod tests {
         let before = polygons_above(mesh, &values, 0).unwrap();
         assert!(!before.is_empty());
         let connected = before.len() == 1 || before.iter().any(|polygon| polygon.len() == 1);
-        assert!(connected || before.len() >= 1);
+        assert!(connected || !before.is_empty());
     }
 
     #[test]

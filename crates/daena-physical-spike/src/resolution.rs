@@ -179,8 +179,10 @@ mod tests {
         assert!(!assessments[2].production_eligible());
         assert!(assessments[4].meets_four_sample_gate);
         assert!(assessments[4].meets_eight_sample_gate);
-        assert!(FEATURE_FIXTURES.retained_strait_width_metres > 0);
-        assert!(FEATURE_FIXTURES.internal_shape_width_metres > 0);
+        const {
+            assert!(FEATURE_FIXTURES.retained_strait_width_metres > 0);
+            assert!(FEATURE_FIXTURES.internal_shape_width_metres > 0);
+        }
     }
 
     #[test]

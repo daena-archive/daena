@@ -94,6 +94,7 @@ pub(crate) fn put_pixel(
         ((u32::from(buffer[offset + 2]) * inv + u32::from(rgb[2]) * t) / 1_000_000) as u8;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_segment(
     buffer: &mut [u8],
     width: u32,
@@ -153,6 +154,7 @@ fn draw_geodesic_segment(
     draw_segment(buffer, width, height, x0, y0, x1, y1, rgb, alpha_ppm);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn composite_overlays(
     buffer: &mut [u8],
     request: &AtlasRenderRequest,
@@ -565,7 +567,7 @@ mod tests {
 
     #[test]
     fn antique_paper_grain_stays_within_8bit_ppm() {
-        let key = domain_key(b"fixture", 1, 0, "paper-grain\0daena-atlas-antique\01");
+        let key = domain_key(b"fixture", 1, 0, "paper-grain\0daena-atlas-antique\0\x31");
         let strength = 90_000;
         let mut max_abs = 0i32;
         let mut nearby_jump = 0i32;

@@ -53,7 +53,7 @@ pub fn priority_fill_pits(
     let mut visited = vec![false; count];
     let mut queue = BinaryHeap::new();
     for index in 0..count {
-        if index % CANCELLATION_STRIDE == 0 {
+        if index.is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         if source_mm[index] < sea_level_mm || protected[index] {
@@ -67,7 +67,7 @@ pub fn priority_fill_pits(
     while let Some((Reverse(level), Reverse(index))) = queue.pop() {
         let j = (index as u32) / width;
         let i = (index as u32) % width;
-        if j as usize % CANCELLATION_STRIDE == 0 {
+        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         for dir in DIRS {
@@ -152,7 +152,7 @@ pub fn mean_remove_delta(
     let mut sums = vec![0_i64; grid.sample_count()];
     let mut counts = vec![0_u32; grid.sample_count()];
     for j in 0..height {
-        if j as usize % CANCELLATION_STRIDE == 0 {
+        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         for i in 0..width {
@@ -190,6 +190,7 @@ pub fn mean_remove_delta(
     Ok(())
 }
 
+#[allow(clippy::type_complexity)]
 pub fn assign_simple_flow(
     width: u32,
     height: u32,
@@ -203,7 +204,7 @@ pub fn assign_simple_flow(
     let mut secondary = vec![NO_FLOW; count];
     let mut weight = vec![0_u32; count];
     for j in 0..height {
-        if j as usize % CANCELLATION_STRIDE == 0 {
+        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         for i in 0..width {
@@ -231,13 +232,13 @@ pub fn assign_simple_flow(
                     * 1_000)
                     / i64::from(dist_ppm(dir));
                 candidates[dir_index] = Some((neighbor as u32, slope));
-                if slope > best_slope || (slope == best_slope && (neighbor as u32) < best_neighbor)
+                if (slope > best_slope
+                    || (slope == best_slope && (neighbor as u32) < best_neighbor))
+                    && slope > 0
                 {
-                    if slope > 0 {
-                        best_slope = slope;
-                        best_dir = dir_index;
-                        best_neighbor = neighbor as u32;
-                    }
+                    best_slope = slope;
+                    best_dir = dir_index;
+                    best_neighbor = neighbor as u32;
                 }
             }
             if best_neighbor == NO_FLOW {
@@ -278,7 +279,7 @@ pub fn accumulate_flow(
     order.sort_by_key(|index| (std::cmp::Reverse(elevation_mm[*index]), *index));
     let mut accum = vec![1_u32; count];
     for (rank, index) in order.iter().copied().enumerate() {
-        if rank % CANCELLATION_STRIDE == 0 {
+        if rank.is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         if elevation_mm[index] < sea_level_mm {
@@ -301,6 +302,7 @@ pub fn accumulate_flow(
     Ok(accum)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn restore_coastal_sign(
     grid: Grid,
     width: u32,
@@ -384,6 +386,7 @@ fn thermal_delta(
     delta
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fluvial_and_deposition_delta(
     width: u32,
     height: u32,
@@ -562,8 +565,8 @@ pub fn apply_scale_erosion(
         );
         enforce_peaks(width, height, params.peaks, params.filled_mm, surface);
         lock_polar_rows(width, height, surface);
-        for index in 0..count {
-            if params.protected[index] {
+        for (index, protected) in params.protected.iter().enumerate() {
+            if *protected {
                 surface[index] = params.filled_mm[index];
             }
         }

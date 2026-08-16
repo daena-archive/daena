@@ -163,7 +163,7 @@ pub fn validate_style_source(raw: &str) -> Result<(), AtlasError> {
 }
 
 pub fn mix_rgb(from: [u8; 3], to: [u8; 3], t_ppm: u32) -> [u8; 3] {
-    let t = u32::from(t_ppm.min(1_000_000));
+    let t = t_ppm.min(1_000_000);
     let inv = 1_000_000 - t;
     [
         ((u32::from(from[0]) * inv + u32::from(to[0]) * t) / 1_000_000) as u8,
@@ -215,7 +215,7 @@ pub fn temperature_fill(style: &AtlasStyle, centi_c: i32) -> [u8; 3] {
 
 pub fn precipitation_fill(style: &AtlasStyle, precip_mm: i32) -> [u8; 3] {
     const HI: i32 = 2_800;
-    let t = (i64::from(precip_mm.max(0).min(HI)) * 1_000_000 / i64::from(HI)) as u32;
+    let t = (i64::from(precip_mm.clamp(0, HI)) * 1_000_000 / i64::from(HI)) as u32;
     ramp3(style, t)
 }
 
@@ -253,7 +253,7 @@ mod tests {
         let (antique, _) = load_style(ANTIQUE_STYLE_ID).unwrap();
         assert_ne!(relief.ocean_deep, antique.ocean_deep);
         assert_eq!(relief.font_id, BUNDLED_FONT_ID);
-        assert!(raw.contains("http") == false);
+        assert!(!raw.contains("http"));
         assert!(validate_style_source("{\"fill\":\"https://example\"}").is_err());
         let (biome, _) = load_style(BIOME_STYLE_ID).unwrap();
         assert_eq!(biome.id, BIOME_STYLE_ID);

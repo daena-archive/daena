@@ -191,12 +191,11 @@ fn mouth_by_watershed(hydrology: &HydrologyField) -> Vec<usize> {
         }
         by_watershed[slot] = by_watershed[slot].min(river.mouth_cell);
     }
-    for cell in 0..count {
-        let watershed = hydrology.watershed_id[cell];
-        if watershed == OCEAN {
+    for (cell, watershed) in hydrology.watershed_id.iter().enumerate() {
+        if *watershed == OCEAN {
             continue;
         }
-        let slot = watershed as usize;
+        let slot = *watershed as usize;
         if slot < by_watershed.len() {
             mouth[cell] = by_watershed[slot];
         }
@@ -237,7 +236,7 @@ fn build_source_surface(
     let height = model.detail.lattice_height;
     let mut source = vec![0_i32; width as usize * height as usize];
     for j in 0..height {
-        if j as usize % CANCELLATION_STRIDE == 0 {
+        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         for i in 0..width {
@@ -265,7 +264,7 @@ fn priority_fill(
     let mut visited = vec![false; count];
     let mut queue = BinaryHeap::new();
     for index in 0..count {
-        if index % CANCELLATION_STRIDE == 0 {
+        if index.is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         if source_mm[index] < sea_level_mm || protected[index] {
@@ -281,7 +280,7 @@ fn priority_fill(
     while let Some((Reverse(level), Reverse(index))) = queue.pop() {
         let j = (index as u32) / width;
         let i = (index as u32) % width;
-        if j as usize % CANCELLATION_STRIDE == 0 {
+        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         for dir in DIRS {
@@ -317,6 +316,7 @@ fn priority_fill(
     Ok((routing, filled_pit_count))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn eligible_flow_neighbor(
     hydrology: &HydrologyField,
     elevations_mm: &[i32],
@@ -337,6 +337,7 @@ fn eligible_flow_neighbor(
         && from_watershed != OCEAN
 }
 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn assign_flow(
     width: u32,
     height: u32,
@@ -352,7 +353,7 @@ fn assign_flow(
     let mut secondary = vec![NO_FLOW; count];
     let mut weight = vec![0_u32; count];
     for j in 0..height {
-        if j as usize % CANCELLATION_STRIDE == 0 {
+        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         for i in 0..width {
@@ -398,13 +399,13 @@ fn assign_flow(
                     * 1_000)
                     / i64::from(dist_ppm(dir));
                 candidates[dir_index] = Some((neighbor as u32, slope));
-                if slope > best_slope || (slope == best_slope && (neighbor as u32) < best_neighbor)
+                if (slope > best_slope
+                    || (slope == best_slope && (neighbor as u32) < best_neighbor))
+                    && slope > 0
                 {
-                    if slope > 0 {
-                        best_slope = slope;
-                        best_dir = dir_index;
-                        best_neighbor = neighbor as u32;
-                    }
+                    best_slope = slope;
+                    best_dir = dir_index;
+                    best_neighbor = neighbor as u32;
                 }
             }
             if best_neighbor == NO_FLOW {
@@ -469,7 +470,7 @@ fn accumulate(
     order.sort_by_key(|index| (Reverse(filled_mm[*index]), *index));
     let mut accum = vec![1_u32; count];
     for (rank, index) in order.iter().copied().enumerate() {
-        if rank % CANCELLATION_STRIDE == 0 {
+        if rank.is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         if filled_mm[index] < sea_level_mm {
@@ -492,6 +493,7 @@ fn accumulate(
     Ok(accum)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn extract_tributaries(
     width: u32,
     height: u32,
@@ -510,7 +512,7 @@ fn extract_tributaries(
     let count = filled_mm.len();
     let mut channel = vec![false; count];
     for index in 0..count {
-        if index % CANCELLATION_STRIDE == 0 {
+        if index.is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         let jitter = (lattice_sample(
@@ -530,7 +532,7 @@ fn extract_tributaries(
     for j in 0..height {
         for i in 0..width {
             let index = lattice_index(width, i, j);
-            if index % CANCELLATION_STRIDE == 0 {
+            if index.is_multiple_of(CANCELLATION_STRIDE) {
                 check_cancelled()?;
             }
             if !channel[index] || features.len() >= MAX_TRIBUTARIES {
@@ -611,6 +613,7 @@ fn extract_tributaries(
     Ok(features)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn extract_valleys(
     width: u32,
     height: u32,
@@ -630,7 +633,7 @@ fn extract_valleys(
     for j in 1..height.saturating_sub(1) {
         for i in 0..width {
             let index = lattice_index(width, i, j);
-            if index % CANCELLATION_STRIDE == 0 {
+            if index.is_multiple_of(CANCELLATION_STRIDE) {
                 check_cancelled()?;
             }
             let jitter = (lattice_sample(drainage_key, i, j, 1) >> 11) as u32 % 3;
@@ -683,6 +686,7 @@ fn extract_valleys(
     Ok(features)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn extract_deposition(
     width: u32,
     height: u32,
@@ -697,7 +701,7 @@ fn extract_deposition(
 ) -> Result<Vec<DepositionFeature>, AtlasError> {
     let mut features = Vec::new();
     for j in 1..height.saturating_sub(1) {
-        if j as usize % CANCELLATION_STRIDE == 0 {
+        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         for i in 0..width {
@@ -757,6 +761,7 @@ fn extract_deposition(
     Ok(features)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn erode(
     model: &AmplificationModel,
     controls: &ControlFields,
@@ -855,7 +860,7 @@ pub fn build_refined_hydrology(
     let source_mm = build_source_surface(model, controls.sea_level_mm, sdf, check_cancelled)?;
     let mut protected = vec![false; count];
     for j in 0..height {
-        if j as usize % CANCELLATION_STRIDE == 0 {
+        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         for i in 0..width {

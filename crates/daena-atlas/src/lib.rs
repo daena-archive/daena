@@ -542,6 +542,7 @@ pub fn prepare_from_source(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_from_source_cached(
     source_bytes: &[u8],
     identity: &[u8],
@@ -886,7 +887,7 @@ mod tests {
                 &world.field,
                 report.reference_water_inventory_m3,
                 Some(&world.tectonics.crust_by_cell),
-                forcing.clone(),
+                forcing,
                 offset,
                 &mut daena_physical::NoopProgress,
             )
@@ -907,7 +908,7 @@ mod tests {
             &identity,
             &past.normalize().unwrap(),
             None,
-            Some(forcing.clone()),
+            Some(forcing),
             &[],
             &mut NoopProgress,
         )

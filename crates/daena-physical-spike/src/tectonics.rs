@@ -208,8 +208,6 @@ enum ContinentLayoutKind {
 
 #[derive(Debug, Clone)]
 struct ContinentLayout {
-    #[allow(dead_code)]
-    kind: ContinentLayoutKind,
     group_count: usize,
     companion_threshold: u64,
     base_radius: f64,
@@ -520,7 +518,6 @@ fn layout_for_kind(
     let max_groups = usize::from(settings.continental_plate_count).max(1);
     match kind {
         ContinentLayoutKind::Mega => ContinentLayout {
-            kind,
             group_count: 1,
             companion_threshold: 4,
             base_radius: 0.96,
@@ -548,7 +545,6 @@ fn layout_for_kind(
             }
             shares[group_count - 1] += leftover - scrap_share * (group_count as u32 - 1);
             ContinentLayout {
-                kind,
                 group_count,
                 companion_threshold: 3,
                 base_radius: 0.88,
@@ -567,7 +563,6 @@ fn layout_for_kind(
         ContinentLayoutKind::Dual => {
             let primary = 560_000 + (splitmix64(stage_seed ^ 0x2d1a_7c15) % 120_001) as u32;
             ContinentLayout {
-                kind,
                 group_count: 2.min(max_groups).max(1),
                 companion_threshold: 2,
                 base_radius: 0.70,
@@ -596,7 +591,6 @@ fn layout_for_kind(
                 shares[0] += leftover;
             }
             ContinentLayout {
-                kind,
                 group_count,
                 companion_threshold: 1,
                 base_radius: 0.36,
@@ -853,7 +847,7 @@ fn assign_plates(
     let mut visits = 0u32;
     while let Some(Reverse((cost, cell, plate))) = heap.pop() {
         visits += 1;
-        if visits % 512 == 0 {
+        if visits.is_multiple_of(512) {
             progress.check_cancelled()?;
         }
         if cost > best_cost[cell] {
@@ -945,6 +939,7 @@ fn pick_shatter_seed(grid: Grid, cells: &[usize], parent_seed: usize, rng: u64) 
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn shatter_plate(
     grid: Grid,
     plate_by_cell: &mut [u16],
@@ -970,7 +965,7 @@ fn shatter_plate(
     let mut visits = 0u32;
     while let Some(Reverse((cost, cell, plate))) = heap.pop() {
         visits += 1;
-        if visits % 512 == 0 {
+        if visits.is_multiple_of(512) {
             progress.check_cancelled()?;
         }
         if !in_parent[cell] {
@@ -1072,7 +1067,7 @@ fn apply_extra_plate_merges(
 }
 
 fn plate_present(plate_by_cell: &[u16], plate: u16) -> bool {
-    plate_by_cell.iter().any(|assigned| *assigned == plate)
+    plate_by_cell.contains(&plate)
 }
 
 fn compact_plates(
@@ -1380,6 +1375,7 @@ fn diversify_plates(
     Ok(compact_plates(grid, &plates, plate_by_cell, identity))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn crust_cost_delta(
     grid: Grid,
     from: usize,
@@ -1519,7 +1515,7 @@ fn grow_continental_crust(
     let topology = grid.topology();
     while let Some(Reverse((cost, cell, craton_id))) = heap.pop() {
         visits += 1;
-        if visits % 512 == 0 {
+        if visits.is_multiple_of(512) {
             progress.check_cancelled()?;
         }
         if crust[cell] == CrustType::Continental {
@@ -1615,7 +1611,7 @@ fn grow_detached_terranes(
         let local_budget = (remaining / (terrane_count - terrane)).max(1);
         while let Some(Reverse((cost, cell))) = heap.pop() {
             cursor += 1;
-            if cursor % 256 == 0 {
+            if cursor.is_multiple_of(256) {
                 progress.check_cancelled()?;
             }
             if crust[cell] == CrustType::Continental || grown >= local_budget {
@@ -1680,10 +1676,8 @@ fn classify_boundary_at(
     let tangent = midpoint.cross(normal).normalize();
     let normal_speed = relative.dot(normal);
     let tangent_speed = relative.dot(tangent);
-    let kind = if normal_speed.abs() < RELATIVE_MOTION_THRESHOLD_NANORADIANS_PER_YEAR {
-        BoundaryKind::Transform
-    } else if tangent_speed.abs() * 1_000_000.0
-        > normal_speed.abs() * TRANSFORM_TIE_RATIO_PPM as f64
+    let kind = if normal_speed.abs() < RELATIVE_MOTION_THRESHOLD_NANORADIANS_PER_YEAR
+        || tangent_speed.abs() * 1_000_000.0 > normal_speed.abs() * TRANSFORM_TIE_RATIO_PPM as f64
     {
         BoundaryKind::Transform
     } else if normal_speed < 0.0 {
@@ -1732,7 +1726,7 @@ fn build_boundaries(
     let mut seen = HashSet::new();
     let topology = grid.topology();
     for first_cell in 0..grid.sample_count() {
-        if first_cell % 256 == 0 {
+        if first_cell.is_multiple_of(256) {
             progress.check_cancelled()?;
         }
         for second_cell in topology.neighbors(first_cell) {
@@ -1847,6 +1841,7 @@ impl ScaledSource {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_motion_kernel(
     field: &mut [f64],
     dist: &[i64],
@@ -1875,6 +1870,7 @@ fn apply_motion_kernel(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_motion_ring_kernel(
     field: &mut [f64],
     dist: &[i64],
@@ -1929,45 +1925,6 @@ fn metres_to_mm(metres: u64) -> i64 {
     (metres as i64).saturating_mul(1_000).max(1)
 }
 
-#[allow(dead_code)]
-fn apply_kernel(
-    field: &mut [f64],
-    dist: &[i64],
-    mask: impl Fn(usize) -> bool,
-    amplitude: f64,
-    radius_mm: i64,
-) {
-    for (cell, distance) in dist.iter().copied().enumerate() {
-        if !mask(cell) {
-            continue;
-        }
-        let weight = bell(distance, radius_mm);
-        if weight > 0.0 {
-            field[cell] += amplitude * weight;
-        }
-    }
-}
-
-#[allow(dead_code)]
-fn apply_ring_kernel(
-    field: &mut [f64],
-    dist: &[i64],
-    mask: impl Fn(usize) -> bool,
-    amplitude: f64,
-    offset_mm: i64,
-    width_mm: i64,
-) {
-    for (cell, distance) in dist.iter().copied().enumerate() {
-        if !mask(cell) {
-            continue;
-        }
-        let weight = ring(distance, offset_mm, width_mm);
-        if weight > 0.0 {
-            field[cell] += amplitude * weight;
-        }
-    }
-}
-
 fn build_named_relief(
     inputs: ReliefInputs<'_>,
 ) -> Result<(NamedRelief, Vec<VolcanicCenter>), PhysicalError> {
@@ -2016,7 +1973,7 @@ fn build_named_relief(
         .unwrap_or(1)
         .max(1);
     for cell in 0..sample_count {
-        if cell % 256 == 0 {
+        if cell.is_multiple_of(256) {
             progress.check_cancelled()?;
         }
         let restrained =
@@ -2318,7 +2275,7 @@ fn build_named_relief(
             if weight <= 0.0 {
                 continue;
             }
-            let sign = if splitmix64(relief_stage_seed ^ 0x7777 ^ cell as u64) % 2 == 0 {
+            let sign = if splitmix64(relief_stage_seed ^ 0x7777 ^ cell as u64).is_multiple_of(2) {
                 1.0
             } else {
                 -1.0
@@ -4166,11 +4123,23 @@ mod tests {
         shares
     }
 
+    fn inferred_layout_kind(layout: &ContinentLayout) -> ContinentLayoutKind {
+        if layout.group_count == 1 {
+            ContinentLayoutKind::Mega
+        } else if layout.group_share_ppm.first().copied().unwrap_or(0) >= 700_000 {
+            ContinentLayoutKind::GiantScraps
+        } else if layout.group_count == 2 {
+            ContinentLayoutKind::Dual
+        } else {
+            ContinentLayoutKind::Scattered
+        }
+    }
+
     fn world_with_kind(kind: ContinentLayoutKind) -> TectonicWorld {
         let grid = Grid::new(DEFAULT_WIDTH, DEFAULT_HEIGHT, DEFAULT_RADIUS_METRES).unwrap();
         let settings = TectonicSettings::default_for(grid);
         for retry in 0..64 {
-            if continent_layout(831_429, retry, settings).kind == kind {
+            if inferred_layout_kind(&continent_layout(831_429, retry, settings)) == kind {
                 return world_for_retry(retry);
             }
         }
@@ -4182,7 +4151,7 @@ mod tests {
         let grid = Grid::new(DEFAULT_WIDTH, DEFAULT_HEIGHT, DEFAULT_RADIUS_METRES).unwrap();
         let settings = TectonicSettings::default_for(grid);
         let kinds = (0..48)
-            .map(|retry| continent_layout(831_429, retry, settings).kind)
+            .map(|retry| inferred_layout_kind(&continent_layout(831_429, retry, settings)))
             .collect::<HashSet<_>>();
         assert!(kinds.contains(&ContinentLayoutKind::Mega));
         assert!(kinds.contains(&ContinentLayoutKind::GiantScraps));
@@ -4194,7 +4163,7 @@ mod tests {
     fn mega_layout_concentrates_one_continent() {
         let world = world_with_kind(ContinentLayoutKind::Mega);
         let (layout, groups) = crust_groups_for(&world);
-        assert_eq!(layout.kind, ContinentLayoutKind::Mega);
+        assert_eq!(inferred_layout_kind(&layout), ContinentLayoutKind::Mega);
         assert_eq!(layout.group_count, 1);
         let shares = major_group_shares_ppm(&groups);
         assert_eq!(shares.len(), 1);
@@ -4209,7 +4178,7 @@ mod tests {
     fn dual_layout_keeps_two_major_continents() {
         let world = world_with_kind(ContinentLayoutKind::Dual);
         let (layout, groups) = crust_groups_for(&world);
-        assert_eq!(layout.kind, ContinentLayoutKind::Dual);
+        assert_eq!(inferred_layout_kind(&layout), ContinentLayoutKind::Dual);
         let shares = major_group_shares_ppm(&groups);
         assert_eq!(shares.len(), 2);
         assert!(
@@ -4226,7 +4195,10 @@ mod tests {
     fn scattered_layout_fragments_into_many_continents() {
         let world = world_with_kind(ContinentLayoutKind::Scattered);
         let (layout, groups) = crust_groups_for(&world);
-        assert_eq!(layout.kind, ContinentLayoutKind::Scattered);
+        assert_eq!(
+            inferred_layout_kind(&layout),
+            ContinentLayoutKind::Scattered
+        );
         assert!(layout.group_count >= 4);
         let shares = major_group_shares_ppm(&groups);
         assert!(
@@ -4254,7 +4226,10 @@ mod tests {
     fn giant_scraps_layout_keeps_one_dominant_continent() {
         let world = world_with_kind(ContinentLayoutKind::GiantScraps);
         let (layout, groups) = crust_groups_for(&world);
-        assert_eq!(layout.kind, ContinentLayoutKind::GiantScraps);
+        assert_eq!(
+            inferred_layout_kind(&layout),
+            ContinentLayoutKind::GiantScraps
+        );
         assert!(layout.group_count >= 2);
         let shares = major_group_shares_ppm(&groups);
         assert!(

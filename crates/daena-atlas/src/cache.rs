@@ -280,7 +280,7 @@ pub enum CacheLookupResult {
 pub fn cache_key(parts: &[&[u8]]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     for part in parts {
-        hasher.update(&(part.len() as u32).to_le_bytes());
+        hasher.update((part.len() as u32).to_le_bytes());
         hasher.update(part);
     }
     hasher.finalize().into()

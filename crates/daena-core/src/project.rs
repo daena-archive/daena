@@ -6513,20 +6513,6 @@ impl ProjectStore {
         })
     }
 
-    #[allow(dead_code)]
-    fn import_json_with_mode(&self, payload: &str, replace: bool) -> Result<usize, CoreError> {
-        self.import_json_with_mode_and_sync(payload, replace, true)
-    }
-
-    fn import_json_with_mode_and_sync(
-        &self,
-        payload: &str,
-        replace: bool,
-        sync_canonical: bool,
-    ) -> Result<usize, CoreError> {
-        self.import_json_with_mode_and_sync_with_request(payload, replace, sync_canonical, None)
-    }
-
     fn import_json_with_mode_and_sync_with_request(
         &self,
         payload: &str,

@@ -203,6 +203,7 @@ fn shade_ppm(model: &AtlasDetailModel, lon: i32, lat: i32, sea: i32, sdf: &[i32]
     ((lit + mag as i64) * 500_000 / mag as i64).clamp(420_000, 1_000_000) as u32
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn pixel_rgba(
     model: &AtlasDetailModel,
     hydrology: &HydrologyField,
@@ -284,6 +285,7 @@ pub(crate) fn pixel_rgba(
     apply_shade(rgb, shade)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_rgba(
     request: &AtlasRenderRequest,
     model: &AtlasDetailModel,
@@ -394,8 +396,8 @@ mod tests {
         elevations[0] = -1_000;
         elevations[1] = -1_000;
         elevations[8] = -1_000;
-        for col in 0..8 {
-            elevations[col] = -4_000;
+        for elevation in elevations.iter_mut().take(8) {
+            *elevation = -4_000;
         }
         lakes[20] = true;
         lakes[21] = true;
@@ -411,8 +413,8 @@ mod tests {
         let grid = grid(8, 8);
         let mut elevations = vec![1_000; 64];
         let mut lakes = vec![false; 64];
-        for col in 0..8 {
-            elevations[col] = -4_000;
+        for elevation in elevations.iter_mut().take(8) {
+            *elevation = -4_000;
         }
         for index in [20, 21, 22, 23, 28, 29, 30, 31] {
             lakes[index] = true;

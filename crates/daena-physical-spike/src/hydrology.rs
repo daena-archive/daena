@@ -534,8 +534,8 @@ fn build_depression_tree(field: &PhysicalField, sea_level_mm: i32) -> Depression
     let mut cell_catchment = vec![OCEAN_LABEL; count];
     let mut processed = vec![false; count];
     let mut land = Vec::new();
-    for cell in 0..count {
-        if field.elevations_mm[cell] <= sea_level_mm {
+    for (cell, elevation) in field.elevations_mm.iter().enumerate() {
+        if *elevation <= sea_level_mm {
             processed[cell] = true;
         } else {
             land.push(cell);
@@ -1761,11 +1761,6 @@ pub fn derive_hydrology_with_forcing(
         ));
     }
     let mut sea_level = field.sea_level_mm;
-    let mut tree;
-    let mut ice_cells;
-    let ice_thickness_mm;
-    let mut land_ice_m3;
-    let mut inland_water;
     let mut iterations = 0;
     let mut converged = false;
     let mut seen = Vec::<(i32, u64, u64)>::new();
@@ -1773,12 +1768,11 @@ pub fn derive_hydrology_with_forcing(
         iterations = iteration;
         let mut work = field.clone();
         work.sea_level_mm = sea_level;
-        tree = build_depression_tree(&work, sea_level);
-        inland_water = solve_depression_water(&mut tree, climate)?;
+        let mut tree = build_depression_tree(&work, sea_level);
+        let mut inland_water = solve_depression_water(&mut tree, climate)?;
         let ice = derive_land_ice(&work, climate, sea_level, reference_water_inventory_m3)?;
-        ice_cells = ice.0;
-        let _ = ice.1;
-        land_ice_m3 = ice.2;
+        let ice_cells = ice.0;
+        let land_ice_m3 = ice.2;
         for basin in &mut tree.basins {
             if ice_cells[basin.minimum_cell] && basin.water_volume_m3 > 0 {
                 inland_water = inland_water.saturating_sub(basin.water_volume_m3);
@@ -1829,12 +1823,12 @@ pub fn derive_hydrology_with_forcing(
     }
     let mut work = field.clone();
     work.sea_level_mm = sea_level;
-    tree = build_depression_tree(&work, sea_level);
-    inland_water = solve_depression_water(&mut tree, climate)?;
+    let mut tree = build_depression_tree(&work, sea_level);
+    let mut inland_water = solve_depression_water(&mut tree, climate)?;
     let ice = derive_land_ice(&work, climate, sea_level, reference_water_inventory_m3)?;
-    ice_cells = ice.0;
-    ice_thickness_mm = ice.1;
-    land_ice_m3 = ice.2;
+    let ice_cells = ice.0;
+    let ice_thickness_mm = ice.1;
+    let land_ice_m3 = ice.2;
     for basin in &mut tree.basins {
         if ice_cells[basin.minimum_cell] && basin.water_volume_m3 > 0 {
             inland_water = inland_water.saturating_sub(basin.water_volume_m3);

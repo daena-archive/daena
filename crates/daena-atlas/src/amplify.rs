@@ -212,7 +212,7 @@ fn build_octave(
     let mut residual = vec![0_i32; count];
     let step = octave_noise_step(octave);
     for j in 0..height {
-        if j as usize % CANCELLATION_STRIDE == 0 {
+        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         let polar = j == 0 || j + 1 == height;
@@ -495,6 +495,7 @@ fn lattice_path(width: u32, height: u32, start: usize, end: usize) -> Vec<usize>
     path
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_feature(
     features: &mut Vec<MountainFeature>,
     kind: MountainKind,
@@ -525,6 +526,7 @@ fn push_feature(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn synthesize_orometry(
     width: u32,
     height: u32,
@@ -917,7 +919,7 @@ fn extract_mountain_features(
                 continue;
             }
             let dist = chebyshev(lattice_width, peak.lattice_index, cell);
-            if dist >= 2 && dist <= 8 {
+            if (2..=8).contains(&dist) {
                 let candidate = (dist, cell);
                 if foothill
                     .map(|best: (u32, usize)| candidate < best)
@@ -975,7 +977,7 @@ fn upsample_residual(
 ) -> Result<Vec<i32>, AtlasError> {
     let mut dst = vec![0_i32; dst_width as usize * dst_height as usize];
     for j in 0..dst_height {
-        if j as usize % CANCELLATION_STRIDE == 0 {
+        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         let polar = j == 0 || j + 1 == dst_height;
@@ -1059,6 +1061,7 @@ fn coastline_noise_ppm(key: &[u8; 32], i: u32, j: u32, width: u32, height: u32) 
         / 1_000_000) as i32
 }
 
+#[allow(clippy::too_many_arguments)]
 fn synthesize_coastline(
     controls: &ControlFields,
     sdf: &[i32],
@@ -1078,7 +1081,7 @@ fn synthesize_coastline(
     let land_ppm = land_mask_ppm(controls);
     let sea = controls.sea_level_mm;
     for j in 0..height {
-        if j as usize % CANCELLATION_STRIDE == 0 {
+        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         let polar = j == 0 || j + 1 == height;
@@ -1132,6 +1135,7 @@ fn synthesize_coastline(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn erode_residual_octave(
     controls: &ControlFields,
     sdf: &[i32],
@@ -1149,7 +1153,7 @@ fn erode_residual_octave(
     let mut runoff_ppm = vec![0_i32; count];
     let mut watershed = vec![-1_i32; count];
     for j in 0..height {
-        if j as usize % CANCELLATION_STRIDE == 0 {
+        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         for i in 0..width {

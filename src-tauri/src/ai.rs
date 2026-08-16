@@ -38,6 +38,8 @@ pub struct AiRuntime {
     index_state: Option<IndexState>,
 }
 
+/// Request payload for `AiProvider` implementations. Fields are read by providers,
+/// not by this crate's orchestration path.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ProviderRequest {
@@ -58,10 +60,11 @@ pub trait AiProvider: Send + Sync {
     ) -> Vec<AiStreamEvent>;
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 #[derive(Debug, Default)]
 pub struct FakeLoopbackProvider;
 
+#[cfg(test)]
 impl AiProvider for FakeLoopbackProvider {
     fn generate(
         &self,
@@ -116,7 +119,7 @@ impl AiProvider for FakeLoopbackProvider {
 }
 
 impl AiRuntime {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn with_provider(provider: Arc<dyn AiProvider>) -> Self {
         Self {
             provider: Some(provider),

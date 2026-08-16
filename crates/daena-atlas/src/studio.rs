@@ -692,6 +692,7 @@ fn crop_halo(rgba: &[u8], expanded: u32, output: u32, halo: u32) -> Result<Vec<u
     Ok(cropped)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_xyz_region(
     scene: &AtlasPreparedScene,
     scene_request: &AtlasStudioSceneRequestV1,
@@ -1255,15 +1256,9 @@ mod tests {
             let parsed = parse_studio_error(&format!("{code}: extra detail"));
             assert_eq!(parsed.code, code);
         }
-        assert_eq!(
-            derived_feature_explanation("derived-tributary", true)
-                .contains("canonical Physical Map"),
-            true
-        );
-        assert_eq!(
-            derived_feature_explanation("point", false).contains("Authored"),
-            true
-        );
+        assert!(derived_feature_explanation("derived-tributary", true)
+            .contains("canonical Physical Map"));
+        assert!(derived_feature_explanation("point", false).contains("Authored"));
     }
 
     #[test]

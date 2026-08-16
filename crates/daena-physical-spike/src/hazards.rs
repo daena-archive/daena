@@ -18,7 +18,6 @@ pub const MAX_HAZARD_FEATURES: usize = 512;
 pub const RATE_NANO: u64 = 1_000_000_000;
 const EARTHQUAKE_DISTANCE_SCALE_PPM: u32 = 180_000;
 const VOLCANIC_DISTANCE_SCALE_PPM: u32 = 120_000;
-const QUANTIZED_KERNEL_ERROR_NANO: u64 = 256;
 const EARTHQUAKE_LENGTH_REF_METRES: u64 = 100_000;
 const EARTHQUAKE_BASE_NANO: u64 = 8_000;
 const VOLCANIC_CENTER_BASE_NANO: u64 = 6_000;
@@ -134,16 +133,6 @@ fn exp_neg_ppm(x_ppm: u64) -> u64 {
         }
     }
     (1_000_000u128 * 1_000_000 / sum.max(1)) as u64
-}
-
-fn geodesic_decay_ppm(distance_m: f64, scale_m: f64) -> u64 {
-    if scale_m <= 0.0 {
-        return 0;
-    }
-    let x_ppm = (distance_m / scale_m * 1_000_000.0)
-        .round()
-        .clamp(0.0, 20_000_000.0) as u64;
-    exp_neg_ppm(x_ppm)
 }
 
 fn acos_micro_radians(dot: f64) -> u64 {
@@ -469,6 +458,7 @@ fn center_microdegrees(grid: Grid, cell: usize) -> [i32; 2] {
     ]
 }
 
+#[allow(clippy::too_many_arguments)]
 fn hazard_feature(
     id: &str,
     layer: &str,
@@ -553,6 +543,18 @@ pub fn nearest_volcanic_source(field: &HazardField, cell: usize) -> Option<Deriv
 mod tests {
     use super::*;
     use crate::{generate_world, GenerationSettings, NoopProgress, DEFAULT_RADIUS_METRES};
+
+    const QUANTIZED_KERNEL_ERROR_NANO: u64 = 256;
+
+    fn geodesic_decay_ppm(distance_m: f64, scale_m: f64) -> u64 {
+        if scale_m <= 0.0 {
+            return 0;
+        }
+        let x_ppm = (distance_m / scale_m * 1_000_000.0)
+            .round()
+            .clamp(0.0, 20_000_000.0) as u64;
+        exp_neg_ppm(x_ppm)
+    }
 
     fn fixture() -> TectonicWorld {
         let mut progress = NoopProgress;

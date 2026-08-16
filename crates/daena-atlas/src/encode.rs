@@ -245,7 +245,7 @@ fn pdf_escape(value: &str) -> String {
 
 fn base64_encode(data: &[u8]) -> String {
     const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     let mut index = 0;
     while index + 3 <= data.len() {
         let n = (u32::from(data[index]) << 16)
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn png_round_trip_preserves_pixels_and_provenance() {
         let request = AtlasRenderRequest::spike_png(4, 2).unwrap();
-        let rgba = vec![10_u8, 20, 30, 255, 40, 50, 60, 255]
+        let rgba = [10_u8, 20, 30, 255, 40, 50, 60, 255]
             .repeat(2)
             .into_iter()
             .cycle()
@@ -345,7 +345,7 @@ mod tests {
             request.format = AtlasFormat::Svg;
             request.normalize().unwrap()
         };
-        let rgba = vec![10_u8, 20, 30, 255].repeat(8);
+        let rgba = [10_u8, 20, 30, 255].repeat(8);
         let provenance = AtlasRenderProvenanceV1::spike(&request, b"sha256:ab", "sha256:cd");
         let png = encode_png(&request, &rgba, &provenance, &mut crate::NoopProgress).unwrap();
         let svg = encode_svg(&request, &png, &provenance, &mut crate::NoopProgress).unwrap();
@@ -363,7 +363,7 @@ mod tests {
         request.format = AtlasFormat::Pdf;
         request.dpi = 300;
         let request = request.normalize().unwrap();
-        let rgba = vec![10_u8, 20, 30, 255].repeat(300 * 150);
+        let rgba = [10_u8, 20, 30, 255].repeat(300 * 150);
         let provenance = AtlasRenderProvenanceV1::spike(&request, b"sha256:ab", "sha256:cd");
         let pdf = encode_pdf(&request, &rgba, &provenance, &mut crate::NoopProgress).unwrap();
         assert_eq!(parse_pdf_media_box(&pdf).unwrap(), [0, 0, 72, 36]);

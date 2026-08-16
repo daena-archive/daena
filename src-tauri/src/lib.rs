@@ -230,14 +230,6 @@ struct HistoricalProgressEvent {
 }
 
 impl HistoricalProgress {
-    fn cancellation_only(generation: Arc<AtomicU64>, expected: u64) -> Self {
-        Self {
-            generation,
-            expected,
-            reporter: None,
-        }
-    }
-
     fn with_reporter(
         generation: Arc<AtomicU64>,
         expected: u64,
@@ -7670,6 +7662,7 @@ fn derive_reopened_historical(
     Ok((historical, parameters, geojson))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn historical_response(
     world: &daena_physical::tectonics::TectonicWorld,
     source_hash: &str,
@@ -7963,7 +7956,7 @@ async fn project_physical_derived_geojson(
         let world = &validated.world;
         let report = validated.report;
         let (geojson, _) =
-            derive_reopened_hydrology(&world, &generation, report.reference_water_inventory_m3)
+            derive_reopened_hydrology(world, &generation, report.reference_water_inventory_m3)
                 .map_err(CoreError::Validation)?;
         Ok(geojson)
     })
@@ -8097,7 +8090,7 @@ async fn project_physical_derived_hydrology(
         let world = &validated.world;
         let report = validated.report;
         let (_, hydrology) =
-            derive_reopened_hydrology(&world, &generation, report.reference_water_inventory_m3)
+            derive_reopened_hydrology(world, &generation, report.reference_water_inventory_m3)
                 .map_err(CoreError::Validation)?;
         Ok(physical_hydrology_products(&hydrology))
     })
@@ -8149,7 +8142,7 @@ async fn project_physical_derived_epoch(
             }
         }
         let (historical, parameters, geojson) = derive_reopened_historical(
-            &world,
+            world,
             &generation,
             report.reference_water_inventory_m3,
             normalized_epoch,
@@ -8163,7 +8156,7 @@ async fn project_physical_derived_epoch(
         )
         .map_err(CoreError::Validation)?;
         let value = historical_response(
-            &world,
+            world,
             &source_hash,
             &physical_identity,
             cache_key.clone(),
@@ -8237,7 +8230,7 @@ async fn project_physical_materialize_events(
         let world = &validated.world;
         let hazards = daena_physical::hazards::derive_hazards(world)
             .map_err(|error| CoreError::Validation(error.to_string()))?;
-        let events = daena_physical::events::sample_events(&world, &hazards, &request)
+        let events = daena_physical::events::sample_events(world, &hazards, &request)
             .map_err(CoreError::Validation)?;
         let source_hash = format!("sha256:{:x}", Sha256::digest(&bytes));
         let generator_id = generation

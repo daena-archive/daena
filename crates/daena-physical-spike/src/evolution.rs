@@ -555,7 +555,7 @@ fn quantize_split(parts: &mut Vec<(usize, f64, u64)>) -> Vec<(usize, u32, u64)> 
         return Vec::new();
     }
     let weight_sum = parts.iter().map(|part| part.1).sum::<f64>();
-    if !(weight_sum > 0.0) {
+    if weight_sum <= 0.0 || !weight_sum.is_finite() {
         return Vec::new();
     }
     let mut weights = parts
@@ -652,15 +652,17 @@ fn dinfinity_edges(
     }
     let mut parts = if let Some((_, first, second, w1, w2, d1, d2)) = best {
         let mut parts = Vec::new();
-        if w1 > 0.0 && routing[first] <= routing[cell] {
-            if routing[first] < routing[cell] || order[first] < order[cell] {
-                parts.push((first, w1, d1));
-            }
+        if w1 > 0.0
+            && routing[first] <= routing[cell]
+            && (routing[first] < routing[cell] || order[first] < order[cell])
+        {
+            parts.push((first, w1, d1));
         }
-        if w2 > 0.0 && routing[second] <= routing[cell] {
-            if routing[second] < routing[cell] || order[second] < order[cell] {
-                parts.push((second, w2, d2));
-            }
+        if w2 > 0.0
+            && routing[second] <= routing[cell]
+            && (routing[second] < routing[cell] || order[second] < order[cell])
+        {
+            parts.push((second, w2, d2));
         }
         parts
     } else {
@@ -809,8 +811,8 @@ pub fn derive_drainage(
     let (routing, order) = priority_flood(field)?;
     let mut slope_ppm = vec![0u32; field.grid.sample_count()];
     let mut edges = Vec::new();
-    for cell in 0..field.grid.sample_count() {
-        if field.elevations_mm[cell] <= field.sea_level_mm {
+    for (cell, elevation) in field.elevations_mm.iter().enumerate() {
+        if *elevation <= field.sea_level_mm {
             continue;
         }
         let cell_edges = dinfinity_edges(field, &routing, &order, cell);
@@ -836,7 +838,10 @@ pub fn derive_drainage(
             if weight_sum == 0 {
                 0
             } else {
-                (weighted / weight_sum).min(u128::from(u32::MAX)) as u32
+                weighted
+                    .checked_div(weight_sum)
+                    .unwrap_or(0)
+                    .min(u128::from(u32::MAX)) as u32
             }
         };
         edges.extend(cell_edges);

@@ -234,12 +234,12 @@ pub fn mountain_influence_ppm(tectonics: &TectonicWorld, elevations_mm: &[i32]) 
         }
     }
     let mut dilated = influence.clone();
-    for cell in 0..count {
-        if influence[cell] == 0 {
+    for (cell, amount) in influence.iter().enumerate() {
+        if *amount == 0 {
             continue;
         }
         for neighbor in tectonics.grid.neighbors(cell) {
-            dilated[neighbor] = dilated[neighbor].max(influence[cell] / 2);
+            dilated[neighbor] = dilated[neighbor].max(*amount / 2);
         }
     }
     dilated

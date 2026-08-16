@@ -346,7 +346,11 @@ fn clearing_historical_cache_is_disposable_and_does_not_touch_sources() {
 #[test]
 fn superseded_historical_requests_cancel_at_progress_checkpoints() {
     let generation = Arc::new(AtomicU64::new(1));
-    let progress = HistoricalProgress::cancellation_only(generation.clone(), 1);
+    let progress = HistoricalProgress {
+        generation: generation.clone(),
+        expected: 1,
+        reporter: None,
+    };
     generation.store(2, Ordering::Release);
     assert!(matches!(
         daena_physical::ProgressSink::check_cancelled(&progress),

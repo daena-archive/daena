@@ -977,19 +977,21 @@ mod tests {
     fn nearest_ocean_tree_matches_brute_force_distance() {
         let grid = Grid::new(64, 32, DEFAULT_RADIUS_METRES).unwrap();
         let mut elevations = vec![1_000; grid.sample_count()];
-        for cell in 0..grid.sample_count() {
-            if cell % 7 == 0 {
-                elevations[cell] = -500;
+        for (cell, elevation) in elevations.iter_mut().enumerate() {
+            if cell.is_multiple_of(7) {
+                *elevation = -500;
             }
         }
-        let ocean_vectors = (0..grid.sample_count())
-            .filter(|cell| elevations[*cell] <= 0)
-            .map(|cell| cell_geometry(grid, cell).1)
+        let ocean_vectors = elevations
+            .iter()
+            .enumerate()
+            .filter(|(_, elevation)| **elevation <= 0)
+            .map(|(cell, _)| cell_geometry(grid, cell).1)
             .collect::<Vec<_>>();
         assert!(ocean_vectors.len() > 48);
         let tree = KdNode::build(&ocean_vectors);
-        for cell in 0..grid.sample_count() {
-            if elevations[cell] <= 0 {
+        for (cell, elevation) in elevations.iter().enumerate() {
+            if *elevation <= 0 {
                 continue;
             }
             let vector = cell_geometry(grid, cell).1;

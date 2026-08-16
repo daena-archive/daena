@@ -108,6 +108,7 @@ pub fn draw_labels(
     omitted
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_labels_xyz(
     buffer: &mut [u8],
     overlays: &[AuthoredFeature],

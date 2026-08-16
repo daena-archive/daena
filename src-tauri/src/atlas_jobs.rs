@@ -104,10 +104,6 @@ pub struct AtlasBeginInput {
     pub request_id: Option<String>,
 }
 
-fn install_png_bytes(dest: &Path, bytes: &[u8]) -> Result<(), String> {
-    install_artifact_bytes(dest, bytes, "png")
-}
-
 fn install_artifact_bytes(dest: &Path, bytes: &[u8], ext: &str) -> Result<(), String> {
     if dest
         .symlink_metadata()
@@ -614,6 +610,10 @@ pub fn cancel_atlas_jobs(jobs: &SharedAtlasJobs) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn install_png_bytes(dest: &Path, bytes: &[u8]) -> Result<(), String> {
+        install_artifact_bytes(dest, bytes, "png")
+    }
 
     #[test]
     fn export_slot_and_preview_supersession_are_tracked() {

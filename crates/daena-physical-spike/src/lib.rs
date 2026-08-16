@@ -431,8 +431,10 @@ impl GridTopology {
     }
 }
 
+type TopologyCache = Mutex<HashMap<(u32, u32), Arc<GridTopology>>>;
+
 fn cached_topology(grid: Grid) -> Arc<GridTopology> {
-    static CACHE: OnceLock<Mutex<HashMap<(u32, u32), Arc<GridTopology>>>> = OnceLock::new();
+    static CACHE: OnceLock<TopologyCache> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut cache = cache
         .lock()

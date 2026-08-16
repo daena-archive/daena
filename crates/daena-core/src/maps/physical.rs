@@ -115,10 +115,7 @@ pub fn encode_identity_manifest(manifest: &PhysicalIdentityManifestV1) -> Vec<u8
         &mut bytes,
         manifest.historical_forcing.ice_response_years as u64,
     );
-    push_manifest_i32(
-        &mut bytes,
-        manifest.historical_forcing.ice_midpoint_centi_c,
-    );
+    push_manifest_i32(&mut bytes, manifest.historical_forcing.ice_midpoint_centi_c);
     push_manifest_i32(
         &mut bytes,
         manifest.historical_forcing.ice_transition_width_centi_c,
@@ -308,7 +305,10 @@ fn historical_forcing(settings: &PhysicalMapGenerationSettings) -> HistoricalFor
             daena_physical::history::ForcingComponent {
                 amplitude_centi_c: components.first().map(|c| c.amplitude_centi_c).unwrap_or(0),
                 period_years: components.first().map(|c| c.period_years).unwrap_or(0),
-                phase_offset_years: components.first().map(|c| c.phase_offset_years).unwrap_or(0),
+                phase_offset_years: components
+                    .first()
+                    .map(|c| c.phase_offset_years)
+                    .unwrap_or(0),
             },
             daena_physical::history::ForcingComponent {
                 amplitude_centi_c: components.get(1).map(|c| c.amplitude_centi_c).unwrap_or(0),
@@ -330,23 +330,6 @@ fn historical_forcing(settings: &PhysicalMapGenerationSettings) -> HistoricalFor
             .historical_forcing
             .thermal_expansion_ppm_per_degree_c,
     }
-}
-
-fn forcing_json(parameters: HistoricalForcingParameters) -> Value {
-    serde_json::json!({
-        "version": parameters.version,
-        "components": parameters.components.iter().map(|component| serde_json::json!({
-            "amplitudeCentiC": component.amplitude_centi_c,
-            "periodYears": component.period_years,
-            "phaseOffsetYears": component.phase_offset_years,
-        })).collect::<Vec<_>>(),
-        "sensitivityPpm": parameters.sensitivity_ppm,
-        "landIceAmplitudePpm": parameters.land_ice_amplitude_ppm,
-        "iceResponseYears": parameters.ice_response_years,
-        "iceMidpointCentiC": parameters.ice_midpoint_centi_c,
-        "iceTransitionWidthCentiC": parameters.ice_transition_width_centi_c,
-        "thermalExpansionPpmPerDegreeC": parameters.thermal_expansion_ppm_per_degree_c,
-    })
 }
 
 fn source_mismatch(field: &str) -> CoreError {
@@ -450,6 +433,23 @@ pub fn validate_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn forcing_json(parameters: HistoricalForcingParameters) -> Value {
+        serde_json::json!({
+            "version": parameters.version,
+            "components": parameters.components.iter().map(|component| serde_json::json!({
+                "amplitudeCentiC": component.amplitude_centi_c,
+                "periodYears": component.period_years,
+                "phaseOffsetYears": component.phase_offset_years,
+            })).collect::<Vec<_>>(),
+            "sensitivityPpm": parameters.sensitivity_ppm,
+            "landIceAmplitudePpm": parameters.land_ice_amplitude_ppm,
+            "iceResponseYears": parameters.ice_response_years,
+            "iceMidpointCentiC": parameters.ice_midpoint_centi_c,
+            "iceTransitionWidthCentiC": parameters.ice_transition_width_centi_c,
+            "thermalExpansionPpmPerDegreeC": parameters.thermal_expansion_ppm_per_degree_c,
+        })
+    }
 
     fn generation(forcing_value: Option<Value>) -> Value {
         let mut settings = serde_json::json!({

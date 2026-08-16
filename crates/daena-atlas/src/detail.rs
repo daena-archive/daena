@@ -223,7 +223,7 @@ pub fn downsample_mean_mm(
     let mut sums = vec![0_i64; model.grid.sample_count()];
     let mut counts = vec![0_u32; model.grid.sample_count()];
     for j in 0..model.lattice_height {
-        if j as usize % CANCELLATION_STRIDE == 0 {
+        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         for i in 0..model.lattice_width {

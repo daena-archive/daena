@@ -68,6 +68,8 @@ export type NativeVectorEditor = {
   setBackground: (background: NativeVectorBackground | null) => void;
   setBackgroundVisible: (visible: boolean) => void;
   applyView: (center: [number, number], zoom: number) => void;
+  setZoom: (zoom: number) => void;
+  resetView: () => void;
   flush: () => void;
   deleteSelection: () => void;
   updateSelectedName: (name: string | null) => void;
@@ -655,6 +657,12 @@ export function createNativeVectorEditor(
     applyView(center, zoom) {
       const [lon, lat] = normalizedToLonLat(center[0], center[1]);
       map.jumpTo({ center: [lon, lat], zoom });
+    },
+    setZoom(zoom) {
+      map.jumpTo({ zoom });
+    },
+    resetView() {
+      fitContent();
     },
     flush() {
       mergeDrawIntoDraft();

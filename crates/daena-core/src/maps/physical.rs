@@ -193,17 +193,17 @@ pub fn initial_layers_value() -> Value {
     serde_json::json!({
         "schemaVersion": 1,
         "layers": [
-            {"id":"base","name":"Physical base","order":0,"defaultVisible":true,"locked":true,"selector":{},"style":{"fill":"#c9a96e","fillOpacity":0.92,"stroke":"#8a7048","strokeWidth":1.25,"pointRadius":2},"kind":"vector"},
-            {"id":"ocean","name":"Ocean","order":1,"defaultVisible":true,"locked":true,"selector":{},"style":{"fill":"#245c80","fillOpacity":0.58,"stroke":"#397da5","strokeWidth":0.3,"pointRadius":2},"kind":"vector"},
-            {"id":"land","name":"Exposed land","order":2,"defaultVisible":true,"locked":true,"selector":{},"style":{"fill":"#b99b62","fillOpacity":0.55,"stroke":"#d8bd83","strokeWidth":0.45,"pointRadius":2},"kind":"vector"},
+            {"id":"base","name":"Physical base","order":0,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#c9a96e","fillOpacity":0.92,"stroke":"#8a7048","strokeWidth":1.25,"pointRadius":2},"kind":"vector"},
+            {"id":"ocean","name":"Ocean","order":1,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#245c80","fillOpacity":0.58,"stroke":"#397da5","strokeWidth":0.3,"pointRadius":2},"kind":"vector"},
+            {"id":"land","name":"Exposed land","order":2,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#b99b62","fillOpacity":0.55,"stroke":"#d8bd83","strokeWidth":0.45,"pointRadius":2},"kind":"vector"},
             {"id":"shelves","name":"Continental shelves","order":3,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#4f87a2","fillOpacity":0.25,"stroke":"#8db4c3","strokeWidth":0.35,"pointRadius":2},"kind":"vector"},
             {"id":"bathymetric-contours","name":"Bathymetric contours","order":4,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#78b3ca","fillOpacity":0,"stroke":"#78b3ca","strokeWidth":0.6,"pointRadius":2},"kind":"vector"},
             {"id":"tectonic-plates","name":"Tectonic plates","order":5,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#6c8ebf","fillOpacity":0.12,"stroke":"#5c7aa5","strokeWidth":0.5,"pointRadius":2},"kind":"vector"},
             {"id":"tectonic-boundaries","name":"Plate boundaries","order":6,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#d46a5e","fillOpacity":0,"stroke":"#d46a5e","strokeWidth":2,"pointRadius":2},"kind":"vector"},
             {"id":"bathymetry","name":"Bathymetry","order":7,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#4e89b5","fillOpacity":0.12,"stroke":"#386b91","strokeWidth":0.35,"pointRadius":2},"kind":"vector"},
-            {"id":"volcanic-centers","name":"Volcanic centers","order":8,"defaultVisible":true,"locked":true,"selector":{},"style":{"fill":"#ef9b4a","fillOpacity":0.9,"stroke":"#8f4c25","strokeWidth":1,"pointRadius":5},"kind":"vector"},
-            {"id":"lakes","name":"Lakes","order":9,"defaultVisible":true,"locked":true,"selector":{},"style":{"fill":"#4d9ac2","fillOpacity":0.72,"stroke":"#b8e4f5","strokeWidth":1,"pointRadius":2},"kind":"vector"},
-            {"id":"rivers","name":"Rivers","order":10,"defaultVisible":true,"locked":true,"selector":{},"style":{"fill":"#71c7e8","fillOpacity":0,"stroke":"#71c7e8","strokeWidth":1.5,"pointRadius":2},"kind":"vector"},
+            {"id":"volcanic-centers","name":"Volcanic centers","order":8,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#ef9b4a","fillOpacity":0.9,"stroke":"#8f4c25","strokeWidth":1,"pointRadius":5},"kind":"vector"},
+            {"id":"lakes","name":"Lakes","order":9,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#4d9ac2","fillOpacity":0.72,"stroke":"#b8e4f5","strokeWidth":1,"pointRadius":2},"kind":"vector"},
+            {"id":"rivers","name":"Rivers","order":10,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#71c7e8","fillOpacity":0,"stroke":"#71c7e8","strokeWidth":1.5,"pointRadius":2},"kind":"vector"},
             {"id":"watersheds","name":"Watersheds","order":11,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#9c80d1","fillOpacity":0.08,"stroke":"#bba7e5","strokeWidth":0.45,"pointRadius":2},"kind":"vector"},
             {"id":"islands","name":"Islands","order":12,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#e0bb78","fillOpacity":0.18,"stroke":"#f0d39b","strokeWidth":0.7,"pointRadius":2},"kind":"vector"},
             {"id":"ice","name":"Ice","order":13,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#e8f2f8","fillOpacity":0.82,"stroke":"#c5d8e6","strokeWidth":0.4,"pointRadius":2},"kind":"vector"}

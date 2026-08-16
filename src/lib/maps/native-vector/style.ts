@@ -32,7 +32,7 @@ export function layerFilter(layerId: string): FilterSpecification {
 
 export function nativeBaseLayerVisibility(layers: readonly VectorLayerDefinition[]): "visible" | "none" {
   const base = layers.find((layer) => layer.id === BASE_LAYER_ID);
-  return !base || base.defaultVisible ? "visible" : "none";
+  return base?.defaultVisible ? "visible" : "none";
 }
 
 export function nativeVectorStyle(layers: readonly VectorLayerDefinition[]): StyleSpecification {

@@ -46,6 +46,7 @@ import { paintPhysicalSurface } from "../physical/raster";
 import PhysicalWorldView from "../physical/PhysicalWorldView.svelte";
 import AtlasRenderPanel from "../atlas/AtlasRenderPanel.svelte";
 import AtlasStudioView from "../atlas/AtlasStudioView.svelte";
+import MapViewControls from "./MapViewControls.svelte";
 
 let {
   mapId,
@@ -118,6 +119,19 @@ let atlasSupported = $state(false);
 let studioOpen = $state(false);
 let studioSupported = $state(false);
 let studioExport = $state<AtlasRenderRequest | null>(null);
+let layersCollapsed = $state(false);
+let historyCollapsed = $state(true);
+let epochEra = $state<"past" | "future">("past");
+let epochYearsAbs = $state(0);
+let physicalLayerVisibility = $state<Map<string, boolean>>(new Map());
+let sidebarWidth = $state(260);
+
+const SIDEBAR_MIN = 180;
+const SIDEBAR_MAX = 520;
+
+const EPOCH_MIN = -100_000;
+const EPOCH_MAX = 100_000;
+const EPOCH_STEP = 10;
 
 const listedLayers = $derived(
   [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id)),
@@ -148,6 +162,9 @@ const icons = {
   down: '<path d="m6 9 6 6 6-6"/>',
   remove:
     '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+  exportAtlas:
+    '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
+  chevron: '<path d="m6 9 6 6 6-6"/>',
 } as const;
 const activeLayer = $derived(layers.find((layer) => layer.id === activeLayerId) ?? null);
 const canDraw = $derived(
@@ -215,7 +232,15 @@ function physicalHillshadeCanvas(products: {
 
 function applyLayersField(field: FieldValue) {
   layersField = field;
-  layers = parseVectorLayers(field.value);
+  layers = withPhysicalVisibility(parseVectorLayers(field.value));
+}
+
+function withPhysicalVisibility(next: VectorLayerDefinition[]) {
+  if (physicalLayerVisibility.size === 0) return next;
+  return next.map((layer) => {
+    const visible = physicalLayerVisibility.get(layer.id);
+    return visible === undefined ? layer : { ...layer, defaultVisible: visible };
+  });
 }
 
 function destroyEditor() {
@@ -226,6 +251,56 @@ function destroyEditor() {
 function formatEpoch(offset: number): string {
   if (offset === 0) return "Reference epoch";
   return `${offset > 0 ? "+" : ""}${offset.toLocaleString()} years`;
+}
+
+function clampEpoch(offset: number, step = 1) {
+  const snapped = step > 1 ? Math.round(offset / step) * step : Math.round(offset);
+  return Math.min(EPOCH_MAX, Math.max(EPOCH_MIN, snapped));
+}
+
+function syncEpochFields(offset: number) {
+  epochOffsetYears = offset;
+  epochYearsAbs = Math.abs(offset);
+  if (offset < 0) epochEra = "past";
+  else if (offset > 0) epochEra = "future";
+}
+
+function commitEpoch(offset: number) {
+  const next = clampEpoch(offset);
+  syncEpochFields(next);
+  scheduleEpoch(next);
+}
+
+function commitEpochFromExact(absYears: number, era: "past" | "future") {
+  const magnitude = Math.max(0, Math.round(Number.isFinite(absYears) ? absYears : 0));
+  epochYearsAbs = magnitude;
+  epochEra = era;
+  commitEpoch(era === "past" ? -magnitude : magnitude);
+}
+
+function parseEpochYears(raw: string) {
+  const digits = raw.replace(/[^\d]/g, "");
+  const value = digits ? Number(digits) : 0;
+  return Math.min(EPOCH_MAX, value);
+}
+
+function startSidebarResize(event: PointerEvent) {
+  const handle = event.currentTarget;
+  if (!(handle instanceof HTMLElement)) return;
+  event.preventDefault();
+  handle.setPointerCapture(event.pointerId);
+  const originX = event.clientX;
+  const originWidth = sidebarWidth;
+  const onMove = (move: PointerEvent) => {
+    sidebarWidth = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, originWidth + (move.clientX - originX)));
+  };
+  const onUp = () => {
+    handle.removeEventListener("pointermove", onMove);
+    handle.removeEventListener("pointerup", onUp);
+    editor?.resize();
+  };
+  handle.addEventListener("pointermove", onMove);
+  handle.addEventListener("pointerup", onUp);
 }
 
 function handleHistoricalProgress(progress: PhysicalHistoricalProgress) {
@@ -254,6 +329,7 @@ function applyHistoricalProducts(products: PhysicalHistoricalProducts) {
   };
   epochOffsetYears = products.epochOffsetYears;
   appliedEpochOffsetYears = products.epochOffsetYears;
+  syncEpochFields(products.epochOffsetYears);
 }
 
 async function loadPhysicalEpoch(offset: number) {
@@ -275,6 +351,7 @@ async function loadPhysicalEpoch(offset: number) {
   } catch (cause) {
     if (request !== epochRequest) return;
     epochOffsetYears = appliedEpochOffsetYears;
+    syncEpochFields(appliedEpochOffsetYears);
     epochPhase = "";
     epochProgress = null;
     epochNotice = cause instanceof Error ? cause.message : String(cause);
@@ -377,6 +454,9 @@ function mountEditor() {
     get background() {
       return background;
     },
+    onViewChange(next) {
+      defaultView = { ...defaultView, zoom: next.zoom };
+    },
   });
   if ("error" in created) {
     applyEditorEvent({ type: "save-failed", message: `${created.error}: ${created.detail}` });
@@ -454,9 +534,9 @@ async function load() {
         "islands",
         "ice",
       ]);
-      layers = layers.map((layer) =>
-        immutablePhysicalLayerIds.has(layer.id) ? { ...layer, defaultVisible: false } : layer,
-      );
+      physicalLayerVisibility = new Map([...immutablePhysicalLayerIds].map((id) => [id, false]));
+      layers = withPhysicalVisibility(layers);
+      syncEpochFields(0);
       const requestId = crypto.randomUUID();
       activeEpochRequestId = requestId;
       epochBusy = true;
@@ -480,6 +560,7 @@ async function load() {
       epochProgress = null;
     } else {
       immutablePhysicalLayerIds = new Set();
+      physicalLayerVisibility = new Map();
       epochNotice = "";
       draft = cloneCollection(collection);
       loaded = cloneCollection(collection);
@@ -627,10 +708,18 @@ async function mutateLayer(layer: VectorLayerDefinition, update: Parameters<type
 }
 
 async function toggleVisible(layer: VectorLayerDefinition) {
-  layer.defaultVisible = !layer.defaultVisible;
+  const nextVisible = !layer.defaultVisible;
+  if (physicalLayerVisibility.has(layer.id)) {
+    physicalLayerVisibility.set(layer.id, nextVisible);
+    physicalLayerVisibility = new Map(physicalLayerVisibility);
+    layers = layers.map((item) => (item.id === layer.id ? { ...item, defaultVisible: nextVisible } : item));
+    editor?.syncLayers(layers);
+    return;
+  }
+  layer.defaultVisible = nextVisible;
   layers = [...layers];
   editor?.syncLayers(layers);
-  await mutateLayer(layer, { defaultVisible: layer.defaultVisible });
+  await mutateLayer(layer, { defaultVisible: nextVisible });
 }
 
 async function toggleLock(layer: VectorLayerDefinition) {
@@ -811,95 +900,81 @@ onMount(() => {
   <section class="native-vector-editor" aria-label="Native vector map editor">
     <header>
       <div>
-        <span>NATIVE VECTOR MAP</span>
-        <strong>{busy ? "Loading…" : dirty ? "Unsaved changes" : "Saved"}</strong>
+        <span>{physicalMap ? "PHYSICAL WORLD" : "VECTOR MAP"}</span>
+        {#if !physicalMap && dirty}<strong>Unsaved changes</strong>{/if}
       </div>
-      <div class="header-actions" role="toolbar" aria-label="Vector drawing tools">
-        <button
-          type="button"
-          class="icon-button"
-          aria-label="Back to map details"
-          title="Back to map details"
-          onclick={() => void requestBack()}>{@render glyph(icons.back)}</button>
-        <button
-          type="button"
-          class="icon-button"
-          class:active={tool === "static"}
-          aria-pressed={tool === "static"}
-          aria-label="Pan"
-          title="Pan"
-          onclick={() => setTool("static")}>{@render glyph(icons.pan)}</button>
-        <button
-          type="button"
-          class="icon-button"
-          class:active={tool === "select"}
-          aria-pressed={tool === "select"}
-          aria-label="Select"
-          title="Select"
-          onclick={() => setTool("select")}>{@render glyph(icons.select)}</button>
-        <button
-          type="button"
-          class="icon-button"
-          class:active={tool === "point"}
-          aria-pressed={tool === "point"}
-          aria-label="Point"
-          title="Point"
-          disabled={!canDraw}
-          onclick={() => setTool("point")}>{@render glyph(icons.point)}</button>
-        <button
-          type="button"
-          class="icon-button"
-          class:active={tool === "linestring"}
-          aria-pressed={tool === "linestring"}
-          aria-label="Line"
-          title="Line"
-          disabled={!canDraw}
-          onclick={() => setTool("linestring")}>{@render glyph(icons.line)}</button>
-        <button
-          type="button"
-          class="icon-button"
-          class:active={tool === "polygon"}
-          aria-pressed={tool === "polygon"}
-          aria-label="Polygon"
-          title="Polygon"
-          disabled={!canDraw}
-          onclick={() => setTool("polygon")}>{@render glyph(icons.polygon)}</button>
-        <button
-          type="button"
-          class="icon-button"
-          class:active={tool === "freehand"}
-          aria-pressed={tool === "freehand"}
-          aria-label="Freehand"
-          title="Freehand"
-          disabled={!canDraw}
-          onclick={() => setTool("freehand")}>{@render glyph(icons.freehand)}</button>
-        <button type="button" class="icon-button" aria-label="Undo" title="Undo" onclick={() => editor?.undo()}
-          >{@render glyph(icons.undo)}</button>
-        <button type="button" class="icon-button" aria-label="Redo" title="Redo" onclick={() => editor?.redo()}
-          >{@render glyph(icons.redo)}</button>
-        <button
-          type="button"
-          class="icon-button"
-          aria-label="Add layer"
-          title="Add layer"
-          disabled={busy || layers.length >= VECTOR_MAX_LAYERS}
-          onclick={() => void addLayer()}>{@render glyph(icons.addLayer)}</button>
-        <button
-          type="button"
-          class="icon-button save"
-          aria-label={busy ? "Saving…" : dirty ? "Save" : "Saved"}
-          title={busy ? "Saving…" : dirty ? "Save" : "Saved"}
-          disabled={busy || !dirty}
-          onclick={() => void save()}>{@render glyph(icons.save)}</button>
-        {#if studioSupported}
+      <div class="header-actions" role="toolbar" aria-label={physicalMap ? "Physical map actions" : "Vector drawing tools"}>
+        {#if !physicalMap}
           <button
             type="button"
             class="icon-button"
-            class:active={studioOpen}
-            aria-pressed={studioOpen}
-            aria-label="Atlas Studio"
-            title="Atlas Studio"
-            onclick={() => (studioOpen = !studioOpen)}>Studio</button>
+            class:active={tool === "static"}
+            aria-pressed={tool === "static"}
+            aria-label="Pan"
+            title="Pan"
+            onclick={() => setTool("static")}>{@render glyph(icons.pan)}</button>
+          <button
+            type="button"
+            class="icon-button"
+            class:active={tool === "select"}
+            aria-pressed={tool === "select"}
+            aria-label="Select"
+            title="Select"
+            onclick={() => setTool("select")}>{@render glyph(icons.select)}</button>
+          <button
+            type="button"
+            class="icon-button"
+            class:active={tool === "point"}
+            aria-pressed={tool === "point"}
+            aria-label="Point"
+            title="Point"
+            disabled={!canDraw}
+            onclick={() => setTool("point")}>{@render glyph(icons.point)}</button>
+          <button
+            type="button"
+            class="icon-button"
+            class:active={tool === "linestring"}
+            aria-pressed={tool === "linestring"}
+            aria-label="Line"
+            title="Line"
+            disabled={!canDraw}
+            onclick={() => setTool("linestring")}>{@render glyph(icons.line)}</button>
+          <button
+            type="button"
+            class="icon-button"
+            class:active={tool === "polygon"}
+            aria-pressed={tool === "polygon"}
+            aria-label="Polygon"
+            title="Polygon"
+            disabled={!canDraw}
+            onclick={() => setTool("polygon")}>{@render glyph(icons.polygon)}</button>
+          <button
+            type="button"
+            class="icon-button"
+            class:active={tool === "freehand"}
+            aria-pressed={tool === "freehand"}
+            aria-label="Freehand"
+            title="Freehand"
+            disabled={!canDraw}
+            onclick={() => setTool("freehand")}>{@render glyph(icons.freehand)}</button>
+          <button type="button" class="icon-button" aria-label="Undo" title="Undo" onclick={() => editor?.undo()}
+            >{@render glyph(icons.undo)}</button>
+          <button type="button" class="icon-button" aria-label="Redo" title="Redo" onclick={() => editor?.redo()}
+            >{@render glyph(icons.redo)}</button>
+          <button
+            type="button"
+            class="icon-button"
+            aria-label="Add layer"
+            title="Add layer"
+            disabled={busy || layers.length >= VECTOR_MAX_LAYERS}
+            onclick={() => void addLayer()}>{@render glyph(icons.addLayer)}</button>
+          <button
+            type="button"
+            class="icon-button save"
+            aria-label={busy ? "Saving…" : dirty ? "Save" : "Saved"}
+            title={busy ? "Saving…" : dirty ? "Save" : "Saved"}
+            disabled={busy || !dirty}
+            onclick={() => void save()}>{@render glyph(icons.save)}</button>
         {/if}
         {#if atlasSupported}
           <button
@@ -907,9 +982,9 @@ onMount(() => {
             class="icon-button"
             class:active={atlasOpen}
             aria-pressed={atlasOpen}
-            aria-label="Render Atlas Map"
-            title="Render Atlas Map"
-            onclick={() => (atlasOpen = !atlasOpen)}>Atlas</button>
+            aria-label="Export atlas"
+            title="Export atlas"
+            onclick={() => (atlasOpen = !atlasOpen)}>{@render glyph(icons.exportAtlas)}</button>
         {/if}
         <button
           type="button"
@@ -919,6 +994,8 @@ onMount(() => {
           aria-pressed={fullscreen}
           title={fullscreen ? "Exit full screen (Esc)" : "Full screen"}
           onclick={toggleFullscreen}>{@render glyph(fullscreen ? icons.exitFullscreen : icons.fullscreen)}</button>
+        <button type="button" class="text-button" aria-label="Close" title="Close" onclick={() => void requestBack()}
+          >Close</button>
       </div>
     </header>
     {#if conflict}
@@ -939,82 +1016,32 @@ onMount(() => {
     {#if atlasOpen && mapId}
       <AtlasRenderPanel {mapId} {epochOffsetYears} seed={studioExport} onclose={() => (atlasOpen = false)} />
     {/if}
-    {#if physicalMap && !studioOpen}
-      <div class="epoch-control" aria-label="Historical climate time">
-        <label for="physical-epoch">World time</label>
-        <input
-          id="physical-epoch"
-          type="range"
-          min="-100000"
-          max="100000"
-          step="1"
-          value={epochOffsetYears}
-          disabled={busy}
-          oninput={(event) => scheduleEpoch(Number(event.currentTarget.value))} />
-        <output for="physical-epoch">{formatEpoch(epochOffsetYears)}</output>
-        {#if epochBusy}
-          <span role="status">
-            {epochPhase || "Deriving…"}{#if epochProgress}
-              · {epochProgress.completed}/{epochProgress.total}{/if}
-          </span>
+    <div class="editor-body" style={`--sidebar-width: ${sidebarWidth}px`}>
+      <aside aria-label="Map layers">
+        {#if studioSupported}
+          <button
+            type="button"
+            class="studio-open"
+            class:active={studioOpen}
+            aria-pressed={studioOpen}
+            onclick={() => (studioOpen = !studioOpen)}>{studioOpen ? "Close Atlas Studio" : "Atlas Studio"}</button>
         {/if}
-        {#if epochNotice}<small>{epochNotice}</small>{/if}
-      </div>
-      <div class="event-control" aria-label="Materialize natural history">
-        <strong>Materialize natural history</strong>
-        <label>
-          Event
-          <select bind:value={eventKind} disabled={eventBusy || busy}>
-            <option value="earthquake">Earthquake</option>
-            <option value="eruption">Eruption</option>
-          </select>
-        </label>
-        <label>
-          From (years)
-          <input
-            type="number"
-            min="-100000"
-            max="100000"
-            step="1"
-            bind:value={eventStartYears}
-            disabled={eventBusy || busy} />
-        </label>
-        <label>
-          To (years)
-          <input
-            type="number"
-            min="-100000"
-            max="100000"
-            step="1"
-            bind:value={eventEndYears}
-            disabled={eventBusy || busy} />
-        </label>
-        <label>
-          Max events
-          <input type="number" min="1" max="128" step="1" bind:value={eventMaxEvents} disabled={eventBusy || busy} />
-        </label>
-        <label>
-          Hazard seed
-          <input type="number" min="0" step="1" bind:value={eventHazardSeed} disabled={eventBusy || busy} />
-        </label>
-        <button type="button" disabled={eventBusy || busy} onclick={() => void materializePhysicalEvents()}>
-          {eventBusy ? "Committing…" : "Commit events"}
+        <button
+          type="button"
+          class="aside-toggle"
+          aria-expanded={!layersCollapsed}
+          onclick={() => (layersCollapsed = !layersCollapsed)}>
+          <strong id="vector-layers-heading">Vector layers</strong>
+          <span class="aside-chevron" class:collapsed={layersCollapsed}>{@render glyph(icons.chevron)}</span>
         </button>
-        <small
-          >Creates revisioned entities and map links; generated hazards remain read-only and are not predictions.</small>
-        {#if eventNotice}<small role="status">{eventNotice}</small>{/if}
-      </div>
-    {/if}
-    <div class="editor-body">
-      <aside aria-label="Vector layers">
-        <strong id="vector-layers-heading">Vector layers</strong>
-        {#if physicalMap}
-          <p class="hazard-legend">Hazard layers show relative generated rates; they are not real-world predictions.</p>
-        {/if}
-        {#if listedLayers.length === 0}
-          <p class="hint">Add a vector layer to draw points, lines, and regions. Base geography stays read-only.</p>
-        {/if}
-        <div class="layer-list" role="list" aria-labelledby="vector-layers-heading">
+        {#if !layersCollapsed}
+          {#if physicalMap}
+            <p class="hazard-legend">Hazard layers show relative generated rates; they are not real-world predictions.</p>
+          {/if}
+          {#if listedLayers.length === 0}
+            <p class="hint">Add a vector layer to draw points, lines, and regions. Base geography stays read-only.</p>
+          {/if}
+          <div class="layer-list" role="list" aria-labelledby="vector-layers-heading">
           {#each listedLayers as layer (layer.id)}
             <div class="layer" class:active={layer.id === activeLayerId} role="listitem">
               <button
@@ -1136,7 +1163,63 @@ onMount(() => {
             </div>
           {/each}
         </div>
-        {#if selectedFeature}
+        {/if}
+        {#if physicalMap}
+          <button
+            type="button"
+            class="aside-toggle"
+            aria-expanded={!historyCollapsed}
+            onclick={() => (historyCollapsed = !historyCollapsed)}>
+            <strong>Natural history</strong>
+            <span class="aside-chevron" class:collapsed={historyCollapsed}>{@render glyph(icons.chevron)}</span>
+          </button>
+          {#if !historyCollapsed}
+            <div class="event-control" aria-label="Materialize natural history">
+              <label>
+                Event
+                <select bind:value={eventKind} disabled={eventBusy || busy}>
+                  <option value="earthquake">Earthquake</option>
+                  <option value="eruption">Eruption</option>
+                </select>
+              </label>
+              <label>
+                From (years)
+                <input
+                  type="number"
+                  min="-100000"
+                  max="100000"
+                  step="1"
+                  bind:value={eventStartYears}
+                  disabled={eventBusy || busy} />
+              </label>
+              <label>
+                To (years)
+                <input
+                  type="number"
+                  min="-100000"
+                  max="100000"
+                  step="1"
+                  bind:value={eventEndYears}
+                  disabled={eventBusy || busy} />
+              </label>
+              <label>
+                Max events
+                <input type="number" min="1" max="128" step="1" bind:value={eventMaxEvents} disabled={eventBusy || busy} />
+              </label>
+              <label>
+                Hazard seed
+                <input type="number" min="0" step="1" bind:value={eventHazardSeed} disabled={eventBusy || busy} />
+              </label>
+              <button type="button" disabled={eventBusy || busy} onclick={() => void materializePhysicalEvents()}>
+                {eventBusy ? "Committing…" : "Commit events"}
+              </button>
+              <small
+                >Creates revisioned entities and map links; generated hazards remain read-only and are not predictions.</small>
+              {#if eventNotice}<small role="status">{eventNotice}</small>{/if}
+            </div>
+          {/if}
+        {/if}
+        {#if selectedFeature && !physicalMap}
           <div class="inspector" aria-label="Selected feature">
             <strong>Selected feature</strong>
             <p class="hint">
@@ -1158,14 +1241,59 @@ onMount(() => {
             </label>
           </div>
         {/if}
+        {#if !physicalMap}
         <p class="hint">
           Base geography is read-only. Point, line, polygon, and freehand edits save through the canonical GeoJSON
           source. Delete removes the selected feature.
         </p>
+        {/if}
       </aside>
+      <button
+        type="button"
+        class="sidebar-resizer"
+        aria-label="Resize sidebar"
+        title="Drag to resize"
+        onpointerdown={startSidebarResize}></button>
       {#if physicalMap && !studioOpen}
         <div class="canvas" role="img" aria-label="Physical world map">
           <PhysicalWorldView collection={draft} {layers} raster={background?.canvas ?? null} />
+          <div class="epoch-control" aria-label="World epoch">
+            <input
+              id="physical-epoch"
+              type="range"
+              min={EPOCH_MIN}
+              max={EPOCH_MAX}
+              step={EPOCH_STEP}
+              value={epochOffsetYears}
+              aria-label="Epoch offset"
+              disabled={busy}
+              oninput={(event) => commitEpoch(clampEpoch(Number(event.currentTarget.value), EPOCH_STEP))} />
+            <input
+              class="epoch-year"
+              type="text"
+              inputmode="numeric"
+              autocomplete="off"
+              spellcheck="false"
+              value={epochYearsAbs.toLocaleString("en-US")}
+              aria-label="Years from epoch"
+              disabled={busy}
+              onchange={(event) => commitEpochFromExact(parseEpochYears(event.currentTarget.value), epochEra)} />
+            <span>
+              {#if epochOffsetYears === 0}
+                at epoch
+              {:else if epochOffsetYears < 0}
+                years before epoch
+              {:else}
+                years after epoch
+              {/if}
+            </span>
+          </div>
+          {#if busy || epochBusy}
+            <div class="map-busy" role="status">
+              <strong>{epochPhase || (busy ? "Loading…" : "Working…")}</strong>
+              {#if epochProgress}<span>{epochProgress.completed} / {epochProgress.total}</span>{/if}
+            </div>
+          {/if}
         </div>
       {:else if studioOpen && mapId}
         <div class="canvas" role="img" aria-label="Atlas Studio">
@@ -1180,6 +1308,18 @@ onMount(() => {
           tabindex="0"
           role="application"
           aria-label="Native vector map canvas">
+          {#if editor}
+            <MapViewControls
+              zoom={defaultView.zoom}
+              onzoom={(zoom) => {
+                defaultView = { ...defaultView, zoom };
+                editor?.setZoom(zoom);
+              }}
+              onreset={() => editor?.resetView()} />
+          {/if}
+          {#if busy}
+            <div class="map-busy" role="status"><strong>Loading…</strong></div>
+          {/if}
         </div>
       {/if}
     </div>
@@ -1222,6 +1362,32 @@ header span {
   gap: 6px;
   align-items: center;
 }
+.text-button {
+  padding: 6px 12px;
+}
+.studio-open {
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+.aside-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.aside-chevron {
+  display: grid;
+  place-items: center;
+  transform: rotate(0deg);
+}
+.aside-chevron.collapsed {
+  transform: rotate(-90deg);
+}
 button {
   border: 0;
   border-radius: 7px;
@@ -1244,41 +1410,62 @@ button:disabled {
   display: grid;
   min-height: 0;
   flex: 1 1 auto;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width, 260px) 6px minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
 }
+.sidebar-resizer {
+  width: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #405047;
+  cursor: col-resize;
+}
+.sidebar-resizer:hover,
+.sidebar-resizer:focus-visible {
+  background: #d5ab6c;
+}
 .epoch-control {
-  display: grid;
-  grid-template-columns: auto minmax(160px, 1fr) auto;
+  position: absolute;
+  z-index: 2;
+  top: 10px;
+  left: 10px;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  border-bottom: 1px solid #405047;
-  background: #1b2822;
+  gap: 6px 8px;
+  max-width: min(28rem, calc(100% - 20px));
+  padding: 6px 8px;
+  border: 1px solid #405047;
+  border-radius: 8px;
+  background: rgb(27 40 34 / 92%);
   color: #d8e3d9;
   font-size: 12px;
 }
-.epoch-control input {
+.epoch-control input[type="range"] {
+  width: 140px;
   min-width: 0;
   accent-color: #d5ab6c;
 }
-.epoch-control output {
-  min-width: 118px;
-  text-align: right;
+.epoch-year {
+  width: 5.4em;
+  border: 1px solid #405047;
+  border-radius: 6px;
+  padding: 4px 5px;
+  background: #0f1a16;
+  color: #edf2ec;
+  font: 12px system-ui;
   font-variant-numeric: tabular-nums;
+  text-align: right;
 }
-.epoch-control small {
-  grid-column: 2 / -1;
-  color: #aebdb1;
+.epoch-control span {
+  color: #d8e3d9;
+  font-size: 12px;
 }
 .event-control {
   display: grid;
-  grid-template-columns: auto repeat(4, minmax(90px, 1fr)) auto;
-  align-items: end;
   gap: 8px;
-  padding: 8px 16px;
-  border-bottom: 1px solid #405047;
-  background: #18241f;
+  padding: 4px 0 8px;
   color: #d8e3d9;
   font-size: 12px;
 }
@@ -1299,7 +1486,6 @@ button:disabled {
   font: 12px system-ui;
 }
 .event-control small {
-  grid-column: 1 / -1;
   color: #aebdb1;
 }
 aside {
@@ -1319,13 +1505,15 @@ aside {
 }
 .layer-list {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 .layer {
   display: grid;
-  gap: 6px;
-  padding: 8px;
-  border-radius: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 4px;
+  padding: 1px 4px;
+  border-radius: 6px;
   background: #18241f;
 }
 .layer.active {
@@ -1334,6 +1522,12 @@ aside {
 .layer-name {
   text-align: left;
   width: 100%;
+  padding: 4px 6px;
+  background: transparent;
+  font-weight: 600;
+}
+.style-row {
+  grid-column: 1 / -1;
 }
 .inspector {
   display: grid;
@@ -1359,6 +1553,7 @@ aside {
   color: #b8c8bc;
 }
 .canvas {
+  position: relative;
   display: flex;
   width: 100%;
   height: 100%;
@@ -1374,6 +1569,26 @@ aside {
   outline: 2px solid #d5ab6c;
   outline-offset: -2px;
 }
+.map-busy {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 0.3rem;
+  pointer-events: none;
+  color: #f7f0e5;
+  text-align: center;
+  text-shadow: 0 1px 8px rgb(0 0 0 / 75%);
+}
+.map-busy strong {
+  font: 600 1.05rem/1.3 inherit;
+}
+.map-busy span {
+  color: #d9d0c3;
+  font-size: 0.8rem;
+}
 .icon-button {
   display: grid;
   place-items: center;
@@ -1383,9 +1598,13 @@ aside {
   border: 1px solid #4d6358;
   background: transparent;
 }
+.layer-row {
+  flex-wrap: nowrap;
+  gap: 2px;
+}
 .layer-row .icon-button {
-  width: 28px;
-  height: 28px;
+  width: 22px;
+  height: 22px;
 }
 .hint,
 .error {
@@ -1410,12 +1629,7 @@ button:focus-visible {
 }
 @media (max-width: 900px) {
   .event-control {
-    grid-template-columns: repeat(2, minmax(120px, 1fr));
-  }
-  .event-control strong,
-  .event-control button,
-  .event-control small {
-    grid-column: 1 / -1;
+    grid-template-columns: 1fr;
   }
 }
 </style>

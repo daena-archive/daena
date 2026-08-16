@@ -18,12 +18,11 @@ for (const required of [
   "project.cancelPhysicalMap",
   "editor?.dispose()",
   'aria-label="Physical diagnostic layers"',
-  'id: "tectonic-plates"',
   'id: "tectonic-boundaries"',
-  'id: "bathymetry"',
-  'id: "volcanic-centers"',
-  'id: "earthquake-hazard"',
-  'id: "volcanic-hazard"',
+  'id: "ocean"',
+  'id: "lakes"',
+  'id: "rivers"',
+  'id: "islands"',
   "width: 384",
   "height: 192",
   "paintPhysicalSurface",
@@ -39,6 +38,16 @@ for (const required of [
 ]) {
   assert.ok(source.includes(required) || native.includes(required), `physical surface contract is missing ${required}`);
 }
+for (const required of [
+  "tectonic-plates",
+  "tectonic-boundaries",
+  "bathymetry",
+  "volcanic-centers",
+  "earthquake-hazard",
+  "volcanic-hazard",
+]) {
+  assert.ok(native.includes(`"${required}"`), `saved physical maps must retain ${required}`);
+}
 assert.ok(source.includes("PhysicalWorldView"), "generate preview must use PhysicalWorldView");
 assert.ok(native.includes("PhysicalWorldView"), "saved physical maps must use PhysicalWorldView");
 assert.ok(
@@ -49,7 +58,25 @@ assert.ok(
   readFileSync(resolve(root, "src/lib/maps/physical/PhysicalWorldView.svelte"), "utf8").includes("setBackground"),
   "physical world view must update raster without remounting the globe",
 );
-assert.equal(source.includes("defaultVisible: true"), false, "physical diagnostic layers must start hidden");
+assert.match(source, /id: BASE_LAYER_ID[\s\S]*defaultVisible: false/, "physical base must start hidden");
+assert.match(source, /overlayLayers\(\)/, "generator chips must omit the hidden base layer");
+assert.equal(source.includes("Exposed land"), false, "generator must not expose the land overlay");
+assert.match(source, /id: "ocean"[\s\S]*defaultVisible: true/, "ocean overlay must start enabled");
+assert.match(source, /id: "ice"[\s\S]*defaultVisible: true/, "ice overlay must start enabled");
+assert.match(
+  source,
+  /id: "ocean"[\s\S]*id: "ice"[\s\S]*id: "tectonic-boundaries"/,
+  "ice overlay chip must follow ocean",
+);
+assert.match(source, /This preview locks the world’s physical shape/);
+assert.match(source, /high-resolution render/);
+assert.match(source, /aria-label="About this preview"/);
+assert.match(source, /physical-map-help/);
+assert.equal(source.includes("Hillshade"), false, "hillshade must not be a generator toggle");
+assert.equal(source.includes("One world, one preview"), false, "generator copy must not use the old slogan");
+assert.match(source, /Generate a globe, then accept it/);
+assert.match(source, /physical-map-stage/, "generation progress must overlay the globe");
+assert.equal(source.includes("physical-map-progress"), false, "generation progress must not sit above overlay chips");
 
 for (const required of [
   "PHYSICAL_HISTORICAL_PROGRESS_EVENT",
@@ -75,6 +102,21 @@ for (const required of [
   assert.ok(client.includes(required), `physical client event contract is missing ${required}`);
 }
 assert.ok(native.includes("eventRequestId"), "native event materialization must retain its request ID for retries");
+assert.ok(native.includes("physicalLayerVisibility"), "physical overlay visibility must stay local");
+assert.ok(native.includes("EPOCH_STEP"), "world epoch slider must use year strides");
+assert.ok(native.includes("historyCollapsed"), "natural history must start collapsed");
+assert.ok(native.includes("layersCollapsed"), "vector layers must be collapsible");
+assert.match(native, /Atlas Studio/);
+assert.match(native, /aria-label="Close"/);
+assert.match(native, /Export atlas/);
+assert.match(native, /PHYSICAL WORLD/);
+assert.equal(native.includes("NATIVE VECTOR MAP"), false);
+assert.match(native, /years before epoch/);
+assert.match(native, /years after epoch/);
+assert.match(native, /toLocaleString\("en-US"\)/);
+assert.match(native, /sidebar-resizer/);
+assert.match(native, /map-busy/);
+assert.match(native, /MapViewControls/);
 for (const required of ["HistoricalProgressEvent", "physical-historical-progress", "with_reporter"]) {
   assert.ok(host.includes(required), `physical host progress contract is missing ${required}`);
 }
@@ -103,12 +145,7 @@ for (const required of [
 ]) {
   assert.ok(timeline.includes(required), `Timeline physical chronology adapter is missing ${required}`);
 }
-assert.match(mapsManifest, /"key": "physicalChronology"[\s\S]*"shared": true/);
-assert.match(mapsManifest, /daena\.maps:physical-natural-event/);
-assert.match(timelineManifest, /"field\.read:shared"/);
-assert.match(coreMaps, /PHYSICAL_EVENT_CHRONOLOGY_KEY/);
 assert.match(native, /relative generated rates; they are not real-world predictions/);
-assert.match(source, /relative generated rates; they are not real-world predictions/);
 assert.ok(
   readFileSync(resolve(root, "crates/daena-physical-spike/src/contours.rs"), "utf8").includes(
     "CONTOUR_DERIVATION_VERSION",

@@ -842,6 +842,9 @@ async function openPluginView(item: PluginNavigationItem) {
 let mapsEditorMode = $state<"fmg" | "vector" | "physical">("fmg");
 let mapsVectorStart = $state<"generate" | "import">("generate");
 let mapProviderMenuOpen = $state<"header" | "empty" | null>(null);
+const mapSurfaceOpen = $derived(
+  section === "maps" && sandboxView?.renderer === "maps" && Boolean(sandboxView?.view),
+);
 async function createMap(provider: "fmg" | "image" | "vector" | "physical" = "physical") {
   if (projectDiagnostics.length > 0) return;
   try {
@@ -3201,7 +3204,7 @@ onMount(() => {
     <div class="rail-footer">v0.2 · local first</div>
   </aside>
 
-  <section class:sandbox-active={Boolean(sandboxView)} class="app-main">
+  <section class:sandbox-active={Boolean(sandboxView)} class:map-surface-open={mapSurfaceOpen} class="app-main">
     <header class="topbar">
       <div class="breadcrumbs" aria-label="Breadcrumb">
         <span>Private studio</span><i>/</i><strong>{sectionLabel()}</strong>{#if section === "writing"}<i>/</i><span
@@ -3913,6 +3916,7 @@ onMount(() => {
             class="quiet-button"
             onclick={() => void importPortableCheckpoint()}>Import checkpoint</button>
         </div>{/if}
+      {#if !mapSurfaceOpen}
       <div class="workspace-heading">
         <div>
           <span class="overline"
@@ -3959,7 +3963,11 @@ onMount(() => {
             >{/if}
         </div>
       </div>
-      <section class:maps-workspace={section === "maps" && sandboxView?.renderer === "maps"} class="workspace-grid">
+      {/if}
+      <section
+        class:maps-workspace={section === "maps" && sandboxView?.renderer === "maps"}
+        class:map-surface-expanded={mapSurfaceOpen}
+        class="workspace-grid">
         <aside class="collection-panel panel-surface">
           <div class="panel-heading">
             <div>
@@ -5076,6 +5084,51 @@ onMount(() => {
 .maps-workspace {
   grid-template-columns: 245px minmax(0, 1fr);
 }
+.app-main.map-surface-open {
+  display: flex;
+  min-height: 0;
+  height: 100vh;
+  flex-direction: column;
+  overflow: hidden;
+}
+.app-main.map-surface-open > .topbar {
+  flex: 0 0 auto;
+}
+.workspace-grid.map-surface-expanded {
+  display: grid;
+  min-height: 0;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  padding: 8px 10px 10px;
+  align-items: stretch;
+}
+.workspace-grid.map-surface-expanded .collection-panel {
+  display: none;
+}
+.workspace-grid.map-surface-expanded .editor-panel {
+  min-height: 0;
+  height: 100%;
+  padding: 0;
+  overflow: hidden;
+}
+.workspace-grid.map-surface-expanded .map-editor-shell,
+.workspace-grid.map-surface-expanded .map-surface {
+  min-height: 0;
+  height: 100%;
+}
+@media (max-width: 1180px) {
+  .workspace-grid.map-surface-expanded {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    padding: 8px 10px 10px;
+  }
+}
+@media (max-width: 760px) {
+  .workspace-grid.map-surface-expanded {
+    padding: 6px 8px 8px;
+  }
+}
 .panel-surface,
 .editor-panel {
   border: 1px solid var(--line);
@@ -5210,6 +5263,8 @@ onMount(() => {
 .map-surface :global(.native-vector-editor),
 .map-surface :global(.generator) {
   width: 100%;
+  height: 100%;
+  min-height: 0;
 }
 .map-editor-notices {
   display: flex;

@@ -8,6 +8,7 @@ import {
 } from "../native-vector/runtime";
 import { physicalWorldOverlayCoordinates } from "../native-vector/coordinates";
 import type { VectorFeatureCollection, VectorLayerDefinition } from "../native-vector/types";
+import MapViewControls from "../native-vector/MapViewControls.svelte";
 
 let {
   collection,
@@ -97,6 +98,10 @@ $effect(() => {
 <div class="frame">
   {#if notice}<p class="map-reconcile-notice" role="alert">{notice}</p>{/if}
   <div class="viewport" bind:this={host} role="img" aria-label="Physical world map"></div>
+  <MapViewControls
+    zoom={view?.zoom ?? 1.25}
+    onzoom={(zoom) => editor?.setZoom(zoom)}
+    onreset={() => editor?.resetView()} />
 </div>
 
 <style>

@@ -72,12 +72,15 @@ assert.equal(editor.includes("deleteVectorLayer"), true);
 assert.equal(editor.includes("Reload canonical source"), true);
 assert.equal(editor.includes("Selected feature"), true);
 assert.equal(editor.includes("reduceVectorEditor"), true);
-assert.equal(editor.includes("Back to map details"), true);
+assert.equal(editor.includes("Close"), true);
 assert.equal(editor.includes("Full screen"), true);
-assert.equal(runtime.includes("setBackground"), true);
+assert.equal(runtime.includes("applyView"), true);
+assert.equal(runtime.includes("setZoom"), true);
+assert.equal(runtime.includes("resetView"), true);
 assert.equal(runtime.includes("initialView"), true);
 assert.equal(runtime.includes("onViewChange"), true);
 assert.equal(worldView.includes("setBackground"), true);
+assert.equal(worldView.includes("MapViewControls"), true);
 assert.equal(worldView.includes("initialView"), true);
 assert.equal(editor.includes("applyHistoricalProducts(products);\n    mountEditor()"), false);
 

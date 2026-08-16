@@ -12,6 +12,7 @@ import PhysicalWorldView from "./PhysicalWorldView.svelte";
 import NativeVectorMapEditor from "../native-vector/NativeVectorMapEditor.svelte";
 import { parseVectorCollection } from "../native-vector/source";
 import {
+  BASE_LAYER_ID,
   DEFAULT_VECTOR_LAYER_STYLE,
   type VectorFeatureCollection,
   type VectorLayerDefinition,
@@ -41,13 +42,12 @@ let evolutionPreset = $state<"young" | "mature" | "old">("mature");
 let status = $state<PhysicalJobStatus | null>(null);
 let hydrology = $state<PhysicalHydrologyProducts | null>(null);
 let raster = $state<HTMLCanvasElement | null>(null);
-let showHillshade = $state(true);
 let notice = $state("");
 let busy = $state(false);
 let preview = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let layers = $state<VectorLayerDefinition[]>([
   {
-    id: "base",
+    id: BASE_LAYER_ID,
     kind: "vector",
     name: "Physical base",
     order: 0,
@@ -57,14 +57,24 @@ let layers = $state<VectorLayerDefinition[]>([
     style: DEFAULT_VECTOR_LAYER_STYLE,
   },
   {
-    id: "tectonic-plates",
+    id: "ocean",
     kind: "vector",
-    name: "Tectonic plates",
-    order: 5,
-    defaultVisible: false,
+    name: "Ocean",
+    order: 1,
+    defaultVisible: true,
     locked: true,
     selector: {},
-    style: { fill: "#6c8ebf", fillOpacity: 0.12, stroke: "#5c7aa5", strokeWidth: 0.5, pointRadius: 2 },
+    style: { fill: "#245c80", fillOpacity: 0.58, stroke: "#397da5", strokeWidth: 0.3, pointRadius: 2 },
+  },
+  {
+    id: "ice",
+    kind: "vector",
+    name: "Ice",
+    order: 15,
+    defaultVisible: true,
+    locked: true,
+    selector: {},
+    style: { fill: "#e8f2f8", fillOpacity: 0.82, stroke: "#c5d8e6", strokeWidth: 0.4, pointRadius: 2 },
   },
   {
     id: "tectonic-boundaries",
@@ -75,46 +85,6 @@ let layers = $state<VectorLayerDefinition[]>([
     locked: true,
     selector: {},
     style: { fill: "#d46a5e", fillOpacity: 0, stroke: "#d46a5e", strokeWidth: 2, pointRadius: 2 },
-  },
-  {
-    id: "bathymetry",
-    kind: "vector",
-    name: "Bathymetry",
-    order: 7,
-    defaultVisible: false,
-    locked: true,
-    selector: {},
-    style: { fill: "#4e89b5", fillOpacity: 0.12, stroke: "#386b91", strokeWidth: 0.35, pointRadius: 2 },
-  },
-  {
-    id: "volcanic-centers",
-    kind: "vector",
-    name: "Volcanic centers",
-    order: 8,
-    defaultVisible: false,
-    locked: true,
-    selector: {},
-    style: { fill: "#ef9b4a", fillOpacity: 0.9, stroke: "#8f4c25", strokeWidth: 1, pointRadius: 5 },
-  },
-  {
-    id: "earthquake-hazard",
-    kind: "vector",
-    name: "Earthquake hazard (generated)",
-    order: 9,
-    defaultVisible: false,
-    locked: true,
-    selector: {},
-    style: { fill: "#c95353", fillOpacity: 0.72, stroke: "#7f2525", strokeWidth: 0.8, pointRadius: 3 },
-  },
-  {
-    id: "volcanic-hazard",
-    kind: "vector",
-    name: "Volcanic hazard (generated)",
-    order: 10,
-    defaultVisible: false,
-    locked: true,
-    selector: {},
-    style: { fill: "#f08a36", fillOpacity: 0.72, stroke: "#8f4c25", strokeWidth: 0.8, pointRadius: 3 },
   },
   {
     id: "lakes",
@@ -137,56 +107,6 @@ let layers = $state<VectorLayerDefinition[]>([
     style: { fill: "#71c7e8", fillOpacity: 0, stroke: "#71c7e8", strokeWidth: 1.5, pointRadius: 2 },
   },
   {
-    id: "watersheds",
-    kind: "vector",
-    name: "Watersheds",
-    order: 13,
-    defaultVisible: false,
-    locked: true,
-    selector: {},
-    style: { fill: "#9c80d1", fillOpacity: 0.08, stroke: "#bba7e5", strokeWidth: 0.45, pointRadius: 2 },
-  },
-  {
-    id: "ocean",
-    kind: "vector",
-    name: "Ocean",
-    order: 1,
-    defaultVisible: false,
-    locked: true,
-    selector: {},
-    style: { fill: "#245c80", fillOpacity: 0.58, stroke: "#397da5", strokeWidth: 0.3, pointRadius: 2 },
-  },
-  {
-    id: "land",
-    kind: "vector",
-    name: "Exposed land",
-    order: 2,
-    defaultVisible: false,
-    locked: true,
-    selector: {},
-    style: { fill: "#b99b62", fillOpacity: 0.55, stroke: "#d8bd83", strokeWidth: 0.45, pointRadius: 2 },
-  },
-  {
-    id: "shelves",
-    kind: "vector",
-    name: "Continental shelves",
-    order: 3,
-    defaultVisible: false,
-    locked: true,
-    selector: {},
-    style: { fill: "#4f87a2", fillOpacity: 0.25, stroke: "#8db4c3", strokeWidth: 0.35, pointRadius: 2 },
-  },
-  {
-    id: "bathymetric-contours",
-    kind: "vector",
-    name: "Bathymetric contours",
-    order: 4,
-    defaultVisible: false,
-    locked: true,
-    selector: {},
-    style: { fill: "#78b3ca", fillOpacity: 0, stroke: "#78b3ca", strokeWidth: 0.6, pointRadius: 2 },
-  },
-  {
     id: "islands",
     kind: "vector",
     name: "Islands",
@@ -196,20 +116,19 @@ let layers = $state<VectorLayerDefinition[]>([
     selector: {},
     style: { fill: "#e0bb78", fillOpacity: 0.18, stroke: "#f0d39b", strokeWidth: 0.7, pointRadius: 2 },
   },
-  {
-    id: "ice",
-    kind: "vector",
-    name: "Ice",
-    order: 15,
-    defaultVisible: false,
-    locked: true,
-    selector: {},
-    style: { fill: "#e8f2f8", fillOpacity: 0.82, stroke: "#c5d8e6", strokeWidth: 0.4, pointRadius: 2 },
-  },
 ]);
 
 function publish(nextStatus: string, detail: unknown = null) {
   onstate?.(nextStatus, detail);
+}
+
+function overlayLayers() {
+  return layers.filter((layer) => layer.id !== BASE_LAYER_ID);
+}
+
+function headline() {
+  if (status?.state === "completed") return "Preview ready — accept this world";
+  return "Generate a globe, then accept it";
 }
 
 function randomSeed() {
@@ -334,10 +253,10 @@ onMount(() => {
   <section class="native-vector-editor physical-map-editor" aria-label="Generate physical map">
     <header>
       <div>
-        <span>PHYSICAL WORLD</span><strong
-          >{busy ? `${status?.stage ?? "Starting"}…` : "One world, one preview"}</strong>
+        <span>PHYSICAL WORLD</span>
+        <strong>{headline()}</strong>
       </div>
-      <button class="icon-button" type="button" aria-label="Cancel" onclick={() => void cancel()}>×</button>
+      <button class="icon-button" type="button" aria-label="Close" onclick={() => void cancel()}>×</button>
     </header>
     <div class="physical-map-controls">
       <label>Map name<input bind:value={name} disabled={busy} /></label>
@@ -350,29 +269,33 @@ onMount(() => {
         </select></label>
       <button class="quiet-button" type="button" onclick={randomSeed} disabled={busy}>Reroll seed</button>
     </div>
-    {#if status}<p class="physical-map-progress" role="status">
-        {status.state === "completed" ? "Preview ready" : `${status.stage} · ${status.completed}/${status.total}`}
-      </p>{/if}
     {#if notice}<p class="map-reconcile-notice" role="alert">{notice}</p>{/if}
-    <div class="physical-layer-controls" aria-label="Physical diagnostic layers">
-      <label
-        ><input
-          type="checkbox"
-          checked={showHillshade}
-          onchange={() => {
-            showHillshade = !showHillshade;
-          }} />
-        Hillshade</label>
-      {#each layers as layer}
-        <label
-          ><input type="checkbox" checked={layer.defaultVisible} onchange={() => toggleLayer(layer.id)} />
-          {layer.name}</label>
-      {/each}
+    <div class="physical-layer-controls">
+      <div role="group" aria-label="Physical diagnostic layers">
+        {#each overlayLayers() as layer (layer.id)}
+          <button
+            class="layer-toggle"
+            type="button"
+            aria-pressed={layer.defaultVisible}
+            onclick={() => toggleLayer(layer.id)}>{layer.name}</button>
+        {/each}
+      </div>
+      <span class="physical-map-help">
+        <button type="button" aria-describedby="physical-map-hint" aria-label="About this preview">?</button>
+        <p id="physical-map-hint" role="tooltip">
+          This preview locks the world’s physical shape—coasts, climate, ice, rivers, and the rest. The accepted,
+          exportable map is a high-resolution render with far more detail and quality.
+        </p>
+      </span>
     </div>
-    <small class="physical-hazard-legend"
-      >Hazard layers show relative generated rates; they are not real-world predictions.</small>
     <div class="native-vector-map">
-      <PhysicalWorldView collection={preview} {layers} {raster} showRaster={showHillshade} />
+      <PhysicalWorldView collection={preview} {layers} {raster} showRaster />
+      {#if busy}
+        <div class="physical-map-stage" role="status">
+          <strong>{status?.stage ?? "Starting"}…</strong>
+          {#if status && status.total > 0}<span>{status.completed} / {status.total}</span>{/if}
+        </div>
+      {/if}
     </div>
     <footer class="physical-map-actions">
       {#if status?.state === "completed"}
@@ -392,7 +315,7 @@ onMount(() => {
 .physical-map-editor {
   display: flex;
   flex-direction: column;
-  min-height: 560px;
+  min-height: 0;
   height: 100%;
   background: #0d1b2a;
   color: #f7f0e5;
@@ -442,39 +365,116 @@ onMount(() => {
   padding: 0.45rem 0.55rem;
 }
 
-.physical-map-controls select,
-.physical-map-editor button {
-  border: 1px solid rgb(255 255 255 / 18%);
-  border-radius: 0.35rem;
-  font: inherit;
-}
-
 .physical-map-controls select {
   min-width: 10rem;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 0.35rem;
   background: rgb(255 255 255 / 7%);
   color: inherit;
   padding: 0.45rem 0.55rem;
+  font: inherit;
 }
 
-.physical-map-editor button {
+.physical-map-editor .icon-button,
+.physical-map-editor .quiet-button,
+.physical-map-editor .primary-button,
+.physical-map-editor .layer-toggle {
   cursor: pointer;
-  padding: 0.45rem 0.7rem;
+  font: inherit;
 }
 
-.physical-map-editor button:disabled {
-  cursor: wait;
+.physical-map-editor .icon-button {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 0.35rem;
+  background: transparent;
+  color: #f7f0e5;
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+.physical-map-editor .icon-button:hover {
+  background: rgb(255 255 255 / 10%);
+}
+
+.physical-map-editor .icon-button:focus-visible,
+.physical-map-editor .quiet-button:focus-visible,
+.physical-map-editor .primary-button:focus-visible,
+.physical-map-editor .layer-toggle:focus-visible,
+.physical-map-help button:focus-visible {
+  outline: 2px solid #f3d39a;
+  outline-offset: 2px;
+}
+
+.physical-map-editor .quiet-button {
+  padding: 0.5rem 0.85rem;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 0.45rem;
+  background: rgb(255 255 255 / 8%);
+  color: #f7f0e5;
+}
+
+.physical-map-editor .quiet-button:hover {
+  border-color: rgb(255 255 255 / 28%);
+  background: rgb(255 255 255 / 12%);
+}
+
+.physical-map-editor .primary-button {
+  padding: 0.5rem 0.95rem;
+  border: 1px solid #d4b57a;
+  border-radius: 0.45rem;
+  background: #c9a96e;
+  color: #0d1b2a;
+  font-weight: 700;
+}
+
+.physical-map-editor .primary-button:hover {
+  background: #d8ba82;
+}
+
+.physical-map-editor .icon-button:disabled,
+.physical-map-editor .quiet-button:disabled,
+.physical-map-editor .primary-button:disabled {
+  cursor: not-allowed;
   opacity: 0.55;
 }
 
-.physical-map-progress,
+.physical-map-editor .layer-toggle {
+  padding: 0.3rem 0.65rem;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 6%);
+  color: #d9d0c3;
+}
+
+.physical-map-editor .layer-toggle:hover {
+  border-color: rgb(255 255 255 / 28%);
+  background: rgb(255 255 255 / 10%);
+}
+
+.physical-map-editor .layer-toggle[aria-pressed="true"] {
+  border-color: #c9a96e;
+  background: #c9a96e;
+  color: #0d1b2a;
+  font-weight: 600;
+}
+
 .physical-map-editor .map-reconcile-notice {
   margin: 0;
   padding: 0.55rem 1rem;
 }
 
 .physical-layer-controls {
+  position: relative;
+  z-index: 3;
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
   gap: 0.45rem 0.8rem;
   padding: 0.5rem 1rem;
   border-bottom: 1px solid rgb(255 255 255 / 8%);
@@ -482,24 +482,90 @@ onMount(() => {
   font-size: 0.75rem;
 }
 
-.physical-layer-controls label {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
+.physical-layer-controls > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.8rem;
 }
 
-.physical-hazard-legend {
+.physical-map-help {
+  position: relative;
+  margin-left: auto;
+}
+
+.physical-map-help button {
+  display: grid;
+  place-items: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  padding: 0;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 6%);
+  color: #d9d0c3;
+  font: inherit;
+  cursor: pointer;
+}
+
+.physical-map-help button:hover {
+  border-color: rgb(255 255 255 / 28%);
+  background: rgb(255 255 255 / 10%);
+  color: #f7f0e5;
+}
+
+.physical-map-help p {
+  position: absolute;
+  z-index: 3;
+  right: calc(100% + 0.35rem);
+  bottom: calc(100% + 0.35rem);
+  display: none;
+  width: min(22rem, calc(100vw - 2.5rem));
+  margin: 0;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 0.45rem;
+  background: #152536;
+  color: #f7f0e5;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+  font-size: 0.78rem;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.physical-map-help:hover p,
+.physical-map-help:focus-within p {
   display: block;
-  padding: 0.45rem 1rem;
-  color: #b9c4c7;
-  font-size: 0.72rem;
 }
 
 .native-vector-map {
+  position: relative;
   display: flex;
   min-height: 360px;
   min-width: 0;
   flex: 1;
+}
+
+.physical-map-stage {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 0.35rem;
+  pointer-events: none;
+  background: rgb(13 27 42 / 42%);
+  color: #f7f0e5;
+  text-align: center;
+}
+
+.physical-map-stage strong {
+  font: 600 1.05rem/1.3 inherit;
+}
+
+.physical-map-stage span {
+  color: #d9d0c3;
+  font-size: 0.8rem;
 }
 
 .physical-map-actions {

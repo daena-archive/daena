@@ -138,7 +138,7 @@ for (const required of [
   "Add layer",
   "Selected feature",
   "reduceVectorEditor",
-  "Back to map details",
+  "Close",
   "Full screen",
 ]) {
   if (!editor.includes(required)) fail(`NativeVectorMapEditor missing ${required}`);

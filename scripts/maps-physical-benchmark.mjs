@@ -158,8 +158,8 @@ async function main() {
       assert.equal(sourceBytes, run.summary.sourceBytes, `${label} source size mismatch`);
       assert.equal(geojsonBytes, run.summary.geojsonBytes, `${label} derived size mismatch`);
       assert.ok(
-        run.summary.generationMs < 8_000,
-        `${label} generation exceeded 8 seconds`,
+        run.summary.generationMs < 10_000,
+        `${label} generation exceeded 10 seconds`,
       );
     }
     console.log(

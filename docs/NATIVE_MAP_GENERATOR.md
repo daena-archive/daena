@@ -682,14 +682,15 @@ Increasing resolution is not an acceptable substitute for a weak algorithm.
 Start at a moderate measured resolution and add a level-of-detail strategy only
 after profiling proves it necessary.
 
-The production lock after ADR 0024 is:
+The production lock after ADR 0024, with the wall-time gate raised in
+ADR 0050, is:
 
 | Bound | Value |
 | --- | ---: |
 | Production grid (default and maximum) | 384 × 192 |
 | Canonical source | 128 MiB |
 | Derived GeoJSON | 256 MiB |
-| Generation wall time | 8 s |
+| Generation wall time | 10 s |
 | Working memory | 128 MiB |
 
 `256 x 128` and `512 x 256` remain supported preview grids. `1024 x 512` and
@@ -1550,7 +1551,7 @@ cause-field-to-final-relief accounting.
 #### Packet 3: implement continuous drainage and physical erosion
 
 Status: implemented in `evolution.rs` (ADR 0026). Generator version is `9`.
-`EVOLUTION_DERIVATION_VERSION` is `2`.
+`EVOLUTION_DERIVATION_VERSION` is `3`.
 
 Implement routing and erosion in `evolution.rs` with explicit SI units:
 

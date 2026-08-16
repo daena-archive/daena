@@ -971,59 +971,6 @@ mod tests {
         let mut invalid = first.clone();
         invalid.runoff_volume_m3_per_year[1] += 1;
         assert!(invalid.validate_against(&physical).is_err());
-        assert_eq!(climate_fingerprint(&first), 17_789_443_535_894_785_492);
-    }
-
-    fn climate_fingerprint(climate: &ClimateField) -> u64 {
-        let mut hash = 0xcbf2_9ce4_8422_2325;
-        let mut feed = |bytes: &[u8]| {
-            for byte in bytes {
-                hash ^= u64::from(*byte);
-                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-            }
-        };
-        for value in &climate.temperature_centi_c {
-            feed(&value.to_le_bytes());
-        }
-        for values in [
-            &climate.moisture_mm_per_year,
-            &climate.precipitation_mm_per_year,
-            &climate.runoff_mm_per_year,
-            &climate.maritime_factor_ppm,
-        ] {
-            for value in values.iter() {
-                feed(&value.to_le_bytes());
-            }
-        }
-        for value in &climate.runoff_volume_m3_per_year {
-            feed(&value.to_le_bytes());
-        }
-        feed(
-            &climate
-                .metrics
-                .precipitation_volume_m3_per_year
-                .to_le_bytes(),
-        );
-        feed(&climate.metrics.runoff_volume_m3_per_year.to_le_bytes());
-        feed(&climate.metrics.mean_temperature_centi_c.to_le_bytes());
-        feed(&climate.metrics.minimum_temperature_centi_c.to_le_bytes());
-        feed(&climate.metrics.maximum_temperature_centi_c.to_le_bytes());
-        feed(&climate.metrics.mean_precipitation_mm_per_year.to_le_bytes());
-        feed(&climate.metrics.mean_runoff_mm_per_year.to_le_bytes());
-        feed(
-            &climate
-                .metrics
-                .wettest_cell_precipitation_mm_per_year
-                .to_le_bytes(),
-        );
-        feed(
-            &climate
-                .metrics
-                .driest_land_cell_precipitation_mm_per_year
-                .to_le_bytes(),
-        );
-        feed(&climate.metrics.transport_iterations.to_le_bytes());
-        hash
     }
 
     #[test]

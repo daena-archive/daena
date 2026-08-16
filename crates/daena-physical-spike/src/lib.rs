@@ -46,7 +46,7 @@ pub const CANCELLATION_LATENCY_BUDGET_MS: u128 = 100;
 pub const GENERATION_TIME_BUDGET_MS: u128 = 8_000;
 pub const WORKING_MEMORY_BUDGET_BYTES: usize = 128 * 1024 * 1024;
 pub const GENERATOR_ID: &str = "daena-physical-world";
-pub const GENERATOR_VERSION: u32 = 12;
+pub const GENERATOR_VERSION: u32 = 13;
 
 pub const CODE_GENERATOR_INVALID_SETTINGS: &str = "physical.generator.invalid-settings";
 pub const CODE_GENERATOR_UNSUPPORTED_VERSION: &str = "physical.generator.unsupported-version";
@@ -1180,8 +1180,8 @@ mod tests {
     #[test]
     fn world_pipeline_reports_inventory_and_honors_cancellation() {
         let settings = GenerationSettings {
-            width: 16,
-            height: 8,
+            width: DEFAULT_WIDTH,
+            height: DEFAULT_HEIGHT,
             radius_metres: DEFAULT_RADIUS_METRES,
             target_land_fraction_ppm: 300_000,
         };

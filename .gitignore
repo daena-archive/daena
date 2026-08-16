@@ -10,6 +10,7 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vscode/
 .codebase-memory/
+target/
 crates/**/target/
 /src-tauri/plugin-assets/maps/fmg-v1.119.zip
 /third_party/fantasy-map-generator/

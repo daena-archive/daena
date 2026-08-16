@@ -2,7 +2,7 @@
 
 Proposal values from ADR 0031. Measurements below are from a release
 `atlas-map` build on Darwin 25.6 (2026-08-15) consuming the physical golden
-`64 x 32` source (`sha256:6e9a13df19859f2f0d6978526abf60d20354c23e3ba6c5acd22360e510f429c2`).
+`64 x 32` source (`sha256:9d546d4a23235373031acfb490be39a59b7d2aea7dbce6f52307227ad3bc5f0c`).
 Temporary bytes equal the encoded PNG; the spike writes no `.daena` cache.
 
 | Item | Proposal | Measured status |
@@ -119,11 +119,11 @@ tiles on the same `64 x 32` source.
 
 | Target | Work | SHA-256 |
 | ------ | ---- | ------- |
-| Darwin 25.6 | Studio tile `z=0 / x=0 / y=0` scale `1` | `sha256:882d34d1bc3a72d227ae2f87e2f697d8d9facbb1a3873b01172ebb27e020de50` |
-| Darwin 25.6 | Studio tile `z=8 / x=120 / y=90` scale `1` | `sha256:7bdbc334f10c15b638c4a6fa86953b1250b1ad6326675a7037ebeea8786c50de` |
-| Darwin 25.6 | static preview `2048 x 1024` | `sha256:PENDING` |
-| Darwin 25.6 | named export `4096 x 2048` | `sha256:PENDING` |
-| Darwin 25.6 | named export `8192 x 4096` | `sha256:PENDING` |
+| Darwin 25.6 | Studio tile `z=0 / x=0 / y=0` scale `1` | `sha256:9e9591e0ba14456d894cbc750d5d7eeb6f77402e8dcc8c8f711af47e7601a5a0` |
+| Darwin 25.6 | Studio tile `z=8 / x=120 / y=90` scale `1` | `sha256:b00e4ca87e0caf2adc1997b9221ce6c84d13ade96637b23c106d4cdb1c0ef0fb` |
+| Darwin 25.6 | static preview `2048 x 1024` | `sha256:6b5f535c0976b42124f886c01e7653f23d58fe6c90591a1f462afd59fc0e8ae8` |
+| Darwin 25.6 | named export `4096 x 2048` | `sha256:ae0ba1b90d52b5c13cd28846d308125203a41dfafe8e8e9a08d32290a73f6fb6` |
+| Darwin 25.6 | named export `8192 x 4096` | `sha256:98b20da1a229aaed4d5fb2e168054a3043b2d23e61417b8171cd43ef89288163` |
 
 Historical algorithm `5` (ADR 0046) hashes remain below for provenance only.
 

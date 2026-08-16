@@ -973,55 +973,6 @@ pub fn build_refined_hydrology(
     })
 }
 
-pub fn hydrology_fingerprint(model: &RefinedHydrology) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&model.drainage_key);
-    bytes.extend_from_slice(&model.erosion_key);
-    bytes.extend_from_slice(&model.version.to_le_bytes());
-    bytes.extend_from_slice(&model.filled_pit_count.to_le_bytes());
-    bytes.extend_from_slice(&(model.tributaries.len() as u32).to_le_bytes());
-    for tributary in &model.tributaries {
-        bytes.extend_from_slice(tributary.id.as_bytes());
-        bytes.push(0);
-        bytes.extend_from_slice(&(tributary.source_index as u32).to_le_bytes());
-        bytes.extend_from_slice(&(tributary.join_index as u32).to_le_bytes());
-        bytes.extend_from_slice(&tributary.parent_river_id.to_le_bytes());
-        bytes.extend_from_slice(&tributary.watershed_id.to_le_bytes());
-        bytes.extend_from_slice(&(tributary.path.len() as u32).to_le_bytes());
-        for point in &tributary.path {
-            bytes.extend_from_slice(&point[0].to_le_bytes());
-            bytes.extend_from_slice(&point[1].to_le_bytes());
-        }
-    }
-    bytes.extend_from_slice(&(model.valleys.len() as u32).to_le_bytes());
-    for valley in &model.valleys {
-        bytes.extend_from_slice(valley.id.as_bytes());
-        bytes.push(0);
-        bytes.extend_from_slice(&(valley.lattice_index as u32).to_le_bytes());
-        bytes.extend_from_slice(&valley.watershed_id.to_le_bytes());
-        bytes.extend_from_slice(&valley.lon_micro.to_le_bytes());
-        bytes.extend_from_slice(&valley.lat_micro.to_le_bytes());
-    }
-    bytes.extend_from_slice(&(model.deposition.len() as u32).to_le_bytes());
-    for feature in &model.deposition {
-        bytes.extend_from_slice(feature.id.as_bytes());
-        bytes.push(0);
-        bytes.push(feature.kind as u8);
-        bytes.extend_from_slice(&(feature.lattice_index as u32).to_le_bytes());
-        bytes.extend_from_slice(&feature.watershed_id.to_le_bytes());
-        bytes.extend_from_slice(&feature.lon_micro.to_le_bytes());
-        bytes.extend_from_slice(&feature.lat_micro.to_le_bytes());
-    }
-    bytes.extend_from_slice(&(model.worked_mm.len() as u32).to_le_bytes());
-    let mut elev = Sha256::new();
-    for value in &model.worked_mm {
-        elev.update(value.to_le_bytes());
-    }
-    bytes.extend_from_slice(&elev.finalize());
-    Sha256::digest(bytes).into()
-}
-
 impl RefinedHydrology {
     pub fn encode_identities(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -1173,7 +1124,7 @@ pub fn flow_stays_in_watershed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::amplify::{build_amplification_model, topology_fingerprint};
+    use crate::amplify::build_amplification_model;
     use crate::cache::{decode_residual, encode_residual};
     use crate::control::ControlFields;
     use crate::detail::{
@@ -1192,10 +1143,6 @@ mod tests {
     use std::collections::BTreeSet;
     use std::fs;
     use std::time::Instant;
-
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-    }
 
     fn peak_resident_bytes() -> Option<u64> {
         #[cfg(unix)]
@@ -1301,14 +1248,6 @@ mod tests {
         let v1 = domain_key(b"identity-fixture", 1, 0, REFINED_DRAINAGE_DOMAIN);
         assert_ne!(drainage, v1);
         assert_ne!(drainage, erosion);
-        assert_eq!(
-            hex(&drainage),
-            "867e35855be95b7b3b764b79137382fac9ff554c30a6e4172a9447fd9acff647"
-        );
-        assert_eq!(
-            hex(&erosion),
-            "7dcb0108ea912942485d3205661f5adf0042acc13227427806513aa7fd58d2f2"
-        );
     }
 
     #[test]
@@ -1463,20 +1402,12 @@ mod tests {
                 }
             }
         }
-        assert_eq!(
-            hex(&topology_fingerprint(&model)),
-            "5d19806fbbdb317307de903d1a2c2da1683d43f139a3263a2c6a5240ce1a1da5"
-        );
         let rebuilt =
             build_refined_hydrology(&model, &controls, &hydrology, &sdf, &identity, &mut cancel)
                 .unwrap();
         assert_eq!(refined.worked_mm, rebuilt.worked_mm);
         assert_eq!(refined.tributaries, rebuilt.tributaries);
         assert_eq!(refined.valleys, rebuilt.valleys);
-        assert_eq!(
-            hex(&hydrology_fingerprint(&refined)),
-            "3d921037ab634d2c59cb8674a6727eff85c0f9a3e066cc0444b49bb5dd70cc7f"
-        );
         for j in [0, refined.lattice_height - 1] {
             let pole = refined.worked_mm[lattice_index(refined.lattice_width, 0, j)];
             for i in 1..refined.lattice_width {

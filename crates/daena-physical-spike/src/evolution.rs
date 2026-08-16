@@ -14,9 +14,9 @@ use super::{
     climate::{derive_current_climate, ClimateField, ClimateSettings},
     Grid, PhysicalError, PhysicalErrorCode, PhysicalField, ProgressPhase, ProgressSink,
 };
-use crate::tectonics::{BoundaryKind, TectonicWorld};
+use crate::tectonics::{geodesic_nearest, BoundaryKind, TectonicWorld};
 
-pub const EVOLUTION_DERIVATION_VERSION: u16 = 2;
+pub const EVOLUTION_DERIVATION_VERSION: u16 = 4;
 pub const MAX_EVOLUTION_ELEVATION_MM: i32 = 9_000_000;
 pub const MAX_RELIEF_LOSS_PER_STEP_MM: i32 = 25_000;
 pub const ROUTING_ANISOTROPY_LIMIT_PPM: u32 = 950_000;
@@ -25,6 +25,8 @@ pub const STREAM_POWER_M_MILLI: u16 = 500;
 pub const STREAM_POWER_N_MILLI: u16 = 1_000;
 const MILLION: u128 = 1_000_000;
 const MIN_TANGENT_METRES: f64 = 1.0;
+const COASTAL_EROSION_RADIUS_MM: i64 = 350_000_000;
+const MAX_DEPOSITION_PER_STEP_MM: i32 = 8_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvolutionPreset {
@@ -1063,6 +1065,64 @@ fn stream_power_incision_mm(
     Ok(incision as i32)
 }
 
+fn coastal_incision_scale_ppm(distance_mm: i64, coast_mm: i64, exposure_ppm: u32) -> u32 {
+    if distance_mm == i64::MAX || coast_mm <= 0 || distance_mm >= coast_mm {
+        return 1_000_000;
+    }
+    let t = 1.0 - distance_mm as f64 / coast_mm as f64;
+    let exposure = 0.35 + 0.65 * (f64::from(exposure_ppm) / 1_000_000.0);
+    (1_000_000.0 + 1_200_000.0 * t * exposure).round() as u32
+}
+
+fn ocean_exposure_ppm(grid: Grid, is_ocean: impl Fn(usize) -> bool, cell: usize) -> u32 {
+    let topology = grid.topology();
+    let neighbors = topology.neighbors(cell);
+    if neighbors.is_empty() {
+        return 0;
+    }
+    let ocean = neighbors
+        .iter()
+        .filter(|neighbor| is_ocean(**neighbor))
+        .count();
+    (ocean as u32 * 1_000_000 / neighbors.len() as u32).min(1_000_000)
+}
+
+fn mouth_incision_scale_ppm(accumulation_m3_per_year: u64, distance_mm: i64, coast_mm: i64) -> u32 {
+    if accumulation_m3_per_year < 40_000_000
+        || distance_mm == i64::MAX
+        || distance_mm >= coast_mm.saturating_mul(2)
+    {
+        return 1_000_000;
+    }
+    1_800_000
+}
+
+fn deposition_mm(
+    accumulation_m3_per_year: u64,
+    slope_ppm: u32,
+    timestep_years: u32,
+    coast_distance_mm: i64,
+    coast_mm: i64,
+) -> i32 {
+    if slope_ppm > 85_000 || accumulation_m3_per_year < 8_000_000 {
+        return 0;
+    }
+    let slope_f = 1.0 - f64::from(slope_ppm) / 85_000.0;
+    let mouth = if coast_distance_mm != i64::MAX && coast_distance_mm < coast_mm {
+        1.8
+    } else {
+        0.35
+    };
+    let millimetres = (accumulation_m3_per_year as f64).sqrt()
+        * 2.2e-8
+        * slope_f
+        * mouth
+        * f64::from(timestep_years);
+    millimetres
+        .round()
+        .clamp(0.0, f64::from(MAX_DEPOSITION_PER_STEP_MM)) as i32
+}
+
 fn metrics_for(
     before: &[i32],
     after: &[i32],
@@ -1176,6 +1236,43 @@ pub fn evolve_terrain(
             )?;
         }
         let drainage = derive_drainage(&step_field, &active_climate)?;
+        let outline_locked = step * 2 >= budget.steps;
+        let mut coast_dist = Vec::new();
+        let mut coast_exposure = Vec::new();
+        if outline_locked {
+            let ocean_cells = current
+                .iter()
+                .enumerate()
+                .filter(|(_, elevation)| **elevation <= before_field.sea_level_mm)
+                .map(|(cell, _)| cell)
+                .collect::<Vec<_>>();
+            let (dist, nearest) = geodesic_nearest(
+                before_field.grid,
+                &ocean_cells,
+                COASTAL_EROSION_RADIUS_MM.saturating_mul(2),
+            );
+            let source_exposure = ocean_cells
+                .iter()
+                .map(|cell| {
+                    ocean_exposure_ppm(
+                        before_field.grid,
+                        |other| current[other] <= before_field.sea_level_mm,
+                        *cell,
+                    )
+                })
+                .collect::<Vec<_>>();
+            coast_exposure = nearest
+                .iter()
+                .map(|index| {
+                    if *index == u32::MAX || (*index as usize) >= source_exposure.len() {
+                        0
+                    } else {
+                        source_exposure[*index as usize]
+                    }
+                })
+                .collect();
+            coast_dist = dist;
+        }
         let mut incised = current.clone();
         for cell in 0..current.len() {
             if cell % 128 == 0 {
@@ -1200,13 +1297,45 @@ pub fn evolve_terrain(
                 ))
                 .min()
                 .unwrap_or(0);
-            let incision = stream_power_incision_mm(
+            let base_incision = stream_power_incision_mm(
                 budget,
                 timestep_years,
                 drainage.accumulation_m3_per_year[cell],
                 drainage.slope_ppm[cell],
                 removable,
             )?;
+            let mut incision = base_incision;
+            let mut deposit = 0i32;
+            if outline_locked {
+                let distance = coast_dist.get(cell).copied().unwrap_or(i64::MAX);
+                let exposure = coast_exposure.get(cell).copied().unwrap_or(0);
+                let coastal =
+                    coastal_incision_scale_ppm(distance, COASTAL_EROSION_RADIUS_MM, exposure);
+                let mouth = mouth_incision_scale_ppm(
+                    drainage.accumulation_m3_per_year[cell],
+                    distance,
+                    COASTAL_EROSION_RADIUS_MM,
+                );
+                let scaled = ((i64::from(base_incision) * i64::from(coastal) / 1_000_000)
+                    * i64::from(mouth)
+                    / 1_000_000)
+                    .min(i64::from(removable))
+                    .min(i64::from(MAX_RELIEF_LOSS_PER_STEP_MM))
+                    .max(0) as i32;
+                let extra = scaled.saturating_sub(base_incision);
+                let land_floor = before_field.sea_level_mm.saturating_add(1);
+                let max_keep_land = current[cell].saturating_sub(land_floor).max(0);
+                incision = (base_incision.saturating_add(extra))
+                    .min(max_keep_land)
+                    .min(removable);
+                deposit = deposition_mm(
+                    drainage.accumulation_m3_per_year[cell],
+                    drainage.slope_ppm[cell],
+                    timestep_years,
+                    distance,
+                    COASTAL_EROSION_RADIUS_MM,
+                );
+            }
             max_step_relief_loss_mm = max_step_relief_loss_mm.max(incision);
             let evolved = i64::from(current[cell]) - i64::from(incision);
             if evolved < i64::from(-MAX_EVOLUTION_ELEVATION_MM)
@@ -1220,7 +1349,16 @@ pub fn evolve_terrain(
             let area = row_areas[before_field.grid.row_col(cell).0 as usize];
             erosion_work_m3 = erosion_work_m3
                 .saturating_add((f64::from(incision) * area / 1_000.0).round().max(0.0) as u64);
-            incised[cell] = evolved as i32;
+            let deposited = evolved + i64::from(deposit);
+            if deposited < i64::from(-MAX_EVOLUTION_ELEVATION_MM)
+                || deposited > i64::from(MAX_EVOLUTION_ELEVATION_MM)
+            {
+                return Err(PhysicalError::coded(
+                    PhysicalErrorCode::NumericNonFinite,
+                    "terrain evolution exceeded the bounded signed elevation field",
+                ));
+            }
+            incised[cell] = deposited as i32;
         }
         let mut diffused = incised.clone();
         for cell in 0..current.len() {
@@ -1482,6 +1620,41 @@ mod tests {
         let wet = stream_power_incision_mm(budget, 12_000, 25_000_000, 50_000, 2_000_000).unwrap();
         assert!(steep > low);
         assert!(wet > low);
+    }
+
+    #[test]
+    fn coastal_and_mouth_scales_raise_incision_near_the_ocean() {
+        assert!(coastal_incision_scale_ppm(0, COASTAL_EROSION_RADIUS_MM, 1_000_000) > 1_000_000);
+        assert!(
+            coastal_incision_scale_ppm(0, COASTAL_EROSION_RADIUS_MM, 1_000_000)
+                > coastal_incision_scale_ppm(0, COASTAL_EROSION_RADIUS_MM, 0)
+        );
+        assert_eq!(
+            coastal_incision_scale_ppm(
+                COASTAL_EROSION_RADIUS_MM,
+                COASTAL_EROSION_RADIUS_MM,
+                1_000_000
+            ),
+            1_000_000
+        );
+        assert!(
+            mouth_incision_scale_ppm(80_000_000, 10_000_000, COASTAL_EROSION_RADIUS_MM) > 1_000_000
+        );
+        assert!(
+            deposition_mm(
+                80_000_000,
+                20_000,
+                8_000,
+                1_000_000,
+                COASTAL_EROSION_RADIUS_MM
+            ) > deposition_mm(
+                80_000_000,
+                20_000,
+                8_000,
+                i64::MAX,
+                COASTAL_EROSION_RADIUS_MM
+            )
+        );
     }
 
     #[test]

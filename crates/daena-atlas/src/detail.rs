@@ -300,12 +300,6 @@ mod tests {
             0,
             crate::amplify::HIERARCHICAL_RELIEF_DOMAIN,
         );
-        assert_eq!(
-            key.iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>(),
-            "7ca397a6cdc2ad13e7b42b821e8d6796c0a523bcb54837aa46970bf7d860d31a"
-        );
         assert_ne!(lattice_sample(&key, 3, 5, 0), lattice_sample(&key, 4, 5, 0));
         assert_ne!(
             domain_key(

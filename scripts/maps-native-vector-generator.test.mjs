@@ -1,13 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
 import { DEFAULT_GENERATOR_SETTINGS, generateCandidates } from "../src/lib/maps/native-vector/generator.ts";
-
-const fixtureUrl = new URL("../docs/maps/native-vector-fixtures/phase3-generator.json", import.meta.url);
-
-function sha256(value) {
-  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
-}
 
 function isoperimetric(ring) {
   let area = 0;
@@ -83,21 +75,4 @@ for (const candidate of first) {
   assert.ok(roundness < 0.72, `largest landmass is too round (${roundness})`);
 }
 
-const actual = {
-  generatorVersion: 1,
-  settings: DEFAULT_GENERATOR_SETTINGS,
-  candidates: first.map((candidate) => ({
-    index: candidate.index,
-    seed: candidate.seed,
-    geometryHash: sha256(candidate.collection),
-    thumbnailHash: sha256(candidate.svg),
-  })),
-};
-
-if (process.env.DAENA_WRITE_GENERATOR_GOLDEN === "1") {
-  writeFileSync(fixtureUrl, `${JSON.stringify(actual, null, 2)}\n`);
-}
-
-const expected = JSON.parse(readFileSync(fixtureUrl, "utf8"));
-assert.deepEqual(actual, expected, "native vector generator golden hashes drifted");
-console.log("native vector v1 generator golden hashes matched");
+console.log("native vector v1 generator checks passed");

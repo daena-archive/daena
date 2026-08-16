@@ -12,13 +12,11 @@ let {
   editing,
   editorOpen,
   draft,
-  search,
-  statusFilterInput,
-  statusFilter,
-  tagFilterInput,
-  tagFilter,
-  sort,
-  homonymsOnly,
+  search = $bindable(""),
+  statusFilterInput = $bindable(""),
+  tagFilterInput = $bindable(""),
+  sort = $bindable("lemma"),
+  homonymsOnly = $bindable(false),
   page,
   hasNextPage,
   homonymCount,
@@ -35,12 +33,6 @@ let {
   nextPage,
   importLexicon,
   exportLexicon,
-  onSearchInput,
-  onStatusFilterInput,
-  onTagFilterInput,
-  onSortChange,
-  onHomonymChange,
-  clearLexiconFilters,
 }: {
   selectedLanguage: EntitySummary | null;
   records: ModuleRecord<LexemeValue>[];
@@ -50,9 +42,7 @@ let {
   draft: LexemeValue;
   search: string;
   statusFilterInput: string;
-  statusFilter: string;
   tagFilterInput: string;
-  tagFilter: string;
   sort: ModuleRecordQuery["sort"];
   homonymsOnly: boolean;
   page: number;
@@ -71,13 +61,10 @@ let {
   nextPage: () => void;
   importLexicon: (file: File) => void;
   exportLexicon: () => void;
-  onSearchInput: (value: string) => void;
-  onStatusFilterInput: (value: string) => void;
-  onTagFilterInput: (value: string) => void;
-  onSortChange: (value: ModuleRecordQuery["sort"]) => void;
-  onHomonymChange: (checked: boolean) => void;
-  clearLexiconFilters: () => void;
 } = $props();
+
+const statusFilter = $derived(statusFilterInput.trim());
+const tagFilter = $derived(tagFilterInput.trim());
 
 let tagsText = $state("");
 let fileInput: HTMLInputElement | undefined = $state();
@@ -95,8 +82,11 @@ $effect(() => {
   if (editorOpen && lemmaInput) lemmaInput.focus();
 });
 
+let previousEditorOpen = false;
+
 $effect(() => {
-  if (editorOpen) tagsText = draft.tags.join("\n");
+  if (editorOpen && !previousEditorOpen) tagsText = draft.tags.join("\n");
+  previousEditorOpen = editorOpen;
 });
 
 function handleImportChange() {
@@ -104,29 +94,12 @@ function handleImportChange() {
   if (fileInput) fileInput.value = "";
   if (chosen) void importLexicon(chosen);
 }
-
-function handleSearchInput(event: Event & { currentTarget: HTMLInputElement }) {
-  onSearchInput(event.currentTarget.value);
-}
-
-function handleStatusInput(event: Event & { currentTarget: HTMLInputElement }) {
-  onStatusFilterInput(event.currentTarget.value);
-}
-
-function handleTagInput(event: Event & { currentTarget: HTMLInputElement }) {
-  onTagFilterInput(event.currentTarget.value);
-}
-
-function handleSortChange(event: Event & { currentTarget: HTMLSelectElement }) {
-  onSortChange(event.currentTarget.value as ModuleRecordQuery["sort"]);
-}
-
-function handleHomonymChange(event: Event & { currentTarget: HTMLInputElement }) {
-  onHomonymChange(event.currentTarget.checked);
-}
-
-function handleParadigmChange(event: Event & { currentTarget: HTMLSelectElement }) {
-  draft.paradigmId = event.currentTarget.value || undefined;
+function clearFilters() {
+  search = "";
+  statusFilterInput = "";
+  tagFilterInput = "";
+  sort = "lemma";
+  homonymsOnly = false;
 }
 
 function addPronunciation() {
@@ -207,19 +180,11 @@ async function handleSubmit(event: SubmitEvent) {
         </label>
         <label class="language-field">
           <span>Part of speech (optional)</span>
-          <input
-            name="partOfSpeech"
-            list="language-pos"
-            value={draft.partOfSpeech ?? ""}
-            oninput={(event) => (draft.partOfSpeech = event.currentTarget.value)} />
+          <input name="partOfSpeech" list="language-pos" bind:value={draft.partOfSpeech} />
         </label>
         <label class="language-field">
           <span>Status (optional)</span>
-          <input
-            name="status"
-            list="language-status"
-            value={draft.status ?? ""}
-            oninput={(event) => (draft.status = event.currentTarget.value)} />
+          <input name="status" list="language-status" bind:value={draft.status} />
         </label>
         <label class="language-field">
           <span>Tags — comma or line separated (optional)</span>
@@ -229,11 +194,10 @@ async function handleSubmit(event: SubmitEvent) {
     </section>
     <label class="language-field">
       <span>Paradigm (optional)</span>
-      <select name="paradigmId" aria-label="Paradigm" onchange={handleParadigmChange}>
-        <option value="" selected={!draft.paradigmId}>None</option>
+      <select name="paradigmId" aria-label="Paradigm" bind:value={draft.paradigmId}>
+        <option value={""}>None</option>
         {#each paradigms as record (record.id)}
-          <option value={record.id} selected={record.id === draft.paradigmId}
-            >{record.value.name || "Untitled paradigm"}</option>
+          <option value={record.id}>{record.value.name || "Untitled paradigm"}</option>
         {/each}
       </select>
     </label>
@@ -257,10 +221,7 @@ async function handleSubmit(event: SubmitEvent) {
             </label>
             <label class="language-field">
               <span>Note (optional)</span>
-              <input
-                name={`pronunciation-note-${index}`}
-                value={pronunciation.note ?? ""}
-                oninput={(event) => (pronunciation.note = event.currentTarget.value)} />
+              <input name={`pronunciation-note-${index}`} bind:value={pronunciation.note} />
             </label>
           </div>
           <button
@@ -284,17 +245,11 @@ async function handleSubmit(event: SubmitEvent) {
             </label>
             <label class="language-field">
               <span>Kind (optional)</span>
-              <input
-                name={`form-kind-${index}`}
-                value={form.kind ?? ""}
-                oninput={(event) => (form.kind = event.currentTarget.value)} />
+              <input name={`form-kind-${index}`} bind:value={form.kind} />
             </label>
             <label class="language-field">
               <span>Pronunciation (optional)</span>
-              <input
-                name={`form-pronunciation-${index}`}
-                value={form.pronunciation ?? ""}
-                oninput={(event) => (form.pronunciation = event.currentTarget.value)} />
+              <input name={`form-pronunciation-${index}`} bind:value={form.pronunciation} />
             </label>
           </div>
           <button type="button" class="language-button secondary language-danger" onclick={() => removeForm(index)}
@@ -316,26 +271,15 @@ async function handleSubmit(event: SubmitEvent) {
           </div>
           <label class="language-field">
             <span>Gloss (optional)</span>
-            <input
-              name={`sense-gloss-${index}`}
-              value={sense.gloss ?? ""}
-              oninput={(event) => (sense.gloss = event.currentTarget.value)} />
+            <input name={`sense-gloss-${index}`} bind:value={sense.gloss} />
           </label>
           <label class="language-field">
             <span>Definition (optional)</span>
-            <textarea
-              name={`sense-definition-${index}`}
-              rows={2}
-              value={sense.definition ?? ""}
-              oninput={(event) => (sense.definition = event.currentTarget.value)}></textarea>
+            <textarea name={`sense-definition-${index}`} rows={2} bind:value={sense.definition}></textarea>
           </label>
           <label class="language-field">
             <span>Usage notes (optional)</span>
-            <textarea
-              name={`sense-usage-${index}`}
-              rows={2}
-              value={sense.usageNotes ?? ""}
-              oninput={(event) => (sense.usageNotes = event.currentTarget.value)}></textarea>
+            <textarea name={`sense-usage-${index}`} rows={2} bind:value={sense.usageNotes}></textarea>
           </label>
           {#each sense.examples as example, exampleIndex (example.id)}
             <div class="language-inline">
@@ -350,8 +294,7 @@ async function handleSubmit(event: SubmitEvent) {
                   <textarea
                     name={`sense-${index}-translation-${exampleIndex}`}
                     rows={2}
-                    value={example.translation ?? ""}
-                    oninput={(event) => (example.translation = event.currentTarget.value)}></textarea>
+                    bind:value={example.translation}></textarea>
                 </label>
               </div>
               <button
@@ -366,22 +309,15 @@ async function handleSubmit(event: SubmitEvent) {
     </section>
     <label class="language-field">
       <span>Etymology (optional)</span>
-      <textarea
-        name="etymology"
-        value={draft.etymology ?? ""}
-        oninput={(event) => (draft.etymology = event.currentTarget.value)}></textarea>
+      <textarea name="etymology" bind:value={draft.etymology}></textarea>
     </label>
     <label class="language-field">
       <span>Source notes (optional)</span>
-      <textarea
-        name="sourceNotes"
-        value={draft.sourceNotes ?? ""}
-        oninput={(event) => (draft.sourceNotes = event.currentTarget.value)}></textarea>
+      <textarea name="sourceNotes" bind:value={draft.sourceNotes}></textarea>
     </label>
     <label class="language-field">
       <span>Notes (optional)</span>
-      <textarea name="notes" value={draft.notes ?? ""} oninput={(event) => (draft.notes = event.currentTarget.value)}
-      ></textarea>
+      <textarea name="notes" bind:value={draft.notes}></textarea>
     </label>
     {#if attached}
       <section class="language-group language-form-section">
@@ -495,7 +431,7 @@ async function handleSubmit(event: SubmitEvent) {
     <div class="language-search-row">
       <label class="language-field">
         <span>Search lemma or meaning</span>
-        <input name="search" class="language-search" type="search" value={search} oninput={handleSearchInput} />
+        <input name="search" class="language-search" type="search" bind:value={search} />
       </label>
     </div>
     <details class="language-filter-panel" open={activeFilterCount > 0}>
@@ -503,26 +439,22 @@ async function handleSubmit(event: SubmitEvent) {
       <div class="language-filters">
         <label class="language-field">
           <span>Status</span>
-          <input
-            name="statusFilter"
-            list="language-filter-status"
-            value={statusFilterInput}
-            oninput={handleStatusInput} />
+          <input name="statusFilter" list="language-filter-status" bind:value={statusFilterInput} />
         </label>
         <label class="language-field">
           <span>Tag</span>
-          <input name="tagFilter" value={tagFilterInput} oninput={handleTagInput} />
+          <input name="tagFilter" bind:value={tagFilterInput} />
         </label>
         <label class="language-field">
           <span>Sort</span>
-          <select name="sort" aria-label="Sort lexicon" onchange={handleSortChange}>
-            <option value="lemma" selected={sort === "lemma"}>Sort by lemma</option>
-            <option value="status" selected={sort === "status"}>Sort by status</option>
-            <option value="updatedAt" selected={sort === "updatedAt"}>Sort by updated</option>
+          <select name="sort" aria-label="Sort lexicon" bind:value={sort}>
+            <option value="lemma">Sort by lemma</option>
+            <option value="status">Sort by status</option>
+            <option value="updatedAt">Sort by updated</option>
           </select>
         </label>
         <label class="language-check">
-          <input type="checkbox" checked={homonymsOnly} onchange={handleHomonymChange} /> Homonyms only
+          <input type="checkbox" bind:checked={homonymsOnly} /> Homonyms only
         </label>
         <datalist id="language-filter-status">
           {#each STATUS_SUGGESTIONS as suggestion}
@@ -535,7 +467,7 @@ async function handleSubmit(event: SubmitEvent) {
             type="button"
             class="language-button secondary"
             disabled={activeFilterCount === 0}
-            onclick={clearLexiconFilters}>Clear filters</button>
+            onclick={clearFilters}>Clear filters</button>
         </div>
       </div>
     </details>
@@ -551,7 +483,7 @@ async function handleSubmit(event: SubmitEvent) {
       <p class="language-empty" role="status">{filtered ? "No words match these filters." : "No words yet."}</p>
       <div class="language-inline">
         {#if filtered}
-          <button type="button" class="language-button secondary" onclick={clearLexiconFilters}>Clear filters</button>
+          <button type="button" class="language-button secondary" onclick={clearFilters}>Clear filters</button>
         {:else}
           <button type="button" class="language-button" onclick={addWord}>Add word</button>
         {/if}
@@ -587,7 +519,6 @@ async function handleSubmit(event: SubmitEvent) {
 {/if}
 
 <style>
-.language-sidebar-kicker,
 .language-toolbar-eyebrow {
   margin: 0 0 5px;
   color: var(--accent);
@@ -596,7 +527,6 @@ async function handleSubmit(event: SubmitEvent) {
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
-.language-sidebar-intro,
 .language-toolbar-subtitle {
   margin: 0;
   color: var(--ink-soft);
@@ -698,21 +628,6 @@ async function handleSubmit(event: SubmitEvent) {
     align-items: stretch;
   }
 }
-.language-panel h2,
-.language-panel h3 {
-  margin: 0;
-  font-family: var(--font-display);
-  font-weight: 500;
-}
-.language-panel h2 {
-  font-size: 24px;
-  line-height: 1.15;
-}
-.language-panel h3 {
-  font-size: 16px;
-  line-height: 1.3;
-}
-.language-list,
 .lexeme-list {
   display: grid;
   gap: 8px;
@@ -815,42 +730,23 @@ async function handleSubmit(event: SubmitEvent) {
   overflow-x: auto;
   margin: 8px 0 4px;
 }
-.language-chart,
 .paradigm-preview {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
 }
-.language-chart th,
-.language-chart td,
 .paradigm-preview th,
 .paradigm-preview td {
   border: 1px solid var(--line);
   padding: 8px;
-  text-align: center;
+  text-align: left;
   min-width: 52px;
 }
-.paradigm-preview th,
-.paradigm-preview td {
-  text-align: left;
-}
-.language-chart th,
 .paradigm-preview th {
   background: var(--surface-muted);
   font-weight: 600;
   color: var(--ink-soft);
 }
-.language-chart button {
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-}
-.language-chart .is-empty {
-  color: var(--ink-faint);
-}
-.grammar-paradigm-table caption.visually-hidden,
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -966,17 +862,8 @@ async function handleSubmit(event: SubmitEvent) {
   filter: none;
 }
 .language-button:focus-visible,
-.language-tabs button:focus-visible,
-.language-list button:focus-visible,
 .language-item:focus-visible,
-.lexeme-row:focus-visible,
-.grammar-card:focus-visible,
-.grammar-system:focus-visible,
-.sample-ref:focus-visible,
-.grammar-choice:focus-within,
-.grammar-status input:focus-visible,
-.grammar-checks input:focus-visible,
-.grammar-learn summary:focus-visible {
+.lexeme-row:focus-visible {
   outline: 3px solid rgba(180, 119, 63, 0.24);
   outline-offset: 2px;
 }

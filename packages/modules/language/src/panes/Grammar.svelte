@@ -916,7 +916,7 @@ function removeLink(index: number) {
 </div>
 
 <style>
-:global(.language-toolbar-eyebrow) {
+.language-toolbar-eyebrow {
   margin: 0 0 5px;
   color: var(--accent);
   font-size: 10px;
@@ -924,7 +924,7 @@ function removeLink(index: number) {
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
-:global(.language-toolbar-subtitle) {
+.language-toolbar-subtitle {
   margin: 0;
   color: var(--ink-soft);
   font-size: 12px;
@@ -944,32 +944,32 @@ function removeLink(index: number) {
   font-size: 16px;
   line-height: 1.3;
 }
-:global(.language-toolbar) {
+.language-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
 }
-:global(.language-toolbar-title) {
+.language-toolbar-title {
   display: grid;
   gap: 3px;
 }
-:global(.language-toolbar-title h2) {
+.language-toolbar-title h2 {
   margin: 0;
 }
-:global(.language-toolbar-actions) {
+.language-toolbar-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
-:global(.language-search-row) {
+.language-search-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   margin-top: 16px;
 }
-:global(.language-field) {
+.language-field {
   display: grid;
   gap: 6px;
   min-width: 0;
@@ -977,9 +977,8 @@ function removeLink(index: number) {
   font-size: 11px;
   letter-spacing: 0.01em;
 }
-:global(.language-field input),
-:global(.language-field textarea),
-:global(.language-field select) {
+.language-field input,
+.language-field textarea {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
@@ -990,7 +989,7 @@ function removeLink(index: number) {
   color: var(--ink);
   font: inherit;
 }
-:global(.language-field textarea) {
+.language-field textarea {
   min-height: 4.5em;
   resize: vertical;
 }
@@ -1018,12 +1017,6 @@ function removeLink(index: number) {
   filter: none;
 }
 :global(.language-button:focus-visible),
-:global(.language-tabs button:focus-visible),
-:global(.language-list button:focus-visible),
-:global(.language-item:focus-visible),
-:global(.lexeme-row:focus-visible),
-:global(.grammar-card:focus-visible),
-:global(.grammar-system:focus-visible),
 :global(.sample-ref:focus-visible),
 :global(.grammar-choice:focus-within),
 :global(.grammar-status input:focus-visible),
@@ -1032,23 +1025,28 @@ function removeLink(index: number) {
   outline: 3px solid rgba(180, 119, 63, 0.24);
   outline-offset: 2px;
 }
-:global(.language-empty),
-:global(.language-status) {
+.grammar-card:focus-visible,
+.grammar-system:focus-visible {
+  outline: 3px solid rgba(180, 119, 63, 0.24);
+  outline-offset: 2px;
+}
+.language-empty,
+.language-status {
   margin: 0;
   color: var(--ink-soft);
   font-size: 12px;
   line-height: 1.6;
 }
-:global(.language-status.error) {
+.language-status.error {
   color: #a14f42;
 }
-:global(.language-loading) {
+.language-loading {
   display: flex;
   align-items: center;
   gap: 8px;
   color: var(--ink-soft);
 }
-:global(.language-loading::before) {
+.language-loading::before {
   content: "";
   width: 11px;
   height: 11px;
@@ -1058,7 +1056,7 @@ function removeLink(index: number) {
   border-radius: 50%;
   animation: language-spin 0.75s linear infinite;
 }
-:global(.language-empty-card) {
+.language-empty-card {
   display: grid;
   gap: 12px;
   justify-items: start;
@@ -1068,13 +1066,13 @@ function removeLink(index: number) {
   border-radius: 12px;
   background: var(--surface-muted);
 }
-:global(.language-editor) {
+.language-editor {
   display: grid;
   gap: 16px;
   margin-top: 16px;
   min-width: 0;
 }
-:global(.language-actions) {
+.language-actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1086,7 +1084,7 @@ function removeLink(index: number) {
   background: var(--surface);
   box-shadow: 0 -8px 16px -16px rgba(38, 42, 33, 0.4);
 }
-:global(.language-actions span) {
+.language-actions span {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
@@ -1108,41 +1106,27 @@ function removeLink(index: number) {
 :global(.language-group .language-group) {
   background: var(--surface);
 }
-:global(.language-group-head) {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+:global(.language-inline > .language-button) {
+  flex: 0 0 auto;
 }
-:global(.language-inline) {
+.language-inline {
   display: flex;
   align-items: end;
   gap: 8px;
   min-width: 0;
 }
-:global(.language-inline-fields) {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
-}
-:global(.language-inline > .language-button) {
-  flex: 0 0 auto;
-}
-:global(.grammar-home) {
+.grammar-home {
   display: grid;
   gap: 16px;
   margin-top: 14px;
 }
-:global(.grammar-cards) {
+.grammar-cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 10px;
 }
-:global(.grammar-card),
-:global(.grammar-system) {
+.grammar-card,
+.grammar-system {
   display: grid;
   gap: 4px;
   width: 100%;
@@ -1154,22 +1138,22 @@ function removeLink(index: number) {
   text-align: left;
   cursor: pointer;
 }
-:global(.grammar-card:hover),
-:global(.grammar-system:hover) {
+.grammar-card:hover,
+.grammar-system:hover {
   border-color: #e5d8c6;
   background: var(--surface-muted);
 }
-:global(.grammar-card strong),
-:global(.grammar-system strong) {
+.grammar-card strong,
+.grammar-system strong {
   font-size: 14px;
 }
-:global(.grammar-card span),
-:global(.grammar-system span),
-:global(.grammar-glance dd) {
+.grammar-card span,
+.grammar-system span,
+.grammar-glance dd {
   color: var(--ink-soft);
   font-size: 12px;
 }
-:global(.grammar-glance) {
+.grammar-glance {
   display: grid;
   grid-template-columns: minmax(8rem, 12rem) minmax(0, 1fr);
   gap: 6px 14px;
@@ -1179,15 +1163,15 @@ function removeLink(index: number) {
   border-radius: 10px;
   background: var(--surface-muted);
 }
-:global(.grammar-glance dt) {
+.grammar-glance dt {
   margin: 0;
   color: var(--ink-faint);
   font-size: 11px;
 }
-:global(.grammar-glance dd) {
+.grammar-glance dd {
   margin: 0;
 }
-:global(.grammar-systems) {
+.grammar-systems {
   display: grid;
   gap: 8px;
 }
@@ -1204,7 +1188,7 @@ function removeLink(index: number) {
   color: var(--ink-soft);
   font-size: 11px;
 }
-:global(.grammar-help) {
+.grammar-help {
   margin: 8px 0 0;
   font-size: 13px;
   line-height: 1.55;
@@ -1338,7 +1322,7 @@ function removeLink(index: number) {
   z-index: 3;
   left: 0;
 }
-:global(.grammar-starter-list) {
+.grammar-starter-list {
   margin: 0;
   padding-left: 1.2em;
 }
@@ -1347,12 +1331,12 @@ function removeLink(index: number) {
   gap: 6px;
   min-width: 8rem;
 }
-:global(.grammar-diagnostic) {
+.grammar-diagnostic {
   display: grid;
   gap: 8px;
   justify-items: start;
 }
-:global(.grammar-example) {
+.grammar-example {
   display: grid;
   gap: 8px;
   padding: 12px;
@@ -1371,12 +1355,12 @@ function removeLink(index: number) {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  :global(.language-loading::before) {
+  .language-loading::before {
     animation: none;
   }
 }
 @media (max-width: 760px) {
-  :global(.language-inline) {
+  .language-inline {
     flex-direction: column;
     align-items: stretch;
   }

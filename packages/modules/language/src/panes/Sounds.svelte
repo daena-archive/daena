@@ -139,18 +139,11 @@ function handleNotesSubmit(event: SubmitEvent) {
     </label>
     <label class="language-field">
       <span>IPA (optional)</span>
-      <input
-        name="ipa"
-        value={phonemeDraft.ipa ?? ""}
-        oninput={(event) => (phonemeDraft.ipa = event.currentTarget.value)} />
+      <input name="ipa" bind:value={phonemeDraft.ipa} />
     </label>
     <label class="language-field">
       <span>Kind</span>
-      <select
-        name="kind"
-        aria-label="Sound kind"
-        value={phonemeDraft.kind}
-        onchange={(event) => (phonemeDraft.kind = event.currentTarget.value as PhonemeValue["kind"])}>
+      <select name="kind" aria-label="Sound kind" bind:value={phonemeDraft.kind}>
         {#each PHONEME_KINDS as kind (kind)}
           <option value={kind}>{kind}</option>
         {/each}
@@ -158,65 +151,35 @@ function handleNotesSubmit(event: SubmitEvent) {
     </label>
     <label class="language-field">
       <span>Place (optional)</span>
-      <input
-        name="place"
-        list="language-place"
-        value={phonemeDraft.place ?? ""}
-        oninput={(event) => (phonemeDraft.place = event.currentTarget.value)} />
+      <input name="place" list="language-place" bind:value={phonemeDraft.place} />
     </label>
     <label class="language-field">
       <span>Manner (optional)</span>
-      <input
-        name="manner"
-        list="language-manner"
-        value={phonemeDraft.manner ?? ""}
-        oninput={(event) => (phonemeDraft.manner = event.currentTarget.value)} />
+      <input name="manner" list="language-manner" bind:value={phonemeDraft.manner} />
     </label>
     <label class="language-field">
       <span>Voicing (optional)</span>
-      <input
-        name="voicing"
-        list="language-voice"
-        value={phonemeDraft.voicing ?? ""}
-        oninput={(event) => (phonemeDraft.voicing = event.currentTarget.value)} />
+      <input name="voicing" list="language-voice" bind:value={phonemeDraft.voicing} />
     </label>
     <label class="language-field">
       <span>Height (optional)</span>
-      <input
-        name="height"
-        list="language-height"
-        value={phonemeDraft.height ?? ""}
-        oninput={(event) => (phonemeDraft.height = event.currentTarget.value)} />
+      <input name="height" list="language-height" bind:value={phonemeDraft.height} />
     </label>
     <label class="language-field">
       <span>Backness (optional)</span>
-      <input
-        name="backness"
-        list="language-backness"
-        value={phonemeDraft.backness ?? ""}
-        oninput={(event) => (phonemeDraft.backness = event.currentTarget.value)} />
+      <input name="backness" list="language-backness" bind:value={phonemeDraft.backness} />
     </label>
     <label class="language-field">
       <span>Rounding (optional)</span>
-      <input
-        name="rounding"
-        list="language-rounding"
-        value={phonemeDraft.rounding ?? ""}
-        oninput={(event) => (phonemeDraft.rounding = event.currentTarget.value)} />
+      <input name="rounding" list="language-rounding" bind:value={phonemeDraft.rounding} />
     </label>
     <label class="language-field">
       <span>Example (optional)</span>
-      <input
-        name="example"
-        value={phonemeDraft.example ?? ""}
-        oninput={(event) => (phonemeDraft.example = event.currentTarget.value)} />
+      <input name="example" bind:value={phonemeDraft.example} />
     </label>
     <label class="language-field">
       <span>Notes (optional)</span>
-      <textarea
-        name="notes"
-        value={phonemeDraft.notes ?? ""}
-        oninput={(event) => (phonemeDraft.notes = event.currentTarget.value)}></textarea>
+      <textarea name="notes" bind:value={phonemeDraft.notes}></textarea>
     </label>
     {#if error}
       <p class="language-status error" role="alert">{error}</p>
@@ -251,43 +214,23 @@ function handleNotesSubmit(event: SubmitEvent) {
       <form class="language-editor language-pane-form language-sounds-notes-content" onsubmit={handleNotesSubmit}>
         <label class="language-field">
           <span>Syllable structure (optional)</span>
-          <textarea
-            name="syllableStructure"
-            rows={2}
-            value={phonologyDraft.syllableStructure ?? ""}
-            oninput={(event) => (phonologyDraft.syllableStructure = event.currentTarget.value)}></textarea>
+          <textarea name="syllableStructure" rows={2} bind:value={phonologyDraft.syllableStructure}></textarea>
         </label>
         <label class="language-field">
           <span>Stress (optional)</span>
-          <textarea
-            name="stress"
-            rows={2}
-            value={phonologyDraft.stress ?? ""}
-            oninput={(event) => (phonologyDraft.stress = event.currentTarget.value)}></textarea>
+          <textarea name="stress" rows={2} bind:value={phonologyDraft.stress}></textarea>
         </label>
         <label class="language-field">
           <span>Tone (optional)</span>
-          <textarea
-            name="tone"
-            rows={2}
-            value={phonologyDraft.tone ?? ""}
-            oninput={(event) => (phonologyDraft.tone = event.currentTarget.value)}></textarea>
+          <textarea name="tone" rows={2} bind:value={phonologyDraft.tone}></textarea>
         </label>
         <label class="language-field">
           <span>Phonotactics (optional)</span>
-          <textarea
-            name="phonotactics"
-            rows={2}
-            value={phonologyDraft.phonotactics ?? ""}
-            oninput={(event) => (phonologyDraft.phonotactics = event.currentTarget.value)}></textarea>
+          <textarea name="phonotactics" rows={2} bind:value={phonologyDraft.phonotactics}></textarea>
         </label>
         <label class="language-field">
           <span>Notes (optional)</span>
-          <textarea
-            name="notes"
-            rows={2}
-            value={phonologyDraft.notes ?? ""}
-            oninput={(event) => (phonologyDraft.notes = event.currentTarget.value)}></textarea>
+          <textarea name="notes" rows={2} bind:value={phonologyDraft.notes}></textarea>
         </label>
         <button type="submit" class="language-button">Save sound notes</button>
       </form>
@@ -433,7 +376,6 @@ function handleNotesSubmit(event: SubmitEvent) {
 {/if}
 
 <style>
-.language-sidebar-kicker,
 .language-toolbar-eyebrow {
   margin: 0 0 5px;
   color: var(--accent);
@@ -442,26 +384,11 @@ function handleNotesSubmit(event: SubmitEvent) {
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
-.language-sidebar-intro,
 .language-toolbar-subtitle {
   margin: 0;
   color: var(--ink-soft);
   font-size: 12px;
   line-height: 1.55;
-}
-.language-panel h2,
-.language-panel h3 {
-  margin: 0;
-  font-family: var(--font-display);
-  font-weight: 500;
-}
-.language-panel h2 {
-  font-size: 24px;
-  line-height: 1.15;
-}
-.language-panel h3 {
-  font-size: 16px;
-  line-height: 1.3;
 }
 .language-toolbar {
   display: flex;
@@ -572,12 +499,6 @@ function handleNotesSubmit(event: SubmitEvent) {
   margin-top: 0;
   padding: 0;
 }
-.language-sounds-notes-content > p {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.55;
-}
 .language-group.language-sounds-chart {
   margin-top: 4px;
   padding: 14px 0 0;
@@ -606,9 +527,6 @@ function handleNotesSubmit(event: SubmitEvent) {
   color: var(--ink-faint);
   font-size: 12px;
 }
-.language-search,
-.language-filters input,
-.language-filters select,
 .language-field input,
 .language-field textarea,
 .language-field select {
@@ -665,7 +583,6 @@ function handleNotesSubmit(event: SubmitEvent) {
 .language-chart .is-empty {
   color: var(--ink-faint);
 }
-.language-list,
 .lexeme-list {
   display: grid;
   gap: 8px;
@@ -673,8 +590,7 @@ function handleNotesSubmit(event: SubmitEvent) {
   padding: 0;
   list-style: none;
 }
-.language-item,
-.lexeme-row {
+.language-item {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) auto minmax(0, 1.4fr);
   gap: 8px 12px;
@@ -689,24 +605,20 @@ function handleNotesSubmit(event: SubmitEvent) {
   cursor: pointer;
   box-shadow: 0 1px 2px rgba(38, 42, 33, 0.03);
 }
-.language-item:hover,
-.lexeme-row:hover {
+.language-item:hover {
   border-color: #e5d8c6;
   background: var(--surface-muted);
 }
-.language-item strong,
-.lexeme-row strong {
+.language-item strong {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.language-item small,
-.lexeme-row small {
+.language-item small {
   color: var(--ink-faint);
 }
-.language-item span,
-.lexeme-row span {
+.language-item span {
   min-width: 0;
   color: var(--ink-soft);
   overflow: hidden;
@@ -737,17 +649,7 @@ function handleNotesSubmit(event: SubmitEvent) {
   filter: none;
 }
 .language-button:focus-visible,
-.language-tabs button:focus-visible,
-.language-list button:focus-visible,
-.language-item:focus-visible,
-.lexeme-row:focus-visible,
-.grammar-card:focus-visible,
-.grammar-system:focus-visible,
-.sample-ref:focus-visible,
-.grammar-choice:focus-within,
-.grammar-status input:focus-visible,
-.grammar-checks input:focus-visible,
-.grammar-learn summary:focus-visible {
+.language-item:focus-visible {
   outline: 3px solid rgba(180, 119, 63, 0.24);
   outline-offset: 2px;
 }
@@ -834,36 +736,17 @@ function handleNotesSubmit(event: SubmitEvent) {
   border-radius: 10px;
   background: var(--surface-muted);
 }
-.language-group .language-group {
-  background: var(--surface);
-}
-.language-group-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
 .language-inline {
   display: flex;
   align-items: end;
   gap: 8px;
   min-width: 0;
 }
-.language-inline-fields {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
-}
 .language-inline > .language-button {
   flex: 0 0 auto;
 }
 @media (max-width: 760px) {
-  .language-item span,
-  .lexeme-row span,
-  .lexeme-row small {
+  .language-item span {
     white-space: normal;
   }
   .language-inline {

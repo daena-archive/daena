@@ -143,12 +143,29 @@ onMount(() => {
   void loadLanguages();
   return () => {
     cancelled = true;
+    if (searchTimer !== null) window.clearTimeout(searchTimer);
+    if (overviewAutosaveTimer !== null) window.clearTimeout(overviewAutosaveTimer);
   };
 });
 
-function overviewFieldDefinitions() {
-  return manifest.schemas.flatMap((schema) => schema.fields).filter((field) => !field.relationshipType);
-}
+const overviewFieldDefinitions = $derived(
+  manifest.schemas.flatMap((schema) => schema.fields).filter((field) => !field.relationshipType),
+);
+
+let filtersInitialized = false;
+
+$effect(() => {
+  void search;
+  void statusFilter;
+  void tagFilter;
+  void sort;
+  void homonymsOnly;
+  if (!filtersInitialized) {
+    filtersInitialized = true;
+    return;
+  }
+  scheduleLoad();
+});
 
 function clearOverviewAutosave() {
   if (overviewAutosaveTimer !== null) window.clearTimeout(overviewAutosaveTimer);
@@ -172,7 +189,7 @@ function tryLeaveOverview(confirmLeave: (message: string) => boolean) {
 
 function syncOverviewDirty() {
   const nameDirty = overviewName.trim() !== overviewEntity?.name;
-  const fieldsDirty = overviewFieldDefinitions().some(
+  const fieldsDirty = overviewFieldDefinitions.some(
     (definition) =>
       JSON.stringify(overviewFields[definition.key] ?? "") !==
       JSON.stringify(overviewSavedFields[definition.key] ?? ""),
@@ -244,7 +261,7 @@ async function saveOverview(automatic = false) {
         { expectedRevision: overviewEntity.revision, requestId: crypto.randomUUID() },
       );
     }
-    for (const definition of overviewFieldDefinitions()) {
+    for (const definition of overviewFieldDefinitions) {
       const value = draftFields[definition.key] ?? "";
       if (JSON.stringify(value) === JSON.stringify(overviewSavedFields[definition.key] ?? "")) continue;
       await context.fields.set(overviewEntity.id, definition.key, value, {
@@ -260,7 +277,7 @@ async function saveOverview(automatic = false) {
     }
     const currentDraftChanged =
       overviewName.trim() !== name ||
-      overviewFieldDefinitions().some(
+      overviewFieldDefinitions.some(
         (definition) =>
           JSON.stringify(overviewFields[definition.key] ?? "") !== JSON.stringify(draftFields[definition.key] ?? ""),
       ) ||
@@ -383,7 +400,7 @@ async function loadOverview() {
     if (cancelled || token !== overviewRequest) return;
     if (!entity) throw new Error("This language is no longer available.");
     const values = Object.fromEntries(fieldRecords.map((record) => [record.key, record.value]));
-    for (const definition of overviewFieldDefinitions()) {
+    for (const definition of overviewFieldDefinitions) {
       if (!(definition.key in values)) values[definition.key] = "";
     }
     const document = entity.documents.find((item) => item.format === "markdown") ?? entity.documents[0];
@@ -496,40 +513,6 @@ function scheduleLoad() {
   page = 0;
   if (searchTimer !== null) window.clearTimeout(searchTimer);
   searchTimer = window.setTimeout(() => void loadRecords(), 180);
-}
-
-function clearLexiconFilters() {
-  search = "";
-  statusFilterInput = "";
-  tagFilterInput = "";
-  sort = "lemma";
-  homonymsOnly = false;
-  scheduleLoad();
-}
-
-function onSearchInput(value: string) {
-  search = value;
-  scheduleLoad();
-}
-
-function onStatusFilterInput(value: string) {
-  statusFilterInput = value;
-  scheduleLoad();
-}
-
-function onTagFilterInput(value: string) {
-  tagFilterInput = value;
-  scheduleLoad();
-}
-
-function onSortChange(value: ModuleRecordQuery["sort"]) {
-  sort = value;
-  scheduleLoad();
-}
-
-function onHomonymChange(checked: boolean) {
-  homonymsOnly = checked;
-  scheduleLoad();
 }
 
 function addWord() {
@@ -1232,7 +1215,6 @@ function switchPane(id: Pane) {
   if (!tryLeaveOverview((message) => window.confirm(message))) return;
   if (!tryLeaveGrammar(grammarUi, (message) => window.confirm(message))) return;
   pane = id;
-  resetEditors();
   error = "";
   void loadPane();
 }
@@ -1361,7 +1343,7 @@ async function submitCreateLanguage(event: SubmitEvent) {
       </ul>
     </aside>
   {/if}
-  <main
+  <div
     id="language-pane"
     class="language-panel language-main"
     role="tabpanel"
@@ -1380,7 +1362,7 @@ async function submitCreateLanguage(event: SubmitEvent) {
           onkeydown={(event) => roveTabs(event, index)}>{label}</button>
       {/each}
     </div>
-    {#if pane === "overview"}
+    <div class="language-pane" hidden={pane !== "overview"}>
       <Overview
         {selectedLanguage}
         {error}
@@ -1399,7 +1381,8 @@ async function submitCreateLanguage(event: SubmitEvent) {
         {onOverviewFieldInput}
         {onOverviewDocumentInput}
         {archiveOverviewLanguage} />
-    {:else if pane === "sounds"}
+    </div>
+    <div class="language-pane" hidden={pane !== "sounds"}>
       <Sounds
         {selectedLanguage}
         {paneLoading}
@@ -1417,7 +1400,8 @@ async function submitCreateLanguage(event: SubmitEvent) {
         {savePhoneme}
         {deletePhoneme}
         {savePhonology} />
-    {:else if pane === "writing"}
+    </div>
+    <div class="language-pane" hidden={pane !== "writing"}>
       <Writing
         {selectedLanguage}
         {paneLoading}
@@ -1432,9 +1416,11 @@ async function submitCreateLanguage(event: SubmitEvent) {
         {closeOrthographyEditor}
         {saveOrthography}
         {deleteOrthography} />
-    {:else if pane === "grammar"}
+    </div>
+    <div class="language-pane" hidden={pane !== "grammar"}>
       <Grammar {context} {selectedLanguage} {paneLoading} {error} {grammarUi} {records} {samples} {paradigms} />
-    {:else if pane === "forms"}
+    </div>
+    <div class="language-pane" hidden={pane !== "forms"}>
       <Forms
         {selectedLanguage}
         {paneLoading}
@@ -1444,8 +1430,8 @@ async function submitCreateLanguage(event: SubmitEvent) {
         {paradigmEditing}
         {paradigmEditorOpen}
         {paradigmDraft}
-        {previewStem}
-        {previewLexemeId}
+        bind:previewStem
+        bind:previewLexemeId
         {addParadigm}
         {openParadigmEditor}
         {closeParadigmEditor}
@@ -1453,7 +1439,8 @@ async function submitCreateLanguage(event: SubmitEvent) {
         {deleteParadigm}
         {pinPreviewOverride}
         {clearPreviewOverride} />
-    {:else if pane === "samples"}
+    </div>
+    <div class="language-pane" hidden={pane !== "samples"}>
       <Samples
         {selectedLanguage}
         {paneLoading}
@@ -1469,7 +1456,8 @@ async function submitCreateLanguage(event: SubmitEvent) {
         {saveSample}
         {deleteSample}
         {openLinkedLexeme} />
-    {:else}
+    </div>
+    <div class="language-pane" hidden={pane !== "lexicon"}>
       <Lexicon
         {selectedLanguage}
         {records}
@@ -1477,13 +1465,11 @@ async function submitCreateLanguage(event: SubmitEvent) {
         {editing}
         {editorOpen}
         {draft}
-        {search}
-        {statusFilterInput}
-        {statusFilter}
-        {tagFilterInput}
-        {tagFilter}
-        {sort}
-        {homonymsOnly}
+        bind:search
+        bind:statusFilterInput
+        bind:tagFilterInput
+        bind:sort
+        bind:homonymsOnly
         {page}
         {hasNextPage}
         {homonymCount}
@@ -1499,15 +1485,9 @@ async function submitCreateLanguage(event: SubmitEvent) {
         {previousPage}
         {nextPage}
         {importLexicon}
-        {exportLexicon}
-        {onSearchInput}
-        {onStatusFilterInput}
-        {onTagFilterInput}
-        {onSortChange}
-        {onHomonymChange}
-        {clearLexiconFilters} />
-    {/if}
-  </main>
+        {exportLexicon} />
+    </div>
+  </div>
 </section>
 
 <style>
@@ -1544,8 +1524,7 @@ async function submitCreateLanguage(event: SubmitEvent) {
   justify-content: space-between;
   gap: 12px;
 }
-.language-sidebar-kicker,
-.language-toolbar-eyebrow {
+.language-sidebar-kicker {
   margin: 0 0 5px;
   color: var(--accent);
   font-size: 10px;
@@ -1553,8 +1532,7 @@ async function submitCreateLanguage(event: SubmitEvent) {
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
-.language-sidebar-intro,
-.language-toolbar-subtitle {
+.language-sidebar-intro {
   margin: 0;
   color: var(--ink-soft);
   font-size: 12px;
@@ -1594,22 +1572,14 @@ async function submitCreateLanguage(event: SubmitEvent) {
     flex: 0 0 auto;
   }
 }
-.language-panel h2,
-.language-panel h3 {
+.language-panel h2 {
   margin: 0;
   font-family: var(--font-display);
   font-weight: 500;
-}
-.language-panel h2 {
   font-size: 24px;
   line-height: 1.15;
 }
-.language-panel h3 {
-  font-size: 16px;
-  line-height: 1.3;
-}
-.language-list,
-.lexeme-list {
+.language-list {
   display: grid;
   gap: 8px;
   margin: 4px 0 0;
@@ -1662,12 +1632,7 @@ async function submitCreateLanguage(event: SubmitEvent) {
   gap: 8px;
   flex-wrap: wrap;
 }
-.language-search,
-.language-filters input,
-.language-filters select,
-.language-field input,
-.language-field textarea,
-.language-field select {
+.language-field input {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
@@ -1729,16 +1694,7 @@ async function submitCreateLanguage(event: SubmitEvent) {
 }
 .language-button:focus-visible,
 .language-tabs button:focus-visible,
-.language-list button:focus-visible,
-.language-item:focus-visible,
-.lexeme-row:focus-visible,
-.grammar-card:focus-visible,
-.grammar-system:focus-visible,
-.sample-ref:focus-visible,
-.grammar-choice:focus-within,
-.grammar-status input:focus-visible,
-.grammar-checks input:focus-visible,
-.grammar-learn summary:focus-visible {
+.language-list button:focus-visible {
   outline: 3px solid rgba(180, 119, 63, 0.24);
   outline-offset: 2px;
 }

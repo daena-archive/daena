@@ -68,10 +68,6 @@ $effect(() => {
   }
 });
 
-function handleKindChange(event: Event & { currentTarget: HTMLSelectElement }) {
-  sampleDraft.kind = event.currentTarget.value as SampleKind;
-}
-
 function tokenize() {
   sampleDraft.tokens = tokenizeSample(sampleDraft.text, sampleDraft.tokens);
 }
@@ -117,7 +113,7 @@ async function handleSubmit(event: SubmitEvent) {
     </label>
     <label class="language-field">
       <span>Kind</span>
-      <select name="kind" aria-label="Sample kind" value={sampleDraft.kind} onchange={handleKindChange}>
+      <select name="kind" aria-label="Sample kind" bind:value={sampleDraft.kind}>
         {#each SAMPLE_KINDS as item (item.id)}
           <option value={item.id}>{item.label}</option>
         {/each}
@@ -133,27 +129,15 @@ async function handleSubmit(event: SubmitEvent) {
     </label>
     <label class="language-field">
       <span>Transliteration (optional)</span>
-      <textarea
-        name="transliteration"
-        rows={2}
-        value={sampleDraft.transliteration ?? ""}
-        oninput={(event) => (sampleDraft.transliteration = event.currentTarget.value || undefined)}></textarea>
+      <textarea name="transliteration" rows={2} bind:value={sampleDraft.transliteration}></textarea>
     </label>
     <label class="language-field">
       <span>Translation (optional)</span>
-      <textarea
-        name="translation"
-        rows={2}
-        value={sampleDraft.translation ?? ""}
-        oninput={(event) => (sampleDraft.translation = event.currentTarget.value || undefined)}></textarea>
+      <textarea name="translation" rows={2} bind:value={sampleDraft.translation}></textarea>
     </label>
     <label class="language-field">
       <span>Notes (optional)</span>
-      <textarea
-        name="notes"
-        rows={2}
-        value={sampleDraft.notes ?? ""}
-        oninput={(event) => (sampleDraft.notes = event.currentTarget.value || undefined)}></textarea>
+      <textarea name="notes" rows={2} bind:value={sampleDraft.notes}></textarea>
     </label>
     <section class="language-group">
       <div class="language-group-head">
@@ -176,26 +160,19 @@ async function handleSubmit(event: SubmitEvent) {
             </label>
             <label class="language-field">
               <span>Gloss</span>
-              <input
-                name={`token-gloss-${index}`}
-                value={token.gloss ?? ""}
-                oninput={(event) => (token.gloss = event.currentTarget.value || undefined)} />
+              <input name={`token-gloss-${index}`} bind:value={token.gloss} />
             </label>
             <label class="language-field">
               <span>Grammar</span>
-              <input
-                name={`token-grammar-${index}`}
-                value={token.grammar ?? ""}
-                oninput={(event) => (token.grammar = event.currentTarget.value || undefined)} />
+              <input name={`token-grammar-${index}`} bind:value={token.grammar} />
             </label>
             <label class="language-field">
               <span>Lexeme</span>
               <select
                 name={`token-lexeme-${index}`}
                 aria-label={`Lexeme for token ${index + 1}`}
-                value={token.lexemeId ?? ""}
-                onchange={(event) => (token.lexemeId = event.currentTarget.value || undefined)}>
-                <option value="">None</option>
+                bind:value={token.lexemeId}>
+                <option value={""}>None</option>
                 {#each records as record (record.id)}
                   <option value={record.id}>{record.value.lemma}</option>
                 {/each}
@@ -289,7 +266,6 @@ async function handleSubmit(event: SubmitEvent) {
 .language-toolbar-title h2 {
   margin: 0;
 }
-.language-sidebar-kicker,
 .language-toolbar-eyebrow {
   margin: 0 0 5px;
   color: var(--accent);
@@ -298,26 +274,11 @@ async function handleSubmit(event: SubmitEvent) {
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
-.language-sidebar-intro,
 .language-toolbar-subtitle {
   margin: 0;
   color: var(--ink-soft);
   font-size: 12px;
   line-height: 1.55;
-}
-.language-panel h2,
-.language-panel h3 {
-  margin: 0;
-  font-family: var(--font-display);
-  font-weight: 500;
-}
-.language-panel h2 {
-  font-size: 24px;
-  line-height: 1.15;
-}
-.language-panel h3 {
-  font-size: 16px;
-  line-height: 1.3;
 }
 .language-editor {
   display: grid;
@@ -333,9 +294,6 @@ async function handleSubmit(event: SubmitEvent) {
   font-size: 11px;
   letter-spacing: 0.01em;
 }
-.language-search,
-.language-filters input,
-.language-filters select,
 .language-field input,
 .language-field textarea,
 .language-field select {
@@ -416,17 +374,7 @@ async function handleSubmit(event: SubmitEvent) {
   filter: none;
 }
 .language-button:focus-visible,
-.language-tabs button:focus-visible,
-.language-list button:focus-visible,
-.language-item:focus-visible,
-.lexeme-row:focus-visible,
-.grammar-card:focus-visible,
-.grammar-system:focus-visible,
-.sample-ref:focus-visible,
-.grammar-choice:focus-within,
-.grammar-status input:focus-visible,
-.grammar-checks input:focus-visible,
-.grammar-learn summary:focus-visible {
+.language-item:focus-visible {
   outline: 3px solid rgba(180, 119, 63, 0.24);
   outline-offset: 2px;
 }

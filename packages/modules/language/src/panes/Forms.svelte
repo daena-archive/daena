@@ -25,8 +25,8 @@ let {
   paradigmEditing,
   paradigmEditorOpen,
   paradigmDraft,
-  previewStem,
-  previewLexemeId,
+  previewStem = $bindable(""),
+  previewLexemeId = $bindable(""),
   addParadigm,
   openParadigmEditor,
   closeParadigmEditor,
@@ -103,8 +103,7 @@ function removeOperation(ruleIndex: number, operationIndex: number) {
   paradigmDraft.rules[ruleIndex].operations.splice(operationIndex, 1);
 }
 
-function handleLexemeChange(event: Event & { currentTarget: HTMLSelectElement }) {
-  previewLexemeId = event.currentTarget.value;
+function handleLexemeChange() {
   const chosen = records.find((record) => record.id === previewLexemeId);
   previewStem = chosen?.value.lemma ?? previewStem;
 }
@@ -146,11 +145,7 @@ async function handleSubmit(event: SubmitEvent) {
     </label>
     <label class="language-field">
       <span>Kind</span>
-      <select
-        name="kind"
-        aria-label="Paradigm kind"
-        value={paradigmDraft.kind}
-        onchange={(event) => (paradigmDraft.kind = event.currentTarget.value as ParadigmKind)}>
+      <select name="kind" aria-label="Paradigm kind" bind:value={paradigmDraft.kind}>
         {#each PARADIGM_KINDS as item (item.id)}
           <option value={item.id}>{item.label}</option>
         {/each}
@@ -158,18 +153,11 @@ async function handleSubmit(event: SubmitEvent) {
     </label>
     <label class="language-field">
       <span>Part of speech (optional)</span>
-      <input
-        name="partOfSpeech"
-        list="language-pos"
-        value={paradigmDraft.partOfSpeech ?? ""}
-        oninput={(event) => (paradigmDraft.partOfSpeech = event.currentTarget.value)} />
+      <input name="partOfSpeech" list="language-pos" bind:value={paradigmDraft.partOfSpeech} />
     </label>
     <label class="language-field">
       <span>Notes (optional)</span>
-      <textarea
-        name="notes"
-        value={paradigmDraft.notes ?? ""}
-        oninput={(event) => (paradigmDraft.notes = event.currentTarget.value)}></textarea>
+      <textarea name="notes" bind:value={paradigmDraft.notes}></textarea>
     </label>
     <section class="language-group">
       <div class="language-group-head">
@@ -188,10 +176,7 @@ async function handleSubmit(event: SubmitEvent) {
             </label>
             <label class="language-field">
               <span>Features (optional)</span>
-              <input
-                name={`slot-features-${index}`}
-                value={slot.features ?? ""}
-                oninput={(event) => (slot.features = event.currentTarget.value || undefined)} />
+              <input name={`slot-features-${index}`} bind:value={slot.features} />
             </label>
           </div>
           <button type="button" class="language-button secondary language-danger" onclick={() => removeSlot(index)}
@@ -222,11 +207,7 @@ async function handleSubmit(event: SubmitEvent) {
           </label>
           <label class="language-field">
             <span>Kind</span>
-            <select
-              name={`rule-kind-${index}`}
-              aria-label="Rule kind"
-              value={rule.kind}
-              onchange={(event) => (rule.kind = (event.currentTarget.value || paradigmDraft.kind) as ParadigmKind)}>
+            <select name={`rule-kind-${index}`} aria-label="Rule kind" bind:value={rule.kind}>
               {#each PARADIGM_KINDS as item (item.id)}
                 <option value={item.id}>{item.label}</option>
               {/each}
@@ -234,18 +215,11 @@ async function handleSubmit(event: SubmitEvent) {
           </label>
           <label class="language-field">
             <span>Match lemma ending (optional)</span>
-            <input
-              name={`rule-match-${index}`}
-              value={rule.match ?? ""}
-              oninput={(event) => (rule.match = event.currentTarget.value || undefined)} />
+            <input name={`rule-match-${index}`} bind:value={rule.match} />
           </label>
           <label class="language-field">
             <span>Notes (optional)</span>
-            <textarea
-              name={`rule-notes-${index}`}
-              rows={2}
-              value={rule.notes ?? ""}
-              oninput={(event) => (rule.notes = event.currentTarget.value || undefined)}></textarea>
+            <textarea name={`rule-notes-${index}`} rows={2} bind:value={rule.notes}></textarea>
           </label>
           {#each rule.operations as operation, operationIndex (operation.id)}
             <div class="language-inline">
@@ -255,8 +229,7 @@ async function handleSubmit(event: SubmitEvent) {
                   <select
                     name={`op-slot-${index}-${operationIndex}`}
                     aria-label="Operation slot"
-                    value={operation.slotId}
-                    onchange={(event) => (operation.slotId = event.currentTarget.value)}>
+                    bind:value={operation.slotId}>
                     {#each slotOptions as option (option.id)}
                       <option value={option.id}>{option.label}</option>
                     {/each}
@@ -267,9 +240,7 @@ async function handleSubmit(event: SubmitEvent) {
                   <select
                     name={`op-kind-${index}-${operationIndex}`}
                     aria-label="Operation kind"
-                    value={operation.op}
-                    onchange={(event) =>
-                      (operation.op = (event.currentTarget.value || "suffix") as MorphOperationKind)}>
+                    bind:value={operation.op}>
                     {#each OPERATION_KINDS as item (item.id)}
                       <option value={item.id}>{item.label}</option>
                     {/each}
@@ -277,17 +248,11 @@ async function handleSubmit(event: SubmitEvent) {
                 </label>
                 <label class="language-field">
                   <span>Replace from (optional)</span>
-                  <input
-                    name={`op-from-${index}-${operationIndex}`}
-                    value={operation.from ?? ""}
-                    oninput={(event) => (operation.from = event.currentTarget.value || undefined)} />
+                  <input name={`op-from-${index}-${operationIndex}`} bind:value={operation.from} />
                 </label>
                 <label class="language-field">
                   <span>Affix or replacement (optional)</span>
-                  <input
-                    name={`op-value-${index}-${operationIndex}`}
-                    value={operation.value ?? ""}
-                    oninput={(event) => (operation.value = event.currentTarget.value || undefined)} />
+                  <input name={`op-value-${index}-${operationIndex}`} bind:value={operation.value} />
                 </label>
               </div>
               <button
@@ -311,9 +276,9 @@ async function handleSubmit(event: SubmitEvent) {
         <select
           name="previewLexemeId"
           aria-label="Preview lexeme"
-          value={previewLexemeId}
+          bind:value={previewLexemeId}
           onchange={handleLexemeChange}>
-          <option value="">Type a stem</option>
+          <option value={""}>Type a stem</option>
           {#each records as record (record.id)}
             <option value={record.id}>{record.value.lemma}</option>
           {/each}
@@ -434,7 +399,6 @@ async function handleSubmit(event: SubmitEvent) {
 {/if}
 
 <style>
-.language-sidebar-kicker,
 .language-toolbar-eyebrow {
   margin: 0 0 5px;
   color: var(--accent);
@@ -443,26 +407,11 @@ async function handleSubmit(event: SubmitEvent) {
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
-.language-sidebar-intro,
 .language-toolbar-subtitle {
   margin: 0;
   color: var(--ink-soft);
   font-size: 12px;
   line-height: 1.55;
-}
-.language-panel h2,
-.language-panel h3 {
-  margin: 0;
-  font-family: var(--font-display);
-  font-weight: 500;
-}
-.language-panel h2 {
-  font-size: 24px;
-  line-height: 1.15;
-}
-.language-panel h3 {
-  font-size: 16px;
-  line-height: 1.3;
 }
 .language-toolbar {
   display: flex;
@@ -501,9 +450,6 @@ async function handleSubmit(event: SubmitEvent) {
 .language-pane-section .lexeme-list {
   margin-top: 2px;
 }
-.language-search,
-.language-filters input,
-.language-filters select,
 .language-field input,
 .language-field textarea,
 .language-field select {
@@ -529,14 +475,11 @@ async function handleSubmit(event: SubmitEvent) {
   font-size: 11px;
   letter-spacing: 0.01em;
 }
-.language-chart,
 .paradigm-preview {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
 }
-.language-chart th,
-.language-chart td,
 .paradigm-preview th,
 .paradigm-preview td {
   border: 1px solid var(--line);
@@ -548,7 +491,6 @@ async function handleSubmit(event: SubmitEvent) {
 .paradigm-preview td {
   text-align: left;
 }
-.language-chart th,
 .paradigm-preview th {
   background: var(--surface-muted);
   font-weight: 600;
@@ -578,7 +520,6 @@ async function handleSubmit(event: SubmitEvent) {
 .form-provenance.is-missing {
   color: var(--ink-faint);
 }
-.language-list,
 .lexeme-list {
   display: grid;
   gap: 8px;
@@ -586,8 +527,7 @@ async function handleSubmit(event: SubmitEvent) {
   padding: 0;
   list-style: none;
 }
-.language-item,
-.lexeme-row {
+.language-item {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) auto minmax(0, 1.4fr);
   gap: 8px 12px;
@@ -602,24 +542,20 @@ async function handleSubmit(event: SubmitEvent) {
   cursor: pointer;
   box-shadow: 0 1px 2px rgba(38, 42, 33, 0.03);
 }
-.language-item:hover,
-.lexeme-row:hover {
+.language-item:hover {
   border-color: #e5d8c6;
   background: var(--surface-muted);
 }
-.language-item strong,
-.lexeme-row strong {
+.language-item strong {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.language-item small,
-.lexeme-row small {
+.language-item small {
   color: var(--ink-faint);
 }
-.language-item span,
-.lexeme-row span {
+.language-item span {
   min-width: 0;
   color: var(--ink-soft);
   overflow: hidden;
@@ -650,17 +586,7 @@ async function handleSubmit(event: SubmitEvent) {
   filter: none;
 }
 .language-button:focus-visible,
-.language-tabs button:focus-visible,
-.language-list button:focus-visible,
-.language-item:focus-visible,
-.lexeme-row:focus-visible,
-.grammar-card:focus-visible,
-.grammar-system:focus-visible,
-.sample-ref:focus-visible,
-.grammar-choice:focus-within,
-.grammar-status input:focus-visible,
-.grammar-checks input:focus-visible,
-.grammar-learn summary:focus-visible {
+.language-item:focus-visible {
   outline: 3px solid rgba(180, 119, 63, 0.24);
   outline-offset: 2px;
 }
@@ -774,9 +700,7 @@ async function handleSubmit(event: SubmitEvent) {
   flex: 0 0 auto;
 }
 @media (max-width: 760px) {
-  .language-item span,
-  .lexeme-row span,
-  .lexeme-row small {
+  .language-item span {
     white-space: normal;
   }
   .language-inline {

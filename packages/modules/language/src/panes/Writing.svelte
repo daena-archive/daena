@@ -95,18 +95,11 @@ function handleSubmit(event: SubmitEvent) {
     </label>
     <label class="language-field">
       <span>Status (optional)</span>
-      <input
-        name="status"
-        list="language-status"
-        value={orthographyDraft.status ?? ""}
-        oninput={(event) => (orthographyDraft.status = event.currentTarget.value)} />
+      <input name="status" list="language-status" bind:value={orthographyDraft.status} />
     </label>
     <label class="language-field">
       <span>Notes (optional)</span>
-      <textarea
-        name="notes"
-        value={orthographyDraft.notes ?? ""}
-        oninput={(event) => (orthographyDraft.notes = event.currentTarget.value)}></textarea>
+      <textarea name="notes" bind:value={orthographyDraft.notes}></textarea>
     </label>
     <section class="language-group">
       <div class="language-group-head">
@@ -126,17 +119,11 @@ function handleSubmit(event: SubmitEvent) {
             </label>
             <label class="language-field">
               <span>Environment (optional)</span>
-              <input
-                name={`environment-${index}`}
-                value={mapping.environment ?? ""}
-                oninput={(event) => (mapping.environment = event.currentTarget.value)} />
+              <input name={`environment-${index}`} bind:value={mapping.environment} />
             </label>
             <label class="language-field">
               <span>Notes (optional)</span>
-              <input
-                name={`mapping-notes-${index}`}
-                value={mapping.notes ?? ""}
-                oninput={(event) => (mapping.notes = event.currentTarget.value)} />
+              <input name={`mapping-notes-${index}`} bind:value={mapping.notes} />
             </label>
           </div>
           <button type="button" class="language-button secondary language-danger" onclick={() => removeMapping(index)}
@@ -196,7 +183,6 @@ function handleSubmit(event: SubmitEvent) {
 {/if}
 
 <style>
-.language-sidebar-kicker,
 .language-toolbar-eyebrow {
   margin: 0 0 5px;
   color: var(--accent);
@@ -205,26 +191,11 @@ function handleSubmit(event: SubmitEvent) {
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
-.language-sidebar-intro,
 .language-toolbar-subtitle {
   margin: 0;
   color: var(--ink-soft);
   font-size: 12px;
   line-height: 1.55;
-}
-.language-panel h2,
-.language-panel h3 {
-  margin: 0;
-  font-family: var(--font-display);
-  font-weight: 500;
-}
-.language-panel h2 {
-  font-size: 24px;
-  line-height: 1.15;
-}
-.language-panel h3 {
-  font-size: 16px;
-  line-height: 1.3;
 }
 .language-toolbar {
   display: flex;
@@ -263,12 +234,8 @@ function handleSubmit(event: SubmitEvent) {
 .language-pane-section .lexeme-list {
   margin-top: 2px;
 }
-.language-search,
-.language-filters input,
-.language-filters select,
 .language-field input,
-.language-field textarea,
-.language-field select {
+.language-field textarea {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
@@ -291,7 +258,6 @@ function handleSubmit(event: SubmitEvent) {
   font-size: 11px;
   letter-spacing: 0.01em;
 }
-.language-list,
 .lexeme-list {
   display: grid;
   gap: 8px;
@@ -299,8 +265,7 @@ function handleSubmit(event: SubmitEvent) {
   padding: 0;
   list-style: none;
 }
-.language-item,
-.lexeme-row {
+.language-item {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) auto minmax(0, 1.4fr);
   gap: 8px 12px;
@@ -315,24 +280,20 @@ function handleSubmit(event: SubmitEvent) {
   cursor: pointer;
   box-shadow: 0 1px 2px rgba(38, 42, 33, 0.03);
 }
-.language-item:hover,
-.lexeme-row:hover {
+.language-item:hover {
   border-color: #e5d8c6;
   background: var(--surface-muted);
 }
-.language-item strong,
-.lexeme-row strong {
+.language-item strong {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.language-item small,
-.lexeme-row small {
+.language-item small {
   color: var(--ink-faint);
 }
-.language-item span,
-.lexeme-row span {
+.language-item span {
   min-width: 0;
   color: var(--ink-soft);
   overflow: hidden;
@@ -363,17 +324,7 @@ function handleSubmit(event: SubmitEvent) {
   filter: none;
 }
 .language-button:focus-visible,
-.language-tabs button:focus-visible,
-.language-list button:focus-visible,
-.language-item:focus-visible,
-.lexeme-row:focus-visible,
-.grammar-card:focus-visible,
-.grammar-system:focus-visible,
-.sample-ref:focus-visible,
-.grammar-choice:focus-within,
-.grammar-status input:focus-visible,
-.grammar-checks input:focus-visible,
-.grammar-learn summary:focus-visible {
+.language-item:focus-visible {
   outline: 3px solid rgba(180, 119, 63, 0.24);
   outline-offset: 2px;
 }
@@ -460,9 +411,6 @@ function handleSubmit(event: SubmitEvent) {
   border-radius: 10px;
   background: var(--surface-muted);
 }
-.language-group .language-group {
-  background: var(--surface);
-}
 .language-group-head {
   display: flex;
   justify-content: space-between;
@@ -487,9 +435,7 @@ function handleSubmit(event: SubmitEvent) {
   flex: 0 0 auto;
 }
 @media (max-width: 760px) {
-  .language-item span,
-  .lexeme-row span,
-  .lexeme-row small {
+  .language-item span {
     white-space: normal;
   }
   .language-inline {

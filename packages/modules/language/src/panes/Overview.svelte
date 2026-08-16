@@ -33,7 +33,7 @@ let {
   overviewSavingAutomatically: boolean;
   overviewDeleting: boolean;
   overviewError: string;
-  overviewFieldDefinitions: () => FieldDefinition[];
+  overviewFieldDefinitions: FieldDefinition[];
   onOverviewNameInput: (value: string) => void;
   onOverviewFieldInput: (definition: FieldDefinition, raw: string) => void;
   onOverviewDocumentInput: (value: string) => void;
@@ -109,7 +109,7 @@ let status = $derived.by(() => {
       <h3>Properties</h3>
       <p>A few useful anchors for how this language belongs in the world.</p>
       <div class="language-overview-fields">
-        {#each overviewFieldDefinitions() as definition (definition.key)}
+        {#each overviewFieldDefinitions as definition (definition.key)}
           {#if definition.multiple}
             <label class="language-field">
               <span>{definition.label}</span>
@@ -117,7 +117,7 @@ let status = $derived.by(() => {
                 name={`overview-${definition.key}`}
                 rows={2}
                 value={fieldValue(definition)}
-                oninput={(event) => onOverviewFieldInput(definition, event.currentTarget.value)} />
+                oninput={(event) => onOverviewFieldInput(definition, event.currentTarget.value)}></textarea>
             </label>
           {:else}
             <label class="language-field">
@@ -140,7 +140,7 @@ let status = $derived.by(() => {
         name="overviewDocument"
         rows={12}
         value={overviewDocument}
-        oninput={(event) => onOverviewDocumentInput(event.currentTarget.value)} />
+        oninput={(event) => onOverviewDocumentInput(event.currentTarget.value)}></textarea>
     </section>
 
     {#if overviewError || error}
@@ -173,7 +173,6 @@ let status = $derived.by(() => {
 .language-toolbar-title h2 {
   margin: 0;
 }
-.language-sidebar-kicker,
 .language-toolbar-eyebrow {
   margin: 0 0 5px;
   color: var(--accent);
@@ -182,26 +181,11 @@ let status = $derived.by(() => {
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
-.language-sidebar-intro,
 .language-toolbar-subtitle {
   margin: 0;
   color: var(--ink-soft);
   font-size: 12px;
   line-height: 1.55;
-}
-.language-panel h2,
-.language-panel h3 {
-  margin: 0;
-  font-family: var(--font-display);
-  font-weight: 500;
-}
-.language-panel h2 {
-  font-size: 24px;
-  line-height: 1.15;
-}
-.language-panel h3 {
-  font-size: 16px;
-  line-height: 1.3;
 }
 .language-overview-status {
   display: flex;
@@ -329,12 +313,8 @@ let status = $derived.by(() => {
   font-size: 11px;
   letter-spacing: 0.01em;
 }
-.language-search,
-.language-filters input,
-.language-filters select,
 .language-field input,
-.language-field textarea,
-.language-field select {
+.language-field textarea {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
@@ -372,18 +352,7 @@ let status = $derived.by(() => {
   cursor: not-allowed;
   filter: none;
 }
-.language-button:focus-visible,
-.language-tabs button:focus-visible,
-.language-list button:focus-visible,
-.language-item:focus-visible,
-.lexeme-row:focus-visible,
-.grammar-card:focus-visible,
-.grammar-system:focus-visible,
-.sample-ref:focus-visible,
-.grammar-choice:focus-within,
-.grammar-status input:focus-visible,
-.grammar-checks input:focus-visible,
-.grammar-learn summary:focus-visible {
+.language-button:focus-visible {
   outline: 3px solid rgba(180, 119, 63, 0.24);
   outline-offset: 2px;
 }

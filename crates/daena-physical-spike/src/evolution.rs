@@ -1123,6 +1123,24 @@ fn deposition_mm(
         .clamp(0.0, f64::from(MAX_DEPOSITION_PER_STEP_MM)) as i32
 }
 
+fn removable_relief_by_cell(
+    elevations_mm: &[i32],
+    sea_level_mm: i32,
+    edges: &[DrainageEdge],
+) -> Vec<i32> {
+    let mut removable = elevations_mm
+        .iter()
+        .map(|elevation| elevation.saturating_sub(sea_level_mm).max(0))
+        .collect::<Vec<_>>();
+    for edge in edges {
+        let drop = elevations_mm[edge.source_cell]
+            .saturating_sub(elevations_mm[edge.destination_cell])
+            .max(0);
+        removable[edge.source_cell] = removable[edge.source_cell].min(drop);
+    }
+    removable
+}
+
 fn metrics_for(
     before: &[i32],
     after: &[i32],
@@ -1274,6 +1292,8 @@ pub fn evolve_terrain(
             coast_dist = dist;
         }
         let mut incised = current.clone();
+        let removable_relief =
+            removable_relief_by_cell(&current, before_field.sea_level_mm, &drainage.edges);
         for cell in 0..current.len() {
             if cell % 128 == 0 {
                 progress.check_cancelled()?;
@@ -1281,28 +1301,12 @@ pub fn evolve_terrain(
             if current[cell] <= before_field.sea_level_mm {
                 continue;
             }
-            let removable = drainage
-                .edges
-                .iter()
-                .filter(|edge| edge.source_cell == cell)
-                .map(|edge| {
-                    current[cell]
-                        .saturating_sub(current[edge.destination_cell])
-                        .max(0)
-                })
-                .chain(std::iter::once(
-                    current[cell]
-                        .saturating_sub(before_field.sea_level_mm)
-                        .max(0),
-                ))
-                .min()
-                .unwrap_or(0);
             let base_incision = stream_power_incision_mm(
                 budget,
                 timestep_years,
                 drainage.accumulation_m3_per_year[cell],
                 drainage.slope_ppm[cell],
-                removable,
+                removable_relief[cell],
             )?;
             let mut incision = base_incision;
             let mut deposit = 0i32;
@@ -1319,7 +1323,7 @@ pub fn evolve_terrain(
                 let scaled = ((i64::from(base_incision) * i64::from(coastal) / 1_000_000)
                     * i64::from(mouth)
                     / 1_000_000)
-                    .min(i64::from(removable))
+                    .min(i64::from(removable_relief[cell]))
                     .min(i64::from(MAX_RELIEF_LOSS_PER_STEP_MM))
                     .max(0) as i32;
                 let extra = scaled.saturating_sub(base_incision);
@@ -1327,7 +1331,7 @@ pub fn evolve_terrain(
                 let max_keep_land = current[cell].saturating_sub(land_floor).max(0);
                 incision = (base_incision.saturating_add(extra))
                     .min(max_keep_land)
-                    .min(removable);
+                    .min(removable_relief[cell]);
                 deposit = deposition_mm(
                     drainage.accumulation_m3_per_year[cell],
                     drainage.slope_ppm[cell],
@@ -1620,6 +1624,36 @@ mod tests {
         let wet = stream_power_incision_mm(budget, 12_000, 25_000_000, 50_000, 2_000_000).unwrap();
         assert!(steep > low);
         assert!(wet > low);
+    }
+
+    #[test]
+    fn removable_relief_is_computed_in_one_pass_over_drainage_edges() {
+        let elevations = [1_000, 700, 400, -100];
+        let edges = [
+            DrainageEdge {
+                source_cell: 0,
+                destination_cell: 1,
+                weight_ppm: 600_000,
+                distance_metres: 1,
+            },
+            DrainageEdge {
+                source_cell: 0,
+                destination_cell: 2,
+                weight_ppm: 400_000,
+                distance_metres: 1,
+            },
+            DrainageEdge {
+                source_cell: 1,
+                destination_cell: 2,
+                weight_ppm: 1_000_000,
+                distance_metres: 1,
+            },
+        ];
+
+        assert_eq!(
+            removable_relief_by_cell(&elevations, 0, &edges),
+            vec![300, 300, 400, 0]
+        );
     }
 
     #[test]

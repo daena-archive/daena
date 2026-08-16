@@ -91,7 +91,10 @@ fn physical_evolution_products_expose_routing_and_before_after_fields() {
     let mut progress = daena_physical::NoopProgress;
     let world = daena_physical::generate_world(settings, 831_429, 0, &mut progress).unwrap();
     let products = physical_evolution_products(&world.evolution);
-    assert_eq!(products["derivationVersion"], 2);
+    assert_eq!(
+        products["derivationVersion"],
+        daena_physical::evolution::EVOLUTION_DERIVATION_VERSION
+    );
     assert_eq!(products["preset"], "mature");
     for key in [
         "beforeElevationsMm",
@@ -121,7 +124,10 @@ fn physical_hydrology_products_expose_current_water_and_renderer_fields() {
     let mut progress = daena_physical::NoopProgress;
     let world = daena_physical::generate_world(settings, 831_429, 0, &mut progress).unwrap();
     let products = physical_hydrology_products(&world.hydrology);
-    assert_eq!(products["derivationVersion"], 4);
+    assert_eq!(
+        products["derivationVersion"],
+        daena_physical::hydrology::HYDROLOGY_DERIVATION_VERSION
+    );
     for key in [
         "waterLevelMm",
         "lakeLevelMm",

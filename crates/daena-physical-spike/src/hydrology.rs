@@ -16,7 +16,7 @@ use super::{
 };
 use crate::tectonics::CrustType;
 
-pub const HYDROLOGY_DERIVATION_VERSION: u16 = 4;
+pub const HYDROLOGY_DERIVATION_VERSION: u16 = 5;
 pub const MAX_HYDROLOGY_FEATURES: usize = crate::MAX_GEOJSON_FEATURES;
 pub const WATER_SOLVER_UNDERRELAXATION_PPM: u32 = 1_000_000;
 const MAX_FIXED_POINT_ITERATIONS: u32 = 32;
@@ -392,32 +392,41 @@ struct VolumeCurve {
 
 impl VolumeCurve {
     fn from_cells(grid: Grid, elevations: &[i32], cells: &[usize], spill_mm: i32) -> Self {
-        let mut levels = cells
+        let row_areas = grid.row_areas();
+        let mut samples = cells
             .iter()
-            .map(|cell| elevations[*cell])
-            .filter(|elevation| *elevation < spill_mm)
+            .filter_map(|cell| {
+                let elevation = elevations[*cell];
+                (elevation < spill_mm).then(|| {
+                    let (row, _) = grid.row_col(*cell);
+                    (elevation, *cell, row_areas[row as usize])
+                })
+            })
+            .collect::<Vec<_>>();
+        samples.sort_unstable_by_key(|(elevation, cell, _)| (*elevation, *cell));
+        let mut levels = samples
+            .iter()
+            .map(|(elevation, _, _)| *elevation)
             .collect::<Vec<_>>();
         levels.push(spill_mm);
-        levels.sort_unstable();
         levels.dedup();
-        let knots = levels
-            .into_iter()
-            .map(|level| {
-                let mut area = 0.0;
-                let mut volume = 0u64;
-                for cell in cells {
-                    if elevations[*cell] < level {
-                        area += grid.cell_area(grid.row_col(*cell).0);
-                        volume = volume.saturating_add(volume_for_depth(
-                            grid,
-                            *cell,
-                            level.saturating_sub(elevations[*cell]),
-                        ));
-                    }
-                }
-                (level, area.round().max(0.0) as u64, volume)
-            })
-            .collect();
+
+        let mut knots = Vec::with_capacity(levels.len());
+        let mut sample_index = 0usize;
+        let mut area_m2 = 0.0_f64;
+        let mut area_elevation_mm = 0.0_f64;
+        for level in levels {
+            while sample_index < samples.len() && samples[sample_index].0 < level {
+                let (elevation, _, cell_area_m2) = samples[sample_index];
+                area_m2 += cell_area_m2;
+                area_elevation_mm += cell_area_m2 * f64::from(elevation);
+                sample_index += 1;
+            }
+            let volume_m3 = (area_m2.mul_add(f64::from(level), -area_elevation_mm) / 1_000.0)
+                .round()
+                .clamp(0.0, u64::MAX as f64) as u64;
+            knots.push((level, area_m2.round().max(0.0) as u64, volume_m3));
+        }
         Self { knots }
     }
 
@@ -1604,13 +1613,7 @@ fn river_coordinates_from_cells(
 }
 
 fn polygon_for_cells(grid: Grid, cells: &[usize]) -> Result<Vec<Vec<[i32; 2]>>, PhysicalError> {
-    let mut mask = vec![false; grid.sample_count()];
-    for cell in cells {
-        if *cell < mask.len() {
-            mask[*cell] = true;
-        }
-    }
-    let polygons = contours::polygons_from_mask(grid, &mask)?;
+    let polygons = contours::polygons_for_sparse_cells(grid, cells)?;
     if polygons.is_empty() {
         Ok(Vec::new())
     } else if polygons.len() == 1 {
@@ -2247,6 +2250,32 @@ mod tests {
             .unwrap()
             .reference_water_inventory_m3;
         derive_hydrology(&final_field, &final_climate, &drainage, total).unwrap()
+    }
+
+    #[test]
+    fn cumulative_volume_curve_stays_within_per_cell_rounding_error() {
+        let grid = Grid::new(8, 6, crate::DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![5_000; grid.sample_count()];
+        let cells = [
+            grid.index(1, 1),
+            grid.index(1, 2),
+            grid.index(2, 2),
+            grid.index(3, 3),
+            grid.index(4, 3),
+        ];
+        for (index, cell) in cells.iter().enumerate() {
+            elevations[*cell] = -2_000 + index as i32 * 700;
+        }
+        let curve = VolumeCurve::from_cells(grid, &elevations, &cells, 2_000);
+
+        for (level, _, volume) in &curve.knots {
+            let per_cell = cells
+                .iter()
+                .filter(|cell| elevations[**cell] < *level)
+                .map(|cell| volume_for_depth(grid, *cell, level.saturating_sub(elevations[*cell])))
+                .sum::<u64>();
+            assert!(volume.abs_diff(per_cell) <= cells.len() as u64);
+        }
     }
 
     #[test]

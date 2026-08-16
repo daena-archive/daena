@@ -112,6 +112,50 @@ pub fn polygons_from_mask(
     polygons_above(grid, &scalar, 0)
 }
 
+pub fn polygons_for_sparse_cells(
+    grid: Grid,
+    cells: &[usize],
+) -> Result<Vec<Vec<Vec<[i32; 2]>>>, PhysicalError> {
+    if cells.iter().any(|cell| *cell >= grid.sample_count()) {
+        return Err(PhysicalError::coded(
+            PhysicalErrorCode::GeometryInvalid,
+            "contour cell is outside the physical grid",
+        ));
+    }
+    if cells.is_empty() {
+        return Ok(Vec::new());
+    }
+    if cells.len() > grid.sample_count() / 8
+        || cells.iter().any(|cell| {
+            let (row, _) = grid.row_col(*cell);
+            row == 0 || row + 1 == grid.height
+        })
+    {
+        let mut mask = vec![false; grid.sample_count()];
+        for cell in cells {
+            mask[*cell] = true;
+        }
+        return polygons_from_mask(grid, &mask);
+    }
+
+    let included = cells.iter().copied().collect::<BTreeSet<_>>();
+    let mut squares = BTreeSet::new();
+    for cell in &included {
+        let (row, col) = grid.row_col(*cell);
+        squares.insert((row - 1, (col + grid.width - 1) % grid.width));
+        squares.insert((row - 1, col));
+        squares.insert((row, (col + grid.width - 1) % grid.width));
+        squares.insert((row, col));
+    }
+    let value =
+        |row: u32, col: u32| i32::from(included.contains(&grid.index(row, col % grid.width)));
+    let mut segments = Vec::with_capacity(squares.len());
+    for (row, col) in squares {
+        push_marching_square_segments(grid, 0, true, row, col, &value, &mut segments);
+    }
+    Ok(assemble(grid, segments)?.polygons)
+}
+
 pub fn segments_from_paths(paths: &[Vec<[i32; 2]>]) -> Vec<Segment> {
     let mut segments = Vec::new();
     for path in paths {
@@ -195,6 +239,32 @@ fn marching_squares_segments(
     inside_is_greater: bool,
 ) -> Vec<RawSegment> {
     let value = |row: u32, col: u32| scalar[grid.index(row, col % grid.width)];
+    let mut segments = Vec::new();
+    for row in 0..grid.height.saturating_sub(1) {
+        for col in 0..grid.width {
+            push_marching_square_segments(
+                grid,
+                threshold,
+                inside_is_greater,
+                row,
+                col,
+                &value,
+                &mut segments,
+            );
+        }
+    }
+    segments
+}
+
+fn push_marching_square_segments(
+    grid: Grid,
+    threshold: i32,
+    inside_is_greater: bool,
+    row: u32,
+    col: u32,
+    value: &impl Fn(u32, u32) -> i32,
+    segments: &mut Vec<RawSegment>,
+) {
     let inside = |sample: i32| {
         if inside_is_greater {
             sample > threshold
@@ -202,109 +272,103 @@ fn marching_squares_segments(
             sample < threshold
         }
     };
-    let mut segments = Vec::new();
-    for row in 0..grid.height.saturating_sub(1) {
-        for col in 0..grid.width {
-            let v00 = value(row, col);
-            let v10 = value(row, col + 1);
-            let v11 = value(row + 1, col + 1);
-            let v01 = value(row + 1, col);
-            let code = (inside(v00) as u8)
-                | ((inside(v10) as u8) << 1)
-                | ((inside(v11) as u8) << 2)
-                | ((inside(v01) as u8) << 3);
-            let south = || {
-                edge_crossing(
-                    grid,
-                    EdgeKey::horizontal(row, col),
-                    v00,
-                    v10,
-                    threshold,
-                    row,
-                    col,
-                    row,
-                    col + 1,
-                    code == 5 || code == 10,
-                )
-            };
-            let east = || {
-                edge_crossing(
-                    grid,
-                    EdgeKey::vertical(row, (col + 1) % grid.width),
-                    v10,
-                    v11,
-                    threshold,
-                    row,
-                    col + 1,
-                    row + 1,
-                    col + 1,
-                    code == 5 || code == 10,
-                )
-            };
-            let north = || {
-                edge_crossing(
-                    grid,
-                    EdgeKey::horizontal(row + 1, col),
-                    v01,
-                    v11,
-                    threshold,
-                    row + 1,
-                    col,
-                    row + 1,
-                    col + 1,
-                    code == 5 || code == 10,
-                )
-            };
-            let west = || {
-                edge_crossing(
-                    grid,
-                    EdgeKey::vertical(row, col),
-                    v00,
-                    v01,
-                    threshold,
-                    row,
-                    col,
-                    row + 1,
-                    col,
-                    code == 5 || code == 10,
-                )
-            };
-            let mut push = |a: Option<Crossing>, b: Option<Crossing>| {
-                if let (Some(first), Some(second)) = (a, b) {
-                    segments.push(RawSegment { first, second });
-                }
-            };
-            match code {
-                0 | 15 => {}
-                1 | 14 => push(south(), west()),
-                2 | 13 => push(south(), east()),
-                3 | 12 => push(west(), east()),
-                4 | 11 => push(east(), north()),
-                6 | 9 => push(south(), north()),
-                7 | 8 => push(west(), north()),
-                5 => {
-                    if highs_connected(v00, v10, v11, v01, threshold, inside_is_greater) {
-                        push(south(), east());
-                        push(west(), north());
-                    } else {
-                        push(south(), west());
-                        push(east(), north());
-                    }
-                }
-                10 => {
-                    if highs_connected(v10, v11, v01, v00, threshold, inside_is_greater) {
-                        push(south(), west());
-                        push(east(), north());
-                    } else {
-                        push(south(), east());
-                        push(west(), north());
-                    }
-                }
-                _ => {}
+    let v00 = value(row, col);
+    let v10 = value(row, col + 1);
+    let v11 = value(row + 1, col + 1);
+    let v01 = value(row + 1, col);
+    let code = (inside(v00) as u8)
+        | ((inside(v10) as u8) << 1)
+        | ((inside(v11) as u8) << 2)
+        | ((inside(v01) as u8) << 3);
+    let south = || {
+        edge_crossing(
+            grid,
+            EdgeKey::horizontal(row, col),
+            v00,
+            v10,
+            threshold,
+            row,
+            col,
+            row,
+            col + 1,
+            code == 5 || code == 10,
+        )
+    };
+    let east = || {
+        edge_crossing(
+            grid,
+            EdgeKey::vertical(row, (col + 1) % grid.width),
+            v10,
+            v11,
+            threshold,
+            row,
+            col + 1,
+            row + 1,
+            col + 1,
+            code == 5 || code == 10,
+        )
+    };
+    let north = || {
+        edge_crossing(
+            grid,
+            EdgeKey::horizontal(row + 1, col),
+            v01,
+            v11,
+            threshold,
+            row + 1,
+            col,
+            row + 1,
+            col + 1,
+            code == 5 || code == 10,
+        )
+    };
+    let west = || {
+        edge_crossing(
+            grid,
+            EdgeKey::vertical(row, col),
+            v00,
+            v01,
+            threshold,
+            row,
+            col,
+            row + 1,
+            col,
+            code == 5 || code == 10,
+        )
+    };
+    let mut push = |a: Option<Crossing>, b: Option<Crossing>| {
+        if let (Some(first), Some(second)) = (a, b) {
+            segments.push(RawSegment { first, second });
+        }
+    };
+    match code {
+        0 | 15 => {}
+        1 | 14 => push(south(), west()),
+        2 | 13 => push(south(), east()),
+        3 | 12 => push(west(), east()),
+        4 | 11 => push(east(), north()),
+        6 | 9 => push(south(), north()),
+        7 | 8 => push(west(), north()),
+        5 => {
+            if highs_connected(v00, v10, v11, v01, threshold, inside_is_greater) {
+                push(south(), east());
+                push(west(), north());
+            } else {
+                push(south(), west());
+                push(east(), north());
             }
         }
+        10 => {
+            if highs_connected(v10, v11, v01, v00, threshold, inside_is_greater) {
+                push(south(), west());
+                push(east(), north());
+            } else {
+                push(south(), east());
+                push(west(), north());
+            }
+        }
+        _ => {}
     }
-    segments
 }
 
 fn highs_connected(
@@ -1115,6 +1179,45 @@ mod tests {
                 "case {code} produced {local} local segments"
             );
         }
+    }
+
+    #[test]
+    fn sparse_single_cell_polygons_match_full_grid_extraction() {
+        let mesh = grid(8, 6);
+        for row in 1..mesh.height - 1 {
+            for col in 0..mesh.width {
+                let cell = mesh.index(row, col);
+                let mut mask = vec![false; mesh.sample_count()];
+                mask[cell] = true;
+                assert_eq!(
+                    polygons_for_sparse_cells(mesh, &[cell]).unwrap(),
+                    polygons_from_mask(mesh, &mask).unwrap(),
+                    "single-cell contour differs at row {row}, column {col}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sparse_multi_cell_polygons_match_full_grid_extraction() {
+        let mesh = grid(16, 10);
+        let cells = [
+            mesh.index(1, 0),
+            mesh.index(1, mesh.width - 1),
+            mesh.index(2, 0),
+            mesh.index(4, 5),
+            mesh.index(4, 6),
+            mesh.index(5, 5),
+            mesh.index(7, 11),
+        ];
+        let mut mask = vec![false; mesh.sample_count()];
+        for cell in cells {
+            mask[cell] = true;
+        }
+        assert_eq!(
+            polygons_for_sparse_cells(mesh, &cells).unwrap(),
+            polygons_from_mask(mesh, &mask).unwrap()
+        );
     }
 
     #[test]

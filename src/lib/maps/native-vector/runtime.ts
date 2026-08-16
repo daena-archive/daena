@@ -355,8 +355,7 @@ export function createNativeVectorEditor(
     }
     if (currentBackground) {
       const [northWest, northEast, southEast, southWest] =
-        currentBackground.coordinates ??
-        imageOverlayCoordinates(currentBackground.width, currentBackground.height);
+        currentBackground.coordinates ?? imageOverlayCoordinates(currentBackground.width, currentBackground.height);
       map.fitBounds(
         [
           [
@@ -613,9 +612,7 @@ export function createNativeVectorEditor(
           return;
         }
         const wanted = new Map(
-          generated.layers
-            .filter((layer) => layer.id.startsWith("daena-vector-"))
-            .map((layer) => [layer.id, layer]),
+          generated.layers.filter((layer) => layer.id.startsWith("daena-vector-")).map((layer) => [layer.id, layer]),
         );
         for (const layer of map.getStyle()?.layers ?? []) {
           if (!layer.id.startsWith("daena-vector-")) continue;
@@ -624,7 +621,8 @@ export function createNativeVectorEditor(
             map.removeLayer(layer.id);
             continue;
           }
-          const visibility = next.layout && "visibility" in next.layout && next.layout.visibility === "none" ? "none" : "visible";
+          const visibility =
+            next.layout && "visibility" in next.layout && next.layout.visibility === "none" ? "none" : "visible";
           map.setLayoutProperty(layer.id, "visibility", visibility);
           wanted.delete(layer.id);
         }

@@ -30,14 +30,7 @@ function run(args, extra = {}) {
 }
 
 function render(width, height, output, extra = {}, release = true) {
-  const args = [
-    "run",
-    "--quiet",
-    "--manifest-path",
-    manifest,
-    "--locked",
-    "--offline",
-  ];
+  const args = ["run", "--quiet", "--manifest-path", manifest, "--locked", "--offline"];
   if (release) args.push("--release");
   args.push(
     "--",
@@ -89,18 +82,15 @@ function render(width, height, output, extra = {}, release = true) {
 
 try {
   run(["test", "--manifest-path", manifest, "--locked", "--offline"], { timeout: 300_000 });
-  run(
-    ["test", "--manifest-path", "crates/daena-core/Cargo.toml", "--locked", "--offline", "maps::atlas"],
-    { timeout: 180_000 },
-  );
-  run(
-    ["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "--offline", "--lib", "atlas_jobs"],
-    { timeout: 180_000 },
-  );
-  run(
-    ["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "--offline", "--lib", "atlas_studio"],
-    { timeout: 180_000 },
-  );
+  run(["test", "--manifest-path", "crates/daena-core/Cargo.toml", "--locked", "--offline", "maps::atlas"], {
+    timeout: 180_000,
+  });
+  run(["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "--offline", "--lib", "atlas_jobs"], {
+    timeout: 180_000,
+  });
+  run(["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "--offline", "--lib", "atlas_studio"], {
+    timeout: 180_000,
+  });
   for (const name of [
     "daena-atlas-relief.v1.json",
     "daena-atlas-antique.v1.json",
@@ -131,10 +121,9 @@ try {
   assert.match(editor, /supportsStudio/);
   assert.match(editor, /AtlasStudioView/);
   assert.equal(/atlasSupported = descriptor\?\.provider/.test(editor), false);
-  run(
-    ["test", "--manifest-path", "crates/daena-core/Cargo.toml", "--locked", "--offline", "maps::calendar"],
-    { timeout: 120_000 },
-  );
+  run(["test", "--manifest-path", "crates/daena-core/Cargo.toml", "--locked", "--offline", "maps::calendar"], {
+    timeout: 120_000,
+  });
   const physical = JSON.parse(
     run(
       [
@@ -221,7 +210,7 @@ try {
   assert.match(svgText, /^<\?xml/);
   assert.match(svgText, /xmlns="http:\/\/www.w3.org\/2000\/svg"/);
   assert.equal(svgText.includes("<script"), false);
-  assert.equal(svgText.includes("href=\"http://"), false);
+  assert.equal(svgText.includes('href="http://'), false);
   assert.equal(svg.summary.format, "svg");
 
   const pdf = render(128, 64, join(temp, "atlas.pdf"), {
@@ -279,11 +268,17 @@ try {
   assert.match(readFileSync(join(root, "crates/daena-atlas/src/amplify.rs"), "utf8"), /build_amplification_model/);
   assert.match(readFileSync(join(root, "crates/daena-atlas/src/control.rs"), "utf8"), /sample_mountain_influence/);
   assert.match(readFileSync(join(root, "crates/daena-atlas/src/refine.rs"), "utf8"), /build_refined_hydrology/);
-  assert.match(readFileSync(join(root, "crates/daena-atlas/src/refine.rs"), "utf8"), /atlas:valley:v\{ATLAS_DERIVED_DRAINAGE_VERSION\}/);
+  assert.match(
+    readFileSync(join(root, "crates/daena-atlas/src/refine.rs"), "utf8"),
+    /atlas:valley:v\{ATLAS_DERIVED_DRAINAGE_VERSION\}/,
+  );
   assert.equal(readFileSync(join(root, "crates/daena-atlas/src/refine.rs"), "utf8").includes("AtlasDiskCache"), false);
   assert.match(drainageSpike, /atlas:valley:v2/);
   const atlasCargo = readFileSync(join(root, "crates/daena-atlas/Cargo.toml"), "utf8");
-  assert.equal(atlasCargo.includes("noise-rs") || atlasCargo.includes("geo =") || atlasCargo.includes("image ="), false);
+  assert.equal(
+    atlasCargo.includes("noise-rs") || atlasCargo.includes("geo =") || atlasCargo.includes("image ="),
+    false,
+  );
   const studioView = readFileSync(join(root, "src/lib/maps/atlas/AtlasStudioView.svelte"), "utf8");
   assert.match(studioView, /maplibre-gl/);
   assert.match(studioView, /atlasStudioOpen/);
@@ -345,15 +340,30 @@ try {
   assert.match(productionThematic, /daena-atlas-precipitation/);
   assert.match(productionThematic, /daena-atlas-bathymetry/);
   assert.match(productionThematic, /daena-atlas-hydrology/);
-  const productionPhysical13 = readFileSync(join(root, "docs/adr/0050-physical-generator-13-orogeny-landmass-poles.md"), "utf8");
+  const productionPhysical13 = readFileSync(
+    join(root, "docs/adr/0050-physical-generator-13-orogeny-landmass-poles.md"),
+    "utf8",
+  );
   assert.match(productionPhysical13, /Generator version is\n  `13`/);
   assert.match(productionPhysical13, /relative_speed \/ 600_000/);
-  assert.match(readFileSync(join(root, "crates/daena-physical-spike/src/lib.rs"), "utf8"), /GENERATOR_VERSION: u32 = 13/);
-  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 6/);
-  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 6/);
+  assert.match(
+    readFileSync(join(root, "crates/daena-physical-spike/src/lib.rs"), "utf8"),
+    /GENERATOR_VERSION: u32 = 13/,
+  );
+  assert.match(
+    readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"),
+    /ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 6/,
+  );
+  assert.match(
+    readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"),
+    /ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 6/,
+  );
   assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /ATLAS_RENDERER_VERSION: u32 = 11/);
   assert.match(readFileSync(join(root, "crates/daena-atlas/src/amplify.rs"), "utf8"), /synthesize_coastline/);
-  assert.match(readFileSync(join(root, "crates/daena-atlas/src/amplify.rs"), "utf8"), /RIDGE_SYNTHESIS_MM: i32 = 780_000/);
+  assert.match(
+    readFileSync(join(root, "crates/daena-atlas/src/amplify.rs"), "utf8"),
+    /RIDGE_SYNTHESIS_MM: i32 = 780_000/,
+  );
   assert.match(readFileSync(join(root, "crates/daena-atlas/src/amplify.rs"), "utf8"), /SecondaryRidge/);
   assert.match(readFileSync(join(root, "crates/daena-atlas/src/amplify.rs"), "utf8"), /follow_ascent/);
   assert.match(readFileSync(join(root, "crates/daena-atlas/src/erosion.rs"), "utf8"), /priority_fill_pits/);

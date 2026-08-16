@@ -146,7 +146,8 @@ function applyStatus(status: AtlasJobStatus) {
     status.currentContentGeneration != null &&
     status.currentContentGeneration > status.capturedContentGeneration
   ) {
-    notice = "The project changed after this render. The image is from the captured generation. Render again to update.";
+    notice =
+      "The project changed after this render. The image is from the captured generation. Render again to update.";
   }
 }
 
@@ -184,7 +185,11 @@ async function runPreview() {
   busyPreview = true;
   notice = "";
   try {
-    const status = await project.atlasPreviewBegin(mapId, request(2048, 1024), previewRequestId as `${string}-${string}-${string}-${string}-${string}`);
+    const status = await project.atlasPreviewBegin(
+      mapId,
+      request(2048, 1024),
+      previewRequestId as `${string}-${string}-${string}-${string}-${string}`,
+    );
     applyStatus(status);
   } catch (error) {
     busyPreview = false;
@@ -251,7 +256,7 @@ async function savePreset() {
 async function applyPreset(id: string) {
   const fields = await project.listFields(mapId);
   const current = fields.find((field) => field.namespace === "maps" && field.key === "atlasPresets");
-  const presets = ((current?.value as { presets?: Array<Record<string, unknown>> } | undefined)?.presets ?? []);
+  const presets = (current?.value as { presets?: Array<Record<string, unknown>> } | undefined)?.presets ?? [];
   const preset = presets.find((item) => item.id === id);
   if (!preset) return;
   const time = preset.time as { kind?: string; offsetYears?: number; authoredYear?: number } | undefined;
@@ -287,7 +292,10 @@ onMount(() => {
   pollTimer = setInterval(() => {
     const jobs = [previewJob, exportJob].filter((job): job is AtlasJobStatus => Boolean(job));
     for (const job of jobs) {
-      void project.atlasJobStatus(job.jobId).then(applyStatus).catch(() => undefined);
+      void project
+        .atlasJobStatus(job.jobId)
+        .then(applyStatus)
+        .catch(() => undefined);
     }
   }, 2000);
 });
@@ -375,7 +383,10 @@ onDestroy(() => {
         {layer.name}
       </label>
     {/each}
-    <p>Rivers include atlas-only minor tributaries. They are not canonical geography and are never promoted automatically.</p>
+    <p>
+      Rivers include atlas-only minor tributaries. They are not canonical geography and are never promoted
+      automatically.
+    </p>
   </fieldset>
   <label>
     Size
@@ -387,7 +398,8 @@ onDestroy(() => {
         heightPx = preset.height;
       }}>
       {#each PRESETS as preset, index}
-        <option value={index} selected={preset.width === widthPx}>{preset.label} ({preset.width}×{preset.height})</option>
+        <option value={index} selected={preset.width === widthPx}
+          >{preset.label} ({preset.width}×{preset.height})</option>
       {/each}
     </select>
   </label>
@@ -403,7 +415,8 @@ onDestroy(() => {
   <div class="actions">
     <button type="button" class="primary" onclick={() => void runExport()}>Render</button>
     <button type="button" onclick={() => void cancel(exportJob ?? previewJob)}>Cancel render</button>
-    <button type="button" disabled={exportJob?.state !== "ready-to-save"} onclick={() => void saveExport()}>Save</button>
+    <button type="button" disabled={exportJob?.state !== "ready-to-save"} onclick={() => void saveExport()}
+      >Save</button>
     <input bind:value={presetName} aria-label="Preset name" />
     <button type="button" onclick={() => void savePreset()}>Save preset</button>
     <button type="button" onclick={() => onclose?.()}>Close</button>

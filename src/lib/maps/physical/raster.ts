@@ -35,13 +35,7 @@ function landTint(heightMm: number): [number, number, number] {
   return [lerp(132, 232, t), lerp(96, 228, t), lerp(58, 224, t)];
 }
 
-function floodComponent(
-  width: number,
-  height: number,
-  start: number,
-  wet: boolean[],
-  seen: Uint8Array,
-): number[] {
+function floodComponent(width: number, height: number, start: number, wet: boolean[], seen: Uint8Array): number[] {
   const cells: number[] = [];
   const stack = [start];
   seen[start] = 1;
@@ -106,12 +100,7 @@ export function paintPhysicalSurface(products: PhysicalRasterProducts): HTMLCanv
   canvas.height = products.height * PHYSICAL_RASTER_OVERSAMPLE;
   const context = canvas.getContext("2d");
   if (!context) return canvas;
-  const water = classifyPhysicalWater(
-    products.width,
-    products.height,
-    products.bathymetryMm,
-    products.lakeCells,
-  );
+  const water = classifyPhysicalWater(products.width, products.height, products.bathymetryMm, products.lakeCells);
   const pixels = context.createImageData(canvas.width, canvas.height);
   for (let canvasRow = 0; canvasRow < canvas.height; canvasRow += 1) {
     const sourceRow = physicalGridRowForRasterRow(canvasRow, canvas.height, products.height);
@@ -137,10 +126,7 @@ export function paintPhysicalSurface(products: PhysicalRasterProducts): HTMLCanv
         green = Math.round(132 * light);
         blue = Math.round(138 * light);
       } else {
-        const heightMm = Math.max(
-          0,
-          (products.waterLevelMm[index] ?? products.seaLevelMm) - products.seaLevelMm,
-        );
+        const heightMm = Math.max(0, (products.waterLevelMm[index] ?? products.seaLevelMm) - products.seaLevelMm);
         const [landRed, landGreen, landBlue] = landTint(heightMm);
         red = Math.round(landRed * light);
         green = Math.round(landGreen * light);

@@ -842,9 +842,7 @@ async function openPluginView(item: PluginNavigationItem) {
 let mapsEditorMode = $state<"fmg" | "vector" | "physical">("fmg");
 let mapsVectorStart = $state<"generate" | "import">("generate");
 let mapProviderMenuOpen = $state<"header" | "empty" | null>(null);
-const mapSurfaceOpen = $derived(
-  section === "maps" && sandboxView?.renderer === "maps" && Boolean(sandboxView?.view),
-);
+const mapSurfaceOpen = $derived(section === "maps" && sandboxView?.renderer === "maps" && Boolean(sandboxView?.view));
 async function createMap(provider: "fmg" | "image" | "vector" | "physical" = "physical") {
   if (projectDiagnostics.length > 0) return;
   try {
@@ -3917,52 +3915,52 @@ onMount(() => {
             onclick={() => void importPortableCheckpoint()}>Import checkpoint</button>
         </div>{/if}
       {#if !mapSurfaceOpen}
-      <div class="workspace-heading">
-        <div>
-          <span class="overline"
-            >{section === "lore"
-              ? "WORLD BIBLE"
-              : section === "timeline"
-                ? "CHRONOLOGY"
-                : section === "maps"
-                  ? "MAP ATLAS"
-                  : "DRAFTING DESK"}</span>
-          <h1>{sectionLabel()}</h1>
-          <p>
-            {section === "lore"
-              ? "A living reference for every person, place, and power."
-              : section === "timeline"
-                ? "Events, eras, and the threads that connect them."
-                : section === "maps"
-                  ? "Keep every map beside its notes, links, and provider source."
-                  : writingView === "manuscripts"
-                    ? "Draft stories, essays, and other long-form work."
-                    : "Build the pages, notes, and references behind the story."}
-          </p>
+        <div class="workspace-heading">
+          <div>
+            <span class="overline"
+              >{section === "lore"
+                ? "WORLD BIBLE"
+                : section === "timeline"
+                  ? "CHRONOLOGY"
+                  : section === "maps"
+                    ? "MAP ATLAS"
+                    : "DRAFTING DESK"}</span>
+            <h1>{sectionLabel()}</h1>
+            <p>
+              {section === "lore"
+                ? "A living reference for every person, place, and power."
+                : section === "timeline"
+                  ? "Events, eras, and the threads that connect them."
+                  : section === "maps"
+                    ? "Keep every map beside its notes, links, and provider source."
+                    : writingView === "manuscripts"
+                      ? "Draft stories, essays, and other long-form work."
+                      : "Build the pages, notes, and references behind the story."}
+            </p>
+          </div>
+          <div class="heading-actions">
+            {#if section === "maps"}<div class="map-provider-create">
+                <button
+                  class="primary-button"
+                  type="button"
+                  aria-haspopup="menu"
+                  aria-expanded={mapProviderMenuOpen === "header"}
+                  onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "header" ? null : "header")}
+                  >Create map</button>
+                {#if mapProviderMenuOpen === "header"}<div class="map-provider-menu" role="menu">
+                    <button type="button" role="menuitem" onclick={() => void createMap("physical")}
+                      >Create physical world</button>
+                    <button type="button" role="menuitem" onclick={() => void createMap("fmg")}>Create with FMG</button>
+                    <button type="button" role="menuitem" onclick={() => void createMap("image")}>Import image</button>
+                    <button type="button" role="menuitem" onclick={() => void createMap("vector")}
+                      >Import vector map</button>
+                  </div>{/if}
+              </div>{/if}
+            {#if section !== "writing" && section !== "maps"}<button class="quiet-button" onclick={openProjection}
+                >Open {section === "lore" ? "graph" : section === "timeline" ? "timeline" : "language"} ↗</button
+              >{/if}
+          </div>
         </div>
-        <div class="heading-actions">
-          {#if section === "maps"}<div class="map-provider-create">
-              <button
-                class="primary-button"
-                type="button"
-                aria-haspopup="menu"
-                aria-expanded={mapProviderMenuOpen === "header"}
-                onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "header" ? null : "header")}
-                >Create map</button>
-              {#if mapProviderMenuOpen === "header"}<div class="map-provider-menu" role="menu">
-                  <button type="button" role="menuitem" onclick={() => void createMap("physical")}
-                    >Create physical world</button>
-                  <button type="button" role="menuitem" onclick={() => void createMap("fmg")}>Create with FMG</button>
-                  <button type="button" role="menuitem" onclick={() => void createMap("image")}>Import image</button>
-                  <button type="button" role="menuitem" onclick={() => void createMap("vector")}
-                    >Import vector map</button>
-                </div>{/if}
-            </div>{/if}
-          {#if section !== "writing" && section !== "maps"}<button class="quiet-button" onclick={openProjection}
-              >Open {section === "lore" ? "graph" : section === "timeline" ? "timeline" : "language"} ↗</button
-            >{/if}
-        </div>
-      </div>
       {/if}
       <section
         class:maps-workspace={section === "maps" && sandboxView?.renderer === "maps"}

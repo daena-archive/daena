@@ -986,12 +986,10 @@ export const project = {
     invoke<AtlasStudioSessionStatus>("project_atlas_studio_open", {
       input: { request, deviceScale },
     }),
-  atlasStudioClose: (sessionToken: string) =>
-    invoke<void>("project_atlas_studio_close", { sessionToken }),
+  atlasStudioClose: (sessionToken: string) => invoke<void>("project_atlas_studio_close", { sessionToken }),
   atlasStudioStatus: (sessionToken: string) =>
     invoke<AtlasStudioSessionStatus>("project_atlas_studio_status", { sessionToken }),
-  atlasStudioRegenerateCache: () =>
-    invoke<{ deletedEntries: number }>("project_atlas_studio_regenerate_cache"),
+  atlasStudioRegenerateCache: () => invoke<{ deletedEntries: number }>("project_atlas_studio_regenerate_cache"),
   atlasStudioInspect: (sessionToken: string, lonMicro: number, latMicro: number, zoom: number) =>
     invoke<AtlasStudioInspectHit[]>("project_atlas_studio_inspect", {
       input: { sessionToken, lonMicro, latMicro, zoom },

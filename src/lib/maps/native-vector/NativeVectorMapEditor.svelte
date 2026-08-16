@@ -162,8 +162,7 @@ const icons = {
   down: '<path d="m6 9 6 6 6-6"/>',
   remove:
     '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
-  exportAtlas:
-    '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
+  exportAtlas: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
 } as const;
 const activeLayer = $derived(layers.find((layer) => layer.id === activeLayerId) ?? null);
@@ -903,7 +902,10 @@ onMount(() => {
         <span>{physicalMap ? "PHYSICAL WORLD" : "VECTOR MAP"}</span>
         {#if !physicalMap && dirty}<strong>Unsaved changes</strong>{/if}
       </div>
-      <div class="header-actions" role="toolbar" aria-label={physicalMap ? "Physical map actions" : "Vector drawing tools"}>
+      <div
+        class="header-actions"
+        role="toolbar"
+        aria-label={physicalMap ? "Physical map actions" : "Vector drawing tools"}>
         {#if !physicalMap}
           <button
             type="button"
@@ -1036,133 +1038,135 @@ onMount(() => {
         </button>
         {#if !layersCollapsed}
           {#if physicalMap}
-            <p class="hazard-legend">Hazard layers show relative generated rates; they are not real-world predictions.</p>
+            <p class="hazard-legend">
+              Hazard layers show relative generated rates; they are not real-world predictions.
+            </p>
           {/if}
           {#if listedLayers.length === 0}
             <p class="hint">Add a vector layer to draw points, lines, and regions. Base geography stays read-only.</p>
           {/if}
           <div class="layer-list" role="list" aria-labelledby="vector-layers-heading">
-          {#each listedLayers as layer (layer.id)}
-            <div class="layer" class:active={layer.id === activeLayerId} role="listitem">
-              <button
-                class="layer-name"
-                type="button"
-                aria-pressed={layer.id === activeLayerId}
-                onclick={() => switchLayer(layer.id)}>
-                {#if renamingId === layer.id}
-                  <input
-                    value={layer.name}
-                    aria-label="Layer name"
-                    onblur={(event) => void renameLayer(layer, event.currentTarget.value)}
-                    onkeydown={(event) => {
-                      if (event.key === "Enter") void renameLayer(layer, event.currentTarget.value);
-                      if (event.key === "Escape") renamingId = null;
-                    }} />
-                {:else}{layer.name}{/if}
-              </button>
-              <div class="layer-row">
+            {#each listedLayers as layer (layer.id)}
+              <div class="layer" class:active={layer.id === activeLayerId} role="listitem">
                 <button
+                  class="layer-name"
                   type="button"
-                  class="icon-button"
-                  aria-pressed={layer.defaultVisible}
-                  aria-label={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
-                  title={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
-                  onclick={() => void toggleVisible(layer)}
-                  >{@render glyph(layer.defaultVisible ? icons.show : icons.hide)}</button>
-                {#if !immutablePhysicalLayerIds.has(layer.id)}
+                  aria-pressed={layer.id === activeLayerId}
+                  onclick={() => switchLayer(layer.id)}>
+                  {#if renamingId === layer.id}
+                    <input
+                      value={layer.name}
+                      aria-label="Layer name"
+                      onblur={(event) => void renameLayer(layer, event.currentTarget.value)}
+                      onkeydown={(event) => {
+                        if (event.key === "Enter") void renameLayer(layer, event.currentTarget.value);
+                        if (event.key === "Escape") renamingId = null;
+                      }} />
+                  {:else}{layer.name}{/if}
+                </button>
+                <div class="layer-row">
                   <button
                     type="button"
                     class="icon-button"
-                    aria-pressed={layer.locked}
-                    aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
-                    title={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
-                    onclick={() => void toggleLock(layer)}
-                    >{@render glyph(layer.locked ? icons.lock : icons.unlock)}</button>
-                  <button
-                    type="button"
-                    class="icon-button"
-                    aria-label={`Rename ${layer.name}`}
-                    title="Rename"
-                    onclick={() => (renamingId = layer.id)}>{@render glyph(icons.rename)}</button>
-                  <button
-                    type="button"
-                    class="icon-button"
-                    aria-label={`Move ${layer.name} up`}
-                    title="Up"
-                    onclick={() => void moveLayer(layer, -1)}>{@render glyph(icons.up)}</button>
-                  <button
-                    type="button"
-                    class="icon-button"
-                    aria-label={`Move ${layer.name} down`}
-                    title="Down"
-                    onclick={() => void moveLayer(layer, 1)}>{@render glyph(icons.down)}</button>
-                  <button
-                    type="button"
-                    class="icon-button"
-                    aria-label={`Delete ${layer.name}`}
-                    title="Delete"
-                    onclick={() => void removeLayer(layer)}>{@render glyph(icons.remove)}</button>
+                    aria-pressed={layer.defaultVisible}
+                    aria-label={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
+                    title={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
+                    onclick={() => void toggleVisible(layer)}
+                    >{@render glyph(layer.defaultVisible ? icons.show : icons.hide)}</button>
+                  {#if !immutablePhysicalLayerIds.has(layer.id)}
+                    <button
+                      type="button"
+                      class="icon-button"
+                      aria-pressed={layer.locked}
+                      aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
+                      title={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
+                      onclick={() => void toggleLock(layer)}
+                      >{@render glyph(layer.locked ? icons.lock : icons.unlock)}</button>
+                    <button
+                      type="button"
+                      class="icon-button"
+                      aria-label={`Rename ${layer.name}`}
+                      title="Rename"
+                      onclick={() => (renamingId = layer.id)}>{@render glyph(icons.rename)}</button>
+                    <button
+                      type="button"
+                      class="icon-button"
+                      aria-label={`Move ${layer.name} up`}
+                      title="Up"
+                      onclick={() => void moveLayer(layer, -1)}>{@render glyph(icons.up)}</button>
+                    <button
+                      type="button"
+                      class="icon-button"
+                      aria-label={`Move ${layer.name} down`}
+                      title="Down"
+                      onclick={() => void moveLayer(layer, 1)}>{@render glyph(icons.down)}</button>
+                    <button
+                      type="button"
+                      class="icon-button"
+                      aria-label={`Delete ${layer.name}`}
+                      title="Delete"
+                      onclick={() => void removeLayer(layer)}>{@render glyph(icons.remove)}</button>
+                  {/if}
+                </div>
+                {#if layer.id === activeLayerId && !immutablePhysicalLayerIds.has(layer.id)}
+                  <div class="style-row">
+                    <label>
+                      Fill
+                      <input
+                        type="color"
+                        value={layer.style.fill}
+                        aria-label={`${layer.name} fill`}
+                        onchange={(event) => void updateStyle(layer, { fill: event.currentTarget.value })} />
+                    </label>
+                    <label>
+                      Stroke
+                      <input
+                        type="color"
+                        value={layer.style.stroke}
+                        aria-label={`${layer.name} stroke`}
+                        onchange={(event) => void updateStyle(layer, { stroke: event.currentTarget.value })} />
+                    </label>
+                    <label>
+                      Fill opacity
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={layer.style.fillOpacity}
+                        aria-label={`${layer.name} fill opacity`}
+                        oninput={(event) =>
+                          void updateStyle(layer, { fillOpacity: Number(event.currentTarget.value) })} />
+                    </label>
+                    <label>
+                      Stroke width
+                      <input
+                        type="number"
+                        min="0"
+                        max="32"
+                        step="0.25"
+                        value={layer.style.strokeWidth}
+                        aria-label={`${layer.name} stroke width`}
+                        onchange={(event) =>
+                          void updateStyle(layer, { strokeWidth: Number(event.currentTarget.value) })} />
+                    </label>
+                    <label>
+                      Point radius
+                      <input
+                        type="number"
+                        min="1"
+                        max="64"
+                        step="1"
+                        value={layer.style.pointRadius}
+                        aria-label={`${layer.name} point radius`}
+                        onchange={(event) =>
+                          void updateStyle(layer, { pointRadius: Number(event.currentTarget.value) })} />
+                    </label>
+                  </div>
                 {/if}
               </div>
-              {#if layer.id === activeLayerId && !immutablePhysicalLayerIds.has(layer.id)}
-                <div class="style-row">
-                  <label>
-                    Fill
-                    <input
-                      type="color"
-                      value={layer.style.fill}
-                      aria-label={`${layer.name} fill`}
-                      onchange={(event) => void updateStyle(layer, { fill: event.currentTarget.value })} />
-                  </label>
-                  <label>
-                    Stroke
-                    <input
-                      type="color"
-                      value={layer.style.stroke}
-                      aria-label={`${layer.name} stroke`}
-                      onchange={(event) => void updateStyle(layer, { stroke: event.currentTarget.value })} />
-                  </label>
-                  <label>
-                    Fill opacity
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      value={layer.style.fillOpacity}
-                      aria-label={`${layer.name} fill opacity`}
-                      oninput={(event) =>
-                        void updateStyle(layer, { fillOpacity: Number(event.currentTarget.value) })} />
-                  </label>
-                  <label>
-                    Stroke width
-                    <input
-                      type="number"
-                      min="0"
-                      max="32"
-                      step="0.25"
-                      value={layer.style.strokeWidth}
-                      aria-label={`${layer.name} stroke width`}
-                      onchange={(event) =>
-                        void updateStyle(layer, { strokeWidth: Number(event.currentTarget.value) })} />
-                  </label>
-                  <label>
-                    Point radius
-                    <input
-                      type="number"
-                      min="1"
-                      max="64"
-                      step="1"
-                      value={layer.style.pointRadius}
-                      aria-label={`${layer.name} point radius`}
-                      onchange={(event) =>
-                        void updateStyle(layer, { pointRadius: Number(event.currentTarget.value) })} />
-                  </label>
-                </div>
-              {/if}
-            </div>
-          {/each}
-        </div>
+            {/each}
+          </div>
         {/if}
         {#if physicalMap}
           <button
@@ -1204,7 +1208,13 @@ onMount(() => {
               </label>
               <label>
                 Max events
-                <input type="number" min="1" max="128" step="1" bind:value={eventMaxEvents} disabled={eventBusy || busy} />
+                <input
+                  type="number"
+                  min="1"
+                  max="128"
+                  step="1"
+                  bind:value={eventMaxEvents}
+                  disabled={eventBusy || busy} />
               </label>
               <label>
                 Hazard seed
@@ -1242,10 +1252,10 @@ onMount(() => {
           </div>
         {/if}
         {#if !physicalMap}
-        <p class="hint">
-          Base geography is read-only. Point, line, polygon, and freehand edits save through the canonical GeoJSON
-          source. Delete removes the selected feature.
-        </p>
+          <p class="hint">
+            Base geography is read-only. Point, line, polygon, and freehand edits save through the canonical GeoJSON
+            source. Delete removes the selected feature.
+          </p>
         {/if}
       </aside>
       <button
@@ -1297,7 +1307,12 @@ onMount(() => {
         </div>
       {:else if studioOpen && mapId}
         <div class="canvas" role="img" aria-label="Atlas Studio">
-          <AtlasStudioView {mapId} onexport={(request) => { studioExport = request; atlasOpen = true; }} />
+          <AtlasStudioView
+            {mapId}
+            onexport={(request) => {
+              studioExport = request;
+              atlasOpen = true;
+            }} />
         </div>
       {:else}
         <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->

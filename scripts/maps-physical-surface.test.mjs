@@ -179,9 +179,7 @@ for (const required of [
 }
 assert.ok(host.includes("history-v{}"), "historical cache key must include the derivation version");
 assert.ok(
-  readFileSync(resolve(root, "crates/daena-physical-spike/src/hydrology.rs"), "utf8").includes(
-    "ThermalExpansion",
-  ),
+  readFileSync(resolve(root, "crates/daena-physical-spike/src/hydrology.rs"), "utf8").includes("ThermalExpansion"),
   "hydrology must accept coupled thermal expansion",
 );
 

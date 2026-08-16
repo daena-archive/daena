@@ -245,10 +245,7 @@ function scheduleSession() {
   debounce = setTimeout(() => void openSession(), 300);
 }
 
-function mountMap(
-  status: AtlasStudioSessionStatus,
-  view?: { center: [number, number]; zoom: number },
-) {
+function mountMap(status: AtlasStudioSessionStatus, view?: { center: [number, number]; zoom: number }) {
   const container = host;
   if (!container) return;
   const style: StyleSpecification = {
@@ -452,7 +449,7 @@ async function applyPreset(id: string) {
   if (!id) return;
   const fields = await project.listFields(mapId);
   const current = fields.find((field) => field.namespace === "maps" && field.key === "atlasPresets");
-  const presets = ((current?.value as { presets?: Array<Record<string, unknown>> } | undefined)?.presets ?? []);
+  const presets = (current?.value as { presets?: Array<Record<string, unknown>> } | undefined)?.presets ?? [];
   const preset = presets.find((item) => item.id === id);
   if (!preset) return;
   const time = preset.time as { kind?: string; offsetYears?: number; authoredYear?: number } | undefined;
@@ -619,12 +616,17 @@ onDestroy(() => {
         <strong>Provenance</strong>
         <p>The Physical Map is canonical. Atlas geography is derived, deterministic, and disposable.</p>
         <p>Released products: detail algorithm 6 · drainage 6 · renderer 11.</p>
-        <p>Regenerate cache deletes only validated files under the project Atlas cache. Canonical maps, presets, and checkpoints stay unchanged.</p>
+        <p>
+          Regenerate cache deletes only validated files under the project Atlas cache. Canonical maps, presets, and
+          checkpoints stay unchanged.
+        </p>
       </section>
       {#if confirmCache}
         <div class="confirm" role="alertdialog" aria-labelledby="atlas-cache-title" aria-describedby="atlas-cache-copy">
           <strong id="atlas-cache-title">Regenerate disposable Atlas cache?</strong>
-          <p id="atlas-cache-copy">This removes derived Atlas cache files only. It does not change canonical project files.</p>
+          <p id="atlas-cache-copy">
+            This removes derived Atlas cache files only. It does not change canonical project files.
+          </p>
           <div class="actions">
             <button type="button" onclick={() => void regenerate()}>Regenerate now</button>
             <button type="button" onclick={() => (confirmCache = false)}>Cancel</button>
@@ -666,7 +668,9 @@ onDestroy(() => {
           <button type="button" onclick={() => void openSession()}>Retry</button>
         </p>
       {:else if stale}
-        {@const diagnostic = explainStudioError(stale.includes("atlas.studio.stale") ? stale : `atlas.studio.stale: ${stale}`)}
+        {@const diagnostic = explainStudioError(
+          stale.includes("atlas.studio.stale") ? stale : `atlas.studio.stale: ${stale}`,
+        )}
         <p class="stale" role="status">
           <strong>{diagnostic.title}</strong>
           <span>{diagnostic.action}</span>
@@ -682,7 +686,8 @@ onDestroy(() => {
         bind:this={host}
         tabindex="-1"
         aria-label="Atlas Studio map"
-        aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown + - Home Enter Escape"></div>
+        aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown + - Home Enter Escape">
+      </div>
     </div>
   </div>
 </section>
@@ -814,7 +819,9 @@ button {
 }
 .error code,
 .stale code {
-  font: 11px/1.3 ui-monospace, monospace;
+  font:
+    11px/1.3 ui-monospace,
+    monospace;
   color: #b8c8bc;
 }
 .skip {

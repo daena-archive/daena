@@ -56,7 +56,10 @@ let styleId = $state("daena-atlas-relief");
 let widthPx = $state(2048);
 let heightPx = $state(1024);
 let dpi = $state(300);
-let offsetYears = $state(epochOffsetYears);
+let offsetYears = $state(0);
+$effect(() => {
+  offsetYears = epochOffsetYears;
+});
 let timeKind = $state<"physical-offset-year" | "calendar-year">("physical-offset-year");
 let authoredYear = $state(1);
 let presetName = $state("Atlas preset");

@@ -508,6 +508,14 @@ $effect(() => {
   queueMicrotask(() => map?.resize());
 });
 
+$effect(() => {
+  const node = host;
+  if (!node) return;
+  const handler = (event: KeyboardEvent) => onViewportKey(event);
+  node.addEventListener("keydown", handler);
+  return () => node.removeEventListener("keydown", handler);
+});
+
 onDestroy(() => {
   unlisten?.();
   if (debounce) clearTimeout(debounce);
@@ -662,6 +670,7 @@ onDestroy(() => {
         <p class="stale" role="status">
           <strong>{diagnostic.title}</strong>
           <span>{diagnostic.action}</span>
+          {#if diagnostic.code}<code>{diagnostic.code}</code>{/if}
           <button type="button" onclick={() => void openSession()}>Refresh Atlas</button>
         </p>
       {:else if loading}
@@ -671,11 +680,9 @@ onDestroy(() => {
         class="viewport"
         id="atlas-studio-map"
         bind:this={host}
-        role="application"
-        tabindex="0"
+        tabindex="-1"
         aria-label="Atlas Studio map"
-        aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown + - Home Enter Escape"
-        onkeydown={onViewportKey}></div>
+        aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown + - Home Enter Escape"></div>
     </div>
   </div>
 </section>

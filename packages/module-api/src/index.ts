@@ -249,6 +249,10 @@ export interface ModuleContext {
   readonly module: ModuleManifest;
   /** Host-selected entity to preserve when opening a module projection. */
   readonly focusEntityId?: UUID;
+  /** True when the host renders this module inside a native workspace panel
+   * that owns entity selection and creation, so the module should not draw
+   * its own entity list. */
+  readonly embedded?: boolean;
   readonly services: {
     isAvailable(name: string, major: number): boolean;
   };

@@ -35,6 +35,7 @@ import NativeVectorMapEditor from "$lib/maps/native-vector/NativeVectorMapEditor
 import PhysicalMapEditor from "$lib/maps/physical/PhysicalMapEditor.svelte";
 import { nativeVectorSession } from "$lib/maps/native-vector/session";
 import ProjectionView from "$lib/ProjectionView.svelte";
+import ModuleMount from "$lib/ModuleMount.svelte";
 import SettingsView from "$lib/SettingsView.svelte";
 import SchemaSettingsPanel from "$lib/SchemaSettingsPanel.svelte";
 import { allowLeaveSchemaEditor, isSchemaEditorDirty } from "$lib/schemaEditorGuard";
@@ -941,6 +942,27 @@ $effect(() => {
   })();
 });
 
+let languageListRefreshed = false;
+$effect(() => {
+  if (!ready || section !== "language") {
+    languageListRefreshed = false;
+    return;
+  }
+  void entities;
+  if (languageListRefreshed) return;
+  languageListRefreshed = true;
+  void project
+    .listEntities()
+    .then((list) => {
+      if (section !== "language") return;
+      entities = list;
+    })
+    .catch(() => {
+      // Keep the current list on transient failures; retry on next visit.
+    });
+  if (!selected && visibleEntities().length > 0) selected = visibleEntities()[0];
+});
+
 function savedMaps() {
   return savedMapsCache ?? [];
 }
@@ -1124,7 +1146,7 @@ function entityTypeLabel(entityType: string | null) {
 }
 
 function openProjection() {
-  const projection = projectionModule(section === "lore" ? "lore" : section === "timeline" ? "timeline" : "language");
+  const projection = projectionModule(section === "lore" ? "lore" : "timeline");
   hostView = null;
   sandboxView = null;
   projectionView = projection;
@@ -2263,7 +2285,9 @@ async function createEntity(event: SubmitEvent) {
         ? "timeline"
         : option.template.entityType === "manuscript" || option.template.entityType === "reference-page"
           ? "writing"
-          : "lore";
+          : option.template.entityType === "language"
+            ? "language"
+            : "lore";
     if (option.template.entityType === "manuscript") writingView = "manuscripts";
     if (option.template.entityType === "reference-page") writingView = "reference";
     name = "";
@@ -3878,19 +3902,6 @@ onMount(() => {
           })}
           onClose={() => (projectionView = null)} />
       {/key}
-    {:else if section === "language"}
-      {@const languageProjection = projectionModule("language")}
-      {#key selected?.id ?? "language"}
-        <ProjectionView
-          title="Languages"
-          view={languageProjection.module.views[0]}
-          context={buildModuleContext(languageProjection.module.manifest, projectInfo?.root ?? "", {
-            focusEntityId: selected?.id as UUID | undefined,
-            availableServices: enabledServices(),
-          })}
-          embedded={true}
-          onClose={() => {}} />
-      {/key}
     {:else if hostView}
       <div class="host-view-shell">
         <button class="quiet-button host-view-back" onclick={() => (hostView = null)}>Back to workspace</button
@@ -3924,7 +3935,9 @@ onMount(() => {
                   ? "CHRONOLOGY"
                   : section === "maps"
                     ? "MAP ATLAS"
-                    : "DRAFTING DESK"}</span>
+                    : section === "language"
+                      ? "LANGUAGE WORKSHOP"
+                      : "DRAFTING DESK"}</span>
             <h1>{sectionLabel()}</h1>
             <p>
               {section === "lore"
@@ -3933,9 +3946,11 @@ onMount(() => {
                   ? "Events, eras, and the threads that connect them."
                   : section === "maps"
                     ? "Keep every map beside its notes, links, and provider source."
-                    : writingView === "manuscripts"
-                      ? "Draft stories, essays, and other long-form work."
-                      : "Build the pages, notes, and references behind the story."}
+                    : section === "language"
+                      ? "Words, sounds, writing, and grammar for every language of your world."
+                      : writingView === "manuscripts"
+                        ? "Draft stories, essays, and other long-form work."
+                        : "Build the pages, notes, and references behind the story."}
             </p>
           </div>
           <div class="heading-actions">
@@ -3956,8 +3971,10 @@ onMount(() => {
                       >Import vector map</button>
                   </div>{/if}
               </div>{/if}
-            {#if section !== "writing" && section !== "maps"}<button class="quiet-button" onclick={openProjection}
-                >Open {section === "lore" ? "graph" : section === "timeline" ? "timeline" : "language"} ↗</button
+            {#if section !== "writing" && section !== "maps" && section !== "language"}<button
+                class="quiet-button"
+                onclick={openProjection}
+                >Open {section === "lore" ? "graph" : "timeline"} ↗</button
               >{/if}
           </div>
         </div>
@@ -3965,6 +3982,7 @@ onMount(() => {
       <section
         class:maps-workspace={section === "maps" && sandboxView?.renderer === "maps"}
         class:map-surface-expanded={mapSurfaceOpen}
+        class:workspace-grid-no-inspector={section === "language"}
         class="workspace-grid">
         <aside class="collection-panel panel-surface">
           <div class="panel-heading">
@@ -3976,9 +3994,11 @@ onMount(() => {
                     ? "TIMELINE"
                     : section === "maps"
                       ? "MAPS"
-                      : writingView === "manuscripts"
-                        ? "MANUSCRIPTS"
-                        : "REFERENCE PAGES"}</span
+                      : section === "language"
+                        ? "LANGUAGES"
+                        : writingView === "manuscripts"
+                          ? "MANUSCRIPTS"
+                          : "REFERENCE PAGES"}</span
               ><strong>{visibleEntities().length} {collectionLabel()}</strong>
             </div>
           </div>
@@ -4047,10 +4067,23 @@ onMount(() => {
           </div>
         </aside>
 
-        <article
-          class:editor-fullscreen={editorFullscreen}
-          class:map-editor-active={section === "maps" && sandboxView?.renderer === "maps" && Boolean(sandboxView.view)}
-          class="editor-panel">
+        {#if section === "language"}
+          {@const languageProjection = projectionModule("language")}
+          {#key selected?.id ?? "language"}
+            <ModuleMount
+              view={languageProjection.module.views[0]}
+              context={buildModuleContext(languageProjection.module.manifest, projectInfo?.root ?? "", {
+                focusEntityId: selected?.id as UUID | undefined,
+                availableServices: enabledServices(),
+                embedded: true,
+              })}
+              className="language-mount" />
+          {/key}
+        {:else}
+          <article
+            class:editor-fullscreen={editorFullscreen}
+            class:map-editor-active={section === "maps" && sandboxView?.renderer === "maps" && Boolean(sandboxView.view)}
+            class="editor-panel">
           {#if section === "maps" && sandboxView?.renderer === "maps" && sandboxView.view}
             {@const mapId = selected?.entity_type === "daena.maps:map" ? selected.id : null}
             {@const mapState = mapId ? (mapSaveStates[mapId] ?? null) : null}
@@ -4313,8 +4346,9 @@ onMount(() => {
             {/if}
           {/if}
         </article>
+        {/if}
 
-        {#if (section !== "maps" || sandboxView?.renderer !== "maps") && selected}<aside
+        {#if (section !== "maps" || sandboxView?.renderer !== "maps") && section !== "language" && selected}<aside
             class="inspector-panel panel-surface">
             <div class="inspector-heading">
               <div><span class="panel-kicker">INSPECTOR</span><strong>Details</strong></div>
@@ -4527,7 +4561,7 @@ onMount(() => {
                       </div>
                     </div>{/each}{/if}
               </section>{/if}
-          </aside>{:else if section !== "maps" || sandboxView?.renderer !== "maps"}<aside
+          </aside>{:else if (section !== "maps" || sandboxView?.renderer !== "maps") && section !== "language"}<aside
             class="inspector-panel panel-surface inspector-empty">
             <span>INSPECTOR</span>
             <p>Select an entry to see its properties, relationships, and attachments.</p>
@@ -5057,6 +5091,16 @@ onMount(() => {
   color: var(--ink-soft);
   font-size: 13px;
 }
+:global(.module-mount.language-mount) {
+  min-height: 650px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--canvas);
+  box-shadow: var(--shadow-sm);
+}
+:global(.module-mount.language-mount .language-workspace) {
+  height: auto;
+}
 .heading-actions {
   display: flex;
   gap: 7px;
@@ -5077,7 +5121,9 @@ onMount(() => {
   grid-template-columns: 245px minmax(360px, 1fr) 270px;
   gap: 14px;
   padding: 0 40px 40px;
-  align-items: start;
+}
+.workspace-grid-no-inspector {
+  grid-template-columns: 245px minmax(360px, 1fr);
 }
 .maps-workspace {
   grid-template-columns: 245px minmax(0, 1fr);
@@ -6052,6 +6098,10 @@ onMount(() => {
   .collection-panel,
   .editor-panel,
   .inspector-panel {
+    width: 100%;
+    min-height: auto;
+  }
+  :global(.module-mount.language-mount) {
     width: 100%;
     min-height: auto;
   }

@@ -169,9 +169,11 @@ export const language: DaenaModule = {
 
         const root = document.createElement("section");
         root.className = "language-workspace";
+        if (context.embedded) root.classList.add("language-workspace-embedded");
         const style = document.createElement("style");
         style.textContent = `
           .language-workspace{display:grid;grid-template-columns:minmax(220px,260px) minmax(0,1fr);gap:18px;height:100%;min-height:0;color:var(--ink)}
+          .language-workspace-embedded{grid-template-columns:minmax(0,1fr);height:auto}
           .language-panel{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:auto;border:1px solid var(--line);border-radius:16px;background:var(--surface);padding:22px 20px 24px;box-shadow:var(--shadow-sm,0 2px 8px rgba(38,42,33,.05))}
           .language-sidebar{gap:14px}
           .language-sidebar-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
@@ -2945,111 +2947,116 @@ export const language: DaenaModule = {
           if (cancelled) return;
           rememberFocus();
           root.replaceChildren(style);
-          const languagesPanel = document.createElement("aside");
-          languagesPanel.className = "language-panel language-sidebar";
-          languagesPanel.setAttribute("aria-busy", String(languageLoading));
-          const sidebarHead = document.createElement("div");
-          sidebarHead.className = "language-sidebar-head";
-          const sidebarTitle = document.createElement("div");
-          const sidebarKicker = document.createElement("p");
-          sidebarKicker.className = "language-sidebar-kicker";
-          sidebarKicker.textContent = "Language studio";
-          const languagesTitle = document.createElement("h2");
-          languagesTitle.textContent = "Languages";
-          sidebarTitle.append(sidebarKicker, languagesTitle);
-          const createLanguageButton = button("Create language", "language-button secondary", () => {
-            creatingLanguage = true;
-            languageCreateName = "";
-            languageCreateError = "";
-            render();
-            root.querySelector<HTMLInputElement>('[name="languageCreateName"]')?.focus();
-          });
-          sidebarHead.append(sidebarTitle, createLanguageButton);
-          languagesPanel.append(sidebarHead);
-          const sidebarIntro = document.createElement("p");
-          sidebarIntro.className = "language-sidebar-intro";
-          sidebarIntro.textContent = "Choose a language to shape its words, sounds, writing, and grammar.";
-          languagesPanel.append(sidebarIntro);
-          const languageSearch = input("languageQuery", languageQuery);
-          languageSearch.type = "search";
-          languageSearch.oninput = () => {
-            languageQuery = languageSearch.value;
-            fillLanguageList(languagesList);
-          };
-          languagesPanel.append(field("Filter languages", languageSearch));
-          if (creatingLanguage) {
-            const createForm = document.createElement("form");
-            createForm.className = "language-create";
-            const createInput = input("languageCreateName", languageCreateName);
-            createInput.autocomplete = "off";
-            createForm.append(field("Language name", createInput));
-            if (languageCreateError) createForm.append(alertMessage(languageCreateError));
-            const createActions = document.createElement("div");
-            createActions.className = "language-create-actions";
-            createActions.append(
-              button("Cancel", "language-button secondary", () => {
-                creatingLanguage = false;
-                languageCreateName = "";
-                languageCreateError = "";
-                render();
-              }),
-            );
-            const saveLanguage = document.createElement("button");
-            saveLanguage.type = "submit";
-            saveLanguage.className = "language-button";
-            saveLanguage.textContent = "Create";
-            createActions.append(saveLanguage);
-            createForm.append(createActions);
-            createInput.oninput = () => {
-              languageCreateName = createInput.value;
+          const panels: HTMLElement[] = [];
+          if (!context.embedded) {
+            const languagesPanel = document.createElement("aside");
+            languagesPanel.className = "language-panel language-sidebar";
+            languagesPanel.setAttribute("aria-busy", String(languageLoading));
+            const sidebarHead = document.createElement("div");
+            sidebarHead.className = "language-sidebar-head";
+            const sidebarTitle = document.createElement("div");
+            const sidebarKicker = document.createElement("p");
+            sidebarKicker.className = "language-sidebar-kicker";
+            sidebarKicker.textContent = "Language studio";
+            const languagesTitle = document.createElement("h2");
+            languagesTitle.textContent = "Languages";
+            sidebarTitle.append(sidebarKicker, languagesTitle);
+            const createLanguageButton = button("Create language", "language-button secondary", () => {
+              creatingLanguage = true;
+              languageCreateName = "";
               languageCreateError = "";
+              render();
+              root.querySelector<HTMLInputElement>('[name="languageCreateName"]')?.focus();
+            });
+            sidebarHead.append(sidebarTitle, createLanguageButton);
+            languagesPanel.append(sidebarHead);
+            const sidebarIntro = document.createElement("p");
+            sidebarIntro.className = "language-sidebar-intro";
+            sidebarIntro.textContent = "Choose a language to shape its words, sounds, writing, and grammar.";
+            languagesPanel.append(sidebarIntro);
+            const languageSearch = input("languageQuery", languageQuery);
+            languageSearch.type = "search";
+            languageSearch.oninput = () => {
+              languageQuery = languageSearch.value;
+              fillLanguageList(languagesList);
             };
-            createForm.onsubmit = async (event) => {
-              event.preventDefault();
-              languageCreateName = createInput.value.trim();
-              if (!languageCreateName) {
-                languageCreateError = "Language name is required.";
-                render();
-                root.querySelector<HTMLInputElement>('[name="languageCreateName"]')?.focus();
-                return;
-              }
-              saveLanguage.disabled = true;
-              saveLanguage.textContent = "Creating…";
-              try {
-                const created = await context.entities.create({ name: languageCreateName, type: "language" });
-                languageSummaries = [created, ...languageSummaries.filter((language) => language.id !== created.id)];
-                languageListLoaded = true;
-                languageLoading = false;
-                selectedLanguage = created;
-                creatingLanguage = false;
-                languageCreateName = "";
+            languagesPanel.append(field("Filter languages", languageSearch));
+            if (creatingLanguage) {
+              const createForm = document.createElement("form");
+              createForm.className = "language-create";
+              const createInput = input("languageCreateName", languageCreateName);
+              createInput.autocomplete = "off";
+              createForm.append(field("Language name", createInput));
+              if (languageCreateError) createForm.append(alertMessage(languageCreateError));
+              const createActions = document.createElement("div");
+              createActions.className = "language-create-actions";
+              createActions.append(
+                button("Cancel", "language-button secondary", () => {
+                  creatingLanguage = false;
+                  languageCreateName = "";
+                  languageCreateError = "";
+                  render();
+                }),
+              );
+              const saveLanguage = document.createElement("button");
+              saveLanguage.type = "submit";
+              saveLanguage.className = "language-button";
+              saveLanguage.textContent = "Create";
+              createActions.append(saveLanguage);
+              createForm.append(createActions);
+              createInput.oninput = () => {
+                languageCreateName = createInput.value;
                 languageCreateError = "";
-                resetEditors();
-                search = "";
-                statusFilter = "";
-                tagFilter = "";
-                page = 0;
-                render();
-                void loadPane();
-              } catch (cause) {
-                languageCreateError = cause instanceof Error ? cause.message : String(cause);
-                render();
-                root.querySelector<HTMLInputElement>('[name="languageCreateName"]')?.focus();
-              }
-            };
-            languagesPanel.append(createForm);
+              };
+              createForm.onsubmit = async (event) => {
+                event.preventDefault();
+                languageCreateName = createInput.value.trim();
+                if (!languageCreateName) {
+                  languageCreateError = "Language name is required.";
+                  render();
+                  root.querySelector<HTMLInputElement>('[name="languageCreateName"]')?.focus();
+                  return;
+                }
+                saveLanguage.disabled = true;
+                saveLanguage.textContent = "Creating…";
+                try {
+                  const created = await context.entities.create({ name: languageCreateName, type: "language" });
+                  languageSummaries = [created, ...languageSummaries.filter((language) => language.id !== created.id)];
+                  languageListLoaded = true;
+                  languageLoading = false;
+                  selectedLanguage = created;
+                  creatingLanguage = false;
+                  languageCreateName = "";
+                  languageCreateError = "";
+                  resetEditors();
+                  search = "";
+                  statusFilter = "";
+                  tagFilter = "";
+                  page = 0;
+                  render();
+                  void loadPane();
+                } catch (cause) {
+                  languageCreateError = cause instanceof Error ? cause.message : String(cause);
+                  render();
+                  root.querySelector<HTMLInputElement>('[name="languageCreateName"]')?.focus();
+                }
+              };
+              languagesPanel.append(createForm);
+            }
+            const languagesList = document.createElement("ul");
+            languagesList.className = "language-list";
+            fillLanguageList(languagesList);
+            languagesPanel.append(languagesList);
+            panels.push(languagesPanel);
           }
-          const languagesList = document.createElement("ul");
-          languagesList.className = "language-list";
           if (!languageListLoaded && !languageLoading) {
             languageLoading = true;
             void loadLanguages();
           }
-          fillLanguageList(languagesList);
-          languagesPanel.append(languagesList);
 
           const lexiconPanel = document.createElement("main");
           lexiconPanel.className = "language-panel language-main";
+          panels.push(lexiconPanel);
           lexiconPanel.id = "language-pane";
           lexiconPanel.setAttribute("role", "tabpanel");
           lexiconPanel.setAttribute("aria-labelledby", `language-tab-${pane}`);
@@ -3110,42 +3117,42 @@ export const language: DaenaModule = {
           lexiconPanel.append(tabs);
           if (pane === "overview") {
             renderOverview(lexiconPanel, error);
-            root.append(languagesPanel, lexiconPanel);
+            root.append(...panels);
             element.replaceChildren(root);
             restoreFocus();
             return;
           }
           if (pane === "sounds") {
             renderSounds(lexiconPanel, error);
-            root.append(languagesPanel, lexiconPanel);
+            root.append(...panels);
             element.replaceChildren(root);
             restoreFocus();
             return;
           }
           if (pane === "writing") {
             renderWriting(lexiconPanel, error);
-            root.append(languagesPanel, lexiconPanel);
+            root.append(...panels);
             element.replaceChildren(root);
             restoreFocus();
             return;
           }
           if (pane === "grammar") {
             renderGrammar(lexiconPanel, error);
-            root.append(languagesPanel, lexiconPanel);
+            root.append(...panels);
             element.replaceChildren(root);
             restoreFocus();
             return;
           }
           if (pane === "forms") {
             renderForms(lexiconPanel, error);
-            root.append(languagesPanel, lexiconPanel);
+            root.append(...panels);
             element.replaceChildren(root);
             restoreFocus();
             return;
           }
           if (pane === "samples") {
             renderSamples(lexiconPanel, error);
-            root.append(languagesPanel, lexiconPanel);
+            root.append(...panels);
             element.replaceChildren(root);
             restoreFocus();
             return;
@@ -3195,7 +3202,7 @@ export const language: DaenaModule = {
           lexiconPanel.append(toolbar);
           if (editorOpen) {
             lexiconPanel.append(editForm(error));
-            root.append(languagesPanel, lexiconPanel);
+            root.append(...panels);
             element.replaceChildren(root);
             restoreFocus();
             return;
@@ -3368,7 +3375,7 @@ export const language: DaenaModule = {
               lexiconPanel.append(paging);
             }
           }
-          root.append(languagesPanel, lexiconPanel);
+          root.append(...panels);
           element.replaceChildren(root);
           restoreFocus();
         }

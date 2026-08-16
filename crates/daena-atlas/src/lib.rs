@@ -237,6 +237,61 @@ impl AtlasPreparedScene {
             precipitation_mm: &self.precipitation_mm,
         }
     }
+
+    pub fn sample_surface(&self, lon_micro: i32, lat_micro: i32) -> overlay::AtlasSurfaceSample {
+        let grid = self.model.grid;
+        let cell = detail::nearest_cell(grid, lon_micro, lat_micro);
+        let sea_level_mm = self.hydrology.sea_level_mm;
+        let sdf_ppm = detail::sample_sdf_ppm(grid, &self.sdf, lon_micro, lat_micro);
+        let elevation_mm = self
+            .model
+            .refined_at(lon_micro, lat_micro, sea_level_mm, sdf_ppm);
+        let temperature_centi_c =
+            detail::sample_field_mm(grid, &self.temperature_centi_c, lon_micro, lat_micro);
+        let precipitation_mm =
+            detail::sample_field_mm(grid, &self.precipitation_mm, lon_micro, lat_micro);
+        let climate = control::climate_class_name(
+            self.climate_class
+                .get(cell)
+                .copied()
+                .unwrap_or(control::CLIMATE_CLASS_GRASSLAND),
+        );
+        let ice = self.hydrology.ice_cells.get(cell).copied().unwrap_or(false);
+        let inland = self
+            .visible_water
+            .inland
+            .get(cell)
+            .copied()
+            .unwrap_or(false);
+        let ice_thickness_mm = i32::try_from(
+            self.hydrology
+                .ice_thickness_mm
+                .get(cell)
+                .copied()
+                .unwrap_or(0),
+        )
+        .unwrap_or(i32::MAX);
+        let water_surface_mm = if inland {
+            self.hydrology
+                .lake_level_mm
+                .get(cell)
+                .copied()
+                .unwrap_or(sea_level_mm)
+        } else {
+            sea_level_mm
+        };
+        overlay::AtlasSurfaceSample {
+            lon_micro,
+            lat_micro,
+            elevation_mm,
+            water_surface_mm,
+            temperature_centi_c,
+            precipitation_mm,
+            climate: climate.to_string(),
+            surface: control::surface_kind(ice, inland, elevation_mm, sea_level_mm).to_string(),
+            ice_thickness_mm,
+        }
+    }
 }
 
 fn drainage_from_refined(refined: &refine::RefinedHydrology) -> drainage::DerivedDrainage {

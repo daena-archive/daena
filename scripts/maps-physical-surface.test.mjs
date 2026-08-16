@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 const root = resolve(import.meta.dirname, "..");
 const source = readFileSync(resolve(root, "src/lib/maps/physical/PhysicalMapEditor.svelte"), "utf8");
 const native = readFileSync(resolve(root, "src/lib/maps/native-vector/NativeVectorMapEditor.svelte"), "utf8");
+const worldView = readFileSync(resolve(root, "src/lib/maps/physical/PhysicalWorldView.svelte"), "utf8");
 const client = readFileSync(resolve(root, "src/lib/project/client.ts"), "utf8");
 const host = readFileSync(resolve(root, "src-tauri/src/lib.rs"), "utf8");
 const moduleContext = readFileSync(resolve(root, "src/lib/modules/context.ts"), "utf8");
@@ -107,6 +108,10 @@ assert.ok(native.includes("EPOCH_STEP"), "world epoch slider must use year strid
 assert.ok(native.includes("historyCollapsed"), "natural history must start collapsed");
 assert.ok(native.includes("layersCollapsed"), "vector layers must be collapsible");
 assert.match(native, /Atlas Studio/);
+assert.match(native, /Open Physical Map/);
+assert.match(native, /ATLAS STUDIO/);
+assert.match(native, /editor-body.studio|class:studio=\{studioOpen\}/);
+assert.match(native, /studioOpen = studioSupported/);
 assert.match(native, /aria-label="Close"/);
 assert.match(native, /Export atlas/);
 assert.match(native, /PHYSICAL WORLD/);
@@ -117,6 +122,7 @@ assert.match(native, /toLocaleString\("en-US"\)/);
 assert.match(native, /sidebar-resizer/);
 assert.match(native, /map-busy/);
 assert.match(native, /MapViewControls/);
+assert.match(worldView, /onpan/);
 for (const required of ["HistoricalProgressEvent", "physical-historical-progress", "with_reporter"]) {
   assert.ok(host.includes(required), `physical host progress contract is missing ${required}`);
 }

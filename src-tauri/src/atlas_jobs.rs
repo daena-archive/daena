@@ -431,11 +431,18 @@ async fn begin_job(
         if kind == "export" {
             if let Some(existing) = manager.export_job_id.clone() {
                 if let Some(job) = manager.jobs.get(&existing) {
-                    if job.status.state != "failed"
-                        && job.status.state != "cancelled"
-                        && job.status.state != "saved"
-                    {
+                    let replaceable = matches!(
+                        job.status.state.as_str(),
+                        "failed" | "cancelled" | "saved" | "ready-to-save"
+                    );
+                    if !replaceable {
                         return Err("atlas.resource-limit: one export job may run at a time".into());
+                    }
+                }
+                if let Some(mut job) = manager.jobs.remove(&existing) {
+                    job.cancel.cancel();
+                    if let Some(path) = job.artifact.take() {
+                        let _ = remove_atlas_path(&path);
                     }
                 }
             }

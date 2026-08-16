@@ -9,24 +9,60 @@ import {
   type AtlasRenderCapabilities,
   type AtlasRenderRequest,
 } from "$lib/project/client";
+import type { VectorLayerDefinition } from "../native-vector/types";
 
 let {
   mapId,
   epochOffsetYears = 0,
   seed = null,
+  viewerLayers = [],
   onclose,
 }: {
   mapId: string;
   epochOffsetYears?: number;
   seed?: AtlasRenderRequest | null;
+  viewerLayers?: Pick<VectorLayerDefinition, "id" | "name" | "defaultVisible">[];
   onclose?: () => void;
 } = $props();
 
+const PREVIEW_WIDTH = 1024;
+const PREVIEW_HEIGHT = 512;
 const PRESETS = [
-  { label: "Preview 2K", width: 2048, height: 1024 },
+  { label: "2K", width: 2048, height: 1024 },
   { label: "Print 4K", width: 4096, height: 2048 },
   { label: "Print 8K", width: 8192, height: 4096 },
 ] as const;
+const EPOCH_MIN = -100_000;
+const EPOCH_MAX = 100_000;
+const EPOCH_STEP = 10;
+
+const VIEWER_ROLE_ALIASES: Record<string, string[]> = {
+  ocean: ["ocean"],
+  ice: ["ice"],
+  lakes: ["lakes"],
+  rivers: ["rivers"],
+  coastlines: ["islands", "coastlines"],
+  contours: ["bathymetric-contours", "contours"],
+  "tectonic-plates": ["tectonic-plates"],
+  "tectonic-boundaries": ["tectonic-boundaries"],
+  "volcanic-centers": ["volcanic-centers"],
+  watersheds: ["watersheds"],
+};
+
+function viewerLayerName(atlasLayerId: string): string | null {
+  const aliases = VIEWER_ROLE_ALIASES[atlasLayerId];
+  if (!aliases || viewerLayers.length === 0) return null;
+  const matched = viewerLayers.find((layer) => aliases.includes(layer.id));
+  return matched?.name ?? null;
+}
+
+function viewerLayerEnabled(atlasLayerId: string): boolean | null {
+  const aliases = VIEWER_ROLE_ALIASES[atlasLayerId];
+  if (!aliases || viewerLayers.length === 0) return null;
+  const matched = viewerLayers.filter((layer) => aliases.includes(layer.id));
+  if (matched.length === 0) return null;
+  return matched.some((layer) => layer.defaultVisible);
+}
 
 function styleLabel(id: string) {
   switch (id) {
@@ -95,10 +131,41 @@ function applySeed(next: AtlasRenderRequest | null) {
   seedUnlock = next.unlockAspect;
 }
 
+function parseEpochYears(raw: string) {
+  const digits = raw.replace(/[^\d]/g, "");
+  const value = digits ? Number(digits) : 0;
+  return Math.min(EPOCH_MAX, value);
+}
+
+function clampEpoch(offset: number, step = 1) {
+  const snapped = step > 1 ? Math.round(offset / step) * step : Math.round(offset);
+  return Math.min(EPOCH_MAX, Math.max(EPOCH_MIN, snapped));
+}
+
+function setOffsetYears(next: number) {
+  offsetYears = clampEpoch(next);
+  schedulePreview();
+}
+
+function setOffsetYearsAbs(raw: string) {
+  const magnitude = parseEpochYears(raw);
+  setOffsetYears(offsetYears < 0 ? -magnitude : magnitude);
+}
+
+function exportBusy() {
+  return Boolean(
+    exportJob &&
+      exportJob.state !== "ready-to-save" &&
+      exportJob.state !== "saved" &&
+      exportJob.state !== "failed" &&
+      exportJob.state !== "cancelled",
+  );
+}
+
 function formatEpoch(offset: number) {
-  if (offset === 0) return "Reference epoch";
-  if (offset < 0) return `${Math.abs(offset)} years before reference`;
-  return `${offset} years after reference`;
+  if (offset === 0) return "at epoch";
+  if (offset < 0) return "years before epoch";
+  return "years after epoch";
 }
 
 function request(width: number, height: number): AtlasRenderRequest {
@@ -161,12 +228,22 @@ async function loadCapabilities() {
   if (capabilities.calendarBinding) {
     authoredYear = capabilities.calendarBinding.calendarReferenceYear;
   }
-  layers = capabilities.layers.map((layer) => ({
-    id: layer.id,
-    name: layer.name,
-    enabled: layer.defaultVisible,
-  }));
+  layers = capabilities.layers.map((layer) => {
+    const fromViewer = viewerLayerEnabled(layer.id);
+    return {
+      id: layer.id,
+      name: viewerLayerName(layer.id) ?? layer.name,
+      enabled: fromViewer ?? layer.defaultVisible,
+    };
+  });
   applySeed(seed);
+  if (viewerLayers.length > 0) {
+    layers = layers.map((layer) => ({
+      ...layer,
+      name: viewerLayerName(layer.id) ?? layer.name,
+      enabled: viewerLayerEnabled(layer.id) ?? layer.enabled,
+    }));
+  }
   schedulePreview();
 }
 
@@ -187,7 +264,7 @@ async function runPreview() {
   try {
     const status = await project.atlasPreviewBegin(
       mapId,
-      request(2048, 1024),
+      request(PREVIEW_WIDTH, PREVIEW_HEIGHT),
       previewRequestId as `${string}-${string}-${string}-${string}-${string}`,
     );
     applyStatus(status);
@@ -198,6 +275,7 @@ async function runPreview() {
 }
 
 async function runExport() {
+  if (exportBusy()) return;
   notice = "";
   try {
     const status = await project.atlasRenderBegin(mapId, request(widthPx, heightPx), crypto.randomUUID());
@@ -286,6 +364,10 @@ async function cancel(job: AtlasJobStatus | null) {
 onMount(() => {
   applySeed(seed);
   void loadCapabilities();
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape") onclose?.();
+  };
+  window.addEventListener("keydown", onKey);
   void listen<AtlasJobStatus>(ATLAS_PROGRESS_EVENT, (event) => applyStatus(event.payload)).then((fn) => {
     unlisten = fn;
   });
@@ -298,6 +380,7 @@ onMount(() => {
         .catch(() => undefined);
     }
   }, 2000);
+  return () => window.removeEventListener("keydown", onKey);
 });
 
 onDestroy(() => {
@@ -308,159 +391,302 @@ onDestroy(() => {
 });
 </script>
 
-<section class="atlas-panel" aria-label="Render Atlas Map">
-  <header>
-    <strong>Render Atlas Map</strong>
-    <button type="button" onclick={() => onclose?.()}>Close</button>
-  </header>
-  {#if previewUrl}
-    <img src={previewUrl} alt="Atlas preview" />
-  {:else}
-    <div class="preview-empty">{busyPreview ? "Rendering preview…" : "Preview will appear here"}</div>
-  {/if}
-  {#if previewJob}
-    <p class="status" role="status">
-      Preview · {previewJob.stage} · {previewJob.completed}/{previewJob.total}
+<div class="atlas-modal" role="dialog" aria-modal="true" aria-label="Export atlas">
+  <button type="button" class="atlas-backdrop" aria-label="Close export" onclick={() => onclose?.()}></button>
+  <section class="atlas-panel">
+    <header>
+      <div>
+        <span>ATLAS EXPORT</span>
+        <strong>Render atlas map</strong>
+      </div>
+      <button type="button" onclick={() => onclose?.()}>Close</button>
+    </header>
+    <div class="preview-frame">
+      {#if previewUrl}
+        <img src={previewUrl} alt="Atlas preview" />
+      {:else}
+        <div class="preview-empty">Preview will appear here</div>
+      {/if}
+      {#if busyPreview || (previewJob && previewJob.state !== "ready-to-save" && previewJob.state !== "failed" && previewJob.state !== "cancelled")}
+        <div class="map-busy" role="status">
+          <strong>{previewJob?.stage ?? "Rendering preview…"}</strong>
+          {#if previewJob}<span>{previewJob.completed} / {previewJob.total}</span>{/if}
+        </div>
+      {/if}
+    </div>
+    <p class="preview-note">
+      Rivers include atlas-only minor tributaries. They are not canonical geography and are never promoted automatically.
     </p>
-  {/if}
-  <label>
-    World time
-    <input
-      type="range"
-      min="-100000"
-      max="100000"
-      step="1"
-      bind:value={offsetYears}
-      oninput={() => schedulePreview()} />
-    <output>{formatEpoch(offsetYears)}</output>
-  </label>
-  {#if capabilities?.timeModes.includes("calendar-year")}
-    <label>
-      Time mode
-      <select bind:value={timeKind} onchange={() => schedulePreview()}>
-        <option value="physical-offset-year">Physical offset</option>
-        <option value="calendar-year">Authored year</option>
-      </select>
-    </label>
-    {#if timeKind === "calendar-year"}
+    <div class="epoch-control" aria-label="World epoch">
+      <input
+        type="range"
+        min={EPOCH_MIN}
+        max={EPOCH_MAX}
+        step={EPOCH_STEP}
+        value={offsetYears}
+        aria-label="Epoch offset"
+        oninput={(event) => setOffsetYears(clampEpoch(Number(event.currentTarget.value), EPOCH_STEP))} />
+      <input
+        class="epoch-year"
+        type="text"
+        inputmode="numeric"
+        autocomplete="off"
+        spellcheck="false"
+        value={Math.abs(offsetYears).toLocaleString("en-US")}
+        aria-label="Years from epoch"
+        onchange={(event) => setOffsetYearsAbs(event.currentTarget.value)} />
+      <span>{formatEpoch(offsetYears)}</span>
+    </div>
+    {#if capabilities?.timeModes.includes("calendar-year")}
       <label>
-        Authored year
-        <input type="number" bind:value={authoredYear} oninput={() => schedulePreview()} />
+        Time mode
+        <select bind:value={timeKind} onchange={() => schedulePreview()}>
+          <option value="physical-offset-year">Physical offset</option>
+          <option value="calendar-year">Authored year</option>
+        </select>
+      </label>
+      {#if timeKind === "calendar-year"}
+        <label>
+          Authored year
+          <input type="number" bind:value={authoredYear} oninput={() => schedulePreview()} />
+        </label>
+      {/if}
+    {/if}
+    {#if (capabilities?.presets.length ?? 0) > 0}
+      <label>
+        Preset
+        <select onchange={(event) => void applyPreset(event.currentTarget.value)}>
+          <option value="">Apply a saved preset</option>
+          {#each capabilities?.presets ?? [] as preset}
+            <option value={preset.id}>{preset.name}</option>
+          {/each}
+        </select>
       </label>
     {/if}
-  {/if}
-  {#if (capabilities?.presets.length ?? 0) > 0}
-    <label>
-      Preset
-      <select onchange={(event) => void applyPreset(event.currentTarget.value)}>
-        <option value="">Apply a saved preset</option>
-        {#each capabilities?.presets ?? [] as preset}
-          <option value={preset.id}>{preset.name}</option>
-        {/each}
-      </select>
-    </label>
-  {/if}
-  <label>
-    Style
-    <select bind:value={styleId} onchange={() => schedulePreview()}>
-      {#each capabilities?.styles ?? [] as id}
-        <option value={id}>{styleLabel(id)}</option>
-      {/each}
-    </select>
-  </label>
-  <fieldset>
-    <legend>Layers</legend>
-    {#each layers as layer, index}
+    <div class="style-row">
       <label>
-        <input
-          type="checkbox"
-          checked={layer.enabled}
-          onchange={(event) => {
-            layers[index].enabled = event.currentTarget.checked;
+        Style
+        <select bind:value={styleId} onchange={() => schedulePreview()}>
+          {#each capabilities?.styles ?? [] as id}
+            <option value={id}>{styleLabel(id)}</option>
+          {/each}
+        </select>
+      </label>
+      <input bind:value={presetName} aria-label="Preset name" placeholder="Preset name" />
+      <button type="button" onclick={() => void savePreset()}>Save preset</button>
+    </div>
+    <div class="layer-toggles" role="group" aria-label="Atlas layers">
+      {#each layers as layer, index}
+        <button
+          class="layer-toggle"
+          type="button"
+          aria-pressed={layer.enabled}
+          onclick={() => {
+            layers[index].enabled = !layer.enabled;
             layers = layers;
             schedulePreview();
-          }} />
-        {layer.name}
-      </label>
-    {/each}
-    <p>
-      Rivers include atlas-only minor tributaries. They are not canonical geography and are never promoted
-      automatically.
-    </p>
-  </fieldset>
-  <label>
-    Size
-    <select
-      onchange={(event) => {
-        const preset = PRESETS[Number(event.currentTarget.value)];
-        if (!preset) return;
-        widthPx = preset.width;
-        heightPx = preset.height;
-      }}>
-      {#each PRESETS as preset, index}
-        <option value={index} selected={preset.width === widthPx}
-          >{preset.label} ({preset.width}×{preset.height})</option>
+          }}>{layer.name}</button>
       {/each}
-    </select>
-  </label>
-  <label>
-    DPI metadata
-    <input type="number" min="72" max="2400" bind:value={dpi} />
-    <small>{(widthPx / dpi).toFixed(2)} × {(heightPx / dpi).toFixed(2)} in</small>
-  </label>
-  {#if exportJob}
-    <p class="status" role="status">Export · {exportJob.state} · {exportJob.stage}</p>
-  {/if}
-  {#if notice}<p class="notice">{notice}</p>{/if}
-  <div class="actions">
-    <button type="button" class="primary" onclick={() => void runExport()}>Render</button>
-    <button type="button" onclick={() => void cancel(exportJob ?? previewJob)}>Cancel render</button>
-    <button type="button" disabled={exportJob?.state !== "ready-to-save"} onclick={() => void saveExport()}
-      >Save</button>
-    <input bind:value={presetName} aria-label="Preset name" />
-    <button type="button" onclick={() => void savePreset()}>Save preset</button>
-    <button type="button" onclick={() => onclose?.()}>Close</button>
-  </div>
-</section>
+    </div>
+    <div class="output-row">
+      <label>
+        Export size
+        <select
+          onchange={(event) => {
+            const preset = PRESETS[Number(event.currentTarget.value)];
+            if (!preset) return;
+            widthPx = preset.width;
+            heightPx = preset.height;
+          }}>
+          {#each PRESETS as preset, index}
+            <option value={index} selected={preset.width === widthPx}
+              >{preset.label} ({preset.width}×{preset.height})</option>
+          {/each}
+        </select>
+      </label>
+      <label>
+        DPI metadata
+        <input type="number" min="72" max="2400" bind:value={dpi} />
+        <small>{(widthPx / dpi).toFixed(2)} × {(heightPx / dpi).toFixed(2)} in</small>
+      </label>
+    </div>
+    {#if exportJob}
+      <p class="status" role="status">Export · {exportJob.state} · {exportJob.stage}</p>
+    {/if}
+    {#if notice}<p class="notice">{notice}</p>{/if}
+    <div class="actions">
+      <button type="button" class="primary" disabled={exportBusy()} onclick={() => void runExport()}>Render</button>
+      <button type="button" onclick={() => void cancel(exportJob ?? previewJob)}>Cancel render</button>
+      <button type="button" disabled={exportJob?.state !== "ready-to-save"} onclick={() => void saveExport()}
+        >Save</button>
+    </div>
+  </section>
+</div>
 
 <style>
+.atlas-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+}
+.atlas-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  border-radius: 0;
+  background: rgb(8 14 12 / 62%);
+  cursor: pointer;
+}
 .atlas-panel {
+  position: relative;
+  z-index: 1;
   display: grid;
   gap: 10px;
+  width: min(52rem, 100%);
+  max-height: calc(100vh - 3rem);
+  overflow: auto;
   padding: 12px 16px;
-  border-bottom: 1px solid #405047;
+  border: 1px solid #405047;
+  border-radius: 12px;
   background: #1b2822;
   color: #edf2ec;
   font: 13px/1.4 system-ui;
+  box-shadow: 0 16px 48px rgb(0 0 0 / 45%);
 }
 header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  gap: 12px;
+}
+header div {
+  display: grid;
+  gap: 2px;
+}
+header span {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: #b8c8bc;
+}
+.preview-frame {
+  position: relative;
+  height: 320px;
+  background: #101814;
+  border-radius: 8px;
+  overflow: hidden;
 }
 img,
 .preview-empty {
   width: 100%;
-  max-height: 280px;
+  height: 100%;
   object-fit: contain;
-  background: #101814;
-  border-radius: 8px;
 }
 .preview-empty {
-  min-height: 120px;
   display: grid;
   place-items: center;
   color: #b8c8bc;
 }
-label,
-fieldset {
+.preview-note {
+  margin: 0;
+  color: #aebdb1;
+  font-size: 12px;
+}
+.map-busy {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 0.3rem;
+  pointer-events: none;
+  color: #f7f0e5;
+  text-align: center;
+  text-shadow: 0 1px 8px rgb(0 0 0 / 75%);
+}
+.map-busy strong {
+  font: 600 1.05rem/1.3 inherit;
+}
+.map-busy span {
+  color: #d9d0c3;
+  font-size: 0.8rem;
+}
+.epoch-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+.epoch-control input[type="range"] {
+  width: 140px;
+  accent-color: #d5ab6c;
+}
+.epoch-year {
+  width: 5.4em;
+  border: 1px solid #405047;
+  border-radius: 6px;
+  padding: 4px 5px;
+  background: #0f1a16;
+  color: #edf2ec;
+  font: 12px system-ui;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.style-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+}
+.output-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: start;
+  gap: 8px;
+}
+.style-row label,
+.output-row label {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+.output-row select,
+.output-row input[type="number"] {
+  box-sizing: border-box;
+  height: 2.25rem;
+  border: 1px solid #405047;
+  border-radius: 6px;
+  padding: 0 8px;
+  background: #0f1a16;
+  color: #edf2ec;
+  font: 12px system-ui;
+}
+.output-row small {
+  color: #aebdb1;
+}
+.style-row input {
+  min-width: 10rem;
+  border: 1px solid #405047;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #0f1a16;
+  color: #edf2ec;
+  font: 12px system-ui;
+}
+.layer-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.8rem;
+}
+label {
   display: grid;
   gap: 4px;
 }
-fieldset {
-  border: 1px solid #405047;
-  border-radius: 8px;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+label select,
+label input[type="number"] {
+  min-width: 0;
+  width: 100%;
 }
 .actions {
   display: flex;
@@ -475,6 +701,23 @@ button {
   color: #edf2ec;
   font: 700 12px system-ui;
   cursor: pointer;
+}
+.layer-toggle {
+  padding: 0.3rem 0.65rem;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 6%);
+  color: #d9d0c3;
+  font-weight: 600;
+}
+.layer-toggle:hover {
+  border-color: rgb(255 255 255 / 28%);
+  background: rgb(255 255 255 / 10%);
+}
+.layer-toggle[aria-pressed="true"] {
+  border-color: #c9a96e;
+  background: #c9a96e;
+  color: #0d1b2a;
 }
 button.primary,
 button:disabled {

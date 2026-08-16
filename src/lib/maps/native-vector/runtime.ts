@@ -69,6 +69,7 @@ export type NativeVectorEditor = {
   setBackgroundVisible: (visible: boolean) => void;
   applyView: (center: [number, number], zoom: number) => void;
   setZoom: (zoom: number) => void;
+  panBy: (longitudeDegrees: number, latitudeDegrees: number) => void;
   resetView: () => void;
   flush: () => void;
   deleteSelection: () => void;
@@ -202,11 +203,13 @@ export function createNativeVectorEditor(
       container,
       style,
       center: session.initialView?.center ?? (globe ? [0, 0] : [longitude, latitude]),
-      zoom: session.initialView?.zoom ?? (globe ? Math.min(session.zoom, 1.25) : session.zoom),
+      zoom: session.initialView?.zoom ?? (globe ? 0 : session.zoom),
       bearing: session.initialView?.bearing ?? 0,
       pitch: session.initialView?.pitch ?? 0,
-      renderWorldCopies: false,
+      renderWorldCopies: globe,
       attributionControl: false,
+      minZoom: globe ? 0 : undefined,
+      maxZoom: globe ? 8 : undefined,
       maxPitch: globe ? 85 : 0,
       pitchWithRotate: globe,
       fadeDuration: 0,
@@ -327,11 +330,39 @@ export function createNativeVectorEditor(
     applyBackground();
   };
 
-  const emitView = () => {
+  const wrapLon = (value: number) => ((((value + 180) % 360) + 360) % 360) - 180;
+  const clampLat = (value: number) => Math.max(-85, Math.min(85, value));
+  let lookAt = {
+    lng: session.initialView?.center[0] ?? (globe ? 0 : longitude),
+    lat: session.initialView?.center[1] ?? (globe ? 0 : latitude),
+  };
+  let applyingLookAt = false;
+
+  const applyLookAt = (zoom = map.getZoom()) => {
     if (disposed) return;
-    const center = map.getCenter();
+    applyingLookAt = true;
+    map.jumpTo({
+      center: [lookAt.lng, lookAt.lat],
+      zoom,
+      bearing: map.getBearing(),
+      pitch: map.getPitch(),
+    });
+    map.setCenter([lookAt.lng, lookAt.lat]);
+    applyingLookAt = false;
     session.onViewChange?.({
-      center: [center.lng, center.lat],
+      center: [lookAt.lng, lookAt.lat],
+      zoom: map.getZoom(),
+      bearing: map.getBearing(),
+      pitch: map.getPitch(),
+    });
+  };
+
+  const emitView = () => {
+    if (disposed || applyingLookAt) return;
+    const center = map.getCenter();
+    lookAt = { lng: wrapLon(center.lng), lat: clampLat(center.lat) };
+    session.onViewChange?.({
+      center: [lookAt.lng, lookAt.lat],
       zoom: map.getZoom(),
       bearing: map.getBearing(),
       pitch: map.getPitch(),
@@ -350,7 +381,7 @@ export function createNativeVectorEditor(
       return;
     }
     if (session.projection === "globe") {
-      map.jumpTo({ center: [0, 0], zoom: 1.25, pitch: 0, bearing: 0 });
+      map.jumpTo({ center: [0, 0], zoom: 0, pitch: 0, bearing: 0 });
       return;
     }
     if (currentBackground) {
@@ -654,10 +685,18 @@ export function createNativeVectorEditor(
     },
     applyView(center, zoom) {
       const [lon, lat] = normalizedToLonLat(center[0], center[1]);
-      map.jumpTo({ center: [lon, lat], zoom });
+      lookAt = { lng: lon, lat: lat };
+      applyLookAt(zoom);
     },
     setZoom(zoom) {
-      map.jumpTo({ zoom });
+      applyLookAt(zoom);
+    },
+    panBy(longitudeDegrees, latitudeDegrees) {
+      lookAt = {
+        lng: wrapLon(lookAt.lng + longitudeDegrees),
+        lat: clampLat(lookAt.lat + latitudeDegrees),
+      };
+      applyLookAt();
     },
     resetView() {
       fitContent();

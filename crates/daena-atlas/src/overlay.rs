@@ -368,6 +368,27 @@ pub struct OverlayHit {
     pub derived: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AtlasSurfaceSample {
+    pub lon_micro: i32,
+    pub lat_micro: i32,
+    pub elevation_mm: i32,
+    pub water_surface_mm: i32,
+    pub temperature_centi_c: i32,
+    pub precipitation_mm: i32,
+    pub climate: String,
+    pub surface: String,
+    pub ice_thickness_mm: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AtlasInspectResult {
+    pub hits: Vec<OverlayHit>,
+    pub surface: AtlasSurfaceSample,
+}
+
 pub fn hit_test_features(
     overlays: &[AuthoredFeature],
     lon_micro: i32,

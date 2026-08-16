@@ -309,7 +309,7 @@ pub fn capabilities_for_descriptor(descriptor: &Value, layers: &Value) -> AtlasR
                         }
                     }
                     if let Some(name) = layer.get("name").and_then(Value::as_str) {
-                        if role == id {
+                        if role == id || (role == "coastlines" && id == "islands") {
                             choice.name = name.to_string();
                         }
                     }
@@ -360,11 +360,11 @@ fn role_name(role: &str) -> String {
     match role {
         "ocean" => "Ocean".into(),
         "relief" => "Relief".into(),
-        "ice" => "Land ice".into(),
+        "ice" => "Ice".into(),
         "lakes" => "Lakes".into(),
         "rivers" => "Rivers".into(),
-        "coastlines" => "Coastlines".into(),
-        "contours" => "Contours".into(),
+        "coastlines" => "Islands".into(),
+        "contours" => "Bathymetric contours".into(),
         "graticule" => "Graticule".into(),
         "frame" => "Frame".into(),
         "labels" => "Labels".into(),

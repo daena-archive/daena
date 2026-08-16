@@ -71,7 +71,7 @@ let {
 } = $props();
 
 let host = $state<HTMLDivElement | null>(null);
-let editor: NativeVectorEditor | null = null;
+let editor = $state.raw<NativeVectorEditor | null>(null);
 let draft = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let loaded = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let layers = $state<VectorLayerDefinition[]>([]);
@@ -119,6 +119,13 @@ let atlasSupported = $state(false);
 let studioOpen = $state(false);
 let studioSupported = $state(false);
 let studioExport = $state<AtlasRenderRequest | null>(null);
+let studioStage = $state("");
+let studioApi = $state<{
+  refresh: () => void;
+  requestRegenerate: () => void;
+  toggleHelp: () => void;
+  exportView: () => AtlasRenderRequest | null;
+} | null>(null);
 let layersCollapsed = $state(false);
 let historyCollapsed = $state(true);
 let epochEra = $state<"past" | "future">("past");
@@ -488,7 +495,6 @@ async function load() {
     atlasSupported = false;
     atlasOpen = false;
     studioSupported = false;
-    studioOpen = false;
     try {
       const capabilities = await project.atlasCapabilities(mapId);
       atlasSupported = capabilities.supported;
@@ -497,6 +503,7 @@ async function load() {
       atlasSupported = false;
       studioSupported = false;
     }
+    studioOpen = studioSupported;
     if (descriptor?.defaultView?.center) defaultView = { ...defaultView, center: descriptor.defaultView.center };
     if (typeof descriptor?.defaultView?.zoom === "number")
       defaultView = { ...defaultView, zoom: descriptor.defaultView.zoom };
@@ -899,8 +906,9 @@ onMount(() => {
   <section class="native-vector-editor" aria-label="Native vector map editor">
     <header>
       <div>
-        <span>{physicalMap ? "PHYSICAL WORLD" : "VECTOR MAP"}</span>
-        {#if !physicalMap && dirty}<strong>Unsaved changes</strong>{/if}
+        <span>{studioOpen ? "ATLAS STUDIO" : physicalMap ? "PHYSICAL WORLD" : "VECTOR MAP"}</span>
+        {#if studioOpen && studioStage}<strong>{studioStage}</strong>
+        {:else if !physicalMap && dirty}<strong>Unsaved changes</strong>{/if}
       </div>
       <div
         class="header-actions"
@@ -978,6 +986,13 @@ onMount(() => {
             disabled={busy || !dirty}
             onclick={() => void save()}>{@render glyph(icons.save)}</button>
         {/if}
+        {#if studioOpen}
+          <button type="button" class="text-button" onclick={() => (studioOpen = false)}>Open Physical Map</button>
+          <button type="button" class="text-button" onclick={() => studioApi?.refresh()}>Refresh Atlas</button>
+          <button type="button" class="text-button" onclick={() => studioApi?.requestRegenerate()}
+            >Regenerate cache</button>
+          <button type="button" class="text-button" onclick={() => studioApi?.toggleHelp()}>Keyboard help</button>
+        {/if}
         {#if atlasSupported}
           <button
             type="button"
@@ -986,7 +1001,13 @@ onMount(() => {
             aria-pressed={atlasOpen}
             aria-label="Export atlas"
             title="Export atlas"
-            onclick={() => (atlasOpen = !atlasOpen)}>{@render glyph(icons.exportAtlas)}</button>
+            onclick={() => {
+              if (studioOpen) {
+                const request = studioApi?.exportView();
+                if (request) studioExport = request;
+              }
+              atlasOpen = !atlasOpen;
+            }}>{@render glyph(icons.exportAtlas)}</button>
         {/if}
         <button
           type="button"
@@ -1016,9 +1037,15 @@ onMount(() => {
       <p class="hint" role="status">{notice}</p>
     {/if}
     {#if atlasOpen && mapId}
-      <AtlasRenderPanel {mapId} {epochOffsetYears} seed={studioExport} onclose={() => (atlasOpen = false)} />
+      <AtlasRenderPanel
+        {mapId}
+        {epochOffsetYears}
+        viewerLayers={layers}
+        seed={studioExport}
+        onclose={() => (atlasOpen = false)} />
     {/if}
-    <div class="editor-body" style={`--sidebar-width: ${sidebarWidth}px`}>
+    <div class="editor-body" class:studio={studioOpen} style={`--sidebar-width: ${sidebarWidth}px`}>
+      {#if !studioOpen}
       <aside aria-label="Map layers">
         {#if studioSupported}
           <button
@@ -1026,7 +1053,7 @@ onMount(() => {
             class="studio-open"
             class:active={studioOpen}
             aria-pressed={studioOpen}
-            onclick={() => (studioOpen = !studioOpen)}>{studioOpen ? "Close Atlas Studio" : "Atlas Studio"}</button>
+            onclick={() => (studioOpen = !studioOpen)}>Atlas Studio</button>
         {/if}
         <button
           type="button"
@@ -1264,6 +1291,7 @@ onMount(() => {
         aria-label="Resize sidebar"
         title="Drag to resize"
         onpointerdown={startSidebarResize}></button>
+      {/if}
       {#if physicalMap && !studioOpen}
         <div class="canvas" role="img" aria-label="Physical world map">
           <PhysicalWorldView collection={draft} {layers} raster={background?.canvas ?? null} />
@@ -1309,6 +1337,9 @@ onMount(() => {
         <div class="canvas" role="img" aria-label="Atlas Studio">
           <AtlasStudioView
             {mapId}
+            viewerLayers={layers}
+            bind:stage={studioStage}
+            onready={(api) => (studioApi = api)}
             onexport={(request) => {
               studioExport = request;
               atlasOpen = true;
@@ -1329,8 +1360,7 @@ onMount(() => {
               onzoom={(zoom) => {
                 defaultView = { ...defaultView, zoom };
                 editor?.setZoom(zoom);
-              }}
-              onreset={() => editor?.resetView()} />
+              }} />
           {/if}
           {#if busy}
             <div class="map-busy" role="status"><strong>Loading…</strong></div>
@@ -1427,6 +1457,9 @@ button:disabled {
   flex: 1 1 auto;
   grid-template-columns: var(--sidebar-width, 260px) 6px minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
+}
+.editor-body.studio {
+  grid-template-columns: minmax(0, 1fr);
 }
 .sidebar-resizer {
   width: 6px;

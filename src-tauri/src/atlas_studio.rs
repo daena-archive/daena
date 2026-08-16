@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use daena_atlas::cache::AtlasDiskCache;
-use daena_atlas::overlay::{hit_test_features, AuthoredFeature, OverlayHit};
+use daena_atlas::overlay::{hit_test_features, AtlasInspectResult, AuthoredFeature};
 use daena_atlas::studio::{
     render_studio_tile_with_overlays, tile_count, AtlasStudioSceneRequestV1,
     AtlasStudioTileRequestV1, CODE_STUDIO_CANCELLED, CODE_STUDIO_EXPIRED,
@@ -716,7 +716,7 @@ pub struct AtlasStudioInspectInput {
 pub async fn project_atlas_studio_inspect(
     studio: tauri::State<'_, Arc<Mutex<AtlasStudioManager>>>,
     input: AtlasStudioInspectInput,
-) -> Result<Vec<OverlayHit>, String> {
+) -> Result<AtlasInspectResult, String> {
     let mut manager = studio
         .lock()
         .map_err(|_| "atlas studio state is unavailable".to_string())?;
@@ -753,13 +753,12 @@ pub async fn project_atlas_studio_inspect(
             }
         }
     }
-    Ok(hit_test_features(
-        &features,
-        input.lon_micro,
-        input.lat_micro,
-        radius,
-        32,
-    ))
+    Ok(AtlasInspectResult {
+        hits: hit_test_features(&features, input.lon_micro, input.lat_micro, radius, 32),
+        surface: session
+            .prepared
+            .sample_surface(input.lon_micro, input.lat_micro),
+    })
 }
 
 #[cfg(test)]

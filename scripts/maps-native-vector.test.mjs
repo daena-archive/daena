@@ -62,7 +62,7 @@ for (const required of [
   "maplibre-gl/dist/maplibre-gl-csp.js",
   "maplibre-gl/dist/maplibre-gl-csp-worker.js?url",
   "setWorkerUrl",
-  "renderWorldCopies: false",
+  "renderWorldCopies: globe",
   "style.load",
   "TerraDrawPointMode",
   "TerraDrawLineStringMode",

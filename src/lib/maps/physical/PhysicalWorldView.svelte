@@ -52,7 +52,7 @@ $effect(() => {
       },
       activeLayerId: null,
       center: [0.5, 0.5],
-      zoom: 1,
+      zoom: 0,
       setDraft() {},
       setActiveLayerId() {},
       onDiagnostic(code, detail) {
@@ -99,9 +99,11 @@ $effect(() => {
   {#if notice}<p class="map-reconcile-notice" role="alert">{notice}</p>{/if}
   <div class="viewport" bind:this={host} role="img" aria-label="Physical world map"></div>
   <MapViewControls
-    zoom={view?.zoom ?? 1.25}
+    zoom={view?.zoom ?? 0}
+    min={0}
+    max={8}
     onzoom={(zoom) => editor?.setZoom(zoom)}
-    onreset={() => editor?.resetView()} />
+    onpan={(longitude, latitude) => editor?.panBy(longitude, latitude)} />
 </div>
 
 <style>

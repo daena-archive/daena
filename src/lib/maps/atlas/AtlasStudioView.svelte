@@ -13,23 +13,52 @@ import {
   type AtlasStudioInspectHit,
   type AtlasStudioProgress,
   type AtlasStudioSessionStatus,
+  type AtlasStudioSurfaceSample,
 } from "$lib/project/client";
+import type { VectorLayerDefinition } from "../native-vector/types";
+import MapViewControls from "../native-vector/MapViewControls.svelte";
 
 if (typeof maplibregl.setWorkerUrl === "function") maplibregl.setWorkerUrl(workerUrl);
 if (typeof maplibregl.setMaxParallelImageRequests === "function") maplibregl.setMaxParallelImageRequests(8);
 
+const EPOCH_MIN = -100_000;
+const EPOCH_MAX = 100_000;
+const EPOCH_STEP = 10;
+const VIEWER_ROLE_ALIASES: Record<string, string[]> = {
+  ocean: ["ocean"],
+  ice: ["ice"],
+  lakes: ["lakes"],
+  rivers: ["rivers"],
+  coastlines: ["islands", "coastlines"],
+  contours: ["bathymetric-contours", "contours"],
+  "tectonic-plates": ["tectonic-plates"],
+  "tectonic-boundaries": ["tectonic-boundaries"],
+  "volcanic-centers": ["volcanic-centers"],
+  watersheds: ["watersheds"],
+};
+
 let {
   mapId,
+  viewerLayers = [],
+  stage = $bindable("Opening Atlas Studio…"),
   onexport,
+  onready,
 }: {
   mapId: string;
+  viewerLayers?: Pick<VectorLayerDefinition, "id" | "name" | "defaultVisible">[];
+  stage?: string;
   onexport?: (request: AtlasRenderRequest) => void;
+  onready?: (api: {
+    refresh: () => void;
+    requestRegenerate: () => void;
+    toggleHelp: () => void;
+    exportView: () => AtlasRenderRequest | null;
+  }) => void;
 } = $props();
 
 let host = $state<HTMLDivElement | null>(null);
 let session = $state<AtlasStudioSessionStatus | null>(null);
 let capabilities = $state<AtlasRenderCapabilities | null>(null);
-let stage = $state("Opening Atlas Studio…");
 let error = $state("");
 let stale = $state("");
 let cursor = $state("—");
@@ -40,13 +69,19 @@ let timeKind = $state<"physical-offset-year" | "calendar-year">("physical-offset
 let authoredYear = $state(1);
 let layers = $state<Array<{ id: string; name: string; enabled: boolean }>>([]);
 let hits = $state<AtlasStudioInspectHit[]>([]);
+let surface = $state<AtlasStudioSurfaceSample | null>(null);
 let confirmCache = $state(false);
 let showHelp = $state(false);
+let viewZoom = $state(1);
+let worldMinZoom = $state(0);
 let unlisten: UnlistenFn | undefined;
 let map: MapLibreMap | null = null;
 let opening = false;
 let resizeObserver: ResizeObserver | undefined;
 let debounce: ReturnType<typeof setTimeout> | undefined;
+let inspectHover: ReturnType<typeof setTimeout> | undefined;
+let inspectSeq = 0;
+let syncingCopies = false;
 let statusTimer: ReturnType<typeof setInterval> | undefined;
 let prefetchTimer: ReturnType<typeof setTimeout> | undefined;
 let mountedControls = false;
@@ -57,9 +92,72 @@ function deviceScale() {
 }
 
 function formatEpoch(offset: number) {
-  if (offset === 0) return "Reference epoch";
-  if (offset < 0) return `${Math.abs(offset)} years before reference`;
-  return `${offset} years after reference`;
+  if (offset === 0) return "at epoch";
+  if (offset < 0) return "years before epoch";
+  return "years after epoch";
+}
+
+function parseEpochYears(raw: string) {
+  const digits = raw.replace(/[^\d]/g, "");
+  const value = digits ? Number(digits) : 0;
+  return Math.min(EPOCH_MAX, value);
+}
+
+function clampEpoch(offset: number, step = 1) {
+  const snapped = step > 1 ? Math.round(offset / step) * step : Math.round(offset);
+  return Math.min(EPOCH_MAX, Math.max(EPOCH_MIN, snapped));
+}
+
+function wrapLon(value: number) {
+  return ((((value + 180) % 360) + 360) % 360) - 180;
+}
+
+function fillWidthZoom(width: number, tileSize: number) {
+  return Math.max(0, Math.log2(Math.max(1, width) / Math.max(1, tileSize)));
+}
+
+function overviewZoom(width: number, tileSize: number) {
+  return Math.max(0, fillWidthZoom(width, tileSize) - 1);
+}
+
+function syncWorldCopies() {
+  if (!map || !host || !session || syncingCopies) return;
+  const worldPx = session.tileSize * 2 ** map.getZoom();
+  const center = map.getCenter();
+  const copies = worldPx >= host.clientWidth || Math.abs(center.lng) > 0.5;
+  if (map.getRenderWorldCopies() === copies) return;
+  syncingCopies = true;
+  try {
+    map.setRenderWorldCopies(copies);
+    map.setCenter(center);
+  } finally {
+    syncingCopies = false;
+  }
+}
+
+function applyWorldConstraints() {
+  const container = host;
+  const status = session;
+  worldMinZoom = 0;
+  map?.setMinZoom(0);
+  syncWorldCopies();
+  if (!container || !status) return 0;
+  return overviewZoom(container.clientWidth, status.tileSize);
+}
+
+function viewerLayerName(atlasLayerId: string): string | null {
+  const aliases = VIEWER_ROLE_ALIASES[atlasLayerId];
+  if (!aliases || viewerLayers.length === 0) return null;
+  const matched = viewerLayers.find((layer) => aliases.includes(layer.id));
+  return matched?.name ?? null;
+}
+
+function viewerLayerEnabled(atlasLayerId: string): boolean | null {
+  const aliases = VIEWER_ROLE_ALIASES[atlasLayerId];
+  if (!aliases || viewerLayers.length === 0) return null;
+  const matched = viewerLayers.filter((layer) => aliases.includes(layer.id));
+  if (matched.length === 0) return null;
+  return matched.some((layer) => layer.defaultVisible);
 }
 
 function prefersReducedMotion() {
@@ -199,11 +297,14 @@ async function loadCapabilities() {
   }
   layers = capabilities.layers
     .filter((layer) => layer.id !== "frame")
-    .map((layer) => ({
-      id: layer.id,
-      name: layer.name,
-      enabled: layer.defaultVisible && layer.id !== "frame",
-    }));
+    .map((layer) => {
+      const enabled = viewerLayerEnabled(layer.id);
+      return {
+        id: layer.id,
+        name: viewerLayerName(layer.id) ?? layer.name,
+        enabled: enabled ?? (layer.defaultVisible && layer.id !== "frame"),
+      };
+    });
 }
 
 async function openSession() {
@@ -229,7 +330,9 @@ async function openSession() {
     styleId = next.styleId;
     offsetYears = next.offsetYears;
     stage = "Mounting map…";
-    mountMap(next, keepCenter ? { center: [keepCenter.lng, keepCenter.lat], zoom: keepZoom ?? 1 } : undefined);
+    const overview = applyWorldConstraints();
+    const center: [number, number] = keepCenter ? [keepCenter.lng, keepCenter.lat] : [0, 20];
+    mountMap(next, { center, zoom: keepZoom ?? overview });
     queueMicrotask(() => map?.resize());
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
@@ -270,12 +373,13 @@ function mountMap(status: AtlasStudioSessionStatus, view?: { center: [number, nu
       container,
       style,
       center: view?.center ?? [0, 20],
-      zoom: view?.zoom ?? 1,
+      zoom: view?.zoom ?? applyWorldConstraints(),
       minZoom: 0,
       maxZoom: status.maxZoom,
       maxPitch: 0,
+      dragRotate: false,
       pitchWithRotate: false,
-      renderWorldCopies: true,
+      renderWorldCopies: false,
       attributionControl: false,
       fadeDuration: 0,
       keyboard: true,
@@ -294,19 +398,23 @@ function mountMap(status: AtlasStudioSessionStatus, view?: { center: [number, nu
   map.on("load", () => map?.resize());
   map.on("mousemove", (event) => {
     cursor = `${event.lngLat.lng.toFixed(4)}°, ${event.lngLat.lat.toFixed(4)}°`;
+    scheduleInspect(event.lngLat.lng, event.lngLat.lat);
   });
   map.on("click", (event) => {
+    if (inspectHover) clearTimeout(inspectHover);
     inspectAt(event.lngLat.lng, event.lngLat.lat);
+  });
+  map.on("move", () => {
+    if (!map || syncingCopies) return;
+    const zoom = map.getZoom();
+    if (viewZoom !== zoom) viewZoom = zoom;
+    syncWorldCopies();
   });
   map.on("moveend", () => schedulePrefetch(status));
   map.on("idle", () => {
-    loading = false;
-    stage = "Ready";
-    map?.resize();
+    if (loading) loading = false;
+    if (stage !== "Ready") stage = "Ready";
     schedulePrefetch(status);
-  });
-  map.on("dataloading", () => {
-    if (!error) loading = true;
   });
   map.on("error", (event) => {
     const message = event.error?.message ?? "";
@@ -317,7 +425,10 @@ function mountMap(status: AtlasStudioSessionStatus, view?: { center: [number, nu
     }
   });
   resizeObserver?.disconnect();
-  resizeObserver = new ResizeObserver(() => map?.resize());
+  resizeObserver = new ResizeObserver(() => {
+    applyWorldConstraints();
+    map?.resize();
+  });
   resizeObserver.observe(container);
 }
 
@@ -398,17 +509,81 @@ async function regenerate() {
   }
 }
 
+function setViewZoom(next: number) {
+  const zoom = Math.max(worldMinZoom, Math.min(session?.maxZoom ?? 8, next));
+  viewZoom = zoom;
+  if (!map) return;
+  const center = map.getCenter();
+  map.jumpTo({ center, zoom });
+  syncWorldCopies();
+}
+
+function shiftMap(longitudeDegrees: number, latitudeDegrees = 0) {
+  if (!map) return;
+  const reduced = prefersReducedMotion();
+  const center = [wrapLon(map.getCenter().lng + longitudeDegrees), Math.max(-85, Math.min(85, map.getCenter().lat + latitudeDegrees))] as [
+    number,
+    number,
+  ];
+  map.setRenderWorldCopies(true);
+  map.easeTo({
+    center,
+    zoom: map.getZoom(),
+    duration: reduced ? 0 : 250,
+    animate: !reduced,
+  });
+}
+
+function resetView() {
+  const zoom = applyWorldConstraints();
+  viewZoom = zoom;
+  map?.jumpTo({ center: [0, 20], zoom });
+}
+
+function titleCase(value: string) {
+  return value ? `${value[0].toUpperCase()}${value.slice(1)}` : value;
+}
+
+function formatMetres(mm: number) {
+  const metres = mm / 1000;
+  const abs = Math.abs(metres);
+  const text = abs >= 100 ? abs.toFixed(0) : abs.toFixed(1);
+  return `${metres < 0 ? "−" : ""}${text} m`;
+}
+
+function formatElevation(elevationMm: number, waterSurfaceMm: number, surface: string) {
+  const relative = elevationMm - waterSurfaceMm;
+  const height = formatMetres(relative);
+  if (surface === "ocean" || surface === "lake") {
+    return relative < 0 ? `${formatMetres(-relative)} below water` : `${height} at water`;
+  }
+  return `${height} above water`;
+}
+
+function formatTemperature(centiC: number) {
+  return `${(centiC / 100).toFixed(1)} °C`;
+}
+
 function inspectAt(lng: number, lat: number) {
   const token = session?.sessionToken;
   if (!token || !map) return;
+  const seq = ++inspectSeq;
   void project
     .atlasStudioInspect(token, toMicro(lng), toMicro(lat), Math.floor(map.getZoom()))
     .then((next) => {
-      hits = next;
+      if (seq !== inspectSeq) return;
+      hits = next.hits;
+      surface = next.surface;
     })
     .catch(() => {
+      if (seq !== inspectSeq) return;
       hits = [];
     });
+}
+
+function scheduleInspect(lng: number, lat: number) {
+  if (inspectHover) clearTimeout(inspectHover);
+  inspectHover = setTimeout(() => inspectAt(lng, lat), 120);
 }
 
 function onViewportKey(event: KeyboardEvent) {
@@ -429,7 +604,7 @@ function onViewportKey(event: KeyboardEvent) {
     map.zoomOut({ animate, duration: reduced ? 0 : 200 });
   } else if (event.key === "0" || event.key === "Home") {
     event.preventDefault();
-    map.jumpTo({ center: [0, 20], zoom: 1 });
+    map.jumpTo({ center: [0, 20], zoom: applyWorldConstraints() });
   } else if (event.key === "Enter") {
     event.preventDefault();
     const center = map.getCenter();
@@ -443,6 +618,16 @@ function onViewportKey(event: KeyboardEvent) {
       showHelp = !showHelp;
     }
   }
+}
+
+function setOffsetYears(next: number) {
+  offsetYears = clampEpoch(next, EPOCH_STEP);
+  scheduleSession();
+}
+
+function setOffsetYearsAbs(raw: string) {
+  const magnitude = parseEpochYears(raw);
+  setOffsetYears(offsetYears < 0 ? -magnitude : magnitude);
 }
 
 async function applyPreset(id: string) {
@@ -486,6 +671,16 @@ onMount(() => {
       })
       .catch(() => undefined);
   }, 2000);
+  onready?.({
+    refresh: () => void openSession(),
+    requestRegenerate: () => {
+      confirmCache = true;
+    },
+    toggleHelp: () => {
+      showHelp = !showHelp;
+    },
+    exportView: () => currentViewExport(),
+  });
   void loadCapabilities()
     .then(() => {
       mountedControls = true;
@@ -516,6 +711,7 @@ $effect(() => {
 onDestroy(() => {
   unlisten?.();
   if (debounce) clearTimeout(debounce);
+  if (inspectHover) clearTimeout(inspectHover);
   if (statusTimer) clearInterval(statusTimer);
   if (prefetchTimer) clearTimeout(prefetchTimer);
   resizeObserver?.disconnect();
@@ -529,25 +725,6 @@ onDestroy(() => {
 </script>
 
 <section class="studio" aria-label="Atlas Studio">
-  <a class="skip" href="#atlas-studio-map">Skip to map</a>
-  <header>
-    <div>
-      <strong>Atlas Studio</strong>
-      <span role="status">{error ? "Error" : loading ? stage : `${styleId} · ${formatEpoch(offsetYears)}`}</span>
-    </div>
-    <div class="actions">
-      <output aria-live="polite">{cursor}</output>
-      <button type="button" onclick={() => void openSession()}>Refresh Atlas</button>
-      <button type="button" onclick={() => (confirmCache = true)}>Regenerate cache</button>
-      <button
-        type="button"
-        onclick={() => {
-          const request = currentViewExport();
-          if (request) onexport?.(request);
-        }}>Export</button>
-      <button type="button" aria-expanded={showHelp} onclick={() => (showHelp = !showHelp)}>Keyboard help</button>
-    </div>
-  </header>
   <div class="body">
     <aside aria-label="Atlas Studio controls">
       {#if (capabilities?.presets.length ?? 0) > 0}
@@ -569,18 +746,28 @@ onDestroy(() => {
           {/each}
         </select>
       </label>
-      <label>
-        World time
+      <div class="epoch-control" aria-label="World epoch">
         <input
           type="range"
-          min="-100000"
-          max="100000"
-          step="1"
-          bind:value={offsetYears}
+          min={EPOCH_MIN}
+          max={EPOCH_MAX}
+          step={EPOCH_STEP}
+          value={offsetYears}
+          aria-label="Epoch offset"
           disabled={timeKind === "calendar-year"}
-          oninput={() => scheduleSession()} />
-        <output>{formatEpoch(offsetYears)}</output>
-      </label>
+          oninput={(event) => setOffsetYears(clampEpoch(Number(event.currentTarget.value), EPOCH_STEP))} />
+        <input
+          class="epoch-year"
+          type="text"
+          inputmode="numeric"
+          autocomplete="off"
+          spellcheck="false"
+          value={Math.abs(offsetYears).toLocaleString("en-US")}
+          aria-label="Years from epoch"
+          disabled={timeKind === "calendar-year"}
+          onchange={(event) => setOffsetYearsAbs(event.currentTarget.value)} />
+        <span>{formatEpoch(offsetYears)}</span>
+      </div>
       {#if capabilities?.timeModes.includes("calendar-year")}
         <label>
           Time mode
@@ -596,30 +783,57 @@ onDestroy(() => {
           </label>
         {/if}
       {/if}
-      <fieldset>
-        <legend>Layers</legend>
+      <div class="layer-toggles" role="group" aria-label="Atlas layers">
         {#each layers as layer, index}
-          <label>
-            <input
-              type="checkbox"
-              checked={layer.enabled}
-              onchange={(event) => {
-                layers[index].enabled = event.currentTarget.checked;
-                layers = layers;
-                scheduleSession();
-              }} />
-            {layer.name}
-          </label>
+          <button
+            class="layer-toggle"
+            type="button"
+            aria-pressed={layer.enabled}
+            onclick={() => {
+              layers[index].enabled = !layer.enabled;
+              layers = layers;
+              scheduleSession();
+            }}>{layer.name}</button>
         {/each}
-      </fieldset>
-      <section class="provenance" aria-label="Atlas provenance">
-        <strong>Provenance</strong>
-        <p>The Physical Map is canonical. Atlas geography is derived, deterministic, and disposable.</p>
-        <p>Released products: detail algorithm 6 · drainage 6 · renderer 11.</p>
-        <p>
-          Regenerate cache deletes only validated files under the project Atlas cache. Canonical maps, presets, and
-          checkpoints stay unchanged.
-        </p>
+      </div>
+      <section class="place" aria-label="Place" aria-live="polite">
+        <strong>Place</strong>
+        <dl>
+          <div>
+            <dt>Coordinates</dt>
+            <dd>{cursor}</dd>
+          </div>
+          {#if surface}
+            <div>
+              <dt>Elevation</dt>
+              <dd>{formatElevation(surface.elevationMm, surface.waterSurfaceMm, surface.surface)}</dd>
+            </div>
+            <div>
+              <dt>Temperature</dt>
+              <dd>{formatTemperature(surface.temperatureCentiC)}</dd>
+            </div>
+            <div>
+              <dt>Climate</dt>
+              <dd>{titleCase(surface.climate)}</dd>
+            </div>
+            <div>
+              <dt>Rainfall</dt>
+              <dd>{surface.precipitationMm.toLocaleString("en-US")} mm/year</dd>
+            </div>
+            <div>
+              <dt>Surface</dt>
+              <dd>{titleCase(surface.surface)}</dd>
+            </div>
+            {#if surface.iceThicknessMm > 0}
+              <div>
+                <dt>Ice</dt>
+                <dd>{formatMetres(surface.iceThicknessMm)}</dd>
+              </div>
+            {/if}
+          {:else}
+            <p>Move or click the map to sample this point.</p>
+          {/if}
+        </dl>
       </section>
       {#if confirmCache}
         <div class="confirm" role="alertdialog" aria-labelledby="atlas-cache-title" aria-describedby="atlas-cache-copy">
@@ -637,6 +851,7 @@ onDestroy(() => {
         <section class="help" aria-label="Keyboard shortcuts">
           <strong>Keyboard</strong>
           <ul>
+            <li>Drag or the pan pad to move the view</li>
             <li>Arrows pan (Shift for a larger step)</li>
             <li>+ / − zoom</li>
             <li>Home or 0 resets the view</li>
@@ -678,7 +893,9 @@ onDestroy(() => {
           <button type="button" onclick={() => void openSession()}>Refresh Atlas</button>
         </p>
       {:else if loading}
-        <p class="loading" role="status">{stage}</p>
+        <div class="map-busy" role="status">
+          <strong>{stage}</strong>
+        </div>
       {/if}
       <div
         class="viewport"
@@ -688,6 +905,12 @@ onDestroy(() => {
         aria-label="Atlas Studio map"
         aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown + - Home Enter Escape">
       </div>
+      <MapViewControls
+        zoom={viewZoom}
+        min={worldMinZoom}
+        max={session?.maxZoom ?? 8}
+        onzoom={setViewZoom}
+        onpan={shiftMap} />
     </div>
   </div>
 </section>
@@ -695,8 +918,7 @@ onDestroy(() => {
 <style>
 .studio {
   position: relative;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  display: flex;
   min-height: 0;
   width: 100%;
   height: 100%;
@@ -706,9 +928,10 @@ onDestroy(() => {
 }
 .body {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: 240px minmax(0, 1fr);
   min-height: 0;
   height: 100%;
+  width: 100%;
 }
 aside {
   display: grid;
@@ -720,14 +943,9 @@ aside {
   border-right: 1px solid #405047;
   font: 12px/1.4 system-ui;
 }
-aside label,
-aside fieldset {
+aside label {
   display: grid;
   gap: 4px;
-}
-aside fieldset {
-  border: 1px solid #405047;
-  border-radius: 8px;
 }
 aside select,
 aside input[type="number"] {
@@ -736,6 +954,75 @@ aside input[type="number"] {
   padding: 6px;
   background: #0f1a16;
   color: #edf2ec;
+}
+.epoch-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+.epoch-control input[type="range"],
+aside input[type="range"] {
+  width: 140px;
+  accent-color: #d5ab6c;
+}
+.epoch-year {
+  width: 5.4em;
+  border: 1px solid #405047;
+  border-radius: 6px;
+  padding: 4px 5px;
+  background: #0f1a16;
+  color: #edf2ec;
+  font: 12px system-ui;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.layer-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.8rem;
+}
+.layer-toggle {
+  padding: 0.3rem 0.65rem;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 6%);
+  color: #d9d0c3;
+  font-weight: 600;
+}
+.layer-toggle:hover {
+  border-color: rgb(255 255 255 / 28%);
+  background: rgb(255 255 255 / 10%);
+}
+.layer-toggle[aria-pressed="true"] {
+  border-color: #c9a96e;
+  background: #c9a96e;
+  color: #0d1b2a;
+}
+.place {
+  display: grid;
+  gap: 6px;
+}
+.place dl,
+.place p {
+  margin: 0;
+}
+.place div {
+  display: grid;
+  grid-template-columns: 7.2em minmax(0, 1fr);
+  gap: 6px 10px;
+  align-items: baseline;
+}
+.place dt {
+  color: #aebdb1;
+  font-weight: 500;
+}
+.place dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.place p {
+  color: #aebdb1;
 }
 .inspect p {
   margin: 0;
@@ -751,21 +1038,6 @@ aside input[type="number"] {
   min-height: 360px;
   height: 100%;
   background: #0d1b2a;
-}
-header {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 12px;
-  background: #1b2822;
-  border-bottom: 1px solid #405047;
-}
-header span,
-output {
-  display: block;
-  font: 12px/1.4 system-ui;
-  color: #b8c8bc;
 }
 .actions {
   display: flex;
@@ -793,7 +1065,6 @@ button {
   height: 100%;
 }
 .error,
-.loading,
 .stale {
   position: absolute;
   z-index: 1;
@@ -813,8 +1084,7 @@ button {
 .error {
   color: #f5a49c;
 }
-.stale,
-.loading {
+.stale {
   color: #d5ab6c;
 }
 .error code,
@@ -824,22 +1094,22 @@ button {
     monospace;
   color: #b8c8bc;
 }
-.skip {
+.map-busy {
   position: absolute;
-  left: 8px;
-  top: 8px;
   z-index: 3;
-  transform: translateY(-200%);
-  padding: 6px 10px;
-  background: #edf2ec;
-  color: #0f1a16;
-  font: 700 12px system-ui;
-  border-radius: 6px;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 0.3rem;
+  pointer-events: none;
+  color: #f7f0e5;
+  text-align: center;
+  text-shadow: 0 1px 8px rgb(0 0 0 / 75%);
 }
-.skip:focus {
-  transform: none;
+.map-busy strong {
+  font: 600 1.05rem/1.3 inherit;
 }
-.provenance,
 .help,
 .confirm {
   display: grid;
@@ -848,7 +1118,6 @@ button {
   border: 1px solid #405047;
   border-radius: 8px;
 }
-.provenance p,
 .help li,
 .confirm p {
   margin: 0;
@@ -858,8 +1127,10 @@ button {
   margin: 0;
   padding-left: 1.2em;
 }
+aside small {
+  color: #aebdb1;
+}
 button:focus-visible,
-a:focus-visible,
 select:focus-visible,
 input:focus-visible,
 .viewport:focus-visible {

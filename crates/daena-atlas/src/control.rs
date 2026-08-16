@@ -190,6 +190,29 @@ pub fn climate_class_at(ice: bool, temperature_centi_c: i32, precipitation_mm: u
     }
 }
 
+pub fn climate_class_name(class: i32) -> &'static str {
+    match class {
+        CLIMATE_CLASS_ICE => "ice",
+        CLIMATE_CLASS_TUNDRA => "tundra",
+        CLIMATE_CLASS_ARID => "arid",
+        CLIMATE_CLASS_GRASSLAND => "grassland",
+        CLIMATE_CLASS_FOREST => "forest",
+        _ => "grassland",
+    }
+}
+
+pub fn surface_kind(ice: bool, lake: bool, elevation_mm: i32, sea_level_mm: i32) -> &'static str {
+    if ice {
+        "ice"
+    } else if lake {
+        "lake"
+    } else if elevation_mm < sea_level_mm {
+        "ocean"
+    } else {
+        "land"
+    }
+}
+
 pub fn mountain_influence_ppm(tectonics: &TectonicWorld, elevations_mm: &[i32]) -> Vec<i32> {
     let count = tectonics.grid.sample_count();
     let mut influence = vec![0_i32; count];
@@ -338,5 +361,19 @@ mod tests {
             controls.sample_lake_mask(1_000, 1_000),
             controls.lake_mask[cell]
         );
+    }
+
+    #[test]
+    fn climate_and_surface_names_are_stable() {
+        assert_eq!(climate_class_name(CLIMATE_CLASS_ICE), "ice");
+        assert_eq!(climate_class_name(CLIMATE_CLASS_TUNDRA), "tundra");
+        assert_eq!(climate_class_name(CLIMATE_CLASS_ARID), "arid");
+        assert_eq!(climate_class_name(CLIMATE_CLASS_GRASSLAND), "grassland");
+        assert_eq!(climate_class_name(CLIMATE_CLASS_FOREST), "forest");
+        assert_eq!(surface_kind(true, true, 1_000, 0), "ice");
+        assert_eq!(surface_kind(false, true, -1_000, 0), "lake");
+        assert_eq!(surface_kind(false, false, -1_000, 0), "ocean");
+        assert_eq!(surface_kind(false, false, 1_000, 0), "land");
+        assert_eq!(surface_kind(false, false, 0, 0), "land");
     }
 }

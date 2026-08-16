@@ -5,7 +5,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
-const root = resolve(import.meta.dirname, "..");
+import { compile } from "svelte/compiler";
+
+function assertSvelteCompiles(relative) {
+  const filename = join(root, relative);
+  const source = readFileSync(filename, "utf8");
+  compile(source, { filename, css: "injected" });
+}
 const temp = mkdtempSync(join(tmpdir(), "daena-atlas-spike-"));
 const sourcePath = join(temp, "world.pworld");
 const previewPath = join(temp, "atlas-2048.png");
@@ -115,11 +121,20 @@ try {
   assert.equal(panel.includes("maplibre"), false);
   assert.equal(panel.includes("getCanvas"), false);
   assert.match(panel, /convertFileSrc/);
-  assert.match(panel, /seed\?:/);
+  assert.match(panel, /viewerLayers/);
+  assert.match(panel, /"id" \| "name" \| "defaultVisible"/);
+  assert.match(panel, /output-row/);
+  assert.match(panel, /PREVIEW_WIDTH = 1024/);
+  assert.match(panel, /PREVIEW_HEIGHT = 512/);
+  assert.equal(panel.includes("Preview 2K"), false);
+  assert.match(panel, /role="dialog"/);
+  assert.match(panel, /years before epoch/);
+  assert.match(panel, /ready-to-save/);
   const editor = readFileSync(join(root, "src/lib/maps/native-vector/NativeVectorMapEditor.svelte"), "utf8");
   assert.match(editor, /atlasCapabilities/);
   assert.match(editor, /supportsStudio/);
   assert.match(editor, /AtlasStudioView/);
+  assert.match(editor, /studioOpen = studioSupported/);
   assert.equal(/atlasSupported = descriptor\?\.provider/.test(editor), false);
   run(["test", "--manifest-path", "crates/daena-core/Cargo.toml", "--locked", "--offline", "maps::calendar"], {
     timeout: 120_000,
@@ -280,11 +295,23 @@ try {
     false,
   );
   const studioView = readFileSync(join(root, "src/lib/maps/atlas/AtlasStudioView.svelte"), "utf8");
+  assertSvelteCompiles("src/lib/maps/atlas/AtlasStudioView.svelte");
+  assertSvelteCompiles("src/lib/maps/atlas/AtlasRenderPanel.svelte");
+  assertSvelteCompiles("src/lib/maps/native-vector/NativeVectorMapEditor.svelte");
   assert.match(studioView, /maplibre-gl/);
   assert.match(studioView, /atlasStudioOpen/);
   assert.match(studioView, /setMaxParallelImageRequests|maxParallelImageRequests/);
   assert.match(studioView, /isTransientTileError/);
   assert.match(studioView, /atlasStudioInspect/);
+  assert.match(studioView, /scheduleInspect/);
+  assert.match(studioView, />Place</);
+  assert.match(studioView, /Elevation/);
+  assert.match(studioView, /formatElevation/);
+  assert.match(studioView, /waterSurfaceMm/);
+  assert.equal(studioView.includes("Provenance"), false);
+  assert.equal(studioView.includes("detail algorithm 6"), false);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /fn sample_surface/);
+  assert.match(readFileSync(join(root, "crates/daena-atlas/src/lib.rs"), "utf8"), /refined_at/);
   assert.match(studioView, /priority=prefetch/);
   assert.match(studioView, /calendar-year/);
   assert.equal(studioView.includes("getCanvas"), false);
@@ -297,13 +324,31 @@ try {
   assert.equal(studioView.includes("algorithmVersion: 5"), false);
   assert.equal(studioView.includes("tributary:v2"), false);
   assert.equal(studioView.includes("valley:v2"), false);
-  assert.match(studioView, /Skip to map/);
+  assert.match(studioView, /setRenderWorldCopies/);
+  assert.match(studioView, /getRenderWorldCopies/);
+  assert.match(studioView, /syncingCopies/);
+  assert.equal(studioView.includes('map.on("dataloading"'), false);
+  assert.match(studioView, /overviewZoom/);
   assert.match(studioView, /aria-keyshortcuts/);
   assert.match(studioView, /atlas\.studio\.stale/);
-  assert.match(studioView, /detail algorithm 6/);
   assert.match(studioView, /Regenerate disposable Atlas cache/);
   assert.match(studioView, /Atlas-only derived drainage/);
   assert.match(studioView, /currentViewExportHeight/);
+  assert.match(studioView, /layer-toggle/);
+  assert.match(studioView, /EPOCH_STEP/);
+  assert.match(studioView, /onpan=\{shiftMap\}/);
+  const viewControls = readFileSync(join(root, "src/lib/maps/native-vector/MapViewControls.svelte"), "utf8");
+  assert.match(viewControls, /Pan north/);
+  assert.match(viewControls, /Pan east/);
+  assert.match(viewControls, /Pan south/);
+  assert.match(viewControls, /Pan west/);
+  assert.match(viewControls, /Zoom in/);
+  assert.match(viewControls, /Zoom out/);
+  assert.equal(viewControls.includes('type="range"'), false);
+  assert.equal(viewControls.includes("Reset"), false);
+  assert.match(viewControls, /flex-direction: row/);
+  assert.equal(studioView.includes("Skip to map"), false);
+  assert.equal(studioView.includes("Map center"), false);
   const studioRelease = readFileSync(join(root, "docs/adr/0042-atlas-studio-iteration-5.md"), "utf8");
   assert.match(studioRelease, /release hardening/);
   assert.match(studioRelease, /current_view_export_request/);

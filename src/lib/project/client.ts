@@ -443,6 +443,21 @@ export interface AtlasStudioInspectHit {
   label: string | null;
   derived: boolean;
 }
+export interface AtlasStudioSurfaceSample {
+  lonMicro: number;
+  latMicro: number;
+  elevationMm: number;
+  waterSurfaceMm: number;
+  temperatureCentiC: number;
+  precipitationMm: number;
+  climate: string;
+  surface: string;
+  iceThicknessMm: number;
+}
+export interface AtlasStudioInspectResult {
+  hits: AtlasStudioInspectHit[];
+  surface: AtlasStudioSurfaceSample;
+}
 export interface PhysicalGenerationInput {
   seed: number;
   retryIndex: number;
@@ -991,7 +1006,7 @@ export const project = {
     invoke<AtlasStudioSessionStatus>("project_atlas_studio_status", { sessionToken }),
   atlasStudioRegenerateCache: () => invoke<{ deletedEntries: number }>("project_atlas_studio_regenerate_cache"),
   atlasStudioInspect: (sessionToken: string, lonMicro: number, latMicro: number, zoom: number) =>
-    invoke<AtlasStudioInspectHit[]>("project_atlas_studio_inspect", {
+    invoke<AtlasStudioInspectResult>("project_atlas_studio_inspect", {
       input: { sessionToken, lonMicro, latMicro, zoom },
     }),
   readAssetBytes: (assetId: string) => invoke<number[]>("project_read_asset_bytes", { assetId }),

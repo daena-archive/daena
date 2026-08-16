@@ -1,0 +1,1384 @@
+<script lang="ts">
+import { untrack } from "svelte";
+import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
+import type { LexemeValue } from "../lexeme";
+import type { Paradigm } from "../morphology";
+import type { Sample } from "../samples";
+import { sampleTitle } from "../samples";
+import {
+  GRAMMAR_SECTIONS,
+  applyStoredVersion,
+  configuredMinimum,
+  grammarGlance,
+  grammarStatusLabel,
+  grammarSystemDescriptor,
+  keepDraftAfterConflict,
+  openAgreementEditor,
+  openAgreementNotUsedEditor,
+  openCustomRuleEditor,
+  openSystemEditor,
+  searchGrammar,
+  sectionCardSummary,
+  setSystemStatus,
+  summarizeSystem,
+  systemsForSection,
+} from "../grammar.ts";
+import { GRAMMAR_STARTER_STEPS, nextStarterSystem, remainingStarterSystems } from "../grammar.ts";
+import { starterPosition, starterStepLabel } from "../grammar/starter";
+import { renderCustomRuleEditor } from "../grammar/rules";
+import { renderAgreementEditor, summarizeAgreement } from "../grammar/agreement";
+import { renderChoiceEditor } from "../grammar/choice";
+import { referencedCategoryIds, renderInventoryEditor } from "../grammar/inventory";
+import { renderStrategyEditor } from "../grammar/strategy";
+import { renderClauseEditor } from "../grammar/clause";
+import { renderParadigmEditor } from "../grammar/paradigm";
+import {
+  deleteGrammarEditor,
+  goHome,
+  goSection,
+  goSystem,
+  saveGrammarEditor,
+  tryLeaveGrammar,
+  type GrammarPaneContext,
+} from "../grammar/pane";
+import type {
+  GrammarAgreementRecord,
+  GrammarCustomRuleRecord,
+  GrammarEditSession,
+  GrammarLink,
+  GrammarSearchHit,
+  GrammarSectionId,
+  GrammarSectionStateRecord,
+  GrammarStatus,
+  GrammarSystemId,
+  GrammarSystemRecord,
+  GrammarUiState,
+  IndexedGrammar,
+} from "../grammar.ts";
+import type { ParadigmConfig } from "../grammar/types";
+
+let {
+  context,
+  selectedLanguage,
+  error,
+  paneLoading,
+  grammarUi,
+  records,
+  samples,
+  paradigms,
+}: {
+  context: ModuleContext;
+  selectedLanguage: EntitySummary | null;
+  error: string;
+  paneLoading: boolean;
+  grammarUi: GrammarUiState;
+  records: ModuleRecord<LexemeValue>[];
+  samples: ModuleRecord<Sample>[];
+  paradigms: ModuleRecord<Paradigm>[];
+} = $props();
+
+let root: HTMLDivElement | undefined = $state();
+let systemHost: HTMLDivElement | undefined = $state();
+let agreementHost: HTMLDivElement | undefined = $state();
+let customRuleHost: HTMLDivElement | undefined = $state();
+let hostTick = $state(0);
+
+const SYSTEM_STATUSES = ["unconfigured", "configured", "not-used"] as const satisfies readonly GrammarStatus[];
+
+type AgreementRecord = { id: string; revision: string; value: GrammarAgreementRecord };
+type CustomRuleRecord = { id: string; revision: string; value: GrammarCustomRuleRecord };
+
+const windowConfirm = (message: string) => window.confirm(message);
+
+const session = $derived(grammarUi.editing);
+const section = $derived(GRAMMAR_SECTIONS.find((item) => item.id === grammarUi.section));
+const hits = $derived(searchGrammar(grammarUi.query, grammarUi.index));
+const starterRemaining = $derived(remainingStarterSystems(grammarUi.index));
+const glanceRows = $derived(grammarGlance(grammarUi.index));
+const agreementRecords = $derived(
+  grammarUi.index.agreements.flatMap((item): AgreementRecord[] =>
+    item.value.recordKind === "agreement" ? [{ ...item, value: item.value }] : [],
+  ),
+);
+const customRules = $derived(
+  grammarUi.index.customRules.flatMap((item): CustomRuleRecord[] =>
+    item.value.recordKind === "custom-rule" ? [{ ...item, value: item.value }] : [],
+  ),
+);
+const unusedAgreementState = $derived.by(() => {
+  const loaded = grammarUi.index.sectionStates.get("agreement");
+  if (!loaded || loaded.value.recordKind !== "section-state") return undefined;
+  return { ...loaded, value: loaded.value } as { id: string; revision: string; value: GrammarSectionStateRecord };
+});
+
+const ctx: GrammarPaneContext = $derived({
+  languageName: selectedLanguage?.name,
+  ownerId: selectedLanguage?.id,
+  records: context.records,
+  confirm: windowConfirm,
+  render: () => {
+    hostTick += 1;
+  },
+  choices: {
+    lexemes: records.map((record) => ({ id: record.id, lemma: record.value.lemma })),
+    samples: samples.map((record) => ({ id: record.id, title: sampleTitle(record.value) })),
+    paradigms: paradigms.map((record) => ({ id: record.id, name: record.value.name })),
+    examples: records.flatMap((record) =>
+      record.value.senses.flatMap((sense) =>
+        sense.examples.map((example) => ({
+          lexemeId: record.id,
+          exampleId: example.id,
+          lemma: record.value.lemma,
+          text: example.text,
+        })),
+      ),
+    ),
+  },
+});
+
+const editorTitle = $derived.by(() => {
+  const current = session;
+  if (!current) return "Grammar";
+  const value = current.draft;
+  if (value.recordKind === "system") return grammarSystemDescriptor(value.systemId)?.label ?? "System";
+  if (value.recordKind === "agreement") return current.recordId ? value.title || "Agreement" : "New agreement system";
+  if (value.recordKind === "custom-rule") return current.recordId ? "Custom rule" : "New custom rule";
+  return "Agreement";
+});
+
+const stored = $derived.by(() => {
+  if (!session?.conflict || !session.recordId) return undefined;
+  return [
+    ...grammarUi.index.systems.values(),
+    ...grammarUi.index.customRules,
+    ...grammarUi.index.agreements,
+    ...grammarUi.index.sectionStates.values(),
+  ].find((item) => item.id === session.recordId);
+});
+
+let previousSession: GrammarEditSession | null = null;
+
+$effect(() => {
+  const current = grammarUi.editing;
+  const explicit = grammarUi.focusTarget;
+  const target = explicit ?? (current && current !== previousSession ? "#grammar-editor-heading" : undefined);
+  previousSession = current;
+  if (!target || !root) return;
+  untrack(() => {
+    grammarUi.focusTarget = undefined;
+  });
+  root.querySelector<HTMLElement>(target)?.focus();
+});
+
+$effect(() => {
+  const editing = grammarUi.editing;
+  const tick = hostTick;
+  const host = systemHost;
+  if (!editing || !host) return;
+  untrack(() => {
+    const draft = editing.draft;
+    if (draft.recordKind !== "system" || draft.status !== "configured") return;
+    const onChange = (next: GrammarSystemRecord, rerender: boolean) => {
+      if (editing.draft.recordKind !== "system") return;
+      editing.draft = next;
+      if (rerender) hostTick += 1;
+    };
+    let node: HTMLElement | null = renderChoiceEditor(draft, editing.locked, onChange);
+    if (!node) {
+      node = renderInventoryEditor(
+        draft,
+        editing.locked,
+        { referencedIds: referencedCategoryIds(grammarUi.index, draft.systemId), confirm: windowConfirm },
+        onChange,
+      );
+    }
+    if (!node) {
+      node = renderStrategyEditor(
+        draft,
+        editing.locked,
+        {
+          agreements: grammarUi.index.agreements.flatMap((item) =>
+            item.value.recordKind === "agreement" ? [{ id: item.id, title: item.value.title }] : [],
+          ),
+        },
+        onChange,
+      );
+    }
+    if (!node) {
+      const negativeVerb = grammarUi.index.systems.get("verbs.negative-forms")?.value;
+      const relativePosition = grammarUi.index.systems.get("syntax.relative-clause-position")?.value;
+      node = renderClauseEditor(
+        draft,
+        editing.locked,
+        {
+          lexemes: ctx.choices.lexemes,
+          negativeVerbSummary:
+            negativeVerb?.recordKind === "system" ? summarizeSystem("verbs.negative-forms", negativeVerb) : undefined,
+          relativePositionSummary:
+            relativePosition?.recordKind === "system"
+              ? summarizeSystem("syntax.relative-clause-position", relativePosition)
+              : undefined,
+        },
+        onChange,
+      );
+    }
+    if (!node) {
+      const personalPronouns = grammarUi.index.systems.get("pronouns.personal")?.value;
+      node = renderParadigmEditor(
+        draft,
+        editing.locked,
+        {
+          confirm: windowConfirm,
+          referencedIds: referencedCategoryIds(grammarUi.index, draft.systemId),
+          pronounAxes:
+            personalPronouns?.recordKind === "system" ? (personalPronouns.config as ParadigmConfig).axes : undefined,
+          agreements: grammarUi.index.agreements.flatMap((item) =>
+            item.value.recordKind === "agreement" ? [{ id: item.id, title: item.value.title }] : [],
+          ),
+        },
+        onChange,
+      );
+    }
+    if (node) host.replaceChildren(node);
+    else host.replaceChildren();
+  });
+});
+
+$effect(() => {
+  const editing = grammarUi.editing;
+  const tick = hostTick;
+  const host = agreementHost;
+  if (!editing || !host) return;
+  untrack(() => {
+    const draft = editing.draft;
+    if (draft.recordKind !== "agreement") return;
+    const node = renderAgreementEditor(draft, editing.locked, grammarUi.index, (next, rerender) => {
+      if (editing.draft.recordKind !== "agreement") return;
+      editing.draft = next;
+      if (rerender) hostTick += 1;
+    });
+    host.replaceChildren(node);
+  });
+});
+
+$effect(() => {
+  const editing = grammarUi.editing;
+  const tick = hostTick;
+  const host = customRuleHost;
+  if (!editing || !host) return;
+  untrack(() => {
+    const draft = editing.draft;
+    if (draft.recordKind !== "custom-rule") return;
+    const node = renderCustomRuleEditor(draft, editing.locked, (next, rerender) => {
+      if (editing.draft.recordKind !== "custom-rule") return;
+      editing.draft = next;
+      if (rerender) hostTick += 1;
+    });
+    host.replaceChildren(node);
+  });
+});
+
+function grammarFocusSelector(draftValue: GrammarEditSession["draft"], recordId?: string) {
+  if (draftValue.recordKind === "system") return `[data-grammar-id="system:${draftValue.systemId}"]`;
+  if (draftValue.recordKind === "agreement") return `[data-grammar-id="agreement:${recordId ?? ""}"]`;
+  if (draftValue.recordKind === "custom-rule") return `[data-grammar-id="rule:${recordId ?? ""}"]`;
+  return '[data-grammar-id="section:agreement"]';
+}
+
+function leaveEditor() {
+  const current = session;
+  if (!current || !tryLeaveGrammar(grammarUi, windowConfirm)) return false;
+  const origin = current.originSection;
+  const focus = grammarFocusSelector(current.draft, current.recordId);
+  grammarUi.editing = null;
+  grammarUi.starterCurrent = undefined;
+  grammarUi.section = origin;
+  grammarUi.focusTarget = focus;
+  return true;
+}
+
+function handleAllSections() {
+  goHome(grammarUi, windowConfirm);
+}
+
+function handleStatusChange(status: GrammarStatus) {
+  const current = session;
+  const value = current?.draft;
+  if (!current || !value || value.recordKind !== "system" || current.locked) return;
+  if (value.status === "configured" && status !== "configured") {
+    if (!windowConfirm("Reset this system's configuration? Unsaved settings in this editor will be cleared.")) return;
+  }
+  current.draft = setSystemStatus(value, status);
+  hostTick += 1;
+}
+
+function advanceStarter(current: GrammarSystemId) {
+  const next = nextStarterSystem(grammarUi.index, current);
+  if (!next) {
+    grammarUi.starterDismissed = true;
+    grammarUi.starterCurrent = undefined;
+    grammarUi.editing = null;
+    grammarUi.section = null;
+    grammarUi.focusTarget = '[data-grammar-id="section:syntax"]';
+    return;
+  }
+  grammarUi.starterCurrent = next;
+  grammarUi.section = grammarSystemDescriptor(next)?.sectionId ?? grammarUi.section;
+  grammarUi.editing = openSystemEditor(grammarUi.index, next);
+  grammarUi.focusTarget = "#grammar-editor-heading";
+}
+
+function handleSkip() {
+  if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+  if (grammarUi.starterCurrent) advanceStarter(grammarUi.starterCurrent);
+}
+
+function handleExitStarter() {
+  if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+  grammarUi.starterDismissed = true;
+  grammarUi.starterCurrent = undefined;
+  grammarUi.editing = null;
+}
+
+function handleStartStarter() {
+  if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+  const next = nextStarterSystem(grammarUi.index);
+  if (!next) {
+    grammarUi.starterDismissed = true;
+    return;
+  }
+  grammarUi.query = "";
+  grammarUi.starterCurrent = next;
+  grammarUi.section = grammarSystemDescriptor(next)?.sectionId ?? null;
+  grammarUi.editing = openSystemEditor(grammarUi.index, next);
+  grammarUi.focusTarget = "#grammar-editor-heading";
+}
+
+function handleDismissStarter() {
+  if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+  grammarUi.starterDismissed = true;
+  grammarUi.starterCurrent = undefined;
+  grammarUi.editing = null;
+}
+
+function handleStartAgreement() {
+  if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+  if (grammarUi.index.sectionStates.get("agreement")) {
+    if (
+      !windowConfirm(
+        "This section is marked not used. Create an agreement system anyway? Saving it will clear the not-used marker.",
+      )
+    ) {
+      return;
+    }
+  }
+  grammarUi.section = "agreement";
+  grammarUi.query = "";
+  grammarUi.starterCurrent = undefined;
+  grammarUi.editing = openAgreementEditor(grammarUi.index);
+  grammarUi.focusTarget = "#grammar-editor-heading";
+}
+
+function handleOpenAgreementNotUsed() {
+  if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+  grammarUi.editing = openAgreementNotUsedEditor(grammarUi.index);
+}
+
+function handleAddCustomRule() {
+  if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+  grammarUi.editing = openCustomRuleEditor(grammarUi.index);
+}
+
+function handleSearchHit(hit: GrammarSearchHit) {
+  if (hit.kind === "system" && hit.systemId) {
+    goSystem(grammarUi, hit.systemId, windowConfirm);
+  } else if (hit.kind === "custom-rule") {
+    if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+    grammarUi.section = "other";
+    grammarUi.query = "";
+    grammarUi.editing = openCustomRuleEditor(grammarUi.index, hit.recordId);
+  } else if (hit.kind === "agreement" && hit.recordId) {
+    if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+    grammarUi.section = "agreement";
+    grammarUi.query = "";
+    grammarUi.editing = openAgreementEditor(grammarUi.index, hit.recordId);
+  } else {
+    goSection(grammarUi, hit.sectionId, windowConfirm);
+  }
+}
+
+async function handleSubmit(event: SubmitEvent) {
+  event.preventDefault();
+  const message = await saveGrammarEditor(grammarUi, ctx);
+  if (message && grammarUi.editing?.validationFocus) {
+    grammarUi.focusTarget = `[name="${CSS.escape(grammarUi.editing.validationFocus)}"]`;
+  } else if (message) {
+    grammarUi.focusTarget = "#grammar-editor-heading";
+  }
+}
+
+async function handleDelete() {
+  const message = await deleteGrammarEditor(grammarUi, ctx);
+  if (message && grammarUi.editing) grammarUi.editing.validationMessage = message;
+}
+
+function handleLoadStored() {
+  if (!stored || !session) return;
+  grammarUi.editing = applyStoredVersion(session, stored);
+}
+
+function handleKeepDraft() {
+  if (!stored || !session) return;
+  grammarUi.editing = keepDraftAfterConflict(session, stored);
+}
+
+function recordWithExtras(value: GrammarUiState["editing"]) {
+  if (!value) return null;
+  const draft = value.draft;
+  if (draft.recordKind !== "system" && draft.recordKind !== "custom-rule" && draft.recordKind !== "agreement") {
+    return null;
+  }
+  return draft;
+}
+
+function addExample() {
+  const draft = recordWithExtras(session);
+  if (!draft) return;
+  draft.examples = [...draft.examples, { id: crypto.randomUUID(), text: "" }];
+}
+
+function removeExample(index: number) {
+  const draft = recordWithExtras(session);
+  if (!draft) return;
+  draft.examples = draft.examples.filter((_, item) => item !== index);
+}
+
+function handleAddLink(event: Event & { currentTarget: HTMLSelectElement }) {
+  const select = event.currentTarget;
+  if (!select.value) return;
+  const draft = recordWithExtras(session);
+  if (!draft) return;
+  const parsed = JSON.parse(select.value) as GrammarLink;
+  draft.links = [...draft.links, { ...parsed, id: crypto.randomUUID() }];
+}
+
+function removeLink(index: number) {
+  const draft = recordWithExtras(session);
+  if (!draft) return;
+  draft.links = draft.links.filter((_, item) => item !== index);
+}
+</script>
+
+<div bind:this={root}>
+  <div class="language-toolbar">
+    <div class="language-toolbar-title">
+      <p class="language-toolbar-eyebrow">Focused projection</p>
+      <h2>Grammar</h2>
+      <p class="language-toolbar-subtitle">
+        {selectedLanguage
+          ? `${selectedLanguage.name} · systems, examples, and usage patterns`
+          : "Select a language to document its grammar."}
+      </p>
+    </div>
+    {#if grammarUi.section || grammarUi.editing}
+      <div class="language-toolbar-actions">
+        <button type="button" class="language-button secondary" onclick={handleAllSections}>All sections</button>
+      </div>
+    {/if}
+  </div>
+  {#if error}
+    <p class="language-status error" role="alert">{error}</p>
+  {/if}
+  {#if !selectedLanguage}
+    <div class="language-empty-card">
+      <p class="language-empty" role="status">Select a language to document its grammar.</p>
+    </div>
+  {:else if paneLoading}
+    <p class="language-empty language-loading" aria-live="polite" role="status">Loading grammar systems…</p>
+  {:else if session}
+    <div class="language-toolbar">
+      <button type="button" class="language-button secondary" onclick={leaveEditor}>Back</button>
+      {#if grammarUi.starterCurrent && session.draft.recordKind === "system"}
+        {@const position = starterPosition(grammarUi.starterCurrent)}
+        <span>Starter {position.current} of {position.total}</span>
+        <button type="button" class="language-button secondary" onclick={handleSkip}>Skip</button>
+        <button type="button" class="language-button secondary" onclick={handleExitStarter}>Exit starter</button>
+      {/if}
+    </div>
+    <form class="language-editor" onsubmit={handleSubmit}>
+      <h2 id="grammar-editor-heading" tabindex="-1">{editorTitle}</h2>
+      {#if session.draft.recordKind === "system"}
+        {@const systemDraft = session.draft}
+        <p class="language-empty" role="status">{grammarSystemDescriptor(systemDraft.systemId)?.hint}</p>
+        <details
+          class="grammar-learn"
+          open={session.learnMoreOpen}
+          ontoggle={(event) => (session.learnMoreOpen = event.currentTarget.open)}>
+          <summary>Learn more</summary>
+          <p class="grammar-help">{grammarSystemDescriptor(systemDraft.systemId)?.learnMore}</p>
+        </details>
+        <fieldset class="grammar-status">
+          <legend>Status</legend>
+          {#each SYSTEM_STATUSES as status (status)}
+            <label>
+              <input
+                type="radio"
+                name="status"
+                value={status}
+                checked={systemDraft.status === status}
+                disabled={session.locked}
+                onchange={() => handleStatusChange(status)} />
+              {grammarStatusLabel(status)}
+            </label>
+          {/each}
+        </fieldset>
+        {#if systemDraft.status === "configured"}
+          {#if configuredMinimum(systemDraft.systemId, systemDraft.config)}
+            <p class="language-empty" role="status">{summarizeSystem(systemDraft.systemId, systemDraft)}</p>
+          {/if}
+          <div bind:this={systemHost}></div>
+        {/if}
+        {#if systemDraft.status === "not-used"}
+          <label class="language-field">
+            <span>Why it is not used (optional)</span>
+            <textarea
+              rows="3"
+              placeholder="Noun roles are primarily expressed through word order and adpositions."
+              value={systemDraft.notes}
+              disabled={session.locked}
+              oninput={(event) => (systemDraft.notes = event.currentTarget.value)}></textarea>
+          </label>
+        {:else}
+          <label class="language-field">
+            <span>Notes</span>
+            <textarea
+              rows="4"
+              value={systemDraft.notes}
+              disabled={session.locked}
+              oninput={(event) => (systemDraft.notes = event.currentTarget.value)}></textarea>
+          </label>
+        {/if}
+      {:else if session.draft.recordKind === "agreement"}
+        {@const agreementDraft = session.draft}
+        <div bind:this={agreementHost}></div>
+        <label class="language-field">
+          <span>Notes</span>
+          <textarea
+            rows="4"
+            value={agreementDraft.notes}
+            disabled={session.locked}
+            oninput={(event) => (agreementDraft.notes = event.currentTarget.value)}></textarea>
+        </label>
+      {:else if session.draft.recordKind === "custom-rule"}
+        <div bind:this={customRuleHost}></div>
+      {:else if session.draft.recordKind === "section-state"}
+        {@const sectionDraft = session.draft}
+        <p class="language-empty" role="status">
+          If your language does not use agreement, you can mark this section as not used.
+        </p>
+        <label class="language-field">
+          <span>Note (optional)</span>
+          <textarea
+            rows="3"
+            value={sectionDraft.note ?? ""}
+            disabled={session.locked}
+            oninput={(event) => (sectionDraft.note = event.currentTarget.value)}></textarea>
+        </label>
+      {/if}
+      {#if session.draft.recordKind === "system" || session.draft.recordKind === "custom-rule" || session.draft.recordKind === "agreement"}
+        {@const recordDraft = session.draft}
+        <section class="language-group">
+          <h3>Examples</h3>
+          <p class="language-empty" role="status">Add a sentence, and optionally a translation, gloss, or notes.</p>
+          {#each recordDraft.examples as example, index (example.id)}
+            <div class="grammar-example">
+              <label class="language-field">
+                <span>Example</span>
+                <textarea
+                  rows="2"
+                  placeholder="Nar bel tor."
+                  value={example.text}
+                  disabled={session.locked}
+                  oninput={(event) => (example.text = event.currentTarget.value)}></textarea>
+              </label>
+              <label class="language-field">
+                <span>Translation (optional)</span>
+                <input
+                  placeholder="I eat bread."
+                  value={example.translation ?? ""}
+                  disabled={session.locked}
+                  oninput={(event) => (example.translation = event.currentTarget.value)} />
+              </label>
+              <label class="language-field">
+                <span>Gloss (optional)</span>
+                <input
+                  placeholder="1sg bread eat"
+                  value={example.gloss ?? ""}
+                  disabled={session.locked}
+                  oninput={(event) => (example.gloss = event.currentTarget.value)} />
+              </label>
+              <label class="language-field">
+                <span>Notes (optional)</span>
+                <textarea
+                  rows="2"
+                  value={example.notes ?? ""}
+                  disabled={session.locked}
+                  oninput={(event) => (example.notes = event.currentTarget.value)}></textarea>
+              </label>
+              {#if !session.locked}
+                <button
+                  type="button"
+                  class="language-button secondary language-danger"
+                  onclick={() => removeExample(index)}>Remove example</button>
+              {/if}
+            </div>
+          {/each}
+          {#if !session.locked}
+            <button type="button" class="language-button secondary" onclick={addExample}>Add example</button>
+          {/if}
+        </section>
+        <section class="language-group">
+          <h3>Links</h3>
+          {#each recordDraft.links as link, index (link.id)}
+            <div class="language-inline">
+              <span>{link.kind}: {link.label || link.targetId}</span>
+              {#if !session.locked}
+                <button
+                  type="button"
+                  class="language-button secondary language-danger"
+                  onclick={() => removeLink(index)}>Remove</button>
+              {/if}
+            </div>
+          {/each}
+          {#if !session.locked}
+            <select aria-label="Link a record" onchange={handleAddLink}>
+              <option value="">Link a word, sample, or paradigm…</option>
+              {#each ctx.choices.lexemes as lexeme (lexeme.id)}
+                <option value={JSON.stringify({ kind: "lexeme", targetId: lexeme.id, label: lexeme.lemma })}
+                  >Word:
+                  {lexeme.lemma}</option>
+              {/each}
+              {#each ctx.choices.examples as example (example.lexemeId + example.exampleId)}
+                <option
+                  value={JSON.stringify({
+                    kind: "lexeme-example",
+                    targetId: example.lexemeId,
+                    secondaryId: example.exampleId,
+                    label: example.text,
+                  })}>Example: {example.lemma} — {example.text}</option>
+              {/each}
+              {#each ctx.choices.samples as sample (sample.id)}
+                <option value={JSON.stringify({ kind: "sample", targetId: sample.id, label: sample.title })}
+                  >Sample:
+                  {sample.title}</option>
+              {/each}
+              {#each ctx.choices.paradigms as paradigm (paradigm.id)}
+                <option value={JSON.stringify({ kind: "paradigm", targetId: paradigm.id, label: paradigm.name })}
+                  >Paradigm:
+                  {paradigm.name}</option>
+              {/each}
+            </select>
+          {/if}
+        </section>
+      {/if}
+      {#if error || session.validationMessage}
+        <p class="language-status error" role="alert">{session.validationMessage || error}</p>
+      {/if}
+      {#if session.conflict && session.recordId && stored}
+        <div class="language-inline">
+          <button type="button" class="language-button secondary" onclick={handleLoadStored}
+            >Load stored version</button>
+          <button type="button" class="language-button secondary" onclick={handleKeepDraft}>Keep my draft</button>
+        </div>
+      {/if}
+      <div class="language-actions">
+        <span>
+          {#if session.recordId && !session.locked}
+            <button
+              type="button"
+              class="language-button secondary language-danger"
+              aria-label={`Delete ${editorTitle}`}
+              onclick={handleDelete}>Delete</button>
+          {/if}
+        </span>
+        <span>
+          <button type="button" class="language-button secondary" onclick={leaveEditor}>Cancel</button>
+          <button type="submit" class="language-button" disabled={session.locked}>Save</button>
+        </span>
+      </div>
+    </form>
+  {:else}
+    <div class="language-search-row">
+      <label class="language-field">
+        <span>Search grammar systems</span>
+        <input
+          name="grammar-search"
+          placeholder="Search grammar systems…"
+          aria-label="Search grammar systems"
+          value={grammarUi.query}
+          oninput={(event) => (grammarUi.query = event.currentTarget.value)} />
+      </label>
+    </div>
+    <div class="grammar-home">
+      {#each grammarUi.index.diagnostics as diagnostic}
+        <div class="grammar-diagnostic" role="group" aria-label="Grammar diagnostic">
+          <p class="language-status error" role="alert">{diagnostic.message}</p>
+          {#if diagnostic.systemId}
+            <button
+              type="button"
+              class="language-button secondary"
+              onclick={() => goSystem(grammarUi, diagnostic.systemId!, windowConfirm)}
+              >Open
+              {grammarSystemDescriptor(diagnostic.systemId)?.label ?? diagnostic.systemId}</button>
+          {:else if diagnostic.recordIds[0] && grammarUi.index.agreements.some((item) => item.id === diagnostic.recordIds[0])}
+            <button
+              type="button"
+              class="language-button secondary"
+              onclick={() => {
+                if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+                grammarUi.section = "agreement";
+                grammarUi.editing = openAgreementEditor(grammarUi.index, diagnostic.recordIds[0]);
+                grammarUi.focusTarget = "#grammar-editor-heading";
+              }}>Open agreement</button>
+          {/if}
+        </div>
+      {/each}
+      {#if grammarUi.query.trim()}
+        <div class="grammar-systems">
+          {#if hits.length === 0}
+            <p class="language-empty" role="status">No matching grammar systems.</p>
+          {/if}
+          {#each hits as hit}
+            <button type="button" class="grammar-system" onclick={() => handleSearchHit(hit)}>
+              <strong>{hit.label}</strong>
+              <span
+                >{GRAMMAR_SECTIONS.find((entry) => entry.id === hit.sectionId)?.label ?? ""} ·
+                {hit.status ? grammarStatusLabel(hit.status) : hit.summary}</span>
+            </button>
+          {/each}
+        </div>
+      {:else if !grammarUi.section}
+        <p class="language-empty" role="status">
+          Define how sentences and words behave in this language. You do not need to configure every system.
+        </p>
+        {#if !grammarUi.starterDismissed && starterRemaining.length > 0}
+          <section class="language-empty-card" data-grammar-id="starter">
+            <p class="language-empty" role="status">Start your grammar</p>
+            <p class="language-empty" role="status">
+              Choose a few foundational systems now. Everything can be changed later.
+            </p>
+            <ol class="grammar-starter-list">
+              {#each starterRemaining as systemId (systemId)}
+                <li>{starterStepLabel(systemId)}</li>
+              {/each}
+            </ol>
+            <div class="language-inline">
+              <button type="button" class="language-button" data-grammar-id="starter-start" onclick={handleStartStarter}
+                >{starterRemaining.length === GRAMMAR_STARTER_STEPS.length ? "Start" : "Continue starter"}</button>
+              <button type="button" class="language-button secondary" onclick={handleDismissStarter}
+                >I'll configure grammar manually</button>
+            </div>
+          </section>
+        {/if}
+        <div class="grammar-cards">
+          {#each GRAMMAR_SECTIONS as entry (entry.id)}
+            {@const summary = sectionCardSummary(grammarUi.index, entry.id)}
+            {@const notUsed = summary.notUsed ? ` · ${summary.notUsed} not used` : ""}
+            <button
+              type="button"
+              class="grammar-card"
+              data-grammar-id={`section:${entry.id}`}
+              aria-label={`${summary.label}: ${summary.detail}${notUsed}`}
+              onclick={() => goSection(grammarUi, entry.id, windowConfirm)}>
+              <strong>{summary.label}</strong>
+              <span>{summary.detail}{notUsed}</span>
+            </button>
+          {/each}
+        </div>
+        <dl class="grammar-glance" aria-label="At a glance">
+          {#each glanceRows as row}
+            <dt>{row.label}</dt>
+            <dd>{row.value}</dd>
+          {/each}
+        </dl>
+      {:else}
+        {@const currentSection = section!}
+        <h3>{currentSection.label}</h3>
+        <p class="language-empty" role="status">{currentSection.orientation}</p>
+        {#if currentSection.id === "agreement"}
+          {#if unusedAgreementState}
+            <p class="language-empty" role="status">Not used</p>
+            {#if unusedAgreementState.value.note}
+              <p class="language-empty" role="status">{unusedAgreementState.value.note}</p>
+            {/if}
+            <div class="language-inline">
+              <button type="button" class="language-button" onclick={handleStartAgreement}>Add agreement system</button>
+              <button type="button" class="language-button secondary" onclick={handleOpenAgreementNotUsed}>Edit</button>
+            </div>
+          {:else if agreementRecords.length === 0}
+            <div class="language-empty-card">
+              <p class="language-empty" role="status">{currentSection.emptyBody}</p>
+              <div class="language-inline">
+                <button type="button" class="language-button" onclick={handleStartAgreement}
+                  >Add agreement system</button>
+                <button type="button" class="language-button secondary" onclick={handleOpenAgreementNotUsed}
+                  >Mark as not used</button>
+              </div>
+            </div>
+          {:else}
+            <button type="button" class="language-button" onclick={handleStartAgreement}>Add agreement system</button>
+            <div class="grammar-systems">
+              {#each agreementRecords as record (record.id)}
+                <button
+                  type="button"
+                  class="grammar-system"
+                  data-grammar-id={`agreement:${record.id}`}
+                  aria-label={`${record.value.title}: ${summarizeAgreement(record.value)}`}
+                  onclick={() => {
+                    if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+                    grammarUi.editing = openAgreementEditor(grammarUi.index, record.id);
+                    grammarUi.focusTarget = "#grammar-editor-heading";
+                  }}>
+                  <strong>{record.value.title}</strong>
+                  <span>{summarizeAgreement(record.value)}</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        {:else if currentSection.id === "other"}
+          {#if customRules.length === 0}
+            <div class="language-empty-card">
+              <p class="language-empty" role="status">{currentSection.emptyBody}</p>
+              <div class="language-inline">
+                <button type="button" class="language-button" onclick={handleAddCustomRule}>Add a custom rule</button>
+              </div>
+            </div>
+          {:else}
+            <button type="button" class="language-button" onclick={handleAddCustomRule}>Add a custom rule</button>
+            <div class="grammar-systems">
+              {#each customRules as record (record.id)}
+                <button
+                  type="button"
+                  class="grammar-system"
+                  data-grammar-id={`rule:${record.id}`}
+                  aria-label={record.value.title}
+                  onclick={() => {
+                    if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+                    grammarUi.editing = openCustomRuleEditor(grammarUi.index, record.id);
+                    grammarUi.focusTarget = "#grammar-editor-heading";
+                  }}>
+                  <strong>{record.value.title}</strong>
+                  <span>{record.value.tags.join(", ") || record.value.body.split("\n")[0] || "Custom rule"}</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        {:else}
+          {@const listed = systemsForSection(currentSection.id)}
+          {#if listed.every((system) => !grammarUi.index.systems.has(system.id) && !grammarUi.index.duplicates.has(system.id))}
+            {@const first = listed[0]}
+            <div class="language-empty-card">
+              <p class="language-empty" role="status">{currentSection.emptyBody}</p>
+              {#if first}
+                <div class="language-inline">
+                  <button
+                    type="button"
+                    class="language-button"
+                    onclick={() => goSystem(grammarUi, first.id, windowConfirm)}>{first.emptyAction}</button>
+                </div>
+              {/if}
+            </div>
+          {/if}
+          <div class="grammar-systems">
+            {#each listed as system (system.id)}
+              {@const record = grammarUi.index.systems.get(system.id)?.value}
+              {@const duplicate = grammarUi.index.duplicates.has(system.id)}
+              {@const summary = duplicate
+                ? "Duplicate records — edits disabled"
+                : record?.recordKind === "system"
+                  ? summarizeSystem(system.id, record)
+                  : grammarStatusLabel("unconfigured")}
+              <button
+                type="button"
+                class="grammar-system"
+                data-grammar-id={`system:${system.id}`}
+                aria-label={`${system.label}: ${summary}`}
+                onclick={() => goSystem(grammarUi, system.id, windowConfirm)}>
+                <strong>{system.label}</strong>
+                <span>{summary}</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      {/if}
+    </div>
+  {/if}
+</div>
+
+<style>
+:global(.language-toolbar-eyebrow) {
+  margin: 0 0 5px;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+:global(.language-toolbar-subtitle) {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.55;
+}
+:global(.language-panel h2),
+:global(.language-panel h3) {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 500;
+}
+:global(.language-panel h2) {
+  font-size: 24px;
+  line-height: 1.15;
+}
+:global(.language-panel h3) {
+  font-size: 16px;
+  line-height: 1.3;
+}
+:global(.language-toolbar) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+:global(.language-toolbar-title) {
+  display: grid;
+  gap: 3px;
+}
+:global(.language-toolbar-title h2) {
+  margin: 0;
+}
+:global(.language-toolbar-actions) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+:global(.language-search-row) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 16px;
+}
+:global(.language-field) {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+  letter-spacing: 0.01em;
+}
+:global(.language-field input),
+:global(.language-field textarea),
+:global(.language-field select) {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+:global(.language-field textarea) {
+  min-height: 4.5em;
+  resize: vertical;
+}
+:global(.language-button) {
+  padding: 8px 12px;
+  border: 1px solid var(--accent-dark);
+  border-radius: 8px;
+  background: var(--accent-dark);
+  color: #fff;
+  cursor: pointer;
+}
+:global(.language-button:hover) {
+  filter: brightness(1.06);
+}
+:global(.language-button.secondary) {
+  background: transparent;
+  color: var(--accent-dark);
+}
+:global(.language-button.secondary:hover) {
+  background: var(--surface-muted);
+}
+:global(.language-button:disabled) {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: none;
+}
+:global(.language-button:focus-visible),
+:global(.language-tabs button:focus-visible),
+:global(.language-list button:focus-visible),
+:global(.language-item:focus-visible),
+:global(.lexeme-row:focus-visible),
+:global(.grammar-card:focus-visible),
+:global(.grammar-system:focus-visible),
+:global(.sample-ref:focus-visible),
+:global(.grammar-choice:focus-within),
+:global(.grammar-status input:focus-visible),
+:global(.grammar-checks input:focus-visible),
+:global(.grammar-learn summary:focus-visible) {
+  outline: 3px solid rgba(180, 119, 63, 0.24);
+  outline-offset: 2px;
+}
+:global(.language-empty),
+:global(.language-status) {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.6;
+}
+:global(.language-status.error) {
+  color: #a14f42;
+}
+:global(.language-loading) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-soft);
+}
+:global(.language-loading::before) {
+  content: "";
+  width: 11px;
+  height: 11px;
+  flex: 0 0 11px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: language-spin 0.75s linear infinite;
+}
+:global(.language-empty-card) {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+  margin: 18px 0;
+  padding: 20px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  background: var(--surface-muted);
+}
+:global(.language-editor) {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+  min-width: 0;
+}
+:global(.language-actions) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 -20px -24px;
+  padding: 12px 20px 24px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: 0 -8px 16px -16px rgba(38, 42, 33, 0.4);
+}
+:global(.language-actions span) {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+:global(.language-danger) {
+  border-color: #a14f42 !important;
+  color: #a14f42 !important;
+  background: transparent;
+}
+:global(.language-group) {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+:global(.language-group .language-group) {
+  background: var(--surface);
+}
+:global(.language-group-head) {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+:global(.language-inline) {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  min-width: 0;
+}
+:global(.language-inline-fields) {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+:global(.language-inline > .language-button) {
+  flex: 0 0 auto;
+}
+:global(.grammar-home) {
+  display: grid;
+  gap: 16px;
+  margin-top: 14px;
+}
+:global(.grammar-cards) {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+:global(.grammar-card),
+:global(.grammar-system) {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #ebe7de;
+  border-radius: 10px;
+  background: var(--surface);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+:global(.grammar-card:hover),
+:global(.grammar-system:hover) {
+  border-color: #e5d8c6;
+  background: var(--surface-muted);
+}
+:global(.grammar-card strong),
+:global(.grammar-system strong) {
+  font-size: 14px;
+}
+:global(.grammar-card span),
+:global(.grammar-system span),
+:global(.grammar-glance dd) {
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+:global(.grammar-glance) {
+  display: grid;
+  grid-template-columns: minmax(8rem, 12rem) minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+:global(.grammar-glance dt) {
+  margin: 0;
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+:global(.grammar-glance dd) {
+  margin: 0;
+}
+:global(.grammar-systems) {
+  display: grid;
+  gap: 8px;
+}
+:global(.grammar-status) {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+:global(.grammar-status legend) {
+  padding: 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+:global(.grammar-help) {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+}
+:global(.grammar-learn) {
+  margin: 4px 0 8px;
+}
+:global(.grammar-choice-editor),
+:global(.grammar-choice-stack) {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+:global(.grammar-choices),
+:global(.grammar-checks) {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+:global(.grammar-choices) {
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+}
+:global(.grammar-choices legend),
+:global(.grammar-checks legend),
+:global(.grammar-status legend) {
+  padding: 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+:global(.grammar-choice) {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  cursor: pointer;
+}
+:global(.grammar-choice.is-selected) {
+  border-color: var(--accent-dark);
+  background: var(--surface-muted);
+}
+:global(.grammar-choice input) {
+  margin: 0;
+}
+:global(.grammar-choice span),
+:global(.grammar-choice em) {
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.45;
+}
+:global(.grammar-choice em) {
+  font-style: italic;
+}
+:global(.grammar-checks) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+:global(.grammar-checks label) {
+  display: grid;
+  gap: 2px;
+  align-content: start;
+}
+:global(.grammar-template-hint) {
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+:global(.grammar-inventory),
+:global(.grammar-inventory-item) {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+:global(.grammar-inventory-item) {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+:global(.grammar-inventory-toolbar) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+:global(.grammar-paradigm) {
+  overflow: auto;
+  max-width: 100%;
+  max-height: min(70vh, 36rem);
+}
+:global(.grammar-paradigm-table) {
+  border-collapse: collapse;
+  min-width: 100%;
+}
+:global(.grammar-paradigm-table caption.visually-hidden),
+:global(.visually-hidden) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+:global(.grammar-paradigm-table th),
+:global(.grammar-paradigm-table td) {
+  border: 1px solid var(--line);
+  padding: 8px;
+  vertical-align: top;
+  text-align: left;
+  background: var(--surface);
+}
+:global(.grammar-paradigm-table thead th) {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-muted);
+}
+:global(.grammar-paradigm-table th[scope="row"]) {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+:global(.grammar-paradigm-table thead th:first-child) {
+  z-index: 3;
+  left: 0;
+}
+:global(.grammar-starter-list) {
+  margin: 0;
+  padding-left: 1.2em;
+}
+:global(.grammar-paradigm-cell) {
+  display: grid;
+  gap: 6px;
+  min-width: 8rem;
+}
+:global(.grammar-diagnostic) {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+:global(.grammar-example) {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+@keyframes language-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes language-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  :global(.language-loading::before) {
+    animation: none;
+  }
+}
+@media (max-width: 760px) {
+  :global(.language-inline) {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+</style>

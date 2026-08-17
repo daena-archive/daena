@@ -46,6 +46,7 @@ pub struct AtlasStyle {
     pub land_low: [u8; 3],
     pub land_high: [u8; 3],
     pub land_peak: [u8; 3],
+    pub land_snow: [u8; 3],
     pub lake: [u8; 3],
     pub ice: [u8; 3],
     pub river: [u8; 3],
@@ -233,11 +234,17 @@ pub fn hypsometric(style: &AtlasStyle, elevation_mm: i32, sea_level_mm: i32) -> 
                 style.land_high,
                 (u64::from(height) * 1_000_000 / 400_000) as u32,
             )
-        } else {
+        } else if height < 2_500_000 {
             mix_rgb(
                 style.land_high,
                 style.land_peak,
-                (u64::from(height - 400_000) * 1_000_000 / 5_600_000) as u32,
+                (u64::from(height - 400_000) * 1_000_000 / 2_100_000) as u32,
+            )
+        } else {
+            mix_rgb(
+                style.land_peak,
+                style.land_snow,
+                (u64::from(height - 2_500_000) * 1_000_000 / 3_500_000) as u32,
             )
         }
     }
@@ -275,5 +282,7 @@ mod tests {
             precipitation_fill(&precip, 80),
             precipitation_fill(&precip, 2_200)
         );
+        let mid_mountain = hypsometric(&relief, 3_000_000, 0);
+        assert_ne!(mid_mountain, [236, 236, 228]);
     }
 }

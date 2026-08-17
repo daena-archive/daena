@@ -1,82 +1,110 @@
 <script lang="ts">
-import type { EntitySummary, ModuleRecord, ModuleRecordQuery } from "../../../../module-api/src/index";
+import type { EntitySummary, ModuleContext, ModuleRecord, ModuleRecordQuery } from "../../../../module-api/src/index";
 import type { LexemeValue } from "../lexeme";
-import { firstGloss, PART_OF_SPEECH_SUGGESTIONS, STATUS_SUGGESTIONS } from "../lexeme";
+import {
+  emptyLexeme,
+  firstGloss,
+  lexiconExport,
+  normalizeLexeme,
+  parseLexiconImport,
+  PART_OF_SPEECH_SUGGESTIONS,
+  serializeLexeme,
+  STATUS_SUGGESTIONS,
+} from "../lexeme";
 import type { Paradigm, ParadigmSlot } from "../morphology";
-import { clearOverride, pinOverride, previewParadigm } from "../morphology";
+import { clearOverride, normalizeParadigm, pinOverride, previewParadigm } from "../morphology";
 
 let {
+  context,
   selectedLanguage,
-  records,
-  paradigms,
-  editing,
-  editorOpen,
-  draft,
-  search = $bindable(""),
-  statusFilterInput = $bindable(""),
-  tagFilterInput = $bindable(""),
-  sort = $bindable("lemma"),
-  homonymsOnly = $bindable(false),
-  page,
-  hasNextPage,
-  homonymCount,
-  lexiconLoading,
-  lexiconSaving,
-  error,
-  addWord,
-  openLexiconEditor,
-  addHomonym,
-  closeLexiconEditor,
-  saveLexeme,
-  deleteLexeme,
-  previousPage,
-  nextPage,
-  importLexicon,
-  exportLexicon,
+  active,
+  pendingLexemeId,
+  onPendingLexemeHandled,
 }: {
+  context: ModuleContext;
   selectedLanguage: EntitySummary | null;
-  records: ModuleRecord<LexemeValue>[];
-  paradigms: ModuleRecord<Paradigm>[];
-  editing: ModuleRecord<LexemeValue> | null;
-  editorOpen: boolean;
-  draft: LexemeValue;
-  search: string;
-  statusFilterInput: string;
-  tagFilterInput: string;
-  sort: ModuleRecordQuery["sort"];
-  homonymsOnly: boolean;
-  page: number;
-  hasNextPage: boolean;
-  homonymCount: number;
-  lexiconLoading: boolean;
-  lexiconSaving: boolean;
-  error: string;
-  addWord: () => void;
-  openLexiconEditor: (record: ModuleRecord<LexemeValue>) => void;
-  addHomonym: () => void;
-  closeLexiconEditor: () => void;
-  saveLexeme: () => Promise<"ok" | "lemma" | "error" | "none">;
-  deleteLexeme: () => void;
-  previousPage: () => void;
-  nextPage: () => void;
-  importLexicon: (file: File) => void;
-  exportLexicon: () => void;
+  active: boolean;
+  pendingLexemeId: string | null;
+  onPendingLexemeHandled: () => void;
 } = $props();
 
+let cancelled = $state(false);
+let records: ModuleRecord<LexemeValue>[] = $state([]);
+let paradigms: ModuleRecord<Paradigm>[] = $state([]);
+let editing = $state<ModuleRecord<LexemeValue> | null>(null);
+let editorOpen = $state(false);
+let draft: LexemeValue = $state(emptyLexeme());
+let search = $state("");
+let statusFilterInput = $state("");
+let tagFilterInput = $state("");
 const statusFilter = $derived(statusFilterInput.trim());
 const tagFilter = $derived(tagFilterInput.trim());
+let sort: ModuleRecordQuery["sort"] = $state("lemma");
+let homonymsOnly = $state(false);
+let page = $state(0);
+let hasNextPage = $state(false);
+let homonymCount = $state(0);
+let request = $state(0);
+let searchTimer = $state<number | null>(null);
+let lexiconLoading = $state(false);
+let lexiconSaving = $state(false);
+let error = $state("");
 
 let tagsText = $state("");
 let fileInput: HTMLInputElement | undefined = $state();
 let lemmaInput: HTMLInputElement | undefined = $state();
 
-const activeFilterCount = $derived(
-  [search, statusFilter, tagFilter, homonymsOnly ? "homonyms" : ""].filter(Boolean).length,
-);
-const filtered = $derived(Boolean(search || statusFilter || tagFilter || homonymsOnly));
-const attached = $derived(paradigms.find((record) => record.id === draft.paradigmId));
-const firstResult = $derived(page * 50 + 1);
-const lastResult = $derived(page * 50 + records.length);
+let lastLoadedLanguage: string | null = null;
+let filtersInitialized = false;
+let lastHandledPending: string | null = null;
+
+$effect(() => {
+  const languageId = selectedLanguage?.id ?? null;
+  void languageId;
+  if (!active) return;
+  if (languageId === lastLoadedLanguage) return;
+  lastLoadedLanguage = languageId;
+  search = "";
+  statusFilterInput = "";
+  tagFilterInput = "";
+  homonymsOnly = false;
+  page = 0;
+  editing = null;
+  editorOpen = false;
+  void loadRecords();
+});
+
+$effect(() => {
+  void search;
+  void statusFilterInput;
+  void statusFilter;
+  void tagFilter;
+  void sort;
+  void homonymsOnly;
+  if (!filtersInitialized) {
+    filtersInitialized = true;
+    return;
+  }
+  scheduleLoad();
+});
+
+$effect(() => {
+  const pending = pendingLexemeId;
+  if (!pending) {
+    lastHandledPending = null;
+    return;
+  }
+  if (!active || pending === lastHandledPending) return;
+  lastHandledPending = pending;
+  search = "";
+  statusFilterInput = "";
+  tagFilterInput = "";
+  homonymsOnly = false;
+  page = 0;
+  editing = null;
+  editorOpen = false;
+  void openPendingLexeme(pending);
+});
 
 $effect(() => {
   if (editorOpen && lemmaInput) lemmaInput.focus();
@@ -88,6 +116,244 @@ $effect(() => {
   if (editorOpen && !previousEditorOpen) tagsText = draft.tags.join("\n");
   previousEditorOpen = editorOpen;
 });
+
+$effect(() => {
+  return () => {
+    cancelled = true;
+    if (searchTimer !== null) window.clearTimeout(searchTimer);
+    searchTimer = null;
+  };
+});
+
+const activeFilterCount = $derived(
+  [search, statusFilter, tagFilter, homonymsOnly ? "homonyms" : ""].filter(Boolean).length,
+);
+const filtered = $derived(Boolean(search || statusFilter || tagFilter || homonymsOnly));
+const attached = $derived(paradigms.find((record) => record.id === draft.paradigmId));
+const firstResult = $derived(page * 50 + 1);
+const lastResult = $derived(page * 50 + records.length);
+
+async function loadRecords() {
+  if (!selectedLanguage) {
+    records = [];
+    paradigms = [];
+    lexiconLoading = false;
+    return;
+  }
+  const token = ++request;
+  lexiconLoading = true;
+  try {
+    const [result, paradigmList] = await Promise.all([
+      context.records.list<LexemeValue>("lexemes", selectedLanguage.id, {
+        query: search || undefined,
+        status: statusFilter || undefined,
+        tag: tagFilter || undefined,
+        sort,
+        homonymsOnly: homonymsOnly || undefined,
+        limit: 51,
+        offset: page * 50,
+      }),
+      context.records.list<Paradigm>("paradigms", selectedLanguage.id, { limit: 100, sort: "name" }),
+    ]);
+    if (!cancelled && token === request) {
+      lexiconLoading = false;
+      hasNextPage = result.length > 50;
+      records = result.slice(0, 50).map((record) => ({
+        ...record,
+        value: normalizeLexeme(record.value),
+      }));
+      paradigms = paradigmList.map((record) => ({ ...record, value: normalizeParadigm(record.value) }));
+      if (editing) {
+        const current = records.find((record) => record.id === editing?.id);
+        if (current) editing = current;
+      }
+    }
+  } catch (cause) {
+    if (!cancelled && token === request) {
+      lexiconLoading = false;
+    }
+  }
+}
+
+async function findLexeme(id: string, token: number) {
+  if (!selectedLanguage) return null;
+  for (let offset = 0; offset < 2000; offset += 100) {
+    const batch = await context.records.list<LexemeValue>("lexemes", selectedLanguage.id, {
+      limit: 100,
+      offset,
+      sort: "lemma",
+    });
+    if (cancelled || token !== request) return null;
+    const found = batch.find((record) => record.id === id);
+    if (found) return { ...found, value: normalizeLexeme(found.value) };
+    if (batch.length < 100) break;
+  }
+  return null;
+}
+
+async function openPendingLexeme(id: string) {
+  const token = request;
+  const target = records.find((record) => record.id === id) ?? (await findLexeme(id, token));
+  if (cancelled || token !== request) return;
+  if (target) {
+    editing = target;
+    editorOpen = true;
+    draft = normalizeLexeme(target.value);
+    void refreshHomonyms(draft.lemma);
+  }
+  onPendingLexemeHandled();
+}
+
+async function refreshHomonyms(lemma: string) {
+  if (!selectedLanguage || !lemma) {
+    homonymCount = 0;
+    return;
+  }
+  const matches = await context.records.list<LexemeValue>("lexemes", selectedLanguage.id, {
+    query: lemma,
+    limit: 100,
+  });
+  homonymCount = matches.filter(
+    (record) => record.value.lemma.toLocaleLowerCase() === lemma.toLocaleLowerCase() && record.id !== editing?.id,
+  ).length;
+}
+
+function scheduleLoad() {
+  page = 0;
+  if (searchTimer !== null) window.clearTimeout(searchTimer);
+  searchTimer = window.setTimeout(() => void loadRecords(), 180);
+}
+
+function addWord() {
+  editing = null;
+  editorOpen = true;
+  draft = emptyLexeme();
+  homonymCount = 0;
+}
+
+function openLexiconEditor(record: ModuleRecord<LexemeValue>) {
+  editing = record;
+  editorOpen = true;
+  draft = normalizeLexeme(record.value);
+  void refreshHomonyms(draft.lemma);
+}
+
+function addHomonym() {
+  const lemma = draft.lemma;
+  editing = null;
+  editorOpen = true;
+  draft = { ...emptyLexeme(), lemma };
+  void refreshHomonyms(lemma);
+}
+
+function closeLexiconEditor() {
+  editing = null;
+  editorOpen = false;
+  draft = emptyLexeme();
+  error = "";
+}
+
+async function saveLexeme(): Promise<"ok" | "lemma" | "error" | "none"> {
+  if (!selectedLanguage || lexiconSaving) return "none";
+  const value = normalizeLexeme(draft);
+  if (!value.lemma) {
+    error = "Lemma is required.";
+    return "lemma";
+  }
+  error = "";
+  draft = value;
+  lexiconSaving = true;
+  try {
+    const payload = serializeLexeme(value);
+    if (editing) {
+      const updated = await context.records.update("lexemes", editing.id, selectedLanguage.id, payload, {
+        expectedRevision: editing.revision,
+        requestId: crypto.randomUUID(),
+      });
+      editing = { ...updated, value: normalizeLexeme(updated.value) };
+    } else {
+      const created = await context.records.create("lexemes", selectedLanguage.id, payload, {
+        requestId: crypto.randomUUID(),
+      });
+      editing = { ...created, value: normalizeLexeme(created.value) };
+    }
+    editorOpen = true;
+    draft = editing.value;
+    lexiconSaving = false;
+    await loadRecords();
+    await refreshHomonyms(draft.lemma);
+    return "ok";
+  } catch (cause) {
+    lexiconSaving = false;
+    error = cause instanceof Error ? cause.message : String(cause);
+    return "error";
+  }
+}
+
+async function deleteLexeme() {
+  if (!selectedLanguage || !editing) return;
+  if (!window.confirm(`Delete “${editing.value.lemma}”?`)) return;
+  try {
+    await context.records.delete("lexemes", editing.id, selectedLanguage.id, {
+      expectedRevision: editing.revision,
+      requestId: crypto.randomUUID(),
+    });
+    editing = null;
+    editorOpen = false;
+    draft = emptyLexeme();
+    error = "";
+    await loadRecords();
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+  }
+}
+
+function previousPage() {
+  page = Math.max(0, page - 1);
+  void loadRecords();
+}
+
+function nextPage() {
+  page += 1;
+  void loadRecords();
+}
+
+async function exportLexicon() {
+  if (!selectedLanguage) return;
+  const values: LexemeValue[] = [];
+  for (let offset = 0; ; offset += 100) {
+    const batch = await context.records.list<LexemeValue>("lexemes", selectedLanguage.id, {
+      limit: 100,
+      offset,
+      sort: "lemma",
+    });
+    values.push(...batch.map((record) => normalizeLexeme(record.value)));
+    if (batch.length < 100) break;
+  }
+  const blob = new Blob([lexiconExport(selectedLanguage.name, values)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${selectedLanguage.name.replace(/\s+/g, "-").toLowerCase()}-lexicon.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+async function importLexicon(file: File) {
+  if (!selectedLanguage) return;
+  try {
+    const lexemes = parseLexiconImport(await file.text());
+    for (const value of lexemes) {
+      await context.records.create("lexemes", selectedLanguage.id, serializeLexeme(value), {
+        requestId: crypto.randomUUID(),
+      });
+    }
+    page = 0;
+    await loadRecords();
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+  }
+}
 
 function handleImportChange() {
   const chosen = fileInput?.files?.[0];

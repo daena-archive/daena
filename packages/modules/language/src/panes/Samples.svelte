@@ -1,6 +1,7 @@
 <script lang="ts">
-import type { EntitySummary, ModuleRecord } from "../../../../module-api/src/index";
+import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
 import type { LexemeValue } from "../lexeme";
+import { normalizeLexeme } from "../lexeme";
 import {
   emptySample,
   emptyToken,
@@ -9,49 +10,91 @@ import {
   samplePreviewHtml,
   sampleTitle,
   SAMPLE_KINDS,
+  serializeSample,
   tokenizeSample,
   type Sample,
   type SampleKind,
 } from "../samples";
 
 let {
+  context,
   selectedLanguage,
-  paneLoading,
-  error,
-  records,
-  samples,
-  sampleEditing,
-  sampleEditorOpen,
-  sampleDraft,
-  addSample,
-  openSampleEditor,
-  closeSampleEditor,
-  saveSample,
-  deleteSample,
-  openLinkedLexeme,
+  active,
+  openLexeme,
 }: {
+  context: ModuleContext;
   selectedLanguage: EntitySummary | null;
-  paneLoading: boolean;
-  error: string;
-  records: ModuleRecord<LexemeValue>[];
-  samples: ModuleRecord<Sample>[];
-  sampleEditing: ModuleRecord<Sample> | null;
-  sampleEditorOpen: boolean;
-  sampleDraft: Sample;
-  addSample: (kind?: SampleKind) => void;
-  openSampleEditor: (record: ModuleRecord<Sample>) => void;
-  closeSampleEditor: () => void;
-  saveSample: () => Promise<"ok" | "text" | "error" | "none">;
-  deleteSample: () => void;
-  openLinkedLexeme: (lexemeId: string) => void;
+  active: boolean;
+  openLexeme: (lexemeId: string) => void;
 } = $props();
+
+let cancelled = $state(false);
+let records: ModuleRecord<LexemeValue>[] = $state([]);
+let samples: ModuleRecord<Sample>[] = $state([]);
+let sampleEditing = $state<ModuleRecord<Sample> | null>(null);
+let sampleEditorOpen = $state(false);
+let sampleDraft: Sample = $state(emptySample());
+let paneLoading = $state(false);
+let error = $state("");
+let request = $state(0);
 
 let titleInput: HTMLInputElement | undefined = $state();
 let textInput: HTMLTextAreaElement | undefined = $state();
 let previewBox: HTMLDivElement | undefined = $state();
 
+let lastLoadedLanguage: string | null = null;
+
+$effect(() => {
+  const languageId = selectedLanguage?.id ?? null;
+  void languageId;
+  if (!active) return;
+  if (languageId === lastLoadedLanguage) return;
+  lastLoadedLanguage = languageId;
+  sampleEditing = null;
+  sampleEditorOpen = false;
+  sampleDraft = emptySample();
+  void loadSamples();
+});
+
+$effect(() => {
+  return () => {
+    cancelled = true;
+  };
+});
+
 const groups = $derived(groupSamples(samples));
 const previewHtml = $derived(samplePreviewHtml(normalizeSample(sampleDraft)));
+
+async function loadSamples() {
+  if (!selectedLanguage) {
+    samples = [];
+    records = [];
+    paneLoading = false;
+    return;
+  }
+  const token = ++request;
+  paneLoading = true;
+  try {
+    const [items, lexemes] = await Promise.all([
+      context.records.list<Sample>("samples", selectedLanguage.id, { limit: 100, sort: "title" }),
+      context.records.list<LexemeValue>("lexemes", selectedLanguage.id, { limit: 500, sort: "lemma" }),
+    ]);
+    if (!cancelled && token === request) {
+      paneLoading = false;
+      samples = items.map((record) => ({ ...record, value: normalizeSample(record.value) }));
+      records = lexemes.map((record) => ({ ...record, value: normalizeLexeme(record.value) }));
+      if (sampleEditing) {
+        const current = samples.find((record) => record.id === sampleEditing?.id);
+        if (current) sampleEditing = current;
+      }
+    }
+  } catch (cause) {
+    if (!cancelled && token === request) {
+      paneLoading = false;
+      error = cause instanceof Error ? cause.message : String(cause);
+    }
+  }
+}
 
 $effect(() => {
   if (sampleEditorOpen && titleInput) titleInput.focus();
@@ -63,10 +106,80 @@ $effect(() => {
   for (const control of previewBox.querySelectorAll<HTMLButtonElement>(".sample-ref")) {
     control.onclick = () => {
       const lexemeId = control.dataset.lexemeId;
-      if (lexemeId) openLinkedLexeme(lexemeId);
+      if (lexemeId) openLexeme(lexemeId);
     };
   }
 });
+
+function addSample(kind: SampleKind = "sentence") {
+  sampleEditing = null;
+  sampleEditorOpen = true;
+  sampleDraft = emptySample(kind);
+}
+
+function openSampleEditor(record: ModuleRecord<Sample>) {
+  sampleEditing = record;
+  sampleEditorOpen = true;
+  sampleDraft = normalizeSample(record.value);
+}
+
+function closeSampleEditor() {
+  sampleEditing = null;
+  sampleEditorOpen = false;
+  sampleDraft = emptySample();
+  error = "";
+}
+
+async function saveSample(): Promise<"ok" | "text" | "error" | "none"> {
+  if (!selectedLanguage) return "none";
+  const value = normalizeSample(sampleDraft);
+  if (!value.text.trim()) {
+    error = "Text is required.";
+    return "text";
+  }
+  error = "";
+  sampleDraft = value;
+  try {
+    const payload = serializeSample(value);
+    if (sampleEditing) {
+      const updated = await context.records.update("samples", sampleEditing.id, selectedLanguage.id, payload, {
+        expectedRevision: sampleEditing.revision,
+        requestId: crypto.randomUUID(),
+      });
+      sampleEditing = { ...updated, value: normalizeSample(updated.value) };
+    } else {
+      const created = await context.records.create("samples", selectedLanguage.id, payload, {
+        requestId: crypto.randomUUID(),
+      });
+      sampleEditing = { ...created, value: normalizeSample(created.value) };
+    }
+    sampleEditorOpen = true;
+    sampleDraft = sampleEditing.value;
+    await loadSamples();
+    return "ok";
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+    return "error";
+  }
+}
+
+async function deleteSample() {
+  if (!selectedLanguage || !sampleEditing) return;
+  if (!window.confirm(`Delete “${sampleTitle(sampleEditing.value)}”?`)) return;
+  error = "";
+  try {
+    await context.records.delete("samples", sampleEditing.id, selectedLanguage.id, {
+      expectedRevision: sampleEditing.revision,
+      requestId: crypto.randomUUID(),
+    });
+    sampleEditing = null;
+    sampleEditorOpen = false;
+    sampleDraft = emptySample();
+    await loadSamples();
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+  }
+}
 
 function tokenize() {
   sampleDraft.tokens = tokenizeSample(sampleDraft.text, sampleDraft.tokens);

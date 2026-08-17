@@ -1,45 +1,162 @@
 <script lang="ts">
-import type { EntitySummary, ModuleRecord } from "../../../../module-api/src/index";
+import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
 import { STATUS_SUGGESTIONS } from "../lexeme";
 import type { OrthographyValue } from "../orthography";
+import { emptyOrthography, normalizeOrthography, serializeOrthography } from "../orthography";
 import type { PhonemeValue } from "../phonology";
+import { normalizePhoneme } from "../phonology";
 
 let {
+  context,
   selectedLanguage,
-  paneLoading,
-  error,
-  phonemes,
-  orthographies,
-  orthographyEditing,
-  orthographyEditorOpen,
-  orthographyDraft,
-  addOrthography,
-  openOrthographyEditor,
-  closeOrthographyEditor,
-  saveOrthography,
-  deleteOrthography,
+  active,
 }: {
+  context: ModuleContext;
   selectedLanguage: EntitySummary | null;
-  paneLoading: boolean;
-  error: string;
-  phonemes: ModuleRecord<PhonemeValue>[];
-  orthographies: ModuleRecord<OrthographyValue>[];
-  orthographyEditing: ModuleRecord<OrthographyValue> | null;
-  orthographyEditorOpen: boolean;
-  orthographyDraft: OrthographyValue;
-  addOrthography: () => void;
-  openOrthographyEditor: (record: ModuleRecord<OrthographyValue>) => void;
-  closeOrthographyEditor: () => void;
-  saveOrthography: () => Promise<"ok" | "name" | "error" | "none">;
-  deleteOrthography: () => void;
+  active: boolean;
 } = $props();
+
+let cancelled = $state(false);
+let phonemes: ModuleRecord<PhonemeValue>[] = $state([]);
+let orthographies: ModuleRecord<OrthographyValue>[] = $state([]);
+let orthographyEditing = $state<ModuleRecord<OrthographyValue> | null>(null);
+let orthographyEditorOpen = $state(false);
+let orthographyDraft: OrthographyValue = $state(emptyOrthography());
+let paneLoading = $state(false);
+let error = $state("");
+let request = $state(0);
 
 let nameInput: HTMLInputElement | undefined = $state();
 let soundsText = $state<string[]>([]);
 
+let lastLoadedLanguage: string | null = null;
+
+$effect(() => {
+  const languageId = selectedLanguage?.id ?? null;
+  void languageId;
+  if (!active) return;
+  if (languageId === lastLoadedLanguage) return;
+  lastLoadedLanguage = languageId;
+  orthographyEditing = null;
+  orthographyEditorOpen = false;
+  orthographyDraft = emptyOrthography();
+  void loadWriting();
+});
+
+$effect(() => {
+  return () => {
+    cancelled = true;
+  };
+});
+
 $effect(() => {
   if (orthographyEditorOpen) soundsText = orthographyDraft.mappings.map((mapping) => mapping.sounds.join(" "));
 });
+
+async function loadWriting() {
+  if (!selectedLanguage) {
+    orthographies = [];
+    paneLoading = false;
+    return;
+  }
+  const token = ++request;
+  paneLoading = true;
+  try {
+    const [systems, inventory] = await Promise.all([
+      context.records.list<OrthographyValue>("orthographies", selectedLanguage.id, {
+        limit: 100,
+        sort: "name",
+      }),
+      context.records.list<PhonemeValue>("phonemes", selectedLanguage.id, { limit: 100, sort: "symbol" }),
+    ]);
+    if (!cancelled && token === request) {
+      paneLoading = false;
+      orthographies = systems.map((record) => ({ ...record, value: normalizeOrthography(record.value) }));
+      phonemes = inventory.map((record) => ({ ...record, value: normalizePhoneme(record.value) }));
+      if (orthographyEditing) {
+        const current = orthographies.find((record) => record.id === orthographyEditing?.id);
+        if (current) orthographyEditing = current;
+      }
+    }
+  } catch (cause) {
+    if (!cancelled && token === request) {
+      paneLoading = false;
+      error = cause instanceof Error ? cause.message : String(cause);
+    }
+  }
+}
+
+function addOrthography() {
+  orthographyEditing = null;
+  orthographyEditorOpen = true;
+  orthographyDraft = emptyOrthography();
+}
+
+function openOrthographyEditor(record: ModuleRecord<OrthographyValue>) {
+  orthographyEditing = record;
+  orthographyEditorOpen = true;
+  orthographyDraft = normalizeOrthography(record.value);
+}
+
+function closeOrthographyEditor() {
+  orthographyEditing = null;
+  orthographyEditorOpen = false;
+  orthographyDraft = emptyOrthography();
+  error = "";
+}
+
+async function saveOrthography(): Promise<"ok" | "name" | "error" | "none"> {
+  if (!selectedLanguage) return "none";
+  orthographyDraft = normalizeOrthography(orthographyDraft);
+  if (!orthographyDraft.name) {
+    error = "Writing system name is required.";
+    return "name";
+  }
+  error = "";
+  try {
+    const payload = serializeOrthography(orthographyDraft);
+    if (orthographyEditing) {
+      const updated = await context.records.update(
+        "orthographies",
+        orthographyEditing.id,
+        selectedLanguage.id,
+        payload,
+        { expectedRevision: orthographyEditing.revision, requestId: crypto.randomUUID() },
+      );
+      orthographyEditing = { ...updated, value: normalizeOrthography(updated.value) };
+    } else {
+      const created = await context.records.create("orthographies", selectedLanguage.id, payload, {
+        requestId: crypto.randomUUID(),
+      });
+      orthographyEditing = { ...created, value: normalizeOrthography(created.value) };
+    }
+    orthographyEditorOpen = true;
+    orthographyDraft = orthographyEditing.value;
+    await loadWriting();
+    return "ok";
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+    return "error";
+  }
+}
+
+async function deleteOrthography() {
+  if (!selectedLanguage || !orthographyEditing) return;
+  if (!window.confirm(`Delete “${orthographyEditing.value.name}”?`)) return;
+  error = "";
+  try {
+    await context.records.delete("orthographies", orthographyEditing.id, selectedLanguage.id, {
+      expectedRevision: orthographyEditing.revision,
+      requestId: crypto.randomUUID(),
+    });
+    orthographyEditing = null;
+    orthographyEditorOpen = false;
+    orthographyDraft = emptyOrthography();
+    await loadWriting();
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+  }
+}
 
 function addMapping() {
   orthographyDraft.mappings.push({ id: crypto.randomUUID(), grapheme: "", sounds: [] });

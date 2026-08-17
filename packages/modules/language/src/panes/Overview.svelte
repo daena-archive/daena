@@ -1,44 +1,284 @@
 <script lang="ts">
-import type { EntityRecord, EntitySummary } from "../../../../module-api/src/index";
+import type { EntityRecord, EntitySummary, ModuleContext, ModuleManifest } from "../../../../module-api/src/index";
 import type { FieldDefinition } from "../../../../plugin-sdk/src/generated";
+import manifestJson from "../../manifest.json";
+
+const manifest = manifestJson as unknown as ModuleManifest;
 
 let {
+  context,
   selectedLanguage,
-  error,
-  overviewEntity,
-  overviewLoading,
-  overviewName,
-  overviewFields,
-  overviewDocument,
-  overviewDirty,
-  overviewSaving,
-  overviewSavingAutomatically,
-  overviewDeleting,
-  overviewError,
-  overviewFieldDefinitions,
-  onOverviewNameInput,
-  onOverviewFieldInput,
-  onOverviewDocumentInput,
-  archiveOverviewLanguage,
+  active,
+  registerLeaveGuard,
+  onLanguageChanged,
+  onLanguageArchived,
 }: {
+  context: ModuleContext;
   selectedLanguage: EntitySummary | null;
-  error: string;
-  overviewEntity: EntityRecord | null;
-  overviewLoading: boolean;
-  overviewName: string;
-  overviewFields: Record<string, unknown>;
-  overviewDocument: string;
-  overviewDirty: boolean;
-  overviewSaving: boolean;
-  overviewSavingAutomatically: boolean;
-  overviewDeleting: boolean;
-  overviewError: string;
-  overviewFieldDefinitions: FieldDefinition[];
-  onOverviewNameInput: (value: string) => void;
-  onOverviewFieldInput: (definition: FieldDefinition, raw: string) => void;
-  onOverviewDocumentInput: (value: string) => void;
-  archiveOverviewLanguage: () => void;
+  active: boolean;
+  registerLeaveGuard: (guard: (() => boolean) | null) => void;
+  onLanguageChanged: (language: EntitySummary) => void;
+  onLanguageArchived: (languageId: string) => void;
 } = $props();
+
+const overviewFieldDefinitions = manifest.schemas
+  .flatMap((schema) => schema.fields)
+  .filter((field) => !field.relationshipType);
+
+let cancelled = $state(false);
+let overviewEntity = $state<EntityRecord | null>(null);
+let overviewName = $state("");
+let overviewFields: Record<string, unknown> = $state({});
+let overviewSavedFields: Record<string, unknown> = $state({});
+let overviewFieldRevisions: Record<string, string> = $state({});
+let overviewDocument = $state("");
+let overviewSavedDocument = $state("");
+let overviewDocumentRevision = $state("");
+let overviewLoading = $state(false);
+let overviewSaving = $state(false);
+let overviewSavingAutomatically = $state(false);
+let overviewDeleting = $state(false);
+let overviewDirty = $state(false);
+let overviewError = $state("");
+let overviewRequest = $state(0);
+let overviewAutosaveTimer = $state<number | null>(null);
+let overviewAutosaveQueued = $state(false);
+
+let lastLoadedLanguage: string | null = null;
+
+$effect(() => {
+  const languageId = selectedLanguage?.id ?? null;
+  void languageId;
+  if (!active) return;
+  if (languageId === lastLoadedLanguage) return;
+  lastLoadedLanguage = languageId;
+  void loadOverview();
+});
+
+$effect(() => {
+  if (!active) return;
+  registerLeaveGuard(() => tryLeaveOverview((message) => window.confirm(message)));
+  return () => {
+    registerLeaveGuard(null);
+  };
+});
+
+$effect(() => {
+  return () => {
+    cancelled = true;
+    if (overviewAutosaveTimer !== null) window.clearTimeout(overviewAutosaveTimer);
+    overviewAutosaveTimer = null;
+  };
+});
+
+function clearOverviewAutosave() {
+  if (overviewAutosaveTimer !== null) window.clearTimeout(overviewAutosaveTimer);
+  overviewAutosaveTimer = null;
+  overviewAutosaveQueued = false;
+}
+
+function tryLeaveOverview(confirmLeave: (message: string) => boolean) {
+  if (!overviewDirty) {
+    clearOverviewAutosave();
+    return true;
+  }
+  const allowed = confirmLeave("You have unsaved language details. Leave without saving?");
+  if (allowed) {
+    clearOverviewAutosave();
+    overviewDirty = false;
+    overviewError = "";
+  }
+  return allowed;
+}
+
+function syncOverviewDirty() {
+  const nameDirty = overviewName.trim() !== overviewEntity?.name;
+  const fieldsDirty = overviewFieldDefinitions.some(
+    (definition) =>
+      JSON.stringify(overviewFields[definition.key] ?? "") !==
+      JSON.stringify(overviewSavedFields[definition.key] ?? ""),
+  );
+  overviewDirty = nameDirty || fieldsDirty || overviewDocument !== overviewSavedDocument;
+}
+
+function scheduleOverviewAutosave() {
+  if (!overviewDirty || !selectedLanguage || !overviewEntity || overviewDeleting) {
+    if (!overviewDirty) clearOverviewAutosave();
+    return;
+  }
+  if (overviewSaving) {
+    overviewAutosaveQueued = true;
+    return;
+  }
+  if (overviewAutosaveTimer !== null) window.clearTimeout(overviewAutosaveTimer);
+  overviewAutosaveTimer = window.setTimeout(() => {
+    overviewAutosaveTimer = null;
+    void saveOverview(true);
+  }, 800);
+}
+
+function onOverviewNameInput(value: string) {
+  overviewName = value;
+  syncOverviewDirty();
+  scheduleOverviewAutosave();
+}
+
+function onOverviewFieldInput(definition: FieldDefinition, raw: string) {
+  overviewFields = {
+    ...overviewFields,
+    [definition.key]: definition.multiple
+      ? raw
+          .split(/[,\n]/)
+          .map((item) => item.trim())
+          .filter(Boolean)
+      : raw,
+  };
+  syncOverviewDirty();
+  scheduleOverviewAutosave();
+}
+
+function onOverviewDocumentInput(value: string) {
+  overviewDocument = value;
+  syncOverviewDirty();
+  scheduleOverviewAutosave();
+}
+
+async function loadOverview() {
+  clearOverviewAutosave();
+  if (!selectedLanguage) {
+    overviewEntity = null;
+    overviewLoading = false;
+    return;
+  }
+  const token = ++overviewRequest;
+  overviewLoading = true;
+  overviewError = "";
+  try {
+    const [entity, fieldRecords] = await Promise.all([
+      context.entities.get(selectedLanguage.id),
+      context.fields.listRecords(selectedLanguage.id),
+    ]);
+    if (cancelled || token !== overviewRequest) return;
+    if (!entity) throw new Error("This language is no longer available.");
+    const values = Object.fromEntries(fieldRecords.map((record) => [record.key, record.value]));
+    for (const definition of overviewFieldDefinitions) {
+      if (!(definition.key in values)) values[definition.key] = "";
+    }
+    const document = entity.documents.find((item) => item.format === "markdown") ?? entity.documents[0];
+    overviewEntity = entity;
+    overviewName = entity.name;
+    overviewFields = values;
+    overviewSavedFields = { ...values };
+    overviewFieldRevisions = Object.fromEntries(fieldRecords.map((record) => [record.key, record.revision]));
+    overviewDocument = document?.body ?? "";
+    overviewSavedDocument = overviewDocument;
+    overviewDocumentRevision = document?.revision ?? "";
+    overviewDirty = false;
+    overviewLoading = false;
+    overviewError = "";
+  } catch (cause) {
+    if (cancelled || token !== overviewRequest) return;
+    overviewLoading = false;
+    overviewError = cause instanceof Error ? cause.message : String(cause);
+  }
+}
+
+async function saveOverview(automatic = false) {
+  if (!selectedLanguage || !overviewEntity || overviewSaving || overviewDeleting) return;
+  clearOverviewAutosave();
+  const name = overviewName.trim();
+  if (!name) {
+    overviewError = "Language name is required.";
+    return;
+  }
+  const entityId = overviewEntity.id;
+  const draftFields = { ...overviewFields };
+  const draftDocument = overviewDocument;
+  overviewSaving = true;
+  overviewSavingAutomatically = automatic;
+  overviewError = "";
+  try {
+    if (name !== overviewEntity.name) {
+      overviewEntity = await context.entities.update(
+        overviewEntity.id,
+        { name },
+        { expectedRevision: overviewEntity.revision, requestId: crypto.randomUUID() },
+      );
+    }
+    for (const definition of overviewFieldDefinitions) {
+      const value = draftFields[definition.key] ?? "";
+      if (JSON.stringify(value) === JSON.stringify(overviewSavedFields[definition.key] ?? "")) continue;
+      await context.fields.set(overviewEntity.id, definition.key, value, {
+        expectedRevision: overviewFieldRevisions[definition.key] ?? "",
+        requestId: crypto.randomUUID(),
+      });
+    }
+    if (draftDocument !== overviewSavedDocument) {
+      await context.documents.save(
+        { entityId: overviewEntity.id, body: draftDocument, format: "markdown" },
+        { expectedRevision: overviewDocumentRevision, requestId: crypto.randomUUID() },
+      );
+    }
+    const currentDraftChanged =
+      overviewName.trim() !== name ||
+      overviewFieldDefinitions.some(
+        (definition) =>
+          JSON.stringify(overviewFields[definition.key] ?? "") !== JSON.stringify(draftFields[definition.key] ?? ""),
+      ) ||
+      overviewDocument !== draftDocument;
+    const currentDraftName = overviewName;
+    const currentDraftFields = { ...overviewFields };
+    const currentDraftDocument = overviewDocument;
+    const needsFollowUpSave = currentDraftChanged || overviewAutosaveQueued;
+    overviewSaving = false;
+    overviewSavingAutomatically = false;
+    await loadOverview();
+    if (selectedLanguage?.id !== entityId) return;
+    if (needsFollowUpSave) {
+      overviewName = currentDraftName;
+      overviewFields = currentDraftFields;
+      overviewDocument = currentDraftDocument;
+      overviewDirty = true;
+      scheduleOverviewAutosave();
+      return;
+    }
+    if (overviewEntity) {
+      onLanguageChanged({ ...selectedLanguage, name, revision: overviewEntity.revision });
+    }
+  } catch (cause) {
+    overviewSaving = false;
+    overviewSavingAutomatically = false;
+    overviewDirty = true;
+    overviewError = cause instanceof Error ? cause.message : String(cause);
+    if (overviewAutosaveQueued) scheduleOverviewAutosave();
+  }
+}
+
+async function archiveOverviewLanguage() {
+  if (!selectedLanguage || !overviewEntity || overviewDeleting) return;
+  const name = selectedLanguage.name;
+  const message = overviewDirty
+    ? `Archive “${name}”? Unsaved language details will be discarded.`
+    : `Archive “${name}”? It will be removed from the active language list.`;
+  if (!window.confirm(message)) return;
+  clearOverviewAutosave();
+  overviewDeleting = true;
+  overviewError = "";
+  try {
+    await context.entities.delete(overviewEntity.id, {
+      expectedRevision: overviewEntity.revision,
+      requestId: crypto.randomUUID(),
+    });
+    overviewDeleting = false;
+    overviewEntity = null;
+    overviewDirty = false;
+    overviewAutosaveQueued = false;
+    onLanguageArchived(selectedLanguage.id);
+  } catch (cause) {
+    overviewDeleting = false;
+    overviewError = cause instanceof Error ? cause.message : String(cause);
+  }
+}
 
 function fieldValue(definition: FieldDefinition) {
   const value = overviewFields[definition.key];
@@ -48,7 +288,7 @@ function fieldValue(definition: FieldDefinition) {
 let status = $derived.by(() => {
   if (!selectedLanguage) return { state: null, text: "Select a language" };
   if (overviewLoading || !overviewEntity) return { state: null, text: "Loading language details…" };
-  const hasError = Boolean(overviewError || error);
+  const hasError = Boolean(overviewError);
   return {
     state: hasError ? "error" : overviewDeleting || overviewSaving ? "saving" : overviewDirty ? "dirty" : "saved",
     text: hasError
@@ -143,8 +383,8 @@ let status = $derived.by(() => {
         oninput={(event) => onOverviewDocumentInput(event.currentTarget.value)}></textarea>
     </section>
 
-    {#if overviewError || error}
-      <p class="language-status error" role="alert">{overviewError || error}</p>
+    {#if overviewError}
+      <p class="language-status error" role="alert">{overviewError}</p>
     {/if}
     <div class="language-overview-actions">
       <span class="language-overview-danger">

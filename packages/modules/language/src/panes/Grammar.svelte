@@ -2,9 +2,11 @@
 import { untrack } from "svelte";
 import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
 import type { LexemeValue } from "../lexeme";
+import { normalizeLexeme } from "../lexeme";
 import type { Paradigm } from "../morphology";
+import { normalizeParadigm } from "../morphology";
 import type { Sample } from "../samples";
-import { sampleTitle } from "../samples";
+import { normalizeSample, sampleTitle } from "../samples";
 import {
   GRAMMAR_SECTIONS,
   applyStoredVersion,
@@ -24,6 +26,8 @@ import {
   systemsForSection,
 } from "../grammar.ts";
 import { GRAMMAR_STARTER_STEPS, nextStarterSystem, remainingStarterSystems } from "../grammar.ts";
+import { emptyGrammarUiState } from "../grammar.ts";
+import { loadGrammarIndex } from "../grammar/repository";
 import { starterPosition, starterStepLabel } from "../grammar/starter";
 import AgreementEditor from "../editor/AgreementEditor.svelte";
 import CustomRuleEditor from "../editor/CustomRuleEditor.svelte";
@@ -62,24 +66,50 @@ import type { ParadigmConfig } from "../grammar/types";
 let {
   context,
   selectedLanguage,
-  error,
-  paneLoading,
-  grammarUi,
-  records,
-  samples,
-  paradigms,
+  active,
+  registerLeaveGuard,
 }: {
   context: ModuleContext;
   selectedLanguage: EntitySummary | null;
-  error: string;
-  paneLoading: boolean;
-  grammarUi: GrammarUiState;
-  records: ModuleRecord<LexemeValue>[];
-  samples: ModuleRecord<Sample>[];
-  paradigms: ModuleRecord<Paradigm>[];
+  active: boolean;
+  registerLeaveGuard: (guard: (() => boolean) | null) => void;
 } = $props();
 
 let root: HTMLDivElement | undefined = $state();
+let cancelled = $state(false);
+let grammarUi: GrammarUiState = $state(emptyGrammarUiState());
+let records: ModuleRecord<LexemeValue>[] = $state([]);
+let samples: ModuleRecord<Sample>[] = $state([]);
+let paradigms: ModuleRecord<Paradigm>[] = $state([]);
+let paneLoading = $state(false);
+let error = $state("");
+let request = $state(0);
+
+let lastLoadedLanguage: string | null = null;
+
+$effect(() => {
+  const languageId = selectedLanguage?.id ?? null;
+  void languageId;
+  if (!active) return;
+  if (languageId === lastLoadedLanguage) return;
+  lastLoadedLanguage = languageId;
+  grammarUi = emptyGrammarUiState();
+  void loadGrammar();
+});
+
+$effect(() => {
+  if (!active) return;
+  registerLeaveGuard(() => tryLeaveGrammar(grammarUi, (message) => window.confirm(message)));
+  return () => {
+    registerLeaveGuard(null);
+  };
+});
+
+$effect(() => {
+  return () => {
+    cancelled = true;
+  };
+});
 
 const SYSTEM_STATUSES = ["unconfigured", "configured", "not-used"] as const satisfies readonly GrammarStatus[];
 
@@ -87,6 +117,39 @@ type AgreementRecord = { id: string; revision: string; value: GrammarAgreementRe
 type CustomRuleRecord = { id: string; revision: string; value: GrammarCustomRuleRecord };
 
 const windowConfirm = (message: string) => window.confirm(message);
+
+async function loadGrammar() {
+  if (!selectedLanguage) {
+    grammarUi.index = emptyGrammarUiState().index;
+    records = [];
+    samples = [];
+    paradigms = [];
+    paneLoading = false;
+    return;
+  }
+  const token = ++request;
+  paneLoading = true;
+  try {
+    const loaded = await loadGrammarIndex(context.records, selectedLanguage.id);
+    const [lexemes, sampleRecords, paradigmRecords] = await Promise.all([
+      context.records.list<LexemeValue>("lexemes", selectedLanguage.id, { limit: 500, sort: "lemma" }),
+      context.records.list<Sample>("samples", selectedLanguage.id, { limit: 100, sort: "title" }),
+      context.records.list<Paradigm>("paradigms", selectedLanguage.id, { limit: 100, sort: "name" }),
+    ]);
+    if (!cancelled && token === request) {
+      paneLoading = false;
+      grammarUi.index = loaded.index;
+      records = lexemes.map((record) => ({ ...record, value: normalizeLexeme(record.value) }));
+      samples = sampleRecords.map((record) => ({ ...record, value: normalizeSample(record.value) }));
+      paradigms = paradigmRecords.map((record) => ({ ...record, value: normalizeParadigm(record.value) }));
+    }
+  } catch (cause) {
+    if (!cancelled && token === request) {
+      paneLoading = false;
+      error = cause instanceof Error ? cause.message : String(cause);
+    }
+  }
+}
 
 const session = $derived(grammarUi.editing);
 const section = $derived(GRAMMAR_SECTIONS.find((item) => item.id === grammarUi.section));

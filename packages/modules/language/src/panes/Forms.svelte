@@ -1,15 +1,19 @@
 <script lang="ts">
-import type { EntitySummary, ModuleRecord } from "../../../../module-api/src/index";
+import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
 import type { LexemeValue } from "../lexeme";
-import { PART_OF_SPEECH_SUGGESTIONS } from "../lexeme";
+import { normalizeLexeme, PART_OF_SPEECH_SUGGESTIONS, serializeLexeme } from "../lexeme";
 import {
+  clearOverride,
   emptyOperation,
+  emptyParadigm,
   emptyRule,
   emptySlot,
   normalizeParadigm,
   OPERATION_KINDS,
   PARADIGM_KINDS,
+  pinOverride,
   previewParadigm,
+  serializeParadigm,
   type MorphOperationKind,
   type Paradigm,
   type ParadigmKind,
@@ -17,44 +21,50 @@ import {
 } from "../morphology";
 
 let {
+  context,
   selectedLanguage,
-  paneLoading,
-  error,
-  records,
-  paradigms,
-  paradigmEditing,
-  paradigmEditorOpen,
-  paradigmDraft,
-  previewStem = $bindable(""),
-  previewLexemeId = $bindable(""),
-  addParadigm,
-  openParadigmEditor,
-  closeParadigmEditor,
-  saveParadigm,
-  deleteParadigm,
-  pinPreviewOverride,
-  clearPreviewOverride,
+  active,
 }: {
+  context: ModuleContext;
   selectedLanguage: EntitySummary | null;
-  paneLoading: boolean;
-  error: string;
-  records: ModuleRecord<LexemeValue>[];
-  paradigms: ModuleRecord<Paradigm>[];
-  paradigmEditing: ModuleRecord<Paradigm> | null;
-  paradigmEditorOpen: boolean;
-  paradigmDraft: Paradigm;
-  previewStem: string;
-  previewLexemeId: string;
-  addParadigm: () => void;
-  openParadigmEditor: (record: ModuleRecord<Paradigm>) => void;
-  closeParadigmEditor: () => void;
-  saveParadigm: () => Promise<"ok" | "name" | "error" | "none">;
-  deleteParadigm: () => void;
-  pinPreviewOverride: (record: ModuleRecord<LexemeValue>, slot: ParadigmSlot, form: string) => void;
-  clearPreviewOverride: (record: ModuleRecord<LexemeValue>, slot: ParadigmSlot) => void;
+  active: boolean;
 } = $props();
 
+let cancelled = $state(false);
+let records: ModuleRecord<LexemeValue>[] = $state([]);
+let paradigms: ModuleRecord<Paradigm>[] = $state([]);
+let paradigmEditing = $state<ModuleRecord<Paradigm> | null>(null);
+let paradigmEditorOpen = $state(false);
+let paradigmDraft: Paradigm = $state(emptyParadigm());
+let previewStem = $state("");
+let previewLexemeId = $state("");
+let paneLoading = $state(false);
+let error = $state("");
+let request = $state(0);
+
 let nameInput: HTMLInputElement | undefined = $state();
+
+let lastLoadedLanguage: string | null = null;
+
+$effect(() => {
+  const languageId = selectedLanguage?.id ?? null;
+  void languageId;
+  if (!active) return;
+  if (languageId === lastLoadedLanguage) return;
+  lastLoadedLanguage = languageId;
+  paradigmEditing = null;
+  paradigmEditorOpen = false;
+  paradigmDraft = emptyParadigm();
+  previewStem = "";
+  previewLexemeId = "";
+  void loadForms();
+});
+
+$effect(() => {
+  return () => {
+    cancelled = true;
+  };
+});
 
 const slotOptions = $derived(
   paradigmDraft.slots.filter((slot) => slot.label.trim()).map((slot) => ({ id: slot.id, label: slot.label })),
@@ -70,6 +80,142 @@ const previewCells = $derived(
     previewParadigmId,
   ),
 );
+
+async function loadForms() {
+  if (!selectedLanguage) {
+    paradigms = [];
+    records = [];
+    paneLoading = false;
+    return;
+  }
+  const token = ++request;
+  paneLoading = true;
+  try {
+    const [tables, lexemes] = await Promise.all([
+      context.records.list<Paradigm>("paradigms", selectedLanguage.id, { limit: 100, sort: "name" }),
+      context.records.list<LexemeValue>("lexemes", selectedLanguage.id, { limit: 500, sort: "lemma" }),
+    ]);
+    if (!cancelled && token === request) {
+      paneLoading = false;
+      paradigms = tables.map((record) => ({ ...record, value: normalizeParadigm(record.value) }));
+      records = lexemes.map((record) => ({ ...record, value: normalizeLexeme(record.value) }));
+      if (paradigmEditing) {
+        const current = paradigms.find((record) => record.id === paradigmEditing?.id);
+        if (current) paradigmEditing = current;
+      }
+    }
+  } catch (cause) {
+    if (!cancelled && token === request) {
+      paneLoading = false;
+      error = cause instanceof Error ? cause.message : String(cause);
+    }
+  }
+}
+
+function addParadigm() {
+  paradigmEditing = null;
+  paradigmEditorOpen = true;
+  paradigmDraft = emptyParadigm();
+  previewStem = "";
+  previewLexemeId = "";
+}
+
+function openParadigmEditor(record: ModuleRecord<Paradigm>) {
+  paradigmEditing = record;
+  paradigmEditorOpen = true;
+  paradigmDraft = normalizeParadigm(record.value);
+  previewStem = "";
+  previewLexemeId = "";
+}
+
+function closeParadigmEditor() {
+  paradigmEditing = null;
+  paradigmEditorOpen = false;
+  paradigmDraft = emptyParadigm();
+  error = "";
+}
+
+async function saveParadigm(): Promise<"ok" | "name" | "error" | "none"> {
+  if (!selectedLanguage) return "none";
+  const value = normalizeParadigm(paradigmDraft);
+  if (!value.name) {
+    error = "Name is required.";
+    return "name";
+  }
+  error = "";
+  paradigmDraft = value;
+  try {
+    const payload = serializeParadigm(value);
+    if (paradigmEditing) {
+      const updated = await context.records.update("paradigms", paradigmEditing.id, selectedLanguage.id, payload, {
+        expectedRevision: paradigmEditing.revision,
+        requestId: crypto.randomUUID(),
+      });
+      paradigmEditing = { ...updated, value: normalizeParadigm(updated.value) };
+    } else {
+      const created = await context.records.create("paradigms", selectedLanguage.id, payload, {
+        requestId: crypto.randomUUID(),
+      });
+      paradigmEditing = { ...created, value: normalizeParadigm(created.value) };
+    }
+    paradigmEditorOpen = true;
+    paradigmDraft = paradigmEditing.value;
+    await loadForms();
+    return "ok";
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+    return "error";
+  }
+}
+
+async function deleteParadigm() {
+  if (!selectedLanguage || !paradigmEditing) return;
+  if (!window.confirm(`Delete “${paradigmEditing.value.name}”?`)) return;
+  error = "";
+  try {
+    await context.records.delete("paradigms", paradigmEditing.id, selectedLanguage.id, {
+      expectedRevision: paradigmEditing.revision,
+      requestId: crypto.randomUUID(),
+    });
+    paradigmEditing = null;
+    paradigmEditorOpen = false;
+    paradigmDraft = emptyParadigm();
+    await loadForms();
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+  }
+}
+
+async function persistLexemeForms(record: ModuleRecord<LexemeValue>, forms: LexemeValue["forms"]) {
+  if (!selectedLanguage) return;
+  const value = normalizeLexeme({ ...record.value, forms });
+  const updated = await context.records.update("lexemes", record.id, selectedLanguage.id, serializeLexeme(value), {
+    expectedRevision: record.revision,
+    requestId: crypto.randomUUID(),
+  });
+  const next = { ...updated, value: normalizeLexeme(updated.value) };
+  records = records.map((item) => (item.id === next.id ? next : item));
+}
+
+async function pinPreviewOverride(record: ModuleRecord<LexemeValue>, slot: ParadigmSlot, form: string) {
+  const paradigmId = paradigmEditing?.id;
+  if (!paradigmId) return;
+  try {
+    await persistLexemeForms(record, pinOverride(record.value.forms, paradigmId, slot, form));
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+  }
+}
+
+async function clearPreviewOverride(record: ModuleRecord<LexemeValue>, slot: ParadigmSlot) {
+  const paradigmId = paradigmEditing?.id;
+  if (!paradigmId) return;
+  try {
+    await persistLexemeForms(record, clearOverride(record.value.forms, paradigmId, slot));
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+  }
+}
 
 $effect(() => {
   if (paradigmEditorOpen && nameInput) nameInput.focus();

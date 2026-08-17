@@ -1,13 +1,19 @@
 <script lang="ts">
-import type { EntitySummary, ModuleRecord } from "../../../../module-api/src/index";
+import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
 import {
   BACKNESS_SUGGESTIONS,
   consonantChart,
+  emptyPhoneme,
+  emptyPhonologyNotes,
   HEIGHT_SUGGESTIONS,
   MANNER_SUGGESTIONS,
+  normalizePhoneme,
+  normalizePhonologyNotes,
   PHONEME_KINDS,
   PLACE_SUGGESTIONS,
   ROUNDING_SUGGESTIONS,
+  serializePhoneme,
+  serializePhonologyNotes,
   VOICING_SUGGESTIONS,
   vowelChart,
   type PhonemeValue,
@@ -15,42 +21,49 @@ import {
 } from "../phonology";
 
 let {
+  context,
   selectedLanguage,
-  paneLoading,
-  error,
-  phonemes,
-  phonemeEditing,
-  phonemeEditorOpen,
-  phonemeDraft,
-  phonologyRecord,
-  phonologyDraft,
-  phonologyNotesOpen,
-  addPhoneme,
-  openPhonemeEditor,
-  closePhonemeEditor,
-  savePhoneme,
-  deletePhoneme,
-  savePhonology,
+  active,
 }: {
+  context: ModuleContext;
   selectedLanguage: EntitySummary | null;
-  paneLoading: boolean;
-  error: string;
-  phonemes: ModuleRecord<PhonemeValue>[];
-  phonemeEditing: ModuleRecord<PhonemeValue> | null;
-  phonemeEditorOpen: boolean;
-  phonemeDraft: PhonemeValue;
-  phonologyRecord: ModuleRecord<PhonologyNotes> | null;
-  phonologyDraft: PhonologyNotes;
-  phonologyNotesOpen: boolean;
-  addPhoneme: () => void;
-  openPhonemeEditor: (record: ModuleRecord<PhonemeValue>) => void;
-  closePhonemeEditor: () => void;
-  savePhoneme: () => Promise<"ok" | "symbol" | "error" | "none">;
-  deletePhoneme: () => void;
-  savePhonology: () => Promise<void>;
+  active: boolean;
 } = $props();
 
+let cancelled = $state(false);
+let phonemes: ModuleRecord<PhonemeValue>[] = $state([]);
+let phonemeEditing = $state<ModuleRecord<PhonemeValue> | null>(null);
+let phonemeEditorOpen = $state(false);
+let phonemeDraft: PhonemeValue = $state(emptyPhoneme());
+let phonologyRecord = $state<ModuleRecord<PhonologyNotes> | null>(null);
+let phonologyDraft: PhonologyNotes = $state(emptyPhonologyNotes());
+let phonologyNotesOpen = $state(false);
+let paneLoading = $state(false);
+let error = $state("");
+let request = $state(0);
+
 let symbolInput: HTMLInputElement | undefined = $state();
+
+let lastLoadedLanguage: string | null = null;
+
+$effect(() => {
+  const languageId = selectedLanguage?.id ?? null;
+  void languageId;
+  if (!active) return;
+  if (languageId === lastLoadedLanguage) return;
+  lastLoadedLanguage = languageId;
+  phonemeEditing = null;
+  phonemeEditorOpen = false;
+  phonemeDraft = emptyPhoneme();
+  phonologyNotesOpen = false;
+  void loadSounds();
+});
+
+$effect(() => {
+  return () => {
+    cancelled = true;
+  };
+});
 
 const phonemeValues = $derived(phonemes.map((record) => record.value));
 const consonants = $derived(consonantChart(phonemeValues));
@@ -59,6 +72,40 @@ const otherSounds = $derived(
   phonemes.filter((record) => record.value.kind === "tone" || record.value.kind === "other"),
 );
 
+async function loadSounds() {
+  if (!selectedLanguage) {
+    phonemes = [];
+    phonologyRecord = null;
+    phonologyDraft = emptyPhonologyNotes();
+    phonologyNotesOpen = false;
+    paneLoading = false;
+    return;
+  }
+  const token = ++request;
+  paneLoading = true;
+  try {
+    const [inventory, notes] = await Promise.all([
+      context.records.list<PhonemeValue>("phonemes", selectedLanguage.id, { limit: 100, sort: "symbol" }),
+      context.records.list<PhonologyNotes>("phonology", selectedLanguage.id, { limit: 1 }),
+    ]);
+    if (!cancelled && token === request) {
+      paneLoading = false;
+      phonemes = inventory.map((record) => ({ ...record, value: normalizePhoneme(record.value) }));
+      phonologyRecord = notes[0] ? { ...notes[0], value: normalizePhonologyNotes(notes[0].value) } : null;
+      phonologyDraft = phonologyRecord?.value ?? emptyPhonologyNotes();
+      if (phonemeEditing) {
+        const current = phonemes.find((record) => record.id === phonemeEditing?.id);
+        if (current) phonemeEditing = current;
+      }
+    }
+  } catch (cause) {
+    if (!cancelled && token === request) {
+      paneLoading = false;
+      error = cause instanceof Error ? cause.message : String(cause);
+    }
+  }
+}
+
 function chartItems(chart: ReturnType<typeof consonantChart>, row: string, column: string) {
   return chart.cells.find((entry) => entry.row === row && entry.column === column)?.items ?? [];
 }
@@ -66,6 +113,99 @@ function chartItems(chart: ReturnType<typeof consonantChart>, row: string, colum
 function openFromChart(item: PhonemeValue) {
   const record = phonemes.find((entry) => entry.value.symbol === item.symbol && entry.value.kind === item.kind);
   if (record) openPhonemeEditor(record);
+}
+
+function addPhoneme() {
+  phonemeEditing = null;
+  phonemeEditorOpen = true;
+  phonemeDraft = emptyPhoneme();
+}
+
+function openPhonemeEditor(record: ModuleRecord<PhonemeValue>) {
+  phonemeEditing = record;
+  phonemeEditorOpen = true;
+  phonemeDraft = normalizePhoneme(record.value);
+}
+
+function closePhonemeEditor() {
+  phonemeEditing = null;
+  phonemeEditorOpen = false;
+  phonemeDraft = emptyPhoneme();
+  error = "";
+}
+
+async function savePhoneme(): Promise<"ok" | "symbol" | "error" | "none"> {
+  if (!selectedLanguage) return "none";
+  phonemeDraft = normalizePhoneme(phonemeDraft);
+  if (!phonemeDraft.symbol) {
+    error = "Symbol is required. IPA is optional.";
+    return "symbol";
+  }
+  error = "";
+  try {
+    const payload = serializePhoneme(phonemeDraft);
+    if (phonemeEditing) {
+      const updated = await context.records.update("phonemes", phonemeEditing.id, selectedLanguage.id, payload, {
+        expectedRevision: phonemeEditing.revision,
+        requestId: crypto.randomUUID(),
+      });
+      phonemeEditing = { ...updated, value: normalizePhoneme(updated.value) };
+    } else {
+      const created = await context.records.create("phonemes", selectedLanguage.id, payload, {
+        requestId: crypto.randomUUID(),
+      });
+      phonemeEditing = { ...created, value: normalizePhoneme(created.value) };
+    }
+    phonemeEditorOpen = true;
+    phonemeDraft = phonemeEditing.value;
+    await loadSounds();
+    return "ok";
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+    return "error";
+  }
+}
+
+async function deletePhoneme() {
+  if (!selectedLanguage || !phonemeEditing) return;
+  if (!window.confirm(`Delete “${phonemeEditing.value.symbol}”?`)) return;
+  error = "";
+  try {
+    await context.records.delete("phonemes", phonemeEditing.id, selectedLanguage.id, {
+      expectedRevision: phonemeEditing.revision,
+      requestId: crypto.randomUUID(),
+    });
+    phonemeEditing = null;
+    phonemeEditorOpen = false;
+    phonemeDraft = emptyPhoneme();
+    await loadSounds();
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+  }
+}
+
+async function savePhonology() {
+  if (!selectedLanguage) return;
+  error = "";
+  try {
+    phonologyDraft = normalizePhonologyNotes(phonologyDraft);
+    const payload = serializePhonologyNotes(phonologyDraft);
+    if (phonologyRecord) {
+      const updated = await context.records.update("phonology", phonologyRecord.id, selectedLanguage.id, payload, {
+        expectedRevision: phonologyRecord.revision,
+        requestId: crypto.randomUUID(),
+      });
+      phonologyRecord = { ...updated, value: normalizePhonologyNotes(updated.value) };
+    } else {
+      const created = await context.records.create("phonology", selectedLanguage.id, payload, {
+        requestId: crypto.randomUUID(),
+      });
+      phonologyRecord = { ...created, value: normalizePhonologyNotes(created.value) };
+    }
+    phonologyDraft = phonologyRecord.value;
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+  }
 }
 
 function handleSubmit(event: SubmitEvent) {

@@ -25,13 +25,15 @@ import {
 } from "../grammar.ts";
 import { GRAMMAR_STARTER_STEPS, nextStarterSystem, remainingStarterSystems } from "../grammar.ts";
 import { starterPosition, starterStepLabel } from "../grammar/starter";
-import { renderCustomRuleEditor } from "../grammar/rules";
-import { renderAgreementEditor, summarizeAgreement } from "../grammar/agreement";
-import { renderChoiceEditor } from "../grammar/choice";
-import { referencedCategoryIds, renderInventoryEditor } from "../grammar/inventory";
-import { renderStrategyEditor } from "../grammar/strategy";
-import { renderClauseEditor } from "../grammar/clause";
-import { renderParadigmEditor } from "../grammar/paradigm";
+import AgreementEditor from "../editor/AgreementEditor.svelte";
+import CustomRuleEditor from "../editor/CustomRuleEditor.svelte";
+import SystemEditor from "../editor/SystemEditor.svelte";
+import { summarizeAgreement } from "../grammar/agreement";
+import { isClauseSystem } from "../grammar/clause";
+import { isChoiceSystem } from "../grammar/choice";
+import { isInventorySystem, referencedCategoryIds } from "../grammar/inventory";
+import { isParadigmSystem } from "../grammar/paradigm";
+import { isStrategySystem } from "../grammar/strategy";
 import {
   deleteGrammarEditor,
   goHome,
@@ -78,10 +80,6 @@ let {
 } = $props();
 
 let root: HTMLDivElement | undefined = $state();
-let systemHost: HTMLDivElement | undefined = $state();
-let agreementHost: HTMLDivElement | undefined = $state();
-let customRuleHost: HTMLDivElement | undefined = $state();
-let hostTick = $state(0);
 
 const SYSTEM_STATUSES = ["unconfigured", "configured", "not-used"] as const satisfies readonly GrammarStatus[];
 
@@ -110,15 +108,29 @@ const unusedAgreementState = $derived.by(() => {
   if (!loaded || loaded.value.recordKind !== "section-state") return undefined;
   return { ...loaded, value: loaded.value } as { id: string; revision: string; value: GrammarSectionStateRecord };
 });
+const agreementChoices = $derived(
+  grammarUi.index.agreements.flatMap((item) =>
+    item.value.recordKind === "agreement" ? [{ id: item.id, title: item.value.title }] : [],
+  ),
+);
+const negativeVerbSummary = $derived.by(() => {
+  const value = grammarUi.index.systems.get("verbs.negative-forms")?.value;
+  return value?.recordKind === "system" ? summarizeSystem("verbs.negative-forms", value) : undefined;
+});
+const relativePositionSummary = $derived.by(() => {
+  const value = grammarUi.index.systems.get("syntax.relative-clause-position")?.value;
+  return value?.recordKind === "system" ? summarizeSystem("syntax.relative-clause-position", value) : undefined;
+});
+const pronounAxes = $derived.by(() => {
+  const value = grammarUi.index.systems.get("pronouns.personal")?.value;
+  return value?.recordKind === "system" ? (value.config as ParadigmConfig).axes : undefined;
+});
 
 const ctx: GrammarPaneContext = $derived({
   languageName: selectedLanguage?.name,
   ownerId: selectedLanguage?.id,
   records: context.records,
   confirm: windowConfirm,
-  render: () => {
-    hostTick += 1;
-  },
   choices: {
     lexemes: records.map((record) => ({ id: record.id, lemma: record.value.lemma })),
     samples: samples.map((record) => ({ id: record.id, title: sampleTitle(record.value) })),
@@ -170,114 +182,6 @@ $effect(() => {
   root.querySelector<HTMLElement>(target)?.focus();
 });
 
-$effect(() => {
-  const editing = grammarUi.editing;
-  const tick = hostTick;
-  const host = systemHost;
-  if (!editing || !host) return;
-  untrack(() => {
-    const draft = editing.draft;
-    if (draft.recordKind !== "system" || draft.status !== "configured") return;
-    const onChange = (next: GrammarSystemRecord, rerender: boolean) => {
-      if (editing.draft.recordKind !== "system") return;
-      editing.draft = next;
-      if (rerender) hostTick += 1;
-    };
-    let node: HTMLElement | null = renderChoiceEditor(draft, editing.locked, onChange);
-    if (!node) {
-      node = renderInventoryEditor(
-        draft,
-        editing.locked,
-        { referencedIds: referencedCategoryIds(grammarUi.index, draft.systemId), confirm: windowConfirm },
-        onChange,
-      );
-    }
-    if (!node) {
-      node = renderStrategyEditor(
-        draft,
-        editing.locked,
-        {
-          agreements: grammarUi.index.agreements.flatMap((item) =>
-            item.value.recordKind === "agreement" ? [{ id: item.id, title: item.value.title }] : [],
-          ),
-        },
-        onChange,
-      );
-    }
-    if (!node) {
-      const negativeVerb = grammarUi.index.systems.get("verbs.negative-forms")?.value;
-      const relativePosition = grammarUi.index.systems.get("syntax.relative-clause-position")?.value;
-      node = renderClauseEditor(
-        draft,
-        editing.locked,
-        {
-          lexemes: ctx.choices.lexemes,
-          negativeVerbSummary:
-            negativeVerb?.recordKind === "system" ? summarizeSystem("verbs.negative-forms", negativeVerb) : undefined,
-          relativePositionSummary:
-            relativePosition?.recordKind === "system"
-              ? summarizeSystem("syntax.relative-clause-position", relativePosition)
-              : undefined,
-        },
-        onChange,
-      );
-    }
-    if (!node) {
-      const personalPronouns = grammarUi.index.systems.get("pronouns.personal")?.value;
-      node = renderParadigmEditor(
-        draft,
-        editing.locked,
-        {
-          confirm: windowConfirm,
-          referencedIds: referencedCategoryIds(grammarUi.index, draft.systemId),
-          pronounAxes:
-            personalPronouns?.recordKind === "system" ? (personalPronouns.config as ParadigmConfig).axes : undefined,
-          agreements: grammarUi.index.agreements.flatMap((item) =>
-            item.value.recordKind === "agreement" ? [{ id: item.id, title: item.value.title }] : [],
-          ),
-        },
-        onChange,
-      );
-    }
-    if (node) host.replaceChildren(node);
-    else host.replaceChildren();
-  });
-});
-
-$effect(() => {
-  const editing = grammarUi.editing;
-  const tick = hostTick;
-  const host = agreementHost;
-  if (!editing || !host) return;
-  untrack(() => {
-    const draft = editing.draft;
-    if (draft.recordKind !== "agreement") return;
-    const node = renderAgreementEditor(draft, editing.locked, grammarUi.index, (next, rerender) => {
-      if (editing.draft.recordKind !== "agreement") return;
-      editing.draft = next;
-      if (rerender) hostTick += 1;
-    });
-    host.replaceChildren(node);
-  });
-});
-
-$effect(() => {
-  const editing = grammarUi.editing;
-  const tick = hostTick;
-  const host = customRuleHost;
-  if (!editing || !host) return;
-  untrack(() => {
-    const draft = editing.draft;
-    if (draft.recordKind !== "custom-rule") return;
-    const node = renderCustomRuleEditor(draft, editing.locked, (next, rerender) => {
-      if (editing.draft.recordKind !== "custom-rule") return;
-      editing.draft = next;
-      if (rerender) hostTick += 1;
-    });
-    host.replaceChildren(node);
-  });
-});
-
 function grammarFocusSelector(draftValue: GrammarEditSession["draft"], recordId?: string) {
   if (draftValue.recordKind === "system") return `[data-grammar-id="system:${draftValue.systemId}"]`;
   if (draftValue.recordKind === "agreement") return `[data-grammar-id="agreement:${recordId ?? ""}"]`;
@@ -309,7 +213,6 @@ function handleStatusChange(status: GrammarStatus) {
     if (!windowConfirm("Reset this system's configuration? Unsaved settings in this editor will be cleared.")) return;
   }
   current.draft = setSystemStatus(value, status);
-  hostTick += 1;
 }
 
 function advanceStarter(current: GrammarSystemId) {
@@ -536,7 +439,16 @@ function removeLink(index: number) {
           {#if configuredMinimum(systemDraft.systemId, systemDraft.config)}
             <p class="language-empty" role="status">{summarizeSystem(systemDraft.systemId, systemDraft)}</p>
           {/if}
-          <div bind:this={systemHost}></div>
+          <SystemEditor
+            draft={systemDraft}
+            locked={session.locked}
+            lexemes={ctx.choices.lexemes}
+            referencedIds={referencedCategoryIds(grammarUi.index, systemDraft.systemId)}
+            confirm={windowConfirm}
+            agreements={agreementChoices}
+            {negativeVerbSummary}
+            {relativePositionSummary}
+            {pronounAxes} />
         {/if}
         {#if systemDraft.status === "not-used"}
           <label class="language-field">
@@ -560,7 +472,7 @@ function removeLink(index: number) {
         {/if}
       {:else if session.draft.recordKind === "agreement"}
         {@const agreementDraft = session.draft}
-        <div bind:this={agreementHost}></div>
+        <AgreementEditor draft={agreementDraft} locked={session.locked} index={grammarUi.index} />
         <label class="language-field">
           <span>Notes</span>
           <textarea
@@ -570,7 +482,8 @@ function removeLink(index: number) {
             oninput={(event) => (agreementDraft.notes = event.currentTarget.value)}></textarea>
         </label>
       {:else if session.draft.recordKind === "custom-rule"}
-        <div bind:this={customRuleHost}></div>
+        {@const customRuleDraft = session.draft}
+        <CustomRuleEditor draft={customRuleDraft} locked={session.locked} />
       {:else if session.draft.recordKind === "section-state"}
         {@const sectionDraft = session.draft}
         <p class="language-empty" role="status">

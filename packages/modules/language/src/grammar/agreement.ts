@@ -1,4 +1,3 @@
-import { emptyMessage, field, input, textarea } from "../ui.ts";
 import { grammarSystemDescriptor } from "./catalog.ts";
 import { MAX_FEATURES } from "./normalize.ts";
 import type {
@@ -206,117 +205,12 @@ export function groupSelected(draft: GrammarAgreementRecord, group: OfferedAgree
   );
 }
 
-export function renderAgreementEditor(
-  draft: GrammarAgreementRecord,
-  locked: boolean,
-  index: IndexedGrammar,
-  onChange: (next: GrammarAgreementRecord, rerender: boolean) => void,
-): HTMLElement {
-  const section = document.createElement("section");
-  section.className = "language-group grammar-choice-stack";
-  section.append(emptyMessage("Which element determines the grammatical features? Which element changes to match it?"));
-  const titleField = input("title", draft.title);
-  titleField.disabled = locked;
-  titleField.oninput = () => onChange(setAgreementField(draft, "title", titleField.value), false);
-  section.append(field("Title", titleField));
-  section.append(
-    radios("Controller", CONTROLLER_OPTIONS, draft.controller.kind, locked, (value) => {
-      onChange(setAgreementController(draft, value as AgreementControllerKind), true);
-    }),
-  );
-  if (draft.controller.kind === "custom") {
-    const custom = input("controllerCustom", draft.controller.customLabel ?? "");
-    custom.disabled = locked;
-    custom.oninput = () => onChange(setAgreementEndpointLabel(draft, "controller", custom.value), false);
-    section.append(field("Custom controller", custom));
-  }
-  section.append(
-    radios("Target", TARGET_OPTIONS, draft.target.kind, locked, (value) => {
-      onChange(setAgreementTarget(draft, value as AgreementTargetKind), true);
-    }),
-  );
-  if (draft.target.kind === "custom") {
-    const custom = input("targetCustom", draft.target.customLabel ?? "");
-    custom.disabled = locked;
-    custom.oninput = () => onChange(setAgreementEndpointLabel(draft, "target", custom.value), false);
-    section.append(field("Custom target", custom));
-  }
-  const groups = offeredAgreementGroups(index);
-  const features = document.createElement("fieldset");
-  features.className = "grammar-checks";
-  const legend = document.createElement("legend");
-  legend.textContent = `${endpointLabel(draft.target)} agrees with ${endpointLabel(draft.controller)} in`;
-  features.append(legend);
-  if (groups.length === 0)
-    features.append(emptyMessage("Configure number, case, classes, or pronouns first to reuse those categories here."));
-  for (const group of groups) {
-    const label = document.createElement("label");
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.checked = groupSelected(draft, group);
-    box.disabled = locked;
-    box.onchange = () => onChange(toggleAgreementGroup(draft, group), true);
-    label.append(box, ` ${group.label}`);
-    features.append(label);
-  }
-  section.append(features);
-  const customFeatures = draft.features.filter((item) => !item.sourceSystemId);
-  for (const feature of customFeatures) {
-    const featureIndex = draft.features.indexOf(feature);
-    const row = document.createElement("div");
-    row.className = "grammar-inventory-toolbar";
-    const name = input("customFeature", feature.label);
-    name.disabled = locked;
-    name.oninput = () => onChange(updateAgreementFeature(draft, featureIndex, { label: name.value }), false);
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.className = "language-button secondary language-danger";
-    remove.textContent = "Remove";
-    remove.disabled = locked;
-    remove.onclick = () => onChange(removeAgreementFeature(draft, featureIndex), true);
-    row.append(name, remove);
-    section.append(field("Custom feature", row));
-  }
-  if (!locked) {
-    const add = document.createElement("button");
-    add.type = "button";
-    add.className = "language-button secondary";
-    add.textContent = "Add custom feature";
-    add.onclick = () => onChange(addCustomAgreementFeature(draft), true);
-    section.append(add);
-  }
-  const broken = draft.features.filter(
+export function brokenAgreementFeatures(index: IndexedGrammar, record: GrammarAgreementRecord) {
+  return record.features.filter(
     (item) =>
       (item.sourceSystemId && item.categoryId && !liveCategoryLabel(index, item.sourceSystemId, item.categoryId)) ||
       (item.sourceSystemId && !item.categoryId && !configured(index, item.sourceSystemId)),
   );
-  if (broken.length) {
-    section.append(
-      emptyMessage(
-        `Broken references: ${broken.map((item) => item.label).join(", ")}. Edit the owning system to restore them, or remove the feature.`,
-      ),
-    );
-  }
-  section.append(
-    radios("Behavior", BEHAVIOR_OPTIONS, draft.behavior, locked, (value) => {
-      onChange(setAgreementBehavior(draft, value as AgreementBehavior), true);
-    }),
-  );
-  const defaultForm = input("defaultForm", draft.defaultForm ?? "");
-  defaultForm.disabled = locked;
-  defaultForm.oninput = () => onChange(setAgreementField(draft, "defaultForm", defaultForm.value), false);
-  const conditions = textarea("conditions", draft.conditions ?? "", 3);
-  conditions.disabled = locked;
-  conditions.oninput = () => onChange(setAgreementField(draft, "conditions", conditions.value), false);
-  const exceptions = textarea("exceptions", draft.exceptions ?? "", 3);
-  exceptions.disabled = locked;
-  exceptions.oninput = () => onChange(setAgreementField(draft, "exceptions", exceptions.value), false);
-  section.append(
-    field("Default form (optional)", defaultForm),
-    field("Conditions (optional)", conditions),
-    field("Exceptions (optional)", exceptions),
-  );
-  return section;
 }
 
 function withAutoTitle(draft: GrammarAgreementRecord, patch: Partial<GrammarAgreementRecord>): GrammarAgreementRecord {
@@ -404,40 +298,4 @@ function liveCategoryLabel(index: IndexedGrammar, systemId: GrammarSystemId, cat
   if (fromInventory?.label) return fromInventory.label;
   const axis = (config.axes ?? []).find((item) => item.id === categoryId);
   return axis?.label;
-}
-
-function radios(
-  legendText: string,
-  options: { value: string; label: string; expansion?: string }[],
-  selected: string | undefined,
-  locked: boolean,
-  onChange: (value: string) => void,
-) {
-  const group = document.createElement("fieldset");
-  group.className = "grammar-choices";
-  const legend = document.createElement("legend");
-  legend.textContent = legendText;
-  group.append(legend);
-  for (const option of options) {
-    const card = document.createElement("label");
-    card.className = "grammar-choice";
-    if (option.value === selected) card.classList.add("is-selected");
-    const radio = document.createElement("input");
-    radio.type = "radio";
-    radio.name = legendText;
-    radio.value = option.value;
-    radio.checked = option.value === selected;
-    radio.disabled = locked;
-    radio.onchange = () => onChange(option.value);
-    const title = document.createElement("strong");
-    title.textContent = option.label;
-    card.append(radio, title);
-    if (option.expansion) {
-      const hint = document.createElement("span");
-      hint.textContent = option.expansion;
-      card.append(hint);
-    }
-    group.append(card);
-  }
-  return group;
 }

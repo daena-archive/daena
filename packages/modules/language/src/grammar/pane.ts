@@ -17,7 +17,6 @@ export type GrammarPaneContext = {
   ownerId?: UUID;
   records: GrammarRecordsApi;
   confirm: (message: string) => boolean;
-  render: () => void;
   choices: GrammarLinkChoices;
 };
 

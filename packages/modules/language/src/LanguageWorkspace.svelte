@@ -1708,4 +1708,111 @@ async function submitCreateLanguage(event: SubmitEvent) {
 .language-status.error {
   color: #a14f42;
 }
+:global(.language-panel h2),
+:global(.language-panel h3) {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 500;
+}
+:global(.language-panel h2) {
+  font-size: 24px;
+  line-height: 1.15;
+}
+:global(.language-panel h3) {
+  font-size: 16px;
+  line-height: 1.3;
+}
+:global(.language-button) {
+  padding: 8px 12px;
+  border: 1px solid var(--accent-dark);
+  border-radius: 8px;
+  background: var(--accent-dark);
+  color: #fff;
+  cursor: pointer;
+}
+:global(.language-button:hover) {
+  filter: brightness(1.06);
+}
+:global(.language-button.secondary) {
+  background: transparent;
+  color: var(--accent-dark);
+}
+:global(.language-button.secondary:hover) {
+  background: var(--surface-muted);
+}
+:global(.language-button:disabled) {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: none;
+}
+:global(.language-button:focus-visible) {
+  outline: 3px solid rgba(180, 119, 63, 0.24);
+  outline-offset: 2px;
+}
+:global(.language-danger) {
+  border-color: #a14f42 !important;
+  color: #a14f42 !important;
+  background: transparent;
+}
+:global(.language-group) {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+:global(.language-group .language-group) {
+  background: var(--surface);
+}
+:global(.language-field) {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+  letter-spacing: 0.01em;
+}
+:global(.language-field input),
+:global(.language-field textarea) {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+:global(.language-field textarea) {
+  min-height: 4.5em;
+  resize: vertical;
+}
+:global(.language-inline) {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  min-width: 0;
+}
+:global(.language-inline > .language-button) {
+  flex: 0 0 auto;
+}
+:global(.language-empty),
+:global(.language-status) {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.6;
+}
+:global(.language-status.error) {
+  color: #a14f42;
+}
+@media (max-width: 760px) {
+  :global(.language-inline) {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
 </style>

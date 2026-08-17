@@ -556,4 +556,8 @@ async function handleSubmit(event: SubmitEvent) {
   font: inherit;
   cursor: pointer;
 }
+:global(.sample-ref:focus-visible) {
+  outline: 3px solid rgba(180, 119, 63, 0.24);
+  outline-offset: 2px;
+}
 </style>

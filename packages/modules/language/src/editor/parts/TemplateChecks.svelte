@@ -32,6 +32,28 @@ let {
 </fieldset>
 
 <style>
+.grammar-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.grammar-checks legend {
+  padding: 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+.grammar-checks label {
+  display: grid;
+  gap: 2px;
+  align-content: start;
+}
+.grammar-checks input:focus-visible {
+  outline: 3px solid rgba(180, 119, 63, 0.24);
+  outline-offset: 2px;
+}
 .grammar-template-hint {
   color: var(--ink-faint);
   font-size: 11px;

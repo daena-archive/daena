@@ -843,20 +843,6 @@ function removeLink(index: number) {
   font-size: 12px;
   line-height: 1.55;
 }
-:global(.language-panel h2),
-:global(.language-panel h3) {
-  margin: 0;
-  font-family: var(--font-display);
-  font-weight: 500;
-}
-:global(.language-panel h2) {
-  font-size: 24px;
-  line-height: 1.15;
-}
-:global(.language-panel h3) {
-  font-size: 16px;
-  line-height: 1.3;
-}
 .language-toolbar {
   display: flex;
   align-items: center;
@@ -906,35 +892,8 @@ function removeLink(index: number) {
   min-height: 4.5em;
   resize: vertical;
 }
-:global(.language-button) {
-  padding: 8px 12px;
-  border: 1px solid var(--accent-dark);
-  border-radius: 8px;
-  background: var(--accent-dark);
-  color: #fff;
-  cursor: pointer;
-}
-:global(.language-button:hover) {
-  filter: brightness(1.06);
-}
-:global(.language-button.secondary) {
-  background: transparent;
-  color: var(--accent-dark);
-}
-:global(.language-button.secondary:hover) {
-  background: var(--surface-muted);
-}
-:global(.language-button:disabled) {
-  opacity: 0.45;
-  cursor: not-allowed;
-  filter: none;
-}
-:global(.language-button:focus-visible),
-:global(.sample-ref:focus-visible),
-:global(.grammar-choice:focus-within),
-:global(.grammar-status input:focus-visible),
-:global(.grammar-checks input:focus-visible),
-:global(.grammar-learn summary:focus-visible) {
+.grammar-status input:focus-visible,
+.grammar-learn summary:focus-visible {
   outline: 3px solid rgba(180, 119, 63, 0.24);
   outline-offset: 2px;
 }
@@ -1002,26 +961,6 @@ function removeLink(index: number) {
   gap: 8px;
   flex-wrap: wrap;
 }
-:global(.language-danger) {
-  border-color: #a14f42 !important;
-  color: #a14f42 !important;
-  background: transparent;
-}
-:global(.language-group) {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface-muted);
-}
-:global(.language-group .language-group) {
-  background: var(--surface);
-}
-:global(.language-inline > .language-button) {
-  flex: 0 0 auto;
-}
 .language-inline {
   display: flex;
   align-items: end;
@@ -1088,7 +1027,7 @@ function removeLink(index: number) {
   display: grid;
   gap: 8px;
 }
-:global(.grammar-status) {
+.grammar-status {
   display: flex;
   gap: 14px;
   flex-wrap: wrap;
@@ -1096,7 +1035,7 @@ function removeLink(index: number) {
   margin: 0;
   padding: 0;
 }
-:global(.grammar-status legend) {
+.grammar-status legend {
   padding: 0;
   color: var(--ink-soft);
   font-size: 11px;
@@ -1106,143 +1045,12 @@ function removeLink(index: number) {
   font-size: 13px;
   line-height: 1.55;
 }
-:global(.grammar-learn) {
+.grammar-learn {
   margin: 4px 0 8px;
-}
-:global(.grammar-choice-editor),
-:global(.grammar-choice-stack) {
-  display: grid;
-  gap: 12px;
-  min-width: 0;
-}
-:global(.grammar-choices),
-:global(.grammar-checks) {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-:global(.grammar-choices) {
-  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
-}
-:global(.grammar-choices legend),
-:global(.grammar-checks legend),
-:global(.grammar-status legend) {
-  padding: 0;
-  color: var(--ink-soft);
-  font-size: 11px;
-}
-:global(.grammar-choice) {
-  display: grid;
-  gap: 4px;
-  align-content: start;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
-  cursor: pointer;
-}
-:global(.grammar-choice.is-selected) {
-  border-color: var(--accent-dark);
-  background: var(--surface-muted);
-}
-:global(.grammar-choice input) {
-  margin: 0;
-}
-:global(.grammar-choice span),
-:global(.grammar-choice em) {
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.45;
-}
-:global(.grammar-choice em) {
-  font-style: italic;
-}
-:global(.grammar-checks) {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-}
-:global(.grammar-checks label) {
-  display: grid;
-  gap: 2px;
-  align-content: start;
-}
-:global(.grammar-template-hint) {
-  color: var(--ink-faint);
-  font-size: 11px;
-}
-:global(.grammar-inventory),
-:global(.grammar-inventory-item) {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-}
-:global(.grammar-inventory-item) {
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
-}
-:global(.grammar-inventory-toolbar) {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-:global(.grammar-paradigm) {
-  overflow: auto;
-  max-width: 100%;
-  max-height: min(70vh, 36rem);
-}
-:global(.grammar-paradigm-table) {
-  border-collapse: collapse;
-  min-width: 100%;
-}
-:global(.grammar-paradigm-table caption.visually-hidden),
-:global(.visually-hidden) {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-:global(.grammar-paradigm-table th),
-:global(.grammar-paradigm-table td) {
-  border: 1px solid var(--line);
-  padding: 8px;
-  vertical-align: top;
-  text-align: left;
-  background: var(--surface);
-}
-:global(.grammar-paradigm-table thead th) {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  background: var(--surface-muted);
-}
-:global(.grammar-paradigm-table th[scope="row"]) {
-  position: sticky;
-  left: 0;
-  z-index: 1;
-}
-:global(.grammar-paradigm-table thead th:first-child) {
-  z-index: 3;
-  left: 0;
 }
 .grammar-starter-list {
   margin: 0;
   padding-left: 1.2em;
-}
-:global(.grammar-paradigm-cell) {
-  display: grid;
-  gap: 6px;
-  min-width: 8rem;
 }
 .grammar-diagnostic {
   display: grid;

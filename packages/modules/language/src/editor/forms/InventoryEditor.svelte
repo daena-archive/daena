@@ -277,4 +277,11 @@ function applyRemoval(result: InventoryMutation) {
   gap: 12px;
   min-width: 0;
 }
+.grammar-learn {
+  margin: 4px 0 8px;
+}
+.grammar-learn summary:focus-visible {
+  outline: 3px solid rgba(180, 119, 63, 0.24);
+  outline-offset: 2px;
+}
 </style>

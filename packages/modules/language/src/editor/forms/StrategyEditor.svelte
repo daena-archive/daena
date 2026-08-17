@@ -267,3 +267,13 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
     <p class="language-empty" role="status">Irregular forms can be recorded as examples.</p>
   {/if}
 </Group>
+
+<style>
+.grammar-learn {
+  margin: 4px 0 8px;
+}
+.grammar-learn summary:focus-visible {
+  outline: 3px solid rgba(180, 119, 63, 0.24);
+  outline-offset: 2px;
+}
+</style>

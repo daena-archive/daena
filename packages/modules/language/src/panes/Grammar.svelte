@@ -92,7 +92,10 @@ $effect(() => {
   const languageId = selectedLanguage?.id ?? null;
   void languageId;
   if (!active) return;
-  if (languageId === lastLoadedLanguage) return;
+  if (languageId === lastLoadedLanguage) {
+    void loadGrammar();
+    return;
+  }
   lastLoadedLanguage = languageId;
   grammarUi = emptyGrammarUiState();
   void loadGrammar();

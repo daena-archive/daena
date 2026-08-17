@@ -52,11 +52,11 @@ let {
   mapId,
   picking = false,
   start = "generate",
-  focusLinkId: _focusLinkId,
+  focusLinkId,
   oncreated,
   oncancel,
-  onpick: _onpick,
-  onopen: _onopen,
+  onpick,
+  onopen,
   onstate,
 }: {
   mapId?: string;
@@ -133,6 +133,14 @@ let epochYearsAbs = $state(0);
 let physicalLayerVisibility = $state<Map<string, boolean>>(new Map());
 let sidebarWidth = $state(260);
 
+let loadGeneration = 0;
+let saveGeneration = 0;
+const objectUrls: string[] = [];
+let featureLinks = new Map<string, { entityId: string; locationId: string; label: string | null }>();
+let linksByLocationId = new Map<string, string>();
+let layersFieldRevision = "";
+let layerMutationChain: Promise<void> = Promise.resolve();
+
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 520;
 
@@ -183,6 +191,49 @@ const conflict = $derived(editorState.conflict);
 
 function publish(status: string, detail: unknown = null) {
   onstate?.(status, detail);
+}
+
+function featureFallbackPoint(feature: VectorFeature | null): [number, number] {
+  if (!feature) return [0, 0];
+  const positions = feature.geometry.coordinates.flat(Infinity) as number[];
+  if (positions.length < 2) return [0, 0];
+  return [positions[0], positions[1]];
+}
+
+function pickAnchorFor(feature: VectorFeature): MapAnchor {
+  const featureKind =
+    feature.properties.kind === "land" ||
+    feature.properties.kind === "lake" ||
+    feature.properties.kind === "region" ||
+    feature.properties.kind === "route" ||
+    feature.properties.kind === "marker" ||
+    feature.properties.kind === "custom"
+      ? feature.properties.kind
+      : feature.geometry.type;
+  return {
+    kind: "provider-feature",
+    provider: "daena-vector",
+    featureKind,
+    featureId: feature.id,
+    fallbackPoint: featureFallbackPoint(feature),
+  };
+}
+
+function applyFeatureLinks(pins: { id: string; entityId: string; anchor?: unknown }[]) {
+  featureLinks = new Map();
+  linksByLocationId = new Map();
+  for (const pin of pins) {
+    const anchor = pin.anchor;
+    if (!anchor || typeof anchor !== "object" || !("kind" in anchor)) continue;
+    const candidate = anchor as Partial<MapAnchor>;
+    if (candidate.kind !== "provider-feature" || typeof candidate.featureId !== "string") continue;
+    featureLinks.set(candidate.featureId, {
+      entityId: pin.entityId,
+      locationId: pin.id,
+      label: null,
+    });
+    linksByLocationId.set(pin.id, candidate.featureId);
+  }
 }
 
 async function requestBack() {
@@ -238,6 +289,7 @@ function physicalHillshadeCanvas(products: {
 
 function applyLayersField(field: FieldValue) {
   layersField = field;
+  layersFieldRevision = field.revision;
   layers = withPhysicalVisibility(parseVectorLayers(field.value));
 }
 
@@ -456,6 +508,15 @@ function mountEditor() {
     },
     onSelect(feature) {
       selectedFeature = feature;
+      if (picking && feature && onpick) onpick(pickAnchorFor(feature));
+      else if (feature) {
+        const linked = featureLinks.get(feature.id);
+        if (linked && onopen) onopen(linked.entityId);
+      }
+    },
+    onDoubleClick(featureId) {
+      const linked = featureLinks.get(featureId);
+      if (linked && onopen) onopen(linked.entityId);
     },
     get background() {
       return background;
@@ -477,6 +538,7 @@ function mountEditor() {
 
 async function load() {
   if (!mapId) return;
+  const generation = ++loadGeneration;
   epochRequest += 1;
   epochBusy = false;
   epochPhase = "";
@@ -484,6 +546,7 @@ async function load() {
   busy = true;
   try {
     const fields = await project.listFields(mapId);
+    if (generation !== loadGeneration) return;
     const descriptorField = fields.find((field) => field.namespace === "maps" && field.key === "map");
     const descriptor = descriptorField?.value as {
       provider?: { id?: string };
@@ -503,6 +566,7 @@ async function load() {
       atlasSupported = false;
       studioSupported = false;
     }
+    if (generation !== loadGeneration) return;
     studioOpen = studioSupported;
     if (descriptor?.defaultView?.center) defaultView = { ...defaultView, center: descriptor.defaultView.center };
     if (typeof descriptor?.defaultView?.zoom === "number")
@@ -511,6 +575,7 @@ async function load() {
     if (!nextLayersField) throw new Error("maps:layers is missing");
     applyLayersField(nextLayersField);
     const assets = await project.listAssets(mapId);
+    if (generation !== loadGeneration) return;
     const sourceId = physicalMap ? descriptor?.authoredSourceAssetId : descriptor?.sourceAssetId;
     const source = assets.find((asset) => asset.id === sourceId);
     if (!source) throw new Error("The vector source asset is missing");
@@ -518,6 +583,7 @@ async function load() {
     if (background?.url) URL.revokeObjectURL(background.url);
     background = null;
     const bytes = await project.readAssetBytes(source.id);
+    if (generation !== loadGeneration) return;
     const collection = parseVectorCollection(bytes);
     if (physicalMap) {
       epochOffsetYears = 0;
@@ -549,6 +615,7 @@ async function load() {
       epochPhase = "Starting historical derivation";
       epochProgress = { completed: 0, total: 1 };
       const historical = await project.physicalMapDerivedEpoch(mapId, 0, requestId);
+      if (generation !== loadGeneration) return;
       const physical = parseVectorCollection(new TextEncoder().encode(historical.geojson));
       const combined = { type: "FeatureCollection" as const, features: [...physical.features, ...collection.features] };
       draft = cloneCollection(combined);
@@ -575,10 +642,17 @@ async function load() {
     const preview = previewId ? assets.find((asset) => asset.id === previewId) : null;
     if (preview) {
       const previewBytes = await project.readAssetBytes(preview.id);
+      if (generation !== loadGeneration) return;
       const url = URL.createObjectURL(new Blob([new Uint8Array(previewBytes)], { type: preview.mime_type }));
+      objectUrls.push(url);
       background = await new Promise((resolve, reject) => {
         const image = new Image();
         image.onload = () => {
+          if (generation !== loadGeneration) {
+            URL.revokeObjectURL(url);
+            resolve(null);
+            return;
+          }
           const canvas = document.createElement("canvas");
           canvas.width = image.naturalWidth;
           canvas.height = image.naturalHeight;
@@ -597,6 +671,12 @@ async function load() {
         };
         image.src = url;
       });
+      if (generation !== loadGeneration) return;
+    }
+    {
+      const pins = await project.listMapPins(mapId).catch(() => []);
+      if (generation !== loadGeneration) return;
+      applyFeatureLinks(pins);
     }
     const ordered = [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id));
     activeLayerId = ordered.some((layer) => layer.id === activeLayerId) ? activeLayerId : (ordered[0]?.id ?? null);
@@ -606,18 +686,22 @@ async function load() {
     recoveryPath = "";
     notice = "";
     await tick();
+    if (generation !== loadGeneration) return;
     mountEditor();
   } catch (cause) {
+    if (generation !== loadGeneration) return;
     applyEditorEvent({
       type: "save-failed",
       message: cause instanceof Error ? cause.message : String(cause),
     });
     publish("error", { message: editorState.diagnostic });
   } finally {
-    busy = false;
-    epochBusy = false;
-    epochPhase = "";
-    epochProgress = null;
+    if (generation === loadGeneration) {
+      busy = false;
+      epochBusy = false;
+      epochPhase = "";
+      epochProgress = null;
+    }
   }
 }
 
@@ -627,18 +711,26 @@ async function save() {
     applyEditorEvent({ type: "save-succeeded" });
     return;
   }
+  const generation = ++saveGeneration;
   busy = true;
   applyEditorEvent({ type: "save-started" });
   try {
     editor?.flush();
-    const bytes = collectionBytes(persistedCollection(draft));
+    const snapshot = cloneCollection(persistedCollection(draft));
+    const bytes = collectionBytes(snapshot);
     const hash = await sha256Hex(bytes);
     const replaced = await project.replaceVectorSource(sourceAsset.id, bytes, hash, sourceAsset.revision);
+    if (generation !== saveGeneration) return;
     sourceAsset = replaced.source;
-    loaded = cloneCollection(draft);
+    loaded = cloneCollection(snapshot);
     recoveryPath = "";
-    applyEditorEvent({ type: "save-succeeded" });
+    if (JSON.stringify(persistedCollection(draft)) === JSON.stringify(snapshot)) {
+      applyEditorEvent({ type: "save-succeeded" });
+    } else {
+      applyEditorEvent({ type: "geometry-changed" });
+    }
   } catch (cause) {
+    if (generation !== saveGeneration) return;
     const text = cause instanceof Error ? cause.message : String(cause);
     const parsed = parseVectorDiagnostic(text);
     if (parsed.code === "asset.revision-conflict") {
@@ -647,7 +739,7 @@ async function save() {
       applyEditorEvent({ type: "save-failed", message: text });
     }
   } finally {
-    busy = false;
+    if (generation === saveGeneration) busy = false;
   }
 }
 
@@ -682,9 +774,15 @@ function switchLayer(layerId: string) {
 
 async function addLayer() {
   if (!mapId || !layersField || layers.length >= VECTOR_MAX_LAYERS) return;
+  layerMutationChain = layerMutationChain.then(() => runAddLayer()).catch(() => {});
+  await layerMutationChain;
+}
+
+async function runAddLayer() {
+  if (!mapId || !layersField || layers.length >= VECTOR_MAX_LAYERS) return;
   busy = true;
   try {
-    const change = await project.createVectorLayer(mapId, `Layer ${layers.length + 1}`, layersField.revision, {
+    const change = await project.createVectorLayer(mapId, `Layer ${layers.length + 1}`, layersFieldRevision, {
       style: { ...DEFAULT_VECTOR_LAYER_STYLE },
     });
     applyLayersField(change.layers);
@@ -701,15 +799,31 @@ async function addLayer() {
   }
 }
 
-async function mutateLayer(layer: VectorLayerDefinition, update: Parameters<typeof project.updateMapLayer>[3]) {
+function mutateLayer(layer: VectorLayerDefinition, update: Parameters<typeof project.updateMapLayer>[3]) {
+  layerMutationChain = layerMutationChain.then(() => runLayerMutation(layer, update)).catch(() => {});
+  return layerMutationChain;
+}
+
+async function runLayerMutation(layer: VectorLayerDefinition, update: Parameters<typeof project.updateMapLayer>[3]) {
   if (!mapId || !layersField) return;
   try {
-    const change = await project.updateMapLayer(mapId, layer.id, layersField.revision, update);
+    const change = await project.updateMapLayer(mapId, layer.id, layersFieldRevision, update);
     applyLayersField(change.layers);
     editor?.syncLayers(layers);
   } catch (cause) {
     applyEditorEvent({ type: "save-failed", message: cause instanceof Error ? cause.message : String(cause) });
-    await load();
+    await refreshLayersField();
+  }
+}
+
+async function refreshLayersField() {
+  if (!mapId) return;
+  try {
+    const fields = await project.listFields(mapId);
+    const next = fields.find((item) => item.namespace === "maps" && item.key === "layers") ?? null;
+    if (next) applyLayersField(next);
+  } catch {
+    // Keep the current field; the next mutation retries with the same revision.
   }
 }
 
@@ -783,12 +897,18 @@ async function removeLayer(layer: VectorLayerDefinition) {
   ) {
     return;
   }
+  layerMutationChain = layerMutationChain.then(() => runRemoveLayer(layer, savedCount)).catch(() => {});
+  await layerMutationChain;
+}
+
+async function runRemoveLayer(layer: VectorLayerDefinition, savedCount: number) {
+  if (!mapId || !layersField || !sourceAsset) return;
   busy = true;
   try {
     const change = await project.deleteVectorLayer(
       mapId,
       layer.id,
-      layersField.revision,
+      layersFieldRevision,
       sourceAsset.revision,
       savedCount,
     );
@@ -814,10 +934,22 @@ async function removeLayer(layer: VectorLayerDefinition) {
     } else {
       applyEditorEvent({ type: "save-failed", message: text });
     }
+    await refreshLayersField();
   } finally {
     busy = false;
   }
 }
+
+$effect(() => {
+  const linkId = focusLinkId;
+  if (!linkId || picking) return;
+  const featureId = linksByLocationId.get(linkId);
+  if (featureId && editor) editor.focusFeature(featureId);
+});
+
+$effect(() => {
+  if (picking && editor) editor.setMode("static");
+});
 
 function onKey(event: KeyboardEvent) {
   if (event.key === "Escape" && fullscreen) {
@@ -872,11 +1004,14 @@ onMount(() => {
   return () => {
     mounted = false;
     window.removeEventListener("keydown", onKey);
+    loadGeneration += 1;
     unlistenHistoricalProgress?.();
     destroyEditor();
     epochRequest += 1;
     if (epochTimer) clearTimeout(epochTimer);
     if (background?.url) URL.revokeObjectURL(background.url);
+    for (const url of objectUrls) URL.revokeObjectURL(url);
+    objectUrls.length = 0;
     registerNativeVectorSession(null);
   };
 });

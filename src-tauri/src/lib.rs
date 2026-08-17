@@ -1446,6 +1446,10 @@ fn plugin_asset_response(
                     include_bytes!("../../packages/plugin-sdk/dist/generated.js"),
                     "text/javascript",
                 ),
+                (_, "/dist/ui/maps.js") => (
+                    include_bytes!("../../packages/plugin-sdk/dist/maps.js"),
+                    "text/javascript",
+                ),
                 (_, "/dist/ui/plugin.css") => (
                     include_bytes!("../plugin-assets/shared/plugin.css"),
                     "text/css",
@@ -1569,6 +1573,52 @@ fn json_response(value: serde_json::Value, status: u16) -> tauri::http::Response
         .unwrap()
 }
 
+/// JSON response scoped to a single plugin origin instead of `*`.
+fn json_response_with_origin(
+    value: serde_json::Value,
+    status: u16,
+    origin: &str,
+) -> tauri::http::Response<Vec<u8>> {
+    tauri::http::Response::builder()
+        .status(status)
+        .header("Content-Type", "application/json")
+        .header("Access-Control-Allow-Origin", origin)
+        .body(serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()))
+        .unwrap()
+}
+
+/// Navigation allowlist for sandboxed plugin webviews. A plugin document may
+/// only navigate within its own `plugin://<id>` origin; every other scheme,
+/// host, or external URL is rejected by the native webview.
+fn plugin_navigation_allowed(
+    url: &tauri::Url,
+    policy: &daena_plugin_host::runtime::PluginWebviewPolicy,
+) -> bool {
+    match url.host_str() {
+        Some(host) => {
+            url.scheme() == policy.protocol
+                && format!("{}://{host}", policy.protocol) == policy.origin
+        }
+        None => false,
+    }
+}
+
+/// The request Origin must match the plugin's own `plugin://<id>` origin for
+/// bridge POSTs. GET asset requests do not carry an Origin and stay allowed.
+fn plugin_request_origin_matches(request: &tauri::http::Request<Vec<u8>>, plugin_id: &str) -> bool {
+    if request.method() != tauri::http::Method::POST {
+        return true;
+    }
+    let expected = format!(
+        "{}://{plugin_id}",
+        daena_plugin_host::runtime::plugin_protocol(plugin_id)
+    );
+    match request.headers().get("Origin").and_then(|value| value.to_str().ok()) {
+        Some(origin) => origin.eq_ignore_ascii_case(&expected),
+        None => false,
+    }
+}
+
 fn plugin_protocol_response(
     webview_label: &str,
     request: &tauri::http::Request<Vec<u8>>,
@@ -1594,6 +1644,17 @@ fn plugin_protocol_response(
         return json_response(
             serde_json::json!({"error": "plugin protocol origin mismatch"}),
             403,
+        );
+    }
+    let plugin_origin = format!(
+        "{}://{plugin_id}",
+        daena_plugin_host::runtime::plugin_protocol(plugin_id)
+    );
+    if !plugin_request_origin_matches(request, plugin_id) {
+        return json_response_with_origin(
+            serde_json::json!({"error": "plugin protocol document origin mismatch"}),
+            403,
+            &plugin_origin,
         );
     }
     if request.uri().path() != "/__rpc" {
@@ -1623,7 +1684,13 @@ fn plugin_protocol_response(
     }
     let envelope = match serde_json::from_slice::<serde_json::Value>(request.body()) {
         Ok(value) => value,
-        Err(error) => return json_response(serde_json::json!({"error": error.to_string()}), 400),
+        Err(error) => {
+            return json_response_with_origin(
+                serde_json::json!({"error": error.to_string()}),
+                400,
+                &plugin_origin,
+            )
+        }
     };
     let operation = envelope.get("op").and_then(serde_json::Value::as_str);
     let result = match operation {
@@ -1675,9 +1742,10 @@ fn plugin_protocol_response(
             {
                 Some(request) => request,
                 None => {
-                    return json_response(
+                    return json_response_with_origin(
                         serde_json::json!({"ok": false, "error": {"message": "invalid plugin RPC request"}}),
                         400,
+                        &plugin_origin,
                     )
                 }
             };
@@ -1829,8 +1897,12 @@ fn plugin_protocol_response(
         _ => Err("unknown plugin protocol operation".into()),
     };
     match result {
-        Ok(value) => json_response(value, 200),
-        Err(error) => json_response(serde_json::json!({"error": error}), 400),
+        Ok(value) => json_response_with_origin(value, 200, &plugin_origin),
+        Err(error) => json_response_with_origin(
+            serde_json::json!({"error": error}),
+            400,
+            &plugin_origin,
+        ),
     }
 }
 
@@ -2534,6 +2606,7 @@ fn open_plugin_webview(
         url.push_str("&view=");
         url.push_str(&percent_encode(view_id));
     }
+    let navigation_policy = policy.clone();
     tauri::WebviewWindowBuilder::new(
         app,
         policy.label,
@@ -2544,6 +2617,7 @@ fn open_plugin_webview(
     )
     .use_https_scheme(true)
     .initialization_script(PLUGIN_WEBVIEW_ISOLATION_SCRIPT)
+    .on_navigation(move |url| plugin_navigation_allowed(&url, &navigation_policy))
     .title(entry.manifest.name.clone())
     .inner_size(980.0, 720.0)
     .visible(true)
@@ -2789,12 +2863,14 @@ async fn plugin_mount_webview(
         webview.close().map_err(|error| error.to_string())?;
     }
 
+    let navigation_policy = policy.clone();
     let main = app
         .get_window("main")
         .ok_or_else(|| "main window is not available".to_string())?;
     let builder = tauri::WebviewBuilder::new(label.clone(), url)
         .use_https_scheme(true)
         .initialization_script(PLUGIN_WEBVIEW_ISOLATION_SCRIPT)
+        .on_navigation(move |url| plugin_navigation_allowed(&url, &navigation_policy))
         .on_page_load(move |webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 let bounds = embedded_webview_states()

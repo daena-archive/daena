@@ -35,14 +35,33 @@ function asKind(value: unknown): VectorKind {
   return typeof value === "string" && KINDS.includes(value as VectorKind) ? (value as VectorKind) : "custom";
 }
 
+function asPosition(value: unknown): value is number[] {
+  return (
+    Array.isArray(value) &&
+    value.length >= 2 &&
+    value.every((entry) => typeof entry === "number" && Number.isFinite(entry))
+  );
+}
+
+function coordinateRingsValid(coordinates: unknown, depth: number): boolean {
+  if (!Array.isArray(coordinates)) return false;
+  if (depth === 0) return asPosition(coordinates);
+  if (coordinates.length === 0) return false;
+  return coordinates.every((item) => coordinateRingsValid(item, depth - 1));
+}
+
 function asGeometry(value: unknown): VectorFeature["geometry"] | null {
   if (!value || typeof value !== "object" || !("type" in value) || !("coordinates" in value)) return null;
   const type = (value as { type: unknown }).type;
   const coordinates = (value as { coordinates: unknown }).coordinates;
-  if (type === "Point" && Array.isArray(coordinates)) return { type, coordinates: coordinates as number[] };
-  if (type === "LineString" && Array.isArray(coordinates)) return { type, coordinates: coordinates as number[][] };
-  if (type === "Polygon" && Array.isArray(coordinates)) return { type, coordinates: coordinates as number[][][] };
-  if (type === "MultiPolygon" && Array.isArray(coordinates)) {
+  if (type === "Point" && coordinateRingsValid(coordinates, 0)) return { type, coordinates: coordinates as number[] };
+  if (type === "LineString" && coordinateRingsValid(coordinates, 1)) {
+    return { type, coordinates: coordinates as number[][] };
+  }
+  if (type === "Polygon" && coordinateRingsValid(coordinates, 2)) {
+    return { type, coordinates: coordinates as number[][][] };
+  }
+  if (type === "MultiPolygon" && coordinateRingsValid(coordinates, 3)) {
     return { type, coordinates: coordinates as number[][][][] };
   }
   return null;
@@ -52,18 +71,29 @@ export function parseVectorCollection(bytes: number[] | Uint8Array): VectorFeatu
   const text = new TextDecoder().decode(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
   const parsed = JSON.parse(text) as { type?: string; features?: unknown[] };
   if (parsed?.type !== "FeatureCollection" || !Array.isArray(parsed.features)) {
-    throw new Error("vector.source.invalid: source is not a FeatureCollection");
+    throw new Error("vector.source.invalid: $: source is not a FeatureCollection");
   }
   const features: VectorFeature[] = [];
-  for (const item of parsed.features) {
-    if (!item || typeof item !== "object") continue;
+  for (let index = 0; index < parsed.features.length; index++) {
+    const path = `features/${index}`;
+    const item = parsed.features[index];
+    if (!item || typeof item !== "object") {
+      throw new Error(`vector.geometry.invalid: ${path}: feature is not an object`);
+    }
     const feature = item as { id?: unknown; properties?: Record<string, unknown>; geometry?: unknown };
+    if (typeof feature.id !== "string" && typeof feature.id !== "number") {
+      throw new Error(`vector.geometry.invalid: ${path}/id: feature id is required`);
+    }
     const geometry = asGeometry(feature.geometry);
-    if (!geometry) continue;
+    if (!geometry) {
+      throw new Error(
+        `vector.geometry.invalid: ${path}/geometry: unsupported or malformed geometry (expected Point, LineString, Polygon, or MultiPolygon with finite coordinates)`,
+      );
+    }
     const properties = feature.properties ?? {};
     features.push({
       type: "Feature",
-      id: typeof feature.id === "string" ? feature.id : crypto.randomUUID(),
+      id: String(feature.id),
       properties: {
         daenaLayerId: typeof properties.daenaLayerId === "string" ? properties.daenaLayerId : "base",
         kind: asKind(properties.kind),

@@ -50,14 +50,29 @@ function registerLeaveGuard(paneId: Pane) {
 }
 
 const registerOverviewGuard = registerLeaveGuard("overview");
+const registerLexiconGuard = registerLeaveGuard("lexicon");
+const registerSoundsGuard = registerLeaveGuard("sounds");
+const registerWritingGuard = registerLeaveGuard("writing");
 const registerGrammarGuard = registerLeaveGuard("grammar");
+const registerFormsGuard = registerLeaveGuard("forms");
+const registerSamplesGuard = registerLeaveGuard("samples");
 
 async function canLeave() {
-  for (const paneId of ["overview", "grammar"] as const) {
+  for (const paneId of PANES.map(([id]) => id)) {
     const guard = leaveGuards[paneId];
     if (guard && !await guard()) return false;
   }
   return true;
+}
+
+let mutationCounter = 0;
+
+function setMutationActive(active: boolean) {
+  mutationCounter = Math.max(0, mutationCounter + (active ? 1 : -1));
+}
+
+function isMutating() {
+  return mutationCounter > 0;
 }
 
 const visibleLanguages = $derived(viewLanguageList(languageQuery, languageSummaries));
@@ -99,7 +114,7 @@ async function loadLanguages() {
 
 async function openLanguage(language: EntitySummary) {
   if (language.id === selectedLanguage?.id) return;
-  if (!await canLeave()) return;
+  if (isMutating() || !await canLeave()) return;
   selectedLanguage = language;
   pendingLexemeId = null;
 }
@@ -278,27 +293,50 @@ async function submitCreateLanguage(event: SubmitEvent) {
         {onLanguageArchived} />
     </div>
     <div class="language-pane" hidden={pane !== "sounds"}>
-      <Sounds {context} {selectedLanguage} active={pane === "sounds"} />
+      <Sounds
+        {context}
+        {selectedLanguage}
+        active={pane === "sounds"}
+        registerLeaveGuard={registerSoundsGuard}
+        setMutationActive={setMutationActive} />
     </div>
     <div class="language-pane" hidden={pane !== "writing"}>
-      <Writing {context} {selectedLanguage} active={pane === "writing"} />
+      <Writing
+        {context}
+        {selectedLanguage}
+        active={pane === "writing"}
+        registerLeaveGuard={registerWritingGuard}
+        setMutationActive={setMutationActive} />
     </div>
     <div class="language-pane" hidden={pane !== "grammar"}>
       <Grammar {context} {selectedLanguage} active={pane === "grammar"} registerLeaveGuard={registerGrammarGuard} />
     </div>
     <div class="language-pane" hidden={pane !== "forms"}>
-      <Forms {context} {selectedLanguage} active={pane === "forms"} />
+      <Forms
+        {context}
+        {selectedLanguage}
+        active={pane === "forms"}
+        registerLeaveGuard={registerFormsGuard}
+        setMutationActive={setMutationActive} />
     </div>
     <div class="language-pane" hidden={pane !== "samples"}>
-      <Samples {context} {selectedLanguage} active={pane === "samples"} openLexeme={openLinkedLexeme} />
+      <Samples
+        {context}
+        {selectedLanguage}
+        active={pane === "samples"}
+        openLexeme={openLinkedLexeme}
+        registerLeaveGuard={registerSamplesGuard}
+        setMutationActive={setMutationActive} />
     </div>
     <div class="language-pane" hidden={pane !== "lexicon"}>
       <Lexicon
         {context}
         {selectedLanguage}
         active={pane === "lexicon"}
-        {pendingLexemeId}
-        onPendingLexemeHandled={clearPendingLexeme} />
+        pendingLexemeId={pendingLexemeId}
+        onPendingLexemeHandled={clearPendingLexeme}
+        registerLeaveGuard={registerLexiconGuard}
+        setMutationActive={setMutationActive} />
     </div>
   </div>
 </section>

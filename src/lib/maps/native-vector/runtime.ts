@@ -71,6 +71,7 @@ export type NativeVectorEditor = {
   setZoom: (zoom: number) => void;
   panBy: (longitudeDegrees: number, latitudeDegrees: number) => void;
   resetView: () => void;
+  focusFeature: (featureId: string) => boolean;
   flush: () => void;
   deleteSelection: () => void;
   updateSelectedName: (name: string | null) => void;
@@ -121,21 +122,24 @@ function asVectorFeature(feature: GeoJSONStoreFeatures, layerId: string): Vector
   };
 }
 
-function toStoreFeature(feature: VectorFeature): GeoJSONStoreFeatures {
-  const geometry =
-    feature.geometry.type === "MultiPolygon"
-      ? { type: "Polygon" as const, coordinates: feature.geometry.coordinates[0] }
-      : feature.geometry;
+function toStoreFeature(feature: VectorFeature): GeoJSONStoreFeatures | null {
+  if (
+    feature.geometry.type !== "Point" &&
+    feature.geometry.type !== "LineString" &&
+    feature.geometry.type !== "Polygon"
+  ) {
+    return null;
+  }
   return {
     type: "Feature",
     id: feature.id,
     properties: {
-      mode: drawModeForGeometry(geometry),
+      mode: drawModeForGeometry(feature.geometry),
       daenaLayerId: feature.properties.daenaLayerId,
       kind: feature.properties.kind,
       name: feature.properties.name,
     },
-    geometry,
+    geometry: feature.geometry,
   };
 }
 
@@ -163,6 +167,30 @@ function collectionBounds(collection: VectorFeatureCollection): [[number, number
   ];
 }
 
+function featureBounds(feature: VectorFeature): [[number, number], [number, number]] {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  const visit = (position: unknown) => {
+    if (!Array.isArray(position)) return;
+    if (typeof position[0] === "number" && typeof position[1] === "number") {
+      minX = Math.min(minX, position[0]);
+      minY = Math.min(minY, position[1]);
+      maxX = Math.max(maxX, position[0]);
+      maxY = Math.max(maxY, position[1]);
+      return;
+    }
+    for (const item of position) visit(item);
+  };
+  visit(feature.geometry.coordinates);
+  if (!Number.isFinite(minX)) return [[0, 0], [0, 0]];
+  return [
+    [minX, minY],
+    [maxX, maxY],
+  ];
+}
+
 export function createNativeVectorEditor(
   container: HTMLElement,
   session: {
@@ -176,6 +204,7 @@ export function createNativeVectorEditor(
     onDirty?: () => void;
     onDiagnostic?: (code: string, detail: string) => void;
     onSelect?: (feature: VectorFeature | null) => void;
+    onDoubleClick?: (featureId: string) => void;
     background?: NativeVectorBackground | null;
     projection?: "mercator" | "globe";
     initialView?: NativeVectorView | null;
@@ -237,6 +266,7 @@ export function createNativeVectorEditor(
   let terraSelectedId: string | number | null = null;
   let currentBackground = session.background ?? null;
   let backgroundVisible = true;
+  let preservedLayerIds = new Set<string>();
 
   const styleNotLoaded = (error: unknown) =>
     /style is not done loading/i.test(error instanceof Error ? error.message : String(error));
@@ -409,7 +439,9 @@ export function createNativeVectorEditor(
   const mergeDrawIntoDraft = () => {
     const layerId = terraLayerId();
     if (!draw || !layerId) return;
-    const kept = session.draft.features.filter((feature) => feature.properties.daenaLayerId !== layerId);
+    const kept = session.draft.features.filter(
+      (feature) => feature.properties.daenaLayerId !== layerId || preservedLayerIds.has(feature.id),
+    );
     const drawn: VectorFeature[] = [];
     for (const feature of draw.getSnapshot()) {
       const converted = asVectorFeature(feature, layerId);
@@ -422,10 +454,15 @@ export function createNativeVectorEditor(
   const loadActiveLayer = () => {
     const layerId = terraLayerId();
     if (!draw || !layerId) return;
-    const features = session.draft.features
-      .filter((feature) => feature.properties.daenaLayerId === layerId)
-      .map(toStoreFeature);
-    if (features.length) draw.addFeatures(features);
+    preservedLayerIds = new Set<string>();
+    const storeFeatures: GeoJSONStoreFeatures[] = [];
+    for (const feature of session.draft.features) {
+      if (feature.properties.daenaLayerId !== layerId) continue;
+      const store = toStoreFeature(feature);
+      if (store) storeFeatures.push(store);
+      else preservedLayerIds.add(feature.id);
+    }
+    if (storeFeatures.length) draw.addFeatures(storeFeatures);
   };
 
   const onChange = (ids: (string | number)[], type: string) => {
@@ -577,6 +614,15 @@ export function createNativeVectorEditor(
     emitSelect(feature);
   };
 
+  const onMapDoubleClick = (event: MapLayerMouseEvent) => {
+    if (disposed || terraLayerId()) return;
+    const layerIds = (map.getStyle()?.layers ?? [])
+      .map((layer) => layer.id)
+      .filter((id) => id.startsWith("daena-vector-"));
+    const hit = layerIds.length ? map.queryRenderedFeatures(event.point, { layers: layerIds }) : [];
+    if (hit[0]?.id !== undefined) session.onDoubleClick?.(String(hit[0].id));
+  };
+
   const onStyleLoad = () => {
     if (disposed || styleInitialized) return;
     styleInitialized = true;
@@ -591,6 +637,7 @@ export function createNativeVectorEditor(
   if (map.isStyleLoaded()) onStyleLoad();
   map.on("mousemove", onHover);
   map.on("click", onMapClick);
+  map.on("dblclick", onMapDoubleClick);
   map.on("moveend", emitView);
   map.on("error", (event) => {
     const message = event.error?.message ?? "MapLibre renderer error";
@@ -701,6 +748,19 @@ export function createNativeVectorEditor(
     resetView() {
       fitContent();
     },
+    focusFeature(featureId) {
+      const feature = session.draft.features.find((item) => item.id === featureId);
+      if (!feature) return false;
+      const bounds = featureBounds(feature);
+      try {
+        map.fitBounds(bounds, { padding: 48, duration: 0, maxZoom: 8 });
+      } catch {
+        map.jumpTo({ center: bounds[0], zoom: 4 });
+      }
+      setMapSelection(feature.id);
+      emitSelect(feature);
+      return true;
+    },
     flush() {
       mergeDrawIntoDraft();
     },
@@ -744,6 +804,7 @@ export function createNativeVectorEditor(
       map.off("style.load", onStyleLoad);
       map.off("mousemove", onHover);
       map.off("click", onMapClick);
+      map.off("dblclick", onMapDoubleClick);
       map.off("moveend", emitView);
       clearFeatureState(hoveredId, "hover");
       clearFeatureState(mapSelectedId, "selected");

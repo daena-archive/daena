@@ -216,7 +216,11 @@ function handleCell(cellId: string, patch: Partial<Omit<ParadigmCell, "id" | "co
       <option value="custom">Custom dimension</option>
     </select>
   {/if}
-  {#each axes.filter((axis) => axis.id !== "person" && axis.id !== "number" && axis.id !== "distance") as axis (axis.id)}
+  {#each axes.filter((axis) => {
+    if (axis.id === "person" || axis.id === "distance") return false;
+    if (axis.id === "number") return extras.some((item) => item.id === "number");
+    return true;
+  }) as axis (axis.id)}
     {@const extra = extras.find((item) => item.id === axis.id)}
     {@render axisChecks(axis.label, axis.id, extra?.values ?? axis.values)}
     {#if !locked}

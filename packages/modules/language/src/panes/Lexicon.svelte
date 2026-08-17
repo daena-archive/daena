@@ -13,7 +13,7 @@ import {
   STATUS_SUGGESTIONS,
 } from "../lexeme";
 import type { Paradigm, ParadigmSlot } from "../morphology";
-import { clearOverride, normalizeParadigm, pinOverride, previewParadigm } from "../morphology";
+import { clearOverride, normalizeParadigm, overrideTarget, pinOverride, previewParadigm } from "../morphology";
 
 let {
   context,
@@ -21,12 +21,16 @@ let {
   active,
   pendingLexemeId,
   onPendingLexemeHandled,
+  registerLeaveGuard,
+  setMutationActive,
 }: {
   context: ModuleContext;
   selectedLanguage: EntitySummary | null;
   active: boolean;
   pendingLexemeId: string | null;
   onPendingLexemeHandled: () => void;
+  registerLeaveGuard: (guard: (() => Promise<boolean> | boolean) | null) => void;
+  setMutationActive: (active: boolean) => void;
 } = $props();
 
 let cancelled = $state(false);
@@ -49,6 +53,8 @@ let request = $state(0);
 let searchTimer = $state<number | null>(null);
 let lexiconLoading = $state(false);
 let lexiconSaving = $state(false);
+let lexiconImporting = $state(false);
+let lexiconExporting = $state(false);
 let error = $state("");
 
 let tagsText = $state("");
@@ -63,7 +69,10 @@ $effect(() => {
   const languageId = selectedLanguage?.id ?? null;
   void languageId;
   if (!active) return;
-  if (languageId === lastLoadedLanguage) return;
+  if (languageId === lastLoadedLanguage) {
+    void loadRecords();
+    return;
+  }
   lastLoadedLanguage = languageId;
   search = "";
   statusFilterInput = "";
@@ -124,6 +133,24 @@ $effect(() => {
     if (searchTimer !== null) window.clearTimeout(searchTimer);
     searchTimer = null;
   };
+});
+
+function lexiconHasDraft() {
+  if (!editorOpen) return false;
+  const baseline = editing ? normalizeLexeme(editing.value) : emptyLexeme();
+  return JSON.stringify(serializeLexeme(normalizeLexeme(draft))) !== JSON.stringify(serializeLexeme(baseline));
+}
+
+async function tryLeaveLexicon(confirmLeave: (message: string) => Promise<boolean> | boolean) {
+  if (!lexiconHasDraft()) return true;
+  if (lexiconSaving || lexiconImporting) return false;
+  const allowed = await confirmLeave("You have unsaved changes in the word editor. Discard them?");
+  if (allowed) closeLexiconEditor();
+  return allowed;
+}
+
+$effect(() => {
+  registerLeaveGuard(() => tryLeaveLexicon((message) => confirm("Unsaved changes", message)));
 });
 
 const activeFilterCount = $derived(
@@ -256,6 +283,7 @@ function closeLexiconEditor() {
 
 async function saveLexeme(): Promise<"ok" | "lemma" | "error" | "none"> {
   if (!selectedLanguage || lexiconSaving) return "none";
+  const ownerLanguageId = selectedLanguage.id;
   const value = normalizeLexeme(draft);
   if (!value.lemma) {
     error = "Lemma is required.";
@@ -264,16 +292,17 @@ async function saveLexeme(): Promise<"ok" | "lemma" | "error" | "none"> {
   error = "";
   draft = value;
   lexiconSaving = true;
+  setMutationActive(true);
   try {
     const payload = serializeLexeme(value);
     if (editing) {
-      const updated = await context.records.update("lexemes", editing.id, selectedLanguage.id, payload, {
+      const updated = await context.records.update("lexemes", editing.id, ownerLanguageId, payload, {
         expectedRevision: editing.revision,
         requestId: crypto.randomUUID(),
       });
       editing = { ...updated, value: normalizeLexeme(updated.value) };
     } else {
-      const created = await context.records.create("lexemes", selectedLanguage.id, payload, {
+      const created = await context.records.create("lexemes", ownerLanguageId, payload, {
         requestId: crypto.randomUUID(),
       });
       editing = { ...created, value: normalizeLexeme(created.value) };
@@ -281,11 +310,15 @@ async function saveLexeme(): Promise<"ok" | "lemma" | "error" | "none"> {
     editorOpen = true;
     draft = editing.value;
     lexiconSaving = false;
-    await loadRecords();
-    await refreshHomonyms(draft.lemma);
+    setMutationActive(false);
+    if (ownerLanguageId === selectedLanguage?.id) {
+      await loadRecords();
+      await refreshHomonyms(draft.lemma);
+    }
     return "ok";
   } catch (cause) {
     lexiconSaving = false;
+    setMutationActive(false);
     error = cause instanceof Error ? cause.message : String(cause);
     return "error";
   }
@@ -294,8 +327,10 @@ async function saveLexeme(): Promise<"ok" | "lemma" | "error" | "none"> {
 async function deleteLexeme() {
   if (!selectedLanguage || !editing) return;
   if (!await confirm("Delete", `Delete “${editing.value.lemma}”?`)) return;
+  const ownerLanguageId = selectedLanguage.id;
   try {
-    await context.records.delete("lexemes", editing.id, selectedLanguage.id, {
+    setMutationActive(true);
+    await context.records.delete("lexemes", editing.id, ownerLanguageId, {
       expectedRevision: editing.revision,
       requestId: crypto.randomUUID(),
     });
@@ -303,8 +338,10 @@ async function deleteLexeme() {
     editorOpen = false;
     draft = emptyLexeme();
     error = "";
-    await loadRecords();
+    setMutationActive(false);
+    if (ownerLanguageId === selectedLanguage?.id) await loadRecords();
   } catch (cause) {
+    setMutationActive(false);
     error = cause instanceof Error ? cause.message : String(cause);
   }
 }
@@ -320,39 +357,58 @@ function nextPage() {
 }
 
 async function exportLexicon() {
-  if (!selectedLanguage) return;
+  if (!selectedLanguage || lexiconExporting) return;
+  const ownerLanguageId = selectedLanguage.id;
+  const languageName = selectedLanguage.name;
+  lexiconExporting = true;
+  setMutationActive(true);
   const values: LexemeValue[] = [];
-  for (let offset = 0; ; offset += 100) {
-    const batch = await context.records.list<LexemeValue>("lexemes", selectedLanguage.id, {
-      limit: 100,
-      offset,
-      sort: "lemma",
-    });
-    values.push(...batch.map((record) => normalizeLexeme(record.value)));
-    if (batch.length < 100) break;
+  try {
+    for (let offset = 0; ; offset += 100) {
+      const batch = await context.records.list<LexemeValue>("lexemes", ownerLanguageId, {
+        limit: 100,
+        offset,
+        sort: "lemma",
+      });
+      values.push(...batch.map((record) => normalizeLexeme(record.value)));
+      if (batch.length < 100) break;
+    }
+    const blob = new Blob([lexiconExport(languageName, values)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${languageName.replace(/\s+/g, "-").toLowerCase()}-lexicon.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    lexiconExporting = false;
+    setMutationActive(false);
   }
-  const blob = new Blob([lexiconExport(selectedLanguage.name, values)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `${selectedLanguage.name.replace(/\s+/g, "-").toLowerCase()}-lexicon.json`;
-  link.click();
-  URL.revokeObjectURL(url);
 }
 
 async function importLexicon(file: File) {
-  if (!selectedLanguage) return;
+  if (!selectedLanguage || lexiconImporting) return;
+  const ownerLanguageId = selectedLanguage.id;
+  lexiconImporting = true;
+  setMutationActive(true);
   try {
     const lexemes = parseLexiconImport(await file.text());
     for (const value of lexemes) {
-      await context.records.create("lexemes", selectedLanguage.id, serializeLexeme(value), {
+      await context.records.create("lexemes", ownerLanguageId, serializeLexeme(value), {
         requestId: crypto.randomUUID(),
       });
     }
-    page = 0;
-    await loadRecords();
+    if (ownerLanguageId === selectedLanguage?.id) {
+      page = 0;
+      await loadRecords();
+    }
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    lexiconImporting = false;
+    setMutationActive(false);
   }
 }
 
@@ -407,8 +463,19 @@ function pinSlotOverride(slot: ParadigmSlot, form: string) {
   draft.forms = pinOverride(draft.forms, attached.id, slot, form);
 }
 
-function clearSlotOverride(slot: ParadigmSlot) {
+async function clearSlotOverride(slot: ParadigmSlot) {
   if (!attached) return;
+  const target = overrideTarget(draft.forms, attached.id, slot);
+  if (target?.legacy) {
+    if (
+      !await confirm(
+        "Clear legacy form",
+        `“${target.form}” is an unscoped form matched by label “${slot.label}”. Removing it also deletes a manually authored form. Remove it anyway?`,
+      )
+    ) {
+      return;
+    }
+  }
   draft.forms = clearOverride(draft.forms, attached.id, slot);
 }
 
@@ -684,13 +751,13 @@ async function handleSubmit(event: SubmitEvent) {
         aria-label="Import lexicon JSON"
         bind:this={fileInput}
         onchange={handleImportChange} />
-      <button type="button" class="language-button secondary" disabled={!selectedLanguage} onclick={exportLexicon}
-        >Export JSON</button>
+      <button type="button" class="language-button secondary" disabled={!selectedLanguage || lexiconExporting} onclick={exportLexicon}
+        >{lexiconExporting ? "Exporting…" : "Export JSON"}</button>
       <button
         type="button"
         class="language-button secondary"
-        disabled={!selectedLanguage}
-        onclick={() => fileInput?.click()}>Import JSON</button>
+        disabled={!selectedLanguage || lexiconImporting}
+        onclick={() => fileInput?.click()}>{lexiconImporting ? "Importing…" : "Import JSON"}</button>
       <button type="button" class="language-button" disabled={!selectedLanguage} onclick={addWord}>Add word</button>
     </div>
   </div>

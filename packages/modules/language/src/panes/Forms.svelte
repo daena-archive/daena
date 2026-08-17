@@ -11,6 +11,7 @@ import {
   emptySlot,
   normalizeParadigm,
   OPERATION_KINDS,
+  overrideTarget,
   PARADIGM_KINDS,
   pinOverride,
   previewParadigm,
@@ -25,10 +26,14 @@ let {
   context,
   selectedLanguage,
   active,
+  registerLeaveGuard,
+  setMutationActive,
 }: {
   context: ModuleContext;
   selectedLanguage: EntitySummary | null;
   active: boolean;
+  registerLeaveGuard: (guard: (() => Promise<boolean> | boolean) | null) => void;
+  setMutationActive: (active: boolean) => void;
 } = $props();
 
 let cancelled = $state(false);
@@ -37,6 +42,7 @@ let paradigms: ModuleRecord<Paradigm>[] = $state([]);
 let paradigmEditing = $state<ModuleRecord<Paradigm> | null>(null);
 let paradigmEditorOpen = $state(false);
 let paradigmDraft: Paradigm = $state(emptyParadigm());
+let paradigmSaving = $state(false);
 let previewStem = $state("");
 let previewLexemeId = $state("");
 let paneLoading = $state(false);
@@ -51,7 +57,10 @@ $effect(() => {
   const languageId = selectedLanguage?.id ?? null;
   void languageId;
   if (!active) return;
-  if (languageId === lastLoadedLanguage) return;
+  if (languageId === lastLoadedLanguage) {
+    void loadForms();
+    return;
+  }
   lastLoadedLanguage = languageId;
   paradigmEditing = null;
   paradigmEditorOpen = false;
@@ -65,6 +74,26 @@ $effect(() => {
   return () => {
     cancelled = true;
   };
+});
+
+function formsHasDraft() {
+  if (!paradigmEditorOpen) return false;
+  const baseline = paradigmEditing ? normalizeParadigm(paradigmEditing.value) : emptyParadigm();
+  return (
+    JSON.stringify(serializeParadigm(normalizeParadigm(paradigmDraft))) !== JSON.stringify(serializeParadigm(baseline))
+  );
+}
+
+async function tryLeaveForms(confirmLeave: (message: string) => Promise<boolean> | boolean) {
+  if (!formsHasDraft()) return true;
+  if (paradigmSaving) return false;
+  const allowed = await confirmLeave("You have unsaved changes to a paradigm. Discard them?");
+  if (allowed) closeParadigmEditor();
+  return allowed;
+}
+
+$effect(() => {
+  registerLeaveGuard(() => tryLeaveForms((message) => confirm("Unsaved changes", message)));
 });
 
 const slotOptions = $derived(
@@ -138,6 +167,7 @@ function closeParadigmEditor() {
 
 async function saveParadigm(): Promise<"ok" | "name" | "error" | "none"> {
   if (!selectedLanguage) return "none";
+  const ownerLanguageId = selectedLanguage.id;
   const value = normalizeParadigm(paradigmDraft);
   if (!value.name) {
     error = "Name is required.";
@@ -145,25 +175,31 @@ async function saveParadigm(): Promise<"ok" | "name" | "error" | "none"> {
   }
   error = "";
   paradigmDraft = value;
+  paradigmSaving = true;
+  setMutationActive(true);
   try {
     const payload = serializeParadigm(value);
     if (paradigmEditing) {
-      const updated = await context.records.update("paradigms", paradigmEditing.id, selectedLanguage.id, payload, {
+      const updated = await context.records.update("paradigms", paradigmEditing.id, ownerLanguageId, payload, {
         expectedRevision: paradigmEditing.revision,
         requestId: crypto.randomUUID(),
       });
       paradigmEditing = { ...updated, value: normalizeParadigm(updated.value) };
     } else {
-      const created = await context.records.create("paradigms", selectedLanguage.id, payload, {
+      const created = await context.records.create("paradigms", ownerLanguageId, payload, {
         requestId: crypto.randomUUID(),
       });
       paradigmEditing = { ...created, value: normalizeParadigm(created.value) };
     }
     paradigmEditorOpen = true;
     paradigmDraft = paradigmEditing.value;
-    await loadForms();
+    paradigmSaving = false;
+    setMutationActive(false);
+    if (ownerLanguageId === selectedLanguage?.id) await loadForms();
     return "ok";
   } catch (cause) {
+    paradigmSaving = false;
+    setMutationActive(false);
     error = cause instanceof Error ? cause.message : String(cause);
     return "error";
   }
@@ -172,30 +208,48 @@ async function saveParadigm(): Promise<"ok" | "name" | "error" | "none"> {
 async function deleteParadigm() {
   if (!selectedLanguage || !paradigmEditing) return;
   if (!await confirm("Delete", `Delete “${paradigmEditing.value.name}”?`)) return;
+  const ownerLanguageId = selectedLanguage.id;
   error = "";
   try {
-    await context.records.delete("paradigms", paradigmEditing.id, selectedLanguage.id, {
+    setMutationActive(true);
+    await context.records.delete("paradigms", paradigmEditing.id, ownerLanguageId, {
       expectedRevision: paradigmEditing.revision,
       requestId: crypto.randomUUID(),
     });
     paradigmEditing = null;
     paradigmEditorOpen = false;
     paradigmDraft = emptyParadigm();
-    await loadForms();
+    setMutationActive(false);
+    if (ownerLanguageId === selectedLanguage?.id) await loadForms();
   } catch (cause) {
+    setMutationActive(false);
     error = cause instanceof Error ? cause.message : String(cause);
   }
 }
 
 async function persistLexemeForms(record: ModuleRecord<LexemeValue>, forms: LexemeValue["forms"]) {
   if (!selectedLanguage) return;
+  const ownerLanguageId = selectedLanguage.id;
   const value = normalizeLexeme({ ...record.value, forms });
-  const updated = await context.records.update("lexemes", record.id, selectedLanguage.id, serializeLexeme(value), {
-    expectedRevision: record.revision,
-    requestId: crypto.randomUUID(),
-  });
-  const next = { ...updated, value: normalizeLexeme(updated.value) };
-  records = records.map((item) => (item.id === next.id ? next : item));
+  setMutationActive(true);
+  try {
+    const updated = await context.records.update(
+      "lexemes",
+      record.id,
+      ownerLanguageId,
+      serializeLexeme(value),
+      {
+        expectedRevision: record.revision,
+        requestId: crypto.randomUUID(),
+      },
+    );
+    const next = { ...updated, value: normalizeLexeme(updated.value) };
+    records = records.map((item) => (item.id === next.id ? next : item));
+    if (ownerLanguageId !== selectedLanguage?.id) throw new Error("Language changed while updating lexeme.");
+    return;
+  } finally {
+    setMutationActive(false);
+  }
 }
 
 async function pinPreviewOverride(record: ModuleRecord<LexemeValue>, slot: ParadigmSlot, form: string) {
@@ -211,6 +265,17 @@ async function pinPreviewOverride(record: ModuleRecord<LexemeValue>, slot: Parad
 async function clearPreviewOverride(record: ModuleRecord<LexemeValue>, slot: ParadigmSlot) {
   const paradigmId = paradigmEditing?.id;
   if (!paradigmId) return;
+  const target = overrideTarget(record.value.forms, paradigmId, slot);
+  if (target?.legacy) {
+    if (
+      !await confirm(
+        "Clear legacy form",
+        `“${target.form}” is an unscoped form matched by label “${slot.label}”. Removing it also deletes a manually authored form. Remove it anyway?`,
+      )
+    ) {
+      return;
+    }
+  }
   try {
     await persistLexemeForms(record, clearOverride(record.value.forms, paradigmId, slot));
   } catch (cause) {
@@ -496,12 +561,16 @@ async function handleSubmit(event: SubmitEvent) {
       <span>
         {#if paradigmEditing}
           <button type="button" class="language-button secondary language-danger" onclick={deleteParadigm}
+            disabled={paradigmSaving}
             >Delete</button>
         {/if}
       </span>
       <span>
-        <button type="button" class="language-button secondary" onclick={closeParadigmEditor}>Cancel</button>
-        <button type="submit" class="language-button">Save paradigm</button>
+        <button type="button" class="language-button secondary" onclick={closeParadigmEditor}
+          disabled={paradigmSaving}
+          >Cancel</button>
+        <button type="submit" class="language-button" disabled={paradigmSaving}
+          >{paradigmSaving ? "Saving…" : "Save paradigm"}</button>
       </span>
     </div>
   </form>

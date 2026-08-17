@@ -44,6 +44,7 @@ export type ParadigmPreviewCell = {
   provenance: FormProvenance;
   generated?: string;
   authoredFormId?: string;
+  legacyOverride?: boolean;
   ruleId?: string;
   ruleName?: string;
 };
@@ -198,9 +199,12 @@ export function generatedForm(paradigm: Paradigm, stem: string, slotId: string) 
 }
 
 export function authoredOverride(forms: LexemeForm[], paradigmId: string, slot: ParadigmSlot) {
+  return forms.find((item) => item.paradigmId === paradigmId && item.slotId === slot.id) ?? null;
+}
+
+export function legacyOverride(forms: LexemeForm[], slot: ParadigmSlot) {
   return (
-    forms.find((item) => item.paradigmId === paradigmId && item.slotId === slot.id) ??
-    forms.find((item) => !item.slotId && item.kind === slot.label)
+    forms.find((item) => !item.slotId && item.kind === slot.label && item.provenance !== "override") ?? null
   );
 }
 
@@ -212,7 +216,9 @@ export function previewParadigm(
 ): ParadigmPreviewCell[] {
   return paradigm.slots.map((slot) => {
     const generated = generatedForm(paradigm, stem, slot.id);
-    const authored = paradigmId ? authoredOverride(forms, paradigmId, slot) : undefined;
+    const scoped = paradigmId ? authoredOverride(forms, paradigmId, slot) : undefined;
+    const legacy = scoped ? null : legacyOverride(forms, slot);
+    const authored = scoped ?? legacy;
     if (authored) {
       return {
         slot,
@@ -220,6 +226,7 @@ export function previewParadigm(
         provenance: "authored" as const,
         generated: generated?.form,
         authoredFormId: authored.id,
+        legacyOverride: Boolean(legacy),
         ruleId: generated?.rule.id,
         ruleName: generated?.rule.name,
       };
@@ -238,15 +245,25 @@ export function previewParadigm(
   });
 }
 
+export function overrideTarget(forms: LexemeForm[], paradigmId: string, slot: ParadigmSlot) {
+  const scoped = authoredOverride(forms, paradigmId, slot);
+  if (scoped) return { id: scoped.id, form: scoped.form, legacy: false };
+  const legacy = legacyOverride(forms, slot);
+  return legacy ? { id: legacy.id, form: legacy.form, legacy: true } : null;
+}
+
 export function pinOverride(forms: LexemeForm[], paradigmId: string, slot: ParadigmSlot, form: string): LexemeForm[] {
   const next = forms.map((item) => ({ ...item }));
-  const existing = authoredOverride(next, paradigmId, slot);
-  if (existing) {
-    existing.form = form;
-    existing.kind = existing.kind || slot.label;
-    existing.paradigmId = paradigmId;
-    existing.slotId = slot.id;
-    existing.provenance = "override";
+  const target = overrideTarget(next, paradigmId, slot);
+  if (target) {
+    const existing = next.find((item) => item.id === target.id);
+    if (existing) {
+      existing.form = form;
+      existing.kind = existing.kind || slot.label;
+      existing.paradigmId = paradigmId;
+      existing.slotId = slot.id;
+      existing.provenance = "override";
+    }
     return next;
   }
   return [
@@ -263,7 +280,7 @@ export function pinOverride(forms: LexemeForm[], paradigmId: string, slot: Parad
 }
 
 export function clearOverride(forms: LexemeForm[], paradigmId: string, slot: ParadigmSlot): LexemeForm[] {
-  const authored = authoredOverride(forms, paradigmId, slot);
-  if (!authored) return forms;
-  return forms.filter((item) => item.id !== authored.id);
+  const target = overrideTarget(forms, paradigmId, slot);
+  if (!target) return forms;
+  return forms.filter((item) => item.id !== target.id);
 }

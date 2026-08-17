@@ -62,7 +62,7 @@ type InstalledModule = ProjectModuleManifest;
 type WorkspaceSection = "lore" | "timeline" | "writing" | "language" | "maps";
 type SettingsSection = "general" | "ai" | "plugins" | "schema" | "git";
 type WritingView = "manuscripts" | "reference";
-type AiFieldSuggestion = { value: string | string[]; rationale: string; confidence: string };
+type AiFieldSuggestion = { value: unknown; rationale: string; confidence: string };
 type RecentProject = { name: string; root: string };
 type CreateOption = { key: string; module: InstalledModule; template: EntityTemplate };
 type CreateGroup = { module: InstalledModule; options: CreateOption[] };
@@ -121,6 +121,7 @@ let hasUnsavedChanges = $state(false);
 let autoSaveTimer: number | null = null;
 let documentRevision = 0;
 let loadedDocumentRevision = "";
+let selectedLoadToken = 0;
 let documentConflict = $state<{ paths: string[]; diagnostics: string[] } | null>(null);
 let conflictDiskBody = $state("");
 let mapSaveStates = $state<Record<string, { status: string; detail: unknown }>>({});
@@ -233,6 +234,11 @@ let aiFieldFillRequestId = $state<string | null>(null);
 let aiFieldFillStream = $state("");
 let aiFieldSuggestions = $state<Record<string, AiFieldSuggestion>>({});
 let aiFieldUnlisten: (() => void) | null = null;
+let aiStartCancelled = $state(false);
+let aiFieldFillStartCancelled = $state(false);
+let aiSourceEntityId = $state<string | null>(null);
+let aiFieldFillEntityId = $state<string | null>(null);
+let aiFieldFillLastSequence = $state(-1);
 let adminPlugins = $state<PluginAdminEntry[] | null>(null);
 let hostView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] } | null>(null);
 let sandboxView = $state<{
@@ -453,12 +459,69 @@ function fieldDisplayValue(value: unknown): string {
   }
   return String(value ?? "");
 }
+function fieldInputValue(definition: FieldDefinition, value: unknown): string | number | boolean | string[] {
+  if (definition.type === "boolean") return value === true;
+  if (definition.type === "number") return typeof value === "number" && Number.isFinite(value) ? value : "";
+  if (definition.multiple) return Array.isArray(value) ? value.map((item) => String(item)) : [];
+  return fieldDisplayValue(value);
+}
+function fieldValueForSave(definition: FieldDefinition, value: unknown) {
+  if (definition.type === "number") {
+    if (value === "" || value === null || value === undefined) return "";
+    const numberValue = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(numberValue) ? numberValue : "";
+  }
+  if (definition.type === "boolean") return value === true || value === "true";
+  if (definition.multiple) return Array.isArray(value) ? value.map((item) => String(item)) : [];
+  return value;
+}
+function aiScalarValue(definition: FieldDefinition, raw: unknown): unknown | null {
+  if (definition.type === "number") {
+    const value = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw.trim()) : Number.NaN;
+    return Number.isFinite(value) ? value : null;
+  }
+  if (definition.type === "boolean") {
+    if (typeof raw === "boolean") return raw;
+    if (raw === "true") return true;
+    if (raw === "false") return false;
+    return null;
+  }
+  if (definition.type === "enum") {
+    return typeof raw === "string" && definition.options?.includes(raw) ? raw : null;
+  }
+  if (definition.type === "date") {
+    if (typeof raw !== "string") return null;
+    const date = parseCalendarDate(raw.trim());
+    return date ? serializeCalendarDate(date) : null;
+  }
+  return typeof raw === "string" && raw.trim() ? raw : null;
+}
+function coerceAiFieldValue(definition: FieldDefinition, raw: unknown): unknown | null {
+  if (definition.multiple || definition.type === "relationship") {
+    if (!Array.isArray(raw) || raw.length === 0 || raw.length > 5) return null;
+    const values = raw.map((item) =>
+      definition.type === "relationship" ? (typeof item === "string" && item.trim() ? item : null) : aiScalarValue(definition, item),
+    );
+    return values.every((value) => value !== null) ? values : null;
+  }
+  return aiScalarValue(definition, raw);
+}
+function aiJsonValueSchema(definition: FieldDefinition) {
+  const scalarType = definition.type === "number" ? "number" : definition.type === "boolean" ? "boolean" : "string";
+  const scalar = {
+    type: scalarType,
+    ...(definition.type === "enum" && definition.options?.length ? { enum: definition.options } : {}),
+  };
+  return definition.multiple || definition.type === "relationship"
+    ? { type: "array", items: scalar, maxItems: 5, uniqueItems: true }
+    : scalar;
+}
 function suggestionDisplayValue(key: string, suggestion: AiFieldSuggestion) {
   const definition = definitions().find((candidate) => candidate.key === key);
   if (definition?.type !== "relationship" || !Array.isArray(suggestion.value))
     return fieldDisplayValue(suggestion.value);
   const names = new Map(entities.map((entity) => [entity.id, entity.name]));
-  return suggestion.value.map((id) => names.get(id) ?? id).join(", ");
+  return suggestion.value.map((id) => names.get(String(id)) ?? String(id)).join(", ");
 }
 function suggestionConfidenceTone(confidence: string) {
   const normalized = confidence.trim().toLowerCase();
@@ -516,7 +579,7 @@ function createFieldsFor(option: CreateOption | null = selectedCreateOption()): 
         .map((field) => ({
           namespace: schema.namespace,
           field,
-          required: false,
+          required: option.template.requiredFields?.includes(field.key) ?? false,
         })),
     );
 }
@@ -742,9 +805,8 @@ function navigationActive(item: NavigationItem) {
 
 async function openHostView(plugin: PluginAdminEntry, view: PluginAdminEntry["views"][number]) {
   if (!(await dismissSettings())) return;
-  await closeNativePluginWebviews();
+  if (!(await leavePluginView())) return;
   hostView = { plugin, view };
-  sandboxView = null;
 }
 
 function pluginViews(): PluginNavigationItem[] {
@@ -835,8 +897,7 @@ async function openPluginView(item: PluginNavigationItem) {
     return;
   }
   if (!(await dismissSettings())) return;
-  await closeNativePluginWebviews();
-  hostView = null;
+  if (!(await leavePluginView())) return;
   sandboxView = { plugin: item.plugin, view: item.view, renderer: "webview" };
 }
 
@@ -1044,6 +1105,7 @@ function entityGlyphClass(entity: Pick<Entity, "entity_type">) {
 
 async function selectSearchResult(entity: Entity) {
   if (!(await flushAutoSave())) return;
+  if (!(await leavePluginView())) return;
   const owner = workspaceSectionOrder.find((target) =>
     manifestForWorkspaceSection(target)?.schemas.some((schema) =>
       schema.entityTypes.includes(entity.entity_type ?? ""),
@@ -1052,8 +1114,6 @@ async function selectSearchResult(entity: Entity) {
   section = owner && owner !== "maps" ? owner : "lore";
   if (entity.entity_type === "reference-page") writingView = "reference";
   if (entity.entity_type === "manuscript") writingView = "manuscripts";
-  hostView = null;
-  sandboxView = null;
   globalQuery = "";
   query = "";
   await selectEntity(entity);
@@ -1145,10 +1205,10 @@ function entityTypeLabel(entityType: string | null) {
           : (entityType ?? "Uncategorized");
 }
 
-function openProjection() {
+async function openProjection() {
+  if (!(await flushAutoSave())) return;
+  if (!(await leavePluginView())) return;
   const projection = projectionModule(section === "lore" ? "lore" : "timeline");
-  hostView = null;
-  sandboxView = null;
   projectionView = projection;
 }
 
@@ -1482,14 +1542,20 @@ function clearAiFieldListener() {
 }
 function closeAiFieldFill() {
   if (aiFieldFillRequestId) void project.aiCancelText(aiFieldFillRequestId).catch(() => {});
+  aiFieldFillStartCancelled = true;
   clearAiFieldListener();
   aiFieldFillOpen = false;
   aiFieldFillBusy = false;
   aiFieldFillRequestId = null;
+  aiFieldFillEntityId = null;
+  aiFieldFillLastSequence = -1;
   aiFieldFillStream = "";
   aiFieldSuggestions = {};
 }
 function handleAiFieldFillEvent(payload: AiStreamEvent) {
+  if (aiFieldFillEntityId !== null && selected?.id !== aiFieldFillEntityId) return;
+  if (payload.sequence <= aiFieldFillLastSequence) return;
+  aiFieldFillLastSequence = payload.sequence;
   if (payload.phase === "delta" && payload.delta) aiFieldFillStream += payload.delta;
   if (payload.phase === "failed") {
     clearAiFieldListener();
@@ -1512,18 +1578,10 @@ function handleAiFieldFillEvent(payload: AiStreamEvent) {
       const suggestions: Record<string, AiFieldSuggestion> = {};
       for (const [key, value] of Object.entries(parsed.suggestions ?? {})) {
         const definition = definitions().find((candidate) => candidate.key === key);
-        const usesValues = definition?.multiple || definition?.type === "relationship";
-        const rawValue = usesValues ? value?.values : value?.value;
-        if (!allowed.has(key) || rawValue === undefined || rawValue === null) continue;
-        if (
-          usesValues &&
-          (!Array.isArray(rawValue) ||
-            rawValue.length === 0 ||
-            rawValue.length > 5 ||
-            rawValue.some((item) => typeof item !== "string" || !item.trim()))
-        )
-          continue;
-        if (!usesValues && (typeof rawValue !== "string" || !rawValue.trim())) continue;
+        if (!definition || !allowed.has(key)) continue;
+        const rawValue = definition.multiple || definition.type === "relationship" ? value?.values : value?.value;
+        const normalizedValue = coerceAiFieldValue(definition, rawValue);
+        if (normalizedValue === null) continue;
         if (definition?.type === "relationship") {
           const allowedIds = new Set(
             entities
@@ -1535,10 +1593,10 @@ function handleAiFieldFillEvent(payload: AiStreamEvent) {
               )
               .map((entity) => entity.id),
           );
-          if (!(rawValue as string[]).every((id) => allowedIds.has(id))) continue;
+          if (!(normalizedValue as string[]).every((id) => allowedIds.has(id))) continue;
         }
         suggestions[key] = {
-          value: usesValues ? (rawValue as string[]) : String(rawValue),
+          value: normalizedValue,
           rationale: typeof value.rationale === "string" ? value.rationale.trim() : "",
           confidence: String(value.confidence ?? "unknown"),
         };
@@ -1568,6 +1626,9 @@ async function fillAiFields() {
   aiFieldFillBusy = true;
   aiFieldFillStream = "";
   aiFieldSuggestions = {};
+  aiFieldFillLastSequence = -1;
+  aiFieldFillStartCancelled = false;
+  aiFieldFillEntityId = selected.id;
   const fieldKeys = empty.map((definition) => definition.key);
   const context = JSON.stringify({
     entity: { name: selected.name, type: selected.entity_type },
@@ -1599,8 +1660,8 @@ async function fillAiFields() {
         type: "object",
         properties: {
           ...(definition.multiple || definition.type === "relationship"
-            ? { values: { type: "array", items: { type: "string", maxLength: 400 }, maxItems: 5, uniqueItems: true } }
-            : { value: { type: "string", maxLength: 4000 } }),
+            ? { values: aiJsonValueSchema(definition) }
+            : { value: aiJsonValueSchema(definition) }),
           rationale: { type: "string", maxLength: 1000 },
           confidence: { type: "string", maxLength: 32 },
         },
@@ -1632,10 +1693,14 @@ async function fillAiFields() {
       `Fill only these empty fields: ${fieldKeys.join(", ")}. For multi-select and relationship fields, return up to five distinct values in the values array. For relationship fields, use only allowed entity IDs from the context. Use only configured options when options are provided. Return evidence-backed suggestions. Do not invent facts.`,
       context,
       outputContract,
-      selected.id,
+      aiFieldFillEntityId!,
       retrievalQuery,
       2,
     );
+    if (aiFieldFillStartCancelled || selected?.id !== aiFieldFillEntityId) {
+      void project.aiCancelText(requestId).catch(() => {});
+      return;
+    }
     aiFieldFillRequestId = requestId;
     aiFieldUnlisten = await listen<AiStreamEvent>(`ai-stream:${requestId}`, (event) =>
       handleAiFieldFillEvent(event.payload),
@@ -1646,10 +1711,12 @@ async function fillAiFields() {
     clearAiFieldListener();
     aiFieldFillBusy = false;
     aiFieldFillRequestId = null;
+    if (aiFieldFillStartCancelled || selected?.id !== aiFieldFillEntityId) return;
     error = friendlyError(cause);
   }
 }
 async function acceptAiFieldSuggestion(key: string) {
+  if (selected?.id !== aiFieldFillEntityId) return;
   const suggestion = aiFieldSuggestions[key];
   const definition = definitions().find((candidate) => candidate.key === key);
   if (
@@ -1681,10 +1748,12 @@ function clearAiStreamListener() {
 }
 function closeAiRewrite() {
   if (aiRequestId) void project.aiCancelText(aiRequestId).catch(() => {});
+  aiStartCancelled = true;
   clearAiStreamListener();
   aiRewriteOpen = false;
   aiBusy = false;
   aiRequestId = null;
+  aiSourceEntityId = null;
   aiStreamText = "";
   aiPreviewOutput = "";
   aiUsage = null;
@@ -1704,6 +1773,7 @@ function validateAiProposal(value: string): string | null {
   return null;
 }
 function handleAiEvent(payload: AiStreamEvent) {
+  if (aiSourceEntityId !== null && selected?.id !== aiSourceEntityId) return;
   if (payload.sequence <= aiLastSequence) return;
   aiLastSequence = payload.sequence;
   if (payload.phase === "delta" && payload.delta) aiStreamText += payload.delta;
@@ -1734,11 +1804,13 @@ function handleAiEvent(payload: AiStreamEvent) {
 async function startAiRewrite() {
   if (!selected || (aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim() || aiBusy) return;
   if (!(await flushAutoSave())) return;
+  aiSourceEntityId = selected.id;
   aiSourceBody = documentBody;
   aiSourceRevision = loadedDocumentRevision;
   aiStreamText = "";
   aiPreviewOutput = "";
   aiLastSequence = -1;
+  aiStartCancelled = false;
   aiBusy = true;
   try {
     const sourceText =
@@ -1751,10 +1823,14 @@ async function startAiRewrite() {
       projectInfo!.root,
       aiInstruction,
       sourceText,
-      selected?.id,
+      aiSourceEntityId,
       retrievalQuery,
       2,
     );
+    if (aiStartCancelled || selected?.id !== aiSourceEntityId) {
+      void project.aiCancelText(requestId).catch(() => {});
+      return;
+    }
     aiRequestId = requestId;
     aiUnlisten = await listen<AiStreamEvent>(`ai-stream:${requestId}`, (event) => {
       handleAiEvent(event.payload);
@@ -1765,13 +1841,14 @@ async function startAiRewrite() {
     clearAiStreamListener();
     aiBusy = false;
     aiRequestId = null;
+    if (aiStartCancelled || selected?.id !== aiSourceEntityId) return;
     error = friendlyError(cause);
   }
 }
 async function acceptAiRewrite() {
   if (!selected || !aiPreviewOutput || aiBusy) return;
-  if (documentBody !== aiSourceBody || loadedDocumentRevision !== aiSourceRevision) {
-    error = "The document changed while the rewrite was being prepared. Discard it and try again.";
+  if (selected.id !== aiSourceEntityId || documentBody !== aiSourceBody || loadedDocumentRevision !== aiSourceRevision) {
+    error = "The entity or document changed while the rewrite was being prepared. Discard it and try again.";
     return;
   }
   const validationError = validateAiProposal(aiPreviewOutput);
@@ -1900,6 +1977,8 @@ async function openProjectDirectory() {
     if (!path) return;
     await runProjectTransition("Opening project…", async () => {
       if (!(await flushAutoSave())) return;
+      if (!(await leavePluginView())) return;
+      resetProjectSessionState();
       await project.close();
       await finishOpening(await project.openDirectory(path));
     });
@@ -1913,6 +1992,8 @@ async function openRecentProject(path: string) {
   showProjectMenu = false;
   await runProjectTransition("Opening project…", async () => {
     if (!(await flushAutoSave())) return;
+    if (!(await leavePluginView())) return;
+    resetProjectSessionState();
     await project.close();
     await finishOpening(await project.openDirectory(path));
   });
@@ -1924,14 +2005,8 @@ async function closeProject() {
   await runProjectTransition("Closing project…", async () => {
     if (!(await flushAutoSave())) return;
     if (!(await leavePluginView())) return;
+    resetProjectSessionState();
     await project.close();
-    clearSelection();
-    projectInfo = null;
-    adminPlugins = null;
-    hostView = null;
-    sandboxView = null;
-    gitStatus = null;
-    ready = false;
   });
 }
 
@@ -1942,13 +2017,27 @@ async function flushAutoSave() {
 }
 
 async function loadSelectedState(entity: Entity) {
+  const token = ++selectedLoadToken;
+  const entityId = entity.id;
+  const isCurrent = () => token === selectedLoadToken && selected?.id === entityId;
   closeAiFieldFill();
+  closeAiRewrite();
+  documentBody = "";
+  fields = {};
+  relationships = [];
+  assets = [];
+  mapLocations = [];
+  loadedDocumentRevision = "";
   const context = contextFor();
-  const record = await context.entities.get(entity.id as UUID);
+  const record = await context.entities.get(entityId as UUID);
+  if (!isCurrent()) return;
   const document = record?.documents[0];
   documentBody = normalizeDocument(document?.body ?? "", document?.format);
-  loadedDocumentRevision = (await project.listDocuments(entity.id))[0]?.revision ?? "";
-  const values = await context.fields.list(entity.id as UUID);
+  const documents = await project.listDocuments(entityId);
+  if (!isCurrent()) return;
+  loadedDocumentRevision = documents[0]?.revision ?? "";
+  const values = await context.fields.list(entityId as UUID);
+  if (!isCurrent()) return;
   dateEditorOpen = {};
   fields = Object.fromEntries(
     Object.entries(values).map(([key, value]) => {
@@ -1959,11 +2048,13 @@ async function loadSelectedState(entity: Entity) {
         if (normalized === "1" || normalized === "1-1" || normalized === "1-1-1") return [key, ""];
         return [key, date ? serializeCalendarDate(date) : String(value ?? "")];
       }
+      if (definition && (definition.type === "number" || definition.type === "boolean" || definition.multiple))
+        return [key, value];
       return [key, fieldDisplayValue(value)];
     }),
   );
   relationships = context.module.capabilities.includes("relationship.read")
-    ? (await context.relationships.list(entity.id as UUID)).map((relationship) => ({
+    ? (await context.relationships.list(entityId as UUID)).map((relationship) => ({
         id: relationship.id,
         source_id: relationship.sourceId,
         target_id: relationship.targetId,
@@ -1972,8 +2063,9 @@ async function loadSelectedState(entity: Entity) {
         revision: relationship.revision,
       }))
     : [];
+  if (!isCurrent()) return;
   assets = context.module.capabilities.includes("asset.read:self")
-    ? (await context.assets.list(entity.id as UUID)).map((asset) => ({
+    ? (await context.assets.list(entityId as UUID)).map((asset) => ({
         id: asset.id,
         entity_id: asset.entityId,
         namespace: asset.namespace,
@@ -1986,7 +2078,10 @@ async function loadSelectedState(entity: Entity) {
         revision: "",
       }))
     : [];
-  await refreshSelectedMapLocations(entity.id);
+  if (!isCurrent()) return;
+  const nextMapLocations = entityId && mapsEnabled() ? await project.listMapLocations(entityId) : [];
+  if (!isCurrent()) return;
+  mapLocations = nextMapLocations;
   savedAt = "";
 }
 
@@ -2059,8 +2154,8 @@ async function applyMapPick(anchor: unknown) {
       await project.upsertMapLocation(entity.id, location);
       if (mapsEditorMode === "fmg")
         await project.mapsEditorFocusLink(location.id, activeMapsPluginId()).catch(() => {});
+      if (!(await leavePluginView())) return;
       section = entity.entity_type === "event" || entity.entity_type === "era" ? "timeline" : "lore";
-      sandboxView = null;
       await selectEntity(entity);
       mapLocations = await project.listMapLocations(entity.id);
     } else {
@@ -2071,8 +2166,8 @@ async function applyMapPick(anchor: unknown) {
         entities.find((candidate) => candidate.id === pending.entityId) ??
         (await project.listEntities()).find((candidate) => candidate.id === pending.entityId);
       if (entity) {
+        if (!(await leavePluginView())) return;
         section = entity.entity_type === "event" || entity.entity_type === "era" ? "timeline" : "lore";
-        sandboxView = null;
         await selectEntity(entity);
         mapLocations = await project.listMapLocations(entity.id);
       }
@@ -2098,8 +2193,8 @@ async function openMapEntityFromLink(entityId: string) {
         : entity.entity_type?.startsWith("timeline") || entity.entity_type === "event" || entity.entity_type === "era"
           ? "timeline"
           : "lore";
+    if (!(await leavePluginView())) return;
     section = target;
-    sandboxView = null;
     await selectEntity(entity);
   } catch (cause) {
     error = friendlyError(cause);
@@ -2245,7 +2340,7 @@ async function createEntity(event: SubmitEvent) {
   try {
     const fieldsForCreate: Record<string, unknown> = {};
     const relationshipsForCreate: Record<string, UUID[]> = {};
-    for (const { field } of createFieldsFor(option)) {
+    for (const { field, required } of createFieldsFor(option)) {
       const value = createFieldValues[field.key];
       const empty =
         value === "" ||
@@ -2254,6 +2349,7 @@ async function createEntity(event: SubmitEvent) {
         (typeof value === "string" && value.trim() === "") ||
         (Array.isArray(value) && value.length === 0);
       if (empty) {
+        if (required) throw new Error(`${field.label} is required`);
         continue;
       }
       if (field.type === "relationship") {
@@ -2333,14 +2429,21 @@ function toggleCreateForm() {
   setTimeout(() => document.getElementById("new-entity")?.focus(), 0);
 }
 
-function updateField(key: string, event: Event) {
+function updateField(definition: FieldDefinition, event: Event) {
   if (projectDiagnostics.length > 0) return;
   const target = event.currentTarget as HTMLInputElement | HTMLSelectElement;
-  const value =
-    target instanceof HTMLSelectElement && target.multiple
-      ? Array.from(target.selectedOptions, (option) => option.value)
-      : target.value;
-  fields = { ...fields, [key]: value };
+  let value: unknown;
+  if (definition.type === "boolean") {
+    value = (target as HTMLInputElement).checked;
+  } else if (definition.type === "number") {
+    const raw = target.value;
+    value = raw === "" ? "" : Number(raw);
+  } else if (target instanceof HTMLSelectElement && target.multiple) {
+    value = Array.from(target.selectedOptions, (option) => option.value);
+  } else {
+    value = target.value;
+  }
+  fields = { ...fields, [definition.key]: value };
   markEntryDirty();
 }
 async function saveDocument(): Promise<boolean> {
@@ -2357,7 +2460,7 @@ async function saveDocument(): Promise<boolean> {
       {
         document: { entity_id: entityId, body, format: "markdown" },
         fields: definitionsForSave.map((definition) => {
-          const value = fieldsSnapshot[definition.key] ?? "";
+          const value = fieldValueForSave(definition, fieldsSnapshot[definition.key] ?? "");
           return {
             entity_id: entityId,
             namespace: activeManifest()?.schemas[0]?.namespace ?? activeModuleId(),
@@ -2897,6 +3000,41 @@ function clearSelection() {
   projectDiagnostics = [];
   showCreateForm = false;
 }
+function resetProjectSessionState() {
+  selectedLoadToken += 1;
+  closeAiFieldFill();
+  closeAiRewrite();
+  clearSelection();
+  projectInfo = null;
+  modules = [];
+  adminPlugins = null;
+  hostView = null;
+  sandboxView = null;
+  projectionView = null;
+  gitStatus = null;
+  gitMessage = "";
+  mapSaveStates = {};
+  mapsEditorKey = "welcome";
+  mapReloadCounter = 0;
+  mapRecoveryBusy = false;
+  mapFocusLinkId = null;
+  mapSelection = null;
+  mapPickPending = null;
+  mapReconcileNotice = "";
+  mapPickNotice = "";
+  searchMatches = null;
+  globalQuery = "";
+  query = "";
+  showSettings = false;
+  schemaPluginId = null;
+  schemaPluginName = "";
+  moduleSchemaPackage = null;
+  moduleSchemaOverlay = { version: 1 };
+  moduleSchemaMessage = "";
+  schemaEditorDirty = false;
+  schemaOverlayLoadToken += 1;
+  ready = false;
+}
 async function seedExample() {
   try {
     await project.seedExample();
@@ -2990,6 +3128,7 @@ onMount(() => {
       const map = entities.find((entity) => entity.id === event.payload.mapEntityId);
       const item = mapsNavigationItem();
       if (!map || !item) throw new Error("map-unavailable: enable the Maps module to open this location");
+      if (!(await leavePluginView())) return;
       selected = map;
       mapsEditorKey = map.id;
       await loadSelectedState(map);
@@ -3094,6 +3233,9 @@ onMount(() => {
   return () => {
     if (aiModelsMessageTimer !== null) window.clearTimeout(aiModelsMessageTimer);
     unlisten?.();
+    if (aiRequestId) void project.aiCancelText(aiRequestId).catch(() => {});
+    if (aiFieldFillRequestId) void project.aiCancelText(aiFieldFillRequestId).catch(() => {});
+    clearAiStreamListener();
     clearAiFieldListener();
     unlistenMaps?.();
     unlistenMapsState?.();
@@ -3301,8 +3443,9 @@ onMount(() => {
                 </div>
                 <label class="create-input-field" for="new-entity"
                   ><span>Name <b>*</b></span><input
-                    id="new-entity"
-                    bind:value={name}
+                     id="new-entity"
+                     required
+                     bind:value={name}
                     placeholder={`e.g. ${createOption.template.name}`}
                     autocomplete="off" /></label
                 >{#each createFieldsFor(createOption) as item}<div class="create-input-field">
@@ -3320,8 +3463,9 @@ onMount(() => {
                             item.field.key,
                             ids,
                           )} />{:else if item.field.type === "text"}<textarea
-                        id={`create-${item.field.key}`}
-                        rows="3"
+                         id={`create-${item.field.key}`}
+                         required={item.required}
+                         rows="3"
                         value={String(createFieldValues[item.field.key] ?? "")}
                         placeholder={`Add ${item.field.label.toLowerCase()}`}
                         oninput={(event) =>
@@ -3329,6 +3473,7 @@ onMount(() => {
                       >{:else if item.field.type === "number"}<input
                         id={`create-${item.field.key}`}
                         type="number"
+                        required={item.required}
                         value={String(createFieldValues[item.field.key] ?? "")}
                         placeholder={`Add ${item.field.label.toLowerCase()}`}
                         oninput={(event) =>
@@ -3341,6 +3486,7 @@ onMount(() => {
                         ><input
                           id={`create-${item.field.key}`}
                           type="checkbox"
+                          required={item.required}
                           checked={createFieldValues[item.field.key] === true}
                           onchange={(event) =>
                             setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).checked)} /><span
@@ -3348,6 +3494,7 @@ onMount(() => {
                         ></label
                       >{:else if item.field.type === "enum"}<select
                         id={`create-${item.field.key}`}
+                        required={item.required}
                         multiple={item.field.multiple ?? false}
                         value={item.field.multiple
                           ? Array.isArray(createFieldValues[item.field.key])
@@ -3360,6 +3507,7 @@ onMount(() => {
                           >{/each}</select
                       >{:else if item.field.type === "entity-ref"}<select
                         id={`create-${item.field.key}`}
+                        required={item.required}
                         value={String(createFieldValues[item.field.key] ?? "")}
                         onchange={(event) =>
                           setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}
@@ -3904,7 +4052,7 @@ onMount(() => {
       {/key}
     {:else if hostView}
       <div class="host-view-shell">
-        <button class="quiet-button host-view-back" onclick={() => (hostView = null)}>Back to workspace</button
+        <button class="quiet-button host-view-back" onclick={() => void leavePluginView()}>Back to workspace</button
         ><HostView plugin={hostView.plugin} view={hostView.view} />
       </div>
     {:else if sandboxView && sandboxView.renderer !== "maps"}
@@ -4117,7 +4265,7 @@ onMount(() => {
               {/if}
               <div class="map-surface">
                 {#if mapsEditorMode === "physical"}
-                  {#key mapsEditorKey}
+                  {#key `${mapsEditorKey}:${mapReloadCounter}`}
                     <PhysicalMapEditor
                       mapId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
                       onstate={(status, detail) => {
@@ -4137,7 +4285,7 @@ onMount(() => {
                       }} />
                   {/key}
                 {:else if mapsEditorMode === "vector"}
-                  {#key mapsEditorKey}
+                  {#key `${mapsEditorKey}:${mapReloadCounter}`}
                     <NativeVectorMapEditor
                       mapId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
                       picking={Boolean(mapPickPending)}
@@ -4486,21 +4634,32 @@ onMount(() => {
                         class="date-empty"
                         type="button"
                         onclick={() => openDateEditor(definition.key)}>Add a date</button
-                      >{/if}{:else if definition.type === "enum" && definition.options?.length}<select
-                      aria-label={definition.label}
-                      multiple={definition.multiple ?? false}
+                      >{/if}{:else if definition.type === "boolean"}<input
+                       type="checkbox"
+                       aria-label={definition.label}
+                       checked={fieldInputValue(definition, fields[definition.key]) === true}
+                       onchange={(event) => updateField(definition, event)}
+                     />{:else if definition.type === "number"}<input
+                       type="number"
+                       aria-label={definition.label}
+                       value={fieldInputValue(definition, fields[definition.key])}
+                       placeholder="Add {definition.label.toLowerCase()}"
+                       onchange={(event) => updateField(definition, event)}
+                     />{:else if definition.type === "enum" && definition.options?.length}<select
+                       aria-label={definition.label}
+                       multiple={definition.multiple ?? false}
                       value={definition.multiple
                         ? Array.isArray(fields[definition.key])
                           ? fields[definition.key]
                           : []
                         : String(fields[definition.key] ?? "")}
-                      onchange={(event) => updateField(definition.key, event)}
-                      >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}</select
-                    >{:else}<input
-                      type="text"
-                      value={fieldDisplayValue(fields[definition.key])}
-                      placeholder="Add {definition.label.toLowerCase()}"
-                      oninput={(event) => updateField(definition.key, event)} />{/if}
+                       onchange={(event) => updateField(definition, event)}
+                       >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}</select
+                     >{:else}<input
+                       type="text"
+                       value={fieldInputValue(definition, fields[definition.key])}
+                       placeholder="Add {definition.label.toLowerCase()}"
+                       oninput={(event) => updateField(definition, event)} />{/if}
                 </div>{/each}
             </section>
             {#each definitions().filter((candidate) => candidate.type === "relationship") as definition}<section

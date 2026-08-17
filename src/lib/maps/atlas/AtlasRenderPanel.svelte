@@ -109,6 +109,7 @@ let unlisten: UnlistenFn | undefined;
 let previewTimer: ReturnType<typeof setTimeout> | undefined;
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let previewRequestId = "";
+let exportRequestId = crypto.randomUUID();
 let seedProjection = $state<"equirectangular" | "web-mercator">("equirectangular");
 let seedExtent = $state<AtlasRenderRequest["extent"] | null>(null);
 let seedUnlock = $state(false);
@@ -196,6 +197,7 @@ function request(width: number, height: number): AtlasRenderRequest {
 }
 
 function applyStatus(status: AtlasJobStatus) {
+  if (status.mapEntityId !== mapId) return;
   if (status.kind === "preview") {
     if (status.requestId !== previewRequestId && status.state !== "cancelled") return;
     previewJob = status;
@@ -205,6 +207,7 @@ function applyStatus(status: AtlasJobStatus) {
     }
     if (status.error && status.state === "failed") notice = status.error;
   } else {
+    if (status.requestId !== exportRequestId && status.state !== "cancelled") return;
     exportJob = status;
     if (status.error && status.state === "failed") notice = status.error;
   }
@@ -277,9 +280,11 @@ async function runPreview() {
 async function runExport() {
   if (exportBusy()) return;
   notice = "";
+  exportRequestId = crypto.randomUUID();
   try {
-    const status = await project.atlasRenderBegin(mapId, request(widthPx, heightPx), crypto.randomUUID());
+    const status = await project.atlasRenderBegin(mapId, request(widthPx, heightPx), exportRequestId);
     applyStatus(status);
+    if (status.requestId !== exportRequestId) exportJob = null;
   } catch (error) {
     notice = error instanceof Error ? error.message : String(error);
   }
@@ -388,6 +393,10 @@ onDestroy(() => {
   if (previewTimer) clearTimeout(previewTimer);
   if (pollTimer) clearInterval(pollTimer);
   if (previewJob) void project.atlasArtifactDiscard(previewJob.jobId).catch(() => undefined);
+  if (exportJob) {
+    void project.atlasArtifactDiscard(exportJob.jobId).catch(() => undefined);
+    void project.atlasJobCancel(exportJob.jobId).catch(() => undefined);
+  }
 });
 </script>
 

@@ -11,10 +11,14 @@ let {
   context,
   selectedLanguage,
   active,
+  registerLeaveGuard,
+  setMutationActive,
 }: {
   context: ModuleContext;
   selectedLanguage: EntitySummary | null;
   active: boolean;
+  registerLeaveGuard: (guard: (() => Promise<boolean> | boolean) | null) => void;
+  setMutationActive: (active: boolean) => void;
 } = $props();
 
 let cancelled = $state(false);
@@ -23,6 +27,7 @@ let orthographies: ModuleRecord<OrthographyValue>[] = $state([]);
 let orthographyEditing = $state<ModuleRecord<OrthographyValue> | null>(null);
 let orthographyEditorOpen = $state(false);
 let orthographyDraft: OrthographyValue = $state(emptyOrthography());
+let orthographySaving = $state(false);
 let paneLoading = $state(false);
 let error = $state("");
 let request = $state(0);
@@ -36,7 +41,10 @@ $effect(() => {
   const languageId = selectedLanguage?.id ?? null;
   void languageId;
   if (!active) return;
-  if (languageId === lastLoadedLanguage) return;
+  if (languageId === lastLoadedLanguage) {
+    void loadWriting();
+    return;
+  }
   lastLoadedLanguage = languageId;
   orthographyEditing = null;
   orthographyEditorOpen = false;
@@ -48,6 +56,27 @@ $effect(() => {
   return () => {
     cancelled = true;
   };
+});
+
+function writingHasDraft() {
+  if (!orthographyEditorOpen) return false;
+  const baseline = orthographyEditing ? normalizeOrthography(orthographyEditing.value) : emptyOrthography();
+  return (
+    JSON.stringify(serializeOrthography(normalizeOrthography(orthographyDraft))) !==
+    JSON.stringify(serializeOrthography(baseline))
+  );
+}
+
+async function tryLeaveWriting(confirmLeave: (message: string) => Promise<boolean> | boolean) {
+  if (!writingHasDraft()) return true;
+  if (orthographySaving) return false;
+  const allowed = await confirmLeave("You have unsaved changes to a writing system. Discard them?");
+  if (allowed) closeOrthographyEditor();
+  return allowed;
+}
+
+$effect(() => {
+  registerLeaveGuard(() => tryLeaveWriting((message) => confirm("Unsaved changes", message)));
 });
 
 $effect(() => {
@@ -108,34 +137,41 @@ function closeOrthographyEditor() {
 
 async function saveOrthography(): Promise<"ok" | "name" | "error" | "none"> {
   if (!selectedLanguage) return "none";
+  const ownerLanguageId = selectedLanguage.id;
   orthographyDraft = normalizeOrthography(orthographyDraft);
   if (!orthographyDraft.name) {
     error = "Writing system name is required.";
     return "name";
   }
   error = "";
+  orthographySaving = true;
+  setMutationActive(true);
   try {
     const payload = serializeOrthography(orthographyDraft);
     if (orthographyEditing) {
       const updated = await context.records.update(
         "orthographies",
         orthographyEditing.id,
-        selectedLanguage.id,
+        ownerLanguageId,
         payload,
         { expectedRevision: orthographyEditing.revision, requestId: crypto.randomUUID() },
       );
       orthographyEditing = { ...updated, value: normalizeOrthography(updated.value) };
     } else {
-      const created = await context.records.create("orthographies", selectedLanguage.id, payload, {
+      const created = await context.records.create("orthographies", ownerLanguageId, payload, {
         requestId: crypto.randomUUID(),
       });
       orthographyEditing = { ...created, value: normalizeOrthography(created.value) };
     }
     orthographyEditorOpen = true;
     orthographyDraft = orthographyEditing.value;
-    await loadWriting();
+    orthographySaving = false;
+    setMutationActive(false);
+    if (ownerLanguageId === selectedLanguage?.id) await loadWriting();
     return "ok";
   } catch (cause) {
+    orthographySaving = false;
+    setMutationActive(false);
     error = cause instanceof Error ? cause.message : String(cause);
     return "error";
   }
@@ -144,17 +180,21 @@ async function saveOrthography(): Promise<"ok" | "name" | "error" | "none"> {
 async function deleteOrthography() {
   if (!selectedLanguage || !orthographyEditing) return;
   if (!await confirm("Delete", `Delete “${orthographyEditing.value.name}”?`)) return;
+  const ownerLanguageId = selectedLanguage.id;
   error = "";
   try {
-    await context.records.delete("orthographies", orthographyEditing.id, selectedLanguage.id, {
+    setMutationActive(true);
+    await context.records.delete("orthographies", orthographyEditing.id, ownerLanguageId, {
       expectedRevision: orthographyEditing.revision,
       requestId: crypto.randomUUID(),
     });
     orthographyEditing = null;
     orthographyEditorOpen = false;
     orthographyDraft = emptyOrthography();
-    await loadWriting();
+    setMutationActive(false);
+    if (ownerLanguageId === selectedLanguage?.id) await loadWriting();
   } catch (cause) {
+    setMutationActive(false);
     error = cause instanceof Error ? cause.message : String(cause);
   }
 }
@@ -256,12 +296,16 @@ function handleSubmit(event: SubmitEvent) {
       <span>
         {#if orthographyEditing}
           <button type="button" class="language-button secondary language-danger" onclick={deleteOrthography}
+            disabled={orthographySaving}
             >Delete</button>
         {/if}
       </span>
       <span>
-        <button type="button" class="language-button secondary" onclick={closeOrthographyEditor}>Cancel</button>
-        <button type="submit" class="language-button">Save writing system</button>
+        <button type="button" class="language-button secondary" onclick={closeOrthographyEditor}
+          disabled={orthographySaving}
+          >Cancel</button>
+        <button type="submit" class="language-button" disabled={orthographySaving}
+          >{orthographySaving ? "Saving…" : "Save writing system"}</button>
       </span>
     </div>
   </form>

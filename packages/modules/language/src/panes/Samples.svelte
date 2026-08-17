@@ -23,11 +23,15 @@ let {
   selectedLanguage,
   active,
   openLexeme,
+  registerLeaveGuard,
+  setMutationActive,
 }: {
   context: ModuleContext;
   selectedLanguage: EntitySummary | null;
   active: boolean;
   openLexeme: (lexemeId: string) => void;
+  registerLeaveGuard: (guard: (() => Promise<boolean> | boolean) | null) => void;
+  setMutationActive: (active: boolean) => void;
 } = $props();
 
 let cancelled = $state(false);
@@ -36,6 +40,7 @@ let samples: ModuleRecord<Sample>[] = $state([]);
 let sampleEditing = $state<ModuleRecord<Sample> | null>(null);
 let sampleEditorOpen = $state(false);
 let sampleDraft: Sample = $state(emptySample());
+let sampleSaving = $state(false);
 let paneLoading = $state(false);
 let error = $state("");
 let request = $state(0);
@@ -49,7 +54,10 @@ $effect(() => {
   const languageId = selectedLanguage?.id ?? null;
   void languageId;
   if (!active) return;
-  if (languageId === lastLoadedLanguage) return;
+  if (languageId === lastLoadedLanguage) {
+    void loadSamples();
+    return;
+  }
   lastLoadedLanguage = languageId;
   sampleEditing = null;
   sampleEditorOpen = false;
@@ -61,6 +69,24 @@ $effect(() => {
   return () => {
     cancelled = true;
   };
+});
+
+function samplesHasDraft() {
+  if (!sampleEditorOpen) return false;
+  const baseline = sampleEditing ? normalizeSample(sampleEditing.value) : emptySample();
+  return JSON.stringify(serializeSample(normalizeSample(sampleDraft))) !== JSON.stringify(serializeSample(baseline));
+}
+
+async function tryLeaveSamples(confirmLeave: (message: string) => Promise<boolean> | boolean) {
+  if (!samplesHasDraft()) return true;
+  if (sampleSaving) return false;
+  const allowed = await confirmLeave("You have unsaved changes to a sample. Discard them?");
+  if (allowed) closeSampleEditor();
+  return allowed;
+}
+
+$effect(() => {
+  registerLeaveGuard(() => tryLeaveSamples((message) => confirm("Unsaved changes", message)));
 });
 
 const groups = $derived(groupSamples(samples));
@@ -133,6 +159,7 @@ function closeSampleEditor() {
 
 async function saveSample(): Promise<"ok" | "text" | "error" | "none"> {
   if (!selectedLanguage) return "none";
+  const ownerLanguageId = selectedLanguage.id;
   const value = normalizeSample(sampleDraft);
   if (!value.text.trim()) {
     error = "Text is required.";
@@ -140,25 +167,31 @@ async function saveSample(): Promise<"ok" | "text" | "error" | "none"> {
   }
   error = "";
   sampleDraft = value;
+  sampleSaving = true;
+  setMutationActive(true);
   try {
     const payload = serializeSample(value);
     if (sampleEditing) {
-      const updated = await context.records.update("samples", sampleEditing.id, selectedLanguage.id, payload, {
+      const updated = await context.records.update("samples", sampleEditing.id, ownerLanguageId, payload, {
         expectedRevision: sampleEditing.revision,
         requestId: crypto.randomUUID(),
       });
       sampleEditing = { ...updated, value: normalizeSample(updated.value) };
     } else {
-      const created = await context.records.create("samples", selectedLanguage.id, payload, {
+      const created = await context.records.create("samples", ownerLanguageId, payload, {
         requestId: crypto.randomUUID(),
       });
       sampleEditing = { ...created, value: normalizeSample(created.value) };
     }
     sampleEditorOpen = true;
     sampleDraft = sampleEditing.value;
-    await loadSamples();
+    sampleSaving = false;
+    setMutationActive(false);
+    if (ownerLanguageId === selectedLanguage?.id) await loadSamples();
     return "ok";
   } catch (cause) {
+    sampleSaving = false;
+    setMutationActive(false);
     error = cause instanceof Error ? cause.message : String(cause);
     return "error";
   }
@@ -167,17 +200,21 @@ async function saveSample(): Promise<"ok" | "text" | "error" | "none"> {
 async function deleteSample() {
   if (!selectedLanguage || !sampleEditing) return;
   if (!await confirm("Delete", `Delete “${sampleTitle(sampleEditing.value)}”?`)) return;
+  const ownerLanguageId = selectedLanguage.id;
   error = "";
   try {
-    await context.records.delete("samples", sampleEditing.id, selectedLanguage.id, {
+    setMutationActive(true);
+    await context.records.delete("samples", sampleEditing.id, ownerLanguageId, {
       expectedRevision: sampleEditing.revision,
       requestId: crypto.randomUUID(),
     });
     sampleEditing = null;
     sampleEditorOpen = false;
     sampleDraft = emptySample();
-    await loadSamples();
+    setMutationActive(false);
+    if (ownerLanguageId === selectedLanguage?.id) await loadSamples();
   } catch (cause) {
+    setMutationActive(false);
     error = cause instanceof Error ? cause.message : String(cause);
   }
 }
@@ -309,12 +346,16 @@ async function handleSubmit(event: SubmitEvent) {
     <div class="language-actions">
       <span>
         {#if sampleEditing}
-          <button type="button" class="language-button secondary language-danger" onclick={deleteSample}>Delete</button>
+          <button type="button" class="language-button secondary language-danger" onclick={deleteSample}
+            disabled={sampleSaving}
+            >Delete</button>
         {/if}
       </span>
       <span>
-        <button type="button" class="language-button secondary" onclick={closeSampleEditor}>Cancel</button>
-        <button type="submit" class="language-button">Save sample</button>
+        <button type="button" class="language-button secondary" onclick={closeSampleEditor} disabled={sampleSaving}
+          >Cancel</button>
+        <button type="submit" class="language-button" disabled={sampleSaving}
+          >{sampleSaving ? "Saving…" : "Save sample"}</button>
       </span>
     </div>
   </form>

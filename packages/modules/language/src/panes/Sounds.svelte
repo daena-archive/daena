@@ -25,10 +25,14 @@ let {
   context,
   selectedLanguage,
   active,
+  registerLeaveGuard,
+  setMutationActive,
 }: {
   context: ModuleContext;
   selectedLanguage: EntitySummary | null;
   active: boolean;
+  registerLeaveGuard: (guard: (() => Promise<boolean> | boolean) | null) => void;
+  setMutationActive: (active: boolean) => void;
 } = $props();
 
 let cancelled = $state(false);
@@ -36,8 +40,10 @@ let phonemes: ModuleRecord<PhonemeValue>[] = $state([]);
 let phonemeEditing = $state<ModuleRecord<PhonemeValue> | null>(null);
 let phonemeEditorOpen = $state(false);
 let phonemeDraft: PhonemeValue = $state(emptyPhoneme());
+let phonemeSaving = $state(false);
 let phonologyRecord = $state<ModuleRecord<PhonologyNotes> | null>(null);
 let phonologyDraft: PhonologyNotes = $state(emptyPhonologyNotes());
+let phonologySaving = $state(false);
 let phonologyNotesOpen = $state(false);
 let chartsOpen = $state(false);
 let paneLoading = $state(false);
@@ -52,7 +58,10 @@ $effect(() => {
   const languageId = selectedLanguage?.id ?? null;
   void languageId;
   if (!active) return;
-  if (languageId === lastLoadedLanguage) return;
+  if (languageId === lastLoadedLanguage) {
+    void loadSounds();
+    return;
+  }
   lastLoadedLanguage = languageId;
   phonemeEditing = null;
   phonemeEditorOpen = false;
@@ -66,6 +75,39 @@ $effect(() => {
   return () => {
     cancelled = true;
   };
+});
+
+function soundsHasDraft() {
+  if (phonemeEditorOpen) {
+    const baseline = phonemeEditing ? normalizePhoneme(phonemeEditing.value) : emptyPhoneme();
+    return (
+      JSON.stringify(serializePhoneme(normalizePhoneme(phonemeDraft))) !== JSON.stringify(serializePhoneme(baseline))
+    );
+  }
+  if (phonologyNotesOpen) {
+    const baseline = phonologyRecord?.value ?? emptyPhonologyNotes();
+    return (
+      JSON.stringify(serializePhonologyNotes(normalizePhonologyNotes(phonologyDraft))) !==
+      JSON.stringify(serializePhonologyNotes(normalizePhonologyNotes(baseline)))
+    );
+  }
+  return false;
+}
+
+async function tryLeaveSounds(confirmLeave: (message: string) => Promise<boolean> | boolean) {
+  if (!soundsHasDraft()) return true;
+  if (phonemeSaving || phonologySaving) return false;
+  const allowed = await confirmLeave("You have unsaved sound or phonology changes. Discard them?");
+  if (allowed) {
+    closePhonemeEditor();
+    phonologyNotesOpen = false;
+    phonologyDraft = normalizePhonologyNotes(phonologyRecord?.value ?? {});
+  }
+  return allowed;
+}
+
+$effect(() => {
+  registerLeaveGuard(() => tryLeaveSounds((message) => confirm("Unsaved changes", message)));
 });
 
 const phonemeValues = $derived(phonemes.map((record) => record.value));
@@ -95,7 +137,7 @@ async function loadSounds() {
       paneLoading = false;
       phonemes = inventory.map((record) => ({ ...record, value: normalizePhoneme(record.value) }));
       phonologyRecord = notes[0] ? { ...notes[0], value: normalizePhonologyNotes(notes[0].value) } : null;
-      phonologyDraft = phonologyRecord?.value ?? emptyPhonologyNotes();
+      phonologyDraft = phonologyRecord ? { ...phonologyRecord.value } : emptyPhonologyNotes();
       if (phonemeEditing) {
         const current = phonemes.find((record) => record.id === phonemeEditing?.id);
         if (current) phonemeEditing = current;
@@ -139,30 +181,37 @@ function closePhonemeEditor() {
 
 async function savePhoneme(): Promise<"ok" | "symbol" | "error" | "none"> {
   if (!selectedLanguage) return "none";
+  const ownerLanguageId = selectedLanguage.id;
   phonemeDraft = normalizePhoneme(phonemeDraft);
   if (!phonemeDraft.symbol) {
     error = "Symbol is required. IPA is optional.";
     return "symbol";
   }
   error = "";
+  phonemeSaving = true;
+  setMutationActive(true);
   try {
     const payload = serializePhoneme(phonemeDraft);
     if (phonemeEditing) {
-      const updated = await context.records.update("phonemes", phonemeEditing.id, selectedLanguage.id, payload, {
+      const updated = await context.records.update("phonemes", phonemeEditing.id, ownerLanguageId, payload, {
         expectedRevision: phonemeEditing.revision,
         requestId: crypto.randomUUID(),
       });
       phonemeEditing = { ...updated, value: normalizePhoneme(updated.value) };
     } else {
-      const created = await context.records.create("phonemes", selectedLanguage.id, payload, {
+      const created = await context.records.create("phonemes", ownerLanguageId, payload, {
         requestId: crypto.randomUUID(),
       });
       phonemeEditing = { ...created, value: normalizePhoneme(created.value) };
     }
-    await loadSounds();
+    phonemeSaving = false;
+    setMutationActive(false);
+    if (ownerLanguageId === selectedLanguage?.id) await loadSounds();
     closePhonemeEditor();
     return "ok";
   } catch (cause) {
+    phonemeSaving = false;
+    setMutationActive(false);
     error = cause instanceof Error ? cause.message : String(cause);
     return "error";
   }
@@ -171,41 +220,52 @@ async function savePhoneme(): Promise<"ok" | "symbol" | "error" | "none"> {
 async function deletePhoneme() {
   if (!selectedLanguage || !phonemeEditing) return;
   if (!await confirm("Delete", `Delete “${phonemeEditing.value.symbol}”?`)) return;
+  const ownerLanguageId = selectedLanguage.id;
   error = "";
   try {
-    await context.records.delete("phonemes", phonemeEditing.id, selectedLanguage.id, {
+    setMutationActive(true);
+    await context.records.delete("phonemes", phonemeEditing.id, ownerLanguageId, {
       expectedRevision: phonemeEditing.revision,
       requestId: crypto.randomUUID(),
     });
     phonemeEditing = null;
     phonemeEditorOpen = false;
     phonemeDraft = emptyPhoneme();
-    await loadSounds();
+    setMutationActive(false);
+    if (ownerLanguageId === selectedLanguage?.id) await loadSounds();
   } catch (cause) {
+    setMutationActive(false);
     error = cause instanceof Error ? cause.message : String(cause);
   }
 }
 
 async function savePhonology() {
   if (!selectedLanguage) return;
+  const ownerLanguageId = selectedLanguage.id;
   error = "";
+  phonologyDraft = normalizePhonologyNotes(phonologyDraft);
+  phonologySaving = true;
+  setMutationActive(true);
   try {
-    phonologyDraft = normalizePhonologyNotes(phonologyDraft);
     const payload = serializePhonologyNotes(phonologyDraft);
     if (phonologyRecord) {
-      const updated = await context.records.update("phonology", phonologyRecord.id, selectedLanguage.id, payload, {
+      const updated = await context.records.update("phonology", phonologyRecord.id, ownerLanguageId, payload, {
         expectedRevision: phonologyRecord.revision,
         requestId: crypto.randomUUID(),
       });
       phonologyRecord = { ...updated, value: normalizePhonologyNotes(updated.value) };
     } else {
-      const created = await context.records.create("phonology", selectedLanguage.id, payload, {
+      const created = await context.records.create("phonology", ownerLanguageId, payload, {
         requestId: crypto.randomUUID(),
       });
       phonologyRecord = { ...created, value: normalizePhonologyNotes(created.value) };
     }
-    phonologyDraft = phonologyRecord.value;
+    phonologyDraft = { ...phonologyRecord.value };
+    phonologySaving = false;
+    setMutationActive(false);
   } catch (cause) {
+    phonologySaving = false;
+    setMutationActive(false);
     error = cause instanceof Error ? cause.message : String(cause);
   }
 }
@@ -333,12 +393,15 @@ function handleNotesSubmit(event: SubmitEvent) {
       <span>
         {#if phonemeEditing}
           <button type="button" class="language-button secondary language-danger" onclick={deletePhoneme}
+            disabled={phonemeSaving}
             >Delete</button>
         {/if}
       </span>
       <span>
-        <button type="button" class="language-button secondary" onclick={closePhonemeEditor}>Cancel</button>
-        <button type="submit" class="language-button">Save sound</button>
+        <button type="button" class="language-button secondary" onclick={closePhonemeEditor} disabled={phonemeSaving}
+          >Cancel</button>
+        <button type="submit" class="language-button" disabled={phonemeSaving}
+          >{phonemeSaving ? "Saving…" : "Save sound"}</button>
       </span>
     </div>
   </form>
@@ -377,7 +440,8 @@ function handleNotesSubmit(event: SubmitEvent) {
           <span>Notes (optional)</span>
           <textarea name="notes" rows={2} bind:value={phonologyDraft.notes}></textarea>
         </label>
-        <button type="submit" class="language-button">Save sound notes</button>
+        <button type="submit" class="language-button" disabled={phonologySaving}
+          >{phonologySaving ? "Saving…" : "Save sound notes"}</button>
       </form>
     </div>
   </details>

@@ -44,6 +44,7 @@ let hydrology = $state<PhysicalHydrologyProducts | null>(null);
 let raster = $state<HTMLCanvasElement | null>(null);
 let notice = $state("");
 let busy = $state(false);
+let helpSeen = $state(false);
 let preview = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let layers = $state<VectorLayerDefinition[]>([
   {
@@ -57,24 +58,24 @@ let layers = $state<VectorLayerDefinition[]>([
     style: DEFAULT_VECTOR_LAYER_STYLE,
   },
   {
-    id: "ocean",
+    id: "ice",
     kind: "vector",
-    name: "Ocean",
+    name: "Ice",
     order: 1,
     defaultVisible: true,
     locked: true,
     selector: {},
-    style: { fill: "#245c80", fillOpacity: 0.58, stroke: "#397da5", strokeWidth: 0.3, pointRadius: 2 },
+    style: { fill: "#e8f2f8", fillOpacity: 0.82, stroke: "#c5d8e6", strokeWidth: 0.4, pointRadius: 2 },
   },
   {
-    id: "ice",
+    id: "ocean",
     kind: "vector",
-    name: "Ice",
-    order: 15,
-    defaultVisible: true,
+    name: "Ocean",
+    order: 2,
+    defaultVisible: false,
     locked: true,
     selector: {},
-    style: { fill: "#e8f2f8", fillOpacity: 0.82, stroke: "#c5d8e6", strokeWidth: 0.4, pointRadius: 2 },
+    style: { fill: "#245c80", fillOpacity: 0.58, stroke: "#397da5", strokeWidth: 0.3, pointRadius: 2 },
   },
   {
     id: "tectonic-boundaries",
@@ -281,7 +282,7 @@ onMount(() => {
         {/each}
       </div>
       <span class="physical-map-help">
-        <button type="button" aria-describedby="physical-map-hint" aria-label="About this preview">?</button>
+        <button type="button" aria-describedby="physical-map-hint" aria-label="About this preview" class:unread={!helpSeen} onmouseenter={() => { helpSeen = true; }} onfocus={() => { helpSeen = true; }}>?</button>
         <p id="physical-map-hint" role="tooltip">
           This preview locks the world’s physical shape—coasts, climate, ice, rivers, and the rest. The accepted,
           exportable map is a high-resolution render with far more detail and quality.
@@ -294,6 +295,10 @@ onMount(() => {
         <div class="physical-map-stage" role="status">
           <strong>{status?.stage ?? "Starting"}…</strong>
           {#if status && status.total > 0}<span>{status.completed} / {status.total}</span>{/if}
+        </div>
+      {:else if preview.features.length === 0 && !raster}
+        <div class="physical-map-empty-hint">
+          <p>Click <strong>Generate world</strong> below to create a physical map.</p>
         </div>
       {/if}
     </div>
@@ -494,6 +499,7 @@ onMount(() => {
 }
 
 .physical-map-help button {
+  position: relative;
   display: grid;
   place-items: center;
   width: 1.65rem;
@@ -513,11 +519,23 @@ onMount(() => {
   color: #f7f0e5;
 }
 
+.physical-map-help button.unread::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #e8913a;
+  box-shadow: 0 0 4px #e8913a;
+}
+
 .physical-map-help p {
   position: absolute;
   z-index: 3;
   right: calc(100% + 0.35rem);
-  bottom: calc(100% + 0.35rem);
+  top: calc(100% + 0.35rem);
   display: none;
   width: min(22rem, calc(100vw - 2.5rem));
   margin: 0;
@@ -566,6 +584,25 @@ onMount(() => {
 .physical-map-stage span {
   color: #d9d0c3;
   font-size: 0.8rem;
+}
+
+.physical-map-empty-hint {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  pointer-events: none;
+  text-align: center;
+}
+
+.physical-map-empty-hint p {
+  margin: 0;
+  padding: 0.55rem 1rem;
+  border-radius: 0.45rem;
+  background: rgb(13 27 42 / 55%);
+  color: #c9a96e;
+  font-size: 0.82rem;
+  line-height: 1.5;
 }
 
 .physical-map-actions {

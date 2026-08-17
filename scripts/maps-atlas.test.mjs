@@ -7,6 +7,8 @@ import { spawnSync } from "node:child_process";
 
 import { compile } from "svelte/compiler";
 
+const root = resolve(import.meta.dirname, "..");
+
 function assertSvelteCompiles(relative) {
   const filename = join(root, relative);
   const source = readFileSync(filename, "utf8");

@@ -3,13 +3,13 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use daena_atlas::cache::AtlasDiskCache;
 use daena_atlas::overlay::{hit_test_features, AtlasInspectResult, AuthoredFeature};
 use daena_atlas::studio::{
-    render_studio_tile_with_overlays, tile_count, AtlasStudioSceneRequestV1,
+    render_studio_tile_with_style_overlays, tile_count, AtlasStudioSceneRequestV1,
     AtlasStudioTileRequestV1, CODE_STUDIO_CANCELLED, CODE_STUDIO_EXPIRED,
     CODE_STUDIO_PROTOCOL_DENIED, CODE_STUDIO_RESOURCE_LIMIT, CODE_STUDIO_TILE_FAILED,
     CODE_STUDIO_TILE_INVALID, STUDIO_MAX_DEVICE_SCALE, STUDIO_MAX_ZOOM, STUDIO_TILE_SIZE,
@@ -30,12 +30,57 @@ use super::{current_info, with_read_project, SharedCore, ATLAS_STUDIO_PROGRESS_E
 
 const SESSION_IDLE: Duration = Duration::from_secs(15 * 60);
 const MAX_SESSIONS: usize = 4;
+const MAX_PREPARED_SCENES: usize = 4;
 const MAX_WAITING_TILES: u32 = 24;
 const MAX_PREFETCH_WAITING: u32 = 8;
+const MAX_CONCURRENT_TILE_RENDERS: u32 = 2;
 const MAX_TILE_PNG_BYTES: usize = 2 * 1024 * 1024;
 const MAX_TILE_CACHE_ENTRIES: usize = 64;
 const MAX_TILE_CACHE_BYTES: usize = 32 * 1024 * 1024;
 static WAITING_TILES: AtomicU32 = AtomicU32::new(0);
+
+#[derive(Default)]
+struct TileGate {
+    active: Mutex<u32>,
+    changed: Condvar,
+}
+
+struct TilePermit {
+    gate: Arc<TileGate>,
+}
+
+impl TileGate {
+    fn acquire(self: &Arc<Self>, prefetch: bool) -> Result<TilePermit, AtlasError> {
+        let mut active = self.active.lock().map_err(|_| {
+            AtlasError::new(CODE_STUDIO_TILE_FAILED, "atlas studio tile gate poisoned")
+        })?;
+        if prefetch {
+            if *active != 0 {
+                return Err(AtlasError::new(
+                    CODE_STUDIO_RESOURCE_LIMIT,
+                    "atlas studio prefetch deferred",
+                ));
+            }
+        } else {
+            while *active >= MAX_CONCURRENT_TILE_RENDERS {
+                active = self.changed.wait(active).map_err(|_| {
+                    AtlasError::new(CODE_STUDIO_TILE_FAILED, "atlas studio tile gate poisoned")
+                })?;
+            }
+        }
+        *active += 1;
+        Ok(TilePermit { gate: self.clone() })
+    }
+}
+
+impl Drop for TilePermit {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.gate.active.lock() {
+            *active = active.saturating_sub(1);
+            self.gate.changed.notify_one();
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,11 +111,30 @@ pub struct AtlasStudioOpenInput {
     pub device_scale: Option<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct PreparedSceneKey {
+    project_id: String,
+    map_entity_id: String,
+    physical_identity: String,
+    content_generation: i64,
+    offset_years: i64,
+    algorithm_version: u32,
+    detail_level: String,
+    variant: u32,
+}
+
+struct CachedPreparedScene {
+    prepared: Arc<AtlasPreparedScene>,
+    last_used: Instant,
+}
+
 struct StudioSession {
     token: String,
     project_id: String,
     map_entity_id: String,
     scene: AtlasStudioSceneRequestV1,
+    style: daena_atlas::style::AtlasStyle,
+    style_hash: String,
     prepared: Arc<AtlasPreparedScene>,
     captured_content_generation: i64,
     device_scale: u32,
@@ -80,7 +144,7 @@ struct StudioSession {
     offset_years: i64,
     time_kind: String,
     authored_year: Option<i64>,
-    overlays: Vec<AuthoredFeature>,
+    overlays: Arc<Vec<AuthoredFeature>>,
     tile_cache: BTreeMap<(u32, u32, u32), (Instant, Vec<u8>)>,
     tile_cache_bytes: usize,
 }
@@ -88,7 +152,8 @@ struct StudioSession {
 #[derive(Default)]
 pub struct AtlasStudioManager {
     sessions: BTreeMap<String, StudioSession>,
-    tile_lock: Arc<Mutex<()>>,
+    prepared_scenes: BTreeMap<PreparedSceneKey, CachedPreparedScene>,
+    tile_gate: Arc<TileGate>,
 }
 
 impl AtlasStudioManager {
@@ -102,6 +167,8 @@ impl AtlasStudioManager {
                 true
             }
         });
+        self.prepared_scenes
+            .retain(|_, cached| cached.last_used + SESSION_IDLE > now);
     }
 
     pub fn cancel_all(&mut self) {
@@ -109,6 +176,7 @@ impl AtlasStudioManager {
             session.cancel.cancel();
         }
         self.sessions.clear();
+        self.prepared_scenes.clear();
     }
 
     fn cancel_map(&mut self, project_id: &str, map_entity_id: &str) {
@@ -157,6 +225,42 @@ impl AtlasStudioManager {
         if let Some(session) = self.sessions.remove(token) {
             session.cancel.cancel();
         }
+    }
+
+    fn prepared_scene(&mut self, key: &PreparedSceneKey) -> Option<Arc<AtlasPreparedScene>> {
+        let cached = self.prepared_scenes.get_mut(key)?;
+        cached.last_used = Instant::now();
+        Some(cached.prepared.clone())
+    }
+
+    fn remember_prepared_scene(
+        &mut self,
+        key: PreparedSceneKey,
+        prepared: Arc<AtlasPreparedScene>,
+    ) {
+        if let Some(cached) = self.prepared_scenes.get_mut(&key) {
+            cached.prepared = prepared;
+            cached.last_used = Instant::now();
+            return;
+        }
+        while self.prepared_scenes.len() >= MAX_PREPARED_SCENES {
+            let oldest = self
+                .prepared_scenes
+                .iter()
+                .min_by_key(|(_, cached)| cached.last_used)
+                .map(|(key, _)| key.clone());
+            let Some(oldest) = oldest else {
+                break;
+            };
+            self.prepared_scenes.remove(&oldest);
+        }
+        self.prepared_scenes.insert(
+            key,
+            CachedPreparedScene {
+                prepared,
+                last_used: Instant::now(),
+            },
+        );
     }
 
     fn status(&mut self, token: &str) -> Result<AtlasStudioSessionStatus, String> {
@@ -446,30 +550,21 @@ fn serve_studio_tile(
             "atlas studio tile queue is full",
         ));
     }
-    let tile_lock = {
+    let tile_gate = {
         let manager = studio
             .lock()
             .map_err(|_| AtlasError::new(CODE_STUDIO_TILE_FAILED, "atlas studio lock poisoned"))?;
-        manager.tile_lock.clone()
+        manager.tile_gate.clone()
     };
-    let _gate = if parsed.prefetch {
-        match tile_lock.try_lock() {
-            Ok(guard) => Some(guard),
-            Err(_) => {
-                WAITING_TILES.fetch_sub(1, Ordering::SeqCst);
-                return Err(AtlasError::new(
-                    CODE_STUDIO_RESOURCE_LIMIT,
-                    "atlas studio prefetch deferred",
-                ));
-            }
-        }
-    } else {
-        Some(tile_lock.lock().map_err(|_| {
-            AtlasError::new(CODE_STUDIO_TILE_FAILED, "atlas studio tile lock poisoned")
-        })?)
-    };
+    let permit = tile_gate.acquire(parsed.prefetch);
     WAITING_TILES.fetch_sub(1, Ordering::SeqCst);
-    let (prepared, scene, overlays, cancel, device_scale) = {
+    let _permit = permit?;
+    let current_project = current_info(core)
+        .ok()
+        .flatten()
+        .map(|info| info.root)
+        .unwrap_or_default();
+    let (prepared, scene, style, style_hash, overlays, cancel, device_scale) = {
         let mut manager = studio
             .lock()
             .map_err(|_| AtlasError::new(CODE_STUDIO_TILE_FAILED, "atlas studio lock poisoned"))?;
@@ -481,11 +576,6 @@ fn serve_studio_tile(
             .sessions
             .get_mut(&parsed.token)
             .ok_or_else(|| AtlasError::new(CODE_STUDIO_EXPIRED, "atlas studio session expired"))?;
-        let current_project = current_info(core)
-            .ok()
-            .flatten()
-            .map(|info| info.root)
-            .unwrap_or_default();
         if current_project != session.project_id {
             return Err(protocol_denied(
                 "atlas studio token does not match the open project",
@@ -506,12 +596,13 @@ fn serve_studio_tile(
         (
             session.prepared.clone(),
             session.scene.clone(),
+            session.style.clone(),
+            session.style_hash.clone(),
             session.overlays.clone(),
             session.cancel.clone(),
             session.device_scale,
         )
     };
-    let _keep = _gate;
     if cancel.is_cancelled() {
         return Err(AtlasError::new(
             CODE_STUDIO_CANCELLED,
@@ -530,21 +621,25 @@ fn serve_studio_tile(
     let mut progress = FlagProgress {
         flag: cancel.as_ref(),
     };
-    let rendered =
-        render_studio_tile_with_overlays(&prepared, &scene, &tile, &overlays, &mut progress)
-            .map_err(|error| {
-                if error.code == CODE_STUDIO_CANCELLED
-                    || error.code == daena_atlas::CODE_RENDER_CANCELLED
-                {
-                    AtlasError::new(CODE_STUDIO_CANCELLED, error.message)
-                } else if error.code == CODE_STUDIO_TILE_INVALID
-                    || error.code == CODE_STUDIO_RESOURCE_LIMIT
-                {
-                    error
-                } else {
-                    AtlasError::new(CODE_STUDIO_TILE_FAILED, error.message)
-                }
-            })?;
+    let rendered = render_studio_tile_with_style_overlays(
+        &prepared,
+        &scene,
+        &style,
+        &style_hash,
+        &tile,
+        overlays.as_slice(),
+        &mut progress,
+    )
+    .map_err(|error| {
+        if error.code == CODE_STUDIO_CANCELLED || error.code == daena_atlas::CODE_RENDER_CANCELLED {
+            AtlasError::new(CODE_STUDIO_CANCELLED, error.message)
+        } else if error.code == CODE_STUDIO_TILE_INVALID || error.code == CODE_STUDIO_RESOURCE_LIMIT
+        {
+            error
+        } else {
+            AtlasError::new(CODE_STUDIO_TILE_FAILED, error.message)
+        }
+    })?;
     if rendered.png.len() > MAX_TILE_PNG_BYTES {
         return Err(AtlasError::new(
             CODE_STUDIO_RESOURCE_LIMIT,
@@ -602,6 +697,19 @@ pub async fn project_atlas_studio_open(
     })
     .await?;
     let token = Uuid::new_v4().to_string();
+    let prepared_key = PreparedSceneKey {
+        project_id: project_id.clone(),
+        map_entity_id: capture.session.map_entity_id.clone(),
+        physical_identity: capture.snapshot.identity.clone(),
+        content_generation: capture.snapshot.content_generation,
+        offset_years: capture.scene.offset_years,
+        algorithm_version: capture.scene.algorithm_version,
+        detail_level: capture.scene.level.as_str().to_string(),
+        variant: capture.scene.variant,
+    };
+    let (style, style_raw) = daena_atlas::style::load_style(&capture.scene.style_id)
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    let style_hash = style.content_hash(style_raw);
     let cache_dir = atlas_cache_dir(Path::new(&project_id));
     let identity = capture.snapshot.identity.clone();
     let source = capture.snapshot.source_bytes.clone();
@@ -611,31 +719,47 @@ pub async fn project_atlas_studio_open(
         .as_render_request(STUDIO_TILE_SIZE)
         .and_then(|request| request.normalize())
         .map_err(|error| format!("{}: {}", error.code, error.message))?;
-    let mut progress = SessionProgress {
-        app,
-        token: token.clone(),
-        map_entity_id: capture.session.map_entity_id.clone(),
+    let prepared = studio
+        .lock()
+        .map_err(|_| "atlas studio state is unavailable".to_string())?
+        .prepared_scene(&prepared_key);
+    let prepared = if let Some(prepared) = prepared {
+        prepared
+    } else {
+        let mut progress = SessionProgress {
+            app,
+            token: token.clone(),
+            map_entity_id: capture.session.map_entity_id.clone(),
+        };
+        let prepared = tauri::async_runtime::spawn_blocking(move || {
+            let cache = AtlasDiskCache::open(&cache_dir).ok();
+            prepare_from_source(
+                &source,
+                identity.as_bytes(),
+                &render,
+                Some(forcing),
+                cache.as_ref(),
+                &mut progress,
+            )
+        })
+        .await
+        .map_err(|error| format!("{CODE_STUDIO_TILE_FAILED}: {error}"))?
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+        let prepared = Arc::new(prepared);
+        studio
+            .lock()
+            .map_err(|_| "atlas studio state is unavailable".to_string())?
+            .remember_prepared_scene(prepared_key, prepared.clone());
+        prepared
     };
-    let prepared = tauri::async_runtime::spawn_blocking(move || {
-        let cache = AtlasDiskCache::open(&cache_dir).ok();
-        prepare_from_source(
-            &source,
-            identity.as_bytes(),
-            &render,
-            Some(forcing),
-            cache.as_ref(),
-            &mut progress,
-        )
-    })
-    .await
-    .map_err(|error| format!("{CODE_STUDIO_TILE_FAILED}: {error}"))?
-    .map_err(|error| format!("{}: {}", error.code, error.message))?;
     let session = StudioSession {
         token: token.clone(),
         project_id,
         map_entity_id: capture.session.map_entity_id.clone(),
         scene: capture.scene,
-        prepared: Arc::new(prepared),
+        style,
+        style_hash,
+        prepared,
         captured_content_generation: capture.snapshot.content_generation,
         device_scale,
         cancel: Arc::new(CancelFlag::default()),
@@ -644,7 +768,7 @@ pub async fn project_atlas_studio_open(
         offset_years: capture.session.offset_years,
         time_kind: capture.session.time_kind.clone(),
         authored_year: capture.session.authored_year,
-        overlays: capture.snapshot.overlays,
+        overlays: Arc::new(capture.snapshot.overlays),
         tile_cache: BTreeMap::new(),
         tile_cache_bytes: 0,
     };
@@ -717,31 +841,31 @@ pub async fn project_atlas_studio_inspect(
     studio: tauri::State<'_, Arc<Mutex<AtlasStudioManager>>>,
     input: AtlasStudioInspectInput,
 ) -> Result<AtlasInspectResult, String> {
-    let mut manager = studio
-        .lock()
-        .map_err(|_| "atlas studio state is unavailable".to_string())?;
-    manager.reap();
-    let session = manager
-        .sessions
-        .get(&input.session_token)
-        .ok_or_else(|| format!("{CODE_STUDIO_EXPIRED}: atlas studio session expired"))?;
+    let (prepared, scene, overlays) = {
+        let mut manager = studio
+            .lock()
+            .map_err(|_| "atlas studio state is unavailable".to_string())?;
+        manager.reap();
+        let session = manager
+            .sessions
+            .get(&input.session_token)
+            .ok_or_else(|| format!("{CODE_STUDIO_EXPIRED}: atlas studio session expired"))?;
+        (
+            session.prepared.clone(),
+            session.scene.clone(),
+            session.overlays.clone(),
+        )
+    };
     let zoom = input.zoom.min(STUDIO_MAX_ZOOM);
     let n = tile_count(zoom).map_err(|error| format!("{}: {}", error.code, error.message))?;
     let radius = (360_000_000i64 * 8 / (i64::from(STUDIO_TILE_SIZE) * i64::from(n.max(1))))
         .clamp(25_000, 2_000_000) as i32;
-    let mut features = session.overlays.clone();
-    if session
-        .scene
-        .active_layer_ids
-        .iter()
-        .any(|id| id == "labels")
-        || session
-            .scene
-            .active_layer_ids
-            .iter()
-            .any(|id| id == "rivers")
-    {
-        for tributary in session.prepared.drainage.tributaries.iter().take(32) {
+    let include_tributaries = scene.active_layer_ids.iter().any(|id| id == "labels")
+        || scene.active_layer_ids.iter().any(|id| id == "rivers");
+    let surface = prepared.sample_surface(input.lon_micro, input.lat_micro);
+    if include_tributaries {
+        let mut features = overlays.as_ref().clone();
+        for tributary in prepared.drainage.tributaries.iter().take(32) {
             if let Some(first) = tributary.path.first() {
                 features.push(AuthoredFeature {
                     id: tributary.id.clone(),
@@ -752,12 +876,20 @@ pub async fn project_atlas_studio_inspect(
                 });
             }
         }
+        return Ok(AtlasInspectResult {
+            hits: hit_test_features(&features, input.lon_micro, input.lat_micro, radius, 32),
+            surface,
+        });
     }
     Ok(AtlasInspectResult {
-        hits: hit_test_features(&features, input.lon_micro, input.lat_micro, radius, 32),
-        surface: session
-            .prepared
-            .sample_surface(input.lon_micro, input.lat_micro),
+        hits: hit_test_features(
+            overlays.as_slice(),
+            input.lon_micro,
+            input.lat_micro,
+            radius,
+            32,
+        ),
+        surface,
     })
 }
 
@@ -823,6 +955,27 @@ mod tests {
     }
 
     #[test]
+    fn tile_gate_parallelizes_visible_tiles_and_defers_prefetch() {
+        let gate = Arc::new(TileGate::default());
+        let first = gate.acquire(false).unwrap();
+        let second = gate.acquire(false).unwrap();
+        assert_eq!(*gate.active.lock().unwrap(), 2);
+        assert_eq!(
+            gate.acquire(true).err().unwrap().code,
+            CODE_STUDIO_RESOURCE_LIMIT
+        );
+        drop(first);
+        drop(second);
+        let prefetch = gate.acquire(true).unwrap();
+        assert_eq!(
+            gate.acquire(true).err().unwrap().code,
+            CODE_STUDIO_RESOURCE_LIMIT
+        );
+        drop(prefetch);
+        assert_eq!(*gate.active.lock().unwrap(), 0);
+    }
+
+    #[test]
     fn session_registry_caps_and_replaces_per_map() {
         let mut manager = AtlasStudioManager::default();
         let settings = daena_physical::GenerationSettings {
@@ -848,6 +1001,19 @@ mod tests {
             )
             .unwrap(),
         );
+        let prepared_key = PreparedSceneKey {
+            project_id: "/tmp/cache".into(),
+            map_entity_id: "00000000-0000-4000-8000-0000000000aa".into(),
+            physical_identity: String::from_utf8_lossy(&identity).into_owned(),
+            content_generation: 1,
+            offset_years: scene.offset_years,
+            algorithm_version: scene.algorithm_version,
+            detail_level: scene.level.as_str().to_string(),
+            variant: scene.variant,
+        };
+        manager.remember_prepared_scene(prepared_key.clone(), prepared.clone());
+        let reused = manager.prepared_scene(&prepared_key).unwrap();
+        assert!(Arc::ptr_eq(&reused, &prepared));
         for index in 0..4 {
             let token = Uuid::new_v4().to_string();
             manager
@@ -856,6 +1022,8 @@ mod tests {
                     project_id: format!("/tmp/p{index}"),
                     map_entity_id: format!("00000000-0000-4000-8000-00000000000{index}"),
                     scene: scene.clone(),
+                    style: prepared.style.clone(),
+                    style_hash: prepared.style_hash.clone(),
                     prepared: prepared.clone(),
                     captured_content_generation: 1,
                     device_scale: 1,
@@ -865,7 +1033,7 @@ mod tests {
                     offset_years: 0,
                     time_kind: "physical-offset-year".into(),
                     authored_year: None,
-                    overlays: Vec::new(),
+                    overlays: Arc::new(Vec::new()),
                     tile_cache: BTreeMap::new(),
                     tile_cache_bytes: 0,
                 })
@@ -879,6 +1047,8 @@ mod tests {
                 project_id: "/tmp/p0".into(),
                 map_entity_id: "00000000-0000-4000-8000-000000000000".into(),
                 scene: scene.clone(),
+                style: prepared.style.clone(),
+                style_hash: prepared.style_hash.clone(),
                 prepared: prepared.clone(),
                 captured_content_generation: 1,
                 device_scale: 1,
@@ -888,7 +1058,7 @@ mod tests {
                 offset_years: 0,
                 time_kind: "physical-offset-year".into(),
                 authored_year: None,
-                overlays: Vec::new(),
+                overlays: Arc::new(Vec::new()),
                 tile_cache: BTreeMap::new(),
                 tile_cache_bytes: 0,
             })
@@ -899,6 +1069,7 @@ mod tests {
         assert!(!manager.sessions.contains_key(&replacement));
         manager.cancel_all();
         assert!(manager.sessions.is_empty());
+        assert!(manager.prepared_scenes.is_empty());
     }
 
     #[test]

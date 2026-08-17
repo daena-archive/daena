@@ -10,7 +10,9 @@ use crate::projection::{
     mercator_x_to_lon_micro, mercator_y_to_lat_micro, wrap_lon_micro, AtlasExtent, AtlasProjection,
     WEB_MERCATOR_MAX_LAT_MICRO,
 };
+#[cfg(test)]
 use crate::render::pixel_rgba;
+use crate::render::{pixel_rgba_with_shade, studio_shade_ppm, RasterOptions};
 use crate::request::{AtlasFormat, AtlasRenderRequest, DetailLevel};
 use crate::{
     AtlasError, AtlasPhase, AtlasPreparedScene, AtlasProgress, ATLAS_DETAIL_ALGORITHM_VERSION,
@@ -521,6 +523,27 @@ pub fn render_studio_tile_with_overlays(
     overlays: &[AuthoredFeature],
     progress: &mut dyn AtlasProgress,
 ) -> Result<RenderedStudioTile, AtlasError> {
+    render_studio_tile_with_style_overlays(
+        scene,
+        scene_request,
+        &scene.style,
+        &scene.style_hash,
+        tile,
+        overlays,
+        progress,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn render_studio_tile_with_style_overlays(
+    scene: &AtlasPreparedScene,
+    scene_request: &AtlasStudioSceneRequestV1,
+    style: &crate::style::AtlasStyle,
+    style_hash: &str,
+    tile: &AtlasStudioTileRequestV1,
+    overlays: &[AuthoredFeature],
+    progress: &mut dyn AtlasProgress,
+) -> Result<RenderedStudioTile, AtlasError> {
     let tile = tile.clone().normalize()?;
     let scene_request = scene_request.clone().normalize()?;
     let output = tile.output_px()?;
@@ -533,45 +556,11 @@ pub fn render_studio_tile_with_overlays(
     let expanded = output
         .checked_add(halo.saturating_mul(2))
         .ok_or_else(|| AtlasError::new(CODE_STUDIO_RESOURCE_LIMIT, "studio halo overflowed"))?;
-    let pixels = (expanded as usize)
-        .checked_mul(expanded as usize)
-        .and_then(|count| count.checked_mul(4))
-        .ok_or_else(|| {
-            AtlasError::new(CODE_STUDIO_RESOURCE_LIMIT, "studio RGBA buffer overflowed")
-        })?;
-    let mut buffer = vec![0_u8; pixels];
-    let total = expanded;
     let halo_i = halo as i32;
-    for py in 0..expanded {
-        progress
-            .report(AtlasPhase::Rendering, py, total)
-            .map_err(map_studio_error)?;
-        progress.check_cancelled().map_err(map_studio_error)?;
-        for px in 0..expanded {
-            let (lon, lat) = xyz_world_pixel_center(
-                tile.z,
-                tile.x,
-                tile.y,
-                px as i32 - halo_i,
-                py as i32 - halo_i,
-                output,
-            )?;
-            let rgba = pixel_rgba(
-                &scene.model,
-                &scene.hydrology,
-                &scene.sdf,
-                &scene.style,
-                &request,
-                &scene.visible_water,
-                scene.paint_fields(),
-                lon,
-                lat,
-            );
-            let offset = (py as usize * expanded as usize + px as usize) * 4;
-            buffer[offset..offset + 4].copy_from_slice(&rgba);
-        }
-    }
-    progress.report(AtlasPhase::Rendering, total, total)?;
+    let mut buffer = render_studio_raster(
+        scene, style, &request, tile.z, tile.x, tile.y, -halo_i, -halo_i, expanded, expanded,
+        output, progress,
+    )?;
     let vector_layers = request
         .active_layer_ids
         .iter()
@@ -603,7 +592,7 @@ pub fn render_studio_tile_with_overlays(
         crate::overlay::composite_overlays(
             &mut south_origin,
             &overlay_request,
-            &scene.style,
+            style,
             &scene.hydrology,
             &scene.tectonics,
             &scene.identity,
@@ -635,7 +624,7 @@ pub fn render_studio_tile_with_overlays(
             crate::labels::draw_labels_xyz(
                 &mut buffer,
                 &label_source,
-                &scene.style,
+                style,
                 world_px,
                 origin_x,
                 origin_y,
@@ -653,7 +642,7 @@ pub fn render_studio_tile_with_overlays(
     let png = crate::encode::encode_png(
         &request,
         &buffer,
-        &scene.export_provenance(&request),
+        &scene.export_provenance(&request, style_hash),
         progress,
     )
     .map_err(map_studio_error)?;
@@ -666,6 +655,192 @@ pub fn render_studio_tile_with_overlays(
         rgba: buffer,
         png,
     })
+}
+
+const STUDIO_SHADE_STEP: u32 = 2;
+
+struct CoordinateTables {
+    lon: Vec<i32>,
+    lat: Vec<i32>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn coordinate_tables(
+    z: u32,
+    tile_x: u32,
+    tile_y: u32,
+    start_x: i32,
+    start_y: i32,
+    width: u32,
+    height: u32,
+    output_px: u32,
+) -> Result<CoordinateTables, AtlasError> {
+    let mut lon = Vec::with_capacity(width as usize);
+    for x in 0..width {
+        lon.push(
+            xyz_world_pixel_center(z, tile_x, tile_y, start_x + x as i32, start_y, output_px)?.0,
+        );
+    }
+    let mut lat = Vec::with_capacity(height as usize);
+    for y in 0..height {
+        lat.push(
+            xyz_world_pixel_center(z, tile_x, tile_y, start_x, start_y + y as i32, output_px)?.1,
+        );
+    }
+    Ok(CoordinateTables { lon, lat })
+}
+
+struct StudioShadeField {
+    width: usize,
+    values: Vec<u32>,
+}
+
+impl StudioShadeField {
+    fn sample(&self, x: u32, y: u32) -> u32 {
+        let sx = (x / STUDIO_SHADE_STEP) as usize;
+        let sy = (y / STUDIO_SHADE_STEP) as usize;
+        let a = self.values[sy * self.width + sx];
+        let b = self.values[sy * self.width + sx + 1];
+        let c = self.values[(sy + 1) * self.width + sx];
+        let d = self.values[(sy + 1) * self.width + sx + 1];
+        let top = if x.is_multiple_of(STUDIO_SHADE_STEP) {
+            a
+        } else {
+            ((u64::from(a) + u64::from(b)) / 2) as u32
+        };
+        let bottom = if x.is_multiple_of(STUDIO_SHADE_STEP) {
+            c
+        } else {
+            ((u64::from(c) + u64::from(d)) / 2) as u32
+        };
+        if y.is_multiple_of(STUDIO_SHADE_STEP) {
+            top
+        } else {
+            ((u64::from(top) + u64::from(bottom)) / 2) as u32
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn studio_shade_field(
+    scene: &AtlasPreparedScene,
+    options: RasterOptions,
+    z: u32,
+    tile_x: u32,
+    tile_y: u32,
+    start_x: i32,
+    start_y: i32,
+    width: u32,
+    height: u32,
+    output_px: u32,
+) -> Result<StudioShadeField, AtlasError> {
+    let shade_width = width.div_ceil(STUDIO_SHADE_STEP).saturating_add(1);
+    let shade_height = height.div_ceil(STUDIO_SHADE_STEP).saturating_add(1);
+    let mut lon = Vec::with_capacity(shade_width as usize);
+    for x in 0..shade_width {
+        lon.push(
+            xyz_world_pixel_center(
+                z,
+                tile_x,
+                tile_y,
+                start_x + (x * STUDIO_SHADE_STEP) as i32,
+                start_y,
+                output_px,
+            )?
+            .0,
+        );
+    }
+    let mut lat = Vec::with_capacity(shade_height as usize);
+    for y in 0..shade_height {
+        lat.push(
+            xyz_world_pixel_center(
+                z,
+                tile_x,
+                tile_y,
+                start_x,
+                start_y + (y * STUDIO_SHADE_STEP) as i32,
+                output_px,
+            )?
+            .1,
+        );
+    }
+    let count = (shade_width as usize)
+        .checked_mul(shade_height as usize)
+        .ok_or_else(|| AtlasError::new(CODE_STUDIO_RESOURCE_LIMIT, "shade field overflowed"))?;
+    let mut values = Vec::with_capacity(count);
+    for &lat in &lat {
+        for &lon in &lon {
+            values.push(studio_shade_ppm(
+                &scene.model,
+                &scene.hydrology,
+                &scene.sdf,
+                options,
+                lon,
+                lat,
+            ));
+        }
+    }
+    Ok(StudioShadeField {
+        width: shade_width as usize,
+        values,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_studio_raster(
+    scene: &AtlasPreparedScene,
+    style: &crate::style::AtlasStyle,
+    request: &AtlasRenderRequest,
+    z: u32,
+    tile_x: u32,
+    tile_y: u32,
+    start_x: i32,
+    start_y: i32,
+    width: u32,
+    height: u32,
+    output_px: u32,
+    progress: &mut dyn AtlasProgress,
+) -> Result<Vec<u8>, AtlasError> {
+    let pixels = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|count| count.checked_mul(4))
+        .ok_or_else(|| {
+            AtlasError::new(CODE_STUDIO_RESOURCE_LIMIT, "studio RGBA buffer overflowed")
+        })?;
+    let coordinates = coordinate_tables(
+        z, tile_x, tile_y, start_x, start_y, width, height, output_px,
+    )?;
+    let options = RasterOptions::for_studio(style, request);
+    let shade = studio_shade_field(
+        scene, options, z, tile_x, tile_y, start_x, start_y, width, height, output_px,
+    )?;
+    let mut buffer = vec![0_u8; pixels];
+    for py in 0..height {
+        progress
+            .report(AtlasPhase::Rendering, py, height)
+            .map_err(map_studio_error)?;
+        progress.check_cancelled().map_err(map_studio_error)?;
+        let lat = coordinates.lat[py as usize];
+        for px in 0..width {
+            let lon = coordinates.lon[px as usize];
+            let rgba = pixel_rgba_with_shade(
+                &scene.model,
+                &scene.hydrology,
+                &scene.sdf,
+                style,
+                options,
+                &scene.visible_water,
+                scene.paint_fields(),
+                lon,
+                lat,
+                shade.sample(px, py),
+            );
+            let offset = (py as usize * width as usize + px as usize) * 4;
+            buffer[offset..offset + 4].copy_from_slice(&rgba);
+        }
+    }
+    progress.report(AtlasPhase::Rendering, height, height)?;
+    Ok(buffer)
 }
 
 fn crop_halo(rgba: &[u8], expanded: u32, output: u32, halo: u32) -> Result<Vec<u8>, AtlasError> {
@@ -718,56 +893,42 @@ pub fn render_xyz_region(
         .as_render_request(output_px)
         .and_then(|request| request.normalize())
         .map_err(map_studio_error)?;
-    let pixels = (width as usize)
-        .checked_mul(height as usize)
-        .and_then(|count| count.checked_mul(4))
-        .ok_or_else(|| AtlasError::new(CODE_STUDIO_RESOURCE_LIMIT, "region RGBA overflowed"))?;
-    let mut buffer = vec![0_u8; pixels];
-    for py in 0..height {
-        progress.check_cancelled().map_err(map_studio_error)?;
-        for px in 0..width {
-            let mut tile_x = origin_x
-                .checked_add(px / output_px)
-                .ok_or_else(|| studio_tile_invalid("region tile x overflowed"))?;
-            let tile_y = origin_y
-                .checked_add(py / output_px)
-                .ok_or_else(|| studio_tile_invalid("region tile y overflowed"))?;
-            if wrap_x {
-                tile_x %= n;
-            } else if tile_x >= n || tile_y >= n {
-                return Err(studio_tile_invalid("region tile is out of range"));
-            }
-            let local_x = px % output_px;
-            let local_y = py % output_px;
-            let (lon, lat) = xyz_pixel_center(z, tile_x, tile_y, local_x, local_y, output_px)?;
-            let rgba = pixel_rgba(
-                &scene.model,
-                &scene.hydrology,
-                &scene.sdf,
-                &scene.style,
-                &request,
-                &scene.visible_water,
-                scene.paint_fields(),
-                lon,
-                lat,
-            );
-            let offset = (py as usize * width as usize + px as usize) * 4;
-            buffer[offset..offset + 4].copy_from_slice(&rgba);
-        }
+    let end_x = origin_x
+        .checked_add(tiles_x)
+        .ok_or_else(|| studio_tile_invalid("region tile x overflowed"))?;
+    let end_y = origin_y
+        .checked_add(tiles_y)
+        .ok_or_else(|| studio_tile_invalid("region tile y overflowed"))?;
+    if end_y > n || (!wrap_x && end_x > n) {
+        return Err(studio_tile_invalid("region tile is out of range"));
     }
-    Ok(buffer)
+    render_studio_raster(
+        scene,
+        &scene.style,
+        &request,
+        z,
+        origin_x % n,
+        origin_y,
+        0,
+        0,
+        width,
+        height,
+        output_px,
+        progress,
+    )
 }
 
 impl AtlasPreparedScene {
     fn export_provenance(
         &self,
         request: &AtlasRenderRequest,
+        style_hash: &str,
     ) -> crate::provenance::AtlasRenderProvenanceV1 {
         let mut provenance = crate::provenance::AtlasRenderProvenanceV1::for_request(
             request,
             &self.identity,
             &self.source_sha256,
-            &self.style_hash,
+            style_hash,
         );
         provenance.derived_drainage_version = crate::ATLAS_DERIVED_DRAINAGE_VERSION;
         provenance.tributary_count = self.drainage.tributaries.len() as u32;
@@ -801,7 +962,7 @@ mod tests {
     #[test]
     fn rejects_unknown_versions_zoom_and_coordinates() {
         let mut tile = AtlasStudioTileRequestV1::new(0, 0, 0);
-        tile.schema_version = 2;
+        tile.schema_version = ATLAS_STUDIO_TILE_SCHEMA_VERSION + 1;
         assert_eq!(tile.normalize().unwrap_err().code, CODE_STUDIO_TILE_INVALID);
         assert_eq!(
             AtlasStudioTileRequestV1::new(STUDIO_MAX_ZOOM + 1, 0, 0)
@@ -1188,6 +1349,29 @@ mod tests {
             .sum();
         assert!(cache_bytes > 0);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prepared_geography_can_be_restyled_without_rederiving() {
+        let (scene, relief_request) = prepared();
+        let tile = AtlasStudioTileRequestV1::new(0, 0, 0);
+        let relief = render_studio_tile(&scene, &relief_request, &tile, &mut NoopProgress).unwrap();
+        let mut biome_request = relief_request.clone();
+        biome_request.style_id = crate::style::BIOME_STYLE_ID.into();
+        let (biome_style, biome_raw) = crate::style::load_style(&biome_request.style_id).unwrap();
+        let biome_hash = biome_style.content_hash(biome_raw);
+        let biome = render_studio_tile_with_style_overlays(
+            &scene,
+            &biome_request,
+            &biome_style,
+            &biome_hash,
+            &tile,
+            &[],
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(scene.style.id, crate::style::RELIEF_STYLE_ID);
+        assert_ne!(relief.rgba, biome.rgba);
     }
 
     #[test]

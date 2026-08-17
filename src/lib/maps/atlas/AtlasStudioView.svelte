@@ -77,6 +77,7 @@ let worldMinZoom = $state(0);
 let unlisten: UnlistenFn | undefined;
 let map: MapLibreMap | null = null;
 let opening = false;
+let reopenPending = false;
 let resizeObserver: ResizeObserver | undefined;
 let debounce: ReturnType<typeof setTimeout> | undefined;
 let inspectHover: ReturnType<typeof setTimeout> | undefined;
@@ -87,8 +88,9 @@ let prefetchTimer: ReturnType<typeof setTimeout> | undefined;
 let mountedControls = false;
 
 function deviceScale() {
-  const ratio = typeof window === "undefined" ? 1 : window.devicePixelRatio || 1;
-  return ratio >= 1.5 ? 2 : 1;
+  // CPU-rendered 2x tiles cost four times as much for a small interactive
+  // sharpness gain. Static exports retain their requested detail.
+  return 1;
 }
 
 function formatEpoch(offset: number) {
@@ -157,7 +159,7 @@ function viewerLayerEnabled(atlasLayerId: string): boolean | null {
   if (!aliases || viewerLayers.length === 0) return null;
   const matched = viewerLayers.filter((layer) => aliases.includes(layer.id));
   if (matched.length === 0) return null;
-  return matched.some((layer) => layer.defaultVisible);
+  return matched.some((layer) => layer.defaultVisible) ? true : null;
 }
 
 function prefersReducedMotion() {
@@ -308,8 +310,12 @@ async function loadCapabilities() {
 }
 
 async function openSession() {
-  if (opening) return;
+  if (opening) {
+    reopenPending = true;
+    return;
+  }
   opening = true;
+  reopenPending = false;
   loading = true;
   error = "";
   stale = "";
@@ -317,28 +323,36 @@ async function openSession() {
   stage = "Snapshotting…";
   try {
     if (!capabilities) await loadCapabilities();
-    if (session) {
-      await project.atlasStudioClose(session.sessionToken).catch(() => undefined);
-      session = null;
-    }
+    const previous = session;
     const keepCenter = map?.getCenter();
     const keepZoom = map?.getZoom();
-    map?.remove();
-    map = null;
     const next = await project.atlasStudioOpen(studioRequest(), deviceScale());
     session = next;
     styleId = next.styleId;
     offsetYears = next.offsetYears;
-    stage = "Mounting map…";
-    const overview = applyWorldConstraints();
-    const center: [number, number] = keepCenter ? [keepCenter.lng, keepCenter.lat] : [0, 20];
-    mountMap(next, { center, zoom: keepZoom ?? overview });
+    const source = map?.getSource("atlas-studio") as { setTiles?: (tiles: string[]) => void } | undefined;
+    if (map && source?.setTiles) {
+      stage = "Updating map…";
+      source.setTiles([next.tileUrlTemplate]);
+      map.triggerRepaint();
+    } else {
+      stage = "Mounting map…";
+      map?.remove();
+      map = null;
+      const overview = applyWorldConstraints();
+      const center: [number, number] = keepCenter ? [keepCenter.lng, keepCenter.lat] : [0, 20];
+      mountMap(next, { center, zoom: keepZoom ?? overview });
+    }
+    if (previous && previous.sessionToken !== next.sessionToken) {
+      void project.atlasStudioClose(previous.sessionToken).catch(() => undefined);
+    }
     queueMicrotask(() => map?.resize());
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
     loading = false;
   } finally {
     opening = false;
+    if (reopenPending) queueMicrotask(() => void openSession());
   }
 }
 
@@ -384,7 +398,7 @@ function mountMap(status: AtlasStudioSessionStatus, view?: { center: [number, nu
       fadeDuration: 0,
       keyboard: true,
       transformRequest(url) {
-        if (!tileUrlAllowed(url, status.sessionToken)) {
+        if (!tileUrlAllowed(url, session?.sessionToken ?? status.sessionToken)) {
           throw new Error("Atlas Studio rejects remote tile, glyph, sprite, and telemetry URLs");
         }
         return { url };
@@ -448,16 +462,24 @@ function prefetchRing(status: AtlasStudioSessionStatus) {
     const y = 0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI);
     return Math.floor(Math.min(n - 1, Math.max(0, y * n)));
   };
-  const minX = lonToX(bounds.getWest()) - 1;
-  const maxX = lonToX(bounds.getEast()) + 1;
-  const minY = Math.max(0, latToY(bounds.getNorth()) - 1);
-  const maxY = Math.min(n - 1, latToY(bounds.getSouth()) + 1);
+  const visibleMinX = lonToX(bounds.getWest());
+  const visibleMaxX = lonToX(bounds.getEast());
+  const visibleMinY = Math.max(0, latToY(bounds.getNorth()));
+  const visibleMaxY = Math.min(n - 1, latToY(bounds.getSouth()));
+  const minX = visibleMinX - 1;
+  const maxX = visibleMaxX + 1;
+  const minY = Math.max(0, visibleMinY - 1);
+  const maxY = Math.min(n - 1, visibleMaxY + 1);
   const template = status.tileUrlTemplate;
+  let requested = 0;
   for (let x = minX; x <= maxX; x += 1) {
     const wrapped = ((x % n) + n) % n;
     for (let y = minY; y <= maxY; y += 1) {
+      if (x >= visibleMinX && x <= visibleMaxX && y >= visibleMinY && y <= visibleMaxY) continue;
       const url = `${template.replace("{z}", String(z)).replace("{x}", String(wrapped)).replace("{y}", String(y))}&priority=prefetch`;
       void fetch(url).catch(() => undefined);
+      requested += 1;
+      if (requested >= 8) return;
     }
   }
 }
@@ -521,10 +543,10 @@ function setViewZoom(next: number) {
 function shiftMap(longitudeDegrees: number, latitudeDegrees = 0) {
   if (!map) return;
   const reduced = prefersReducedMotion();
-  const center = [wrapLon(map.getCenter().lng + longitudeDegrees), Math.max(-85, Math.min(85, map.getCenter().lat + latitudeDegrees))] as [
-    number,
-    number,
-  ];
+  const center = [
+    wrapLon(map.getCenter().lng + longitudeDegrees),
+    Math.max(-85, Math.min(85, map.getCenter().lat + latitudeDegrees)),
+  ] as [number, number];
   map.setRenderWorldCopies(true);
   map.easeTo({
     center,
@@ -583,7 +605,7 @@ function inspectAt(lng: number, lat: number) {
 
 function scheduleInspect(lng: number, lat: number) {
   if (inspectHover) clearTimeout(inspectHover);
-  inspectHover = setTimeout(() => inspectAt(lng, lat), 120);
+  inspectHover = setTimeout(() => inspectAt(lng, lat), 240);
 }
 
 function onViewportKey(event: KeyboardEvent) {

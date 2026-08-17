@@ -169,7 +169,15 @@ fn nearest_cell(grid: Grid, lon_micro: i32, lat_micro: i32) -> usize {
     crate::detail::nearest_cell(grid, lon_micro, lat_micro)
 }
 
-fn shade_ppm(model: &AtlasDetailModel, lon: i32, lat: i32, sea: i32, sdf: &[i32]) -> u32 {
+fn shade_ppm(
+    model: &AtlasDetailModel,
+    lon: i32,
+    lat: i32,
+    sea: i32,
+    sdf: &[i32],
+    center: i32,
+    approximate: bool,
+) -> u32 {
     let cell_lon = (360_000_000i64 / i64::from(model.lattice_width.max(1))) as i32;
     let cell_lat = (180_000_000i64 / i64::from(model.lattice_height.max(1))) as i32;
     let delta_lon = (cell_lon / 4).max(20_000);
@@ -178,18 +186,32 @@ fn shade_ppm(model: &AtlasDetailModel, lon: i32, lat: i32, sea: i32, sdf: &[i32]
         let sdf_ppm = sample_sdf_ppm(model.grid, sdf, lon, lat);
         i64::from(model.refined_at(lon, lat, sea, sdf_ppm))
     };
-    let west = sample(wrap_lon_micro(i64::from(lon) - i64::from(delta_lon)), lat);
-    let east = sample(wrap_lon_micro(i64::from(lon) + i64::from(delta_lon)), lat);
-    let north = sample(
-        lon,
-        (i64::from(lat) + i64::from(delta_lat)).clamp(-90_000_000, 90_000_000) as i32,
-    );
-    let south = sample(
-        lon,
-        (i64::from(lat) - i64::from(delta_lat)).clamp(-90_000_000, 90_000_000) as i32,
-    );
-    let nx = west - east;
-    let ny = south - north;
+    let (nx, ny) = if approximate {
+        let east = sample(wrap_lon_micro(i64::from(lon) + i64::from(delta_lon)), lat);
+        let north = sample(
+            lon,
+            (i64::from(lat) + i64::from(delta_lat)).clamp(-90_000_000, 90_000_000) as i32,
+        );
+        // Forward differences reuse the center sample, removing two expensive
+        // terrain samples per interactive pixel while preserving slope scale.
+        let center = i64::from(center);
+        (
+            center.saturating_sub(east).saturating_mul(2),
+            center.saturating_sub(north).saturating_mul(2),
+        )
+    } else {
+        let west = sample(wrap_lon_micro(i64::from(lon) - i64::from(delta_lon)), lat);
+        let east = sample(wrap_lon_micro(i64::from(lon) + i64::from(delta_lon)), lat);
+        let north = sample(
+            lon,
+            (i64::from(lat) + i64::from(delta_lat)).clamp(-90_000_000, 90_000_000) as i32,
+        );
+        let south = sample(
+            lon,
+            (i64::from(lat) - i64::from(delta_lat)).clamp(-90_000_000, 90_000_000) as i32,
+        );
+        (west - east, south - north)
+    };
     let nz = 220_000_i64;
     let mag = nx
         .unsigned_abs()
@@ -203,7 +225,81 @@ fn shade_ppm(model: &AtlasDetailModel, lon: i32, lat: i32, sea: i32, sdf: &[i32]
     ((lit + mag as i64) * 500_000 / mag as i64).clamp(420_000, 1_000_000) as u32
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RasterTheme {
+    Relief,
+    Biome,
+    Temperature,
+    Precipitation,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RasterOptions {
+    ice: bool,
+    lakes: bool,
+    relief: bool,
+    ocean: bool,
+    coastlines: bool,
+    theme: RasterTheme,
+    approximate_shading: bool,
+}
+
+impl RasterOptions {
+    pub(crate) fn new(style: &AtlasStyle, request: &AtlasRenderRequest) -> Self {
+        let theme = match style.id.as_str() {
+            BIOME_STYLE_ID => RasterTheme::Biome,
+            TEMPERATURE_STYLE_ID => RasterTheme::Temperature,
+            PRECIPITATION_STYLE_ID => RasterTheme::Precipitation,
+            _ => RasterTheme::Relief,
+        };
+        Self {
+            ice: request.layer_enabled("ice"),
+            lakes: request.layer_enabled("lakes"),
+            relief: request.layer_enabled("relief"),
+            ocean: request.layer_enabled("ocean"),
+            coastlines: request.layer_enabled("coastlines"),
+            theme,
+            approximate_shading: false,
+        }
+    }
+
+    pub(crate) fn for_studio(style: &AtlasStyle, request: &AtlasRenderRequest) -> Self {
+        Self {
+            approximate_shading: true,
+            ..Self::new(style, request)
+        }
+    }
+}
+
+pub(crate) fn studio_shade_ppm(
+    model: &AtlasDetailModel,
+    hydrology: &HydrologyField,
+    sdf: &[i32],
+    options: RasterOptions,
+    lon: i32,
+    lat: i32,
+) -> u32 {
+    let sea = hydrology.sea_level_mm;
+    let sdf_ppm = sample_sdf_ppm(model.grid, sdf, lon, lat);
+    let elevation = model.refined_at(lon, lat, sea, sdf_ppm);
+    let shade = shade_ppm(
+        model,
+        lon,
+        lat,
+        sea,
+        sdf,
+        elevation,
+        options.approximate_shading,
+    );
+    if options.theme != RasterTheme::Relief {
+        shade.max(780_000)
+    } else {
+        shade
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn pixel_rgba(
     model: &AtlasDetailModel,
     hydrology: &HydrologyField,
@@ -215,28 +311,97 @@ pub(crate) fn pixel_rgba(
     lon: i32,
     lat: i32,
 ) -> [u8; 4] {
+    pixel_rgba_with_options(
+        model,
+        hydrology,
+        sdf,
+        style,
+        RasterOptions::new(style, request),
+        water,
+        paint,
+        lon,
+        lat,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pixel_rgba_with_options(
+    model: &AtlasDetailModel,
+    hydrology: &HydrologyField,
+    sdf: &[i32],
+    style: &AtlasStyle,
+    options: RasterOptions,
+    water: &VisibleWater,
+    paint: PaintFields<'_>,
+    lon: i32,
+    lat: i32,
+) -> [u8; 4] {
     let sea = hydrology.sea_level_mm;
     let sdf_ppm = sample_sdf_ppm(model.grid, sdf, lon, lat);
     let elevation = model.refined_at(lon, lat, sea, sdf_ppm);
     let cell = nearest_cell(model.grid, lon, lat);
-    let thematic = matches!(
-        style.id.as_str(),
-        BIOME_STYLE_ID | TEMPERATURE_STYLE_ID | PRECIPITATION_STYLE_ID
+    let shade = shade_ppm(
+        model,
+        lon,
+        lat,
+        sea,
+        sdf,
+        elevation,
+        options.approximate_shading,
     );
-    let shade = if thematic {
-        shade_ppm(model, lon, lat, sea, sdf).max(780_000)
+    let shade = if options.theme != RasterTheme::Relief {
+        shade.max(780_000)
     } else {
-        shade_ppm(model, lon, lat, sea, sdf)
+        shade
     };
-    if request.layer_enabled("ice") && hydrology.ice_cells.get(cell).copied().unwrap_or(false) {
+    paint_pixel(
+        hydrology, style, options, water, paint, sea, elevation, cell, shade,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pixel_rgba_with_shade(
+    model: &AtlasDetailModel,
+    hydrology: &HydrologyField,
+    sdf: &[i32],
+    style: &AtlasStyle,
+    options: RasterOptions,
+    water: &VisibleWater,
+    paint: PaintFields<'_>,
+    lon: i32,
+    lat: i32,
+    shade: u32,
+) -> [u8; 4] {
+    let sea = hydrology.sea_level_mm;
+    let sdf_ppm = sample_sdf_ppm(model.grid, sdf, lon, lat);
+    let elevation = model.refined_at(lon, lat, sea, sdf_ppm);
+    let cell = nearest_cell(model.grid, lon, lat);
+    paint_pixel(
+        hydrology, style, options, water, paint, sea, elevation, cell, shade,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_pixel(
+    hydrology: &HydrologyField,
+    style: &AtlasStyle,
+    options: RasterOptions,
+    water: &VisibleWater,
+    paint: PaintFields<'_>,
+    sea: i32,
+    elevation: i32,
+    cell: usize,
+    shade: u32,
+) -> [u8; 4] {
+    if options.ice && hydrology.ice_cells.get(cell).copied().unwrap_or(false) {
         return apply_shade(style.ice, shade.max(700_000));
     }
     let inland = water.inland.get(cell).copied().unwrap_or(false);
-    if request.layer_enabled("lakes") && inland {
+    if options.lakes && inland {
         return apply_shade(style.lake, shade);
     }
     let land = elevation >= sea;
-    if land && !request.layer_enabled("relief") {
+    if land && !options.relief {
         return [
             style.background[0],
             style.background[1],
@@ -244,7 +409,7 @@ pub(crate) fn pixel_rgba(
             255,
         ];
     }
-    if !land && !request.layer_enabled("ocean") {
+    if !land && !options.ocean {
         return [
             style.background[0],
             style.background[1],
@@ -253,7 +418,7 @@ pub(crate) fn pixel_rgba(
         ];
     }
     let painted = if land { elevation.max(sea) } else { elevation };
-    let mut rgb = if land && style.id == BIOME_STYLE_ID {
+    let mut rgb = if land && options.theme == RasterTheme::Biome {
         biome_fill(
             style,
             paint
@@ -262,12 +427,12 @@ pub(crate) fn pixel_rgba(
                 .copied()
                 .unwrap_or(crate::control::CLIMATE_CLASS_GRASSLAND),
         )
-    } else if land && style.id == TEMPERATURE_STYLE_ID {
+    } else if land && options.theme == RasterTheme::Temperature {
         temperature_fill(
             style,
             paint.temperature_centi_c.get(cell).copied().unwrap_or(0),
         )
-    } else if land && style.id == PRECIPITATION_STYLE_ID {
+    } else if land && options.theme == RasterTheme::Precipitation {
         precipitation_fill(
             style,
             paint.precipitation_mm.get(cell).copied().unwrap_or(0),
@@ -275,7 +440,7 @@ pub(crate) fn pixel_rgba(
     } else {
         hypsometric(style, painted, sea)
     };
-    if request.layer_enabled("coastlines") {
+    if options.coastlines {
         let band = elevation.saturating_sub(sea).unsigned_abs();
         if band < 28_000 {
             let t = ((28_000 - band) as u64 * 620_000 / 28_000) as u32;
@@ -320,6 +485,7 @@ pub fn render_rgba(
         return Err(AtlasError::invalid("tile order does not match tile count"));
     }
     let total = tiles.len() as u32;
+    let options = RasterOptions::new(style, request);
     for (step, tile_index) in tile_order.iter().enumerate() {
         progress.report(AtlasPhase::Rendering, step as u32, total)?;
         progress.check_cancelled()?;
@@ -332,8 +498,8 @@ pub fn render_rgba(
                 let x = tile.x + local_x;
                 let y = tile.y + local_y;
                 let (lon, lat) = view.pixel_center(x, y);
-                let rgba = pixel_rgba(
-                    model, hydrology, sdf, style, request, water, paint, lon, lat,
+                let rgba = pixel_rgba_with_options(
+                    model, hydrology, sdf, style, options, water, paint, lon, lat,
                 );
                 let offset = ((y as usize) * width as usize + x as usize) * 4;
                 buffer[offset..offset + 4].copy_from_slice(&rgba);

@@ -282,11 +282,7 @@ pub fn capabilities_for_descriptor(descriptor: &Value, layers: &Value) -> AtlasR
                 "ocean"
                     | "relief"
                     | "ice"
-                    | "lakes"
-                    | "rivers"
-                    | "coastlines"
                     | "graticule"
-                    | "frame"
             ),
         })
         .collect::<Vec<_>>();
@@ -297,17 +293,6 @@ pub fn capabilities_for_descriptor(descriptor: &Value, layers: &Value) -> AtlasR
             };
             if let Some(role) = physical_layer_role(id) {
                 if let Some(choice) = choices.iter_mut().find(|choice| choice.role == role) {
-                    if let Some(visible) = layer.get("defaultVisible").and_then(Value::as_bool) {
-                        if !matches!(
-                            role,
-                            "tectonic-plates"
-                                | "tectonic-boundaries"
-                                | "volcanic-centers"
-                                | "watersheds"
-                        ) {
-                            choice.default_visible = visible;
-                        }
-                    }
                     if let Some(name) = layer.get("name").and_then(Value::as_str) {
                         if role == id || (role == "coastlines" && id == "islands") {
                             choice.name = name.to_string();

@@ -13,8 +13,8 @@ This document is subordinate to:
   boundaries;
 - [`STORAGE.md`](./STORAGE.md) for canonical project files and disposable local
   state;
-- [`MAP_INTEGRATION_PLAN.md`](./MAP_INTEGRATION_PLAN.md) for shared map,
-  layer, anchor, hierarchy, and navigation contracts;
+- [`MAP_INTEGRATION_PLAN.md`](./MAP_INTEGRATION_PLAN.md) for shared map, layer,
+  anchor, hierarchy, and navigation contracts;
 - [`NATIVE_MAP_GENERATOR.md`](./NATIVE_MAP_GENERATOR.md) and its accepted ADRs
   for physical-world identity, epochs, numeric policy, and invariants;
 - [`ATLAS_MAP_RENDERING.md`](./ATLAS_MAP_RENDERING.md) for static rendering,
@@ -31,13 +31,21 @@ contract; do not silently reinterpret an accepted Atlas version.
 
 Atlas becomes a **sister studio to the Physical Map**.
 
-The Physical Map remains the canonical planetary model. Its current `384 x 192` grid is a deliberate simulation resolution used to model large-scale physical state at acceptable cost: land and ocean distribution, elevation trends, mountain systems, climate, hydrology, biomes, ice, sea level, and related physical fields.
+The Physical Map remains the canonical planetary model. Its current `384 x 192`
+grid is a deliberate simulation resolution used to model large-scale physical
+state at acceptable cost: land and ocean distribution, elevation trends,
+mountain systems, climate, hydrology, biomes, ice, sea level, and related
+physical fields.
 
-Atlas derives detailed geography from that model. It adds refined coastlines, peaks, ridges, valleys, drainage, tributaries, local lakes, small islands where permitted, terrain roughness, biome transitions, relief, and surface texture.
+Atlas derives detailed geography from that model. It adds refined coastlines,
+peaks, ridges, valleys, drainage, tributaries, local lakes, small islands where
+permitted, terrain roughness, biome transitions, relief, and surface texture.
 
-Atlas terrain is **derived, deterministic, and disposable**. It is not a second physical simulation and never becomes more authoritative than the Physical Map.
+Atlas terrain is **derived, deterministic, and disposable**. It is not a second
+physical simulation and never becomes more authoritative than the Physical Map.
 
-> **The Physical Map models the planet. Atlas turns that model into detailed geography.**
+> **The Physical Map models the planet. Atlas turns that model into detailed
+> geography.**
 
 ## Product Relationship
 
@@ -57,7 +65,8 @@ view detailed world
         +--> optional static export
 ```
 
-The Physical Map defines **what exists and why**. Atlas defines **what it looks like at geographic scale**.
+The Physical Map defines **what exists and why**. Atlas defines **what it looks
+like at geographic scale**.
 
 Atlas Rendering and Atlas Studio have different product roles:
 
@@ -72,10 +81,14 @@ model, layer resolver, or export path.
 ### Invariants
 
 - The Physical Map remains canonical.
-- Atlas must preserve major continents, oceans, mountain systems, climate zones, ice, and other simulation-relevant facts.
-- Atlas may refine those features into smaller geographic structures but must not contradict them.
-- Atlas detail is reproducible from the Physical Map identity, Atlas algorithm version, and detail variant.
-- Geography exists in world space; changing zoom, export resolution, style, or tile order must not move generated features.
+- Atlas must preserve major continents, oceans, mountain systems, climate zones,
+  ice, and other simulation-relevant facts.
+- Atlas may refine those features into smaller geographic structures but must
+  not contradict them.
+- Atlas detail is reproducible from the Physical Map identity, Atlas algorithm
+  version, and detail variant.
+- Geography exists in world space; changing zoom, export resolution, style, or
+  tile order must not move generated features.
 - Editing the underlying world happens in the Physical Map, not Atlas.
 - Atlas caches may be deleted and regenerated without data loss.
 
@@ -92,9 +105,8 @@ numbers and file locations may advance.
 - The current renderer supports whole-world and regional equirectangular views,
   regional Web Mercator, deterministic relief, biome, temperature, rainfall,
   bathymetry, hydrology, antique, and political styles, authored/semantic
-  overlays, labels, atlas-only minor tributaries, and
-  PNG, self-contained SVG, and single-page PDF output. JPEG is not currently an
-  approved format.
+  overlays, labels, atlas-only minor tributaries, and PNG, self-contained SVG,
+  and single-page PDF output. JPEG is not currently an approved format.
 - `crates/daena-core/src/maps/atlas.rs` owns provider-neutral capability
   resolution, immutable snapshot capture, calendar binding, preset validation,
   overlay resolution, and the `.daena/cache/atlas/` location.
@@ -124,43 +136,62 @@ The user can:
 - open and view the detailed generated terrain;
 - pan and zoom across the world;
 - select a supported physical epoch;
-- control presentation layers such as relief, terrain texture, water, biome coloring, contours, authored layers, labels, and decorations;
+- control presentation layers such as relief, terrain texture, water, biome
+  coloring, contours, authored layers, labels, and decorations;
 - regenerate disposable derived data when necessary;
 - optionally export the whole map or supported extent as a static image.
 
-Opening Atlas does not require an export. Viewing the generated world is a first-class feature.
+Opening Atlas does not require an export. Viewing the generated world is a
+first-class feature.
 
 ## Terrain Generation Pipeline
 
-Atlas must **amplify**, not merely upscale, the Physical Map. Interpolation may smooth the coarse grid, but terrain synthesis must add coherent sub-grid geography.
+Atlas must **amplify**, not merely upscale, the Physical Map. Interpolation may
+smooth the coarse grid, but terrain synthesis must add coherent sub-grid
+geography.
 
 ### 1. Physical constraints
 
-Read the accepted elevation, land/water, tectonic or ridge influence, climate, precipitation, biome, ice, and hydrology products for the selected epoch. Convert them into continuous world-space control fields.
+Read the accepted elevation, land/water, tectonic or ridge influence, climate,
+precipitation, biome, ice, and hydrology products for the selected epoch.
+Convert them into continuous world-space control fields.
 
 ### 2. Hierarchical terrain amplification
 
-Refine terrain through controlled subdivision while preserving large-scale landforms. The primary architectural reference is _Real-Time Hyper-Amplification of Planets_.
+Refine terrain through controlled subdivision while preserving large-scale
+landforms. The primary architectural reference is _Real-Time Hyper-Amplification
+of Planets_.
 
 ### 3. Mountain synthesis
 
-Generate coherent peaks, saddles, ridges, secondary ridges, valleys, and foothills constrained by Physical Map mountain systems. Use orometry and Divide Tree techniques as the main reference rather than generic mountain noise.
+Generate coherent peaks, saddles, ridges, secondary ridges, valleys, and
+foothills constrained by Physical Map mountain systems. Use orometry and Divide
+Tree techniques as the main reference rather than generic mountain noise.
 
 ### 4. Drainage refinement
 
-Resolve artificial depressions where appropriate, calculate flow and catchment structure, and derive tributaries and valleys. Existing lakes and basins required by the Physical Map must remain valid.
+Resolve artificial depressions where appropriate, calculate flow and catchment
+structure, and derive tributaries and valleys. Existing lakes and basins
+required by the Physical Map must remain valid.
 
 ### 5. Multi-scale erosion
 
-Apply erosion and deposition during progressive refinement so new detail develops coherent valleys, slopes, drainage basins, and deposition patterns instead of appearing as interpolated noise.
+Apply erosion and deposition during progressive refinement so new detail
+develops coherent valleys, slopes, drainage basins, and deposition patterns
+instead of appearing as interpolated noise.
 
 ### 6. Procedural detail
 
-Use deterministic noise for local roughness, coastline variation, terrain breakup, elevation residuals, and texture modulation. Noise must be conditioned by slope, terrain type, hydrology, biome, and other physical fields. It must not independently define major geography.
+Use deterministic noise for local roughness, coastline variation, terrain
+breakup, elevation residuals, and texture modulation. Noise must be conditioned
+by slope, terrain type, hydrology, biome, and other physical fields. It must not
+independently define major geography.
 
 ### 7. Rendering
 
-Render terrain, relief, water, biome surfaces, contours, authored layers, labels, and style effects. Large outputs must use tiled or chunked processing with bounded memory usage.
+Render terrain, relief, water, biome surfaces, contours, authored layers,
+labels, and style effects. Large outputs must use tiled or chunked processing
+with bounded memory usage.
 
 ## Candidate Libraries for Later Terrain Versions
 
@@ -201,7 +232,8 @@ image budgets merely to adopt the crate.
 
 - [image-rs/image](https://github.com/image-rs/image)
 
-Atlas should remain a focused Rust terrain/cartography pipeline rather than adopt a general-purpose game engine.
+Atlas should remain a focused Rust terrain/cartography pipeline rather than
+adopt a general-purpose game engine.
 
 ## Research References for Terrain Versions
 
@@ -209,9 +241,9 @@ These papers are architectural and algorithmic references, not permission to
 copy research code or change a released Atlas product in place. Algorithm `6`
 and drainage `6` (ADR 0047) are the current production implementations of the
 ideas below. Closing a remaining gap still requires a new version, conservation
-and topology metrics, license review, and an ADR. Reference implementations
-stay test or research inputs unless their license and production suitability
-are explicitly accepted.
+and topology metrics, license review, and an ADR. Reference implementations stay
+test or research inputs unless their license and production suitability are
+explicitly accepted.
 
 ### Controlled planetary hyper-amplification
 
@@ -225,18 +257,18 @@ to the Physical Map → Atlas relationship.
 
 **In algorithm `6`:** hierarchical subdivision (`f/4` → `f/2` → `f`) with
 interpolated (not per-cell) residual grain of about `8`–`96` m; pit fill so
-noise does not become isolated sinks; divide-tree orometry paints *ridge and
-valley paths* (`780` m / `520` m, `8`-cell falloff) plus plains drainage
-carving; coastline reconstruction from algorithm `4` is retained. Residuals
-are epoch-dependent. Production-grid lattice sizes stay inside the `96 MiB`
+noise does not become isolated sinks; divide-tree orometry paints _ridge and
+valley paths_ (`780` m / `520` m, `8`-cell falloff) plus plains drainage
+carving; coastline reconstruction from algorithm `4` is retained. Residuals are
+epoch-dependent. Production-grid lattice sizes stay inside the `96 MiB`
 in-process budget.
 
 **Still later:** GPU / real-time path.
 
 ### Multi-scale erosion amplification
 
-Increases terrain resolution while repeatedly applying erosion and deposition
-so newly created detail develops hydrologically coherent structure.
+Increases terrain resolution while repeatedly applying erosion and deposition so
+newly created detail develops hydrologically coherent structure.
 
 - [Terrain Amplification using Multi-scale Erosion](https://hal.science/hal-04565030)
 - [ACM DOI 10.1145/3658200](https://dl.acm.org/doi/10.1145/3658200)
@@ -244,8 +276,8 @@ so newly created detail develops hydrologically coherent structure.
 **In drainage `3`:** erosion during hierarchical subdivision (hops `1`, `40` mm)
 then three post-fill scales (`4`-hop, `2`-hop, `1`-hop) along the flow graph;
 fluvial, thermal, and deposition processes; slope-, runoff-, and
-accumulation-limited flux; skip ocean, poles, protected lakes, and high
-mountain influence; mean-change conservation per canonical cell; `80` mm peak
+accumulation-limited flux; skip ocean, poles, protected lakes, and high mountain
+influence; mean-change conservation per canonical cell; `80` mm peak
 re-enforcement; fan and floodplain identities
 (`atlas:deposition:v3:{kind}:{lattice-index}`).
 
@@ -254,20 +286,20 @@ Studio authoring tools.
 
 ### Orometry / Divide Tree synthesis
 
-Models mountain structure through explicit relationships between peaks,
-saddles, ridges, and valleys. This remains the primary reference for detailed
-mountain generation instead of generic mountain noise.
+Models mountain structure through explicit relationships between peaks, saddles,
+ridges, and valleys. This remains the primary reference for detailed mountain
+generation instead of generic mountain noise.
 
 - [Orometry-based Terrain Analysis and Synthesis](https://hal.science/hal-02326472)
 - [ACM DOI 10.1145/3355089.3356535](https://dl.acm.org/doi/10.1145/3355089.3356535)
 - [Reference implementation](https://github.com/oargudo/orometry-terrains)
 
 **In algorithm `6`:** a divide tree over every Physical Map mountain system
-(connected mountain-influence components); at most 768 features and 48 peaks
-per system with minimum peak spacing of 6 lattice steps; IDs
+(connected mountain-influence components); at most 768 features and 48 peaks per
+system with minimum peak spacing of 6 lattice steps; IDs
 `atlas:orometry:v6:{kind}:{lattice-index}`. Saddles record the peak-to-peak
-ascent paths and those polylines are the ridge seeds (not isotropic blobs
-around isolated points). Valleys follow steepest descent from saddles and
+ascent paths and those polylines are the ridge seeds (not isotropic blobs around
+isolated points). Valleys follow steepest descent from saddles and
 high-accumulation drainage. Features do not replace canonical rivers or
 watersheds.
 
@@ -283,7 +315,7 @@ basins are preserved.
 - [Priority-Flood paper](https://doi.org/10.1016/j.cageo.2013.04.024)
 - [Reference implementation](https://github.com/r-barnes/Barnes2013-Depressions)
 
-**In drainage `3`:** Priority-Flood-*style* fill seeded by ocean and protected
+**In drainage `3`:** Priority-Flood-_style_ fill seeded by ocean and protected
 canonical lakes/basins; unprotected refined pits may rise at most `4_800` mm;
 protected cells and high-influence peaks are never raised. Canonical Physical
 Map Priority-Flood (packet 3) is unchanged.
@@ -294,17 +326,17 @@ canonical `fill_depth_mm` without writing it back into the physical source.
 
 ### D-infinity flow routing
 
-Calculates continuous flow directions and contributing area, reducing the
-strong grid-direction artifacts of D8 routing.
+Calculates continuous flow directions and contributing area, reducing the strong
+grid-direction artifacts of D8 routing.
 
 - [A New Method for the Determination of Flow Directions and Upslope Areas in Grid Digital Elevation Models](https://digitalcommons.usu.edu/cee_facpub/2507/)
 - [DOI 10.1029/96WR03137](https://doi.org/10.1029/96WR03137)
 
-**In drainage `3`:** integer two-neighbor steepest-drop (D-infinity *reference*,
+**In drainage `3`:** integer two-neighbor steepest-drop (D-infinity _reference_,
 not Tarboton's slope-weighted proportions). Flow may split to at most two
-downhill 8-neighbors and must stay inside the canonical watershed except at
-that watershed's coastal mouth. Canonical mouths do not move. Atlas-only
-tributaries (`atlas:tributary:v3:{lattice-index}`, cap 128) and valleys
+downhill 8-neighbors and must stay inside the canonical watershed except at that
+watershed's coastal mouth. Canonical mouths do not move. Atlas-only tributaries
+(`atlas:tributary:v3:{lattice-index}`, cap 128) and valleys
 (`atlas:valley:v3:{lattice-index}`, cap 64) join a canonical river or ocean.
 
 **Still later:** true slope-weighted contributing area; reducing remaining
@@ -315,9 +347,12 @@ identities if a measured budget allows.
 
 Atlas geography is generated in **world space**, not output-pixel space.
 
-A ridge, tributary, inlet, valley, or terrain irregularity must remain in the same location across viewer zoom levels, image dimensions, formats, styles, tile boundaries, and execution order.
+A ridge, tributary, inlet, valley, or terrain irregularity must remain in the
+same location across viewer zoom levels, image dimensions, formats, styles, tile
+boundaries, and execution order.
 
-Output dimensions only control sampling density. A higher-resolution render reveals more of the same geography; it does not create a different world.
+Output dimensions only control sampling density. A higher-resolution render
+reveals more of the same geography; it does not create a different world.
 
 ## Caching and Persistence
 
@@ -331,7 +366,9 @@ Atlas may cache expensive derived products such as:
 - contour geometry;
 - rendered tiles.
 
-These caches are not canonical project state and must not be required for Git history, checkpoints, recovery, or portability. They may be discarded and reconstructed deterministically.
+These caches are not canonical project state and must not be required for Git
+history, checkpoints, recovery, or portability. They may be discarded and
+reconstructed deterministically.
 
 ## Export
 
@@ -342,7 +379,8 @@ formats are PNG, self-contained SVG, and single-page PDF. JPEG may be added only
 through a later accepted encoder decision. Normal whole-world presets may target
 `4096 x 2048` and `8192 x 4096`, subject to the enforced release-build budgets.
 
-Export must render directly from Atlas terrain and vector data. It must never upscale or screenshot the `384 x 192` Physical Map canvas.
+Export must render directly from Atlas terrain and vector data. It must never
+upscale or screenshot the `384 x 192` Physical Map canvas.
 
 ## Detailed Implementation Guide for Agents
 
@@ -391,9 +429,8 @@ Ownership is fixed as follows:
   cache payload validation. It does not discover a project root, open SQLite,
   call Tauri, or know about a webview.
 - `daena-core` owns capability resolution, authorization, immutable project
-  snapshot capture, source identity, current content generation, field and
-  asset reads, authored/semantic layer resolution, and the approved local cache
-  root.
+  snapshot capture, source identity, current content generation, field and asset
+  reads, authored/semantic layer resolution, and the approved local cache root.
 - `src-tauri` owns Studio session lifetime, bounded worker scheduling,
   cancellation, custom-protocol or application-controlled byte delivery,
   project-close/app-exit cleanup, and protection of local paths and tokens.
@@ -473,8 +510,8 @@ north-origin `y`. Preserve accepted export bytes: perform the required row or
 extent transformation in a dedicated Studio tile adapter and lock it with
 fixtures. Do not silently flip the existing export renderer.
 
-Zoom controls sampling density and label admission, not geographic identity.
-The chosen detail level and variant remain session settings. Do not seed by zoom,
+Zoom controls sampling density and label admission, not geographic identity. The
+chosen detail level and variant remain session settings. Do not seed by zoom,
 tile number, pixel coordinates, device scale, viewport dimensions, or request
 order. A ridge or tributary visible at multiple zooms must occupy the same world
 location.
@@ -525,8 +562,9 @@ must not invent a parallel location, border, route, pin, or entity-link model.
 Labels require cross-tile coordination. Use deterministic global placement or
 bounded metatiles with stable ownership and collision order. A label crossing a
 tile edge must render once, without clipping or duplication. Higher zoom may
-admit more labels, but labels visible at two zooms retain stable feature anchors.
-Use only bundled, licensed, hashed fonts; never platform fonts or runtime URLs.
+admit more labels, but labels visible at two zooms retain stable feature
+anchors. Use only bundled, licensed, hashed fonts; never platform fonts or
+runtime URLs.
 
 Feature inspection returns stable source IDs and provider-neutral feature
 metadata from a bounded hit-test index. Atlas-only tributaries must remain
@@ -548,11 +586,11 @@ The first usable Studio contains:
 - progress that distinguishes snapshotting, deriving, rendering, cache hits,
   cancellation, and failure.
 
-Changing style, epoch, detail, or layer inputs creates a new immutable session or
-new normalized scene key and cancels/supersedes obsolete tile work. Panning and
-zooming do not rebuild the physical snapshot. Debounce control changes, bound
-prefetch to the visible region plus a small ring, prioritize visible tiles, and
-cancel queued work that leaves that set.
+Changing style, epoch, detail, or layer inputs creates a new immutable session
+or new normalized scene key and cancels/supersedes obsolete tile work. Panning
+and zooming do not rebuild the physical snapshot. Debounce control changes,
+bound prefetch to the visible region plus a small ring, prioritize visible
+tiles, and cancel queued work that leaves that set.
 
 **Export** converts the current geographic view and selected scene settings into
 the existing Atlas render request and opens/reuses the existing export workflow.
@@ -581,8 +619,8 @@ separate versioned Maps-owned contract and a deliberate product decision.
 - Never hold a project writer lock or SQLite transaction while deriving,
   rasterizing, waiting for a worker, serving a tile, or saving an export.
 - Fail with typed `atlas.studio.*` codes for invalid requests, unsupported
-  capability, stale session, expired session, cancellation, resource limit,
-  tile failure, and protocol denial. Diagnostics give a safe corrective action
+  capability, stale session, expired session, cancellation, resource limit, tile
+  failure, and protocol denial. Diagnostics give a safe corrective action
   without leaking paths, SQL, secrets, or source payloads.
 - Regenerating the cache deletes only validated Atlas cache entries through a
   dedicated core/Tauri operation. It must not use a caller-supplied path or
@@ -599,13 +637,13 @@ Required work:
 
 1. Re-read the authority documents, accepted Atlas ADRs, and live constants.
 2. Write the next ADR locking session/tile schemas, projection, XYZ orientation,
-   tile size/device-scale limits, halo/metatile policy, protocol shape, queue and
-   cache budgets, session expiry, and deterministic guarantee.
+   tile size/device-scale limits, halo/metatile policy, protocol shape, queue
+   and cache budgets, session expiry, and deterministic guarantee.
 3. Add a pure Rust tile spike over the existing golden physical source without
    Tauri, SQLite, or project mutation.
 4. Prove static Atlas fixture hashes remain unchanged after any scene refactor.
-5. Measure cold/warm tile latency, pan burst behavior, peak RSS, cache bytes, and
-   cancellation at the proposed maximum zoom and overlay budget.
+5. Measure cold/warm tile latency, pan burst behavior, peak RSS, cache bytes,
+   and cancellation at the proposed maximum zoom and overlay budget.
 
 Exit gate:
 
@@ -686,8 +724,8 @@ Required work:
    ridges, valleys, and foothills conditioned by canonical mountain systems.
 4. Compare the result against named fixtures and measurable structure metrics,
    not visual preference alone.
-5. Review any new library/research-code license and lock numeric/seed behavior in
-   an ADR before exposing the version in capabilities.
+5. Review any new library/research-code license and lock numeric/seed behavior
+   in an ADR before exposing the version in capabilities.
 
 Exit gate:
 
@@ -732,8 +770,17 @@ Required work:
    offline packaging, and app upgrade/restart behavior.
 3. Lock resource budgets and golden fixtures for Studio tiles and current-view
    export alignment.
-4. Remove obsolete experimental paths only after current contracts and user
-   data remain covered.
+4. Remove obsolete experimental paths only after current contracts and user data
+   remain covered.
+5. Add a session-scoped, world-space spatial index for authored overlays,
+   derived features, label candidates, and hit testing. Tile composition and
+   pointer inspection must query bounded visible candidates instead of scanning
+   the full feature collection; deterministic label order and cross-tile
+   ownership remain unchanged.
+6. Parallelize static Atlas raster tiles with a bounded two-to-four-worker pool,
+   deterministic assembly order, cancellation, and explicit Studio-visible work
+   priority. Worker count must stay within measured CPU/RSS budgets and must not
+   change accepted export bytes.
 
 Exit gate:
 
@@ -801,8 +848,9 @@ cancellation, or resource measurements.
 
 Before editing:
 
-1. Run `rtk git status --short`; inspect staged, unstaged, and untracked work and
-   preserve unrelated user changes. Do not stage, commit, or push unless asked.
+1. Run `rtk git status --short`; inspect staged, unstaged, and untracked work
+   and preserve unrelated user changes. Do not stage, commit, or push unless
+   asked.
 2. Read this document, the authority documents, accepted Atlas ADRs, and the
    files in the active iteration.
 3. Use the codebase knowledge graph first for symbols, call paths, and impact.
@@ -811,8 +859,8 @@ Before editing:
 4. Verify all live Atlas/physical versions, capabilities, budgets, schemas,
    commands, paths, and tests. Do not copy this dated baseline blindly.
 5. Write a short vertical-slice plan naming production paths, stored/public
-   contracts, security/resource boundaries, tests, rendered/native evidence,
-   and the exact exit gate.
+   contracts, security/resource boundaries, tests, rendered/native evidence, and
+   the exact exit gate.
 
 While editing:
 
@@ -844,9 +892,9 @@ Do not:
 - expose cache/temp paths, project handles, or renderer access to plugins;
 - persist tiles, high-resolution elevation, hillshade, or generated artifacts as
   canonical project content; or
-- claim completion from compilation and unit tests without the rendered,
-  native, restart, recovery, cancellation, seam, and resource evidence in the
-  active exit gate.
+- claim completion from compilation and unit tests without the rendered, native,
+  restart, recovery, cancellation, seam, and resource evidence in the active
+  exit gate.
 
 After editing:
 

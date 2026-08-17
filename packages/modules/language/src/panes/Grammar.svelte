@@ -93,12 +93,12 @@ $effect(() => {
   void languageId;
   if (!active) return;
   if (languageId === lastLoadedLanguage) {
-    void loadGrammar();
+    untrack(() => void loadGrammar());
     return;
   }
   lastLoadedLanguage = languageId;
   grammarUi = emptyGrammarUiState();
-  void loadGrammar();
+  untrack(() => void loadGrammar());
 });
 
 $effect(() => {

@@ -1,4 +1,5 @@
 <script lang="ts">
+import { untrack } from "svelte";
 import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
 import type { LexemeValue } from "../lexeme";
 import { normalizeLexeme } from "../lexeme";
@@ -55,14 +56,14 @@ $effect(() => {
   void languageId;
   if (!active) return;
   if (languageId === lastLoadedLanguage) {
-    void loadSamples();
+    untrack(() => void loadSamples());
     return;
   }
   lastLoadedLanguage = languageId;
   sampleEditing = null;
   sampleEditorOpen = false;
   sampleDraft = emptySample();
-  void loadSamples();
+  untrack(() => void loadSamples());
 });
 
 $effect(() => {

@@ -1,4 +1,5 @@
 <script lang="ts">
+import { untrack } from "svelte";
 import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
 import { confirm } from "../confirm.svelte";
 import {
@@ -59,7 +60,7 @@ $effect(() => {
   void languageId;
   if (!active) return;
   if (languageId === lastLoadedLanguage) {
-    void loadSounds();
+    untrack(() => void loadSounds());
     return;
   }
   lastLoadedLanguage = languageId;
@@ -68,7 +69,7 @@ $effect(() => {
   phonemeDraft = emptyPhoneme();
   phonologyNotesOpen = false;
   chartsOpen = false;
-  void loadSounds();
+  untrack(() => void loadSounds());
 });
 
 $effect(() => {

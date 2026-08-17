@@ -260,6 +260,20 @@ function applyEditorEvent(event: Parameters<typeof reduceVectorEditor>[1]) {
   });
 }
 
+function parseDerivedCollection(text: string): VectorFeatureCollection {
+  let skipped = 0;
+  const collection = parseVectorCollection(new TextEncoder().encode(text), {
+    lenient: true,
+    onSkipped: () => {
+      skipped += 1;
+    },
+  });
+  if (skipped > 0) {
+    notice = `${skipped} derived feature${skipped === 1 ? "" : "s"} skipped because of degenerate geometry.`;
+  }
+  return collection;
+}
+
 function cloneCollection(collection: VectorFeatureCollection): VectorFeatureCollection {
   // `draft` is Svelte state and may be a reactive Proxy after an edit. The
   // browser structured-clone algorithm rejects that proxy, while GeoJSON is
@@ -374,7 +388,7 @@ function applyHistoricalProducts(products: PhysicalHistoricalProducts) {
   const authoredLoaded = loaded.features.filter(
     (feature) => !immutablePhysicalLayerIds.has(feature.properties.daenaLayerId),
   );
-  const physical = parseVectorCollection(new TextEncoder().encode(products.geojson));
+  const physical = parseDerivedCollection(products.geojson);
   draft = cloneCollection({ type: "FeatureCollection", features: [...physical.features, ...authoredDraft] });
   loaded = cloneCollection({ type: "FeatureCollection", features: [...physical.features, ...authoredLoaded] });
   if (background?.url) URL.revokeObjectURL(background.url);
@@ -616,7 +630,7 @@ async function load() {
       epochProgress = { completed: 0, total: 1 };
       const historical = await project.physicalMapDerivedEpoch(mapId, 0, requestId);
       if (generation !== loadGeneration) return;
-      const physical = parseVectorCollection(new TextEncoder().encode(historical.geojson));
+      const physical = parseDerivedCollection(historical.geojson);
       const combined = { type: "FeatureCollection" as const, features: [...physical.features, ...collection.features] };
       draft = cloneCollection(combined);
       loaded = cloneCollection(combined);

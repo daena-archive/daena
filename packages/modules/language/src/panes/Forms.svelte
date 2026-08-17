@@ -1,4 +1,5 @@
 <script lang="ts">
+import { untrack } from "svelte";
 import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
 import type { LexemeValue } from "../lexeme";
 import { confirm } from "../confirm.svelte";
@@ -58,7 +59,7 @@ $effect(() => {
   void languageId;
   if (!active) return;
   if (languageId === lastLoadedLanguage) {
-    void loadForms();
+    untrack(() => void loadForms());
     return;
   }
   lastLoadedLanguage = languageId;
@@ -67,7 +68,7 @@ $effect(() => {
   paradigmDraft = emptyParadigm();
   previewStem = "";
   previewLexemeId = "";
-  void loadForms();
+  untrack(() => void loadForms());
 });
 
 $effect(() => {

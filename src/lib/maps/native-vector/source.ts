@@ -67,7 +67,21 @@ function asGeometry(value: unknown): VectorFeature["geometry"] | null {
   return null;
 }
 
-export function parseVectorCollection(bytes: number[] | Uint8Array): VectorFeatureCollection {
+export interface VectorCollectionParseOptions {
+  /** When true, malformed features are skipped instead of failing the whole
+   *  collection. Used for derived physical overlays whose degenerate cells can
+   *  emit empty rings/polygons; canonical authored sources stay strict so data
+   *  loss is surfaced rather than silently dropped. Skipped features (if any)
+   *  are reported through `onSkipped`. */
+  lenient?: boolean;
+  onSkipped?: (path: string, detail: string) => void;
+}
+
+export function parseVectorCollection(
+  bytes: number[] | Uint8Array,
+  options: VectorCollectionParseOptions = {},
+): VectorFeatureCollection {
+  const { lenient = false, onSkipped } = options;
   const text = new TextDecoder().decode(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
   const parsed = JSON.parse(text) as { type?: string; features?: unknown[] };
   if (parsed?.type !== "FeatureCollection" || !Array.isArray(parsed.features)) {
@@ -78,14 +92,26 @@ export function parseVectorCollection(bytes: number[] | Uint8Array): VectorFeatu
     const path = `features/${index}`;
     const item = parsed.features[index];
     if (!item || typeof item !== "object") {
+      if (lenient) {
+        onSkipped?.(path, "feature is not an object");
+        continue;
+      }
       throw new Error(`vector.geometry.invalid: ${path}: feature is not an object`);
     }
     const feature = item as { id?: unknown; properties?: Record<string, unknown>; geometry?: unknown };
     if (typeof feature.id !== "string" && typeof feature.id !== "number") {
+      if (lenient) {
+        onSkipped?.(path, "feature id is required");
+        continue;
+      }
       throw new Error(`vector.geometry.invalid: ${path}/id: feature id is required`);
     }
     const geometry = asGeometry(feature.geometry);
     if (!geometry) {
+      if (lenient) {
+        onSkipped?.(path, "unsupported or malformed geometry");
+        continue;
+      }
       throw new Error(
         `vector.geometry.invalid: ${path}/geometry: unsupported or malformed geometry (expected Point, LineString, Polygon, or MultiPolygon with finite coordinates)`,
       );

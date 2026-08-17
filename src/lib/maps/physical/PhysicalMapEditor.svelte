@@ -154,11 +154,25 @@ async function mountPreview() {
   publish("ready", { preview: true });
 }
 
+function parseDerivedVectorCollection(text: string): VectorFeatureCollection {
+  let skipped = 0;
+  const collection = parseVectorCollection(new TextEncoder().encode(text), {
+    lenient: true,
+    onSkipped: () => {
+      skipped += 1;
+    },
+  });
+  if (skipped > 0) {
+    notice = `${skipped} preview feature${skipped === 1 ? "" : "s"} skipped because of degenerate geometry.`;
+  }
+  return collection;
+}
+
 async function loadSavedMap() {
   if (!mapId) return;
   busy = true;
   try {
-    preview = parseVectorCollection(new TextEncoder().encode(await project.physicalMapDerivedGeoJson(mapId)));
+    preview = parseDerivedVectorCollection(await project.physicalMapDerivedGeoJson(mapId));
     hydrology = await project.physicalMapDerivedHydrology(mapId);
     await mountPreview();
   } catch (cause) {
@@ -176,7 +190,7 @@ async function poll(jobId: string) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   if (status.state === "completed") {
-    preview = parseVectorCollection(new TextEncoder().encode(await project.physicalMapPreview(jobId)));
+    preview = parseDerivedVectorCollection(await project.physicalMapPreview(jobId));
     hydrology = await project.physicalMapHydrology(jobId);
     await mountPreview();
     publish("preview-ready", { jobId });

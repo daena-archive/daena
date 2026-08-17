@@ -1604,7 +1604,11 @@ fn plugin_navigation_allowed(
 }
 
 /// The request Origin must match the plugin's own `plugin://<id>` origin for
-/// bridge POSTs. GET asset requests do not carry an Origin and stay allowed.
+/// bridge POSTs. Some webviews omit the `Origin` header for custom-scheme
+/// fetches, so a missing header is tolerated — the webview-label binding and
+/// session validation still tie the caller to the plugin. A present but
+/// mismatched Origin is always rejected. GET asset requests never carry an
+/// Origin and stay allowed.
 fn plugin_request_origin_matches(request: &tauri::http::Request<Vec<u8>>, plugin_id: &str) -> bool {
     if request.method() != tauri::http::Method::POST {
         return true;
@@ -1615,7 +1619,7 @@ fn plugin_request_origin_matches(request: &tauri::http::Request<Vec<u8>>, plugin
     );
     match request.headers().get("Origin").and_then(|value| value.to_str().ok()) {
         Some(origin) => origin.eq_ignore_ascii_case(&expected),
-        None => false,
+        None => true,
     }
 }
 

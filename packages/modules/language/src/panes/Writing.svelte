@@ -1,4 +1,5 @@
 <script lang="ts">
+import { untrack } from "svelte";
 import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
 import { confirm } from "../confirm.svelte";
 import { STATUS_SUGGESTIONS } from "../lexeme";
@@ -42,14 +43,14 @@ $effect(() => {
   void languageId;
   if (!active) return;
   if (languageId === lastLoadedLanguage) {
-    void loadWriting();
+    untrack(() => void loadWriting());
     return;
   }
   lastLoadedLanguage = languageId;
   orthographyEditing = null;
   orthographyEditorOpen = false;
   orthographyDraft = emptyOrthography();
-  void loadWriting();
+  untrack(() => void loadWriting());
 });
 
 $effect(() => {

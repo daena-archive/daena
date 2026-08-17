@@ -227,9 +227,10 @@ function createRelationships(manifest: ModuleManifest, relationships: Record<str
 export function buildModuleContext(
   manifest: ModuleManifest,
   projectId: string,
-  options?: { focusEntityId?: UUID; availableServices?: ReadonlySet<string>; embedded?: boolean },
+  options?: { focusEntityId?: UUID; availableServices?: ReadonlySet<string>; embedded?: boolean; onEntityDeleted?: () => void },
 ): ModuleContext {
   void projectId;
+  const onEntityDeleted = options?.onEntityDeleted;
   const rpc = createPluginRpcClient({
     call: (method, payload, requestId) =>
       invoke("trusted_module_rpc", {
@@ -305,6 +306,7 @@ export function buildModuleContext(
       delete: async (id: UUID, options?: MutationOptions) => {
         checkCapability(manifest, "entity.delete");
         await rpc.call<null>("entity.delete", { id, expectedRevision: options?.expectedRevision }, options?.requestId);
+        onEntityDeleted?.();
       },
     },
     documents: {

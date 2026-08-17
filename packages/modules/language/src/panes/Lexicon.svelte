@@ -1,6 +1,7 @@
 <script lang="ts">
 import type { EntitySummary, ModuleContext, ModuleRecord, ModuleRecordQuery } from "../../../../module-api/src/index";
 import type { LexemeValue } from "../lexeme";
+import { confirm } from "../confirm.svelte";
 import {
   emptyLexeme,
   firstGloss,
@@ -292,7 +293,7 @@ async function saveLexeme(): Promise<"ok" | "lemma" | "error" | "none"> {
 
 async function deleteLexeme() {
   if (!selectedLanguage || !editing) return;
-  if (!window.confirm(`Delete “${editing.value.lemma}”?`)) return;
+  if (!await confirm("Delete", `Delete “${editing.value.lemma}”?`)) return;
   try {
     await context.records.delete("lexemes", editing.id, selectedLanguage.id, {
       expectedRevision: editing.revision,

@@ -2,6 +2,8 @@
 import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
 import type { LexemeValue } from "../lexeme";
 import { normalizeLexeme } from "../lexeme";
+import { confirm } from "../confirm.svelte";
+import RichTextEditor from "../../../../../src/lib/editor/RichTextEditor.svelte";
 import {
   emptySample,
   emptyToken,
@@ -39,7 +41,6 @@ let error = $state("");
 let request = $state(0);
 
 let titleInput: HTMLInputElement | undefined = $state();
-let textInput: HTMLTextAreaElement | undefined = $state();
 let previewBox: HTMLDivElement | undefined = $state();
 
 let lastLoadedLanguage: string | null = null;
@@ -165,7 +166,7 @@ async function saveSample(): Promise<"ok" | "text" | "error" | "none"> {
 
 async function deleteSample() {
   if (!selectedLanguage || !sampleEditing) return;
-  if (!window.confirm(`Delete “${sampleTitle(sampleEditing.value)}”?`)) return;
+  if (!await confirm("Delete", `Delete “${sampleTitle(sampleEditing.value)}”?`)) return;
   error = "";
   try {
     await context.records.delete("samples", sampleEditing.id, selectedLanguage.id, {
@@ -195,8 +196,7 @@ function removeToken(index: number) {
 
 async function handleSubmit(event: SubmitEvent) {
   event.preventDefault();
-  const outcome = await saveSample();
-  if (outcome === "text") textInput?.focus();
+  await saveSample();
 }
 </script>
 
@@ -234,11 +234,7 @@ async function handleSubmit(event: SubmitEvent) {
     </label>
     <label class="language-field">
       <span>Text</span>
-      <textarea
-        name="text"
-        bind:this={textInput}
-        rows={sampleDraft.kind === "paragraph" ? 6 : 3}
-        bind:value={sampleDraft.text}></textarea>
+      <RichTextEditor value={sampleDraft.text} onChange={(v) => (sampleDraft.text = v)} />
     </label>
     <label class="language-field">
       <span>Transliteration (optional)</span>

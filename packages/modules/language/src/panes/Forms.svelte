@@ -1,6 +1,7 @@
 <script lang="ts">
 import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
 import type { LexemeValue } from "../lexeme";
+import { confirm } from "../confirm.svelte";
 import { normalizeLexeme, PART_OF_SPEECH_SUGGESTIONS, serializeLexeme } from "../lexeme";
 import {
   clearOverride,
@@ -170,7 +171,7 @@ async function saveParadigm(): Promise<"ok" | "name" | "error" | "none"> {
 
 async function deleteParadigm() {
   if (!selectedLanguage || !paradigmEditing) return;
-  if (!window.confirm(`Delete “${paradigmEditing.value.name}”?`)) return;
+  if (!await confirm("Delete", `Delete “${paradigmEditing.value.name}”?`)) return;
   error = "";
   try {
     await context.records.delete("paradigms", paradigmEditing.id, selectedLanguage.id, {

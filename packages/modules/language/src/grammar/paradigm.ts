@@ -443,7 +443,7 @@ export function summarizeParadigm(
 }
 
 export type ParadigmEditorContext = {
-  confirm: (message: string) => boolean;
+  confirm: (message: string) => Promise<boolean>;
   referencedIds: Set<string>;
   pronounAxes?: ParadigmAxis[];
   agreements: { id: string; title: string }[];

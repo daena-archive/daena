@@ -1,6 +1,7 @@
 <script lang="ts">
 import { CUSTOM_RULE_TAGS, extraCustomRuleTags, setCustomRuleExtraTags, toggleCustomRuleTag } from "../grammar/rules";
 import type { GrammarCustomRuleRecord } from "../grammar/types";
+import RichTextEditor from "../../../../../src/lib/editor/RichTextEditor.svelte";
 import CheckRow from "./parts/CheckRow.svelte";
 import Field from "./parts/Field.svelte";
 import Group from "./parts/Group.svelte";
@@ -44,6 +45,6 @@ function updateTags(next: string[]) {
       oninput={(event) => updateTags(setCustomRuleExtraTags(draft, event.currentTarget.value).tags)} />
   </Field>
   <Field label="Description">
-    <textarea name="body" rows="8" bind:value={draft.body} disabled={locked}></textarea>
+    <RichTextEditor value={draft.body} onChange={(v) => (draft.body = v)} editable={!locked} />
   </Field>
 </Group>

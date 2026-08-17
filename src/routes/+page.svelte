@@ -3966,11 +3966,15 @@ onMount(() => {
                     <button type="button" role="menuitem" onclick={() => void createMap("physical")}
                       >Create physical world</button>
                     <button type="button" role="menuitem" onclick={() => void createMap("fmg")}>Create with FMG</button>
-                    <button type="button" role="menuitem" onclick={() => void createMap("image")}>Import image</button>
-                    <button type="button" role="menuitem" onclick={() => void createMap("vector")}
-                      >Import vector map</button>
+                    <button type="button" role="menuitem" disabled>Import image</button>
+                    <button type="button" role="menuitem" disabled>Import vector map</button>
                   </div>{/if}
               </div>{/if}
+            {#if section === "language"}<button
+                class="primary-button"
+                type="button"
+                onclick={toggleCreateForm}>Create language</button
+              >{/if}
             {#if section !== "writing" && section !== "maps" && section !== "language"}<button
                 class="quiet-button"
                 onclick={openProjection}
@@ -4046,9 +4050,9 @@ onMount(() => {
                           >Create physical world</button>
                         <button type="button" role="menuitem" onclick={() => void createMap("fmg")}
                           >Create with FMG</button>
-                        <button type="button" role="menuitem" onclick={() => void createMap("image")}
+                        <button type="button" role="menuitem" disabled
                           >Import image</button>
-                        <button type="button" role="menuitem" onclick={() => void createMap("vector")}
+                        <button type="button" role="menuitem" disabled
                           >Import vector map</button>
                       </div>{/if}
                   </div>
@@ -4076,6 +4080,7 @@ onMount(() => {
                 focusEntityId: selected?.id as UUID | undefined,
                 availableServices: enabledServices(),
                 embedded: true,
+                onEntityDeleted: loadEntities,
               })}
               className="language-mount" />
           {/key}
@@ -7479,6 +7484,13 @@ onMount(() => {
 .map-provider-menu button:hover,
 .map-provider-menu button:focus-visible {
   background: var(--surface-muted);
+}
+.map-provider-menu button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.map-provider-menu button:disabled:hover {
+  background: transparent;
 }
 .empty-map-provider-menu {
   top: calc(100% + 6px);

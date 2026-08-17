@@ -1,5 +1,6 @@
 <script lang="ts">
 import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
+import { confirm } from "../confirm.svelte";
 import { STATUS_SUGGESTIONS } from "../lexeme";
 import type { OrthographyValue } from "../orthography";
 import { emptyOrthography, normalizeOrthography, serializeOrthography } from "../orthography";
@@ -142,7 +143,7 @@ async function saveOrthography(): Promise<"ok" | "name" | "error" | "none"> {
 
 async function deleteOrthography() {
   if (!selectedLanguage || !orthographyEditing) return;
-  if (!window.confirm(`Delete “${orthographyEditing.value.name}”?`)) return;
+  if (!await confirm("Delete", `Delete “${orthographyEditing.value.name}”?`)) return;
   error = "";
   try {
     await context.records.delete("orthographies", orthographyEditing.id, selectedLanguage.id, {

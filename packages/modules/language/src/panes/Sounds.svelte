@@ -1,5 +1,6 @@
 <script lang="ts">
 import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
+import { confirm } from "../confirm.svelte";
 import {
   BACKNESS_SUGGESTIONS,
   consonantChart,
@@ -38,6 +39,7 @@ let phonemeDraft: PhonemeValue = $state(emptyPhoneme());
 let phonologyRecord = $state<ModuleRecord<PhonologyNotes> | null>(null);
 let phonologyDraft: PhonologyNotes = $state(emptyPhonologyNotes());
 let phonologyNotesOpen = $state(false);
+let chartsOpen = $state(false);
 let paneLoading = $state(false);
 let error = $state("");
 let request = $state(0);
@@ -56,6 +58,7 @@ $effect(() => {
   phonemeEditorOpen = false;
   phonemeDraft = emptyPhoneme();
   phonologyNotesOpen = false;
+  chartsOpen = false;
   void loadSounds();
 });
 
@@ -156,9 +159,8 @@ async function savePhoneme(): Promise<"ok" | "symbol" | "error" | "none"> {
       });
       phonemeEditing = { ...created, value: normalizePhoneme(created.value) };
     }
-    phonemeEditorOpen = true;
-    phonemeDraft = phonemeEditing.value;
     await loadSounds();
+    closePhonemeEditor();
     return "ok";
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
@@ -168,7 +170,7 @@ async function savePhoneme(): Promise<"ok" | "symbol" | "error" | "none"> {
 
 async function deletePhoneme() {
   if (!selectedLanguage || !phonemeEditing) return;
-  if (!window.confirm(`Delete “${phonemeEditing.value.symbol}”?`)) return;
+  if (!await confirm("Delete", `Delete “${phonemeEditing.value.symbol}”?`)) return;
   error = "";
   try {
     await context.records.delete("phonemes", phonemeEditing.id, selectedLanguage.id, {
@@ -232,7 +234,10 @@ function handleNotesSubmit(event: SubmitEvent) {
     </p>
   </div>
   <div class="language-toolbar-actions">
-    <button type="button" class="language-button" disabled={!selectedLanguage} onclick={addPhoneme}>Add sound</button>
+    {#if !phonemeEditorOpen}
+      <button type="button" class="language-button secondary" disabled={!selectedLanguage || phonemes.length === 0} onclick={() => (chartsOpen = true)}>View charts</button>
+      <button type="button" class="language-button" disabled={!selectedLanguage} onclick={addPhoneme}>Add sound</button>
+    {/if}
   </div>
 </div>
 {#if !selectedLanguage}
@@ -376,100 +381,6 @@ function handleNotesSubmit(event: SubmitEvent) {
       </form>
     </div>
   </details>
-  <section class="language-group language-sounds-chart">
-    <div class="language-sounds-chart-heading">
-      <h3>Consonants</h3>
-    </div>
-    {#if consonants.columns.length === 0}
-      <p class="language-empty" role="status">Add place and manner to position consonants here.</p>
-    {:else}
-      <div class="language-chart-wrap">
-        <table class="language-chart">
-          <thead>
-            <tr>
-              <th></th>
-              {#each consonants.columns as column (column)}
-                <th scope="col">{column}</th>
-              {/each}
-            </tr>
-          </thead>
-          <tbody>
-            {#each consonants.rows as rowLabel (rowLabel)}
-              <tr>
-                <th scope="row">{rowLabel}</th>
-                {#each consonants.columns as column (column)}
-                  {@const items = chartItems(consonants, rowLabel, column)}
-                  <td class:is-empty={items.length === 0}>
-                    {#if items.length === 0}
-                      ·
-                    {:else}
-                      {#each items as item}
-                        <button
-                          type="button"
-                          class="language-button secondary"
-                          title={item.ipa ? `${item.symbol} (${item.ipa})` : item.symbol}
-                          onclick={() => openFromChart(item)}>{item.symbol}</button>
-                      {/each}
-                    {/if}
-                  </td>
-                {/each}
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-    {/if}
-    {#if consonants.unplaced.length}
-      <p class="language-empty">Unplaced: {consonants.unplaced.map((item) => item.symbol).join(", ")}</p>
-    {/if}
-  </section>
-  <section class="language-group language-sounds-chart">
-    <div class="language-sounds-chart-heading">
-      <h3>Vowels</h3>
-    </div>
-    {#if vowels.columns.length === 0}
-      <p class="language-empty" role="status">Add height and backness to position vowels here.</p>
-    {:else}
-      <div class="language-chart-wrap">
-        <table class="language-chart">
-          <thead>
-            <tr>
-              <th></th>
-              {#each vowels.columns as column (column)}
-                <th scope="col">{column}</th>
-              {/each}
-            </tr>
-          </thead>
-          <tbody>
-            {#each vowels.rows as rowLabel (rowLabel)}
-              <tr>
-                <th scope="row">{rowLabel}</th>
-                {#each vowels.columns as column (column)}
-                  {@const items = chartItems(vowels, rowLabel, column)}
-                  <td class:is-empty={items.length === 0}>
-                    {#if items.length === 0}
-                      ·
-                    {:else}
-                      {#each items as item}
-                        <button
-                          type="button"
-                          class="language-button secondary"
-                          title={item.ipa ? `${item.symbol} (${item.ipa})` : item.symbol}
-                          onclick={() => openFromChart(item)}>{item.symbol}</button>
-                      {/each}
-                    {/if}
-                  </td>
-                {/each}
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-    {/if}
-    {#if vowels.unplaced.length}
-      <p class="language-empty">Unplaced: {vowels.unplaced.map((item) => item.symbol).join(", ")}</p>
-    {/if}
-  </section>
   {#if otherSounds.length > 0}
     <p class="language-empty" role="status">
       Other sounds: {otherSounds.map((record) => record.value.symbol).join(", ")}
@@ -513,6 +424,112 @@ function handleNotesSubmit(event: SubmitEvent) {
       </ul>
     </section>
   {/if}
+{/if}
+
+{#if chartsOpen}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div class="language-modal-backdrop" role="presentation" onclick={() => (chartsOpen = false)}>
+    <div class="language-charts-modal" role="dialog" aria-modal="true" aria-label="Sound charts" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+      <div class="language-charts-modal-header">
+        <h3>Sound charts</h3>
+        <button type="button" class="language-button secondary" onclick={() => (chartsOpen = false)}>Close</button>
+      </div>
+      <section class="language-group language-sounds-chart">
+        <div class="language-sounds-chart-heading">
+          <h3>Consonants</h3>
+        </div>
+        {#if consonants.columns.length === 0}
+          <p class="language-empty" role="status">Add place and manner to position consonants here.</p>
+        {:else}
+          <div class="language-chart-wrap">
+            <table class="language-chart">
+              <thead>
+                <tr>
+                  <th></th>
+                  {#each consonants.columns as column (column)}
+                    <th scope="col">{column}</th>
+                  {/each}
+                </tr>
+              </thead>
+              <tbody>
+                {#each consonants.rows as rowLabel (rowLabel)}
+                  <tr>
+                    <th scope="row">{rowLabel}</th>
+                    {#each consonants.columns as column (column)}
+                      {@const items = chartItems(consonants, rowLabel, column)}
+                      <td class:is-empty={items.length === 0}>
+                        {#if items.length === 0}
+                          ·
+                        {:else}
+                          {#each items as item}
+                            <button
+                              type="button"
+                              class="language-button secondary"
+                              title={item.ipa ? `${item.symbol} (${item.ipa})` : item.symbol}
+                              onclick={() => openFromChart(item)}>{item.symbol}</button>
+                          {/each}
+                        {/if}
+                      </td>
+                    {/each}
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+        {#if consonants.unplaced.length}
+          <p class="language-empty">Unplaced: {consonants.unplaced.map((item) => item.symbol).join(", ")}</p>
+        {/if}
+      </section>
+      <section class="language-group language-sounds-chart">
+        <div class="language-sounds-chart-heading">
+          <h3>Vowels</h3>
+        </div>
+        {#if vowels.columns.length === 0}
+          <p class="language-empty" role="status">Add height and backness to position vowels here.</p>
+        {:else}
+          <div class="language-chart-wrap">
+            <table class="language-chart">
+              <thead>
+                <tr>
+                  <th></th>
+                  {#each vowels.columns as column (column)}
+                    <th scope="col">{column}</th>
+                  {/each}
+                </tr>
+              </thead>
+              <tbody>
+                {#each vowels.rows as rowLabel (rowLabel)}
+                  <tr>
+                    <th scope="row">{rowLabel}</th>
+                    {#each vowels.columns as column (column)}
+                      {@const items = chartItems(vowels, rowLabel, column)}
+                      <td class:is-empty={items.length === 0}>
+                        {#if items.length === 0}
+                          ·
+                        {:else}
+                          {#each items as item}
+                            <button
+                              type="button"
+                              class="language-button secondary"
+                              title={item.ipa ? `${item.symbol} (${item.ipa})` : item.symbol}
+                              onclick={() => openFromChart(item)}>{item.symbol}</button>
+                          {/each}
+                        {/if}
+                      </td>
+                    {/each}
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+        {#if vowels.unplaced.length}
+          <p class="language-empty">Unplaced: {vowels.unplaced.map((item) => item.symbol).join(", ")}</p>
+        {/if}
+      </section>
+    </div>
+  </div>
 {/if}
 
 <style>
@@ -893,5 +910,39 @@ function handleNotesSubmit(event: SubmitEvent) {
     flex-direction: column;
     align-items: stretch;
   }
+}
+.language-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(37, 37, 31, 0.28);
+}
+.language-charts-modal {
+  width: min(820px, 100%);
+  max-height: calc(100vh - 40px);
+  display: grid;
+  gap: 16px;
+  padding: 22px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 14px;
+  background: var(--surface, #fffefa);
+  box-shadow: 0 22px 70px rgba(37, 37, 31, 0.2);
+  overflow: auto;
+}
+.language-charts-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.language-charts-modal-header h3 {
+  margin: 0;
+  font-size: 18px;
+}
+.language-charts-modal .language-sounds-chart {
+  margin-top: 0;
 }
 </style>

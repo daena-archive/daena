@@ -26,7 +26,7 @@ let {
   locked?: boolean;
   lexemes: { id: string; lemma: string }[];
   referencedIds: Set<string>;
-  confirm: (message: string) => boolean;
+  confirm: (message: string) => Promise<boolean>;
   agreements: { id: string; title: string }[];
   negativeVerbSummary?: string;
   relativePositionSummary?: string;

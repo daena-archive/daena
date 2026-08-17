@@ -1,6 +1,8 @@
 <script lang="ts">
 import type { EntityRecord, EntitySummary, ModuleContext, ModuleManifest } from "../../../../module-api/src/index";
 import type { FieldDefinition } from "../../../../plugin-sdk/src/generated";
+import RichTextEditor from "../../../../../src/lib/editor/RichTextEditor.svelte";
+import { confirm } from "../confirm.svelte";
 import manifestJson from "../../manifest.json";
 
 const manifest = manifestJson as unknown as ModuleManifest;
@@ -16,7 +18,7 @@ let {
   context: ModuleContext;
   selectedLanguage: EntitySummary | null;
   active: boolean;
-  registerLeaveGuard: (guard: (() => boolean) | null) => void;
+  registerLeaveGuard: (guard: (() => Promise<boolean> | boolean) | null) => void;
   onLanguageChanged: (language: EntitySummary) => void;
   onLanguageArchived: (languageId: string) => void;
 } = $props();
@@ -57,7 +59,7 @@ $effect(() => {
 
 $effect(() => {
   if (!active) return;
-  registerLeaveGuard(() => tryLeaveOverview((message) => window.confirm(message)));
+  registerLeaveGuard(() => tryLeaveOverview((message) => confirm("Unsaved changes", message)));
   return () => {
     registerLeaveGuard(null);
   };
@@ -77,12 +79,12 @@ function clearOverviewAutosave() {
   overviewAutosaveQueued = false;
 }
 
-function tryLeaveOverview(confirmLeave: (message: string) => boolean) {
+async function tryLeaveOverview(confirmLeave: (message: string) => Promise<boolean> | boolean) {
   if (!overviewDirty) {
     clearOverviewAutosave();
     return true;
   }
-  const allowed = confirmLeave("You have unsaved language details. Leave without saving?");
+  const allowed = await confirmLeave("You have unsaved language details. Leave without saving?");
   if (allowed) {
     clearOverviewAutosave();
     overviewDirty = false;
@@ -258,9 +260,9 @@ async function archiveOverviewLanguage() {
   if (!selectedLanguage || !overviewEntity || overviewDeleting) return;
   const name = selectedLanguage.name;
   const message = overviewDirty
-    ? `Archive “${name}”? Unsaved language details will be discarded.`
-    : `Archive “${name}”? It will be removed from the active language list.`;
-  if (!window.confirm(message)) return;
+    ? `Archive "${name}"? Unsaved language details will be discarded.`
+    : `Archive "${name}"? It will be removed from the active language list.`;
+  if (!await confirm("Archive language", message)) return;
   clearOverviewAutosave();
   overviewDeleting = true;
   overviewError = "";
@@ -339,9 +341,12 @@ let status = $derived.by(() => {
             oninput={(event) => onOverviewNameInput(event.currentTarget.value)} />
         </label>
       </div>
-      <div class="language-overview-identity-meta">
-        <span>Workspace status</span>
-        <strong>{overviewDirty ? "Draft changes" : "Ready to build"}</strong>
+      <div class="language-overview-identity-danger">
+        <button
+          type="button"
+          class="language-button secondary language-danger"
+          disabled={overviewSaving || overviewDeleting}
+          onclick={archiveOverviewLanguage}>{overviewDeleting ? "Archiving…" : "Archive language"}</button>
       </div>
     </section>
 
@@ -375,26 +380,14 @@ let status = $derived.by(() => {
     <section class="language-overview-section">
       <h3>Canonical notes</h3>
       <p>Describe what makes this language itself. These notes stay with the language as the projection grows.</p>
-      <textarea
-        class="language-overview-document"
-        name="overviewDocument"
-        rows={12}
-        value={overviewDocument}
-        oninput={(event) => onOverviewDocumentInput(event.currentTarget.value)}></textarea>
+      <div class="language-overview-editor">
+        <RichTextEditor value={overviewDocument} onChange={onOverviewDocumentInput} />
+      </div>
     </section>
 
     {#if overviewError}
       <p class="language-status error" role="alert">{overviewError}</p>
     {/if}
-    <div class="language-overview-actions">
-      <span class="language-overview-danger">
-        <button
-          type="button"
-          class="language-button secondary language-danger"
-          disabled={overviewSaving || overviewDeleting}
-          onclick={archiveOverviewLanguage}>{overviewDeleting ? "Archiving…" : "Archive language"}</button>
-      </span>
-    </div>
   </form>
 {/if}
 
@@ -493,18 +486,10 @@ let status = $derived.by(() => {
   font-size: 12px;
   line-height: 1.55;
 }
-.language-overview-identity-meta {
+.language-overview-identity-danger {
   display: grid;
-  align-content: center;
+  align-content: end;
   justify-items: end;
-  gap: 4px;
-  color: var(--ink-soft);
-  font-size: 12px;
-  text-align: right;
-}
-.language-overview-identity-meta strong {
-  color: var(--accent-dark);
-  font-size: 13px;
 }
 .language-overview-section {
   display: grid;
@@ -528,22 +513,8 @@ let status = $derived.by(() => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
-.language-overview-document {
+.language-overview-editor {
   min-height: 16rem;
-  resize: vertical;
-  line-height: 1.6;
-}
-.language-overview-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin: auto -20px -24px;
-  padding: 12px 20px 24px;
-  border-top: 1px solid var(--line);
-  background: var(--surface);
-  box-shadow: 0 -8px 16px -16px rgba(38, 42, 33, 0.4);
 }
 .language-field {
   display: grid;
@@ -657,9 +628,8 @@ let status = $derived.by(() => {
   .language-overview-fields {
     grid-template-columns: 1fr;
   }
-  .language-overview-identity-meta {
+  .language-overview-identity-danger {
     justify-items: start;
-    text-align: left;
   }
 }
 </style>

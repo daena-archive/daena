@@ -48,13 +48,13 @@ let {
   draft: GrammarSystemRecord;
   locked?: boolean;
   referencedIds: Set<string>;
-  confirm: (message: string) => boolean;
+  confirm: (message: string) => Promise<boolean>;
 } = $props();
 
-function applyRemoval(result: InventoryMutation) {
+async function applyRemoval(result: InventoryMutation) {
   if (result.blocked) {
     if (
-      !confirm(
+      !await confirm(
         `“${result.blocked.label}” is referenced by agreement. Remove it anyway? Agreement will keep the broken reference until you edit it.`,
       )
     ) {

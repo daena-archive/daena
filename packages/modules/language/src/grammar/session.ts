@@ -6,6 +6,7 @@ import {
   emptyCustomRule,
   emptySystemRecord,
   grammarRecordSnapshot,
+  normalizeSystemConfig,
 } from "./normalize.ts";
 import type {
   GrammarRecord,
@@ -62,7 +63,7 @@ export function isGrammarDirty(session: GrammarEditSession | null) {
   return grammarRecordSnapshot(session.draft) !== session.baseline;
 }
 
-export function confirmGrammarLeave(session: GrammarEditSession | null, confirm: (message: string) => boolean) {
+export function confirmGrammarLeave(session: GrammarEditSession | null, confirm: (message: string) => Promise<boolean>) {
   if (!isGrammarDirty(session)) return true;
   return confirm("You have unsaved grammar changes. Leave anyway?");
 }
@@ -102,6 +103,7 @@ export function openSystemEditor(index: IndexedGrammar, systemId: GrammarSystemI
   const loaded = index.systems.get(systemId);
   if (loaded) return sessionFromLoaded(loaded, descriptor.sectionId);
   const draft = emptySystemRecord(systemId);
+  draft.config = normalizeSystemConfig(systemId, draft.config as Record<string, unknown>, draft.examples);
   return {
     draft,
     baseline: grammarRecordSnapshot(draft),
@@ -181,6 +183,9 @@ export function setSystemStatus(
   draft: GrammarSystemRecord,
   status: GrammarSystemRecord["status"],
 ): GrammarSystemRecord {
-  if (status === "configured") return { ...draft, status };
+  if (status === "configured") {
+    const config = normalizeSystemConfig(draft.systemId, draft.config as Record<string, unknown>, draft.examples);
+    return { ...draft, status, config };
+  }
   return { ...draft, status, config: {} };
 }

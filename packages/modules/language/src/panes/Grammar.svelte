@@ -1,5 +1,6 @@
 <script lang="ts">
 import { untrack } from "svelte";
+import { confirm } from "../confirm.svelte";
 import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
 import type { LexemeValue } from "../lexeme";
 import { normalizeLexeme } from "../lexeme";
@@ -72,7 +73,7 @@ let {
   context: ModuleContext;
   selectedLanguage: EntitySummary | null;
   active: boolean;
-  registerLeaveGuard: (guard: (() => boolean) | null) => void;
+  registerLeaveGuard: (guard: (() => Promise<boolean> | boolean) | null) => void;
 } = $props();
 
 let root: HTMLDivElement | undefined = $state();
@@ -99,7 +100,7 @@ $effect(() => {
 
 $effect(() => {
   if (!active) return;
-  registerLeaveGuard(() => tryLeaveGrammar(grammarUi, (message) => window.confirm(message)));
+  registerLeaveGuard(() => tryLeaveGrammar(grammarUi, (message) => confirm("Unsaved changes", message)));
   return () => {
     registerLeaveGuard(null);
   };
@@ -111,12 +112,10 @@ $effect(() => {
   };
 });
 
-const SYSTEM_STATUSES = ["unconfigured", "configured", "not-used"] as const satisfies readonly GrammarStatus[];
-
 type AgreementRecord = { id: string; revision: string; value: GrammarAgreementRecord };
 type CustomRuleRecord = { id: string; revision: string; value: GrammarCustomRuleRecord };
 
-const windowConfirm = (message: string) => window.confirm(message);
+const windowConfirm = (message: string) => confirm("Confirm", message);
 
 async function loadGrammar() {
   if (!selectedLanguage) {
@@ -252,9 +251,9 @@ function grammarFocusSelector(draftValue: GrammarEditSession["draft"], recordId?
   return '[data-grammar-id="section:agreement"]';
 }
 
-function leaveEditor() {
+async function leaveEditor() {
   const current = session;
-  if (!current || !tryLeaveGrammar(grammarUi, windowConfirm)) return false;
+  if (!current || !await tryLeaveGrammar(grammarUi, windowConfirm)) return false;
   const origin = current.originSection;
   const focus = grammarFocusSelector(current.draft, current.recordId);
   grammarUi.editing = null;
@@ -264,16 +263,16 @@ function leaveEditor() {
   return true;
 }
 
-function handleAllSections() {
-  goHome(grammarUi, windowConfirm);
+async function handleAllSections() {
+  await goHome(grammarUi, windowConfirm);
 }
 
-function handleStatusChange(status: GrammarStatus) {
+async function handleStatusChange(status: GrammarStatus) {
   const current = session;
   const value = current?.draft;
   if (!current || !value || value.recordKind !== "system" || current.locked) return;
   if (value.status === "configured" && status !== "configured") {
-    if (!windowConfirm("Reset this system's configuration? Unsaved settings in this editor will be cleared.")) return;
+    if (!await windowConfirm("Reset this system's configuration? Unsaved settings in this editor will be cleared.")) return;
   }
   current.draft = setSystemStatus(value, status);
 }
@@ -294,20 +293,20 @@ function advanceStarter(current: GrammarSystemId) {
   grammarUi.focusTarget = "#grammar-editor-heading";
 }
 
-function handleSkip() {
-  if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+async function handleSkip() {
+  if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
   if (grammarUi.starterCurrent) advanceStarter(grammarUi.starterCurrent);
 }
 
-function handleExitStarter() {
-  if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+async function handleExitStarter() {
+  if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
   grammarUi.starterDismissed = true;
   grammarUi.starterCurrent = undefined;
   grammarUi.editing = null;
 }
 
-function handleStartStarter() {
-  if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+async function handleStartStarter() {
+  if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
   const next = nextStarterSystem(grammarUi.index);
   if (!next) {
     grammarUi.starterDismissed = true;
@@ -320,18 +319,18 @@ function handleStartStarter() {
   grammarUi.focusTarget = "#grammar-editor-heading";
 }
 
-function handleDismissStarter() {
-  if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+async function handleDismissStarter() {
+  if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
   grammarUi.starterDismissed = true;
   grammarUi.starterCurrent = undefined;
   grammarUi.editing = null;
 }
 
-function handleStartAgreement() {
-  if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+async function handleStartAgreement() {
+  if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
   if (grammarUi.index.sectionStates.get("agreement")) {
     if (
-      !windowConfirm(
+      !await windowConfirm(
         "This section is marked not used. Create an agreement system anyway? Saving it will clear the not-used marker.",
       )
     ) {
@@ -345,31 +344,31 @@ function handleStartAgreement() {
   grammarUi.focusTarget = "#grammar-editor-heading";
 }
 
-function handleOpenAgreementNotUsed() {
-  if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+async function handleOpenAgreementNotUsed() {
+  if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
   grammarUi.editing = openAgreementNotUsedEditor(grammarUi.index);
 }
 
-function handleAddCustomRule() {
-  if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+async function handleAddCustomRule() {
+  if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
   grammarUi.editing = openCustomRuleEditor(grammarUi.index);
 }
 
-function handleSearchHit(hit: GrammarSearchHit) {
+async function handleSearchHit(hit: GrammarSearchHit) {
   if (hit.kind === "system" && hit.systemId) {
-    goSystem(grammarUi, hit.systemId, windowConfirm);
+    await goSystem(grammarUi, hit.systemId, windowConfirm);
   } else if (hit.kind === "custom-rule") {
-    if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+    if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
     grammarUi.section = "other";
     grammarUi.query = "";
     grammarUi.editing = openCustomRuleEditor(grammarUi.index, hit.recordId);
   } else if (hit.kind === "agreement" && hit.recordId) {
-    if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+    if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
     grammarUi.section = "agreement";
     grammarUi.query = "";
     grammarUi.editing = openAgreementEditor(grammarUi.index, hit.recordId);
   } else {
-    goSection(grammarUi, hit.sectionId, windowConfirm);
+    await goSection(grammarUi, hit.sectionId, windowConfirm);
   }
 }
 
@@ -476,29 +475,17 @@ function removeLink(index: number) {
       {#if session.draft.recordKind === "system"}
         {@const systemDraft = session.draft}
         <p class="language-empty" role="status">{grammarSystemDescriptor(systemDraft.systemId)?.hint}</p>
-        <details
-          class="grammar-learn"
-          open={session.learnMoreOpen}
-          ontoggle={(event) => (session.learnMoreOpen = event.currentTarget.open)}>
-          <summary>Learn more</summary>
-          <p class="grammar-help">{grammarSystemDescriptor(systemDraft.systemId)?.learnMore}</p>
-        </details>
-        <fieldset class="grammar-status">
-          <legend>Status</legend>
-          {#each SYSTEM_STATUSES as status (status)}
-            <label>
-              <input
-                type="radio"
-                name="status"
-                value={status}
-                checked={systemDraft.status === status}
-                disabled={session.locked}
-                onchange={() => handleStatusChange(status)} />
-              {grammarStatusLabel(status)}
-            </label>
-          {/each}
-        </fieldset>
-        {#if systemDraft.status === "configured"}
+        {#if systemDraft.status === "not-used"}
+          <label class="language-field">
+            <span>Why it is not used (optional)</span>
+            <textarea
+              rows="3"
+              placeholder="Noun roles are primarily expressed through word order and adpositions."
+              value={systemDraft.notes}
+              disabled={session.locked}
+              oninput={(event) => (systemDraft.notes = event.currentTarget.value)}></textarea>
+          </label>
+        {:else}
           {#if configuredMinimum(systemDraft.systemId, systemDraft.config)}
             <p class="language-empty" role="status">{summarizeSystem(systemDraft.systemId, systemDraft)}</p>
           {/if}
@@ -512,18 +499,6 @@ function removeLink(index: number) {
             {negativeVerbSummary}
             {relativePositionSummary}
             {pronounAxes} />
-        {/if}
-        {#if systemDraft.status === "not-used"}
-          <label class="language-field">
-            <span>Why it is not used (optional)</span>
-            <textarea
-              rows="3"
-              placeholder="Noun roles are primarily expressed through word order and adpositions."
-              value={systemDraft.notes}
-              disabled={session.locked}
-              oninput={(event) => (systemDraft.notes = event.currentTarget.value)}></textarea>
-          </label>
-        {:else}
           <label class="language-field">
             <span>Notes</span>
             <textarea
@@ -532,6 +507,15 @@ function removeLink(index: number) {
               disabled={session.locked}
               oninput={(event) => (systemDraft.notes = event.currentTarget.value)}></textarea>
           </label>
+        {/if}
+        {#if systemDraft.status === "not-used"}
+          <div class="language-inline">
+            <button type="button" class="language-button" disabled={session.locked} onclick={() => handleStatusChange("configured")}>Configure this section</button>
+          </div>
+        {:else}
+          <div class="language-inline">
+            <button type="button" class="language-button secondary language-danger" disabled={session.locked} onclick={() => handleStatusChange("not-used")}>Mark as not used</button>
+          </div>
         {/if}
       {:else if session.draft.recordKind === "agreement"}
         {@const agreementDraft = session.draft}
@@ -703,15 +687,15 @@ function removeLink(index: number) {
             <button
               type="button"
               class="language-button secondary"
-              onclick={() => goSystem(grammarUi, diagnostic.systemId!, windowConfirm)}
+              onclick={async () => { await goSystem(grammarUi, diagnostic.systemId!, windowConfirm); }}
               >Open
               {grammarSystemDescriptor(diagnostic.systemId)?.label ?? diagnostic.systemId}</button>
           {:else if diagnostic.recordIds[0] && grammarUi.index.agreements.some((item) => item.id === diagnostic.recordIds[0])}
             <button
               type="button"
               class="language-button secondary"
-              onclick={() => {
-                if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+              onclick={async () => {
+                if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
                 grammarUi.section = "agreement";
                 grammarUi.editing = openAgreementEditor(grammarUi.index, diagnostic.recordIds[0]);
                 grammarUi.focusTarget = "#grammar-editor-heading";
@@ -765,7 +749,7 @@ function removeLink(index: number) {
               class="grammar-card"
               data-grammar-id={`section:${entry.id}`}
               aria-label={`${summary.label}: ${summary.detail}${notUsed}`}
-              onclick={() => goSection(grammarUi, entry.id, windowConfirm)}>
+              onclick={async () => { await goSection(grammarUi, entry.id, windowConfirm); }}>
               <strong>{summary.label}</strong>
               <span>{summary.detail}{notUsed}</span>
             </button>
@@ -810,8 +794,8 @@ function removeLink(index: number) {
                   class="grammar-system"
                   data-grammar-id={`agreement:${record.id}`}
                   aria-label={`${record.value.title}: ${summarizeAgreement(record.value)}`}
-                  onclick={() => {
-                    if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+                  onclick={async () => {
+                    if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
                     grammarUi.editing = openAgreementEditor(grammarUi.index, record.id);
                     grammarUi.focusTarget = "#grammar-editor-heading";
                   }}>
@@ -838,8 +822,8 @@ function removeLink(index: number) {
                   class="grammar-system"
                   data-grammar-id={`rule:${record.id}`}
                   aria-label={record.value.title}
-                  onclick={() => {
-                    if (!tryLeaveGrammar(grammarUi, windowConfirm)) return;
+                  onclick={async () => {
+                    if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
                     grammarUi.editing = openCustomRuleEditor(grammarUi.index, record.id);
                     grammarUi.focusTarget = "#grammar-editor-heading";
                   }}>
@@ -860,7 +844,7 @@ function removeLink(index: number) {
                   <button
                     type="button"
                     class="language-button"
-                    onclick={() => goSystem(grammarUi, first.id, windowConfirm)}>{first.emptyAction}</button>
+                    onclick={async () => { await goSystem(grammarUi, first.id, windowConfirm); }}>{first.emptyAction}</button>
                 </div>
               {/if}
             </div>
@@ -879,7 +863,7 @@ function removeLink(index: number) {
                 class="grammar-system"
                 data-grammar-id={`system:${system.id}`}
                 aria-label={`${system.label}: ${summary}`}
-                onclick={() => goSystem(grammarUi, system.id, windowConfirm)}>
+                onclick={async () => { await goSystem(grammarUi, system.id, windowConfirm); }}>
                 <strong>{system.label}</strong>
                 <span>{summary}</span>
               </button>
@@ -954,11 +938,6 @@ function removeLink(index: number) {
 .language-field textarea {
   min-height: 4.5em;
   resize: vertical;
-}
-.grammar-status input:focus-visible,
-.grammar-learn summary:focus-visible {
-  outline: 3px solid rgba(180, 119, 63, 0.24);
-  outline-offset: 2px;
 }
 .grammar-card:focus-visible,
 .grammar-system:focus-visible {
@@ -1089,27 +1068,6 @@ function removeLink(index: number) {
 .grammar-systems {
   display: grid;
   gap: 8px;
-}
-.grammar-status {
-  display: flex;
-  gap: 14px;
-  flex-wrap: wrap;
-  border: 0;
-  margin: 0;
-  padding: 0;
-}
-.grammar-status legend {
-  padding: 0;
-  color: var(--ink-soft);
-  font-size: 11px;
-}
-.grammar-help {
-  margin: 8px 0 0;
-  font-size: 13px;
-  line-height: 1.55;
-}
-.grammar-learn {
-  margin: 4px 0 8px;
 }
 .grammar-starter-list {
   margin: 0;

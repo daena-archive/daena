@@ -16,16 +16,16 @@ export type GrammarPaneContext = {
   languageName?: string;
   ownerId?: UUID;
   records: GrammarRecordsApi;
-  confirm: (message: string) => boolean;
+  confirm: (message: string) => Promise<boolean>;
   choices: GrammarLinkChoices;
 };
 
-export function tryLeaveGrammar(state: GrammarUiState, confirm: (message: string) => boolean) {
+export async function tryLeaveGrammar(state: GrammarUiState, confirm: (message: string) => Promise<boolean>) {
   return confirmGrammarLeave(state.editing, confirm);
 }
 
-export function goHome(state: GrammarUiState, confirm: (message: string) => boolean) {
-  if (!tryLeaveGrammar(state, confirm)) return false;
+export async function goHome(state: GrammarUiState, confirm: (message: string) => Promise<boolean>) {
+  if (!await tryLeaveGrammar(state, confirm)) return false;
   state.editing = null;
   state.section = null;
   state.query = "";
@@ -33,8 +33,8 @@ export function goHome(state: GrammarUiState, confirm: (message: string) => bool
   return true;
 }
 
-export function goSection(state: GrammarUiState, sectionId: GrammarSectionId, confirm: (message: string) => boolean) {
-  if (!tryLeaveGrammar(state, confirm)) return false;
+export async function goSection(state: GrammarUiState, sectionId: GrammarSectionId, confirm: (message: string) => Promise<boolean>) {
+  if (!await tryLeaveGrammar(state, confirm)) return false;
   state.editing = null;
   state.section = sectionId;
   state.query = "";
@@ -64,8 +64,8 @@ function grammarFocusSelector(draft: GrammarEditSession["draft"], recordId?: str
   return '[data-grammar-id="section:agreement"]';
 }
 
-export function goSystem(state: GrammarUiState, systemId: GrammarSystemId, confirm: (message: string) => boolean) {
-  if (!tryLeaveGrammar(state, confirm)) return false;
+export async function goSystem(state: GrammarUiState, systemId: GrammarSystemId, confirm: (message: string) => Promise<boolean>) {
+  if (!await tryLeaveGrammar(state, confirm)) return false;
   state.query = "";
   state.starterCurrent = undefined;
   state.section = grammarSystemDescriptor(systemId)?.sectionId ?? state.section;
@@ -112,7 +112,7 @@ export async function deleteGrammarEditor(state: GrammarUiState, ctx: GrammarPan
       : "title" in session.draft
         ? session.draft.title
         : "this record";
-  if (!ctx.confirm(`Delete “${title}”?`)) return "";
+  if (!await ctx.confirm(`Delete “${title}”?`)) return "";
   const result = await deleteGrammarRecord(ctx.records, ctx.ownerId, {
     recordId,
     revision: session.revision,

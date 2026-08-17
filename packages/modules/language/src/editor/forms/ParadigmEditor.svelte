@@ -48,7 +48,7 @@ let {
 }: {
   draft: GrammarSystemRecord;
   locked?: boolean;
-  confirm: (message: string) => boolean;
+  confirm: (message: string) => Promise<boolean>;
   referencedIds: Set<string>;
   pronounAxes?: ParadigmAxis[];
   agreements: { id: string; title: string }[];
@@ -61,11 +61,11 @@ function toChecks(values: { id: string; label: string }[]) {
   return values.map((item) => ({ id: item.id, label: item.label }));
 }
 
-function applyMutation(result: ParadigmMutation) {
+async function applyMutation(result: ParadigmMutation) {
   if (result.blocked) {
     const extra = result.blocked.references ? ` ${result.blocked.references} agreement reference(s) will break.` : "";
     if (
-      !confirm(
+      !await confirm(
         `Removing ${result.blocked.label} will discard ${result.blocked.populated} filled cell(s).${extra} Continue?`,
       )
     ) {

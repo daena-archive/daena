@@ -553,7 +553,7 @@ function inventoryItems(value: unknown, fields: { meaning?: boolean; marker?: bo
     .slice(0, MAX_CATEGORIES);
 }
 
-function normalizeSystemConfig(
+export function normalizeSystemConfig(
   systemId: GrammarSystemId,
   raw: Record<string, unknown>,
   examples: GrammarExample[],

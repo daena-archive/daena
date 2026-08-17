@@ -1,6 +1,7 @@
 <script lang="ts">
 import { onMount } from "svelte";
 import type { EntitySummary, ModuleContext } from "../../../module-api/src/index";
+import ConfirmModal from "./ConfirmModal.svelte";
 import Overview from "./panes/Overview.svelte";
 import Lexicon from "./panes/Lexicon.svelte";
 import Sounds from "./panes/Sounds.svelte";
@@ -40,10 +41,10 @@ let languageRequest = $state(0);
 let paneListEl: HTMLDivElement | undefined = $state();
 let createNameInput: HTMLInputElement | undefined = $state();
 
-const leaveGuards: Partial<Record<Pane, (() => boolean) | null>> = {};
+const leaveGuards: Partial<Record<Pane, (() => Promise<boolean> | boolean) | null>> = {};
 
 function registerLeaveGuard(paneId: Pane) {
-  return (guard: (() => boolean) | null) => {
+  return (guard: (() => Promise<boolean> | boolean) | null) => {
     leaveGuards[paneId] = guard;
   };
 }
@@ -51,10 +52,10 @@ function registerLeaveGuard(paneId: Pane) {
 const registerOverviewGuard = registerLeaveGuard("overview");
 const registerGrammarGuard = registerLeaveGuard("grammar");
 
-function canLeave() {
+async function canLeave() {
   for (const paneId of ["overview", "grammar"] as const) {
     const guard = leaveGuards[paneId];
-    if (guard && !guard()) return false;
+    if (guard && !await guard()) return false;
   }
   return true;
 }
@@ -96,23 +97,23 @@ async function loadLanguages() {
   }
 }
 
-function openLanguage(language: EntitySummary) {
+async function openLanguage(language: EntitySummary) {
   if (language.id === selectedLanguage?.id) return;
-  if (!canLeave()) return;
+  if (!await canLeave()) return;
   selectedLanguage = language;
   pendingLexemeId = null;
 }
 
-function switchPane(id: Pane) {
+async function switchPane(id: Pane) {
   if (pane === id) return;
-  if (!canLeave()) return;
+  if (!await canLeave()) return;
   pane = id;
 }
 
-function openLinkedLexeme(lexemeId: string) {
+async function openLinkedLexeme(lexemeId: string) {
   pendingLexemeId = lexemeId;
   if (pane === "lexicon") return;
-  if (!canLeave()) {
+  if (!await canLeave()) {
     pendingLexemeId = null;
     return;
   }
@@ -301,6 +302,8 @@ async function submitCreateLanguage(event: SubmitEvent) {
     </div>
   </div>
 </section>
+
+<ConfirmModal />
 
 <style>
 .language-workspace {

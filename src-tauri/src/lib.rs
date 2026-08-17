@@ -1867,6 +1867,13 @@ fn forward_maps_state_event(payload: &serde_json::Value) {
     }
 }
 
+fn plugin_asset_url(token: &str, session_id: &str, chunk: Option<u64>) -> String {
+    match chunk {
+        Some(index) => format!("/__asset/{token}/{index}?sessionId={session_id}"),
+        None => format!("/__asset/{token}?sessionId={session_id}"),
+    }
+}
+
 fn dispatch_binary_asset_rpc(
     core: &SharedCore,
     transfers: &SharedBinaryTransfers,
@@ -1917,7 +1924,7 @@ fn dispatch_binary_asset_rpc(
                 expires_at: Instant::now() + ASSET_TRANSFER_TTL,
             });
             Ok(
-                serde_json::json!({"handle":token,"url":format!("plugin://{}/__asset/{}?sessionId={}", session.plugin_id, token, session.id),"size":asset.size,"contentHash":asset.content_hash,"mimeType":asset.mime_type,"revision":asset.revision}),
+                serde_json::json!({"handle":token,"url":plugin_asset_url(&token, &session.id, None),"size":asset.size,"contentHash":asset.content_hash,"mimeType":asset.mime_type,"revision":asset.revision}),
             )
         }
         "asset.replace.begin" => {
@@ -1963,7 +1970,7 @@ fn dispatch_binary_asset_rpc(
                 expires_at: Instant::now() + ASSET_TRANSFER_TTL,
             });
             Ok(
-                serde_json::json!({"handle":token,"url":format!("plugin://{}/__asset/{}/0?sessionId={}", session.plugin_id, token, session.id),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
+                serde_json::json!({"handle":token,"url":plugin_asset_url(&token, &session.id, Some(0)),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
             )
         }
         "asset.replace.commit" => {
@@ -2040,7 +2047,7 @@ fn dispatch_binary_asset_rpc(
                 expires_at: Instant::now() + ASSET_TRANSFER_TTL,
             });
             Ok(
-                serde_json::json!({"handle":token,"url":format!("plugin://{}/__asset/{}/0?sessionId={}", session.plugin_id, token, session.id),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
+                serde_json::json!({"handle":token,"url":plugin_asset_url(&token, &session.id, Some(0)),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
             )
         }
         "maps.asset.create.commit" => {
@@ -2162,7 +2169,7 @@ fn dispatch_binary_asset_rpc(
                 expires_at: Instant::now() + ASSET_TRANSFER_TTL,
             });
             Ok(
-                serde_json::json!({"handle":token,"url":format!("plugin://{}/__asset/{}/0?sessionId={}", session.plugin_id, token, session.id),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
+                serde_json::json!({"handle":token,"url":plugin_asset_url(&token, &session.id, Some(0)),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
             )
         }
         "maps.image.import.commit" => {
@@ -2233,7 +2240,7 @@ fn dispatch_binary_asset_rpc(
                 expires_at: Instant::now() + ASSET_TRANSFER_TTL,
             });
             Ok(
-                serde_json::json!({"handle":token,"url":format!("plugin://{}/__asset/{}/0?sessionId={}", session.plugin_id, token, session.id),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
+                serde_json::json!({"handle":token,"url":plugin_asset_url(&token, &session.id, Some(0)),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
             )
         }
         "maps.vector.create.commit" => {
@@ -2304,7 +2311,7 @@ fn dispatch_binary_asset_rpc(
                 expires_at: Instant::now() + ASSET_TRANSFER_TTL,
             });
             Ok(
-                serde_json::json!({"handle":token,"url":format!("plugin://{}/__asset/{}/0?sessionId={}", session.plugin_id, token, session.id),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
+                serde_json::json!({"handle":token,"url":plugin_asset_url(&token, &session.id, Some(0)),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
             )
         }
         "maps.physical.create.commit" => {
@@ -2382,7 +2389,7 @@ fn dispatch_binary_asset_rpc(
                 expires_at: Instant::now() + ASSET_TRANSFER_TTL,
             });
             Ok(
-                serde_json::json!({"handle":token,"url":format!("plugin://{}/__asset/{}/0?sessionId={}", session.plugin_id, token, session.id),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
+                serde_json::json!({"handle":token,"url":plugin_asset_url(&token, &session.id, Some(0)),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
             )
         }
         "maps.vector.replace.commit" => {
@@ -2461,7 +2468,7 @@ fn dispatch_binary_asset_rpc(
                 expires_at: Instant::now() + ASSET_TRANSFER_TTL,
             });
             Ok(
-                serde_json::json!({"handle":token,"url":format!("plugin://{}/__asset/{}/0?sessionId={}", session.plugin_id, token, session.id),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
+                serde_json::json!({"handle":token,"url":plugin_asset_url(&token, &session.id, Some(0)),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
             )
         }
         "maps.recovery.export.commit" => {

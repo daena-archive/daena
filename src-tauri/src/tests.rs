@@ -2066,7 +2066,7 @@ fn maps_asset_create_rpc_round_trips_source_asset() {
     .unwrap();
     let handle = begin["handle"].as_str().unwrap().to_string();
     assert!(begin["url"].as_str().unwrap().starts_with(&format!(
-        "plugin://daena.maps/__asset/{handle}/0?sessionId=session"
+        "/__asset/{handle}/0?sessionId=session"
     )));
     {
         let mut manager = transfers.lock().unwrap();

@@ -372,112 +372,144 @@ async function handleSubmit(event: SubmitEvent) {
       <span>Notes (optional)</span>
       <textarea name="notes" bind:value={paradigmDraft.notes}></textarea>
     </label>
-    <section class="language-group">
-      <div class="language-group-head">
-        <h3>Slots</h3>
-        <button type="button" class="language-button secondary" onclick={addSlot}>Add</button>
+    <section class="language-form-section">
+      <div class="language-form-section-header">
+        <div>
+          <h3>Slots</h3>
+          <p>Define the cells in your paradigm table (e.g., 1sg, plural, comparative).</p>
+        </div>
+        <button type="button" class="language-button secondary" onclick={addSlot}>Add slot</button>
       </div>
       {#if paradigmDraft.slots.length === 0}
-        <p class="language-empty" role="status">Add cells such as 1sg, plural, or comparative.</p>
-      {/if}
-      {#each paradigmDraft.slots as slot, index (slot.id)}
-        <div class="language-inline">
-          <div class="language-inline-fields">
-            <label class="language-field">
-              <span>Slot label</span>
-              <input name={`slot-label-${index}`} bind:value={slot.label} />
-            </label>
-            <label class="language-field">
-              <span>Features (optional)</span>
-              <input name={`slot-features-${index}`} bind:value={slot.features} />
-            </label>
-          </div>
-          <button type="button" class="language-button secondary language-danger" onclick={() => removeSlot(index)}
-            >Remove</button>
+        <div class="language-empty-card">
+          <p class="language-empty" role="status">No slots defined yet. Add cells such as 1sg, plural, or comparative.</p>
         </div>
-      {/each}
-    </section>
-    <section class="language-group">
-      <div class="language-group-head">
-        <h3>Rules</h3>
-        <button type="button" class="language-button secondary" onclick={addRule}>Add</button>
-      </div>
-      {#if paradigmDraft.rules.length === 0}
-        <p class="language-empty" role="status">
-          Add an inflection or derivation rule. More specific suffix matches win.
-        </p>
-      {/if}
-      {#each paradigmDraft.rules as rule, index (rule.id)}
-        <section class="language-group">
-          <div class="language-group-head">
-            <h3>{rule.name || `Rule ${index + 1}`}</h3>
-            <button type="button" class="language-button secondary language-danger" onclick={() => removeRule(index)}
-              >Remove</button>
-          </div>
-          <label class="language-field">
-            <span>Rule name</span>
-            <input name={`rule-name-${index}`} bind:value={rule.name} />
-          </label>
-          <label class="language-field">
-            <span>Kind</span>
-            <select name={`rule-kind-${index}`} aria-label="Rule kind" bind:value={rule.kind}>
-              {#each PARADIGM_KINDS as item (item.id)}
-                <option value={item.id}>{item.label}</option>
-              {/each}
-            </select>
-          </label>
-          <label class="language-field">
-            <span>Match lemma ending (optional)</span>
-            <input name={`rule-match-${index}`} bind:value={rule.match} />
-          </label>
-          <label class="language-field">
-            <span>Notes (optional)</span>
-            <textarea name={`rule-notes-${index}`} rows={2} bind:value={rule.notes}></textarea>
-          </label>
-          {#each rule.operations as operation, operationIndex (operation.id)}
-            <div class="language-inline">
-              <div class="language-inline-fields">
-                <label class="language-field">
-                  <span>Slot</span>
-                  <select
-                    name={`op-slot-${index}-${operationIndex}`}
-                    aria-label="Operation slot"
-                    bind:value={operation.slotId}>
-                    {#each slotOptions as option (option.id)}
-                      <option value={option.id}>{option.label}</option>
-                    {/each}
-                  </select>
-                </label>
-                <label class="language-field">
-                  <span>Operation</span>
-                  <select
-                    name={`op-kind-${index}-${operationIndex}`}
-                    aria-label="Operation kind"
-                    bind:value={operation.op}>
-                    {#each OPERATION_KINDS as item (item.id)}
-                      <option value={item.id}>{item.label}</option>
-                    {/each}
-                  </select>
-                </label>
-                <label class="language-field">
-                  <span>Replace from (optional)</span>
-                  <input name={`op-from-${index}-${operationIndex}`} bind:value={operation.from} />
-                </label>
-                <label class="language-field">
-                  <span>Affix or replacement (optional)</span>
-                  <input name={`op-value-${index}-${operationIndex}`} bind:value={operation.value} />
-                </label>
+      {:else}
+        <div class="forms-slots-grid">
+          {#each paradigmDraft.slots as slot, index (slot.id)}
+            <div class="forms-slot-card">
+              <div class="forms-slot-header">
+                <span class="forms-slot-number">{index + 1}</span>
+                <button type="button" class="forms-slot-remove" onclick={() => removeSlot(index)} aria-label="Remove slot">&times;</button>
               </div>
-              <button
-                type="button"
-                class="language-button secondary language-danger"
-                onclick={() => removeOperation(index, operationIndex)}>Remove</button>
+              <label class="language-field">
+                <span>Label</span>
+                <input name={`slot-label-${index}`} bind:value={slot.label} placeholder="e.g. 1sg" />
+              </label>
+              <label class="language-field">
+                <span>Features (optional)</span>
+                <input name={`slot-features-${index}`} bind:value={slot.features} placeholder="e.g. person=1, number=sg" />
+              </label>
             </div>
           {/each}
-          <button type="button" class="language-button secondary" onclick={() => addOperation(index)}
-            >Add operation</button>
-        </section>
-      {/each}
+        </div>
+      {/if}
+    </section>
+    <section class="language-form-section">
+      <div class="language-form-section-header">
+        <div>
+          <h3>Rules</h3>
+          <p>Define how forms are generated from the stem. More specific suffix matches win.</p>
+        </div>
+        <button type="button" class="language-button secondary" onclick={addRule}>Add rule</button>
+      </div>
+      {#if paradigmDraft.rules.length === 0}
+        <div class="language-empty-card">
+          <p class="language-empty" role="status">No rules defined yet. Add inflection or derivation rules.</p>
+        </div>
+      {:else}
+        <div class="forms-rules-list">
+          {#each paradigmDraft.rules as rule, index (rule.id)}
+            <details class="forms-rule-item" open={index === 0}>
+              <summary>
+                <span class="forms-rule-name">{rule.name || `Rule ${index + 1}`}</span>
+                <span class="forms-rule-kind">{PARADIGM_KINDS.find(k => k.id === rule.kind)?.label ?? rule.kind}</span>
+                <button type="button" class="forms-rule-remove" onclick={(e) => { e.preventDefault(); removeRule(index); }} aria-label="Remove rule">&times;</button>
+              </summary>
+              <div class="forms-rule-content">
+                <div class="language-section-grid">
+                  <label class="language-field">
+                    <span>Rule name</span>
+                    <input name={`rule-name-${index}`} bind:value={rule.name} placeholder="e.g. Regular plural" />
+                  </label>
+                  <label class="language-field">
+                    <span>Kind</span>
+                    <select name={`rule-kind-${index}`} aria-label="Rule kind" bind:value={rule.kind}>
+                      {#each PARADIGM_KINDS as item (item.id)}
+                        <option value={item.id}>{item.label}</option>
+                      {/each}
+                    </select>
+                  </label>
+                </div>
+                <label class="language-field">
+                  <span>Match lemma ending (optional)</span>
+                  <input name={`rule-match-${index}`} bind:value={rule.match} placeholder="e.g. -ar (matches verbs ending in -ar)" />
+                </label>
+                <label class="language-field">
+                  <span>Notes (optional)</span>
+                  <textarea name={`rule-notes-${index}`} rows={2} bind:value={rule.notes} placeholder="Explain when this rule applies"></textarea>
+                </label>
+                <div class="forms-operations">
+                  <div class="forms-operations-header">
+                    <h4>Operations</h4>
+                    <button type="button" class="language-button secondary" onclick={() => addOperation(index)}>Add operation</button>
+                  </div>
+                  {#if rule.operations.length === 0}
+                    <p class="language-empty" role="status">No operations defined. Add suffix, prefix, or replacement rules.</p>
+                  {:else}
+                    <div class="forms-operations-list">
+                      {#each rule.operations as operation, operationIndex (operation.id)}
+                        <div class="forms-operation-item">
+                          <div class="forms-operation-fields">
+                            <label class="language-field">
+                              <span>Slot</span>
+                              <select
+                                name={`op-slot-${index}-${operationIndex}`}
+                                aria-label="Operation slot"
+                                bind:value={operation.slotId}>
+                                <option value="">Select slot...</option>
+                                {#each slotOptions as option (option.id)}
+                                  <option value={option.id}>{option.label}</option>
+                                {/each}
+                              </select>
+                            </label>
+                            <label class="language-field">
+                              <span>Operation</span>
+                              <select
+                                name={`op-kind-${index}-${operationIndex}`}
+                                aria-label="Operation kind"
+                                bind:value={operation.op}>
+                                {#each OPERATION_KINDS as item (item.id)}
+                                  <option value={item.id}>{item.label}</option>
+                                {/each}
+                              </select>
+                            </label>
+                            {#if operation.op === "replace-suffix"}
+                              <label class="language-field">
+                                <span>Replace from</span>
+                                <input name={`op-from-${index}-${operationIndex}`} bind:value={operation.from} placeholder="e.g. -ar" />
+                              </label>
+                            {/if}
+                            <label class="language-field">
+                              <span>{operation.op === "replace-suffix" ? "Replace with" : "Affix"}</span>
+                              <input name={`op-value-${index}-${operationIndex}`} bind:value={operation.value} placeholder={operation.op === "prefix" ? "e.g. un-" : operation.op === "suffix" ? "e.g. -ed" : "e.g. -ó"} />
+                            </label>
+                          </div>
+                          <button
+                            type="button"
+                            class="forms-operation-remove"
+                            onclick={() => removeOperation(index, operationIndex)}
+                            aria-label="Remove operation">&times;</button>
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            </details>
+          {/each}
+        </div>
+      {/if}
     </section>
     <section class="language-group">
       <h3>Generated preview</h3>
@@ -923,6 +955,203 @@ async function handleSubmit(event: SubmitEvent) {
   .language-inline {
     flex-direction: column;
     align-items: stretch;
+  }
+}
+.forms-slots-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+.forms-slot-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.forms-slot-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.forms-slot-number {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+}
+.forms-slot-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 16px;
+}
+.forms-slot-remove:hover {
+  background: var(--surface-muted);
+  color: #a14f42;
+}
+.forms-rules-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.forms-rule-item {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.forms-rule-item summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+.forms-rule-item summary::-webkit-details-marker {
+  display: none;
+}
+.forms-rule-item summary::before {
+  content: "▸";
+  color: var(--ink-faint);
+  font-size: 12px;
+  transition: transform 0.15s ease;
+}
+.forms-rule-item[open] summary::before {
+  transform: rotate(90deg);
+}
+.forms-rule-name {
+  flex: 1;
+  font-weight: 600;
+  font-size: 14px;
+}
+.forms-rule-kind {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+.forms-rule-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 16px;
+}
+.forms-rule-remove:hover {
+  background: var(--surface-muted);
+  color: #a14f42;
+}
+.forms-rule-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border-top: 1px solid var(--line);
+}
+.forms-operations {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.forms-operations-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.forms-operations-header h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.forms-operations-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.forms-operation-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+.forms-operation-fields {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.forms-operation-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.forms-operation-remove:hover {
+  background: var(--surface-muted);
+  color: #a14f42;
+}
+.language-form-section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.language-form-section-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.language-form-section-header p {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+@media (max-width: 760px) {
+  .forms-slots-grid {
+    grid-template-columns: 1fr;
+  }
+  .forms-operation-fields {
+    grid-template-columns: 1fr;
   }
 }
 </style>

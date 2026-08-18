@@ -65,18 +65,22 @@ import type {
 } from "../grammar.ts";
 import type { ParadigmConfig } from "../grammar/types";
 
+type BreadcrumbItem = { label: string; onclick?: () => void };
+
 let {
   context,
   selectedLanguage,
   active,
   registerLeaveGuard,
   setMutationActive,
+  setBreadcrumbExtra,
 }: {
   context: ModuleContext;
   selectedLanguage: EntitySummary | null;
   active: boolean;
   registerLeaveGuard: (guard: (() => Promise<boolean> | boolean) | null) => void;
   setMutationActive: (active: boolean) => void;
+  setBreadcrumbExtra: (items: BreadcrumbItem[]) => void;
 } = $props();
 
 let root: HTMLDivElement | undefined = $state();
@@ -225,6 +229,28 @@ const editorTitle = $derived.by(() => {
   if (value.recordKind === "agreement") return current.recordId ? value.title || "Agreement" : "New agreement system";
   if (value.recordKind === "custom-rule") return current.recordId ? "Custom rule" : "New custom rule";
   return "Agreement";
+});
+
+$effect(() => {
+  if (!active) return;
+  const crumbs: BreadcrumbItem[] = [];
+  if (session) {
+    if (section) {
+      crumbs.push({
+        label: section.label,
+        onclick: async () => {
+          if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
+          grammarUi.editing = null;
+          grammarUi.starterCurrent = undefined;
+        },
+      });
+    }
+    crumbs.push({ label: editorTitle });
+  } else if (section) {
+    crumbs.push({ label: section.label });
+  }
+  setBreadcrumbExtra(crumbs);
+  return () => setBreadcrumbExtra([]);
 });
 
 const stored = $derived.by(() => {
@@ -828,14 +854,25 @@ function removeLink(index: number) {
           {#each GRAMMAR_SECTIONS as entry (entry.id)}
             {@const summary = sectionCardSummary(grammarUi.index, entry.id)}
             {@const notUsed = summary.notUsed ? ` · ${summary.notUsed} not used` : ""}
+            {@const progress = summary.total > 0 ? Math.round((summary.configured / summary.total) * 100) : 0}
             <button
               type="button"
               class="grammar-card"
               data-grammar-id={`section:${entry.id}`}
               aria-label={`${summary.label}: ${summary.detail}${notUsed}`}
               onclick={async () => { await goSection(grammarUi, entry.id, windowConfirm); }}>
-              <strong>{summary.label}</strong>
-              <span>{summary.detail}{notUsed}</span>
+              <div class="grammar-card-header">
+                <strong>{summary.label}</strong>
+                {#if summary.total > 0}
+                  <span class="grammar-card-progress">{progress}%</span>
+                {/if}
+              </div>
+              <span class="grammar-card-detail">{summary.detail}{notUsed}</span>
+              {#if summary.total > 0}
+                <div class="grammar-progress-bar">
+                  <div class="grammar-progress-fill" style="width: {progress}%"></div>
+                </div>
+              {/if}
             </button>
           {/each}
         </div>
@@ -1106,7 +1143,7 @@ function removeLink(index: number) {
 .grammar-card,
 .grammar-system {
   display: grid;
-  gap: 4px;
+  gap: 6px;
   width: 100%;
   padding: 12px;
   border: 1px solid #ebe7de;
@@ -1121,15 +1158,38 @@ function removeLink(index: number) {
   border-color: #e5d8c6;
   background: var(--surface-muted);
 }
-.grammar-card strong,
+.grammar-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.grammar-card-header strong,
 .grammar-system strong {
   font-size: 14px;
 }
-.grammar-card span,
+.grammar-card-progress {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-dark);
+}
+.grammar-card-detail,
 .grammar-system span,
 .grammar-glance dd {
   color: var(--ink-soft);
   font-size: 12px;
+}
+.grammar-progress-bar {
+  height: 4px;
+  background: var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.grammar-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.3s ease;
 }
 .grammar-glance {
   display: grid;

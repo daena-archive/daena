@@ -764,28 +764,39 @@ async function handleSubmit(event: SubmitEvent) {
   </div>
   {#if selectedLanguage}
     <div class="language-search-row">
-      <label class="language-field">
+      <label class="language-field language-search-field">
         <span>Search lemma or meaning</span>
-        <input name="search" class="language-search" type="search" bind:value={search} />
+        <input name="search" class="language-search" type="search" bind:value={search} placeholder="Type to search..." />
       </label>
+      {#if filtered}
+        <div class="language-filter-badge">
+          {activeFilterCount} filter{activeFilterCount !== 1 ? "s" : ""} active
+          <button type="button" class="language-filter-badge-clear" onclick={clearFilters} aria-label="Clear all filters">&times;</button>
+        </div>
+      {/if}
     </div>
-    <details class="language-filter-panel" open={activeFilterCount > 0}>
-      <summary>{activeFilterCount ? `Filters · ${activeFilterCount} active` : "Filters and sorting"}</summary>
+    <details class="language-filter-panel">
+      <summary>
+        <span>Filters and sorting</span>
+        {#if activeFilterCount > 0}
+          <span class="language-filter-count">{activeFilterCount}</span>
+        {/if}
+      </summary>
       <div class="language-filters">
         <label class="language-field">
           <span>Status</span>
-          <input name="statusFilter" list="language-filter-status" bind:value={statusFilterInput} />
+          <input name="statusFilter" list="language-filter-status" bind:value={statusFilterInput} placeholder="Any status" />
         </label>
         <label class="language-field">
           <span>Tag</span>
-          <input name="tagFilter" bind:value={tagFilterInput} />
+          <input name="tagFilter" bind:value={tagFilterInput} placeholder="Any tag" />
         </label>
         <label class="language-field">
-          <span>Sort</span>
+          <span>Sort by</span>
           <select name="sort" aria-label="Sort lexicon" bind:value={sort}>
-            <option value="lemma">Sort by lemma</option>
-            <option value="status">Sort by status</option>
-            <option value="updatedAt">Sort by updated</option>
+            <option value="lemma">Lemma</option>
+            <option value="status">Status</option>
+            <option value="updatedAt">Last updated</option>
           </select>
         </label>
         <label class="language-check">
@@ -796,14 +807,14 @@ async function handleSubmit(event: SubmitEvent) {
             <option value={suggestion}>{suggestion}</option>
           {/each}
         </datalist>
-        <div class="language-filter-actions">
-          <span class="language-status">Use filters to narrow the working set.</span>
-          <button
-            type="button"
-            class="language-button secondary"
-            disabled={activeFilterCount === 0}
-            onclick={clearFilters}>Clear filters</button>
-        </div>
+        {#if activeFilterCount > 0}
+          <div class="language-filter-actions">
+            <button
+              type="button"
+              class="language-button secondary"
+              onclick={clearFilters}>Clear all filters</button>
+          </div>
+        {/if}
       </div>
     </details>
   {/if}
@@ -990,10 +1001,45 @@ async function handleSubmit(event: SubmitEvent) {
   gap: 8px;
 }
 .language-search-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 10px;
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
   margin-top: 16px;
+}
+.language-search-field {
+  flex: 1;
+  min-width: 0;
+}
+.language-filter-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  color: var(--accent-dark);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.language-filter-badge-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--accent-dark);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.language-filter-badge-clear:hover {
+  background: var(--surface);
 }
 .language-filter-panel {
   margin-top: 10px;
@@ -1002,12 +1048,31 @@ async function handleSubmit(event: SubmitEvent) {
   background: var(--surface-muted);
 }
 .language-filter-panel summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 10px 12px;
-  color: var(--accent-dark);
+  color: var(--ink-soft);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   list-style-position: inside;
+}
+.language-filter-panel summary:hover {
+  color: var(--ink);
+}
+.language-filter-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
 }
 .language-filter-panel[open] summary {
   border-bottom: 1px solid var(--line);

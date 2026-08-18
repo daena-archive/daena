@@ -50,6 +50,7 @@ let chartsOpen = $state(false);
 let paneLoading = $state(false);
 let error = $state("");
 let request = $state(0);
+let beginnerMode = $state(true);
 
 let symbolInput: HTMLInputElement | undefined = $state();
 
@@ -296,6 +297,10 @@ function handleNotesSubmit(event: SubmitEvent) {
   </div>
   <div class="language-toolbar-actions">
     {#if !phonemeEditorOpen}
+      <label class="language-mode-toggle">
+        <input type="checkbox" bind:checked={beginnerMode} />
+        <span>Beginner mode</span>
+      </label>
       <button type="button" class="language-button secondary" disabled={!selectedLanguage || phonemes.length === 0} onclick={() => (chartsOpen = true)}>View charts</button>
       <button type="button" class="language-button" disabled={!selectedLanguage} onclick={addPhoneme}>Add sound</button>
     {/if}
@@ -339,54 +344,77 @@ function handleNotesSubmit(event: SubmitEvent) {
         <option value={suggestion}>{suggestion}</option>
       {/each}
     </datalist>
-    <label class="language-field">
-      <span>Symbol</span>
-      <input name="symbol" bind:this={symbolInput} bind:value={phonemeDraft.symbol} />
-    </label>
-    <label class="language-field">
-      <span>IPA (optional)</span>
-      <input name="ipa" bind:value={phonemeDraft.ipa} />
-    </label>
-    <label class="language-field">
-      <span>Kind</span>
-      <select name="kind" aria-label="Sound kind" bind:value={phonemeDraft.kind}>
-        {#each PHONEME_KINDS as kind (kind)}
-          <option value={kind}>{kind}</option>
-        {/each}
-      </select>
-    </label>
-    <label class="language-field">
-      <span>Place (optional)</span>
-      <input name="place" list="language-place" bind:value={phonemeDraft.place} />
-    </label>
-    <label class="language-field">
-      <span>Manner (optional)</span>
-      <input name="manner" list="language-manner" bind:value={phonemeDraft.manner} />
-    </label>
-    <label class="language-field">
-      <span>Voicing (optional)</span>
-      <input name="voicing" list="language-voice" bind:value={phonemeDraft.voicing} />
-    </label>
-    <label class="language-field">
-      <span>Height (optional)</span>
-      <input name="height" list="language-height" bind:value={phonemeDraft.height} />
-    </label>
-    <label class="language-field">
-      <span>Backness (optional)</span>
-      <input name="backness" list="language-backness" bind:value={phonemeDraft.backness} />
-    </label>
-    <label class="language-field">
-      <span>Rounding (optional)</span>
-      <input name="rounding" list="language-rounding" bind:value={phonemeDraft.rounding} />
-    </label>
-    <label class="language-field">
-      <span>Example (optional)</span>
-      <input name="example" bind:value={phonemeDraft.example} />
-    </label>
-    <label class="language-field">
-      <span>Notes (optional)</span>
-      <textarea name="notes" bind:value={phonemeDraft.notes}></textarea>
-    </label>
+    <div class="language-form-section">
+      <h3>Basic information</h3>
+      <div class="language-section-grid">
+        <label class="language-field">
+          <span>Symbol</span>
+          <input name="symbol" bind:this={symbolInput} bind:value={phonemeDraft.symbol} placeholder="e.g. p, t, k" />
+        </label>
+        <label class="language-field">
+          <span>IPA (optional)</span>
+          <input name="ipa" bind:value={phonemeDraft.ipa} placeholder="International Phonetic Alphabet" />
+        </label>
+        <label class="language-field">
+          <span>Kind</span>
+          <select name="kind" aria-label="Sound kind" bind:value={phonemeDraft.kind}>
+            {#each PHONEME_KINDS as kind (kind)}
+              <option value={kind}>{kind}</option>
+            {/each}
+          </select>
+        </label>
+      </div>
+    </div>
+
+    {#if !beginnerMode}
+      <div class="language-form-section">
+        <h3>Consonant features (optional)</h3>
+        <div class="language-section-grid">
+          <label class="language-field">
+            <span>Place</span>
+            <input name="place" list="language-place" bind:value={phonemeDraft.place} placeholder="e.g. bilabial, alveolar" />
+          </label>
+          <label class="language-field">
+            <span>Manner</span>
+            <input name="manner" list="language-manner" bind:value={phonemeDraft.manner} placeholder="e.g. plosive, fricative" />
+          </label>
+          <label class="language-field">
+            <span>Voicing</span>
+            <input name="voicing" list="language-voice" bind:value={phonemeDraft.voicing} placeholder="e.g. voiced, voiceless" />
+          </label>
+        </div>
+      </div>
+
+      <div class="language-form-section">
+        <h3>Vowel features (optional)</h3>
+        <div class="language-section-grid">
+          <label class="language-field">
+            <span>Height</span>
+            <input name="height" list="language-height" bind:value={phonemeDraft.height} placeholder="e.g. high, mid, low" />
+          </label>
+          <label class="language-field">
+            <span>Backness</span>
+            <input name="backness" list="language-backness" bind:value={phonemeDraft.backness} placeholder="e.g. front, central, back" />
+          </label>
+          <label class="language-field">
+            <span>Rounding</span>
+            <input name="rounding" list="language-rounding" bind:value={phonemeDraft.rounding} placeholder="e.g. rounded, unrounded" />
+          </label>
+        </div>
+      </div>
+    {/if}
+
+    <div class="language-form-section">
+      <h3>Additional details (optional)</h3>
+      <label class="language-field">
+        <span>Example word</span>
+        <input name="example" bind:value={phonemeDraft.example} placeholder="A word using this sound" />
+      </label>
+      <label class="language-field">
+        <span>Notes</span>
+        <textarea name="notes" bind:value={phonemeDraft.notes} placeholder="Any additional notes about this sound"></textarea>
+      </label>
+    </div>
     {#if error}
       <p class="language-status error" role="alert">{error}</p>
     {/if}
@@ -630,6 +658,28 @@ function handleNotesSubmit(event: SubmitEvent) {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  align-items: center;
+}
+.language-mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  color: var(--ink-soft);
+  font-size: 12px;
+  cursor: pointer;
+}
+.language-mode-toggle:hover {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+.language-mode-toggle input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
 }
 .language-pane-section {
   display: grid;

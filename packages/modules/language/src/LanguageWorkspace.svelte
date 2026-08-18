@@ -1,7 +1,8 @@
 <script lang="ts">
 import { onMount } from "svelte";
-import type { EntitySummary, ModuleContext } from "../../../module-api/src/index";
+import type { EntitySummary, ModuleContext, UUID } from "../../../module-api/src/index";
 import ConfirmModal from "./ConfirmModal.svelte";
+import WelcomeTour from "./WelcomeTour.svelte";
 import Overview from "./panes/Overview.svelte";
 import Lexicon from "./panes/Lexicon.svelte";
 import Sounds from "./panes/Sounds.svelte";
@@ -12,15 +13,37 @@ import Samples from "./panes/Samples.svelte";
 
 type Pane = "overview" | "lexicon" | "sounds" | "writing" | "grammar" | "forms" | "samples";
 
-const PANES: [Pane, string][] = [
-  ["overview", "Overview"],
-  ["lexicon", "Lexicon"],
-  ["sounds", "Sounds"],
-  ["writing", "Writing"],
-  ["grammar", "Grammar"],
-  ["forms", "Forms"],
-  ["samples", "Samples"],
+interface TabGroup {
+  label: string;
+  tabs: [Pane, string][];
+}
+
+const TAB_GROUPS: TabGroup[] = [
+  {
+    label: "Foundation",
+    tabs: [
+      ["overview", "Overview"],
+      ["lexicon", "Lexicon"],
+    ],
+  },
+  {
+    label: "Phonology & Writing",
+    tabs: [
+      ["sounds", "Sounds"],
+      ["writing", "Writing"],
+    ],
+  },
+  {
+    label: "Grammar & Structure",
+    tabs: [
+      ["grammar", "Grammar"],
+      ["forms", "Morphology"],
+      ["samples", "Samples"],
+    ],
+  },
 ];
+
+const PANES: [Pane, string][] = TAB_GROUPS.flatMap((group) => group.tabs);
 
 let { context }: { context: ModuleContext } = $props();
 
@@ -28,18 +51,23 @@ let cancelled = false;
 let selectedLanguage: EntitySummary | null = $state(null);
 let pane: Pane = $state("overview");
 let pendingLexemeId: string | null = $state(null);
-let languageQuery = $state("");
-let languageSummaries: EntitySummary[] = $state([]);
 let languageLoading = $state(false);
-let languageLoadError = $state("");
-let creatingLanguage = $state(false);
-let languageCreateName = $state("");
-let languageCreateError = $state("");
-let createBusy = $state(false);
 let languageRequest = $state(0);
+let showWelcomeTour = $state(false);
 
 let paneListEl: HTMLDivElement | undefined = $state();
-let createNameInput: HTMLInputElement | undefined = $state();
+
+type BreadcrumbItem = { label: string; onclick?: () => void };
+let breadcrumbExtra: BreadcrumbItem[] = $state([]);
+
+function setBreadcrumbExtra(items: BreadcrumbItem[]) {
+  breadcrumbExtra = items;
+}
+
+$effect(() => {
+  void pane;
+  breadcrumbExtra = [];
+});
 
 const leaveGuards: Partial<Record<Pane, (() => Promise<boolean> | boolean) | null>> = {};
 
@@ -75,48 +103,39 @@ function isMutating() {
   return mutationCounter > 0;
 }
 
-const visibleLanguages = $derived(viewLanguageList(languageQuery, languageSummaries));
-
-function viewLanguageList(query: string, summaries: EntitySummary[]) {
-  const needle = query.trim().toLocaleLowerCase();
-  return needle ? summaries.filter((language) => language.name.toLocaleLowerCase().includes(needle)) : summaries;
-}
-
-$effect(() => {
-  if (creatingLanguage && createNameInput) createNameInput.focus();
-});
-
 onMount(() => {
-  languageLoading = true;
-  void loadLanguages();
+  // Load language entity if focusEntityId is provided
+  if (context.focusEntityId) {
+    void loadLanguage(context.focusEntityId);
+  }
+  
+  // Show welcome tour for first-time users
+  try {
+    const tourCompleted = localStorage.getItem("daena-language-tour-completed");
+    if (!tourCompleted) {
+      showWelcomeTour = true;
+    }
+  } catch {}
+  
   return () => {
     cancelled = true;
   };
 });
 
-async function loadLanguages() {
+async function loadLanguage(entityId: string) {
   const token = ++languageRequest;
+  languageLoading = true;
   try {
-    const languages = await context.entities.list({ type: "language", limit: 500 });
+    const entity = await context.entities.get(entityId as UUID);
     if (cancelled || token !== languageRequest) return;
-    languageSummaries = languages;
-    languageLoading = false;
-    languageLoadError = "";
-    if (!selectedLanguage && languages.length) {
-      selectedLanguage = languages.find((language) => language.id === context.focusEntityId) ?? languages[0];
+    if (entity) {
+      selectedLanguage = entity;
     }
+    languageLoading = false;
   } catch (cause) {
     if (cancelled || token !== languageRequest) return;
     languageLoading = false;
-    languageLoadError = cause instanceof Error ? cause.message : String(cause);
   }
-}
-
-async function openLanguage(language: EntitySummary) {
-  if (language.id === selectedLanguage?.id) return;
-  if (isMutating() || !await canLeave()) return;
-  selectedLanguage = language;
-  pendingLexemeId = null;
 }
 
 async function switchPane(id: Pane) {
@@ -140,14 +159,12 @@ function clearPendingLexeme() {
 }
 
 function onLanguageChanged(language: EntitySummary) {
-  languageSummaries = languageSummaries.map((item) => (item.id === language.id ? language : item));
   if (selectedLanguage?.id === language.id) selectedLanguage = language;
 }
 
 function onLanguageArchived(languageId: string) {
-  languageSummaries = languageSummaries.filter((language) => language.id !== languageId);
   if (selectedLanguage?.id === languageId) {
-    selectedLanguage = languageSummaries[0] ?? null;
+    selectedLanguage = null;
     pendingLexemeId = null;
   }
 }
@@ -168,119 +185,80 @@ function roveTabs(event: KeyboardEvent, index: number) {
   tabs[next]?.click();
 }
 
-function openCreateForm() {
-  creatingLanguage = true;
-  languageCreateName = "";
-  languageCreateError = "";
+function openWelcomeTour() {
+  showWelcomeTour = true;
 }
 
-function cancelCreateLanguage() {
-  creatingLanguage = false;
-  languageCreateName = "";
-  languageCreateError = "";
-}
-
-async function submitCreateLanguage(event: SubmitEvent) {
-  event.preventDefault();
-  languageCreateName = languageCreateName.trim();
-  if (!languageCreateName) {
-    languageCreateError = "Language name is required.";
-    createNameInput?.focus();
-    return;
-  }
-  createBusy = true;
+function completeWelcomeTour() {
+  showWelcomeTour = false;
   try {
-    const created = await context.entities.create({ name: languageCreateName, type: "language" });
-    languageSummaries = [created, ...languageSummaries.filter((language) => language.id !== created.id)];
-    languageLoading = false;
-    selectedLanguage = created;
-    creatingLanguage = false;
-    languageCreateName = "";
-    languageCreateError = "";
-    createBusy = false;
-    pendingLexemeId = null;
-  } catch (cause) {
-    languageCreateError = cause instanceof Error ? cause.message : String(cause);
-    createBusy = false;
-    createNameInput?.focus();
-  }
+    localStorage.setItem("daena-language-tour-completed", "true");
+  } catch {}
+}
+
+function dismissWelcomeTour() {
+  showWelcomeTour = false;
+  try {
+    localStorage.setItem("daena-language-tour-completed", "true");
+  } catch {}
 }
 </script>
 
 <section class="language-workspace" class:language-workspace-embedded={context.embedded}>
-  {#if !context.embedded}
-    <aside class="language-panel language-sidebar" aria-busy={languageLoading}>
-      <div class="language-sidebar-head">
-        <div>
-          <p class="language-sidebar-kicker">Language studio</p>
-          <h2>Languages</h2>
-        </div>
-        <button type="button" class="language-button secondary" onclick={openCreateForm}>Create language</button>
-      </div>
-      <p class="language-sidebar-intro">Choose a language to shape its words, sounds, writing, and grammar.</p>
-      <label class="language-field">
-        <span>Filter languages</span>
-        <input name="languageQuery" type="search" bind:value={languageQuery} />
-      </label>
-      {#if creatingLanguage}
-        <form class="language-create" onsubmit={submitCreateLanguage}>
-          <label class="language-field">
-            <span>Language name</span>
-            <input
-              name="languageCreateName"
-              autocomplete="off"
-              bind:this={createNameInput}
-              bind:value={languageCreateName}
-              oninput={() => (languageCreateError = "")} />
-          </label>
-          {#if languageCreateError}
-            <p class="language-status error" role="alert">{languageCreateError}</p>
-          {/if}
-          <div class="language-create-actions">
-            <button type="button" class="language-button secondary" onclick={cancelCreateLanguage}>Cancel</button>
-            <button type="submit" class="language-button" disabled={createBusy}
-              >{createBusy ? "Creating…" : "Create"}</button>
-          </div>
-        </form>
-      {/if}
-      <ul class="language-list">
-        {#if languageLoading}
-          <li><p class="language-empty" role="status">Loading languages…</p></li>
-        {:else if languageLoadError}
-          <li><p class="language-status error" role="alert">{languageLoadError}</p></li>
-        {:else if languageSummaries.length === 0}
-          <li><p class="language-empty" role="status">No languages yet. Create one to start.</p></li>
-        {:else if visibleLanguages.length === 0}
-          <li><p class="language-empty" role="status">No languages match that filter.</p></li>
-        {:else}
-          {#each visibleLanguages as language (language.id)}
+  <div id="language-pane" class="language-panel language-main" role="tabpanel" aria-labelledby={`language-tab-${pane}`}>
+    <div class="language-main-header">
+      <nav class="language-breadcrumb" aria-label="Breadcrumb">
+        <ol>
+          <li>
+            <button type="button" class="language-breadcrumb-link" onclick={() => switchPane("overview")}>Languages</button>
+          </li>
+          {#if selectedLanguage}
             <li>
+              <span class="language-breadcrumb-sep" aria-hidden="true">›</span>
+              <button type="button" class="language-breadcrumb-link" onclick={() => switchPane("overview")}>{selectedLanguage.name}</button>
+            </li>
+            <li>
+              <span class="language-breadcrumb-sep" aria-hidden="true">›</span>
+              {#if breadcrumbExtra.length > 0}
+                <button type="button" class="language-breadcrumb-link" onclick={() => switchPane(pane)}>{PANES.find(([id]) => id === pane)?.[1] ?? ""}</button>
+              {:else}
+                <span class="language-breadcrumb-current">{PANES.find(([id]) => id === pane)?.[1] ?? ""}</span>
+              {/if}
+            </li>
+            {#each breadcrumbExtra as item, i (item.label)}
+              <li>
+                <span class="language-breadcrumb-sep" aria-hidden="true">›</span>
+                {#if i < breadcrumbExtra.length - 1 && item.onclick}
+                  <button type="button" class="language-breadcrumb-link" onclick={item.onclick}>{item.label}</button>
+                {:else}
+                  <span class="language-breadcrumb-current">{item.label}</span>
+                {/if}
+              </li>
+            {/each}
+          {/if}
+        </ol>
+      </nav>
+      <button type="button" class="language-help-button" onclick={openWelcomeTour} aria-label="Show welcome tour">?</button>
+    </div>
+    <div bind:this={paneListEl} class="language-tabs" role="tablist" aria-label="Language workspace">
+      {#each TAB_GROUPS as group, groupIndex (group.label)}
+        <div class="language-tab-group">
+          <span class="language-tab-group-label">{group.label}</span>
+          <div class="language-tab-group-tabs">
+            {#each group.tabs as [id, label], tabIndex (id)}
+              {@const globalIndex = TAB_GROUPS.slice(0, groupIndex).reduce((acc, g) => acc + g.tabs.length, 0) + tabIndex}
               <button
                 type="button"
-                aria-current={selectedLanguage?.id === language.id ? "page" : undefined}
-                onclick={() => openLanguage(language)}>
-                <span class="language-list-name">{language.name}</span>
-                <span class="language-list-meta"
-                  >{selectedLanguage?.id === language.id ? "Selected language" : "Open language"}</span>
-              </button>
-            </li>
-          {/each}
-        {/if}
-      </ul>
-    </aside>
-  {/if}
-  <div id="language-pane" class="language-panel language-main" role="tabpanel" aria-labelledby={`language-tab-${pane}`}>
-    <div bind:this={paneListEl} class="language-tabs" role="tablist" aria-label="Language workspace">
-      {#each PANES as [id, label], index (id)}
-        <button
-          type="button"
-          role="tab"
-          id={`language-tab-${id}`}
-          aria-controls="language-pane"
-          aria-selected={pane === id}
-          tabindex={pane === id ? 0 : -1}
-          onclick={() => switchPane(id)}
-          onkeydown={(event) => roveTabs(event, index)}>{label}</button>
+                role="tab"
+                id={`language-tab-${id}`}
+                aria-controls="language-pane"
+                aria-selected={pane === id}
+                tabindex={pane === id ? 0 : -1}
+                onclick={() => switchPane(id)}
+                onkeydown={(event) => roveTabs(event, globalIndex)}>{label}</button>
+            {/each}
+          </div>
+        </div>
       {/each}
     </div>
     <div class="language-pane" hidden={pane !== "overview"}>
@@ -314,7 +292,8 @@ async function submitCreateLanguage(event: SubmitEvent) {
         {selectedLanguage}
         active={pane === "grammar"}
         registerLeaveGuard={registerGrammarGuard}
-        setMutationActive={setMutationActive} />
+        setMutationActive={setMutationActive}
+        {setBreadcrumbExtra} />
     </div>
     <div class="language-pane" hidden={pane !== "forms"}>
       <Forms
@@ -348,6 +327,12 @@ async function submitCreateLanguage(event: SubmitEvent) {
 
 <ConfirmModal />
 
+{#if showWelcomeTour}
+  <WelcomeTour
+    onComplete={completeWelcomeTour}
+    onDismiss={dismissWelcomeTour} />
+{/if}
+
 <style>
 .language-workspace {
   display: grid;
@@ -373,32 +358,7 @@ async function submitCreateLanguage(event: SubmitEvent) {
   padding: 22px 20px 24px;
   box-shadow: var(--shadow-sm, 0 2px 8px rgba(38, 42, 33, 0.05));
 }
-.language-sidebar {
-  gap: 14px;
-}
-.language-sidebar-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-.language-sidebar-kicker {
-  margin: 0 0 5px;
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-.language-sidebar-intro {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.55;
-}
-.language-sidebar-intro {
-  margin-top: -5px;
-}
+
 .language-field {
   display: grid;
   gap: 6px;
@@ -437,58 +397,26 @@ async function submitCreateLanguage(event: SubmitEvent) {
   font-size: 24px;
   line-height: 1.15;
 }
-.language-list {
-  display: grid;
-  gap: 8px;
-  margin: 4px 0 0;
-  padding: 0;
-  list-style: none;
-}
-.language-list button {
-  display: grid;
-  gap: 3px;
-  width: 100%;
-  padding: 11px 12px;
-  border: 1px solid #ebe7de;
-  border-radius: 10px;
-  background: var(--surface);
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-  box-shadow: 0 1px 2px rgba(38, 42, 33, 0.03);
-}
-.language-list button:hover {
-  border-color: #e5d8c6;
-  background: var(--surface-muted);
-}
-.language-list button[aria-current="page"] {
-  border-color: #d8c3a5;
-  background: var(--surface-muted);
-  box-shadow:
-    inset 3px 0 var(--accent),
-    0 1px 2px rgba(38, 42, 33, 0.03);
-  color: var(--ink);
-}
-.language-list-name {
-  font-weight: 600;
-}
-.language-list-meta {
-  color: var(--ink-faint);
-  font-size: 11px;
-}
-.language-create {
-  display: grid;
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface-muted);
-}
-.language-create-actions {
+.language-help-button {
   display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.language-help-button:hover {
+  background: var(--surface-muted);
+  color: var(--ink);
+  border-color: var(--accent);
 }
 .language-field input {
   box-sizing: border-box;
@@ -501,13 +429,90 @@ async function submitCreateLanguage(event: SubmitEvent) {
   color: var(--ink);
   font: inherit;
 }
+.language-main-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.language-breadcrumb {
+  margin: 0;
+  padding: 0;
+}
+.language-breadcrumb ol {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+.language-breadcrumb li {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.language-breadcrumb-sep {
+  color: var(--ink-faint);
+  font-size: 11px;
+  margin: 0 2px;
+  user-select: none;
+}
+.language-breadcrumb-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.15s, color 0.15s;
+}
+.language-breadcrumb-link:hover {
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+.language-breadcrumb-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.language-breadcrumb-current {
+  padding: 2px 6px;
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 13px;
+}
 .language-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 12px;
   margin: 0 0 8px;
   padding: 0 0 12px;
   background: var(--surface);
+}
+.language-tab-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.language-tab-group-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding-left: 4px;
+}
+.language-tab-group-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .language-tabs button {
   padding: 7px 12px;
@@ -555,16 +560,6 @@ async function submitCreateLanguage(event: SubmitEvent) {
 .language-list button:focus-visible {
   outline: 3px solid rgba(180, 119, 63, 0.24);
   outline-offset: 2px;
-}
-.language-empty,
-.language-status {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.6;
-}
-.language-status.error {
-  color: #a14f42;
 }
 :global(.language-panel h2),
 :global(.language-panel h3) {
@@ -667,10 +662,88 @@ async function submitCreateLanguage(event: SubmitEvent) {
 :global(.language-status.error) {
   color: #a14f42;
 }
+:global(.language-form-section) {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+:global(.language-form-section h3) {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+:global(.language-section-grid) {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+:global(.language-field-wide) {
+  grid-column: 1 / -1;
+}
+:global(.language-toolbar) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+:global(.language-toolbar-title) {
+  display: grid;
+  gap: 3px;
+}
+:global(.language-toolbar-title h2) {
+  margin: 0;
+}
+:global(.language-toolbar-eyebrow) {
+  margin: 0 0 5px;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+:global(.language-toolbar-subtitle) {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.55;
+}
+:global(.language-toolbar-actions) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+:global(.language-actions) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+:global(.language-actions > span) {
+  display: flex;
+  gap: 8px;
+}
 @media (max-width: 760px) {
   :global(.language-inline) {
     flex-direction: column;
     align-items: stretch;
+  }
+  :global(.language-section-grid) {
+    grid-template-columns: 1fr;
+  }
+  :global(.language-actions) {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  :global(.language-actions > span) {
+    flex-direction: column;
   }
 }
 </style>

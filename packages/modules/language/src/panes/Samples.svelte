@@ -286,61 +286,83 @@ async function handleSubmit(event: SubmitEvent) {
       <span>Notes (optional)</span>
       <textarea name="notes" rows={2} bind:value={sampleDraft.notes}></textarea>
     </label>
-    <section class="language-group">
-      <div class="language-group-head">
-        <h3>Interlinear tokens</h3>
-        <span>
-          <button type="button" class="language-button secondary" onclick={tokenize}>Tokenize text</button>
-          <button type="button" class="language-button secondary" onclick={addToken}>Add</button>
-        </span>
-      </div>
-      <p class="language-empty" role="status">
-        Tokenize splits the sample on whitespace. Matching surface forms keep their glosses, grammar tags, and lexeme
-        links.
-      </p>
-      {#each sampleDraft.tokens as token, index (token.id)}
-        <div class="language-inline">
-          <div class="language-inline-fields">
-            <label class="language-field">
-              <span>Form</span>
-              <input name={`token-text-${index}`} bind:value={token.text} />
-            </label>
-            <label class="language-field">
-              <span>Gloss</span>
-              <input name={`token-gloss-${index}`} bind:value={token.gloss} />
-            </label>
-            <label class="language-field">
-              <span>Grammar</span>
-              <input name={`token-grammar-${index}`} bind:value={token.grammar} />
-            </label>
-            <label class="language-field">
-              <span>Lexeme</span>
-              <select
-                name={`token-lexeme-${index}`}
-                aria-label={`Lexeme for token ${index + 1}`}
-                bind:value={token.lexemeId}>
-                <option value={""}>None</option>
-                {#each records as record (record.id)}
-                  <option value={record.id}>{record.value.lemma}</option>
-                {/each}
-              </select>
-            </label>
-          </div>
-          <button type="button" class="language-button secondary language-danger" onclick={() => removeToken(index)}
-            >Remove</button>
+    <section class="language-form-section">
+      <div class="language-form-section-header">
+        <div>
+          <h3>Interlinear tokens</h3>
+          <p>Tokenize splits the sample on whitespace. Matching surface forms keep their glosses, grammar tags, and lexeme links.</p>
         </div>
-      {/each}
+        <div class="samples-token-actions">
+          <button type="button" class="language-button secondary" onclick={tokenize}>Tokenize text</button>
+          <button type="button" class="language-button secondary" onclick={addToken}>Add token</button>
+        </div>
+      </div>
+      {#if sampleDraft.tokens.length === 0}
+        <div class="language-empty-card">
+          <p class="language-empty" role="status">No tokens defined. Use "Tokenize text" to split on whitespace, or add tokens manually.</p>
+        </div>
+      {:else}
+        <div class="samples-tokens-table">
+          <div class="samples-tokens-header">
+            <span class="samples-tokens-col">#</span>
+            <span class="samples-tokens-col">Form</span>
+            <span class="samples-tokens-col">Gloss</span>
+            <span class="samples-tokens-col">Grammar</span>
+            <span class="samples-tokens-col">Lexeme</span>
+            <span class="samples-tokens-col samples-tokens-actions"></span>
+          </div>
+          {#each sampleDraft.tokens as token, index (token.id)}
+            <div class="samples-token-row">
+              <span class="samples-tokens-col samples-token-number">{index + 1}</span>
+              <label class="samples-tokens-col">
+                <span class="visually-hidden">Form</span>
+                <input name={`token-text-${index}`} bind:value={token.text} placeholder="Word" />
+              </label>
+              <label class="samples-tokens-col">
+                <span class="visually-hidden">Gloss</span>
+                <input name={`token-gloss-${index}`} bind:value={token.gloss} placeholder="Translation" />
+              </label>
+              <label class="samples-tokens-col">
+                <span class="visually-hidden">Grammar</span>
+                <input name={`token-grammar-${index}`} bind:value={token.grammar} placeholder="e.g. N, V" />
+              </label>
+              <label class="samples-tokens-col">
+                <span class="visually-hidden">Lexeme</span>
+                <select
+                  name={`token-lexeme-${index}`}
+                  aria-label={`Lexeme for token ${index + 1}`}
+                  bind:value={token.lexemeId}>
+                  <option value={""}>None</option>
+                  {#each records as record (record.id)}
+                    <option value={record.id}>{record.value.lemma}</option>
+                  {/each}
+                </select>
+              </label>
+              <span class="samples-tokens-col samples-tokens-actions">
+                <button type="button" class="samples-token-remove" onclick={() => removeToken(index)} aria-label="Remove token">&times;</button>
+              </span>
+            </div>
+          {/each}
+        </div>
+      {/if}
     </section>
-    <div class="sample-block">
-      <h3>Readable preview</h3>
-      <div bind:this={previewBox}>
+    <section class="language-form-section">
+      <div class="language-form-section-header">
+        <div>
+          <h3>Readable preview</h3>
+          <p>See how the sample will look when rendered with interlinear glosses.</p>
+        </div>
+      </div>
+      <div class="samples-preview" bind:this={previewBox}>
         {#if previewHtml}
           {@html previewHtml}
         {:else}
-          <p class="language-empty" role="status">Add text or tokens to see the rendered sample.</p>
+          <div class="language-empty-card">
+            <p class="language-empty" role="status">Add text or tokens to see the rendered sample.</p>
+          </div>
         {/if}
       </div>
-    </div>
+    </section>
     {#if error}
       <p class="language-status error" role="alert">{error}</p>
     {/if}
@@ -710,5 +732,187 @@ async function handleSubmit(event: SubmitEvent) {
 :global(.sample-ref:focus-visible) {
   outline: 3px solid rgba(180, 119, 63, 0.24);
   outline-offset: 2px;
+}
+.language-form-section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.language-form-section-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.language-form-section-header p {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+.samples-token-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.samples-tokens-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.samples-tokens-header {
+  display: grid;
+  grid-template-columns: 32px 1fr 1fr 100px 120px 40px;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface-muted);
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.samples-token-row {
+  display: grid;
+  grid-template-columns: 32px 1fr 1fr 100px 120px 40px;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  align-items: center;
+}
+.samples-token-row:last-child {
+  border-bottom: none;
+}
+.samples-token-row:hover {
+  background: var(--surface-muted);
+}
+.samples-token-number {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--surface-muted);
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 600;
+}
+.samples-tokens-col {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.samples-tokens-col input,
+.samples-tokens-col select {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+.samples-tokens-col input:focus,
+.samples-tokens-col select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.samples-tokens-actions {
+  justify-content: center;
+}
+.samples-token-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 14px;
+}
+.samples-token-remove:hover {
+  background: var(--surface-muted);
+  color: #a14f42;
+}
+.samples-preview {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  min-height: 100px;
+}
+.samples-preview :global(.sample-source) {
+  font-size: 16px;
+  line-height: 1.6;
+  margin-bottom: 12px;
+}
+.samples-preview :global(.sample-interlinear) {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(60px, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.samples-preview :global(.sample-token) {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  text-align: center;
+}
+.samples-preview :global(.sample-token .surface) {
+  font-weight: 600;
+  font-size: 14px;
+}
+.samples-preview :global(.sample-token .gloss),
+.samples-preview :global(.sample-token .grammar) {
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+.samples-preview :global(.sample-transliteration) {
+  font-style: italic;
+  color: var(--ink-soft);
+  margin-bottom: 8px;
+}
+.samples-preview :global(.sample-translation) {
+  font-size: 14px;
+  margin-top: 8px;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+@media (max-width: 760px) {
+  .samples-tokens-header {
+    display: none;
+  }
+  .samples-token-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    padding: 12px;
+  }
+  .samples-token-number {
+    display: none;
+  }
+  .samples-tokens-actions {
+    justify-content: flex-start;
+  }
 }
 </style>

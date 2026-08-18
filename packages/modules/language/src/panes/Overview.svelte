@@ -318,7 +318,9 @@ let status = $derived.by(() => {
         : "Select a language to begin."}
     </p>
   </div>
-  <span class="language-overview-status" role="status" aria-live="polite" data-state={status.state}>{status.text}</span>
+  <div class="language-toolbar-actions">
+    <span class="language-overview-status" role="status" aria-live="polite" data-state={status.state}>{status.text}</span>
+  </div>
 </div>
 {#if !selectedLanguage}
   <div class="language-empty-card">
@@ -329,57 +331,62 @@ let status = $derived.by(() => {
 {:else}
   <form class="language-overview" onsubmit={(event) => event.preventDefault()}>
     <section class="language-overview-identity">
-      <div>
-        <h3>Language identity</h3>
-        <p>Keep the name and short identity details close while you build the language.</p>
-        <label class="language-field">
-          <span>Language name</span>
-          <input
-            name="overviewName"
-            autocomplete="off"
-            value={overviewName}
-            oninput={(event) => onOverviewNameInput(event.currentTarget.value)} />
-        </label>
-      </div>
-      <div class="language-overview-identity-danger">
+      <div class="language-overview-identity-header">
+        <div>
+          <h3>Language identity</h3>
+          <p>Keep the name and short identity details close while you build the language.</p>
+        </div>
         <button
           type="button"
-          class="language-button secondary language-danger"
+          class="language-button secondary language-danger language-overview-archive-btn"
           disabled={overviewSaving || overviewDeleting}
           onclick={archiveOverviewLanguage}>{overviewDeleting ? "Archiving…" : "Archive language"}</button>
       </div>
+      <label class="language-field">
+        <span>Language name</span>
+        <input
+          name="overviewName"
+          autocomplete="off"
+          value={overviewName}
+          oninput={(event) => onOverviewNameInput(event.currentTarget.value)} />
+      </label>
     </section>
 
     <section class="language-overview-section">
-      <h3>Properties</h3>
-      <p>A few useful anchors for how this language belongs in the world.</p>
+      <div class="language-overview-section-header">
+        <div>
+          <h3>Properties</h3>
+          <p>A few useful anchors for how this language belongs in the world.</p>
+        </div>
+      </div>
       <div class="language-overview-fields">
         {#each overviewFieldDefinitions as definition (definition.key)}
-          {#if definition.multiple}
-            <label class="language-field">
-              <span>{definition.label}</span>
+          <label class="language-field">
+            <span>{definition.label}</span>
+            {#if definition.multiple}
               <textarea
                 name={`overview-${definition.key}`}
                 rows={2}
                 value={fieldValue(definition)}
                 oninput={(event) => onOverviewFieldInput(definition, event.currentTarget.value)}></textarea>
-            </label>
-          {:else}
-            <label class="language-field">
-              <span>{definition.label}</span>
+            {:else}
               <input
                 name={`overview-${definition.key}`}
                 value={fieldValue(definition)}
                 oninput={(event) => onOverviewFieldInput(definition, event.currentTarget.value)} />
-            </label>
-          {/if}
+            {/if}
+          </label>
         {/each}
       </div>
     </section>
 
     <section class="language-overview-section">
-      <h3>Canonical notes</h3>
-      <p>Describe what makes this language itself. These notes stay with the language as the projection grows.</p>
+      <div class="language-overview-section-header">
+        <div>
+          <h3>Canonical notes</h3>
+          <p>Describe what makes this language itself. These notes stay with the language as the projection grows.</p>
+        </div>
+      </div>
       <div class="language-overview-editor">
         <RichTextEditor value={overviewDocument} onChange={onOverviewDocumentInput} />
       </div>
@@ -469,41 +476,54 @@ let status = $derived.by(() => {
   min-height: 0;
 }
 .language-overview-identity {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.55fr);
+  display: flex;
+  flex-direction: column;
   gap: 16px;
-  padding: 18px;
+  padding: 20px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--surface-muted);
 }
-.language-overview-identity h3 {
-  font-size: 20px;
+.language-overview-identity-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
-.language-overview-identity p {
-  margin: 5px 0 0;
+.language-overview-identity-header h3 {
+  font-size: 20px;
+  margin: 0;
+}
+.language-overview-identity-header p {
+  margin: 6px 0 0;
   color: var(--ink-soft);
   font-size: 12px;
   line-height: 1.55;
 }
-.language-overview-identity-danger {
-  display: grid;
-  align-content: end;
-  justify-items: end;
+.language-overview-archive-btn {
+  flex-shrink: 0;
 }
 .language-overview-section {
-  display: grid;
-  gap: 12px;
-  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--surface);
 }
-.language-overview-section h3 {
-  font-size: 17px;
+.language-overview-section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
-.language-overview-section > p {
+.language-overview-section-header h3 {
+  font-size: 17px;
   margin: 0;
+}
+.language-overview-section-header p {
+  margin: 6px 0 0;
   color: var(--ink-soft);
   font-size: 12px;
   line-height: 1.55;
@@ -511,7 +531,7 @@ let status = $derived.by(() => {
 .language-overview-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 16px;
 }
 .language-overview-editor {
   min-height: 16rem;
@@ -624,12 +644,15 @@ let status = $derived.by(() => {
   background: transparent;
 }
 @media (max-width: 760px) {
-  .language-overview-identity,
+  .language-overview-identity-header {
+    flex-direction: column;
+    gap: 12px;
+  }
+  .language-overview-archive-btn {
+    width: 100%;
+  }
   .language-overview-fields {
     grid-template-columns: 1fr;
-  }
-  .language-overview-identity-danger {
-    justify-items: start;
   }
 }
 </style>

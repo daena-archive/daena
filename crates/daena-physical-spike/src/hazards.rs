@@ -22,6 +22,7 @@ const EARTHQUAKE_LENGTH_REF_METRES: u64 = 100_000;
 const EARTHQUAKE_BASE_NANO: u64 = 8_000;
 const VOLCANIC_CENTER_BASE_NANO: u64 = 6_000;
 const SPREADING_RIFT_BASE_NANO: u64 = 1_200;
+const MAX_HAZARD_WORKERS: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VolcanicOrigin {
@@ -135,36 +136,57 @@ fn exp_neg_ppm(x_ppm: u64) -> u64 {
     (1_000_000u128 * 1_000_000 / sum.max(1)) as u64
 }
 
-fn acos_micro_radians(dot: f64) -> u64 {
-    static TABLE: OnceLock<[u32; 20_001]> = OnceLock::new();
-    let table = TABLE.get_or_init(|| {
-        let mut values = [0u32; 20_001];
-        for (index, slot) in values.iter_mut().enumerate() {
-            let quantized_dot = (index as f64 / 10_000.0) - 1.0;
-            *slot = (quantized_dot.clamp(-1.0, 1.0).acos() * 1_000_000.0).round() as u32;
-        }
-        values
-    });
-    let index =
-        ((dot.clamp(-1.0, 1.0) * 10_000.0).round() as i32 + 10_000).clamp(0, 20_000) as usize;
-    u64::from(table[index])
+fn dot_table_index(dot: f64) -> usize {
+    ((dot.clamp(-1.0, 1.0) * 10_000.0).round() as i32 + 10_000).clamp(0, 20_000) as usize
 }
 
-fn decay_from_dot(dot: f64, scale_ppm: u32) -> u64 {
+fn exp_table() -> &'static [u32; 2_001] {
     static EXP_TABLE: OnceLock<[u32; 2_001]> = OnceLock::new();
-    let table = EXP_TABLE.get_or_init(|| {
+    EXP_TABLE.get_or_init(|| {
         let mut values = [0u32; 2_001];
         for (index, slot) in values.iter_mut().enumerate() {
             *slot = exp_neg_ppm((index as u64) * 10_000) as u32;
         }
         values
-    });
-    let theta_micro = acos_micro_radians(dot);
-    let x_ppm = theta_micro.saturating_mul(1_000_000) / u64::from(scale_ppm.max(1));
-    if x_ppm >= 20_000_000 {
-        return 0;
+    })
+}
+
+fn build_decay_table(scale_ppm: u32) -> [u32; 20_001] {
+    let mut values = [0u32; 20_001];
+    let exponentials = exp_table();
+    for (index, slot) in values.iter_mut().enumerate() {
+        let quantized_dot = (index as f64 / 10_000.0) - 1.0;
+        let theta_micro = (quantized_dot.clamp(-1.0, 1.0).acos() * 1_000_000.0).round() as u64;
+        let x_ppm = theta_micro.saturating_mul(1_000_000) / u64::from(scale_ppm.max(1));
+        if x_ppm < 20_000_000 {
+            *slot = exponentials[(x_ppm / 10_000) as usize];
+        }
     }
-    u64::from(table[(x_ppm / 10_000) as usize])
+    values
+}
+
+fn decay_from_dot(dot: f64, scale_ppm: u32) -> u64 {
+    static EARTHQUAKE_TABLE: OnceLock<[u32; 20_001]> = OnceLock::new();
+    static VOLCANIC_TABLE: OnceLock<[u32; 20_001]> = OnceLock::new();
+    let table = match scale_ppm {
+        EARTHQUAKE_DISTANCE_SCALE_PPM => {
+            EARTHQUAKE_TABLE.get_or_init(|| build_decay_table(EARTHQUAKE_DISTANCE_SCALE_PPM))
+        }
+        VOLCANIC_DISTANCE_SCALE_PPM => {
+            VOLCANIC_TABLE.get_or_init(|| build_decay_table(VOLCANIC_DISTANCE_SCALE_PPM))
+        }
+        _ => {
+            let index = dot_table_index(dot);
+            let quantized_dot = (index as f64 / 10_000.0) - 1.0;
+            let theta_micro = (quantized_dot.clamp(-1.0, 1.0).acos() * 1_000_000.0).round() as u64;
+            let x_ppm = theta_micro.saturating_mul(1_000_000) / u64::from(scale_ppm.max(1));
+            if x_ppm >= 20_000_000 {
+                return 0;
+            }
+            return u64::from(exp_table()[(x_ppm / 10_000) as usize]);
+        }
+    };
+    u64::from(table[dot_table_index(dot)])
 }
 
 fn lon_lat_to_xyz(lon: f64, lat: f64) -> (f64, f64, f64) {
@@ -348,9 +370,38 @@ fn apply_source(
     for (cell, &(x, y, z)) in xyz.iter().enumerate() {
         let dot = (x * source_xyz.0 + y * source_xyz.1 + z * source_xyz.2).clamp(-1.0, 1.0);
         let decay = decay_from_dot(dot, scale_ppm);
-        let contribution = (u128::from(strength_nano) * u128::from(decay) / 1_000_000) as u64;
+        // Every generated source rate is far below `u64::MAX / 1_000_000`.
+        // Keep this hot source-by-cell convolution on native-width arithmetic;
+        // `u128` division is a compiler-runtime call on common 64-bit targets.
+        let contribution = strength_nano.saturating_mul(decay) / 1_000_000;
         rates[cell] = rates[cell].saturating_add(contribution);
     }
+}
+
+fn earthquake_rates(
+    world: &TectonicWorld,
+    points: &[(f64, f64)],
+    xyz: &[(f64, f64, f64)],
+    boundaries: &[BoundarySegment],
+) -> Vec<u64> {
+    let mut rates = vec![0u64; world.grid.sample_count()];
+    for boundary in boundaries {
+        let length_m = segment_length_m(world.grid, points, boundary);
+        let midpoint = geodesic_midpoint(points[boundary.first_cell], points[boundary.second_cell]);
+        let rate = earthquake_segment_rate_nano(
+            boundary.kind,
+            boundary.relative_speed_nanoradians_per_year,
+            length_m,
+        );
+        apply_source(
+            xyz,
+            &mut rates,
+            midpoint,
+            rate,
+            EARTHQUAKE_DISTANCE_SCALE_PPM,
+        );
+    }
+    rates
 }
 
 fn normalize_ppm(values: &[u64]) -> Vec<u32> {
@@ -379,25 +430,34 @@ pub fn derive_hazards(world: &TectonicWorld) -> Result<HazardField, PhysicalErro
     let points = cell_points(world.grid);
     let xyz = cell_xyz(&points);
     let volcanic_sources = derive_volcanic_sources(world, &points);
-    let mut earthquake_annual_rate_nano = vec![0u64; cell_count];
+    let worker_count = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .min(MAX_HAZARD_WORKERS)
+        .min(world.boundaries.len().max(1));
+    let chunk_size = world.boundaries.len().div_ceil(worker_count);
+    let earthquake_annual_rate_nano = if worker_count == 1 {
+        earthquake_rates(world, &points, &xyz, &world.boundaries)
+    } else {
+        std::thread::scope(|scope| {
+            let handles = world
+                .boundaries
+                .chunks(chunk_size)
+                .map(|boundaries| {
+                    scope.spawn(|| earthquake_rates(world, &points, &xyz, boundaries))
+                })
+                .collect::<Vec<_>>();
+            let mut rates = vec![0u64; cell_count];
+            for handle in handles {
+                for (total, partial) in rates.iter_mut().zip(handle.join().unwrap()) {
+                    *total = total.saturating_add(partial);
+                }
+            }
+            rates
+        })
+    };
     let mut volcanic_annual_rate_nano = vec![0u64; cell_count];
 
-    for boundary in &world.boundaries {
-        let length_m = segment_length_m(world.grid, &points, boundary);
-        let midpoint = geodesic_midpoint(points[boundary.first_cell], points[boundary.second_cell]);
-        let rate = earthquake_segment_rate_nano(
-            boundary.kind,
-            boundary.relative_speed_nanoradians_per_year,
-            length_m,
-        );
-        apply_source(
-            &xyz,
-            &mut earthquake_annual_rate_nano,
-            midpoint,
-            rate,
-            EARTHQUAKE_DISTANCE_SCALE_PPM,
-        );
-    }
     for source in &volcanic_sources {
         apply_source(
             &xyz,

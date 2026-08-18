@@ -5,7 +5,7 @@
 //! scalar interpolation on the dual spherical grid, then quantize to
 //! microdegrees.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::{Grid, PhysicalError, PhysicalErrorCode, Segment};
 
@@ -13,7 +13,7 @@ pub const CONTOUR_DERIVATION_VERSION: u16 = 1;
 const SIMPLIFY_CELL_FRACTION_PPM: u32 = 120_000;
 const MIN_RING_VERTICES: usize = 4;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct EdgeKey {
     kind: u8,
     row: u32,
@@ -541,7 +541,7 @@ fn radial_crossing(
 }
 
 fn assemble(grid: Grid, segments: Vec<RawSegment>) -> Result<ContourTopology, PhysicalError> {
-    let mut by_edge: BTreeMap<EdgeKey, Vec<usize>> = BTreeMap::new();
+    let mut by_edge: HashMap<EdgeKey, Vec<usize>> = HashMap::with_capacity(segments.len() * 2);
     for (index, segment) in segments.iter().enumerate() {
         by_edge.entry(segment.first.key).or_default().push(index);
         by_edge.entry(segment.second.key).or_default().push(index);

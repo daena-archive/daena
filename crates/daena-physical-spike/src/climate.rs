@@ -347,18 +347,20 @@ impl KdNode {
             return None;
         }
         let axis = (depth % 3) as u8;
-        indices.sort_unstable_by(|first, second| {
-            coord(points[*first], axis)
-                .partial_cmp(&coord(points[*second], axis))
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| first.cmp(second))
-        });
         let mid = indices.len() / 2;
+        let (left_indices, median, right_indices) =
+            indices.select_nth_unstable_by(mid, |first, second| {
+                coord(points[*first], axis)
+                    .partial_cmp(&coord(points[*second], axis))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| first.cmp(second))
+            });
+        let index = *median;
         Some(Box::new(Self {
-            index: indices[mid],
+            index,
             axis,
-            left: Self::build_from_indices(points, &mut indices[..mid], depth + 1),
-            right: Self::build_from_indices(points, &mut indices[mid + 1..], depth + 1),
+            left: Self::build_from_indices(points, left_indices, depth + 1),
+            right: Self::build_from_indices(points, right_indices, depth + 1),
         }))
     }
 

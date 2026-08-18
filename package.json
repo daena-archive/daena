@@ -39,6 +39,7 @@
     "test:plugin-transport": "node scripts/plugin-transport.test.mjs",
     "test:markdown": "node --experimental-strip-types scripts/markdown-fixtures.test.mjs",
     "check:writing-tabs": "node --experimental-strip-types scripts/writing-tabs.test.mjs",
+    "check:timeline-calendar": "node --experimental-strip-types scripts/timeline-calendar.test.mjs && node --experimental-strip-types scripts/timeline-tabs.test.mjs && node --experimental-strip-types scripts/lore-timeline-relations.test.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri"
   },

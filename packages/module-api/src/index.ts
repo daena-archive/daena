@@ -231,7 +231,7 @@ export interface EntityCreateInput {
 }
 
 export interface CalendarDate {
-  calendar: "gregorian";
+  calendar: string;
   era: "BCE" | "CE";
   year: number;
   month?: number;

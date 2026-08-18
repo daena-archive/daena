@@ -198,6 +198,7 @@ function createTimelineStyles(): HTMLStyleElement {
     .timeline-canvas .vis-time-axis .vis-grid.vis-major { border-color: #e0d5c4; }
     .timeline-canvas .vis-item { border-width: 1px; border-radius: 7px; font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif; box-shadow: 0 0 0 1px rgba(48, 44, 38, 0.06); }
     .timeline-canvas .vis-item.vis-selected { box-shadow: 0 0 0 2px rgba(139, 92, 46, 0.28); }
+    .timeline-canvas .vis-item.vis-background { background: rgba(180, 119, 63, 0.12); color: #8f897e; border: 0; box-shadow: none; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; }
     .timeline-canvas .vis-item.vis-point .vis-dot { border-width: 2px; }
     .timeline-canvas .vis-item .vis-item-content { padding: 3px 8px; }
     .timeline-canvas .vis-labelset .vis-label, .timeline-canvas .vis-foreground .vis-group { border-color: #e9e1d4; }
@@ -422,15 +423,17 @@ export const timeline: DaenaModule = {
             );
             const dated: TimelineEvent[] = [];
             const undated: UndatedEvent[] = [];
+            const eras: TimelineEvent[] = [];
             for (const entry of loaded) {
+              if (entry.entity.type === "calendar") continue;
               if (!entityTypes.has(entry.entity.type ?? "") && entry.relativeYear === null) continue;
               const start = toJsDate(entry.fields.startsAt) ?? toJsDate(entry.fields.endsAt);
               if (!start) {
-                undated.push({ ...entry, relativeYear: entry.relativeYear ?? undefined });
+                if (entry.entity.type !== "era") undated.push({ ...entry, relativeYear: entry.relativeYear ?? undefined });
                 continue;
               }
               const end = entry.fields.endsAt ? toJsDate(entry.fields.endsAt) : null;
-              dated.push({
+              const item: TimelineEvent = {
                 entity: entry.entity,
                 fields: entry.fields,
                 locationName: entry.locationName,
@@ -438,7 +441,9 @@ export const timeline: DaenaModule = {
                 start,
                 end: end && end.getTime() >= start.getTime() ? end : null,
                 colors: colorsForHue(hueForId(entry.entity.id)),
-              });
+              };
+              if (entry.entity.type === "era") eras.push(item);
+              else dated.push(item);
             }
             dated.sort((left, right) => compareCalendarDates(left.fields.startsAt, right.fields.startsAt));
             const years = [...new Set(dated.map(eventYear))];
@@ -601,7 +606,31 @@ export const timeline: DaenaModule = {
               if (visible.length >= 40) {
                 options.cluster = { titleTemplate: "{count} events", showStipes: true, maxItems: 8 };
               }
-              chart = new TimelineCtor(canvas, visible.map(toDataItem), options);
+              chart = new TimelineCtor(
+                canvas,
+                [
+                  ...eras.map((era) => {
+                    const end =
+                      era.end ??
+                      (() => {
+                        const next = new Date(era.start.getTime());
+                        next.setUTCFullYear(next.getUTCFullYear() + 1);
+                        return next;
+                      })();
+                    const item: DataItem = {
+                      id: `era:${era.entity.id}`,
+                      content: era.entity.name,
+                      start: era.start,
+                      end,
+                      type: "background",
+                      title: era.entity.name,
+                    };
+                    return item;
+                  }),
+                  ...visible.map(toDataItem),
+                ],
+                options,
+              );
               chart.fit({ animation: false });
 
               zoomInButton.onclick = () => chart?.zoomIn(0.4);

@@ -2,27 +2,51 @@
   "manifestVersion": 1,
   "id": "daena.timeline",
   "name": "Timeline",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "daena-archive",
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "sandboxed",
   "entrypoints": { "ui": "dist/ui/index.html", "wasm": "dist/service.wasm" },
-  "capabilities": ["entity.read", "entity.write", "entity.delete", "document.read", "document.write", "field.read:self", "field.read:shared", "field.write:self", "relationship.read", "relationship.write", "asset.read:self", "asset.register", "search.query", "schema.overlay", "service.provide:daena.timeline.resolve-date@1", "service.call:daena.maps/navigation"],
+  "capabilities": ["entity.read", "entity.write", "entity.delete", "document.read", "document.write", "field.read:self", "field.read:shared", "field.write:self", "record.read:self", "record.write:self", "relationship.read", "relationship.write", "asset.read:self", "asset.register", "search.query", "schema.overlay", "service.provide:daena.timeline.resolve-date@1", "service.call:daena.maps/navigation"],
   "dependencies": {},
   "namespaces": ["timeline"],
   "schemas": [{
     "namespace": "timeline",
-    "entityTypes": ["event", "encounter"],
+    "entityTypes": ["event", "encounter", "era", "calendar"],
     "fields": [
-      { "key": "startsAt", "label": "Starts", "type": "date", "required": false, "entityTypes": ["event", "encounter"] },
-      { "key": "endsAt", "label": "Ends", "type": "date", "entityTypes": ["event", "encounter"] },
+      { "key": "startsAt", "label": "Starts", "type": "date", "required": false, "entityTypes": ["event", "encounter", "era"] },
+      { "key": "endsAt", "label": "Ends", "type": "date", "entityTypes": ["event", "encounter", "era"] },
+      { "key": "yearStart", "label": "Displayed first year", "type": "number", "entityTypes": ["era"] },
+      { "key": "description", "label": "Description", "type": "text", "entityTypes": ["calendar", "era"] },
       { "key": "location", "label": "Location", "type": "relationship", "relationshipType": "occurred_at", "targetEntityTypes": ["place"], "entityTypes": ["encounter"] },
       { "key": "participants", "label": "Participants", "type": "relationship", "relationshipType": "involves", "targetEntityTypes": ["person"], "entityTypes": ["encounter"] }
     ]
   }],
   "templates": [
     { "id": "event", "name": "Timeline event", "entityType": "event", "description": "A moment, turning point, or span of history.", "icon": "E", "fields": { "startsAt": "", "endsAt": "" } },
-    { "id": "encounter", "name": "Encounter", "entityType": "encounter", "description": "A meeting or interaction between people at a place and time.", "icon": "X", "fields": { "startsAt": "", "endsAt": "", "location": [], "participants": [] } }
+    { "id": "encounter", "name": "Encounter", "entityType": "encounter", "description": "A meeting or interaction between people at a place and time.", "icon": "X", "fields": { "startsAt": "", "endsAt": "", "location": [], "participants": [] } },
+    { "id": "era", "name": "Era", "entityType": "era", "description": "A named period of Timeline history.", "icon": "Æ", "fields": { "startsAt": "", "endsAt": "", "yearStart": "", "description": "" } },
+    { "id": "calendar", "name": "Calendar", "entityType": "calendar", "description": "A way this world names and divides time. Leave it empty to keep using Gregorian dates.", "icon": "C", "fields": { "description": "" } }
+  ],
+  "records": [
+    {
+      "id": "calendar-definition",
+      "ownerEntityTypes": ["calendar"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": { "type": "number" },
+          "startingYear": { "type": "number" },
+          "epoch": { "type": "object" },
+          "dateFormat": { "type": "string" },
+          "months": { "type": "array" },
+          "weekdays": { "type": "array" },
+          "seasons": { "type": "array" }
+        },
+        "required": ["schemaVersion"],
+        "additionalProperties": false
+      }
+    }
   ],
   "views": [],
   "commands": [{ "id": "show-on-map", "title": "Show event on map", "action": { "type": "refresh-view" }, "exposure": ["view"] }],

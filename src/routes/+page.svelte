@@ -29,7 +29,17 @@ import type {
   DaenaModule,
 } from "../../packages/module-api/src/index";
 import { buildModuleContext } from "$lib/modules/context";
-import { filterWorkspaceEntities } from "$lib/modules/workspace";
+import { fieldAppliesToEntity as fieldAppliesToEnabledTypes } from "$lib/modules/fields";
+import { filterWorkspaceEntities, type TimelineView } from "$lib/modules/workspace";
+import CalendarEditor from "../../packages/modules/timeline/src/CalendarEditor.svelte";
+import {
+  calendarDateToParts,
+  daysInCalendarMonth,
+  formatWithCalendar,
+  normalizeCalendarDefinition,
+  partsToCalendarDate,
+  type CalendarDefinition,
+} from "../../packages/modules/timeline/src/calendar";
 import HostView from "$lib/plugins/HostView.svelte";
 import SandboxView from "$lib/plugins/SandboxView.svelte";
 import NativeVectorMapEditor from "$lib/maps/native-vector/NativeVectorMapEditor.svelte";
@@ -55,7 +65,9 @@ import AiProposalPreview from "$lib/ai/AiProposalPreview.svelte";
 import { htmlToMarkdown } from "$lib/editor/markdown";
 import {
   formatCalendarDate,
+  GREGORIAN_CALENDAR_ID,
   isCompleteCalendarDate,
+  isGregorianCalendarId,
   parseCalendarDate,
   serializeCalendarDate,
   type CalendarDate,
@@ -100,6 +112,8 @@ let projectTransitionBusy = $state(false);
 let projectTransitionMessage = $state("");
 let section = $state<WorkspaceSection>("lore");
 let writingView = $state<WritingView>("manuscripts");
+let timelineView = $state<TimelineView>("events");
+let calendarDefinitions = $state<Record<string, CalendarDefinition>>({});
 let entities = $state<Entity[]>([]);
 let selected = $state<Entity | null>(null);
 let documentBody = $state("");
@@ -114,6 +128,7 @@ let name = $state("");
 let selectedCreateKey = $state("");
 let createFieldValues = $state<Record<string, unknown>>({});
 let createDateEditorOpen = $state<Record<string, boolean>>({});
+let createDateCalendarByField = $state<Record<string, string>>({});
 let createDocumentBody = $state("");
 let showDiscardPrompt = $state(false);
 let pendingCreateDiscard = $state<(() => void) | null>(null);
@@ -281,6 +296,7 @@ let searchMatches = $state<Entity[] | null>(null);
 let searchRequest = 0;
 let showCreateForm = $state(false);
 let dateEditorOpen = $state<Record<string, boolean>>({});
+let dateCalendarByField = $state<Record<string, string>>({});
 
 const toastDurationMs = 3500;
 $effect(() => {
@@ -453,17 +469,17 @@ function enabledEntityTypes() {
   );
 }
 function fieldAppliesToEntity(field: FieldDefinition, entityType?: string | null) {
-  const appliesToSource = !field.entityTypes || !entityType || field.entityTypes.includes(entityType);
-  if (!appliesToSource || field.type !== "relationship" || !field.targetEntityTypes?.length) return appliesToSource;
-  if (modules.length === 0) return true;
-  const availableTypes = enabledEntityTypes();
-  return field.targetEntityTypes.some((targetType) => availableTypes.has(targetType));
+  return fieldAppliesToEnabledTypes(field, entityType, modules.length === 0 ? null : enabledEntityTypes());
 }
 const definitions = () => {
   const entityType =
     selected?.entity_type ??
     (section === "timeline"
-      ? "event"
+      ? timelineView === "eras"
+        ? "era"
+        : timelineView === "calendars"
+          ? "calendar"
+          : "event"
       : section === "writing"
         ? writingView === "manuscripts"
           ? "manuscript"
@@ -590,7 +606,11 @@ function defaultCreateOption(options: CreateOption[]) {
   const moduleId = workspaceModuleId(section);
   const entityType =
     section === "timeline"
-      ? "event"
+      ? timelineView === "eras"
+        ? "era"
+        : timelineView === "calendars"
+          ? "calendar"
+          : "event"
       : section === "writing"
         ? writingView === "manuscripts"
           ? "manuscript"
@@ -639,6 +659,7 @@ function resetCreateFields(option: CreateOption | null) {
     createFieldsFor(option).map(({ field }) => [field.key, defaultCreateFieldValue(field, option!.template)]),
   );
   createDateEditorOpen = {};
+  createDateCalendarByField = {};
   createDocumentBody = option?.template.document ?? "";
 }
 function selectCreateOption(key: string) {
@@ -690,36 +711,78 @@ function discardCreateValues() {
 function createDateForField(key: string) {
   return parseCalendarDate(createFieldValues[key]);
 }
+function worldCalendars() {
+  return entities.filter((entity) => entity.entity_type === "calendar" && !entity.deleted);
+}
+function calendarDefinitionForId(calendarId: string | undefined): CalendarDefinition | null {
+  if (isGregorianCalendarId(calendarId)) return null;
+  return calendarDefinitions[calendarId!] ?? null;
+}
+function calendarIdForStoredDate(date: Partial<CalendarDate> | null | undefined, fallback: string | undefined): string {
+  if (date?.calendar) return date.calendar;
+  return fallback || GREGORIAN_CALENDAR_ID;
+}
 function createDateDraftForField(key: string): Partial<CalendarDate> | null {
   return (
     createDateForField(key) ??
-    (createDateEditorOpen[key] ? { calendar: "gregorian", era: "CE", precision: "day" } : null)
+    (createDateEditorOpen[key]
+      ? { calendar: calendarIdForStoredDate(null, createDateCalendarByField[key]), era: "CE", precision: "day" }
+      : null)
   );
+}
+function createCalendarDefinition(key: string): CalendarDefinition | null {
+  return calendarDefinitionForId(calendarIdForStoredDate(createDateForField(key), createDateCalendarByField[key]));
+}
+function createDatePartsDraft(key: string) {
+  const stored = createDateForField(key);
+  const calendar = createCalendarDefinition(key);
+  if (stored) return calendarDateToParts(stored, calendar);
+  return createDateEditorOpen[key] ? { year: undefined as number | undefined, precision: "day" as const } : null;
+}
+function setCreateDateCalendar(key: string, calendarId: string) {
+  createDateCalendarByField = { ...createDateCalendarByField, [key]: calendarId };
+  const previous = createDateForField(key);
+  if (!previous) return;
+  setCreateField(key, serializeCalendarDate({ ...previous, calendar: calendarId }));
 }
 function openCreateDateEditor(key: string) {
   createDateEditorOpen = { ...createDateEditorOpen, [key]: true };
+  createDateCalendarByField = { ...createDateCalendarByField, [key]: GREGORIAN_CALENDAR_ID };
   setCreateField(key, "");
 }
 function updateCreateDateField(key: string, patch: Partial<CalendarDate>) {
-  const current = createDateForField(key) ?? {
-    calendar: "gregorian",
-    era: "CE",
-    year: 1,
-    month: 1,
-    day: 1,
-    precision: "day",
-  };
-  const next = { ...current, ...patch } as CalendarDate;
+  const calendar = createCalendarDefinition(key);
+  const calendarId = calendarIdForStoredDate(createDateForField(key), createDateCalendarByField[key]);
+  const previous = createDateForField(key);
+  const currentParts = calendarDateToParts(
+    previous ?? { calendar: calendarId, era: "CE", year: 1, month: 1, day: 1, precision: "day" },
+    calendar,
+  ) ?? { year: 1, month: 1, day: 1, precision: "day" as const };
+  const nextParts = { ...currentParts, ...patch };
   if (patch.precision === "year") {
-    delete next.month;
-    delete next.day;
+    delete nextParts.month;
+    delete nextParts.day;
   }
-  if (patch.precision === "month" && next.month === undefined) next.month = 1;
+  if (patch.precision === "month" && nextParts.month === undefined) nextParts.month = 1;
   if (patch.precision === "day") {
-    next.month ??= 1;
-    next.day ??= 1;
+    nextParts.month ??= 1;
+    nextParts.day ??= 1;
   }
-  setCreateField(key, serializeCalendarDate(next));
+  const stored = partsToCalendarDate(nextParts, calendar);
+  stored.calendar = calendarId;
+  if (previous) {
+    stored.hour = patch.hour ?? previous.hour;
+    stored.minute = patch.minute ?? previous.minute;
+    stored.second = patch.second ?? previous.second;
+  } else if (patch.hour !== undefined) {
+    stored.hour = patch.hour;
+    stored.minute = patch.minute;
+    stored.second = patch.second;
+  }
+  if (patch.precision === "hour" || patch.precision === "minute" || patch.precision === "second") {
+    stored.precision = patch.precision;
+  }
+  setCreateField(key, serializeCalendarDate(stored));
 }
 function updateCreateDatePart(key: string, part: "year" | "month" | "day", raw: string, min: number, max?: number) {
   if (!raw.trim()) return;
@@ -735,6 +798,9 @@ function updateCreateDateTime(key: string, raw: string) {
 function clearCreateDateField(key: string) {
   setCreateField(key, "");
   createDateEditorOpen = { ...createDateEditorOpen, [key]: false };
+  const next = { ...createDateCalendarByField };
+  delete next[key];
+  createDateCalendarByField = next;
 }
 
 function contextFor(currentSection = section): ModuleContext {
@@ -1126,7 +1192,13 @@ function visibleEntities() {
   const entityTypes = new Set(
     manifestForWorkspaceSection(section)?.schemas.flatMap((schema) => schema.entityTypes) ?? [],
   );
-  return filterWorkspaceEntities({ entityTypes, entities, query, writingView: section === "writing" ? writingView : undefined });
+  return filterWorkspaceEntities({
+    entityTypes,
+    entities,
+    query,
+    writingView: section === "writing" ? writingView : undefined,
+    timelineView: section === "timeline" ? timelineView : undefined,
+  });
 }
 
 function entityGlyph(entity: Pick<Entity, "entity_type">) {
@@ -1156,6 +1228,9 @@ async function selectSearchResult(entity: Entity) {
   section = owner && owner !== "maps" ? owner : "lore";
   if (entity.entity_type === "reference-page") writingView = "reference";
   if (entity.entity_type === "manuscript") writingView = "manuscripts";
+  if (entity.entity_type === "era") timelineView = "eras";
+  if (entity.entity_type === "calendar") timelineView = "calendars";
+  if (entity.entity_type === "event" || entity.entity_type === "encounter") timelineView = "events";
   globalQuery = "";
   query = "";
   await selectEntity(entity);
@@ -1189,6 +1264,15 @@ async function switchWritingView(next: WritingView) {
   query = "";
 }
 
+async function switchTimelineView(next: TimelineView) {
+  if (!(await flushAutoSave())) return;
+  if (!(await leavePluginView())) return;
+  if (timelineView === next) return;
+  timelineView = next;
+  clearSelection();
+  query = "";
+}
+
 function sectionLabel() {
   if (showSettings) {
     if (settingsSection === "plugins") return "Settings · Plugins";
@@ -1211,7 +1295,11 @@ function collectionLabel() {
   return section === "lore"
     ? "entries"
     : section === "timeline"
-      ? "events"
+      ? timelineView === "eras"
+        ? "eras"
+        : timelineView === "calendars"
+          ? "calendars"
+          : "events"
       : section === "writing"
         ? writingView === "manuscripts"
           ? "manuscripts"
@@ -1225,7 +1313,11 @@ function createLabel() {
   return section === "lore"
     ? "entry"
     : section === "timeline"
-      ? "event"
+      ? timelineView === "eras"
+        ? "era"
+        : timelineView === "calendars"
+          ? "calendar"
+          : "event"
       : section === "writing"
         ? writingView === "manuscripts"
           ? "manuscript"
@@ -1244,7 +1336,15 @@ function entityTypeLabel(entityType: string | null) {
         ? "Manuscript"
         : entityType === "language"
           ? "Language"
-          : (entityType ?? "Uncategorized");
+          : entityType === "era"
+            ? "Era"
+            : entityType === "calendar"
+              ? "Calendar"
+              : entityType === "encounter"
+                ? "Encounter"
+                : entityType === "event"
+                  ? "Event"
+                  : (entityType ?? "Uncategorized");
 }
 
 async function openProjection() {
@@ -1266,35 +1366,71 @@ function normalizeDocument(body: string, format?: string) {
 function dateForField(key: string) {
   return parseCalendarDate(fields[key]);
 }
+function selectedCalendarId(key: string): string {
+  return calendarIdForStoredDate(dateForField(key), dateCalendarByField[key]);
+}
+function definitionForDateField(key: string): CalendarDefinition | null {
+  return calendarDefinitionForId(selectedCalendarId(key));
+}
 function dateDraftForField(key: string): Partial<CalendarDate> | null {
-  return dateForField(key) ?? (dateEditorOpen[key] ? { calendar: "gregorian", era: "CE", precision: "day" } : null);
+  return dateForField(key) ?? (dateEditorOpen[key] ? { calendar: selectedCalendarId(key), era: "CE", precision: "day" } : null);
+}
+function datePartsDraft(key: string) {
+  const stored = dateForField(key);
+  const calendar = definitionForDateField(key);
+  if (stored) return calendarDateToParts(stored, calendar);
+  return dateEditorOpen[key] ? { year: undefined as number | undefined, precision: "day" as const } : null;
+}
+function setDateCalendar(key: string, calendarId: string) {
+  dateCalendarByField = { ...dateCalendarByField, [key]: calendarId };
+  const previous = dateForField(key);
+  if (!previous) {
+    dateEditorOpen = { ...dateEditorOpen, [key]: true };
+    return;
+  }
+  fields = { ...fields, [key]: serializeCalendarDate({ ...previous, calendar: calendarId }) };
+  markEntryDirty();
 }
 function openDateEditor(key: string) {
   dateEditorOpen = { ...dateEditorOpen, [key]: true };
+  dateCalendarByField = { ...dateCalendarByField, [key]: GREGORIAN_CALENDAR_ID };
   fields = { ...fields, [key]: "" };
   markEntryDirty();
 }
 function updateDateField(key: string, patch: Partial<CalendarDate>) {
   if (projectDiagnostics.length > 0) return;
-  const current = dateForField(key) ?? {
-    calendar: "gregorian",
-    era: "CE",
-    year: 1,
-    month: 1,
-    day: 1,
-    precision: "day",
-  };
-  const next = { ...current, ...patch } as CalendarDate;
+  const calendar = definitionForDateField(key);
+  const calendarId = selectedCalendarId(key);
+  const previous = dateForField(key);
+  const currentParts = calendarDateToParts(
+    previous ?? { calendar: calendarId, era: "CE", year: 1, month: 1, day: 1, precision: "day" },
+    calendar,
+  ) ?? { year: 1, month: 1, day: 1, precision: "day" as const };
+  const nextParts = { ...currentParts, ...patch };
   if (patch.precision === "year") {
-    delete next.month;
-    delete next.day;
+    delete nextParts.month;
+    delete nextParts.day;
   }
-  if (patch.precision === "month" && next.month === undefined) next.month = 1;
+  if (patch.precision === "month" && nextParts.month === undefined) nextParts.month = 1;
   if (patch.precision === "day") {
-    next.month ??= 1;
-    next.day ??= 1;
+    nextParts.month ??= 1;
+    nextParts.day ??= 1;
   }
-  fields = { ...fields, [key]: serializeCalendarDate(next) };
+  const stored = partsToCalendarDate(nextParts, calendar);
+  stored.calendar = calendarId;
+  if (previous) {
+    stored.hour = patch.hour ?? previous.hour;
+    stored.minute = patch.minute ?? previous.minute;
+    stored.second = patch.second ?? previous.second;
+  } else if (patch.hour !== undefined) {
+    stored.hour = patch.hour;
+    stored.minute = patch.minute;
+    stored.second = patch.second;
+  }
+  if (patch.precision === "hour" || patch.precision === "minute" || patch.precision === "second") {
+    stored.precision = patch.precision;
+  }
+  fields = { ...fields, [key]: serializeCalendarDate(stored) };
   markEntryDirty();
 }
 function updateDatePart(key: string, part: "year" | "month" | "day", raw: string, min: number, max?: number) {
@@ -1316,6 +1452,9 @@ function calendarTimeValue(date: Partial<CalendarDate>): string {
 function clearDateField(key: string) {
   fields = { ...fields, [key]: "" };
   dateEditorOpen = { ...dateEditorOpen, [key]: false };
+  const next = { ...dateCalendarByField };
+  delete next[key];
+  dateCalendarByField = next;
   markEntryDirty();
 }
 
@@ -1974,6 +2113,28 @@ async function loadRecentProjects() {
 }
 async function loadEntities() {
   entities = await project.listEntities();
+  await refreshCalendarDefinitions();
+}
+
+async function refreshCalendarDefinitions() {
+  const next: Record<string, CalendarDefinition> = {};
+  try {
+    if (!projectInfo?.root) {
+      calendarDefinitions = next;
+      return;
+    }
+    const context = contextFor("timeline");
+    const calendars = entities.filter((entity) => entity.entity_type === "calendar" && !entity.deleted);
+    await Promise.all(
+      calendars.map(async (calendar) => {
+        const records = await context.records.list("calendar-definition", calendar.id as UUID, { limit: 1 });
+        next[calendar.id] = records[0] ? normalizeCalendarDefinition(records[0].value) : normalizeCalendarDefinition({});
+      }),
+    );
+  } catch {
+    // A missing record capability or empty project still leaves Gregorian as the default.
+  }
+  calendarDefinitions = next;
 }
 
 async function refreshGit() {
@@ -2090,20 +2251,24 @@ async function loadSelectedState(entity: Entity) {
   const values = await context.fields.list(entityId as UUID);
   if (!isCurrent()) return;
   dateEditorOpen = {};
+  const nextDateCalendars: Record<string, string> = {};
   fields = Object.fromEntries(
     Object.entries(values).map(([key, value]) => {
       const definition = definitions().find((candidate) => candidate.key === key);
       if (definition?.type === "date") {
         const date = parseCalendarDate(value);
-        const normalized = date ? serializeCalendarDate(date) : "";
-        if (normalized === "1" || normalized === "1-1" || normalized === "1-1-1") return [key, ""];
-        return [key, date ? serializeCalendarDate(date) : String(value ?? "")];
+        if (date && !isGregorianCalendarId(date.calendar)) nextDateCalendars[key] = date.calendar;
+        const serialized = date ? serializeCalendarDate(date) : "";
+        const iso = typeof serialized === "string" ? serialized : formatCalendarDate(date);
+        if (iso === "1" || iso === "1-1" || iso === "1-1-1") return [key, ""];
+        return [key, serialized === "" ? String(value ?? "") : serialized];
       }
       if (definition && (definition.type === "number" || definition.type === "boolean" || definition.multiple))
         return [key, value];
       return [key, fieldDisplayValue(value)];
     }),
   );
+  dateCalendarByField = nextDateCalendars;
   relationships = context.module.capabilities.includes("relationship.read")
     ? (await context.relationships.list(entityId as UUID)).map((relationship) => ({
         id: relationship.id,
@@ -2206,7 +2371,7 @@ async function applyMapPick(anchor: unknown) {
       if (mapsEditorMode === "fmg")
         await project.mapsEditorFocusLink(location.id, activeMapsPluginId()).catch(() => {});
       if (!(await leavePluginView())) return;
-      section = entity.entity_type === "event" || entity.entity_type === "era" ? "timeline" : "lore";
+      section = entity.entity_type === "event" || entity.entity_type === "encounter" || entity.entity_type === "era" || entity.entity_type === "calendar" ? "timeline" : "lore";
       await selectEntity(entity);
       mapLocations = await project.listMapLocations(entity.id);
     } else {
@@ -2218,7 +2383,7 @@ async function applyMapPick(anchor: unknown) {
         (await project.listEntities()).find((candidate) => candidate.id === pending.entityId);
       if (entity) {
         if (!(await leavePluginView())) return;
-        section = entity.entity_type === "event" || entity.entity_type === "era" ? "timeline" : "lore";
+        section = entity.entity_type === "event" || entity.entity_type === "encounter" || entity.entity_type === "era" || entity.entity_type === "calendar" ? "timeline" : "lore";
         await selectEntity(entity);
         mapLocations = await project.listMapLocations(entity.id);
       }
@@ -2241,7 +2406,7 @@ async function openMapEntityFromLink(entityId: string) {
       entity.entity_type === "artifact" ||
       entity.entity_type === "culture"
         ? "lore"
-        : entity.entity_type?.startsWith("timeline") || entity.entity_type === "event" || entity.entity_type === "era"
+        : entity.entity_type?.startsWith("timeline") || entity.entity_type === "event" || entity.entity_type === "encounter" || entity.entity_type === "era" || entity.entity_type === "calendar"
           ? "timeline"
           : "lore";
     if (!(await leavePluginView())) return;
@@ -2321,6 +2486,9 @@ async function selectEntity(entity: Entity) {
   if (section === "maps" && sandboxView?.renderer === "maps" && !(await leavePluginView())) return;
   editorFullscreen = false;
   selected = entity;
+  if (entity.entity_type === "era") timelineView = "eras";
+  if (entity.entity_type === "calendar") timelineView = "calendars";
+  if (entity.entity_type === "event" || entity.entity_type === "encounter") timelineView = "events";
   hasUnsavedChanges = false;
   documentConflict = null;
   documentRevision = 0;
@@ -2444,7 +2612,10 @@ async function createEntity(event: SubmitEvent) {
       document: createDocumentBody.trim() ? { body: createDocumentBody.trim(), format: "markdown" } : undefined,
     });
     section =
-      option.template.entityType === "event"
+      option.template.entityType === "event" ||
+      option.template.entityType === "encounter" ||
+      option.template.entityType === "era" ||
+      option.template.entityType === "calendar"
         ? "timeline"
         : option.template.entityType === "manuscript" || option.template.entityType === "reference-page"
           ? "writing"
@@ -2453,6 +2624,9 @@ async function createEntity(event: SubmitEvent) {
             : "lore";
     if (option.template.entityType === "manuscript") writingView = "manuscripts";
     if (option.template.entityType === "reference-page") writingView = "reference";
+    if (option.template.entityType === "era") timelineView = "eras";
+    if (option.template.entityType === "calendar") timelineView = "calendars";
+    if (option.template.entityType === "event" || option.template.entityType === "encounter") timelineView = "events";
     name = "";
     showCreateForm = false;
     resetCreateFields(null);
@@ -3449,6 +3623,8 @@ onMount(() => {
       <div class="breadcrumbs" aria-label="Breadcrumb">
         <span>Private studio</span><i>/</i><strong>{sectionLabel()}</strong>{#if section === "writing"}<i>/</i><span
             >{writingView === "manuscripts" ? "Manuscripts" : "Reference pages"}</span
+          >{/if}{#if section === "timeline"}<i>/</i><span
+            >{timelineView === "eras" ? "Eras" : timelineView === "calendars" ? "Calendars" : "Events"}</span
           >{/if}{#if selected}<i>/</i><span>{selected.name}</span>{/if}
       </div>
       <div class="top-actions">
@@ -3593,34 +3769,63 @@ onMount(() => {
                           >{/each}</select
                       >{:else if item.field.type === "date"}{#if createDateForField(item.field.key) || createDateEditorOpen[item.field.key]}{@const date =
                           createDateDraftForField(item.field.key) ?? {
-                            calendar: "gregorian",
+                            calendar: GREGORIAN_CALENDAR_ID,
                             era: "CE",
                             precision: "day",
-                          }}
+                          }}{@const parts = createDatePartsDraft(item.field.key)}{@const calendar =
+                          createCalendarDefinition(item.field.key)}{@const months = calendar?.months ?? []}
                         <div class="date-editor">
+                          <label class="date-calendar" for={`create-${item.field.key}-calendar`}
+                            >Calendar<select
+                              id={`create-${item.field.key}-calendar`}
+                              aria-label={`${item.field.label} calendar`}
+                              value={calendarIdForStoredDate(createDateForField(item.field.key), createDateCalendarByField[item.field.key])}
+                              onchange={(event) =>
+                                setCreateDateCalendar(item.field.key, (event.currentTarget as HTMLSelectElement).value)}
+                              ><option value={GREGORIAN_CALENDAR_ID}>Gregorian</option
+                              >{#each worldCalendars() as option}<option value={option.id}>{option.name}</option
+                                >{/each}</select
+                            ></label
+                          >
                           <div class="date-fields">
                             <label for={`create-${item.field.key}-year`}
                               >Year<input
                                 id={`create-${item.field.key}-year`}
                                 aria-label={`${item.field.label} year`}
                                 type="number"
-                                min="1"
-                                value={date.year ?? ""}
+                                value={parts?.year ?? date.year ?? ""}
                                 onchange={(event) =>
                                   updateCreateDatePart(
                                     item.field.key,
                                     "year",
                                     (event.currentTarget as HTMLInputElement).value,
-                                    1,
+                                    Number.MIN_SAFE_INTEGER,
                                   )} /></label
-                            ><label for={`create-${item.field.key}-month`}
+                            >{#if months.length > 0}<label for={`create-${item.field.key}-month`}
+                              >Month<select
+                                id={`create-${item.field.key}-month`}
+                                aria-label={`${item.field.label} month`}
+                                value={parts?.month ?? ""}
+                                onchange={(event) =>
+                                  updateCreateDatePart(
+                                    item.field.key,
+                                    "month",
+                                    (event.currentTarget as HTMLSelectElement).value,
+                                    1,
+                                    months.length,
+                                  )}
+                                ><option value="">Month</option>{#each months as month, index}<option value={index + 1}
+                                    >{month.name}</option
+                                  >{/each}</select
+                                ></label
+                              >{:else}<label for={`create-${item.field.key}-month`}
                               >Month<input
                                 id={`create-${item.field.key}-month`}
                                 aria-label={`${item.field.label} month`}
                                 type="number"
                                 min="1"
                                 max="12"
-                                value={date.month ?? ""}
+                                value={parts?.month ?? date.month ?? ""}
                                 onchange={(event) =>
                                   updateCreateDatePart(
                                     item.field.key,
@@ -3629,21 +3834,29 @@ onMount(() => {
                                     1,
                                     12,
                                   )} /></label
-                            ><label for={`create-${item.field.key}-day`}
+                            >{/if}<label for={`create-${item.field.key}-day`}
                               >Day<input
                                 id={`create-${item.field.key}-day`}
                                 aria-label={`${item.field.label} day`}
                                 type="number"
                                 min="1"
-                                max="31"
-                                value={date.day ?? ""}
+                                max={daysInCalendarMonth(
+                                  calendar,
+                                  parts?.year ?? date.year ?? 1,
+                                  parts?.month ?? date.month ?? 1,
+                                )}
+                                value={parts?.day ?? date.day ?? ""}
                                 onchange={(event) =>
                                   updateCreateDatePart(
                                     item.field.key,
                                     "day",
                                     (event.currentTarget as HTMLInputElement).value,
                                     1,
-                                    31,
+                                    daysInCalendarMonth(
+                                      calendar,
+                                      parts?.year ?? date.year ?? 1,
+                                      parts?.month ?? date.month ?? 1,
+                                    ),
                                   )} /></label
                             ><label class="date-time-field" for={`create-${item.field.key}-time`}
                               >Time<input
@@ -3659,7 +3872,9 @@ onMount(() => {
                                   )} /></label>
                           </div>
                           <small class="date-preview"
-                            >{typeof date.year === "number" ? formatCalendarDate(date) : "Add a date"}</small
+                            >{typeof (parts?.year ?? date.year) === "number"
+                              ? formatWithCalendar(createFieldValues[item.field.key], calendar)
+                              : "Add a date"}</small
                           ><button class="date-clear" type="button" onclick={() => clearCreateDateField(item.field.key)}
                             >Clear date</button>
                         </div>{:else}<button
@@ -4167,7 +4382,11 @@ onMount(() => {
               {section === "lore"
                 ? "A living reference for every person, place, and power."
                 : section === "timeline"
-                  ? "Events, eras, and the threads that connect them."
+                  ? timelineView === "eras"
+                    ? "Named periods of history, independent of any one calendar."
+                    : timelineView === "calendars"
+                      ? "Optional ways to name years, months, weeks, and seasons."
+                      : "Events, eras, and the threads that connect them."
                   : section === "maps"
                     ? "Keep every map beside its notes, links, and provider source."
                     : section === "language"
@@ -4219,7 +4438,11 @@ onMount(() => {
                 >{section === "lore"
                   ? "LORE LIBRARY"
                   : section === "timeline"
-                    ? "TIMELINE"
+                    ? timelineView === "eras"
+                      ? "ERAS"
+                      : timelineView === "calendars"
+                        ? "CALENDARS"
+                        : "TIMELINE"
                     : section === "maps"
                       ? "MAPS"
                       : section === "language"
@@ -4241,6 +4464,23 @@ onMount(() => {
                 aria-selected={writingView === "reference"}
                 class:active={writingView === "reference"}
                 onclick={() => switchWritingView("reference")}>Reference pages</button>
+            </div>{/if}
+          {#if section === "timeline"}<div class="collection-tabs" role="tablist" aria-label="Timeline collections">
+              <button
+                role="tab"
+                aria-selected={timelineView === "events"}
+                class:active={timelineView === "events"}
+                onclick={() => void switchTimelineView("events")}>Events</button
+              ><button
+                role="tab"
+                aria-selected={timelineView === "eras"}
+                class:active={timelineView === "eras"}
+                onclick={() => void switchTimelineView("eras")}>Eras</button
+              ><button
+                role="tab"
+                aria-selected={timelineView === "calendars"}
+                class:active={timelineView === "calendars"}
+                onclick={() => void switchTimelineView("calendars")}>Calendars</button>
             </div>{/if}
           <div class="collection-search">
             <span>⌕</span><input
@@ -4416,7 +4656,11 @@ onMount(() => {
                     : section === "lore"
                       ? "LORE ENTRY"
                       : section === "timeline"
-                        ? "TIMELINE EVENT"
+                        ? timelineView === "eras"
+                          ? "ERA"
+                          : timelineView === "calendars"
+                            ? "CALENDAR"
+                            : "TIMELINE EVENT"
                         : section === "maps"
                           ? "MAP"
                           : writingView === "manuscripts"
@@ -4640,31 +4884,61 @@ onMount(() => {
                   <span
                     >{definition.label}{#if definition.required}<b>*</b>{/if}</span
                   >{#if definition.type === "date"}{#if dateForField(definition.key) || dateEditorOpen[definition.key]}{@const date =
-                        dateDraftForField(definition.key) ?? { calendar: "gregorian", era: "CE", precision: "day" }}
+                        dateDraftForField(definition.key) ?? { calendar: GREGORIAN_CALENDAR_ID, era: "CE", precision: "day" }}{@const parts =
+                        datePartsDraft(definition.key)}{@const calendar = definitionForDateField(definition.key)}{@const months =
+                        calendar?.months ?? []}
                       <div class="date-editor">
+                        <label class="date-calendar" for={`${definition.key}-calendar`}
+                          >Calendar<select
+                            id={`${definition.key}-calendar`}
+                            aria-label={`${definition.label} calendar`}
+                            value={selectedCalendarId(definition.key)}
+                            onchange={(event) =>
+                              setDateCalendar(definition.key, (event.currentTarget as HTMLSelectElement).value)}
+                            ><option value={GREGORIAN_CALENDAR_ID}>Gregorian</option
+                            >{#each worldCalendars() as option}<option value={option.id}>{option.name}</option
+                              >{/each}</select
+                          ></label
+                        >
                         <div class="date-fields">
                           <label for={`${definition.key}-year`}
                             >Year<input
                               id={`${definition.key}-year`}
                               aria-label={`${definition.label} year`}
                               type="number"
-                              min="1"
-                              value={date.year ?? ""}
+                              value={parts?.year ?? date.year ?? ""}
                               onchange={(event) =>
                                 updateDatePart(
                                   definition.key,
                                   "year",
                                   (event.currentTarget as HTMLInputElement).value,
-                                  1,
+                                  Number.MIN_SAFE_INTEGER,
                                 )} /></label
-                          ><label for={`${definition.key}-month`}
+                          >{#if months.length > 0}<label for={`${definition.key}-month`}
+                            >Month<select
+                              id={`${definition.key}-month`}
+                              aria-label={`${definition.label} month`}
+                              value={parts?.month ?? ""}
+                              onchange={(event) =>
+                                updateDatePart(
+                                  definition.key,
+                                  "month",
+                                  (event.currentTarget as HTMLSelectElement).value,
+                                  1,
+                                  months.length,
+                                )}
+                              ><option value="">Month</option>{#each months as month, index}<option
+                                  value={index + 1}>{month.name}</option
+                                >{/each}</select
+                            ></label
+                          >{:else}<label for={`${definition.key}-month`}
                             >Month<input
                               id={`${definition.key}-month`}
                               aria-label={`${definition.label} month`}
                               type="number"
                               min="1"
                               max="12"
-                              value={date.month ?? ""}
+                              value={parts?.month ?? date.month ?? ""}
                               onchange={(event) =>
                                 updateDatePart(
                                   definition.key,
@@ -4673,21 +4947,21 @@ onMount(() => {
                                   1,
                                   12,
                                 )} /></label
-                          ><label for={`${definition.key}-day`}
+                          >{/if}<label for={`${definition.key}-day`}
                             >Day<input
                               id={`${definition.key}-day`}
                               aria-label={`${definition.label} day`}
                               type="number"
                               min="1"
-                              max="31"
-                              value={date.day ?? ""}
+                              max={daysInCalendarMonth(calendar, parts?.year ?? date.year ?? 1, parts?.month ?? date.month ?? 1)}
+                              value={parts?.day ?? date.day ?? ""}
                               onchange={(event) =>
                                 updateDatePart(
                                   definition.key,
                                   "day",
                                   (event.currentTarget as HTMLInputElement).value,
                                   1,
-                                  31,
+                                  daysInCalendarMonth(calendar, parts?.year ?? date.year ?? 1, parts?.month ?? date.month ?? 1),
                                 )} /></label
                           ><label class="date-time-field" for={`${definition.key}-time`}
                             >Time<input
@@ -4703,7 +4977,9 @@ onMount(() => {
                                 )} /></label>
                         </div>
                         <small class="date-preview"
-                          >{typeof date.year === "number" ? formatCalendarDate(date) : "Add a date"}</small
+                          >{typeof (parts?.year ?? date.year) === "number"
+                            ? formatWithCalendar(fields[definition.key], calendar)
+                            : "Add a date"}</small
                         ><button class="date-clear" type="button" onclick={() => clearDateField(definition.key)}
                           >Clear date</button>
                       </div>{:else}<button
@@ -4738,6 +5014,16 @@ onMount(() => {
                        oninput={(event) => updateField(definition, event)} />{/if}
                 </div>{/each}
             </section>
+            {#if selected?.entity_type === "calendar" && projectInfo}
+              <section class="inspector-section">
+                <CalendarEditor
+                  context={contextFor("timeline")}
+                  entityId={selected.id as UUID}
+                  onsaved={(definition) => {
+                    calendarDefinitions = { ...calendarDefinitions, [selected.id]: definition };
+                  }} />
+              </section>
+            {/if}
             {#each definitions().filter((candidate) => candidate.type === "relationship") as definition}<section
                 class="inspector-section">
                 <div class="section-title">
@@ -5879,6 +6165,23 @@ onMount(() => {
   background: #fff0ec;
   color: #813d32;
 }
+.date-calendar {
+  display: grid;
+  gap: 4px;
+  color: var(--ink-faint);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.date-calendar select {
+  width: 100%;
+  padding: 8px 6px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--canvas);
+  color: var(--ink);
+  font-size: 11px;
+}
 .date-editor {
   display: grid;
   gap: 8px;
@@ -5900,7 +6203,8 @@ onMount(() => {
   font-weight: 700;
   text-transform: uppercase;
 }
-.date-fields input {
+.date-fields input,
+.date-fields select {
   min-width: 0;
   width: 100%;
   padding: 8px 6px;

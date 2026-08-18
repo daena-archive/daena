@@ -7,48 +7,274 @@
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "sandboxed",
   "entrypoints": { "ui": "dist/ui/index.html" },
-  "capabilities": ["entity.read", "entity.write", "entity.delete", "document.read", "document.write", "field.read:self", "field.write:self", "relationship.read", "relationship.write", "asset.read:self", "asset.register", "search.query", "schema.overlay", "ai.text.generate-structured", "service.call:daena.maps/navigation"],
+  "capabilities": [
+    "entity.read",
+    "entity.write",
+    "entity.delete",
+    "document.read",
+    "document.write",
+    "field.read:self",
+    "field.write:self",
+    "relationship.read",
+    "relationship.write",
+    "asset.read:self",
+    "asset.register",
+    "search.query",
+    "schema.overlay",
+    "ai.text.generate-structured",
+    "service.call:daena.maps/navigation"
+  ],
   "dependencies": {},
   "namespaces": ["lore"],
-  "schemas": [{
-    "namespace": "lore",
-    "entityTypes": ["person", "place", "faction", "artifact", "culture", "concept"],
-    "fields": [
-      { "key": "summary", "label": "Summary", "type": "text" },
-      { "key": "aliases", "label": "Aliases", "type": "text" },
-      { "key": "occupation", "label": "Occupation", "type": "text", "entityTypes": ["person"] },
-      { "key": "languages", "label": "Languages", "type": "relationship", "relationshipType": "speaks", "targetEntityTypes": ["language"], "entityTypes": ["person"] },
-      { "key": "origin", "label": "Origin", "type": "relationship", "relationshipType": "originates_from", "targetEntityTypes": ["place"], "entityTypes": ["person"] },
-      { "key": "affiliation", "label": "Affiliation", "type": "relationship", "relationshipType": "affiliated_with", "targetEntityTypes": ["faction"], "entityTypes": ["person"] },
-      { "key": "bornAt", "label": "Born at", "type": "date", "entityTypes": ["person"] },
-      { "key": "diedAt", "label": "Died at", "type": "date", "entityTypes": ["person"] },
-      { "key": "region", "label": "Region", "type": "text", "entityTypes": ["place"] },
-      { "key": "climate", "label": "Climate", "type": "text", "entityTypes": ["place"] },
-      { "key": "population", "label": "Population", "type": "number", "entityTypes": ["place"] },
-      { "key": "material", "label": "Material", "type": "text", "entityTypes": ["artifact"] },
-      { "key": "creator", "label": "Creator", "type": "relationship", "relationshipType": "created_by", "targetEntityTypes": ["person"], "entityTypes": ["artifact"] },
-      { "key": "currentOwner", "label": "Owners", "type": "relationship", "relationshipType": "owned_by", "targetEntityTypes": ["person"], "entityTypes": ["artifact"] },
-      { "key": "createdAt", "label": "Created at", "type": "date", "entityTypes": ["artifact", "place", "faction", "culture", "concept"] },
-      { "key": "endedAt", "label": "Ended at", "type": "date", "entityTypes": ["artifact", "place", "faction", "culture"] },
-      { "key": "goal", "label": "Goal", "type": "text", "entityTypes": ["faction"] },
-      { "key": "leader", "label": "Leaders", "type": "relationship", "relationshipType": "led_by", "targetEntityTypes": ["person"], "entityTypes": ["faction"] },
-      { "key": "headquarters", "label": "Headquarters", "type": "relationship", "relationshipType": "based_in", "targetEntityTypes": ["place"], "entityTypes": ["faction"] },
-      { "key": "values", "label": "Values", "type": "text", "entityTypes": ["culture"] },
-      { "key": "language", "label": "Language", "type": "text", "entityTypes": ["culture"] },
-      { "key": "homeland", "label": "Homeland", "type": "relationship", "relationshipType": "rooted_in", "targetEntityTypes": ["place"], "entityTypes": ["culture"] }
-    ]
-  }],
+  "schemas": [
+    {
+      "namespace": "lore",
+      "entityTypes": ["person", "place", "faction", "artifact", "culture", "concept"],
+      "fields": [
+        { "key": "summary", "label": "Summary", "type": "text" },
+        { "key": "aliases", "label": "Aliases", "type": "text" },
+        { "key": "occupation", "label": "Occupation", "type": "text", "entityTypes": ["person"] },
+        {
+          "key": "languages",
+          "label": "Languages",
+          "type": "relationship",
+          "relationshipType": "speaks",
+          "targetEntityTypes": ["language"],
+          "entityTypes": ["person"],
+          "metadataFields": [{ "key": "fluency", "label": "Fluency", "type": "text" }]
+        },
+        {
+          "key": "origin",
+          "label": "Origin",
+          "type": "relationship",
+          "relationshipType": "originates_from",
+          "targetEntityTypes": ["place"],
+          "entityTypes": ["person"]
+        },
+        {
+          "key": "affiliation",
+          "label": "Affiliation",
+          "type": "relationship",
+          "relationshipType": "affiliated_with",
+          "targetEntityTypes": ["faction"],
+          "entityTypes": ["person"],
+          "metadataFields": [
+            { "key": "start", "label": "Starts", "type": "date" },
+            { "key": "end", "label": "Ends", "type": "date" }
+          ]
+        },
+        { "key": "bornAt", "label": "Born at", "type": "date", "entityTypes": ["person"] },
+        { "key": "diedAt", "label": "Died at", "type": "date", "entityTypes": ["person"] },
+        {
+          "key": "bornIn",
+          "label": "Born in",
+          "type": "relationship",
+          "relationshipType": "born_in",
+          "targetEntityTypes": ["place"],
+          "entityTypes": ["person"]
+        },
+        {
+          "key": "diedIn",
+          "label": "Died In",
+          "type": "relationship",
+          "relationshipType": "born_in",
+          "targetEntityTypes": ["place"],
+          "entityTypes": ["person"]
+        },
+        { "key": "region", "label": "Region", "type": "text", "entityTypes": ["place"] },
+        { "key": "climate", "label": "Climate", "type": "text", "entityTypes": ["place"] },
+        { "key": "population", "label": "Population", "type": "number", "entityTypes": ["place"] },
+        { "key": "material", "label": "Material", "type": "text", "entityTypes": ["artifact"] },
+        {
+          "key": "creator",
+          "label": "Creator",
+          "type": "relationship",
+          "relationshipType": "created_by",
+          "targetEntityTypes": ["person"],
+          "entityTypes": ["artifact"]
+        },
+        {
+          "key": "currentOwner",
+          "label": "Owners",
+          "type": "relationship",
+          "relationshipType": "owned_by",
+          "targetEntityTypes": ["person"],
+          "entityTypes": ["artifact"],
+          "metadataFields": [
+            { "key": "start", "label": "Starts", "type": "date" },
+            { "key": "end", "label": "Ends", "type": "date" }
+          ]
+        },
+        {
+          "key": "createdAt",
+          "label": "Created at",
+          "type": "date",
+          "entityTypes": ["artifact", "place", "faction", "culture", "concept"]
+        },
+        {
+          "key": "endedAt",
+          "label": "Endsed at",
+          "type": "date",
+          "entityTypes": ["artifact", "place", "faction", "culture"]
+        },
+        { "key": "goal", "label": "Goal", "type": "text", "entityTypes": ["faction"] },
+        {
+          "key": "leader",
+          "label": "Leaders",
+          "type": "relationship",
+          "relationshipType": "led_by",
+          "targetEntityTypes": ["person"],
+          "entityTypes": ["faction"],
+          "metadataFields": [
+            { "key": "start", "label": "Starts", "type": "date" },
+            { "key": "end", "label": "Ends", "type": "date" }
+          ]
+        },
+        {
+          "key": "headquarters",
+          "label": "Headquarters",
+          "type": "relationship",
+          "relationshipType": "based_in",
+          "targetEntityTypes": ["place"],
+          "entityTypes": ["faction"],
+          "metadataFields": [
+            { "key": "start", "label": "Starts", "type": "date" },
+            { "key": "end", "label": "Ends", "type": "date" }
+          ]
+        },
+        { "key": "values", "label": "Values", "type": "text", "entityTypes": ["culture"] },
+        { "key": "language", "label": "Language", "type": "text", "entityTypes": ["culture"] },
+        {
+          "key": "homeland",
+          "label": "Homeland",
+          "type": "relationship",
+          "relationshipType": "rooted_in",
+          "targetEntityTypes": ["place"],
+          "entityTypes": ["culture"],
+          "metadataFields": [
+            { "key": "start", "label": "Starts", "type": "date" },
+            { "key": "end", "label": "Ends", "type": "date" }
+          ]
+        }
+      ]
+    }
+  ],
   "templates": [
-    { "id": "person", "name": "Person", "entityType": "person", "description": "A character with a history, voice, and place in the world.", "icon": "P", "requiredFields": [], "fields": { "summary": "", "aliases": "", "occupation": "", "languages": [], "origin": [], "affiliation": [], "bornAt": "", "diedAt": "" } },
-    { "id": "place", "name": "Place", "entityType": "place", "description": "A location, landmark, or region worth remembering.", "icon": "L", "requiredFields": [], "fields": { "summary": "", "aliases": "", "region": "", "climate": "", "population": "", "createdAt": "", "endedAt": "" } },
-    { "id": "artifact", "name": "Artifact", "entityType": "artifact", "description": "An object with meaning, history, or a story of its own.", "icon": "A", "requiredFields": [], "fields": { "summary": "", "aliases": "", "material": "", "creator": [], "currentOwner": [], "createdAt": "", "endedAt": "" } },
-    { "id": "faction", "name": "Faction", "entityType": "faction", "description": "A group, institution, or power with shared interests.", "icon": "F", "requiredFields": [], "fields": { "summary": "", "aliases": "", "goal": "", "leader": [], "headquarters": [], "createdAt": "", "endedAt": "" } },
-    { "id": "culture", "name": "Culture", "entityType": "culture", "description": "A people, tradition, or way of life that shapes the world.", "icon": "C", "requiredFields": [], "fields": { "summary": "", "aliases": "", "values": "", "language": "", "homeland": [], "createdAt": "", "endedAt": "" } },
-    { "id": "concept", "name": "Concept", "entityType": "concept", "description": "An idea, phenomenon, tradition, or other subject worth remembering.", "icon": "◇", "fields": { "summary": "", "aliases": "", "createdAt": "" } }
+    {
+      "id": "person",
+      "name": "Person",
+      "entityType": "person",
+      "description": "A character with a history, voice, and place in the world.",
+      "icon": "P",
+      "requiredFields": [],
+      "fields": {
+        "summary": "",
+        "aliases": "",
+        "bornAt": "",
+        "diedAt": "",
+        "occupation": "",
+        "languages": [],
+        "origin": [],
+        "affiliation": [],
+        "bornIn": [],
+        "diedIn": []
+      }
+    },
+    {
+      "id": "place",
+      "name": "Place",
+      "entityType": "place",
+      "description": "A location, landmark, or region worth remembering.",
+      "icon": "L",
+      "requiredFields": [],
+      "fields": {
+        "summary": "",
+        "aliases": "",
+        "region": "",
+        "climate": "",
+        "population": "",
+        "createdAt": "",
+        "endedAt": ""
+      }
+    },
+    {
+      "id": "artifact",
+      "name": "Artifact",
+      "entityType": "artifact",
+      "description": "An object with meaning, history, or a story of its own.",
+      "icon": "A",
+      "requiredFields": [],
+      "fields": {
+        "summary": "",
+        "aliases": "",
+        "material": "",
+        "creator": [],
+        "currentOwner": [],
+        "createdAt": "",
+        "endedAt": ""
+      }
+    },
+    {
+      "id": "faction",
+      "name": "Faction",
+      "entityType": "faction",
+      "description": "A group, institution, or power with shared interests.",
+      "icon": "F",
+      "requiredFields": [],
+      "fields": {
+        "summary": "",
+        "aliases": "",
+        "goal": "",
+        "leader": [],
+        "headquarters": [],
+        "createdAt": "",
+        "endedAt": ""
+      }
+    },
+    {
+      "id": "culture",
+      "name": "Culture",
+      "entityType": "culture",
+      "description": "A people, tradition, or way of life that shapes the world.",
+      "icon": "C",
+      "requiredFields": [],
+      "fields": {
+        "summary": "",
+        "aliases": "",
+        "values": "",
+        "language": "",
+        "homeland": [],
+        "createdAt": "",
+        "endedAt": ""
+      }
+    },
+    {
+      "id": "concept",
+      "name": "Concept",
+      "entityType": "concept",
+      "description": "An idea, phenomenon, tradition, or other subject worth remembering.",
+      "icon": "◇",
+      "fields": { "summary": "", "aliases": "", "createdAt": "" }
+    }
   ],
   "views": [],
-  "commands": [{ "id": "show-on-map", "title": "Show selected entity on map", "action": { "type": "refresh-view" }, "exposure": ["view"] }],
+  "commands": [
+    {
+      "id": "show-on-map",
+      "title": "Show selected entity on map",
+      "action": { "type": "refresh-view" },
+      "exposure": ["view"]
+    }
+  ],
   "services": { "provides": [], "consumes": [{ "name": "daena.maps/navigation", "major": 1 }] },
   "events": { "publishes": [], "subscribes": [] },
-  "migrations": [{ "id": "lore-v1", "from": 0, "to": 1, "recovery": "backup", "operations": [{ "kind": "create-namespace", "namespace": "lore" }] }]
+  "migrations": [
+    {
+      "id": "lore-v1",
+      "from": 0,
+      "to": 1,
+      "recovery": "backup",
+      "operations": [{ "kind": "create-namespace", "namespace": "lore" }]
+    }
+  ]
 }

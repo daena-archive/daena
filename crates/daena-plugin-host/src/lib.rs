@@ -2979,14 +2979,14 @@ fn validate_schema_resource(
                 Some(_) => {}
             }
         }
-        "relationship.delete" => {
+        "relationship.delete" | "relationship.update" => {
             let stored_type = payload
                 .get("__stored_relationship_type")
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| {
                     rpc_error(
                         "relationship.identity",
-                        "relationship deletion requires the stored relationship identity",
+                        "relationship update/delete requires the stored relationship identity",
                         false,
                     )
                 })?;

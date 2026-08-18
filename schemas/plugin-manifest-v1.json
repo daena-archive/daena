@@ -284,6 +284,12 @@
           "minLength": 1,
           "type": "string"
         },
+        "metadataFields": {
+          "items": {
+            "$ref": "#/$defs/MetadataFieldDefinition"
+          },
+          "type": "array"
+        },
         "multiple": {
           "default": false,
           "description": "An enum field with multiple enabled values is stored as a string array.",
@@ -332,6 +338,50 @@
             "enum",
             "entity-ref",
             "relationship"
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "label",
+        "type"
+      ],
+      "type": "object"
+    },
+    "MetadataFieldDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "pattern": "^[a-z][a-zA-Z0-9_]*$",
+          "type": "string"
+        },
+        "label": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ],
+          "uniqueItems": true
+        },
+        "required": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "type": {
+          "enum": [
+            "text",
+            "number",
+            "boolean",
+            "date",
+            "enum"
           ]
         }
       },

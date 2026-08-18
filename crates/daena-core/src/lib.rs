@@ -16,8 +16,8 @@ pub use project::{
     GitChange, GitLogEntry, GitPreflight, GitRemote, GitResetResult, GitStatus, GitToolInfo,
     GitUpstream, ImportedImageMap, MigrationHistoryEntry, ModuleField, ModuleNamespace,
     ModuleRecordListParams, ModuleState, PluginBackup, ProjectInfo, ProjectSnapshot, ProjectStore,
-    RasterLayerChange, RasterLayerUpdate, Relationship, RelationshipInput, SaveDocument, SaveEntry,
-    SearchPassage, SyncSummary, VectorLayerDelete, VectorSourceReplace,
+    RasterLayerChange, RasterLayerUpdate, Relationship, RelationshipInput, RelationshipUpdate,
+    SaveDocument, SaveEntry, SearchPassage, SyncSummary, VectorLayerDelete, VectorSourceReplace,
 };
 pub use storage::{
     build_checkpoint_manifest, canonical_json_bytes, canonical_markdown, canonical_markdown_bytes,

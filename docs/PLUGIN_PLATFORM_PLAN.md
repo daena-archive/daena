@@ -355,6 +355,21 @@ Relationship types are registered and qualified by owner. Relationships may
 refer to any visible entity, which is the supported cross-plugin linking
 mechanism.
 
+#### Relationship metadata
+
+A relationship field may declare an optional `metadataFields` array. Each entry
+has a stable `key`, author-facing `label`, one of the supported scalar types
+(`text`, `number`, `boolean`, `date`, or `enum`), and the applicable required or
+enum options. These declarations belong to the plugin manifest and are derived
+runtime state; they are not copied into canonical project files.
+
+When enabled plugins declare metadata for the same relationship type, the host
+merges declarations in ascending plugin ID order. Metadata keys are the merge
+unit, so a later plugin's declaration replaces an earlier declaration with the
+same key. A conflicting type for a merged key is rejected. The same merged
+schema drives Rust mutation validation, the relationship editor, and
+human-facing AI citation labels.
+
 Migrations are declarative and packaged. Runtime code cannot submit arbitrary
 migration JSON. The plugin manager selects the exact migration chain from the
 installed, digest-verified manifest and verifies:

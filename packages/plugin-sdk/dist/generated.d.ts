@@ -14,10 +14,18 @@ export interface Dependency {
     required: boolean;
     version: string;
 }
+export interface MetadataFieldDefinition {
+    key: string;
+    label: string;
+    options?: string[] | null;
+    required?: boolean | null;
+    type: "text" | "number" | "boolean" | "date" | "enum";
+}
 export interface FieldDefinition {
     entityTypes?: string[];
     key: string;
     label: string;
+    metadataFields?: MetadataFieldDefinition[];
     multiple?: boolean;
     options?: string[] | null;
     relationshipType?: string;
@@ -526,6 +534,12 @@ export interface RelationshipDeletePayload {
 export interface RelationshipListPayload {
     entityId: string;
 }
+export interface RelationshipUpdatePayload {
+    expectedRevision: string;
+    id: string;
+    metadata?: string | null;
+    target_id?: string | null;
+}
 export interface SearchQueryPayload {
     query: string;
 }
@@ -589,6 +603,7 @@ export interface BrokerMethodPayloads {
     "relationship.create": RelationshipCreatePayload;
     "relationship.delete": RelationshipDeletePayload;
     "relationship.list": RelationshipListPayload;
+    "relationship.update": RelationshipUpdatePayload;
     "search.query": SearchQueryPayload;
     "service.call": ServiceCallPayload;
 }

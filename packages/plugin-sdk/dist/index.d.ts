@@ -1,5 +1,6 @@
 import type { EntityRecord, Event, Migration, MigrationAuthoringOptions, MigrationOperation, PluginManifest, PluginRpcError, PluginBootstrap, Service, MutationOptions, AiRequestStartPayload, AiRequestIdPayload } from "./generated.js";
 export * from "./generated.js";
+export type { MetadataFieldDefinition } from "./generated.js";
 export * from "./maps.js";
 export interface PluginRpcTransport {
     call(method: string, payload: unknown, requestId?: string): Promise<unknown>;

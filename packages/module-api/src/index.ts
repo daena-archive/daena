@@ -1,6 +1,7 @@
 export type {
   PluginManifest,
   FieldDefinition,
+  MetadataFieldDefinition,
   SchemaContribution,
   EntityTemplate,
   Migration,
@@ -109,6 +110,7 @@ export interface ProposalPreviewOptions {
 
 export interface AiCitation {
   sourceKind: string;
+  summary?: string | null;
   entityId?: string | null;
   documentId?: string | null;
   canonicalPath?: string | null;
@@ -165,7 +167,7 @@ export function createProposalPreview(options: ProposalPreviewOptions): HTMLElem
     const list = document.createElement("ul");
     for (const citation of options.citations) {
       const item = document.createElement("li");
-      const source = citation.canonicalPath ?? citation.sourceKind;
+      const source = citation.summary ?? citation.canonicalPath ?? citation.sourceKind;
       item.textContent = `${citation.stale ? "Stale · " : ""}${source} · revision ${citation.revision}`;
       if (
         citation.byteStart !== null &&
@@ -299,6 +301,10 @@ export interface ModuleContext {
   relationships: {
     list(entityId: UUID): Promise<Relationship[]>;
     create(input: Omit<Relationship, "id" | "revision">, options?: MutationOptions): Promise<Relationship>;
+    update(
+      input: { id: UUID; metadata?: Record<string, unknown>; targetId?: UUID },
+      options?: MutationOptions,
+    ): Promise<Relationship>;
     delete(id: UUID, relationshipType: string, options?: MutationOptions): Promise<void>;
   };
   assets: {

@@ -43,6 +43,15 @@ Entity UUIDs are stable references. Names, types, timestamps, soft-delete
 state, fields, relationships, and assets may change without changing an
 entity's identity.
 
+`entities/<entity-uuid>/relationships.json` stores relationship metadata as
+opaque JSON alongside the relationship identity. At relationship create and
+update boundaries, Rust validates metadata against the merged schema supplied
+by the enabled plugin manifests. The schema is runtime-derived and is never
+persisted as part of the project. Canonical export, reopen, and recovery retain
+the validated metadata JSON, including metadata keys that are not currently
+rendered by the active UI, so a plugin schema change does not silently erase
+authored relationship context.
+
 `checkpoint.json` is generated output and records the portable format, project
 identity, content generation, and the sorted path, size, and SHA-256 digest of
 every other portable file. It is written after the complete checkpoint has

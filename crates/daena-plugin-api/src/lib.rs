@@ -255,6 +255,18 @@ pub struct Dependency {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
+pub struct MetadataFieldDefinition {
+    pub key: String,
+    pub label: String,
+    #[serde(rename = "type")]
+    pub field_type: String,
+    pub required: Option<bool>,
+    pub options: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct FieldDefinition {
     pub key: String,
     pub label: String,
@@ -275,6 +287,8 @@ pub struct FieldDefinition {
     /// An enum field with multiple enabled values is stored as a string array.
     #[serde(default)]
     pub multiple: bool,
+    #[serde(rename = "metadataFields", default)]
+    pub metadata_fields: Option<Vec<MetadataFieldDefinition>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -757,6 +771,12 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                     field.key
                 )));
             }
+            validate_metadata_fields(
+                &field.field_type,
+                &field.key,
+                field.metadata_fields.as_deref(),
+            )
+            .map_err(ContractError)?;
             if fields.insert(&field.key, (schema, field)).is_some() {
                 return Err(ContractError(format!(
                     "duplicate field key across schemas: {}",

@@ -100,6 +100,71 @@ fn relationship_fields_require_valid_target_metadata() {
 }
 
 #[test]
+fn relationship_metadata_fields_require_valid_enum_options() {
+    let json = include_str!("../../../packages/modules/lore/manifest.json");
+    let mut manifest = parse_manifest(json).unwrap();
+    manifest.schemas[0].fields[3].metadata_fields = Some(vec![MetadataFieldDefinition {
+        key: "status".into(),
+        label: "Status".into(),
+        field_type: "enum".into(),
+        required: None,
+        options: Some(Vec::new()),
+    }]);
+    assert!(validate_manifest(&manifest).is_err());
+
+    manifest.schemas[0].fields[3]
+        .metadata_fields
+        .as_mut()
+        .unwrap()[0]
+        .options = Some(vec!["active".into(), "inactive".into()]);
+    assert!(validate_manifest(&manifest).is_ok());
+
+    manifest.schemas[0].fields[3]
+        .metadata_fields
+        .as_mut()
+        .unwrap()[0]
+        .field_type = "unsupported".into();
+    assert!(validate_manifest(&manifest).is_err());
+}
+
+#[test]
+fn non_relationship_field_rejects_metadata_fields() {
+    let json = include_str!("../../../packages/modules/lore/manifest.json");
+    let mut manifest = parse_manifest(json).unwrap();
+    manifest.schemas[0].fields[0].metadata_fields = Some(vec![MetadataFieldDefinition {
+        key: "note".into(),
+        label: "Note".into(),
+        field_type: "text".into(),
+        required: None,
+        options: None,
+    }]);
+    assert!(validate_manifest(&manifest).is_err());
+}
+
+#[test]
+fn relationship_metadata_field_keys_are_unique() {
+    let json = include_str!("../../../packages/modules/lore/manifest.json");
+    let mut manifest = parse_manifest(json).unwrap();
+    manifest.schemas[0].fields[3].metadata_fields = Some(vec![
+        MetadataFieldDefinition {
+            key: "validFrom".into(),
+            label: "Valid from".into(),
+            field_type: "date".into(),
+            required: None,
+            options: None,
+        },
+        MetadataFieldDefinition {
+            key: "validFrom".into(),
+            label: "Also valid from".into(),
+            field_type: "date".into(),
+            required: None,
+            options: None,
+        },
+    ]);
+    assert!(validate_manifest(&manifest).is_err());
+}
+
+#[test]
 fn host_components_are_schema_and_capability_bound() {
     let json = include_str!("../../../examples/plugins/declarative/manifest.json");
     let mut manifest = parse_manifest(json).unwrap();

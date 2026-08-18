@@ -7,29 +7,43 @@
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "sandboxed",
   "entrypoints": { "ui": "dist/ui/index.html" },
-  "capabilities": ["entity.read", "entity.write", "entity.delete", "document.read", "document.write", "field.read:self", "field.write:self", "record.read:self", "record.write:self"],
+  "capabilities": [
+    "entity.read",
+    "entity.write",
+    "entity.delete",
+    "document.read",
+    "document.write",
+    "field.read:self",
+    "field.write:self",
+    "record.read:self",
+    "record.write:self"
+  ],
   "dependencies": {},
   "namespaces": ["language"],
-  "schemas": [{
-    "namespace": "language",
-    "entityTypes": ["language"],
-    "fields": [
-      { "key": "nativeName", "label": "Native name", "type": "text" },
-      { "key": "aliases", "label": "Aliases", "type": "text" },
-      { "key": "status", "label": "Status", "type": "text" },
-      { "key": "family", "label": "Language family", "type": "text" },
-      { "key": "writingSystem", "label": "Writing system", "type": "text" }
-    ]
-  }],
-  "templates": [{
-    "id": "language",
-    "name": "Language",
-    "entityType": "language",
-    "description": "Document a fictional language, its sounds, writing, grammar, forms, samples, and lexicon.",
-    "icon": "Aa",
-    "fields": { "nativeName": "", "aliases": "", "status": "", "family": "", "writingSystem": "" },
-    "document": ""
-  }],
+  "schemas": [
+    {
+      "namespace": "language",
+      "entityTypes": ["language"],
+      "fields": [
+        { "key": "nativeName", "label": "Native name", "type": "text" },
+        { "key": "aliases", "label": "Aliases", "type": "text" },
+        { "key": "status", "label": "Status", "type": "text" },
+        { "key": "family", "label": "Language family", "type": "text" },
+        { "key": "writingSystem", "label": "Writing system", "type": "text" }
+      ]
+    }
+  ],
+  "templates": [
+    {
+      "id": "language",
+      "name": "Language",
+      "entityType": "language",
+      "description": "Document a fictional language, its sounds, writing, grammar, forms, samples, and lexicon.",
+      "icon": "Aa",
+      "fields": { "nativeName": "", "aliases": "", "status": "", "family": "", "writingSystem": "" },
+      "document": ""
+    }
+  ],
   "records": [
     {
       "id": "lexemes",
@@ -180,5 +194,13 @@
   "commands": [],
   "services": { "provides": [], "consumes": [] },
   "events": { "publishes": [], "subscribes": [] },
-  "migrations": [{ "id": "language-v1", "from": 0, "to": 1, "recovery": "backup", "operations": [{ "kind": "create-namespace", "namespace": "language" }] }]
+  "migrations": [
+    {
+      "id": "language-v1",
+      "from": 0,
+      "to": 1,
+      "recovery": "backup",
+      "operations": [{ "kind": "create-namespace", "namespace": "language" }]
+    }
+  ]
 }

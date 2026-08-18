@@ -27,7 +27,7 @@ use daena_plugin_api::rpc::{
     MapsVectorCreateBeginPayload, MapsVectorCreateCommitPayload, MapsVectorReplaceBeginPayload,
     MapsVectorReplaceCommitPayload, PluginBootstrap, RecordCreatePayload, RecordDeletePayload,
     RecordListPayload, RecordUpdatePayload, RelationshipCreatePayload, RelationshipDeletePayload,
-    RelationshipListPayload, SearchQueryPayload, ServiceCallPayload,
+    RelationshipListPayload, RelationshipUpdatePayload, SearchQueryPayload, ServiceCallPayload,
 };
 use daena_plugin_api::{
     PluginManifest, RpcError, CAPABILITY_REGISTRY, DENIED_BY_DEFAULT_CAPABILITIES,
@@ -192,6 +192,23 @@ fn manifest_schema() -> Value {
     // FieldDefinition.
     set_prop(
         &mut root,
+        "MetadataFieldDefinition",
+        "type",
+        json!({"enum": ["text", "number", "boolean", "date", "enum"]}),
+    );
+    {
+        let defs = defs_entry(&mut root, "MetadataFieldDefinition");
+        let key = defs["properties"]["key"].as_object_mut().expect("key");
+        key.insert("pattern".to_owned(), json!(r"^[a-z][a-zA-Z0-9_]*$"));
+        let label = defs["properties"]["label"].as_object_mut().expect("label");
+        label.insert("minLength".to_owned(), json!(1));
+        let options = defs["properties"]["options"]
+            .as_object_mut()
+            .expect("options");
+        options.insert("uniqueItems".to_owned(), json!(true));
+    }
+    set_prop(
+        &mut root,
         "FieldDefinition",
         "type",
         json!({"enum": ["text", "number", "boolean", "date", "enum", "entity-ref", "relationship"]}),
@@ -229,6 +246,12 @@ fn manifest_schema() -> Value {
         "FieldDefinition",
         "targetEntityTypes",
         json!({"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true}),
+    );
+    set_prop(
+        &mut root,
+        "FieldDefinition",
+        "metadataFields",
+        json!({"type": "array", "items": ref_to("MetadataFieldDefinition")}),
     );
 
     // EntityTemplate.
@@ -381,6 +404,7 @@ fn register_payload(gen: &mut SchemaGenerator, payload_schema: &str) {
         "RecordDeletePayload" => gen.subschema_for::<RecordDeletePayload>(),
         "RelationshipListPayload" => gen.subschema_for::<RelationshipListPayload>(),
         "RelationshipCreatePayload" => gen.subschema_for::<RelationshipCreatePayload>(),
+        "RelationshipUpdatePayload" => gen.subschema_for::<RelationshipUpdatePayload>(),
         "RelationshipDeletePayload" => gen.subschema_for::<RelationshipDeletePayload>(),
         "AssetListPayload" => gen.subschema_for::<AssetListPayload>(),
         "AssetRegisterPayload" => gen.subschema_for::<AssetRegisterPayload>(),

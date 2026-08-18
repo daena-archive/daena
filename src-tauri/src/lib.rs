@@ -19,8 +19,8 @@ use daena_core::{
 };
 use daena_plugin_api::{
     merge_module_manifest, parse_module_overlay, supports_schema_overlay, CommandAction,
-    MigrationOperation, ModuleSchemaEditorState, ModuleSchemaOverlay, PluginManifest, RpcRequest,
-    RpcResponse, ViewComponent, SCHEMA_OVERLAY_VERSION,
+    MetadataFieldDefinition, MigrationOperation, ModuleSchemaEditorState, ModuleSchemaOverlay,
+    PluginManifest, RpcRequest, RpcResponse, ViewComponent, SCHEMA_OVERLAY_VERSION,
 };
 use daena_plugin_host::{
     plugin_window_label, webview_policy, ArchiveLimits, DependencyResolver, PluginHost, Session,
@@ -3439,7 +3439,10 @@ async fn plugin_rpc(
     request: RpcRequest,
 ) -> Result<RpcResponse, String> {
     let mut request = request;
-    if request.method == "relationship.delete" {
+    if matches!(
+        request.method.as_str(),
+        "relationship.delete" | "relationship.update"
+    ) {
         let id = payload_string(&request.payload, "id").map_err(|error| error.to_string())?;
         let stored = with_core(core.clone(), move |core| {
             core.project(trusted_shell())?.relationship(id)
@@ -3468,6 +3471,15 @@ async fn plugin_rpc(
     let method = request.method;
     let event_method = method.clone();
     let mut payload = request.payload;
+    if matches!(
+        method.as_str(),
+        "relationship.delete" | "relationship.update"
+    ) {
+        payload
+            .as_object_mut()
+            .ok_or_else(|| "relationship mutation payload must be an object".to_string())?
+            .remove("__stored_relationship_type");
+    }
     if method == "field.list" {
         let namespace = payload
             .get("namespace")
@@ -3927,6 +3939,103 @@ fn sync_project_usage(project: &ProjectStore, host: &mut PluginHost) -> Result<(
     Ok(())
 }
 
+fn relationship_metadata_schemas_for_project(
+    project: &ProjectStore,
+    host: &PluginHost,
+) -> Result<BTreeMap<String, Vec<MetadataFieldDefinition>>, CoreError> {
+    let project_id = project.info().map(|info| info.root);
+    let mut entries = host
+        .catalog
+        .list()
+        .map(|entry| entry.manifest.id.clone())
+        .collect::<Vec<_>>();
+    entries.sort();
+    let mut merged: BTreeMap<String, BTreeMap<String, MetadataFieldDefinition>> = BTreeMap::new();
+    for module_id in entries {
+        let enabled = if project_id.is_some() {
+            project.is_module_enabled(&module_id)?
+        } else {
+            host.catalog
+                .get(&module_id)
+                .and_then(|entry| entry.manifest.enabled_by_default)
+                .unwrap_or(true)
+        };
+        if !enabled {
+            continue;
+        }
+        let entry = host
+            .runtime_entry(project_id.as_deref().unwrap_or_default(), &module_id)
+            .or_else(|| host.catalog.get(&module_id).cloned())
+            .ok_or_else(|| CoreError::Validation("plugin catalog entry disappeared".into()))?;
+        let mut manifest = entry.manifest.clone();
+        if supports_schema_overlay(&manifest) {
+            let overlay_value = if project_id.is_some() {
+                project
+                    .module_schema_overlay(&module_id)?
+                    .unwrap_or_else(|| serde_json::json!({}))
+            } else {
+                serde_json::json!({})
+            };
+            let overlay = parse_module_overlay(&overlay_value).map_err(CoreError::Validation)?;
+            manifest = merge_module_manifest(&manifest, &overlay).map_err(CoreError::Validation)?;
+        }
+        for schema in &manifest.schemas {
+            for field in &schema.fields {
+                let Some(metadata_fields) = field.metadata_fields.as_deref() else {
+                    continue;
+                };
+                let fields = merged
+                    .entry(field.relationship_type.clone().ok_or_else(|| {
+                        CoreError::Validation(format!(
+                            "relationship metadata field {} is missing relationshipType",
+                            field.key
+                        ))
+                    })?)
+                    .or_default();
+                for metadata_field in metadata_fields {
+                    if let Some(existing) = fields.get(&metadata_field.key) {
+                        if existing.field_type != metadata_field.field_type {
+                            return Err(CoreError::Validation(format!(
+                                "conflicting relationship metadata field type for {}",
+                                metadata_field.key
+                            )));
+                        }
+                    }
+                    fields.insert(metadata_field.key.clone(), metadata_field.clone());
+                }
+            }
+        }
+    }
+    Ok(merged
+        .into_iter()
+        .map(|(relationship_type, fields)| {
+            (relationship_type, fields.into_values().collect::<Vec<_>>())
+        })
+        .collect())
+}
+
+fn refresh_relationship_metadata_schemas(
+    core: &SharedCore,
+    plugins: &SharedPluginHost,
+) -> Result<(), String> {
+    let session = current_session(core)?;
+    let mut service = session
+        .core
+        .lock()
+        .map_err(|_| "core lock poisoned".to_string())?;
+    let project = service
+        .project_mut(trusted_shell())
+        .map_err(|error| error.to_string())?;
+    let host = plugins
+        .lock()
+        .map_err(|_| "plugin host lock poisoned".to_string())?;
+    let schemas = relationship_metadata_schemas_for_project(project, &host)
+        .map_err(|error| error.to_string())?;
+    project
+        .set_relationship_metadata_schemas(schemas)
+        .map_err(|error| error.to_string())
+}
+
 async fn sync_project_usage_and_wait(
     core: SharedCore,
     plugins: SharedPluginHost,
@@ -4015,10 +4124,13 @@ async fn sync_project_usage_and_wait(
 
         let project =
             ProjectStore::open_read_only(project_root).map_err(|error| error.to_string())?;
-        let mut host = plugins
-            .lock()
-            .map_err(|_| "plugin host lock poisoned".to_string())?;
-        sync_project_usage(&project, &mut host).map_err(|error| error.to_string())
+        {
+            let mut host = plugins
+                .lock()
+                .map_err(|_| "plugin host lock poisoned".to_string())?;
+            sync_project_usage(&project, &mut host).map_err(|error| error.to_string())?;
+        }
+        refresh_relationship_metadata_schemas(&core, &plugins)
     })
     .await
     .map_err(|error| format!("module synchronization worker failed: {error}"))?
@@ -4316,6 +4428,11 @@ async fn module_schema_overlay_set(
             )
         };
         project.set_module_schema_overlay(module_id, value)?;
+        let host = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        let schemas = relationship_metadata_schemas_for_project(project, &host)?;
+        project.set_relationship_metadata_schemas(schemas)?;
         Ok(normalized)
     })
     .await
@@ -4432,6 +4549,8 @@ async fn module_enable(
         host.record_project_usage(&project_id, &id, &manifest.version)
             .map_err(|error| CoreError::Conflict(error.to_string()))?;
         project.set_module_enabled(id, true)?;
+        let schemas = relationship_metadata_schemas_for_project(project, &host)?;
+        project.set_relationship_metadata_schemas(schemas)?;
         Ok(())
     })
     .await
@@ -4477,6 +4596,8 @@ async fn module_disable(
         }
         host.deactivate_bundled(&project_id, &id);
         close_plugin_webview(&app, &id);
+        let schemas = relationship_metadata_schemas_for_project(project, &host)?;
+        project.set_relationship_metadata_schemas(schemas)?;
         Ok(())
     })
     .await
@@ -4646,6 +4767,11 @@ async fn plugin_upgrade(
         }
         project.set_module_package_version(&plugin_id, Some(&version))?;
         project.set_module_enabled(plugin_id, true)?;
+        let host = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        let schemas = relationship_metadata_schemas_for_project(project, &host)?;
+        project.set_relationship_metadata_schemas(schemas)?;
         Ok(())
     })
     .await
@@ -4712,6 +4838,11 @@ async fn plugin_rollback(
         }
         project.set_module_package_version(&plugin_id, Some(&version))?;
         project.set_module_enabled(plugin_id, true)?;
+        let host = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        let schemas = relationship_metadata_schemas_for_project(project, &host)?;
+        project.set_relationship_metadata_schemas(schemas)?;
         Ok(())
     })
     .await
@@ -5140,6 +5271,7 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
             ],
             &["metadata"],
         ),
+        "relationship.update" => (&["id", "expectedRevision"], &["metadata", "target_id"]),
         "relationship.delete" => (&["id", "expectedRevision"], &["relationship_type"]),
         "asset.list" => (&["entityId"], &["namespace"]),
         "asset.register" => (
@@ -5572,6 +5704,30 @@ fn dispatch_module_rpc(
             )?)
             .map_err(|error| CoreError::Validation(error.to_string()))
         }
+        "relationship.update" => {
+            let expected_revision = required_payload_string(
+                &payload,
+                &["expectedRevision", "expected_revision", "revision"],
+                "expectedRevision",
+            )?;
+            let input = daena_core::RelationshipUpdate {
+                id: payload_string(&payload, "id")?,
+                metadata: payload
+                    .get("metadata")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                target_id: payload
+                    .get("target_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            };
+            serde_json::to_value(project.update_relationship_with_options(
+                input,
+                Some(&expected_revision),
+                request_id,
+            )?)
+            .map_err(|error| CoreError::Validation(error.to_string()))
+        }
         "relationship.delete" => {
             let expected_revision = required_payload_string(
                 &payload,
@@ -5883,6 +6039,7 @@ fn publish_core_mutation_event(
             | "document.save"
             | "field.set"
             | "relationship.create"
+            | "relationship.update"
             | "relationship.delete"
             | "asset.register"
     ) {
@@ -6322,6 +6479,7 @@ async fn open_external_url(url: String) -> Result<(), String> {
 async fn project_open_memory(
     state: tauri::State<'_, SharedCore>,
     jobs: tauri::State<'_, SharedPhysicalJobs>,
+    plugins: tauri::State<'_, SharedPluginHost>,
     ai_runtime: tauri::State<'_, ai::SharedAiRuntime>,
     watcher: tauri::State<'_, SharedProjectWatcher>,
 ) -> Result<(), String> {
@@ -6329,8 +6487,15 @@ async fn project_open_memory(
     stop_project_watcher(watcher.inner())?;
     flush_project_checkpoint(state.clone(), "project lifecycle transition").await?;
     let core = state.inner().clone();
-    let result = with_core(state, |core| {
-        core.open_memory_without_flush(trusted_shell())
+    let plugins = plugins.inner().clone();
+    let result = with_core(state, move |core| {
+        core.open_memory_without_flush(trusted_shell())?;
+        let project = core.project_mut(trusted_shell())?;
+        let host = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        let schemas = relationship_metadata_schemas_for_project(project, &host)?;
+        project.set_relationship_metadata_schemas(schemas)
     })
     .await;
     if result.is_ok() {
@@ -6534,6 +6699,24 @@ async fn project_create_relationship(
     with_core(state, move |core| {
         core.project(trusted_shell())?
             .create_relationship_with_options(
+                input,
+                expected_revision.as_deref(),
+                request_id.as_deref(),
+            )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_update_relationship(
+    state: tauri::State<'_, SharedCore>,
+    input: daena_core::RelationshipUpdate,
+    expected_revision: Option<String>,
+    request_id: Option<String>,
+) -> Result<Relationship, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .update_relationship_with_options(
                 input,
                 expected_revision.as_deref(),
                 request_id.as_deref(),
@@ -9058,6 +9241,7 @@ pub fn run() {
             project_set_field,
             project_list_fields,
             project_create_relationship,
+            project_update_relationship,
             project_list_relationships,
             project_list_map_locations,
             project_upsert_map_location,

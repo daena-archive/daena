@@ -150,6 +150,8 @@ pub struct AiRequest {
 #[serde(rename_all = "camelCase")]
 pub struct SourceRef {
     pub source_kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     pub entity_id: Option<String>,
     pub document_id: Option<String>,
     pub canonical_path: Option<String>,
@@ -440,6 +442,7 @@ mod tests {
     fn source(path: &str, revision: &str, hash: &str) -> SourceRef {
         SourceRef {
             source_kind: "document".into(),
+            summary: None,
             entity_id: Some("entity-1".into()),
             document_id: Some("document-1".into()),
             canonical_path: Some(path.into()),

@@ -1,4 +1,5 @@
 use super::*;
+use daena_plugin_api::MetadataFieldDefinition;
 use std::collections::BTreeMap;
 
 fn canonical_files(root: &Path) -> BTreeMap<String, Vec<u8>> {
@@ -55,6 +56,164 @@ fn directory_session_lock_rejects_second_writer_and_reclaims_dead_owner() {
     .unwrap();
     let reclaimed = ProjectStore::open_directory(&root).unwrap();
     drop(reclaimed);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn update_relationship_metadata_validates_and_roundtrips() {
+    let root = std::env::temp_dir().join(format!("daena-relationship-metadata-{}", Uuid::new_v4()));
+    let mut store = ProjectStore::open_directory(&root).unwrap();
+    let source = store
+        .create_entity(CreateEntity {
+            name: "Artifact".into(),
+            entity_type: Some("artifact".into()),
+        })
+        .unwrap();
+    let target = store
+        .create_entity(CreateEntity {
+            name: "Owner".into(),
+            entity_type: Some("person".into()),
+        })
+        .unwrap();
+    store
+        .set_relationship_metadata_schemas(BTreeMap::from([(
+            "owned_by".into(),
+            vec![
+                MetadataFieldDefinition {
+                    key: "validFrom".into(),
+                    label: "Valid from".into(),
+                    field_type: "date".into(),
+                    required: Some(true),
+                    options: None,
+                },
+                MetadataFieldDefinition {
+                    key: "status".into(),
+                    label: "Status".into(),
+                    field_type: "enum".into(),
+                    required: None,
+                    options: Some(vec!["active".into(), "ended".into()]),
+                },
+            ],
+        )]))
+        .unwrap();
+
+    let relationship = store
+        .create_relationship(RelationshipInput {
+            source_id: source.id.clone(),
+            target_id: target.id,
+            relationship_type: "owned_by".into(),
+            metadata: Some(
+                serde_json::json!({
+                    "validFrom": "2024-01-01",
+                    "unknown": "preserved"
+                })
+                .to_string(),
+            ),
+        })
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&relationship.metadata).unwrap(),
+        serde_json::json!({"validFrom": "2024-01-01", "unknown": "preserved"})
+    );
+
+    let replacement_target = store
+        .create_entity(CreateEntity {
+            name: "Replacement owner".into(),
+            entity_type: Some("person".into()),
+        })
+        .unwrap();
+    let original_revision = relationship.revision.clone();
+    let update = RelationshipUpdate {
+        id: relationship.id.clone(),
+        metadata: Some(
+            serde_json::json!({
+                    "validFrom": "2025-01-01",
+                    "status": "active",
+                    "unknown": "preserved"
+            })
+            .to_string(),
+        ),
+        target_id: Some(replacement_target.id.clone()),
+    };
+    let request_id = Uuid::new_v4().to_string();
+    let updated = store
+        .update_relationship_with_options(
+            update.clone(),
+            Some(&original_revision),
+            Some(&request_id),
+        )
+        .unwrap();
+    assert_eq!(updated.id, relationship.id);
+    assert_eq!(updated.target_id, replacement_target.id);
+    assert_ne!(updated.revision, original_revision);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&updated.metadata).unwrap(),
+        serde_json::json!({"validFrom": "2025-01-01", "status": "active", "unknown": "preserved"})
+    );
+
+    let repeated = store
+        .update_relationship_with_options(update, Some(&original_revision), Some(&request_id))
+        .unwrap();
+    assert_eq!(repeated.id, updated.id);
+    assert_eq!(repeated.revision, updated.revision);
+
+    let stale = store.update_relationship_with_options(
+        RelationshipUpdate {
+            id: relationship.id.clone(),
+            metadata: Some("{}".into()),
+            target_id: None,
+        },
+        Some(&original_revision),
+        None,
+    );
+    assert!(
+        matches!(stale, Err(CoreError::Conflict(message)) if message.contains("relationship revision conflict"))
+    );
+
+    let invalid_update = store.update_relationship_with_options(
+        RelationshipUpdate {
+            id: relationship.id.clone(),
+            metadata: Some(serde_json::json!({"validFrom": "not-a-date"}).to_string()),
+            target_id: None,
+        },
+        Some(&updated.revision),
+        None,
+    );
+    assert!(
+        matches!(invalid_update, Err(CoreError::Validation(message)) if message.contains("validFrom"))
+    );
+
+    let missing_required = store.create_relationship(RelationshipInput {
+        source_id: source.id.clone(),
+        target_id: relationship.target_id.clone(),
+        relationship_type: "owned_by".into(),
+        metadata: Some("{}".into()),
+    });
+    assert!(
+        matches!(missing_required, Err(CoreError::Validation(message)) if message.contains("validFrom"))
+    );
+
+    let invalid_date = store.create_relationship(RelationshipInput {
+        source_id: source.id.clone(),
+        target_id: relationship.target_id.clone(),
+        relationship_type: "owned_by".into(),
+        metadata: Some(serde_json::json!({"validFrom": "not-a-date"}).to_string()),
+    });
+    assert!(
+        matches!(invalid_date, Err(CoreError::Validation(message)) if message.contains("validFrom"))
+    );
+
+    store
+        .flush_checkpoint("relationship metadata test")
+        .unwrap();
+    let before_recovery = canonical_files(&root);
+    drop(store);
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    rebuilt
+        .flush_checkpoint("relationship metadata recovery test")
+        .unwrap();
+    assert_eq!(before_recovery, canonical_files(&root));
     std::fs::remove_dir_all(root).unwrap();
 }
 

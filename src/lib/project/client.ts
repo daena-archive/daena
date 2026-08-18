@@ -832,6 +832,16 @@ export const project = {
       expected_revision: options?.expectedRevision ?? null,
       request_id: requestId(options),
     }),
+  updateRelationship: (id: string, metadata?: Record<string, unknown>, options?: MutationOptions) =>
+    invoke<Relationship>("project_update_relationship", {
+      input: {
+        id,
+        metadata: metadata ? JSON.stringify(metadata) : null,
+        target_id: null,
+      },
+      expected_revision: options?.expectedRevision ?? null,
+      request_id: requestId(options),
+    }),
   listRelationships: (entityId: string) => invoke<Relationship[]>("project_list_relationships", { entityId }),
   listMapLocations: (entityId: string) => invoke<MapLocation[]>("project_list_map_locations", { entityId }),
   upsertMapLocation: (entityId: string, location: MapLocation, options?: MutationOptions) =>

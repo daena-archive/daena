@@ -1252,6 +1252,34 @@
       ],
       "type": "object"
     },
+    "RelationshipUpdatePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "expectedRevision": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "expectedRevision",
+        "id"
+      ],
+      "type": "object"
+    },
     "SearchQueryPayload": {
       "additionalProperties": false,
       "properties": {
@@ -1571,6 +1599,22 @@
             "properties": {
               "payload": {
                 "$ref": "#/$defs/RelationshipCreatePayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "relationship.update"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/RelationshipUpdatePayload"
               }
             }
           }
@@ -2219,6 +2263,7 @@
             "record.delete",
             "relationship.list",
             "relationship.create",
+            "relationship.update",
             "relationship.delete",
             "asset.list",
             "asset.register",
@@ -2640,6 +2685,14 @@
     "relationship.list": {
       "payload": "RelationshipListPayload",
       "requestId": "envelope"
+    },
+    "relationship.update": {
+      "payload": "RelationshipUpdatePayload",
+      "requestId": "envelope",
+      "requiredPayload": [
+        "expectedRevision",
+        "id"
+      ]
     },
     "search.query": {
       "payload": "SearchQueryPayload",

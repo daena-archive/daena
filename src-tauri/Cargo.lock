@@ -960,6 +960,7 @@ version = "0.1.0"
 dependencies = [
  "daena-atlas",
  "daena-physical",
+ "daena-plugin-api",
  "jpeg-decoder",
  "libc",
  "png 0.17.16",

@@ -15,6 +15,7 @@ import type {
 } from "./generated.js";
 
 export * from "./generated.js";
+export type { MetadataFieldDefinition } from "./generated.js";
 export * from "./maps.js";
 
 export interface PluginRpcTransport {
@@ -568,11 +569,44 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
               "relationshipType",
               "targetEntityTypes",
               "shared",
+              "metadataFields",
             ],
             errors,
           );
           if (field.shared !== undefined && typeof field.shared !== "boolean")
             errors.push(`field ${String(field.key)} shared must be boolean`);
+          if (field.metadataFields !== undefined) {
+            if (field.type !== "relationship") {
+              errors.push(`non-relationship field ${String(field.key)} cannot declare metadataFields`);
+            } else if (!Array.isArray(field.metadataFields)) {
+              errors.push(`relationship field ${String(field.key)} metadataFields must be an array`);
+            } else {
+              const metadataKeys = new Set<string>();
+              for (const metadataField of field.metadataFields) {
+                if (!isRecord(metadataField)) {
+                  errors.push(`relationship field ${String(field.key)} metadataFields must contain objects`);
+                  continue;
+                }
+                checkKeys(metadataField, "metadata field", ["key", "label", "type", "required", "options"], errors);
+                if (typeof metadataField.key !== "string" || !metadataField.key.trim())
+                  errors.push(`relationship field ${String(field.key)} has an invalid metadata key`);
+                else if (metadataKeys.has(metadataField.key))
+                  errors.push(
+                    `relationship field ${String(field.key)} has duplicate metadata key: ${metadataField.key}`,
+                  );
+                else metadataKeys.add(metadataField.key);
+                if (typeof metadataField.label !== "string" || !metadataField.label.trim())
+                  errors.push(`relationship metadata field ${String(metadataField.key)} requires a label`);
+                if (!["text", "number", "boolean", "date", "enum"].includes(String(metadataField.type)))
+                  errors.push(`relationship metadata field ${String(metadataField.key)} has an unsupported type`);
+                if (
+                  metadataField.type === "enum" &&
+                  (!Array.isArray(metadataField.options) || metadataField.options.length === 0)
+                )
+                  errors.push(`relationship metadata enum field ${String(metadataField.key)} requires options`);
+              }
+            }
+          }
         }
     }
   if (Array.isArray(templates))

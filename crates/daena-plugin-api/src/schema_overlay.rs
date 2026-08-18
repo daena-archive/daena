@@ -1,6 +1,6 @@
 //! Project-owned module schema overlays (host-side customization of package defaults).
 
-use crate::{EntityTemplate, FieldDefinition, PluginManifest};
+use crate::{EntityTemplate, FieldDefinition, MetadataFieldDefinition, PluginManifest};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -16,6 +16,51 @@ const ALLOWED_FIELD_TYPES: &[&str] = &[
     "entity-ref",
     "relationship",
 ];
+
+const ALLOWED_METADATA_FIELD_TYPES: &[&str] = &["text", "number", "boolean", "date", "enum"];
+
+/// Validate the relationship-only metadata declaration attached to a field.
+pub fn validate_metadata_fields(
+    field_type: &str,
+    field_key: &str,
+    metadata_fields: Option<&[MetadataFieldDefinition]>,
+) -> Result<(), String> {
+    let Some(metadata_fields) = metadata_fields else {
+        return Ok(());
+    };
+    if field_type != "relationship" {
+        return Err(format!(
+            "non-relationship field {field_key} cannot declare metadataFields"
+        ));
+    }
+    let mut keys = BTreeSet::new();
+    for field in metadata_fields {
+        if field.key.trim().is_empty() || field.label.trim().is_empty() {
+            return Err(format!(
+                "relationship metadata fields require key and label: {field_key}"
+            ));
+        }
+        if !ALLOWED_METADATA_FIELD_TYPES.contains(&field.field_type.as_str()) {
+            return Err(format!(
+                "unsupported relationship metadata field type for {}: {}",
+                field.key, field.field_type
+            ));
+        }
+        if !keys.insert(&field.key) {
+            return Err(format!(
+                "duplicate relationship metadata field key: {}",
+                field.key
+            ));
+        }
+        if field.field_type == "enum" && field.options.as_ref().is_none_or(Vec::is_empty) {
+            return Err(format!(
+                "relationship metadata enum field requires non-empty options: {}",
+                field.key
+            ));
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -387,6 +432,11 @@ pub fn validate_module_overlay(
                 ));
             }
         }
+        validate_metadata_fields(
+            &field.field_type,
+            &field.key,
+            field.metadata_fields.as_deref(),
+        )?;
     }
 
     let effective_fields: BTreeSet<&str> = package_fields
@@ -702,6 +752,7 @@ mod tests {
                 target_entity_types: None,
                 shared: false,
                 multiple: false,
+                metadata_fields: None,
             }],
             ..ModuleSchemaOverlay::default()
         };
@@ -726,6 +777,7 @@ mod tests {
                 target_entity_types: None,
                 shared: false,
                 multiple: false,
+                metadata_fields: None,
             }],
             ..ModuleSchemaOverlay::default()
         };
@@ -750,6 +802,7 @@ mod tests {
                 target_entity_types: None,
                 shared: false,
                 multiple: false,
+                metadata_fields: None,
             }],
             ..ModuleSchemaOverlay::default()
         };
@@ -799,6 +852,7 @@ mod tests {
                 target_entity_types: None,
                 shared: false,
                 multiple: false,
+                metadata_fields: None,
             }],
             custom_templates: vec![EntityTemplate {
                 id: "species".into(),
@@ -847,6 +901,7 @@ mod tests {
                 target_entity_types: None,
                 shared: false,
                 multiple: false,
+                metadata_fields: None,
             }],
             ..ModuleSchemaOverlay::default()
         };
@@ -941,6 +996,7 @@ mod tests {
                 target_entity_types: None,
                 shared: false,
                 multiple: false,
+                metadata_fields: None,
             }],
             custom_templates: vec![EntityTemplate {
                 id: "chapter".into(),

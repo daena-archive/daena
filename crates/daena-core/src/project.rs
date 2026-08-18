@@ -1,4 +1,5 @@
 use crate::error::CoreError;
+use daena_plugin_api::MetadataFieldDefinition;
 use rusqlite::{named_params, params, Connection, OpenFlags, OptionalExtension};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -109,6 +110,13 @@ pub struct RelationshipInput {
     pub target_id: String,
     pub relationship_type: String,
     pub metadata: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelationshipUpdate {
+    pub id: String,
+    pub metadata: Option<String>,
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -440,6 +448,158 @@ fn validate_document_format(format: Option<&str>, directory_backed: bool) -> Res
     Ok(())
 }
 
+fn is_leap_year(year: u32) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+fn valid_calendar_date(year: u32, month: u32, day: u32) -> bool {
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=days).contains(&day)
+}
+
+fn parse_fixed_decimal(value: &[u8], start: usize, end: usize) -> Option<u32> {
+    if end > value.len() || end <= start || !value[start..end].iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    std::str::from_utf8(&value[start..end]).ok()?.parse().ok()
+}
+
+fn is_rfc3339_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() < 10
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || !bytes[..4].iter().all(u8::is_ascii_digit)
+        || !bytes[5..7].iter().all(u8::is_ascii_digit)
+        || !bytes[8..10].iter().all(u8::is_ascii_digit)
+    {
+        return false;
+    }
+    let year = parse_fixed_decimal(bytes, 0, 4).unwrap_or_default();
+    let month = parse_fixed_decimal(bytes, 5, 7).unwrap_or_default();
+    let day = parse_fixed_decimal(bytes, 8, 10).unwrap_or_default();
+    if !valid_calendar_date(year, month, day) {
+        return false;
+    }
+    if bytes.len() == 10 {
+        return true;
+    }
+    if bytes.get(10) != Some(&b'T') {
+        return false;
+    }
+    if bytes.len() < 20 || bytes[13] != b':' || bytes[16] != b':' {
+        return false;
+    }
+    let hour = parse_fixed_decimal(bytes, 11, 13).unwrap_or_default();
+    let minute = parse_fixed_decimal(bytes, 14, 16).unwrap_or_default();
+    let second = parse_fixed_decimal(bytes, 17, 19).unwrap_or_default();
+    if hour > 23 || minute > 59 || second > 59 {
+        return false;
+    }
+    let mut index = 19;
+    if bytes.get(index) == Some(&b'.') {
+        index += 1;
+        let fraction_start = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+        if fraction_start == index {
+            return false;
+        }
+    }
+    match bytes.get(index) {
+        Some(b'Z') => index + 1 == bytes.len(),
+        Some(b'+') | Some(b'-') => {
+            index + 6 == bytes.len()
+                && bytes[index + 3] == b':'
+                && parse_fixed_decimal(bytes, index + 1, index + 3).is_some_and(|hour| hour <= 23)
+                && parse_fixed_decimal(bytes, index + 4, index + 6)
+                    .is_some_and(|minute| minute <= 59)
+        }
+        _ => false,
+    }
+}
+
+fn validate_relationship_metadata(
+    relationship_type: &str,
+    metadata: &serde_json::Value,
+    declared: Option<&[MetadataFieldDefinition]>,
+) -> Result<serde_json::Value, CoreError> {
+    let object = metadata.as_object().ok_or_else(|| {
+        CoreError::Validation(format!(
+            "relationship metadata for {relationship_type} must be a JSON object"
+        ))
+    })?;
+    let Some(declared) = declared.filter(|fields| !fields.is_empty()) else {
+        return Ok(metadata.clone());
+    };
+    let declared_keys = declared
+        .iter()
+        .map(|field| field.key.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut cleaned = object
+        .iter()
+        .filter(|(key, _)| !declared_keys.contains(key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<serde_json::Map<_, _>>();
+    for field in declared {
+        let Some(value) = object.get(&field.key) else {
+            if field.required.unwrap_or(false) {
+                return Err(CoreError::Validation(format!(
+                    "relationship {relationship_type} is missing required metadata field: {}",
+                    field.key
+                )));
+            }
+            continue;
+        };
+        if value.is_null() {
+            if field.required.unwrap_or(false) {
+                return Err(CoreError::Validation(format!(
+                    "relationship {relationship_type} is missing required metadata field: {}",
+                    field.key
+                )));
+            }
+            continue;
+        }
+        let valid = match field.field_type.as_str() {
+            "text" => value.as_str().is_some(),
+            "number" => value.is_number(),
+            "boolean" => value.is_boolean(),
+            "date" => value.as_str().is_some_and(is_rfc3339_date),
+            "enum" => value.as_str().is_some_and(|candidate| {
+                field
+                    .options
+                    .as_ref()
+                    .is_some_and(|options| options.iter().any(|option| option == candidate))
+            }),
+            _ => false,
+        };
+        if !valid {
+            return Err(CoreError::Validation(format!(
+                "relationship {relationship_type} metadata field {} has the wrong type or value",
+                field.key
+            )));
+        }
+        if field.required.unwrap_or(false)
+            && field.field_type == "text"
+            && value.as_str().is_some_and(str::is_empty)
+        {
+            return Err(CoreError::Validation(format!(
+                "relationship {relationship_type} metadata field {} is required",
+                field.key
+            )));
+        }
+        cleaned.insert(field.key.clone(), value.clone());
+    }
+    Ok(serde_json::Value::Object(cleaned))
+}
+
 fn markdown_export_stem(value: &str) -> String {
     let mut stem = value
         .chars()
@@ -732,6 +892,7 @@ pub struct ProjectStore {
     connection: Connection,
     database_epoch: String,
     root: Option<PathBuf>,
+    relationship_metadata_schemas: BTreeMap<String, Vec<MetadataFieldDefinition>>,
     suppress_sync: Cell<bool>,
     _session_lock: Option<crate::sync::ProjectSessionLock>,
     export_worker: Option<ExportWorker>,
@@ -945,6 +1106,7 @@ impl ProjectStore {
             connection,
             database_epoch,
             root: Some(root),
+            relationship_metadata_schemas: BTreeMap::new(),
             suppress_sync: Cell::new(true),
             _session_lock: None,
             export_worker: None,
@@ -1152,6 +1314,7 @@ impl ProjectStore {
             connection,
             database_epoch: String::new(),
             root,
+            relationship_metadata_schemas: BTreeMap::new(),
             suppress_sync: Cell::new(false),
             _session_lock: session_lock,
             export_worker: None,
@@ -3652,6 +3815,11 @@ impl ProjectStore {
                     "relationship type cannot be empty".into(),
                 ));
             }
+            validate_relationship_metadata(
+                &relationship.relationship_type,
+                &serde_json::json!({}),
+                self.metadata_fields_for_relationship_type(&relationship.relationship_type),
+            )?;
             let mut target_ids = BTreeSet::new();
             for target_id in &relationship.target_ids {
                 if !target_ids.insert(target_id) {
@@ -3793,6 +3961,11 @@ impl ProjectStore {
                         "relationship type cannot be empty".into(),
                     ));
                 }
+                validate_relationship_metadata(
+                    &relationship.relationship_type,
+                    &serde_json::json!({}),
+                    self.metadata_fields_for_relationship_type(&relationship.relationship_type),
+                )?;
                 let mut target_ids = BTreeSet::new();
                 for target_id in relationship.target_ids {
                     if !target_ids.insert(target_id.clone()) {
@@ -6092,6 +6265,45 @@ impl ProjectStore {
         Ok(fields)
     }
 
+    /// Install the currently enabled plugin relationship schemas for this
+    /// runtime session. The registry is derived state and is never persisted.
+    pub fn set_relationship_metadata_schemas(
+        &mut self,
+        schemas: BTreeMap<String, Vec<MetadataFieldDefinition>>,
+    ) -> Result<(), CoreError> {
+        for (relationship_type, fields) in &schemas {
+            if relationship_type.trim().is_empty() {
+                return Err(CoreError::Validation(
+                    "relationship metadata schema type cannot be empty".into(),
+                ));
+            }
+            daena_plugin_api::validate_metadata_fields(
+                "relationship",
+                relationship_type,
+                Some(fields),
+            )
+            .map_err(CoreError::Validation)?;
+        }
+        self.relationship_metadata_schemas = schemas;
+        Ok(())
+    }
+
+    fn metadata_fields_for_relationship_type(
+        &self,
+        relationship_type: &str,
+    ) -> Option<&[MetadataFieldDefinition]> {
+        self.relationship_metadata_schemas
+            .get(relationship_type)
+            .map(Vec::as_slice)
+    }
+
+    pub fn relationship_metadata_fields_for_type(
+        &self,
+        relationship_type: &str,
+    ) -> Option<&[MetadataFieldDefinition]> {
+        self.metadata_fields_for_relationship_type(relationship_type)
+    }
+
     pub fn create_relationship(&self, input: RelationshipInput) -> Result<Relationship, CoreError> {
         self.create_relationship_with_options(input, None, None)
     }
@@ -6140,6 +6352,15 @@ impl ProjectStore {
         )?;
         let id = Uuid::new_v4().to_string();
         let metadata = input.metadata.unwrap_or_else(|| "{}".into());
+        let metadata_value = serde_json::from_str(&metadata).map_err(|error| {
+            CoreError::Validation(format!("relationship metadata is invalid JSON: {error}"))
+        })?;
+        let metadata = serde_json::to_string(&validate_relationship_metadata(
+            &input.relationship_type,
+            &metadata_value,
+            self.metadata_fields_for_relationship_type(&input.relationship_type),
+        )?)
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
         let request_id = self.request_id(request_id)?;
         let result = serde_json::to_value(&Relationship {
             id: id.clone(),
@@ -6169,6 +6390,100 @@ impl ProjectStore {
             relationship_type: input.relationship_type,
             metadata,
             revision,
+        })
+    }
+
+    pub fn update_relationship(
+        &self,
+        input: RelationshipUpdate,
+    ) -> Result<Relationship, CoreError> {
+        self.update_relationship_with_options(input, None, None)
+    }
+
+    pub fn update_relationship_with_options(
+        &self,
+        input: RelationshipUpdate,
+        expected_revision: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Result<Relationship, CoreError> {
+        if let Some(relationship) = self.committed_mutation::<Relationship>(request_id)? {
+            let mut relationship = relationship;
+            relationship.revision = self.revision_for_relationship_value(&relationship)?;
+            return Ok(relationship);
+        }
+
+        let current = self.relationship(input.id.clone())?;
+        Self::ensure_expected_revision(
+            expected_revision,
+            current.revision.clone(),
+            "relationship",
+        )?;
+
+        if let Some(target_id) = input.target_id.as_deref() {
+            let exists: Option<String> = self
+                .connection
+                .query_row(
+                    "SELECT id FROM entities WHERE id=?1 AND deleted=0",
+                    params![target_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if exists.is_none() {
+                return Err(CoreError::NotFound(
+                    "relationship target entity not found".into(),
+                ));
+            }
+        }
+
+        let metadata = input.metadata.unwrap_or_else(|| current.metadata.clone());
+        let metadata_value = serde_json::from_str(&metadata).map_err(|error| {
+            CoreError::Validation(format!("relationship metadata is invalid JSON: {error}"))
+        })?;
+        let metadata = serde_json::to_string(&validate_relationship_metadata(
+            &current.relationship_type,
+            &metadata_value,
+            self.metadata_fields_for_relationship_type(&current.relationship_type),
+        )?)
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let target_id = input
+            .target_id
+            .clone()
+            .unwrap_or_else(|| current.target_id.clone());
+        let target_changed = target_id != current.target_id;
+        let updated = Relationship {
+            id: current.id.clone(),
+            source_id: current.source_id.clone(),
+            target_id: target_id.clone(),
+            relationship_type: current.relationship_type.clone(),
+            metadata: metadata.clone(),
+            revision: String::new(),
+        };
+        let result = serde_json::to_value(&updated)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let request_id = self.request_id(request_id)?;
+        let affected_prefixes = if target_changed {
+            vec![
+                format!("entities/{}/", current.source_id),
+                format!("entities/{}/", current.target_id),
+                format!("entities/{target_id}/"),
+            ]
+        } else {
+            vec![format!("entities/{}/", current.source_id)]
+        };
+        let transaction = self.begin_mutation(&request_id, Some(&result), &affected_prefixes)?;
+        if transaction.execute(
+            "UPDATE relationships SET metadata=?1, target_id=COALESCE(?2,target_id) WHERE id=?3",
+            params![metadata, input.target_id.as_deref(), current.id],
+        )? == 0
+        {
+            return Err(CoreError::NotFound("relationship not found".into()));
+        }
+        transaction.commit()?;
+        self.notify_export_worker()?;
+        let revision = self.revision_for_relationship(&updated.id)?;
+        Ok(Relationship {
+            revision,
+            ..updated
         })
     }
 

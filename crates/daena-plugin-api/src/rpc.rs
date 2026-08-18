@@ -290,6 +290,18 @@ pub struct RelationshipCreatePayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
+pub struct RelationshipUpdatePayload {
+    pub id: String,
+    pub metadata: Option<String>,
+    #[serde(rename = "target_id")]
+    pub target_id: Option<String>,
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct RelationshipDeletePayload {
     pub id: String,
     #[serde(rename = "relationship_type")]
@@ -716,6 +728,19 @@ mod tests {
         });
         let parsed: RelationshipCreatePayload = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(parsed.source_id, "e1");
+        assert_eq!(serde_json::to_value(parsed).unwrap(), json);
+    }
+
+    #[test]
+    fn relationship_update_round_trips_optional_fields() {
+        let json = serde_json::json!({
+            "id": "relationship-1",
+            "metadata": "{\"validFrom\":\"2024-01-01\"}",
+            "target_id": "e2",
+            "expectedRevision": "rev-10"
+        });
+        let parsed: RelationshipUpdatePayload = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(parsed.target_id.as_deref(), Some("e2"));
         assert_eq!(serde_json::to_value(parsed).unwrap(), json);
     }
 

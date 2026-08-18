@@ -888,6 +888,87 @@ fn related_retrieval_supports_two_hops_and_preserves_relationship_context() {
 }
 
 #[test]
+fn relationship_citations_use_metadata_labels_without_removing_raw_context() {
+    let mut project = ProjectStore::in_memory().unwrap();
+    let source = project
+        .create_entity(CreateEntity {
+            name: "Artifact".into(),
+            entity_type: Some("artifact".into()),
+        })
+        .unwrap();
+    let target = project
+        .create_entity(CreateEntity {
+            name: "Alice".into(),
+            entity_type: Some("person".into()),
+        })
+        .unwrap();
+    project
+        .set_relationship_metadata_schemas(BTreeMap::from([(
+            "owned_by".into(),
+            vec![
+                MetadataFieldDefinition {
+                    key: "validFrom".into(),
+                    label: "Valid from".into(),
+                    field_type: "date".into(),
+                    required: None,
+                    options: None,
+                },
+                MetadataFieldDefinition {
+                    key: "validTo".into(),
+                    label: "Valid to".into(),
+                    field_type: "date".into(),
+                    required: None,
+                    options: None,
+                },
+            ],
+        )]))
+        .unwrap();
+    project
+        .create_relationship(RelationshipInput {
+            source_id: source.id.clone(),
+            target_id: target.id,
+            relationship_type: "owned_by".into(),
+            metadata: Some(
+                serde_json::json!({
+                    "validFrom": "2024-01-01",
+                    "validTo": "2024-06-01"
+                })
+                .to_string(),
+            ),
+        })
+        .unwrap();
+
+    let caller = daena_ai::AiCaller::authorized_plugin(
+        "daena.lore",
+        "project",
+        vec!["document.read".into(), "relationship.read".into()],
+        vec!["project:project".into()],
+        1,
+        "relationship-citation-summary",
+    );
+    let policy = daena_plugin_api::AiRetrievalPolicyPayload {
+        mode: daena_plugin_api::AiRetrievalMode::Related,
+        query: None,
+        seed_ids: vec![source.id],
+        allowed_source_kinds: vec!["relationship".into()],
+        relationship_depth: 1,
+        passage_count: 4,
+        include_shared_fields: false,
+    };
+    let (context, citations) = ai::build_retrieval_context(&project, &caller, &policy).unwrap();
+    assert!(context.contains("Metadata:"));
+    assert!(context.contains("validFrom"));
+    let citation = citations
+        .iter()
+        .find(|citation| citation.source_kind == "relationship")
+        .unwrap();
+    assert_eq!(
+        citation.summary.as_deref(),
+        Some("Artifact --owned_by--> Alice · Valid from: 2024-01-01 · Valid to: 2024-06-01")
+    );
+}
+
+#[test]
 fn broker_retrieval_attaches_citations_until_inspected() {
     let core = new_shared_core();
     current_session(&core)

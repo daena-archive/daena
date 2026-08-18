@@ -5,6 +5,7 @@ license = "Apache-2.0"
 edition = "2021"
 
 [dependencies]
+daena-plugin-api = { path = "../daena-plugin-api" }
 daena-physical = { path = "../daena-physical-spike" }
 daena-atlas = { path = "../daena-atlas" }
 rusqlite = { version = "0.32", features = ["backup", "bundled"] }

@@ -10,7 +10,8 @@ export type PluginKind = "declarative" | "sandboxed";
 export type FieldType = "text" | "number" | "boolean" | "date" | "enum" | "entity-ref" | "relationship";
 export interface Entrypoints { ui?: string; wasm?: string }
 export interface Dependency { required: boolean; version: string }
-export interface FieldDefinition { entityTypes?: string[]; key: string; label: string; multiple?: boolean; options?: string[] | null; relationshipType?: string; required?: boolean | null; shared?: boolean; targetEntityTypes?: string[]; type: FieldType }
+export interface MetadataFieldDefinition { key: string; label: string; options?: string[] | null; required?: boolean | null; type: "text" | "number" | "boolean" | "date" | "enum" }
+export interface FieldDefinition { entityTypes?: string[]; key: string; label: string; metadataFields?: MetadataFieldDefinition[]; multiple?: boolean; options?: string[] | null; relationshipType?: string; required?: boolean | null; shared?: boolean; targetEntityTypes?: string[]; type: FieldType }
 export interface SchemaContribution { entityTypes: string[]; fields: FieldDefinition[]; namespace: string }
 export interface EntityTemplate { description?: string | null; document?: string | null; entityType: string; fields: Record<string, unknown>; icon?: string | null; id: string; name: string; requiredFields?: string[] | null }
 export type MigrationOperation = { kind: "create-namespace"; namespace: string } | { field: FieldDefinition; kind: "add-field"; namespace: string } | { from: string; kind: "rename-field"; namespace: string; to: string } | { key: string; kind: "drop-field"; namespace: string };
@@ -99,6 +100,7 @@ export interface RecordUpdatePayload { collection: string; expectedRevision: str
 export interface RelationshipCreatePayload { expectedRevision: string; metadata?: string | null; relationship_type: string; source_id: string; target_id: string }
 export interface RelationshipDeletePayload { expectedRevision: string; id: string; relationship_type?: string | null }
 export interface RelationshipListPayload { entityId: string }
+export interface RelationshipUpdatePayload { expectedRevision: string; id: string; metadata?: string | null; target_id?: string | null }
 export interface SearchQueryPayload { query: string }
 export interface ServiceCallPayload { deadlineMs?: number | null; major: number; name: string; payload: unknown }
 export interface BrokerMethodPayloads {
@@ -155,6 +157,7 @@ export interface BrokerMethodPayloads {
   "relationship.create": RelationshipCreatePayload;
   "relationship.delete": RelationshipDeletePayload;
   "relationship.list": RelationshipListPayload;
+  "relationship.update": RelationshipUpdatePayload;
   "search.query": SearchQueryPayload;
   "service.call": ServiceCallPayload;
 }

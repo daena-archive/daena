@@ -24,7 +24,14 @@ pub type SharedAiRuntime = Arc<Mutex<AiRuntime>>;
 const MAX_BUFFERED_REQUESTS: usize = 32;
 const MAX_BUFFERED_EVENTS: usize = 64;
 const AI_CHUNKER_VERSION: &str = "chunker.v1";
-type RetrievalSourceIds = BTreeMap<String, (Option<String>, Option<String>)>;
+#[derive(Debug, Clone)]
+struct RetrievalSource {
+    entity_id: Option<String>,
+    canonical_path: Option<String>,
+    summary: Option<String>,
+}
+
+type RetrievalSourceIds = BTreeMap<String, RetrievalSource>;
 
 #[derive(Default)]
 pub struct AiRuntime {
@@ -351,6 +358,62 @@ pub async fn ai_index_search(
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+fn display_metadata_value(value: &serde_json::Value) -> String {
+    let rendered = match value {
+        serde_json::Value::String(value) => value.clone(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Number(value) => value.to_string(),
+        _ => value.to_string(),
+    };
+    let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = normalized.chars();
+    let display = chars.by_ref().take(160).collect::<String>();
+    if chars.next().is_some() {
+        format!("{display}...")
+    } else {
+        display
+    }
+}
+
+fn relationship_summary(
+    project: &ProjectStore,
+    source_name: &str,
+    target_name: &str,
+    relationship_type: &str,
+    raw_metadata: &str,
+) -> String {
+    let mut summary = format!("{source_name} --{relationship_type}--> {target_name}");
+    let Ok(serde_json::Value::Object(metadata)) = serde_json::from_str(raw_metadata) else {
+        return summary;
+    };
+    let labels = project
+        .relationship_metadata_fields_for_type(relationship_type)
+        .map(|fields| {
+            fields
+                .iter()
+                .map(|field| (field.key.as_str(), field.label.as_str()))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let metadata_summary = metadata
+        .iter()
+        .filter(|(_, value)| !value.is_null() && value.as_str() != Some(""))
+        .take(8)
+        .map(|(key, value)| {
+            format!(
+                "{}: {}",
+                labels.get(key.as_str()).copied().unwrap_or(key),
+                display_metadata_value(value)
+            )
+        })
+        .collect::<Vec<_>>();
+    if !metadata_summary.is_empty() {
+        summary.push_str(" · ");
+        summary.push_str(&metadata_summary.join(" · "));
+    }
+    summary
 }
 
 fn project_chunks(project: &ProjectStore) -> Result<Vec<TextChunk>, String> {
@@ -913,10 +976,18 @@ fn build_retrieval_context_with_semantic(
                     "{source_name} --{}--> {target_name}.{metadata}",
                     relationship.relationship_type
                 );
+                let summary = relationship_summary(
+                    project,
+                    source_name,
+                    target_name,
+                    &relationship.relationship_type,
+                    &relationship.metadata,
+                );
                 let hash = hash_text(&text);
                 passages.push(RetrievedPassage {
                     source: SourceRef {
                         source_kind: "relationship".into(),
+                        summary: Some(summary),
                         entity_id: Some(relationship.source_id),
                         document_id: None,
                         canonical_path: Some(format!("relationships/{}.json", relationship.id)),
@@ -963,6 +1034,7 @@ fn build_retrieval_context_with_semantic(
                 passages.push(RetrievedPassage {
                     source: SourceRef {
                         source_kind: "document".into(),
+                        summary: None,
                         entity_id: Some(passage.entity_id),
                         document_id: Some(document.id),
                         canonical_path: Some(passage.source_path),
@@ -1000,6 +1072,7 @@ fn build_retrieval_context_with_semantic(
                     }
                     let source = SourceRef {
                         source_kind: "document".into(),
+                        summary: None,
                         entity_id: Some(entity_id.clone()),
                         document_id: Some(document.id.clone()),
                         canonical_path: Some(format!("entities/{}/document.md", entity_id)),
@@ -1029,6 +1102,7 @@ fn build_retrieval_context_with_semantic(
                     passages.push(RetrievedPassage {
                         source: SourceRef {
                             source_kind: "field".into(),
+                            summary: None,
                             entity_id: Some(entity_id.clone()),
                             document_id: None,
                             canonical_path: Some(format!(
@@ -1074,6 +1148,12 @@ fn retrieval_source_ids(
     };
     let entity_ids =
         retrieval_entity_ids(project, mode, &payload.seed_ids, payload.relationship_depth)?;
+    let entity_names = project
+        .list_entities()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|entity| (entity.id, entity.name))
+        .collect::<BTreeMap<_, _>>();
     let mut source_ids = RetrievalSourceIds::new();
     for entity_id in &entity_ids {
         for document in project
@@ -1082,10 +1162,11 @@ fn retrieval_source_ids(
         {
             source_ids.insert(
                 document.id,
-                (
-                    Some(entity_id.clone()),
-                    Some(format!("entities/{}/document.md", entity_id)),
-                ),
+                RetrievalSource {
+                    entity_id: Some(entity_id.clone()),
+                    canonical_path: Some(format!("entities/{}/document.md", entity_id)),
+                    summary: None,
+                },
             );
         }
         for field in project
@@ -1094,13 +1175,14 @@ fn retrieval_source_ids(
         {
             source_ids.insert(
                 format!("field:{}:{}:{}", entity_id, field.namespace, field.key),
-                (
-                    Some(entity_id.clone()),
-                    Some(format!(
+                RetrievalSource {
+                    entity_id: Some(entity_id.clone()),
+                    canonical_path: Some(format!(
                         "entities/{}/fields/{}-{}.json",
                         entity_id, field.namespace, field.key
                     )),
-                ),
+                    summary: None,
+                },
             );
         }
         for relationship in project
@@ -1112,12 +1194,27 @@ fn retrieval_source_ids(
             {
                 continue;
             }
+            let source_name = entity_names
+                .get(&relationship.source_id)
+                .map(String::as_str)
+                .unwrap_or(&relationship.source_id);
+            let target_name = entity_names
+                .get(&relationship.target_id)
+                .map(String::as_str)
+                .unwrap_or(&relationship.target_id);
             source_ids.insert(
                 format!("relationship:{}", relationship.id),
-                (
-                    Some(relationship.source_id),
-                    Some(format!("relationships/{}.json", relationship.id)),
-                ),
+                RetrievalSource {
+                    entity_id: Some(relationship.source_id.clone()),
+                    canonical_path: Some(format!("relationships/{}.json", relationship.id)),
+                    summary: Some(relationship_summary(
+                        project,
+                        source_name,
+                        target_name,
+                        &relationship.relationship_type,
+                        &relationship.metadata,
+                    )),
+                },
             );
         }
     }
@@ -1167,17 +1264,17 @@ async fn semantic_retrieval_passages(
                 let record = records
                     .iter()
                     .find(|record| record.chunk.id == matched.chunk_id)?;
-                let (entity_id, canonical_path) =
-                    allowed_source_ids.get(&record.chunk.source.source_id)?;
+                let source_metadata = allowed_source_ids.get(&record.chunk.source.source_id)?;
                 if !allowed_kind(&record.chunk.source.source_kind) {
                     return None;
                 }
                 let source = SourceRef {
                     source_kind: record.chunk.source.source_kind.clone(),
-                    entity_id: entity_id.clone(),
+                    summary: source_metadata.summary.clone(),
+                    entity_id: source_metadata.entity_id.clone(),
                     document_id: (record.chunk.source.source_kind == "document")
                         .then(|| record.chunk.source.source_id.clone()),
-                    canonical_path: canonical_path.clone(),
+                    canonical_path: source_metadata.canonical_path.clone(),
                     revision: record.chunk.source.revision.clone(),
                     content_hash: record.chunk.source.source_hash.clone(),
                     byte_start: Some(record.chunk.byte_start),

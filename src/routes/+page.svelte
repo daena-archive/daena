@@ -52,6 +52,7 @@ import SchemaSettingsPanel from "$lib/SchemaSettingsPanel.svelte";
 import { allowLeaveSchemaEditor, isSchemaEditorDirty } from "$lib/schemaEditorGuard";
 import GitSettingsPanel from "$lib/GitSettingsPanel.svelte";
 import RelationshipPicker from "$lib/RelationshipPicker.svelte";
+import RelationshipMetadataDialog from "$lib/RelationshipMetadataDialog.svelte";
 import EntityHoverCard from "$lib/EntityHoverCard.svelte";
 import { confirmDialog, promptDialog } from "$lib/dialogs.svelte";
 import DialogHost from "$lib/DialogHost.svelte";
@@ -119,6 +120,7 @@ let selected = $state<Entity | null>(null);
 let documentBody = $state("");
 let fields = $state<Record<string, unknown>>({});
 let relationships = $state<Relationship[]>([]);
+let metadataDialog = $state<{ relationship: Relationship; definition: FieldDefinition | null } | null>(null);
 let assets = $state<Asset[]>([]);
 let mapLocations = $state<MapLocation[]>([]);
 let modules = $state<InstalledModule[]>([]);
@@ -315,7 +317,8 @@ $effect(() => {
     confirmAction !== null ||
     deleteTarget !== null ||
     installConsent !== null ||
-    deleteBackupPath !== "";
+    deleteBackupPath !== "" ||
+    metadataDialog !== null;
   document.body.classList.toggle("modal-open", modalOpen);
   if (!modalOpen) return;
   const onKey = (event: KeyboardEvent) => {
@@ -341,6 +344,9 @@ $effect(() => {
     } else if (aiRewriteOpen) {
       event.preventDefault();
       closeAiRewrite();
+    } else if (metadataDialog) {
+      event.preventDefault();
+      metadataDialog = null;
     }
   };
   window.addEventListener("keydown", onKey, true);
@@ -2237,6 +2243,7 @@ async function loadSelectedState(entity: Entity) {
   documentBody = "";
   fields = {};
   relationships = [];
+  metadataDialog = null;
   assets = [];
   mapLocations = [];
   loadedDocumentRevision = "";
@@ -2760,6 +2767,62 @@ function selectedRelationshipIds(definition: FieldDefinition) {
     )
     .map((relationship) => relationship.target_id);
 }
+function relationshipsForDefinition(definition: FieldDefinition) {
+  return relationships.filter(
+    (relationship) =>
+      relationship.source_id === selected?.id && relationship.relationship_type === definition.relationshipType,
+  );
+}
+function definitionForRelationship(relationship: Relationship): FieldDefinition | null {
+  const manifests = modules
+    .filter((module) => module.enabled)
+    .map((module) => module as unknown as ModuleManifest);
+  if (manifests.length === 0) {
+    const fallback = activeManifest();
+    if (fallback) manifests.push(fallback);
+  }
+  for (const manifest of manifests) {
+    for (const schema of manifest.schemas ?? []) {
+      const definition = schema.fields.find(
+        (field) =>
+          field.type === "relationship" &&
+          field.relationshipType === relationship.relationship_type &&
+          field.metadataFields !== undefined,
+      );
+      if (definition) return definition;
+    }
+  }
+  return null;
+}
+function relationshipTargetName(relationship: Relationship) {
+  return entities.find((entity) => entity.id === relationship.target_id)?.name ?? relationship.target_id;
+}
+function relationshipMetadataSummary(relationship: Relationship, definition: FieldDefinition | null) {
+  let metadata: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(relationship.metadata || "{}");
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      metadata = parsed as Record<string, unknown>;
+    }
+  } catch {
+    return "Metadata needs repair";
+  }
+  const labels = new Map((definition?.metadataFields ?? []).map((field) => [field.key, field.label]));
+  return Object.entries(metadata)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .slice(0, 3)
+    .map(([key, value]) => `${labels.get(key) ?? key}: ${fieldDisplayValue(value)}`)
+    .join(" · ");
+}
+function openRelationshipMetadata(relationship: Relationship) {
+  metadataDialog = { relationship, definition: definitionForRelationship(relationship) };
+}
+async function saveRelationshipMetadata(relationship: Relationship, metadata: Record<string, unknown>) {
+  const updated = await project.updateRelationship(relationship.id, metadata, {
+    expectedRevision: relationship.revision,
+  });
+  relationships = relationships.map((current) => (current.id === updated.id ? updated : current));
+}
 async function updateRelationshipField(definition: FieldDefinition, targetIds: string[]) {
   if (projectDiagnostics.length > 0) return;
   if (!selected || !definition.relationshipType) return;
@@ -3242,6 +3305,7 @@ function clearSelection() {
   documentBody = "";
   fields = {};
   relationships = [];
+  metadataDialog = null;
   assets = [];
   savedAt = "";
   loadedDocumentRevision = "";
@@ -5024,18 +5088,33 @@ onMount(() => {
                   }} />
               </section>
             {/if}
-            {#each definitions().filter((candidate) => candidate.type === "relationship") as definition}<section
-                class="inspector-section">
-                <div class="section-title">
+             {#each definitions().filter((candidate) => candidate.type === "relationship") as definition}<section
+                 class="inspector-section">
+                 <div class="section-title">
                   <h3>{definition.label}</h3>
                   <span>{selectedRelationshipIds(definition).length}</span>
                 </div>
                 <RelationshipPicker
                   field={definition}
                   {entities}
-                  selectedIds={selectedRelationshipIds(definition)}
-                  onChange={(ids) => void updateRelationshipField(definition, ids)} />
-              </section>{/each}
+                   selectedIds={selectedRelationshipIds(definition)}
+                   onChange={(ids) => void updateRelationshipField(definition, ids)} />
+                  {#if definition.metadataFields?.length && relationshipsForDefinition(definition).length > 0}<div class="relationship-detail-list" aria-label={`${definition.label} details`}>
+                     {#each relationshipsForDefinition(definition) as relationship (relationship.id)}
+                       <div class="relationship-detail-row">
+                         <div class="relationship-detail-copy">
+                           <strong>{relationshipTargetName(relationship)}</strong>
+                           <small>{entities.find((entity) => entity.id === relationship.target_id)?.entity_type ?? "Entity"}{#if relationshipMetadataSummary(relationship, definitionForRelationship(relationship) ?? definition)} · {relationshipMetadataSummary(relationship, definitionForRelationship(relationship) ?? definition)}{/if}</small>
+                         </div>
+                         <button
+                           class="quiet-button relationship-details-button"
+                           type="button"
+                           aria-label={`Edit details for ${relationship.relationship_type} to ${relationshipTargetName(relationship)}`}
+                           onclick={() => openRelationshipMetadata(relationship)}>Details</button>
+                       </div>
+                     {/each}
+                   </div>{/if}
+               </section>{/each}
             <section class="inspector-section">
               <div class="section-title">
                 <h3>Attachments</h3>
@@ -5106,6 +5185,15 @@ onMount(() => {
       onclick={toggleCreateForm}>＋</button
     >{/if}
 </main>
+{#if metadataDialog}
+  {@const dialog = metadataDialog}
+  <RelationshipMetadataDialog
+    relationship={dialog.relationship}
+    definition={dialog.definition}
+    {entities}
+    onSave={(metadata) => saveRelationshipMetadata(dialog.relationship, metadata)}
+    onClose={() => (metadataDialog = null)} />
+{/if}
 <DialogHost />
 
 <style>
@@ -6311,6 +6399,45 @@ onMount(() => {
 .section-title span {
   color: var(--ink-faint);
   font-size: 11px;
+}
+.relationship-detail-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+.relationship-detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fcf8f1;
+}
+.relationship-detail-copy {
+  min-width: 0;
+}
+.relationship-detail-copy strong,
+.relationship-detail-copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.relationship-detail-copy strong {
+  color: var(--ink);
+  font-size: 11px;
+}
+.relationship-detail-copy small {
+  margin-top: 3px;
+  color: var(--ink-faint);
+  font-size: 9px;
+}
+.relationship-details-button {
+  flex: none;
+  padding: 5px 8px;
+  font-size: 10px;
 }
 .asset-row strong,
 .asset-row small {

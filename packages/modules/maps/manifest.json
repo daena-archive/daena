@@ -9,28 +9,109 @@
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "sandboxed",
   "entrypoints": { "ui": "dist/ui/index.html" },
-  "capabilities": ["entity.read", "entity.write", "entity.delete", "field.read:self", "field.write:self", "relationship.read", "relationship.write", "asset.read:self", "asset.write:self", "search.query", "host.surface:daena.maps/editor@1", "service.provide:daena.maps/navigation@1", "event.subscribe:daena.core/entity-changed@1", "event.publish:daena.maps/state@1", "event.publish:daena.maps/selection@1"],
+  "capabilities": [
+    "entity.read",
+    "entity.write",
+    "entity.delete",
+    "field.read:self",
+    "field.write:self",
+    "relationship.read",
+    "relationship.write",
+    "asset.read:self",
+    "asset.write:self",
+    "search.query",
+    "host.surface:daena.maps/editor@1",
+    "service.provide:daena.maps/navigation@1",
+    "event.subscribe:daena.core/entity-changed@1",
+    "event.publish:daena.maps/state@1",
+    "event.publish:daena.maps/selection@1"
+  ],
   "dependencies": {},
   "namespaces": ["maps"],
-  "schemas": [{
-    "namespace": "maps",
-    "entityTypes": ["daena.maps:map", "daena.maps:physical-natural-event"],
-    "fields": [
-      { "key": "map", "label": "Map descriptor", "type": "text", "entityTypes": ["daena.maps:map"] },
-      { "key": "locations", "label": "Location references", "type": "text", "shared": true },
-      { "key": "physicalChronology", "label": "Physical chronology", "type": "text", "entityTypes": ["daena.maps:physical-natural-event"], "shared": true },
-      { "key": "layers", "label": "Semantic layer definitions", "type": "text", "entityTypes": ["daena.maps:map"] },
-      { "key": "physicalCalendarBinding", "label": "Physical calendar binding", "type": "text", "entityTypes": ["daena.maps:map"] },
-      { "key": "atlasPresets", "label": "Atlas render presets", "type": "text", "entityTypes": ["daena.maps:map"] },
-      { "key": "detailMap", "label": "Detail map", "type": "relationship", "relationshipType": "daena.maps:detail-map", "targetEntityTypes": ["daena.maps:map"] },
-      { "key": "overviewMap", "label": "Overview map", "type": "relationship", "relationshipType": "daena.maps:overview-map", "targetEntityTypes": ["daena.maps:map"] },
-      { "key": "relatedMap", "label": "Related map", "type": "relationship", "relationshipType": "daena.maps:related-map", "targetEntityTypes": ["daena.maps:map"] }
-    ]
-  }],
+  "schemas": [
+    {
+      "namespace": "maps",
+      "entityTypes": ["daena.maps:map", "daena.maps:physical-natural-event"],
+      "fields": [
+        { "key": "map", "label": "Map descriptor", "type": "text", "entityTypes": ["daena.maps:map"] },
+        { "key": "locations", "label": "Location references", "type": "text", "shared": true },
+        {
+          "key": "physicalChronology",
+          "label": "Physical chronology",
+          "type": "text",
+          "entityTypes": ["daena.maps:physical-natural-event"],
+          "shared": true
+        },
+        { "key": "layers", "label": "Semantic layer definitions", "type": "text", "entityTypes": ["daena.maps:map"] },
+        {
+          "key": "physicalCalendarBinding",
+          "label": "Physical calendar binding",
+          "type": "text",
+          "entityTypes": ["daena.maps:map"]
+        },
+        { "key": "atlasPresets", "label": "Atlas render presets", "type": "text", "entityTypes": ["daena.maps:map"] },
+        {
+          "key": "detailMap",
+          "label": "Detail map",
+          "type": "relationship",
+          "relationshipType": "daena.maps:detail-map",
+          "targetEntityTypes": ["daena.maps:map"]
+        },
+        {
+          "key": "overviewMap",
+          "label": "Overview map",
+          "type": "relationship",
+          "relationshipType": "daena.maps:overview-map",
+          "targetEntityTypes": ["daena.maps:map"]
+        },
+        {
+          "key": "relatedMap",
+          "label": "Related map",
+          "type": "relationship",
+          "relationshipType": "daena.maps:related-map",
+          "targetEntityTypes": ["daena.maps:map"]
+        }
+      ]
+    }
+  ],
   "templates": [],
-  "views": [{ "id": "map-workspace", "title": "Maps", "renderer": { "type": "host-surface", "id": "daena.maps/editor", "major": 1 }, "components": [] }],
-  "commands": [{ "id": "capture-anchor", "title": "Capture map anchor", "action": { "type": "refresh-view" }, "exposure": ["view"] }, { "id": "reconcile-links", "title": "Reconcile linked locations", "action": { "type": "refresh-view" }, "exposure": ["view"] }],
+  "views": [
+    {
+      "id": "map-workspace",
+      "title": "Maps",
+      "renderer": { "type": "host-surface", "id": "daena.maps/editor", "major": 1 },
+      "components": []
+    }
+  ],
+  "commands": [
+    {
+      "id": "capture-anchor",
+      "title": "Capture map anchor",
+      "action": { "type": "refresh-view" },
+      "exposure": ["view"]
+    },
+    {
+      "id": "reconcile-links",
+      "title": "Reconcile linked locations",
+      "action": { "type": "refresh-view" },
+      "exposure": ["view"]
+    }
+  ],
   "services": { "provides": [{ "name": "daena.maps/navigation", "major": 1 }], "consumes": [] },
-  "events": { "publishes": [{ "name": "daena.maps/state", "version": 1 }, { "name": "daena.maps/selection", "version": 1 }], "subscribes": [{ "name": "daena.core/entity-changed", "version": 1 }] },
-  "migrations": [{ "id": "maps-v1", "from": 0, "to": 1, "recovery": "backup", "operations": [{ "kind": "create-namespace", "namespace": "maps" }] }]
+  "events": {
+    "publishes": [
+      { "name": "daena.maps/state", "version": 1 },
+      { "name": "daena.maps/selection", "version": 1 }
+    ],
+    "subscribes": [{ "name": "daena.core/entity-changed", "version": 1 }]
+  },
+  "migrations": [
+    {
+      "id": "maps-v1",
+      "from": 0,
+      "to": 1,
+      "recovery": "backup",
+      "operations": [{ "kind": "create-namespace", "namespace": "maps" }]
+    }
+  ]
 }

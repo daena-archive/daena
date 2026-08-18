@@ -443,6 +443,23 @@ export function buildModuleContext(
         );
         return toRelationship(rel);
       },
+      update: async (
+        input: { id: UUID; metadata?: Record<string, unknown>; targetId?: UUID },
+        options?: MutationOptions,
+      ) => {
+        checkCapability(manifest, "relationship.write");
+        const rel = await rpc.call<RawRelationship>(
+          "relationship.update",
+          {
+            id: input.id,
+            metadata: input.metadata ? JSON.stringify(input.metadata) : undefined,
+            target_id: input.targetId,
+            expectedRevision: options?.expectedRevision,
+          },
+          options?.requestId,
+        );
+        return toRelationship(rel);
+      },
       delete: async (id: UUID, relationshipType: string, options?: MutationOptions) => {
         checkCapability(manifest, "relationship.write");
         if (

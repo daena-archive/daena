@@ -29,6 +29,7 @@ import type {
   DaenaModule,
 } from "../../packages/module-api/src/index";
 import { buildModuleContext } from "$lib/modules/context";
+import { filterWorkspaceEntities } from "$lib/modules/workspace";
 import HostView from "$lib/plugins/HostView.svelte";
 import SandboxView from "$lib/plugins/SandboxView.svelte";
 import NativeVectorMapEditor from "$lib/maps/native-vector/NativeVectorMapEditor.svelte";
@@ -42,6 +43,8 @@ import { allowLeaveSchemaEditor, isSchemaEditorDirty } from "$lib/schemaEditorGu
 import GitSettingsPanel from "$lib/GitSettingsPanel.svelte";
 import RelationshipPicker from "$lib/RelationshipPicker.svelte";
 import EntityHoverCard from "$lib/EntityHoverCard.svelte";
+import { confirmDialog, promptDialog } from "$lib/dialogs.svelte";
+import DialogHost from "$lib/DialogHost.svelte";
 import loreManifestJson from "../../packages/modules/lore/manifest.json";
 import timelineManifestJson from "../../packages/modules/timeline/manifest.json";
 import writingManifestJson from "../../packages/modules/writing/manifest.json";
@@ -227,7 +230,10 @@ let aiSourceBody = $state("");
 let aiSourceRevision = $state("");
 let aiLastSequence = $state(-1);
 let aiUnlisten: (() => void) | null = null;
-let editorRef = $state<{ insertAiTextAtRequest: (value: string) => boolean } | null>(null);
+let editorRef = $state<{
+  insertAiTextAtRequest: (value: string) => boolean;
+  replaceAiTextWithMarkdown: (value: string) => string | null;
+} | null>(null);
 let aiFieldFillBusy = $state(false);
 let aiFieldFillOpen = $state(false);
 let aiFieldFillRequestId = $state<string | null>(null);
@@ -246,7 +252,7 @@ let sandboxView = $state<{
   view: PluginAdminEntry["views"][number] | null;
   renderer: "maps" | "webview";
 } | null>(null);
-let projectionView = $state<{ title: string; module: DaenaModule } | null>(null);
+let projectionView = $state<{ title: string; module: DaenaModule; manifest: ModuleManifest } | null>(null);
 let adminBusy = $state(false);
 let pluginActionId = $state<string | null>(null);
 let installing = $state(false);
@@ -295,7 +301,37 @@ $effect(() => {
     installConsent !== null ||
     deleteBackupPath !== "";
   document.body.classList.toggle("modal-open", modalOpen);
-  return () => document.body.classList.remove("modal-open");
+  if (!modalOpen) return;
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key !== "Escape") return;
+    if (showCreateForm) {
+      event.preventDefault();
+      closeCreateForm();
+    } else if (deleteBackupPath) {
+      event.preventDefault();
+      deleteBackupPath = "";
+    } else if (deleteTarget) {
+      event.preventDefault();
+      deleteTarget = null;
+    } else if (upgradePreview) {
+      event.preventDefault();
+      upgradePreview = null;
+    } else if (installConsent) {
+      event.preventDefault();
+      installConsent = null;
+    } else if (confirmAction) {
+      event.preventDefault();
+      confirmAction = null;
+    } else if (aiRewriteOpen) {
+      event.preventDefault();
+      closeAiRewrite();
+    }
+  };
+  window.addEventListener("keydown", onKey, true);
+  return () => {
+    window.removeEventListener("keydown", onKey, true);
+    document.body.classList.remove("modal-open");
+  };
 });
 
 const activeModuleId = () =>
@@ -743,7 +779,11 @@ async function resolveDirtyMapSession(): Promise<boolean> {
   const mapId = currentMapId();
   if (!mapId || sandboxView?.renderer !== "maps" || mapSaveStates[mapId]?.status !== "dirty") return true;
   if (mapsEditorMode === "physical") return true;
-  if (confirm("Save changes to this map before leaving?")) {
+  if (await confirmDialog({
+    title: "Save changes to this map before leaving?",
+    message: "Your map has unsaved edits.",
+    confirmLabel: "Save",
+  })) {
     try {
       if (mapsEditorMode === "vector") {
         await nativeVectorSession()?.save();
@@ -763,7 +803,12 @@ async function resolveDirtyMapSession(): Promise<boolean> {
       return false;
     }
   }
-  return confirm("Discard unsaved map edits? Choose Cancel to remain in the editor.");
+  return confirmDialog({
+    title: "Discard unsaved map edits?",
+    message: "Choose Cancel to remain in the editor.",
+    confirmLabel: "Discard",
+    danger: true,
+  });
 }
 
 async function leavePluginView(): Promise<boolean> {
@@ -1081,10 +1126,7 @@ function visibleEntities() {
   const entityTypes = new Set(
     manifestForWorkspaceSection(section)?.schemas.flatMap((schema) => schema.entityTypes) ?? [],
   );
-  return entities.filter((entity) => {
-    const belongs = entity.entity_type !== null && entityTypes.has(entity.entity_type);
-    return belongs && (!term || `${entity.name} ${entity.entity_type ?? ""}`.toLowerCase().includes(term));
-  });
+  return filterWorkspaceEntities({ entityTypes, entities, query, writingView: section === "writing" ? writingView : undefined });
 }
 
 function entityGlyph(entity: Pick<Entity, "entity_type">) {
@@ -1209,7 +1251,11 @@ async function openProjection() {
   if (!(await flushAutoSave())) return;
   if (!(await leavePluginView())) return;
   const projection = projectionModule(section === "lore" ? "lore" : "timeline");
-  projectionView = projection;
+  projectionView = {
+    title: projection.title,
+    module: projection.module,
+    manifest: (manifestForWorkspaceSection(section) ?? projection.module.manifest) as ModuleManifest,
+  };
 }
 
 function normalizeDocument(body: string, format?: string) {
@@ -1865,14 +1911,19 @@ async function acceptAiRewrite() {
     if (await saveDocument()) closeAiRewrite();
     return;
   }
-  const start = documentBody.indexOf(aiSourceSelection);
-  if (start < 0) {
-    error = "The selected Markdown is no longer present in the document. Discard it and try again.";
+  const nextMarkdown = editorRef?.replaceAiTextWithMarkdown(aiPreviewOutput);
+  if (nextMarkdown === null || nextMarkdown === undefined) {
+    error = "The selected text is no longer at the original position. Discard it and try again.";
     return;
   }
-  documentBody = `${documentBody.slice(0, start)}${aiPreviewOutput}${documentBody.slice(start + aiSourceSelection.length)}`;
+  const bodyBefore = documentBody;
+  documentBody = nextMarkdown;
   markEntryDirty();
-  if (await saveDocument()) closeAiRewrite();
+  if (await saveDocument()) {
+    closeAiRewrite();
+  } else {
+    documentBody = bodyBefore;
+  }
 }
 async function persistRecentProjects(next: RecentProject[]) {
   recentProjects = next;
@@ -2202,7 +2253,15 @@ async function openMapEntityFromLink(entityId: string) {
 }
 
 async function unlinkMapLocation(location: MapLocation) {
-  if (!selected || !confirm(`Unlink ${location.label || "this location"}? The entity and map feature will remain.`))
+  if (
+    !selected ||
+    !(await confirmDialog({
+      title: "Unlink this location?",
+      message: `${location.label || "This location"} will be unlinked from ${selected.name}. The entity and map feature will remain.`,
+      confirmLabel: "Unlink",
+      danger: true,
+    }))
+  )
     return;
   try {
     await project.unlinkMapLocation(selected.id, location.id);
@@ -2214,8 +2273,16 @@ async function unlinkMapLocation(location: MapLocation) {
 
 async function editMapLocation(location: MapLocation) {
   if (!selected) return;
-  const role = window.prompt("Edit location role", location.role)?.trim();
-  if (!role) return;
+  const role = await promptDialog({
+    title: "Edit location role",
+    message: "Describe what this location represents for this entity.",
+    value: location.role,
+    placeholder: "e.g. Birthplace, Residence",
+    confirmLabel: "Save",
+  });
+  if (role === null) return;
+  const nextRole = role.trim();
+  if (!nextRole) return;
   try {
     await project.upsertMapLocation(selected.id, { ...location, role });
     mapLocations = await project.listMapLocations(selected.id);
@@ -2489,7 +2556,16 @@ async function saveDocument(): Promise<boolean> {
 async function archiveSelected() {
   if (projectDiagnostics.length > 0) return;
   if (!(await flushAutoSave())) return;
-  if (!selected || !confirm(`Archive ${selected.name}?`)) return;
+  if (
+    !selected ||
+    !(await confirmDialog({
+      title: `Archive ${selected.name}?`,
+      message: `${selected.name} will be archived and hidden from the workspace.`,
+      confirmLabel: "Archive",
+      danger: true,
+    }))
+  )
+    return;
   try {
     await loadEntities();
     const current = entities.find((entity) => entity.id === selected?.id);
@@ -3059,14 +3135,12 @@ async function rebuildSearchIndex() {
   }
 }
 async function importPortableCheckpoint() {
-  try {
+  await runProjectTransition("Importing checkpoint…", async () => {
     await project.importCheckpoint();
-    projectInfo = await project.info();
-    await loadEntities();
+    resetProjectSessionState();
+    await finishOpening();
     projectDiagnostics = [];
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
+  });
 }
 async function createPortableBackup() {
   return project.backup();
@@ -3092,9 +3166,11 @@ async function createRecoveryBackup() {
   return project.recoveryBackup();
 }
 async function restoreRecoveryBackup(path: string) {
-  await project.restoreRecoveryBackup(path);
-  projectInfo = await project.info();
-  await loadEntities();
+  await runProjectTransition("Restoring recovery backup…", async () => {
+    await project.restoreRecoveryBackup(path);
+    resetProjectSessionState();
+    await finishOpening();
+  });
 }
 $effect(() => {
   const term = globalQuery.trim();
@@ -4044,7 +4120,7 @@ onMount(() => {
         <ProjectionView
           title={projectionView.title}
           view={projectionView.module.views[0]}
-          context={buildModuleContext(projectionView.module.manifest, projectInfo?.root ?? "", {
+          context={buildModuleContext(projectionView.manifest, projectInfo?.root ?? "", {
             focusEntityId: selected?.id as UUID | undefined,
             availableServices: enabledServices(),
           })}
@@ -4744,6 +4820,7 @@ onMount(() => {
       onclick={toggleCreateForm}>＋</button
     >{/if}
 </main>
+<DialogHost />
 
 <style>
 :global(*) {

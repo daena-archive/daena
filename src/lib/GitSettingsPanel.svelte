@@ -57,6 +57,7 @@ let selectedCommitMessage = $state("");
 let snapshotChanges = $state<GitChange[]>([]);
 let recoveryUpstream = $state<GitUpstream | null>(null);
 let snapshotLoadToken = 0;
+let diffRequestToken = 0;
 let selectedChangePath = $state<string | null>(null);
 let changeDiff = $state("");
 let diffLoading = $state(false);
@@ -84,6 +85,31 @@ let squashMessage = $state("Consolidate snapshot history");
 function friendly(cause: unknown) {
   return cause instanceof Error ? cause.message : String(cause);
 }
+
+$effect(() => {
+  if (!remoteModalOpen) return;
+  const frame = window.requestAnimationFrame(() => {
+    const nameInput = document.getElementById("git-remote-name");
+    const urlInput = document.getElementById("git-remote-url");
+    if (nameInput) nameInput.focus();
+    else urlInput?.focus();
+  });
+  return () => window.cancelAnimationFrame(frame);
+});
+
+$effect(() => {
+  const anyOpen = remoteModalOpen || confirmation !== null || selectedCommit !== null || aiMessageBusy;
+  if (!anyOpen) return;
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    if (confirmation && !confirmationBusy) closeConfirmation();
+    else if (remoteModalOpen) closeRemoteModal();
+    else if (selectedCommit) closeSnapshotModal();
+  };
+  window.addEventListener("keydown", onKey, true);
+  return () => window.removeEventListener("keydown", onKey, true);
+});
 
 async function withBusy<T>(label: string, run: () => Promise<T>) {
   busy = true;
@@ -678,6 +704,7 @@ async function selectCommit(hash: string) {
 
 function closeSnapshotModal() {
   snapshotLoadToken += 1;
+  diffRequestToken += 1;
   selectedCommit = null;
   selectedCommitMessage = "";
   selectedChangePath = null;
@@ -688,15 +715,23 @@ function closeSnapshotModal() {
 
 async function selectSnapshotChange(path: string) {
   if (!selectedCommit) return;
+  const token = ++diffRequestToken;
+  const commit = selectedCommit;
+  const selectedPath = path;
   selectedChangePath = path;
   diffLoading = true;
   try {
-    changeDiff = await project.gitShowDiff(selectedCommit, path);
+    const diff = await project.gitShowDiff(commit, selectedPath);
+    if (token === diffRequestToken && selectedCommit === commit && selectedChangePath === selectedPath) {
+      changeDiff = diff;
+    }
   } catch (cause) {
-    onError(friendly(cause));
-    changeDiff = "";
+    if (token === diffRequestToken && selectedCommit === commit && selectedChangePath === selectedPath) {
+      onError(friendly(cause));
+      changeDiff = "";
+    }
   } finally {
-    diffLoading = false;
+    if (token === diffRequestToken) diffLoading = false;
   }
 }
 

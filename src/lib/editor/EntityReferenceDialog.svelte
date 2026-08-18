@@ -16,6 +16,7 @@ let label = "";
 let searchInput: HTMLInputElement;
 let labelInput: HTMLInputElement;
 let wasOpen = false;
+let lastFocused: Element | null = null;
 let filteredEntities: Entity[] = [];
 
 $: filteredEntities = entities
@@ -63,8 +64,14 @@ $: {
     selectedId = initialSelectedId;
     label = initialLabel;
     wasOpen = true;
+    lastFocused = document.activeElement;
     void tick().then(() => (initialLabel ? labelInput?.focus() : searchInput?.focus()));
   }
+}
+
+$: if (!open && lastFocused) {
+  if (lastFocused instanceof HTMLElement && lastFocused.isConnected) lastFocused.focus();
+  lastFocused = null;
 }
 </script>
 

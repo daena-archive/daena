@@ -9,6 +9,7 @@ import {
   normalizeSystemConfig,
 } from "./normalize.ts";
 import type {
+  GrammarDuplicateRecord,
   GrammarRecord,
   GrammarSectionId,
   GrammarSystemId,
@@ -28,6 +29,7 @@ export type GrammarEditSession = {
   originSection: GrammarSectionId;
   validationMessage?: string;
   validationFocus?: string;
+  duplicates?: GrammarDuplicateRecord[];
 };
 
 export type GrammarUiState = {
@@ -88,8 +90,9 @@ function sessionFromLoaded(
 
 export function openSystemEditor(index: IndexedGrammar, systemId: GrammarSystemId): GrammarEditSession {
   const descriptor = grammarSystemDescriptor(systemId)!;
-  const duplicateIds = index.duplicates.get(systemId);
-  if (duplicateIds?.length) {
+  const duplicates = index.duplicates.get(systemId);
+  if (duplicates?.length) {
+    const label = descriptor.label;
     return {
       draft: emptySystemRecord(systemId),
       baseline: grammarRecordSnapshot(emptySystemRecord(systemId)),
@@ -97,7 +100,8 @@ export function openSystemEditor(index: IndexedGrammar, systemId: GrammarSystemI
       conflict: false,
       learnMoreOpen: false,
       originSection: descriptor.sectionId,
-      validationMessage: `${descriptor.label} has duplicate records. Edits are disabled until the conflict is resolved.`,
+      validationMessage: `${label} has duplicate records (${duplicates.length}). Edits are disabled until the conflict is resolved.`,
+      duplicates,
     };
   }
   const loaded = index.systems.get(systemId);

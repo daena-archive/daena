@@ -35,11 +35,11 @@
     ]
   }],
   "templates": [
-    { "id": "person", "name": "Person", "entityType": "person", "description": "A character with a history, voice, and place in the world.", "icon": "P", "requiredFields": ["occupation"], "fields": { "summary": "", "aliases": "", "occupation": "", "languages": [], "origin": [], "affiliation": [] } },
-    { "id": "place", "name": "Place", "entityType": "place", "description": "A location, landmark, or region worth remembering.", "icon": "L", "requiredFields": ["region"], "fields": { "summary": "", "aliases": "", "region": "", "climate": "", "population": "" } },
-    { "id": "artifact", "name": "Artifact", "entityType": "artifact", "description": "An object with meaning, history, or a story of its own.", "icon": "A", "requiredFields": ["material"], "fields": { "summary": "", "aliases": "", "material": "", "creator": [], "currentOwner": [] } },
-    { "id": "faction", "name": "Faction", "entityType": "faction", "description": "A group, institution, or power with shared interests.", "icon": "F", "requiredFields": ["goal"], "fields": { "summary": "", "aliases": "", "goal": "", "leader": [], "headquarters": [] } },
-    { "id": "culture", "name": "Culture", "entityType": "culture", "description": "A people, tradition, or way of life that shapes the world.", "icon": "C", "requiredFields": ["values"], "fields": { "summary": "", "aliases": "", "values": "", "language": "", "homeland": [] } },
+    { "id": "person", "name": "Person", "entityType": "person", "description": "A character with a history, voice, and place in the world.", "icon": "P", "requiredFields": [], "fields": { "summary": "", "aliases": "", "occupation": "", "languages": [], "origin": [], "affiliation": [] } },
+    { "id": "place", "name": "Place", "entityType": "place", "description": "A location, landmark, or region worth remembering.", "icon": "L", "requiredFields": [], "fields": { "summary": "", "aliases": "", "region": "", "climate": "", "population": "" } },
+    { "id": "artifact", "name": "Artifact", "entityType": "artifact", "description": "An object with meaning, history, or a story of its own.", "icon": "A", "requiredFields": [], "fields": { "summary": "", "aliases": "", "material": "", "creator": [], "currentOwner": [] } },
+    { "id": "faction", "name": "Faction", "entityType": "faction", "description": "A group, institution, or power with shared interests.", "icon": "F", "requiredFields": [], "fields": { "summary": "", "aliases": "", "goal": "", "leader": [], "headquarters": [] } },
+    { "id": "culture", "name": "Culture", "entityType": "culture", "description": "A people, tradition, or way of life that shapes the world.", "icon": "C", "requiredFields": [], "fields": { "summary": "", "aliases": "", "values": "", "language": "", "homeland": [] } },
     { "id": "concept", "name": "Concept", "entityType": "concept", "description": "An idea, phenomenon, tradition, or other subject worth remembering.", "icon": "◇", "fields": { "summary": "", "aliases": "" } }
   ],
   "views": [],

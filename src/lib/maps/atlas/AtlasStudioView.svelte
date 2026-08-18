@@ -159,7 +159,7 @@ function viewerLayerEnabled(atlasLayerId: string): boolean | null {
   if (!aliases || viewerLayers.length === 0) return null;
   const matched = viewerLayers.filter((layer) => aliases.includes(layer.id));
   if (matched.length === 0) return null;
-  return matched.some((layer) => layer.defaultVisible) ? true : null;
+  return matched.some((layer) => layer.defaultVisible);
 }
 
 function prefersReducedMotion() {

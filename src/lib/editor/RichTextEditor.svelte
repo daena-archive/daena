@@ -18,6 +18,7 @@ import Underline from "@tiptap/extension-underline";
 import { UndoRedo } from "@tiptap/extensions";
 import { onMount } from "svelte";
 import { htmlToMarkdown, markdownToHtml } from "$lib/editor/markdown";
+import { promptDialog } from "$lib/dialogs.svelte";
 import type { Entity } from "$lib/project/client";
 import EntityReferenceDialog from "$lib/editor/EntityReferenceDialog.svelte";
 
@@ -185,6 +186,25 @@ export function insertAiTextAtRequest(value: string): boolean {
   return inserted;
 }
 
+/**
+ * Replaces the selection captured at request time with rewritten Markdown.
+ * Uses the captured ProseMirror range so the exact occurrence is rewritten;
+ * returns null if the document no longer contains the original selection.
+ */
+export function replaceAiTextWithMarkdown(value: string): string | null {
+  if (!editor || !aiRequestRange || !selectionText) return null;
+  const { from, to } = aiRequestRange;
+  if (editor.state.doc.textBetween(from, to, "\n") !== selectionText) return null;
+  let html = sanitizeHtml(markdownToHtml(value));
+  if (html.startsWith("<p>") && html.endsWith("</p>")) html = html.slice(3, -4);
+  const ok = editor.chain().focus().insertContentAt({ from, to }, html).run();
+  if (!ok) return null;
+  aiRequestRange = null;
+  currentMarkdown = htmlToMarkdown(editor.getHTML());
+  editorText = editor.view.dom.textContent ?? "";
+  return currentMarkdown;
+}
+
 function blockStyle(): string {
   if (!editorState) return "paragraph";
   if (editorState.isActive("heading", { level: 1 })) return "heading-1";
@@ -211,19 +231,26 @@ function changeBlockStyle(event: Event) {
 function setLink() {
   if (!editorState) return;
   const previousUrl = editorState.getAttributes("link").href ?? "";
-  const nextUrl = window.prompt("Enter a link URL", previousUrl);
-  if (nextUrl === null) return;
-  const url = nextUrl.trim();
-  if (!url) {
-    editorState.chain().focus().unsetLink().run();
-    return;
-  }
-  editorState
-    .chain()
-    .focus()
-    .extendMarkRange("link")
-    .setLink({ href: url, target: "_blank", rel: "noopener noreferrer" })
-    .run();
+  void promptDialog({
+    title: "Link URL",
+    message: "Enter the destination for this link.",
+    value: previousUrl,
+    placeholder: "https://…",
+    confirmLabel: "Set link",
+  }).then((nextUrl) => {
+    if (nextUrl === null) return;
+    const url = nextUrl.trim();
+    if (!url) {
+      editorState?.chain().focus().unsetLink().run();
+      return;
+    }
+    editorState
+      ?.chain()
+      .focus()
+      .extendMarkRange("link")
+      .setLink({ href: url, target: "_blank", rel: "noopener noreferrer" })
+      .run();
+  });
 }
 
 function insertEntityReference(entity: Entity, label: string) {

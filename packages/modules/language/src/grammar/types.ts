@@ -486,9 +486,14 @@ export type GrammarDiagnostic = GrammarIssue & {
   systemId?: GrammarSystemId;
 };
 
+export type GrammarDuplicateRecord = {
+  id: string;
+  revision: string;
+};
+
 export type IndexedGrammar = {
   systems: Map<GrammarSystemId, LoadedGrammarRecord>;
-  duplicates: Map<GrammarSystemId, string[]>;
+  duplicates: Map<GrammarSystemId, GrammarDuplicateRecord[]>;
   agreements: LoadedGrammarRecord[];
   customRules: LoadedGrammarRecord[];
   sectionStates: Map<string, LoadedGrammarRecord>;

@@ -689,12 +689,10 @@ export function createNativeVectorEditor(
           session.onDiagnostic?.(RENDERER_UNAVAILABLE, "Native vector style must not request remote URLs.");
           return;
         }
-        const wanted = new Map(
-          generated.layers.filter((layer) => layer.id.startsWith("daena-vector-")).map((layer) => [layer.id, layer]),
-        );
+        const specs = new Map(generated.layers.map((layer) => [layer.id, layer]));
         for (const layer of map.getStyle()?.layers ?? []) {
           if (!layer.id.startsWith("daena-vector-")) continue;
-          const next = wanted.get(layer.id);
+          const next = specs.get(layer.id);
           if (!next) {
             map.removeLayer(layer.id);
             continue;
@@ -702,11 +700,27 @@ export function createNativeVectorEditor(
           const visibility =
             next.layout && "visibility" in next.layout && next.layout.visibility === "none" ? "none" : "visible";
           map.setLayoutProperty(layer.id, "visibility", visibility);
-          wanted.delete(layer.id);
+          for (const [key, value] of Object.entries(next.paint ?? {})) {
+            if (!Object.is((layer as { paint?: Record<string, unknown> }).paint?.[key], value)) {
+              map.setPaintProperty(layer.id, key, value);
+            }
+          }
+          specs.delete(layer.id);
         }
-        for (const layer of wanted.values()) {
+        for (const layer of specs.values()) {
+          if (!layer.id.startsWith("daena-vector-")) continue;
           if (map.getLayer("daena-hover-fill")) map.addLayer(layer, "daena-hover-fill");
           else map.addLayer(layer);
+        }
+        const vectorLayerIds = generated.layers
+          .filter((layer) => layer.id.startsWith("daena-vector-"))
+          .map((layer) => layer.id);
+        for (let index = vectorLayerIds.length - 1; index >= 0; index -= 1) {
+          const id = vectorLayerIds[index];
+          if (!map.getLayer(id)) continue;
+          const beforeId = index + 1 < vectorLayerIds.length ? vectorLayerIds[index + 1] : "daena-hover-fill";
+          if (map.getLayer(beforeId)) map.moveLayer(id, beforeId);
+          else map.moveLayer(id);
         }
         const baseVisibility = nativeBaseLayerVisibility(layers);
         if (map.getLayer("daena-base-fill")) {
@@ -714,6 +728,13 @@ export function createNativeVectorEditor(
         }
         if (map.getLayer("daena-base-line")) {
           map.setLayoutProperty("daena-base-line", "visibility", baseVisibility);
+        }
+        const active = layers.find((layer) => layer.id === session.activeLayerId);
+        const terraRendered = active ? active.defaultVisible : false;
+        for (const id of ["td-point", "td-point-marker", "td-linestring", "td-polygon", "td-polygon-outline"]) {
+          if (map.getLayer(id)) {
+            map.setLayoutProperty(id, "visibility", terraRendered ? "visible" : "none");
+          }
         }
         applySources(session.activeLayerId);
       });

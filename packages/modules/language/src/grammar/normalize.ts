@@ -17,6 +17,7 @@ import {
   type GrammarAgreementRecord,
   type GrammarCustomRuleRecord,
   type GrammarDiagnostic,
+  type GrammarDuplicateRecord,
   type GrammarExample,
   type GrammarIssue,
   type GrammarLink,
@@ -1058,8 +1059,8 @@ export function serializeGrammarRecord(value: GrammarRecord): Record<string, unk
 
 export function indexGrammarRecords(records: { id: string; revision?: string; value: unknown }[]): IndexedGrammar {
   const systems = new Map<GrammarSystemId, LoadedGrammarRecord>();
-  const duplicates = new Map<GrammarSystemId, string[]>();
-  const seen = new Map<GrammarSystemId, string[]>();
+  const duplicates = new Map<GrammarSystemId, GrammarDuplicateRecord[]>();
+  const seen = new Map<GrammarSystemId, GrammarDuplicateRecord[]>();
   const agreements: LoadedGrammarRecord[] = [];
   const customRules: LoadedGrammarRecord[] = [];
   const sectionStates = new Map<string, LoadedGrammarRecord>();
@@ -1080,7 +1081,7 @@ export function indexGrammarRecords(records: { id: string; revision?: string; va
     };
     if (result.record.recordKind === "system") {
       const ids = seen.get(result.record.systemId) ?? [];
-      ids.push(record.id);
+      ids.push({ id: record.id, revision: record.revision ?? "" });
       seen.set(result.record.systemId, ids);
     } else if (result.record.recordKind === "agreement") agreements.push(loaded);
     else if (result.record.recordKind === "custom-rule") customRules.push(loaded);
@@ -1094,15 +1095,16 @@ export function indexGrammarRecords(records: { id: string; revision?: string; va
         code: "duplicate-system",
         message: `${grammarSystemDescriptor(systemId)?.label ?? systemId} has duplicate records. Edits are disabled until the conflict is resolved.`,
         systemId,
-        recordIds: ids,
+        recordIds: ids.map((item) => item.id),
       });
       continue;
     }
-    const source = records.find((item) => item.id === ids[0]);
+    const first = ids[0];
+    const source = records.find((item) => item.id === first?.id);
     const result = source ? normalizeGrammarRecord(source.value) : null;
-    if (result?.ok && result.record.recordKind === "system") {
-      systems.set(systemId, { id: ids[0], revision: source?.revision ?? "", value: result.record });
-      for (const item of result.issues) diagnostics.push({ ...item, recordIds: ids, systemId });
+    if (result?.ok && result.record.recordKind === "system" && first) {
+      systems.set(systemId, { id: first.id, revision: first.revision || source?.revision || "", value: result.record });
+      for (const item of result.issues) diagnostics.push({ ...item, recordIds: ids.map((entry) => entry.id), systemId });
     }
   }
 

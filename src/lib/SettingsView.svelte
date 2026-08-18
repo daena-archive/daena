@@ -2,6 +2,7 @@
 import type { Snippet } from "svelte";
 import { onMount } from "svelte";
 import { setSchemaEditorDiscardPrompt } from "$lib/schemaEditorGuard";
+import { confirmDialog } from "$lib/dialogs.svelte";
 
 type SettingsSection = "general" | "ai" | "plugins" | "schema" | "git";
 type RecentProject = { name: string; root: string };
@@ -140,6 +141,11 @@ let embeddingSectionOpen = $state(false);
 let recoveryPath = $state("");
 let storageBusy = $state(false);
 let storageMessage = $state("");
+let storageError = $state("");
+
+function storageErrorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
 let schemaDiscardOpen = $state(false);
 let schemaDiscardResolver: ((allowed: boolean) => void) | null = null;
 
@@ -164,6 +170,30 @@ onMount(() => {
     }
     schemaDiscardOpen = false;
   };
+});
+
+$effect(() => {
+  if (!providerModalOpen) return;
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      providerModalOpen = false;
+    }
+  };
+  window.addEventListener("keydown", onKey, true);
+  return () => window.removeEventListener("keydown", onKey, true);
+});
+
+$effect(() => {
+  if (!schemaDiscardOpen) return;
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      resolveSchemaDiscard(false);
+    }
+  };
+  window.addEventListener("keydown", onKey, true);
+  return () => window.removeEventListener("keydown", onKey, true);
 });
 
 function resolveSchemaDiscard(allowed: boolean) {
@@ -226,8 +256,12 @@ function closeModelPickerSoon() {
 
 async function createPortableBackup() {
   storageBusy = true;
+  storageError = "";
   try {
     storageMessage = `Portable backup: ${await onPortableBackup()}`;
+  } catch (cause) {
+    storageError = `Portable backup failed: ${storageErrorMessage(cause)}`;
+    storageMessage = "";
   } finally {
     storageBusy = false;
   }
@@ -235,21 +269,38 @@ async function createPortableBackup() {
 
 async function createRecoveryBackup() {
   storageBusy = true;
+  storageError = "";
   try {
     recoveryPath = await onRecoveryBackup();
     storageMessage = `Recovery backup: ${recoveryPath}`;
+  } catch (cause) {
+    storageError = `Recovery backup failed: ${storageErrorMessage(cause)}`;
+    storageMessage = "";
   } finally {
     storageBusy = false;
   }
 }
 
 async function restoreRecoveryBackup() {
-  if (!recoveryPath.trim() || !window.confirm("Restore this recovery backup and replace the current runtime state?"))
+  if (
+    !recoveryPath.trim() ||
+    !(await confirmDialog({
+      title: "Restore recovery backup?",
+      message: "This replaces the current runtime state with the recovery backup.",
+      confirmLabel: "Restore",
+      danger: true,
+    }))
+  )
     return;
   storageBusy = true;
+  storageError = "";
   try {
     await onRestoreRecoveryBackup(recoveryPath.trim());
+    recoveryPath = "";
     storageMessage = "Recovery backup restored.";
+  } catch (cause) {
+    storageError = `Restore failed: ${storageErrorMessage(cause)}`;
+    storageMessage = "";
   } finally {
     storageBusy = false;
   }
@@ -355,6 +406,13 @@ async function handleClose() {
             class="quiet-button"
             disabled={storageBusy || !recoveryPath.trim()}
             onclick={() => void restoreRecoveryBackup()}>Restore recovery backup</button>
+          {#if storageError}
+            <p class="settings-note settings-note-error" role="alert">
+              {storageError}
+              <button type="button" class="settings-note-dismiss" aria-label="Dismiss error" onclick={() => (storageError = "")}
+                >×</button>
+            </p>
+          {/if}
           {#if storageMessage}<p class="settings-note" role="status">{storageMessage}</p>{/if}
         {/if}
       {:else if section === "ai"}
@@ -1089,6 +1147,26 @@ async function handleClose() {
   color: #6d625d;
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+.settings-note-error {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid #e3b9b1;
+  border-radius: 8px;
+  background: #fbf1ef;
+  color: #a14f42;
+}
+.settings-note-dismiss {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
 }
 .ai-card-actions {
   padding-top: 2px;

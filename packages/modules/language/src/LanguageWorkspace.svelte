@@ -309,7 +309,12 @@ async function submitCreateLanguage(event: SubmitEvent) {
         setMutationActive={setMutationActive} />
     </div>
     <div class="language-pane" hidden={pane !== "grammar"}>
-      <Grammar {context} {selectedLanguage} active={pane === "grammar"} registerLeaveGuard={registerGrammarGuard} />
+      <Grammar
+        {context}
+        {selectedLanguage}
+        active={pane === "grammar"}
+        registerLeaveGuard={registerGrammarGuard}
+        setMutationActive={setMutationActive} />
     </div>
     <div class="language-pane" hidden={pane !== "forms"}>
       <Forms

@@ -1,16 +1,48 @@
 <script lang="ts">
 import { confirmState, resolveConfirm } from "./confirm.svelte";
+
+let confirmButton: HTMLButtonElement | undefined = $state();
+let lastFocused: Element | null = null;
+
+$effect(() => {
+  if (!confirmState.open) return;
+  lastFocused = document.activeElement;
+  const frame = window.requestAnimationFrame(() => confirmButton?.focus());
+  return () => window.cancelAnimationFrame(frame);
+});
+
+$effect(() => {
+  if (!confirmState.open) return;
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      resolveConfirm(false);
+    }
+  };
+  window.addEventListener("keydown", onKey, true);
+  return () => window.removeEventListener("keydown", onKey, true);
+});
+
+function settle(value: boolean) {
+  if (!confirmState.open) return;
+  resolveConfirm(value);
+  const focused = lastFocused;
+  lastFocused = null;
+  window.requestAnimationFrame(() => {
+    if (focused instanceof HTMLElement && focused.isConnected) focused.focus();
+  });
+}
 </script>
 
 {#if confirmState.open}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="language-modal-backdrop" role="presentation" onclick={() => resolveConfirm(false)}>
+  <div class="language-modal-backdrop" role="presentation" onclick={() => settle(false)}>
     <div class="language-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" tabindex="-1" onclick={(e) => e.stopPropagation()}>
       <h3 id="confirm-title">{confirmState.title}</h3>
       <p>{confirmState.message}</p>
       <div class="language-modal-actions">
-        <button type="button" class="language-button secondary" onclick={() => resolveConfirm(false)}>Cancel</button>
-        <button type="button" class="language-button secondary language-danger" onclick={() => resolveConfirm(true)}>Confirm</button>
+        <button type="button" class="language-button secondary" onclick={() => settle(false)}>Cancel</button>
+        <button type="button" class="language-button secondary language-danger" bind:this={confirmButton} onclick={() => settle(true)}>Confirm</button>
       </div>
     </div>
   </div>

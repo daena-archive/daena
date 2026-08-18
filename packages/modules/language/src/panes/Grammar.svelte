@@ -29,6 +29,7 @@ import {
 import { GRAMMAR_STARTER_STEPS, nextStarterSystem, remainingStarterSystems } from "../grammar.ts";
 import { emptyGrammarUiState } from "../grammar.ts";
 import { loadGrammarIndex } from "../grammar/repository";
+import { deleteGrammarRecord } from "../grammar/repository";
 import { starterPosition, starterStepLabel } from "../grammar/starter";
 import AgreementEditor from "../editor/AgreementEditor.svelte";
 import CustomRuleEditor from "../editor/CustomRuleEditor.svelte";
@@ -69,11 +70,13 @@ let {
   selectedLanguage,
   active,
   registerLeaveGuard,
+  setMutationActive,
 }: {
   context: ModuleContext;
   selectedLanguage: EntitySummary | null;
   active: boolean;
   registerLeaveGuard: (guard: (() => Promise<boolean> | boolean) | null) => void;
+  setMutationActive: (active: boolean) => void;
 } = $props();
 
 let root: HTMLDivElement | undefined = $state();
@@ -85,6 +88,7 @@ let paradigms: ModuleRecord<Paradigm>[] = $state([]);
 let paneLoading = $state(false);
 let error = $state("");
 let request = $state(0);
+let grammarSaving = $state(false);
 
 let lastLoadedLanguage: string | null = null;
 
@@ -256,6 +260,7 @@ function grammarFocusSelector(draftValue: GrammarEditSession["draft"], recordId?
 
 async function leaveEditor() {
   const current = session;
+  if (grammarSaving) return false;
   if (!current || !await tryLeaveGrammar(grammarUi, windowConfirm)) return false;
   const origin = current.originSection;
   const focus = grammarFocusSelector(current.draft, current.recordId);
@@ -377,17 +382,68 @@ async function handleSearchHit(hit: GrammarSearchHit) {
 
 async function handleSubmit(event: SubmitEvent) {
   event.preventDefault();
-  const message = await saveGrammarEditor(grammarUi, ctx);
-  if (message && grammarUi.editing?.validationFocus) {
-    grammarUi.focusTarget = `[name="${CSS.escape(grammarUi.editing.validationFocus)}"]`;
-  } else if (message) {
-    grammarUi.focusTarget = "#grammar-editor-heading";
+  if (grammarSaving || !session || session.locked) return;
+  const ownerLanguageId = selectedLanguage?.id;
+  if (!ownerLanguageId) return;
+  grammarSaving = true;
+  setMutationActive(true);
+  try {
+    const message = await saveGrammarEditor(grammarUi, ctx);
+    if (message && grammarUi.editing?.validationFocus) {
+      grammarUi.focusTarget = `[name="${CSS.escape(grammarUi.editing.validationFocus)}"]`;
+    } else if (message) {
+      grammarUi.focusTarget = "#grammar-editor-heading";
+    }
+  } finally {
+    grammarSaving = false;
+    setMutationActive(false);
   }
 }
 
 async function handleDelete() {
-  const message = await deleteGrammarEditor(grammarUi, ctx);
-  if (message && grammarUi.editing) grammarUi.editing.validationMessage = message;
+  if (grammarSaving || !session || session.locked) return;
+  const ownerLanguageId = selectedLanguage?.id;
+  if (!ownerLanguageId) return;
+  grammarSaving = true;
+  setMutationActive(true);
+  try {
+    const message = await deleteGrammarEditor(grammarUi, ctx);
+    if (message && grammarUi.editing) grammarUi.editing.validationMessage = message;
+  } finally {
+    grammarSaving = false;
+    setMutationActive(false);
+  }
+}
+
+async function resolveDuplicate(recordId: string, revision: string) {
+  if (grammarSaving || !session || !session.duplicates) return;
+  const ownerLanguageId = selectedLanguage?.id;
+  if (!ownerLanguageId) return;
+  if (session.draft.recordKind !== "system") return;
+  const systemId = session.draft.systemId;
+  if (!await windowConfirm(`Remove duplicate record ${recordId.slice(0, 8)}…? The other records for this system are kept.`)) return;
+  grammarSaving = true;
+  setMutationActive(true);
+  try {
+    const result = await deleteGrammarRecord(ctx.records, ownerLanguageId, { recordId, revision });
+    if (result.ok) {
+      grammarUi.index = result.index;
+      grammarUi.editing = openSystemEditor(result.index, systemId);
+      error = "";
+    } else if (result.stale) {
+      const reopened = openSystemEditor(result.index, systemId);
+      grammarUi.index = result.index;
+      grammarUi.editing = reopened;
+      error = reopened.validationMessage ?? "This record changed; review the duplicates and try again.";
+    } else {
+      error = result.error;
+    }
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    grammarSaving = false;
+    setMutationActive(false);
+  }
 }
 
 function handleLoadStored() {
@@ -647,6 +703,28 @@ function removeLink(index: number) {
       {#if error || session.validationMessage}
         <p class="language-status error" role="alert">{session.validationMessage || error}</p>
       {/if}
+      {#if session.duplicates && session.duplicates.length > 1}
+        <section class="language-group" aria-label="Resolve duplicate records">
+          <h3>Resolve duplicate records</h3>
+          <p class="language-empty" role="status">
+            Keep one record for {editorTitle} and remove the duplicates below. Edits stay locked until a single record remains.
+          </p>
+          <ul class="grammar-duplicate-list">
+            {#each session.duplicates as record (record.id)}
+              <li>
+                <span class="grammar-duplicate-id">{record.id}</span>
+                <button
+                  type="button"
+                  class="language-button secondary language-danger"
+                  disabled={grammarSaving}
+                  onclick={() => void resolveDuplicate(record.id, record.revision)}>
+                  {grammarSaving ? "Removing…" : "Remove this record"}
+                </button>
+              </li>
+            {/each}
+          </ul>
+        </section>
+      {/if}
       {#if session.conflict && session.recordId && stored}
         <div class="language-inline">
           <button type="button" class="language-button secondary" onclick={handleLoadStored}
@@ -661,12 +739,15 @@ function removeLink(index: number) {
               type="button"
               class="language-button secondary language-danger"
               aria-label={`Delete ${editorTitle}`}
+              disabled={grammarSaving}
               onclick={handleDelete}>Delete</button>
           {/if}
         </span>
         <span>
-          <button type="button" class="language-button secondary" onclick={leaveEditor}>Cancel</button>
-          <button type="submit" class="language-button" disabled={session.locked}>Save</button>
+          <button type="button" class="language-button secondary" disabled={grammarSaving} onclick={leaveEditor}
+            >Cancel</button>
+          <button type="submit" class="language-button" disabled={session.locked || grammarSaving}
+            >{grammarSaving ? "Saving…" : "Save"}</button>
         </span>
       </div>
     </form>
@@ -1088,6 +1169,31 @@ function removeLink(index: number) {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface-muted);
+}
+.grammar-duplicate-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.grammar-duplicate-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.grammar-duplicate-id {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--ink-soft);
 }
 @keyframes language-spin {
   to {

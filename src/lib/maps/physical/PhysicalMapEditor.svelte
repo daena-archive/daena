@@ -44,6 +44,7 @@ let hydrology = $state<PhysicalHydrologyProducts | null>(null);
 let raster = $state<HTMLCanvasElement | null>(null);
 let notice = $state("");
 let busy = $state(false);
+let activeJobId: string | null = null;
 let helpSeen = $state(false);
 let preview = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let layers = $state<VectorLayerDefinition[]>([
@@ -183,22 +184,39 @@ async function loadSavedMap() {
   }
 }
 
-async function poll(jobId: string) {
-  for (;;) {
-    status = await project.physicalMapStatus(jobId);
-    if (status.state !== "running" && status.state !== "cancelling") break;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  if (status.state === "completed") {
-    preview = parseDerivedVectorCollection(await project.physicalMapPreview(jobId));
-    hydrology = await project.physicalMapHydrology(jobId);
-    await mountPreview();
-    publish("preview-ready", { jobId });
-  } else if (status.state !== "cancelled") {
-    notice = status.error ?? "Physical generation failed";
+async function cancelActiveJob(jobId: string) {
+  activeJobId = null;
+  try {
+    await project.cancelPhysicalMap(jobId);
+  } catch (cause) {
+    notice = `Could not cancel the background generation: ${cause instanceof Error ? cause.message : String(cause)}`;
     publish("error", { detail: notice });
   }
-  busy = false;
+}
+
+async function poll(jobId: string) {
+  try {
+    for (;;) {
+      status = await project.physicalMapStatus(jobId);
+      if (status.state !== "running" && status.state !== "cancelling") break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (status.state === "completed") {
+      preview = parseDerivedVectorCollection(await project.physicalMapPreview(jobId));
+      hydrology = await project.physicalMapHydrology(jobId);
+      await mountPreview();
+      publish("preview-ready", { jobId });
+    } else if (status.state !== "cancelled") {
+      notice = status.error ?? "Physical generation failed";
+      publish("error", { detail: notice });
+    }
+  } catch (cause) {
+    notice = cause instanceof Error ? cause.message : String(cause);
+    publish("error", { detail: notice });
+    if (activeJobId === jobId) {
+      await cancelActiveJob(jobId);
+    }
+  }
 }
 
 async function generate() {
@@ -221,25 +239,29 @@ async function generate() {
       },
     };
     status = await project.generatePhysicalMap(input);
+    activeJobId = status.jobId;
     await poll(status.jobId);
   } catch (cause) {
-    busy = false;
     notice = cause instanceof Error ? cause.message : String(cause);
     publish("error", { detail: notice });
+  } finally {
+    busy = false;
   }
 }
 
 async function cancel() {
-  if (!status || !busy) {
+  const jobId = activeJobId ?? status?.jobId ?? null;
+  if (!jobId || !busy) {
     oncancel?.();
     return;
   }
-  await project.cancelPhysicalMap(status.jobId);
+  await cancelActiveJob(jobId);
 }
 
 async function accept() {
   if (!status || status.state !== "completed" || busy) return;
   busy = true;
+  activeJobId = null;
   try {
     const accepted = await project.acceptPhysicalMap(status.jobId, name.trim() || "Physical World");
     oncreated?.(accepted.entity);
@@ -254,8 +276,8 @@ onMount(() => {
   if (mapId) return;
   void loadSavedMap();
   return () => {
-    if (status?.jobId && busy && (status.state === "running" || status.state === "cancelling")) {
-      void project.cancelPhysicalMap(status.jobId);
+    if (activeJobId) {
+      void cancelActiveJob(activeJobId);
     }
     destroyPreview();
   };

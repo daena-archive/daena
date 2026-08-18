@@ -13,6 +13,7 @@ let fields = $state<Record<string, unknown>>({});
 let loading = $state(true);
 let saving = $state("");
 let error = $state("");
+let refreshToken = 0;
 
 function fieldDefinition(key: string): FieldDefinition | undefined {
   for (const schema of plugin.schemas) {
@@ -23,18 +24,31 @@ function fieldDefinition(key: string): FieldDefinition | undefined {
 }
 
 async function refresh(entityId = selectedEntityId) {
+  const token = ++refreshToken;
+  const forPlugin = plugin.id;
+  const forView = view.id;
+  const forEntity = entityId ?? null;
   loading = true;
   error = "";
   try {
-    const result: HostViewData = await project.hostViewData(plugin.id, view.id, entityId ?? undefined);
+    const result: HostViewData = await project.hostViewData(forPlugin, forView, forEntity ?? undefined);
+    if (
+      token !== refreshToken ||
+      forPlugin !== plugin.id ||
+      forView !== view.id ||
+      (forEntity !== null && (selectedEntityId ?? null) !== forEntity)
+    ) {
+      return;
+    }
     lists = result.lists;
     selected = result.selected;
     selectedEntityId = result.selected?.id ?? null;
     fields = result.fields;
   } catch (cause) {
+    if (token !== refreshToken) return;
     error = cause instanceof Error ? cause.message : String(cause);
   } finally {
-    loading = false;
+    if (token === refreshToken) loading = false;
   }
 }
 

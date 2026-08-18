@@ -24,6 +24,7 @@ let {
 } = $props();
 
 let settings = $state<NativeGeneratorSettings>({ ...DEFAULT_GENERATOR_SETTINGS });
+let generatedSettings: NativeGeneratorSettings | null = null;
 let seedText = $state(String(DEFAULT_GENERATOR_SETTINGS.seed));
 let mapName = $state("Untitled map");
 let candidates = $state<NativeGeneratorCandidate[]>([]);
@@ -149,11 +150,13 @@ function generate({ randomizeSeed = true }: { randomizeSeed?: boolean } = {}) {
   message = "";
   selected = null;
   candidates = [];
+  const snapshot = { ...settings };
+  generatedSettings = snapshot;
   const current = ++requestId;
   void ensureWorker()
     .then((instance) => {
       if (current !== requestId) return;
-      instance.postMessage({ type: "generate", requestId: current, settings: { ...settings } });
+      instance.postMessage({ type: "generate", requestId: current, settings: snapshot });
     })
     .catch((cause) => {
       if (current !== requestId) return;
@@ -161,6 +164,17 @@ function generate({ randomizeSeed = true }: { randomizeSeed?: boolean } = {}) {
       message = cause instanceof Error ? cause.message : String(cause);
     });
 }
+
+const settingsChangedSinceGeneration = $derived.by(() => {
+  if (candidates.length === 0 || !generatedSettings) return false;
+  return (
+    generatedSettings.seed !== settings.seed ||
+    generatedSettings.landPercent !== settings.landPercent ||
+    generatedSettings.continentCount !== settings.continentCount ||
+    generatedSettings.coastlineRoughness !== settings.coastlineRoughness ||
+    generatedSettings.islandFrequency !== settings.islandFrequency
+  );
+});
 
 async function copySeed() {
   try {
@@ -181,14 +195,14 @@ async function pasteSeed() {
 }
 
 async function accept() {
-  if (selected === null || !candidates[selected] || accepting) return;
+  if (selected === null || !candidates[selected] || accepting || settingsChangedSinceGeneration) return;
   accepting = true;
   message = "";
   try {
     const imported = await project.acceptVectorMap(
       mapName.trim() || "Untitled map",
       candidates[selected].collection,
-      generationProvenance(settings),
+      generationProvenance(generatedSettings ?? settings),
     );
     await oncreated?.(imported.entity);
   } catch (cause) {
@@ -270,7 +284,7 @@ onDestroy(() => {
       <button
         type="button"
         class="primary"
-        disabled={selected === null || busy || accepting}
+        disabled={selected === null || busy || accepting || settingsChangedSinceGeneration}
         onclick={() => void accept()}>{accepting ? "Accepting…" : "Accept candidate"}</button>
       <button
         type="button"
@@ -365,7 +379,9 @@ onDestroy(() => {
       {/if}
     </div>
   </div>
-  {#if message}
+  {#if settingsChangedSinceGeneration}
+    <p class="status" role="status">Settings changed after generation — regenerate before accepting.</p>
+  {:else if message}
     <p class="status" role="status">{message}</p>
   {/if}
 </section>

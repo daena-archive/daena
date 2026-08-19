@@ -19,25 +19,25 @@ const timelineTypes = new Set(timeline.schemas[0].entityTypes);
 const loreTypes = new Set(lore.schemas[0].entityTypes);
 const withTimeline = new Set([...loreTypes, ...timelineTypes]);
 
-assert.equal(byKey.bornAt.type, "date");
-assert.deepEqual(byKey.bornAt.entityTypes, ["person"]);
-assert.equal(byKey.diedAt.type, "date");
+assert.equal(byKey.birth.type, "date");
+assert.deepEqual(byKey.birth.entityTypes, ["person"]);
+assert.equal(byKey.death.type, "date");
 assert.equal(byKey.createdAt.type, "date");
 assert.equal(byKey.endedAt.type, "date");
-assert.equal(byKey.bornAt.relationshipType, undefined);
+assert.equal(byKey.birth.relationshipType, undefined);
 assert.equal(
   timeline.schemas[0].fields.some((field) => field.key === "calendar"),
   false,
   "calendar choice lives on the date, not an event relationship",
 );
 
-assert.equal(fieldAppliesToEntity(byKey.bornAt, "person", loreTypes), false, "born hides without Timeline");
+assert.equal(fieldAppliesToEntity(byKey.birth, "person", loreTypes), false, "born hides without Timeline");
 assert.equal(fieldAppliesToEntity(byKey.createdAt, "artifact", loreTypes), false, "created hides without Timeline");
 assert.equal(fieldAppliesToEntity(byKey.endedAt, "faction", loreTypes), false, "ended hides without Timeline");
 assert.equal(fieldAppliesToEntity(byKey.origin, "person", loreTypes), true, "origin stays available without Timeline");
 
-assert.equal(fieldAppliesToEntity(byKey.bornAt, "person", withTimeline), true);
-assert.equal(fieldAppliesToEntity(byKey.diedAt, "person", withTimeline), true);
+assert.equal(fieldAppliesToEntity(byKey.birth, "person", withTimeline), true);
+assert.equal(fieldAppliesToEntity(byKey.death, "person", withTimeline), true);
 assert.equal(fieldAppliesToEntity(byKey.createdAt, "artifact", withTimeline), true);
 assert.equal(fieldAppliesToEntity(byKey.createdAt, "person", withTimeline), false);
 assert.equal(fieldAppliesToEntity(byKey.endedAt, "concept", withTimeline), false);

@@ -63,8 +63,8 @@
             { "key": "end", "label": "Ends", "type": "date" }
           ]
         },
-        { "key": "bornAt", "label": "Born at", "type": "date", "entityTypes": ["person"] },
-        { "key": "diedAt", "label": "Died at", "type": "date", "entityTypes": ["person"] },
+        { "key": "birth", "label": "Birth", "type": "date", "entityTypes": ["person"] },
+        { "key": "death", "label": "Death", "type": "date", "entityTypes": ["person"] },
         {
           "key": "bornIn",
           "label": "Born in",
@@ -77,7 +77,7 @@
           "key": "diedIn",
           "label": "Died In",
           "type": "relationship",
-          "relationshipType": "born_in",
+          "relationshipType": "died_in",
           "targetEntityTypes": ["place"],
           "entityTypes": ["person"]
         },
@@ -170,8 +170,8 @@
       "fields": {
         "summary": "",
         "aliases": "",
-        "bornAt": "",
-        "diedAt": "",
+        "birth": "",
+        "death": "",
         "occupation": "",
         "languages": [],
         "origin": [],

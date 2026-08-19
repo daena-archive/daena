@@ -145,7 +145,11 @@ function loadCollectionQuery(sec: WorkspaceSection): CollectionQuery {
       return { ...DEFAULT_COLLECTION_QUERY, ...parsed, section: sec, excludedTypes: parsed.excludedTypes ?? [] };
     }
   } catch {}
-  return { ...DEFAULT_COLLECTION_QUERY, section: sec, viewMode: sec === "language" ? "flat" : DEFAULT_COLLECTION_QUERY.viewMode };
+  return {
+    ...DEFAULT_COLLECTION_QUERY,
+    section: sec,
+    viewMode: sec === "language" ? "flat" : DEFAULT_COLLECTION_QUERY.viewMode,
+  };
 }
 
 let collectionQuery = $state<CollectionQuery>(loadCollectionQuery("lore"));
@@ -594,7 +598,11 @@ function coerceAiFieldValue(definition: FieldDefinition, raw: unknown): unknown 
   if (definition.multiple || definition.type === "relationship") {
     if (!Array.isArray(raw) || raw.length === 0 || raw.length > 5) return null;
     const values = raw.map((item) =>
-      definition.type === "relationship" ? (typeof item === "string" && item.trim() ? item : null) : aiScalarValue(definition, item),
+      definition.type === "relationship"
+        ? typeof item === "string" && item.trim()
+          ? item
+          : null
+        : aiScalarValue(definition, item),
     );
     return values.every((value) => value !== null) ? values : null;
   }
@@ -779,7 +787,14 @@ function createDatePartsDraft(key: string) {
   const stored = createDateForField(key);
   const calendar = createCalendarDefinition(key);
   if (stored) return calendarDateToParts(stored, calendar);
-  return createDateEditorOpen[key] ? { year: undefined as number | undefined, month: undefined as number | undefined, day: undefined as number | undefined, precision: "day" as const } : null;
+  return createDateEditorOpen[key]
+    ? {
+        year: undefined as number | undefined,
+        month: undefined as number | undefined,
+        day: undefined as number | undefined,
+        precision: "day" as const,
+      }
+    : null;
 }
 function setCreateDateCalendar(key: string, calendarId: string) {
   createDateCalendarByField = { ...createDateCalendarByField, [key]: calendarId };
@@ -887,11 +902,13 @@ async function resolveDirtyMapSession(): Promise<boolean> {
   const mapId = currentMapId();
   if (!mapId || sandboxView?.renderer !== "maps" || mapSaveStates[mapId]?.status !== "dirty") return true;
   if (mapsEditorMode === "physical") return true;
-  if (await confirmDialog({
-    title: "Save changes to this map before leaving?",
-    message: "Your map has unsaved edits.",
-    confirmLabel: "Save",
-  })) {
+  if (
+    await confirmDialog({
+      title: "Save changes to this map before leaving?",
+      message: "Your map has unsaved edits.",
+      confirmLabel: "Save",
+    })
+  ) {
     try {
       if (mapsEditorMode === "vector") {
         await nativeVectorSession()?.save();
@@ -1443,13 +1460,23 @@ function definitionForDateField(key: string): CalendarDefinition | null {
   return calendarDefinitionForId(selectedCalendarId(key));
 }
 function dateDraftForField(key: string): Partial<CalendarDate> | null {
-  return dateForField(key) ?? (dateEditorOpen[key] ? { calendar: selectedCalendarId(key), era: "CE", precision: "day" } : null);
+  return (
+    dateForField(key) ??
+    (dateEditorOpen[key] ? { calendar: selectedCalendarId(key), era: "CE", precision: "day" } : null)
+  );
 }
 function datePartsDraft(key: string) {
   const stored = dateForField(key);
   const calendar = definitionForDateField(key);
   if (stored) return calendarDateToParts(stored, calendar);
-  return dateEditorOpen[key] ? { year: undefined as number | undefined, month: undefined as number | undefined, day: undefined as number | undefined, precision: "day" as const } : null;
+  return dateEditorOpen[key]
+    ? {
+        year: undefined as number | undefined,
+        month: undefined as number | undefined,
+        day: undefined as number | undefined,
+        precision: "day" as const,
+      }
+    : null;
 }
 function setDateCalendar(key: string, calendarId: string) {
   dateCalendarByField = { ...dateCalendarByField, [key]: calendarId };
@@ -2102,7 +2129,11 @@ async function startAiRewrite() {
 }
 async function acceptAiRewrite() {
   if (!selected || !aiPreviewOutput || aiBusy) return;
-  if (selected.id !== aiSourceEntityId || documentBody !== aiSourceBody || loadedDocumentRevision !== aiSourceRevision) {
+  if (
+    selected.id !== aiSourceEntityId ||
+    documentBody !== aiSourceBody ||
+    loadedDocumentRevision !== aiSourceRevision
+  ) {
     error = "The entity or document changed while the rewrite was being prepared. Discard it and try again.";
     return;
   }
@@ -2198,7 +2229,9 @@ async function refreshCalendarDefinitions() {
     await Promise.all(
       calendars.map(async (calendar) => {
         const records = await context.records.list("calendar-definition", calendar.id as UUID, { limit: 1 });
-        next[calendar.id] = records[0] ? normalizeCalendarDefinition(records[0].value) : normalizeCalendarDefinition({});
+        next[calendar.id] = records[0]
+          ? normalizeCalendarDefinition(records[0].value)
+          : normalizeCalendarDefinition({});
       }),
     );
   } catch {
@@ -2442,7 +2475,13 @@ async function applyMapPick(anchor: unknown) {
       if (mapsEditorMode === "fmg")
         await project.mapsEditorFocusLink(location.id, activeMapsPluginId()).catch(() => {});
       if (!(await leavePluginView())) return;
-      section = entity.entity_type === "event" || entity.entity_type === "encounter" || entity.entity_type === "era" || entity.entity_type === "calendar" ? "timeline" : "lore";
+      section =
+        entity.entity_type === "event" ||
+        entity.entity_type === "encounter" ||
+        entity.entity_type === "era" ||
+        entity.entity_type === "calendar"
+          ? "timeline"
+          : "lore";
       await selectEntity(entity);
       mapLocations = await project.listMapLocations(entity.id);
     } else {
@@ -2454,7 +2493,13 @@ async function applyMapPick(anchor: unknown) {
         (await project.listEntities()).find((candidate) => candidate.id === pending.entityId);
       if (entity) {
         if (!(await leavePluginView())) return;
-        section = entity.entity_type === "event" || entity.entity_type === "encounter" || entity.entity_type === "era" || entity.entity_type === "calendar" ? "timeline" : "lore";
+        section =
+          entity.entity_type === "event" ||
+          entity.entity_type === "encounter" ||
+          entity.entity_type === "era" ||
+          entity.entity_type === "calendar"
+            ? "timeline"
+            : "lore";
         await selectEntity(entity);
         mapLocations = await project.listMapLocations(entity.id);
       }
@@ -2477,7 +2522,11 @@ async function openMapEntityFromLink(entityId: string) {
       entity.entity_type === "artifact" ||
       entity.entity_type === "culture"
         ? "lore"
-        : entity.entity_type?.startsWith("timeline") || entity.entity_type === "event" || entity.entity_type === "encounter" || entity.entity_type === "era" || entity.entity_type === "calendar"
+        : entity.entity_type?.startsWith("timeline") ||
+            entity.entity_type === "event" ||
+            entity.entity_type === "encounter" ||
+            entity.entity_type === "era" ||
+            entity.entity_type === "calendar"
           ? "timeline"
           : "lore";
     if (!(await leavePluginView())) return;
@@ -2838,9 +2887,7 @@ function relationshipsForDefinition(definition: FieldDefinition) {
   );
 }
 function definitionForRelationship(relationship: Relationship): FieldDefinition | null {
-  const manifests = modules
-    .filter((module) => module.enabled)
-    .map((module) => module as unknown as ModuleManifest);
+  const manifests = modules.filter((module) => module.enabled).map((module) => module as unknown as ModuleManifest);
   if (manifests.length === 0) {
     const fallback = activeManifest();
     if (fallback) manifests.push(fallback);
@@ -3637,7 +3684,11 @@ onMount(() => {
       </div>
     </div>
   {/if}
-  <aside class:startup-rail={!ready} class:rail-collapsed={railCollapsed && ready} class:menu-open={railCollapsed && ready && showProjectMenu} class="rail">
+  <aside
+    class:startup-rail={!ready}
+    class:rail-collapsed={railCollapsed && ready}
+    class:menu-open={railCollapsed && ready && showProjectMenu}
+    class="rail">
     <div class="brand">
       {#if railCollapsed && ready}
         <img class="brand-icon" src="/branding/icon.png" alt="Daena" />
@@ -3680,9 +3731,10 @@ onMount(() => {
         </button>
         {#if showProjectMenu}
           {#if railCollapsed}<button
-            class="rail-backdrop"
-            aria-label="Close menu"
-            onclick={() => (showProjectMenu = false)}></button>{/if}
+              class="rail-backdrop"
+              aria-label="Close menu"
+              onclick={() => (showProjectMenu = false)}></button
+            >{/if}
           <div class="project-menu" role="menu">
             <button class="rail-button" role="menuitem" onclick={openProjectDirectory}
               ><span class="rail-icon">↗</span><span>Open another folder</span></button>
@@ -3756,15 +3808,16 @@ onMount(() => {
       title="Settings"
       onclick={() => void openSettings()}><span class="rail-icon">⚙</span><span>Settings</span></button>
     {#if ready}<button
-      class="rail-button muted-button rail-collapse-toggle"
-      aria-label={railCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-      title={railCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-      onclick={() => {
-        railCollapsed = !railCollapsed;
-        localStorage.setItem("daena:rail-collapsed", String(railCollapsed));
-      }}
-      ><span class="rail-icon">{railCollapsed ? "»" : "«"}</span><span>{railCollapsed ? "Expand" : "Collapse"}</span></button
-    >{/if}
+        class="rail-button muted-button rail-collapse-toggle"
+        aria-label={railCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+        title={railCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+        onclick={() => {
+          railCollapsed = !railCollapsed;
+          localStorage.setItem("daena:rail-collapsed", String(railCollapsed));
+        }}
+        ><span class="rail-icon">{railCollapsed ? "»" : "«"}</span><span>{railCollapsed ? "Expand" : "Collapse"}</span
+        ></button
+      >{/if}
     <div class="rail-footer">v0.1.0</div>
   </aside>
 
@@ -3845,9 +3898,9 @@ onMount(() => {
                 </div>
                 <label class="create-input-field" for="new-entity"
                   ><span>Name <b>*</b></span><input
-                     id="new-entity"
-                     required
-                     bind:value={name}
+                    id="new-entity"
+                    required
+                    bind:value={name}
                     placeholder={`e.g. ${createOption.template.name}`}
                     autocomplete="off" /></label
                 >{#each createFieldsFor(createOption) as item}<div class="create-input-field">
@@ -3865,9 +3918,9 @@ onMount(() => {
                             item.field.key,
                             ids,
                           )} />{:else if item.field.type === "text"}<textarea
-                         id={`create-${item.field.key}`}
-                         required={item.required}
-                         rows="3"
+                        id={`create-${item.field.key}`}
+                        required={item.required}
+                        rows="3"
                         value={String(createFieldValues[item.field.key] ?? "")}
                         placeholder={`Add ${item.field.label.toLowerCase()}`}
                         oninput={(event) =>
@@ -3929,14 +3982,16 @@ onMount(() => {
                             >Calendar<select
                               id={`create-${item.field.key}-calendar`}
                               aria-label={`${item.field.label} calendar`}
-                              value={calendarIdForStoredDate(createDateForField(item.field.key), createDateCalendarByField[item.field.key])}
+                              value={calendarIdForStoredDate(
+                                createDateForField(item.field.key),
+                                createDateCalendarByField[item.field.key],
+                              )}
                               onchange={(event) =>
                                 setCreateDateCalendar(item.field.key, (event.currentTarget as HTMLSelectElement).value)}
                               ><option value={GREGORIAN_CALENDAR_ID}>Gregorian</option
                               >{#each worldCalendars() as option}<option value={option.id}>{option.name}</option
                                 >{/each}</select
-                            ></label
-                          >
+                            ></label>
                           <div class="date-fields">
                             <label for={`create-${item.field.key}-year`}
                               >Year<input
@@ -3952,39 +4007,39 @@ onMount(() => {
                                     Number.MIN_SAFE_INTEGER,
                                   )} /></label
                             >{#if months.length > 0}<label for={`create-${item.field.key}-month`}
-                              >Month<select
-                                id={`create-${item.field.key}-month`}
-                                aria-label={`${item.field.label} month`}
-                                value={parts?.month ?? ""}
-                                onchange={(event) =>
-                                  updateCreateDatePart(
-                                    item.field.key,
-                                    "month",
-                                    (event.currentTarget as HTMLSelectElement).value,
-                                    1,
-                                    months.length,
-                                  )}
-                                ><option value="">Month</option>{#each months as month, index}<option value={index + 1}
-                                    >{month.name}</option
-                                  >{/each}</select
+                                >Month<select
+                                  id={`create-${item.field.key}-month`}
+                                  aria-label={`${item.field.label} month`}
+                                  value={parts?.month ?? ""}
+                                  onchange={(event) =>
+                                    updateCreateDatePart(
+                                      item.field.key,
+                                      "month",
+                                      (event.currentTarget as HTMLSelectElement).value,
+                                      1,
+                                      months.length,
+                                    )}
+                                  ><option value="">Month</option>{#each months as month, index}<option
+                                      value={index + 1}>{month.name}</option
+                                    >{/each}</select
                                 ></label
                               >{:else}<label for={`create-${item.field.key}-month`}
-                              >Month<input
-                                id={`create-${item.field.key}-month`}
-                                aria-label={`${item.field.label} month`}
-                                type="number"
-                                min="1"
-                                max="12"
-                                value={parts?.month ?? date.month ?? ""}
-                                onchange={(event) =>
-                                  updateCreateDatePart(
-                                    item.field.key,
-                                    "month",
-                                    (event.currentTarget as HTMLInputElement).value,
-                                    1,
-                                    12,
-                                  )} /></label
-                            >{/if}<label for={`create-${item.field.key}-day`}
+                                >Month<input
+                                  id={`create-${item.field.key}-month`}
+                                  aria-label={`${item.field.label} month`}
+                                  type="number"
+                                  min="1"
+                                  max="12"
+                                  value={parts?.month ?? date.month ?? ""}
+                                  onchange={(event) =>
+                                    updateCreateDatePart(
+                                      item.field.key,
+                                      "month",
+                                      (event.currentTarget as HTMLInputElement).value,
+                                      1,
+                                      12,
+                                    )} /></label
+                              >{/if}<label for={`create-${item.field.key}-day`}
                               >Day<input
                                 id={`create-${item.field.key}-day`}
                                 aria-label={`${item.field.label} day`}
@@ -4563,15 +4618,12 @@ onMount(() => {
                     <button type="button" role="menuitem" disabled>Import vector map</button>
                   </div>{/if}
               </div>{/if}
-            {#if section === "language"}<button
-                class="primary-button"
-                type="button"
-                onclick={toggleCreateForm}>Create language</button
+            {#if section === "language"}<button class="primary-button" type="button" onclick={toggleCreateForm}
+                >Create language</button
               >{/if}
             {#if section !== "writing" && section !== "maps" && section !== "language"}<button
                 class="quiet-button"
-                onclick={openProjection}
-                >Open {section === "lore" ? "graph" : "timeline"} ↗</button
+                onclick={openProjection}>Open {section === "lore" ? "graph" : "timeline"} ↗</button
               >{/if}
           </div>
         </div>
@@ -4651,8 +4703,7 @@ onMount(() => {
                     ><button
                       class="sort-dir-toggle"
                       aria-label={collectionQuery.sortDir === "asc" ? "Ascending" : "Descending"}
-                      onclick={() =>
-                        (collectionQuery.sortDir = collectionQuery.sortDir === "asc" ? "desc" : "asc")}
+                      onclick={() => (collectionQuery.sortDir = collectionQuery.sortDir === "asc" ? "desc" : "asc")}
                       >{collectionQuery.sortDir === "asc" ? "↑" : "↓"}</button>
                   </div>
                 </fieldset>
@@ -4665,7 +4716,8 @@ onMount(() => {
                           name="pageSize"
                           value={size}
                           checked={collectionQuery.pageSize === size}
-                          onchange={() => (collectionQuery.pageSize = size)} /> {size}</label
+                          onchange={() => (collectionQuery.pageSize = size)} />
+                        {size}</label
                       >{/each}<label
                       ><input
                         type="radio"
@@ -4682,7 +4734,8 @@ onMount(() => {
                         ><input
                           type="checkbox"
                           checked={!collectionQuery.excludedTypes.includes(type)}
-                          onchange={() => toggleTypeFilter(type)} /> {entityTypeLabel(type)}</label
+                          onchange={() => toggleTypeFilter(type)} />
+                        {entityTypeLabel(type)}</label
                       >{/each}
                   </div>
                 </fieldset>
@@ -4691,7 +4744,9 @@ onMount(() => {
           <div class="collection-list">
             {#if collectionResult().total === 0}<div class="list-empty" role="status">
                 <span class="empty-mark" aria-hidden="true">✦</span><strong
-                  >{collectionQuery.textSearch ? `No ${collectionLabel()} match that search.` : `No ${collectionLabel()} yet.`}</strong>
+                  >{collectionQuery.textSearch
+                    ? `No ${collectionLabel()} match that search.`
+                    : `No ${collectionLabel()} yet.`}</strong>
                 <p>
                   {collectionQuery.textSearch
                     ? "Try another search or create something new."
@@ -4714,24 +4769,20 @@ onMount(() => {
                           >Create physical world</button>
                         <button type="button" role="menuitem" onclick={() => void createMap("fmg")}
                           >Create with FMG</button>
-                        <button type="button" role="menuitem" disabled
-                          >Import image</button>
-                        <button type="button" role="menuitem" disabled
-                          >Import vector map</button>
+                        <button type="button" role="menuitem" disabled>Import image</button>
+                        <button type="button" role="menuitem" disabled>Import vector map</button>
                       </div>{/if}
                   </div>
                 {:else}<button class="empty-create" type="button" onclick={toggleCreateForm}
                     >＋ Create {createLabel()}</button
                   >{/if}
-              </div>{:else}{#if collectionQuery.viewMode === "grouped"}{#each collectionResult().groups ?? [] as group}<div class="collection-group">
-                    <button
-                      type="button"
-                      class="collection-group-header"
-                      onclick={() => toggleGroup(group.type)}
-                      ><span class="group-chevron">{expandedGroups.has(group.type) ? "⌄" : "›"}</span><span
-                        class={`entity-glyph ${entityGlyphClassForType(group.type)}`}>{glyphForType(group.type)}</span
-                      ><strong>{group.label}</strong><small>{group.count}</small></button
-                    >{#if expandedGroups.has(group.type)}{#each group.entities as entity}<button
+              </div>{:else if collectionQuery.viewMode === "grouped"}{#each collectionResult().groups ?? [] as group}<div
+                  class="collection-group">
+                  <button type="button" class="collection-group-header" onclick={() => toggleGroup(group.type)}
+                    ><span class="group-chevron">{expandedGroups.has(group.type) ? "⌄" : "›"}</span><span
+                      class={`entity-glyph ${entityGlyphClassForType(group.type)}`}>{glyphForType(group.type)}</span
+                    ><strong>{group.label}</strong><small>{group.count}</small></button
+                  >{#if expandedGroups.has(group.type)}{#each group.entities as entity}<button
                         class:selected={selected?.id === entity.id}
                         class="collection-item"
                         onclick={() => selectEntity(entity)}
@@ -4739,15 +4790,16 @@ onMount(() => {
                           class="item-copy"
                           ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
                         ><span class="item-arrow" aria-hidden="true">›</span></button
-                      >{/each}{/if}</div>{/each}{:else}{#each collectionResult().entities as entity}<button
-                    class:selected={selected?.id === entity.id}
-                    class="collection-item"
-                    onclick={() => selectEntity(entity)}
-                    ><span class={`entity-glyph ${entityGlyphClass(entity)}`}>{entityGlyph(entity)}</span><span
-                      class="item-copy"
-                      ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
-                    ><span class="item-arrow" aria-hidden="true">›</span></button
-                  >{/each}{/if}{/if}
+                      >{/each}{/if}
+                </div>{/each}{:else}{#each collectionResult().entities as entity}<button
+                  class:selected={selected?.id === entity.id}
+                  class="collection-item"
+                  onclick={() => selectEntity(entity)}
+                  ><span class={`entity-glyph ${entityGlyphClass(entity)}`}>{entityGlyph(entity)}</span><span
+                    class="item-copy"
+                    ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
+                  ><span class="item-arrow" aria-hidden="true">›</span></button
+                >{/each}{/if}
           </div>
         </aside>
 
@@ -4767,288 +4819,295 @@ onMount(() => {
         {:else}
           <article
             class:editor-fullscreen={editorFullscreen}
-            class:map-editor-active={section === "maps" && sandboxView?.renderer === "maps" && Boolean(sandboxView.view)}
+            class:map-editor-active={section === "maps" &&
+              sandboxView?.renderer === "maps" &&
+              Boolean(sandboxView.view)}
             class="editor-panel">
-          {#if section === "maps" && sandboxView?.renderer === "maps" && sandboxView.view}
-            {@const mapId = selected?.entity_type === "daena.maps:map" ? selected.id : null}
-            {@const mapState = mapId ? (mapSaveStates[mapId] ?? null) : null}
-            {@const mapDetail = mapConflictDetail(mapState?.detail)}
-            <div class="map-editor-shell">
-              {#if mapReconcileNotice || mapPickNotice}
-                <div class="map-editor-notices">
-                  {#if mapReconcileNotice}<span class="map-reconcile-notice">{mapReconcileNotice}</span>{/if}
-                  {#if mapPickNotice}<span class="map-reconcile-notice">{mapPickNotice}</span>{/if}
-                </div>
-              {/if}
-              {#if mapState?.status === "conflict"}
-                <div class="map-conflict-banner" role="alert">
-                  <div class="map-conflict-copy">
-                    <strong>This map changed on disk while you were editing</strong>
-                    <p>Your draft was not saved over it. A recovery copy was exported so nothing is lost.</p>
-                    {#if mapDetail.path}<code>{mapDetail.path}</code>{/if}
+            {#if section === "maps" && sandboxView?.renderer === "maps" && sandboxView.view}
+              {@const mapId = selected?.entity_type === "daena.maps:map" ? selected.id : null}
+              {@const mapState = mapId ? (mapSaveStates[mapId] ?? null) : null}
+              {@const mapDetail = mapConflictDetail(mapState?.detail)}
+              <div class="map-editor-shell">
+                {#if mapReconcileNotice || mapPickNotice}
+                  <div class="map-editor-notices">
+                    {#if mapReconcileNotice}<span class="map-reconcile-notice">{mapReconcileNotice}</span>{/if}
+                    {#if mapPickNotice}<span class="map-reconcile-notice">{mapPickNotice}</span>{/if}
                   </div>
-                  <div class="map-conflict-actions">
-                    <button class="primary-button" type="button" disabled={mapRecoveryBusy} onclick={restoreMapDraft}
-                      >{mapRecoveryBusy ? "Restoring…" : "Restore draft"}</button
-                    ><button class="quiet-button" type="button" onclick={reloadMapOriginal}>Reload original</button
-                    ><button class="quiet-button" type="button" onclick={dismissMapConflict}>Keep editing</button>
-                  </div>
-                </div>
-              {/if}
-              <div class="map-surface">
-                {#if mapsEditorMode === "physical"}
-                  {#key `${mapsEditorKey}:${mapReloadCounter}`}
-                    <PhysicalMapEditor
-                      mapId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
-                      onstate={(status, detail) => {
-                        if (!mapId) return;
-                        mapSaveStates[mapId] = { status, detail };
-                      }}
-                      oncreated={async (map) => {
-                        entities = await project.listEntities();
-                        savedMapsCache = null;
-                        selected = map;
-                        mapsEditorKey = map.id;
-                        mapsEditorMode = "vector";
-                        await loadSelectedState(map);
-                      }}
-                      oncancel={() => {
-                        void leavePluginView();
-                      }} />
-                  {/key}
-                {:else if mapsEditorMode === "vector"}
-                  {#key `${mapsEditorKey}:${mapReloadCounter}`}
-                    <NativeVectorMapEditor
-                      mapId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
-                      picking={Boolean(mapPickPending)}
-                      start={mapsEditorKey.startsWith("draft-") ? mapsVectorStart : "generate"}
-                      focusLinkId={mapFocusLinkId ?? undefined}
-                      onpick={(anchor) => void applyMapPick(anchor)}
-                      onopen={(entityId) => void openMapEntityFromLink(entityId)}
-                      onstate={(status, detail) => {
-                        if (status === "fullscreen") {
-                          editorFullscreen =
-                            typeof detail === "object" &&
-                            detail !== null &&
-                            "enabled" in detail &&
-                            detail.enabled === true;
-                          return;
-                        }
-                        if (status === "back") {
-                          void leavePluginView();
-                          return;
-                        }
-                        if (!mapId) return;
-                        mapSaveStates[mapId] = { status, detail };
-                      }}
-                      oncreated={async (map) => {
-                        entities = await project.listEntities();
-                        savedMapsCache = null;
-                        selected = map;
-                        mapsEditorKey = map.id;
-                        mapsEditorMode = "vector";
-                        await loadSelectedState(map);
-                      }}
-                      oncancel={() => {
-                        void leavePluginView();
-                      }} />
-                  {/key}
-                {:else}
-                  <SandboxView
-                    pluginId={sandboxView.plugin.id}
-                    viewId={sandboxView.view.id}
-                    title={sandboxView.plugin.name}
-                    mapEntityId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
-                    linkId={mapFocusLinkId ?? undefined} />
                 {/if}
-              </div>
-            </div>
-          {:else}
-            <div class="editor-header">
-              <div>
-                <span class="panel-kicker"
-                  >{selected
-                    ? entityTypeLabel(selected.entity_type).toUpperCase()
-                    : section === "lore"
-                      ? "LORE ENTRY"
-                      : section === "timeline"
-                        ? timelineView === "eras"
-                          ? "ERA"
-                          : timelineView === "calendars"
-                            ? "CALENDAR"
-                            : "TIMELINE EVENT"
-                        : section === "maps"
-                          ? "MAP"
-                          : writingView === "manuscripts"
-                            ? "MANUSCRIPT"
-                            : "REFERENCE PAGE"}</span>
-                <h2>{selected?.name ?? (section === "maps" ? "Choose a map" : "Choose an entry")}</h2>
-              </div>
-              {#if selected}
-                <div class="editor-status">
-                  {#if isSaving}<span class="saving-dot"></span> Saving…{:else if hasUnsavedChanges}<span
-                      class="unsaved-dot"></span> Unsaved changes{:else if savedAt}<span class="saved-dot">✓</span>
-                    Saved {savedAt}{/if}
-                  {#if section === "maps"}<button
-                      class="quiet-button"
-                      type="button"
-                      onclick={() => void openSelectedMapEditor()}>Open map editor</button
-                    >{/if}
-                </div>
-              {/if}
-            </div>
-            {#if selected}
-              {#if documentConflict}
-                <div class="document-conflict" role="alert">
-                  <strong
-                    >{documentConflict.diagnostics.length
-                      ? "Canonical source needs attention"
-                      : "This draft changed on disk"}</strong>
-                  <p>
-                    {documentConflict.diagnostics.length
-                      ? documentConflict.diagnostics[0]
-                      : "Your unsaved draft is preserved. Choose how to reconcile it before saving."}
-                  </p>
-                  {#if !documentConflict.diagnostics.length}<details class="conflict-compare">
-                      <summary>Compare with disk</summary>
-                      <pre>{conflictDiskBody}</pre>
-                    </details>{/if}
-                  <div class="conflict-actions">
-                    <button class="quiet-button" type="button" onclick={reloadConflict}>Reload disk</button><button
-                      class="quiet-button"
-                      type="button"
-                      onclick={overwriteConflict}
-                      disabled={documentConflict.diagnostics.length > 0}>Overwrite as new revision</button
-                    ><button class="quiet-button" type="button" onclick={saveConflictRecoveryCopy}
-                      >Save recovery copy</button>
-                  </div>
-                </div>
-              {/if}
-              {#if aiRewriteOpen}
-                <div class="ai-rewrite-modal-backdrop">
-                  <div
-                    class="ai-rewrite-panel"
-                    role="dialog"
-                    aria-modal="true"
-                    aria-labelledby="ai-rewrite-title"
-                    tabindex="-1"
-                    onkeydown={(event) => {
-                      if (event.key === "Escape" && !aiBusy) closeAiRewrite();
-                    }}>
-                    <div class="ai-rewrite-heading">
-                      <div>
-                        <span class="panel-kicker">{aiSettings.provider.name || "AI provider"}</span><strong
-                          id="ai-rewrite-title"
-                          >{aiBusy
-                            ? aiMode === "generate"
-                              ? "Generating text…"
-                              : "Rewriting selection…"
-                            : aiPreviewOutput
-                              ? aiMode === "generate"
-                                ? "Review generated text"
-                                : "Review rewrite"
-                              : aiMode === "generate"
-                                ? "Generate text"
-                                : "Rewrite selection"}</strong>
-                      </div>
+                {#if mapState?.status === "conflict"}
+                  <div class="map-conflict-banner" role="alert">
+                    <div class="map-conflict-copy">
+                      <strong>This map changed on disk while you were editing</strong>
+                      <p>Your draft was not saved over it. A recovery copy was exported so nothing is lost.</p>
+                      {#if mapDetail.path}<code>{mapDetail.path}</code>{/if}
                     </div>
-                    {#if !aiBusy}<label class="ai-instruction"
-                        >Instruction<textarea
-                          rows="2"
-                          bind:value={aiInstruction}
-                          disabled={aiBusy}
-                          placeholder={`Tell ${aiSettings.provider.name || "the AI provider"} how to rewrite the selection`}
-                        ></textarea
-                        ></label
-                      >{/if}
-                    <AiProposalPreview
-                      original={aiSourceSelectionPlain}
-                      bind:proposal={aiPreviewOutput}
-                      streamText={aiStreamText}
-                      busy={aiBusy}
-                      onCancel={() =>
-                        aiBusy && aiRequestId ? void project.aiCancelText(aiRequestId) : closeAiRewrite()}
-                      onDiscard={closeAiRewrite}
-                      onAccept={() => void acceptAiRewrite()} />
-                    {#if aiUsage}<p class="muted-note">
-                        Provider usage: {aiUsage.inputTokens} input + {aiUsage.outputTokens} output tokens.
-                      </p>{/if}
-                    {#if !aiBusy && aiPreviewOutput}<div class="ai-rewrite-actions">
-                        <button class="primary-button" type="button" onclick={() => void acceptAiRewrite()}
-                          >Accept proposal</button>
-                        <button class="quiet-button ai-retry-button" type="button" onclick={() => void startAiRewrite()}
-                          >Retry</button>
-                        <button class="quiet-button ai-discard-button" type="button" onclick={closeAiRewrite}
-                          >Discard</button>
-                      </div>
-                    {:else if !aiBusy}<div class="ai-rewrite-actions">
-                        <button
-                          class="primary-button"
-                          type="button"
-                          disabled={(aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim()}
-                          onclick={() => void startAiRewrite()}
-                          >{aiMode === "generate" ? "Generate text" : "Generate rewrite"}</button>
-                        <button class="quiet-button" type="button" onclick={closeAiRewrite}>Cancel</button>
-                      </div>{/if}
+                    <div class="map-conflict-actions">
+                      <button class="primary-button" type="button" disabled={mapRecoveryBusy} onclick={restoreMapDraft}
+                        >{mapRecoveryBusy ? "Restoring…" : "Restore draft"}</button
+                      ><button class="quiet-button" type="button" onclick={reloadMapOriginal}>Reload original</button
+                      ><button class="quiet-button" type="button" onclick={dismissMapConflict}>Keep editing</button>
+                    </div>
                   </div>
-                </div>
-              {/if}
-              {#if documentMode === "read"}
-                <MarkdownArticle markdown={documentBody} {entities} onOpenEntity={(id) => {
-                  const target = entities.find((entity) => entity.id === id && !entity.deleted);
-                  if (target) void selectEntity(target);
-                }} />
-              {:else}
-              <RichTextEditor
-                bind:this={editorRef}
-                value={documentBody}
-                {entities}
-                editable={projectDiagnostics.length === 0 && !aiBusy && !aiRewriteOpen}
-                fullscreen={editorFullscreen}
-                onChange={updateDocumentBody}
-                onSelectionChange={setAiSelection}
-                onAiRequest={openAiAction}
-                onFullscreenChange={setEditorFullscreen}
-                placeholder={section === "writing"
-                  ? writingView === "manuscripts"
-                    ? "Write your manuscript…"
-                    : "Write this reference page…"
-                  : section === "maps"
-                    ? "Describe this map and the world it contains…"
-                    : "Write the canonical story of this entry…"} />
-              {/if}
-              <div class="editor-footer">
-                <span>{wordCount()} words</span>
-                <div>
-                  <button
-                    class="quiet-button"
-                    type="button"
-                    onclick={() => (documentMode = documentMode === "read" ? "edit" : "read")}
-                    >{documentMode === "read" ? "Edit" : "View article"}</button>
-                  <button class="quiet-button" onclick={archiveSelected}>Archive</button>
+                {/if}
+                <div class="map-surface">
+                  {#if mapsEditorMode === "physical"}
+                    {#key `${mapsEditorKey}:${mapReloadCounter}`}
+                      <PhysicalMapEditor
+                        mapId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
+                        onstate={(status, detail) => {
+                          if (!mapId) return;
+                          mapSaveStates[mapId] = { status, detail };
+                        }}
+                        oncreated={async (map) => {
+                          entities = await project.listEntities();
+                          savedMapsCache = null;
+                          selected = map;
+                          mapsEditorKey = map.id;
+                          mapsEditorMode = "vector";
+                          await loadSelectedState(map);
+                        }}
+                        oncancel={() => {
+                          void leavePluginView();
+                        }} />
+                    {/key}
+                  {:else if mapsEditorMode === "vector"}
+                    {#key `${mapsEditorKey}:${mapReloadCounter}`}
+                      <NativeVectorMapEditor
+                        mapId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
+                        picking={Boolean(mapPickPending)}
+                        start={mapsEditorKey.startsWith("draft-") ? mapsVectorStart : "generate"}
+                        focusLinkId={mapFocusLinkId ?? undefined}
+                        onpick={(anchor) => void applyMapPick(anchor)}
+                        onopen={(entityId) => void openMapEntityFromLink(entityId)}
+                        onstate={(status, detail) => {
+                          if (status === "fullscreen") {
+                            editorFullscreen =
+                              typeof detail === "object" &&
+                              detail !== null &&
+                              "enabled" in detail &&
+                              detail.enabled === true;
+                            return;
+                          }
+                          if (status === "back") {
+                            void leavePluginView();
+                            return;
+                          }
+                          if (!mapId) return;
+                          mapSaveStates[mapId] = { status, detail };
+                        }}
+                        oncreated={async (map) => {
+                          entities = await project.listEntities();
+                          savedMapsCache = null;
+                          selected = map;
+                          mapsEditorKey = map.id;
+                          mapsEditorMode = "vector";
+                          await loadSelectedState(map);
+                        }}
+                        oncancel={() => {
+                          void leavePluginView();
+                        }} />
+                    {/key}
+                  {:else}
+                    <SandboxView
+                      pluginId={sandboxView.plugin.id}
+                      viewId={sandboxView.view.id}
+                      title={sandboxView.plugin.name}
+                      mapEntityId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
+                      linkId={mapFocusLinkId ?? undefined} />
+                  {/if}
                 </div>
               </div>
             {:else}
-              <div class="editor-empty">
-                <div class="empty-mark">✦</div>
-                <h3>
-                  {section === "maps"
-                    ? "Your map notes are waiting."
-                    : section === "writing"
-                      ? writingView === "manuscripts"
-                        ? "Your draft is waiting."
-                        : "Your reference desk is waiting."
-                      : "Your canvas is waiting."}
-                </h3>
-                <p>
-                  {section === "maps"
-                    ? "Select a map from the atlas, or create one with a map integration."
-                    : "Select an entry from the library, or create something new to begin writing."}
-                </p>
+              <div class="editor-header">
+                <div>
+                  <span class="panel-kicker"
+                    >{selected
+                      ? entityTypeLabel(selected.entity_type).toUpperCase()
+                      : section === "lore"
+                        ? "LORE ENTRY"
+                        : section === "timeline"
+                          ? timelineView === "eras"
+                            ? "ERA"
+                            : timelineView === "calendars"
+                              ? "CALENDAR"
+                              : "TIMELINE EVENT"
+                          : section === "maps"
+                            ? "MAP"
+                            : writingView === "manuscripts"
+                              ? "MANUSCRIPT"
+                              : "REFERENCE PAGE"}</span>
+                  <h2>{selected?.name ?? (section === "maps" ? "Choose a map" : "Choose an entry")}</h2>
+                </div>
+                {#if selected}
+                  <div class="editor-status">
+                    {#if isSaving}<span class="saving-dot"></span> Saving…{:else if hasUnsavedChanges}<span
+                        class="unsaved-dot"></span> Unsaved changes{:else if savedAt}<span class="saved-dot">✓</span>
+                      Saved {savedAt}{/if}
+                    {#if section === "maps"}<button
+                        class="quiet-button"
+                        type="button"
+                        onclick={() => void openSelectedMapEditor()}>Open map editor</button
+                      >{/if}
+                  </div>
+                {/if}
               </div>
+              {#if selected}
+                {#if documentConflict}
+                  <div class="document-conflict" role="alert">
+                    <strong
+                      >{documentConflict.diagnostics.length
+                        ? "Canonical source needs attention"
+                        : "This draft changed on disk"}</strong>
+                    <p>
+                      {documentConflict.diagnostics.length
+                        ? documentConflict.diagnostics[0]
+                        : "Your unsaved draft is preserved. Choose how to reconcile it before saving."}
+                    </p>
+                    {#if !documentConflict.diagnostics.length}<details class="conflict-compare">
+                        <summary>Compare with disk</summary>
+                        <pre>{conflictDiskBody}</pre>
+                      </details>{/if}
+                    <div class="conflict-actions">
+                      <button class="quiet-button" type="button" onclick={reloadConflict}>Reload disk</button><button
+                        class="quiet-button"
+                        type="button"
+                        onclick={overwriteConflict}
+                        disabled={documentConflict.diagnostics.length > 0}>Overwrite as new revision</button
+                      ><button class="quiet-button" type="button" onclick={saveConflictRecoveryCopy}
+                        >Save recovery copy</button>
+                    </div>
+                  </div>
+                {/if}
+                {#if aiRewriteOpen}
+                  <div class="ai-rewrite-modal-backdrop">
+                    <div
+                      class="ai-rewrite-panel"
+                      role="dialog"
+                      aria-modal="true"
+                      aria-labelledby="ai-rewrite-title"
+                      tabindex="-1"
+                      onkeydown={(event) => {
+                        if (event.key === "Escape" && !aiBusy) closeAiRewrite();
+                      }}>
+                      <div class="ai-rewrite-heading">
+                        <div>
+                          <span class="panel-kicker">{aiSettings.provider.name || "AI provider"}</span><strong
+                            id="ai-rewrite-title"
+                            >{aiBusy
+                              ? aiMode === "generate"
+                                ? "Generating text…"
+                                : "Rewriting selection…"
+                              : aiPreviewOutput
+                                ? aiMode === "generate"
+                                  ? "Review generated text"
+                                  : "Review rewrite"
+                                : aiMode === "generate"
+                                  ? "Generate text"
+                                  : "Rewrite selection"}</strong>
+                        </div>
+                      </div>
+                      {#if !aiBusy}<label class="ai-instruction"
+                          >Instruction<textarea
+                            rows="2"
+                            bind:value={aiInstruction}
+                            disabled={aiBusy}
+                            placeholder={`Tell ${aiSettings.provider.name || "the AI provider"} how to rewrite the selection`}
+                          ></textarea
+                          ></label
+                        >{/if}
+                      <AiProposalPreview
+                        original={aiSourceSelectionPlain}
+                        bind:proposal={aiPreviewOutput}
+                        streamText={aiStreamText}
+                        busy={aiBusy}
+                        onCancel={() =>
+                          aiBusy && aiRequestId ? void project.aiCancelText(aiRequestId) : closeAiRewrite()}
+                        onDiscard={closeAiRewrite}
+                        onAccept={() => void acceptAiRewrite()} />
+                      {#if aiUsage}<p class="muted-note">
+                          Provider usage: {aiUsage.inputTokens} input + {aiUsage.outputTokens} output tokens.
+                        </p>{/if}
+                      {#if !aiBusy && aiPreviewOutput}<div class="ai-rewrite-actions">
+                          <button class="primary-button" type="button" onclick={() => void acceptAiRewrite()}
+                            >Accept proposal</button>
+                          <button
+                            class="quiet-button ai-retry-button"
+                            type="button"
+                            onclick={() => void startAiRewrite()}>Retry</button>
+                          <button class="quiet-button ai-discard-button" type="button" onclick={closeAiRewrite}
+                            >Discard</button>
+                        </div>
+                      {:else if !aiBusy}<div class="ai-rewrite-actions">
+                          <button
+                            class="primary-button"
+                            type="button"
+                            disabled={(aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim()}
+                            onclick={() => void startAiRewrite()}
+                            >{aiMode === "generate" ? "Generate text" : "Generate rewrite"}</button>
+                          <button class="quiet-button" type="button" onclick={closeAiRewrite}>Cancel</button>
+                        </div>{/if}
+                    </div>
+                  </div>
+                {/if}
+                {#if documentMode === "read"}
+                  <MarkdownArticle
+                    markdown={documentBody}
+                    {entities}
+                    onOpenEntity={(id) => {
+                      const target = entities.find((entity) => entity.id === id && !entity.deleted);
+                      if (target) void selectEntity(target);
+                    }} />
+                {:else}
+                  <RichTextEditor
+                    bind:this={editorRef}
+                    value={documentBody}
+                    {entities}
+                    editable={projectDiagnostics.length === 0 && !aiBusy && !aiRewriteOpen}
+                    fullscreen={editorFullscreen}
+                    onChange={updateDocumentBody}
+                    onSelectionChange={setAiSelection}
+                    onAiRequest={openAiAction}
+                    onFullscreenChange={setEditorFullscreen}
+                    placeholder={section === "writing"
+                      ? writingView === "manuscripts"
+                        ? "Write your manuscript…"
+                        : "Write this reference page…"
+                      : section === "maps"
+                        ? "Describe this map and the world it contains…"
+                        : "Write the canonical story of this entry…"} />
+                {/if}
+                <div class="editor-footer">
+                  <span>{wordCount()} words</span>
+                  <div>
+                    <button
+                      class="quiet-button"
+                      type="button"
+                      onclick={() => (documentMode = documentMode === "read" ? "edit" : "read")}
+                      >{documentMode === "read" ? "Edit" : "View article"}</button>
+                    <button class="quiet-button" onclick={archiveSelected}>Archive</button>
+                  </div>
+                </div>
+              {:else}
+                <div class="editor-empty">
+                  <div class="empty-mark">✦</div>
+                  <h3>
+                    {section === "maps"
+                      ? "Your map notes are waiting."
+                      : section === "writing"
+                        ? writingView === "manuscripts"
+                          ? "Your draft is waiting."
+                          : "Your reference desk is waiting."
+                        : "Your canvas is waiting."}
+                  </h3>
+                  <p>
+                    {section === "maps"
+                      ? "Select a map from the atlas, or create one with a map integration."
+                      : "Select an entry from the library, or create something new to begin writing."}
+                  </p>
+                </div>
+              {/if}
             {/if}
-          {/if}
-        </article>
+          </article>
         {/if}
 
         {#if (section !== "maps" || sandboxView?.renderer !== "maps") && section !== "language" && selected}<aside
@@ -5114,9 +5173,13 @@ onMount(() => {
                   <span
                     >{definition.label}{#if definition.required}<b>*</b>{/if}</span
                   >{#if definition.type === "date"}{#if dateForField(definition.key) || dateEditorOpen[definition.key]}{@const date =
-                        dateDraftForField(definition.key) ?? { calendar: GREGORIAN_CALENDAR_ID, era: "CE", precision: "day" }}{@const parts =
-                        datePartsDraft(definition.key)}{@const calendar = definitionForDateField(definition.key)}{@const months =
-                        calendar?.months ?? []}
+                        dateDraftForField(definition.key) ?? {
+                          calendar: GREGORIAN_CALENDAR_ID,
+                          era: "CE",
+                          precision: "day",
+                        }}{@const parts = datePartsDraft(definition.key)}{@const calendar = definitionForDateField(
+                        definition.key,
+                      )}{@const months = calendar?.months ?? []}
                       <div class="date-editor">
                         <label class="date-calendar" for={`${definition.key}-calendar`}
                           >Calendar<select
@@ -5128,8 +5191,7 @@ onMount(() => {
                             ><option value={GREGORIAN_CALENDAR_ID}>Gregorian</option
                             >{#each worldCalendars() as option}<option value={option.id}>{option.name}</option
                               >{/each}</select
-                          ></label
-                        >
+                          ></label>
                         <div class="date-fields">
                           <label for={`${definition.key}-year`}
                             >Year<input
@@ -5145,45 +5207,49 @@ onMount(() => {
                                   Number.MIN_SAFE_INTEGER,
                                 )} /></label
                           >{#if months.length > 0}<label for={`${definition.key}-month`}
-                            >Month<select
-                              id={`${definition.key}-month`}
-                              aria-label={`${definition.label} month`}
-                              value={parts?.month ?? ""}
-                              onchange={(event) =>
-                                updateDatePart(
-                                  definition.key,
-                                  "month",
-                                  (event.currentTarget as HTMLSelectElement).value,
-                                  1,
-                                  months.length,
-                                )}
-                              ><option value="">Month</option>{#each months as month, index}<option
-                                  value={index + 1}>{month.name}</option
-                                >{/each}</select
-                            ></label
-                          >{:else}<label for={`${definition.key}-month`}
-                            >Month<input
-                              id={`${definition.key}-month`}
-                              aria-label={`${definition.label} month`}
-                              type="number"
-                              min="1"
-                              max="12"
-                              value={parts?.month ?? date.month ?? ""}
-                              onchange={(event) =>
-                                updateDatePart(
-                                  definition.key,
-                                  "month",
-                                  (event.currentTarget as HTMLInputElement).value,
-                                  1,
-                                  12,
-                                )} /></label
-                          >{/if}<label for={`${definition.key}-day`}
+                              >Month<select
+                                id={`${definition.key}-month`}
+                                aria-label={`${definition.label} month`}
+                                value={parts?.month ?? ""}
+                                onchange={(event) =>
+                                  updateDatePart(
+                                    definition.key,
+                                    "month",
+                                    (event.currentTarget as HTMLSelectElement).value,
+                                    1,
+                                    months.length,
+                                  )}
+                                ><option value="">Month</option>{#each months as month, index}<option value={index + 1}
+                                    >{month.name}</option
+                                  >{/each}</select
+                              ></label
+                            >{:else}<label for={`${definition.key}-month`}
+                              >Month<input
+                                id={`${definition.key}-month`}
+                                aria-label={`${definition.label} month`}
+                                type="number"
+                                min="1"
+                                max="12"
+                                value={parts?.month ?? date.month ?? ""}
+                                onchange={(event) =>
+                                  updateDatePart(
+                                    definition.key,
+                                    "month",
+                                    (event.currentTarget as HTMLInputElement).value,
+                                    1,
+                                    12,
+                                  )} /></label
+                            >{/if}<label for={`${definition.key}-day`}
                             >Day<input
                               id={`${definition.key}-day`}
                               aria-label={`${definition.label} day`}
                               type="number"
                               min="1"
-                              max={daysInCalendarMonth(calendar, parts?.year ?? date.year ?? 1, parts?.month ?? date.month ?? 1)}
+                              max={daysInCalendarMonth(
+                                calendar,
+                                parts?.year ?? date.year ?? 1,
+                                parts?.month ?? date.month ?? 1,
+                              )}
                               value={parts?.day ?? date.day ?? ""}
                               onchange={(event) =>
                                 updateDatePart(
@@ -5191,7 +5257,11 @@ onMount(() => {
                                   "day",
                                   (event.currentTarget as HTMLInputElement).value,
                                   1,
-                                  daysInCalendarMonth(calendar, parts?.year ?? date.year ?? 1, parts?.month ?? date.month ?? 1),
+                                  daysInCalendarMonth(
+                                    calendar,
+                                    parts?.year ?? date.year ?? 1,
+                                    parts?.month ?? date.month ?? 1,
+                                  ),
                                 )} /></label
                           ><label class="date-time-field" for={`${definition.key}-time`}
                             >Time<input
@@ -5217,31 +5287,34 @@ onMount(() => {
                         type="button"
                         onclick={() => openDateEditor(definition.key)}>Add a date</button
                       >{/if}{:else if definition.type === "boolean"}<input
-                       type="checkbox"
-                       aria-label={definition.label}
-                       checked={fieldInputValue(definition, fields[definition.key]) === true}
-                       onchange={(event) => updateField(definition, event)}
-                     />{:else if definition.type === "number"}<input
-                       type="number"
-                       aria-label={definition.label}
-                       value={fieldInputValue(definition, fields[definition.key])}
-                       placeholder="Add {definition.label.toLowerCase()}"
-                       onchange={(event) => updateField(definition, event)}
-                     />{:else if definition.type === "enum" && definition.options?.length}<select
-                       aria-label={definition.label}
-                       multiple={definition.multiple ?? false}
+                      type="checkbox"
+                      aria-label={definition.label}
+                      checked={fieldInputValue(definition, fields[definition.key]) === true}
+                      onchange={(event) =>
+                        updateField(definition, event)} />{:else if definition.type === "number"}<input
+                      type="number"
+                      aria-label={definition.label}
+                      value={fieldInputValue(definition, fields[definition.key])}
+                      placeholder="Add {definition.label.toLowerCase()}"
+                      onchange={(event) =>
+                        updateField(
+                          definition,
+                          event,
+                        )} />{:else if definition.type === "enum" && definition.options?.length}<select
+                      aria-label={definition.label}
+                      multiple={definition.multiple ?? false}
                       value={definition.multiple
                         ? Array.isArray(fields[definition.key])
                           ? fields[definition.key]
                           : []
                         : String(fields[definition.key] ?? "")}
-                       onchange={(event) => updateField(definition, event)}
-                       >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}</select
-                     >{:else}<input
-                       type="text"
-                       value={fieldInputValue(definition, fields[definition.key])}
-                       placeholder="Add {definition.label.toLowerCase()}"
-                       oninput={(event) => updateField(definition, event)} />{/if}
+                      onchange={(event) => updateField(definition, event)}
+                      >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}</select
+                    >{:else}<input
+                      type="text"
+                      value={fieldInputValue(definition, fields[definition.key])}
+                      placeholder="Add {definition.label.toLowerCase()}"
+                      oninput={(event) => updateField(definition, event)} />{/if}
                 </div>{/each}
             </section>
             {#if selected?.entity_type === "calendar" && projectInfo}
@@ -5254,33 +5327,41 @@ onMount(() => {
                   }} />
               </section>
             {/if}
-             {#each definitions().filter((candidate) => candidate.type === "relationship") as definition}<section
-                 class="inspector-section">
-                 <div class="section-title">
+            {#each definitions().filter((candidate) => candidate.type === "relationship") as definition}<section
+                class="inspector-section">
+                <div class="section-title">
                   <h3>{definition.label}</h3>
                   <span>{selectedRelationshipIds(definition).length}</span>
                 </div>
                 <RelationshipPicker
                   field={definition}
                   {entities}
-                   selectedIds={selectedRelationshipIds(definition)}
-                   onChange={(ids) => void updateRelationshipField(definition, ids)} />
-                  {#if definition.metadataFields?.length && relationshipsForDefinition(definition).length > 0}<div class="relationship-detail-list" aria-label={`${definition.label} details`}>
-                     {#each relationshipsForDefinition(definition) as relationship (relationship.id)}
-                       <div class="relationship-detail-row">
-                         <div class="relationship-detail-copy">
-                           <strong>{relationshipTargetName(relationship)}</strong>
-                           <small>{entities.find((entity) => entity.id === relationship.target_id)?.entity_type ?? "Entity"}{#if relationshipMetadataSummary(relationship, definitionForRelationship(relationship) ?? definition)} · {relationshipMetadataSummary(relationship, definitionForRelationship(relationship) ?? definition)}{/if}</small>
-                         </div>
-                         <button
-                           class="quiet-button relationship-details-button"
-                           type="button"
-                           aria-label={`Edit details for ${relationship.relationship_type} to ${relationshipTargetName(relationship)}`}
-                           onclick={() => openRelationshipMetadata(relationship)}>Details</button>
-                       </div>
-                     {/each}
-                   </div>{/if}
-               </section>{/each}
+                  selectedIds={selectedRelationshipIds(definition)}
+                  onChange={(ids) => void updateRelationshipField(definition, ids)} />
+                {#if definition.metadataFields?.length && relationshipsForDefinition(definition).length > 0}<div
+                    class="relationship-detail-list"
+                    aria-label={`${definition.label} details`}>
+                    {#each relationshipsForDefinition(definition) as relationship (relationship.id)}
+                      <div class="relationship-detail-row">
+                        <div class="relationship-detail-copy">
+                          <strong>{relationshipTargetName(relationship)}</strong>
+                          <small
+                            >{entities.find((entity) => entity.id === relationship.target_id)?.entity_type ??
+                              "Entity"}{#if relationshipMetadataSummary(relationship, definitionForRelationship(relationship) ?? definition)}
+                              · {relationshipMetadataSummary(
+                                relationship,
+                                definitionForRelationship(relationship) ?? definition,
+                              )}{/if}</small>
+                        </div>
+                        <button
+                          class="quiet-button relationship-details-button"
+                          type="button"
+                          aria-label={`Edit details for ${relationship.relationship_type} to ${relationshipTargetName(relationship)}`}
+                          onclick={() => openRelationshipMetadata(relationship)}>Details</button>
+                      </div>
+                    {/each}
+                  </div>{/if}
+              </section>{/each}
             <section class="inspector-section">
               <div class="section-title">
                 <h3>Attachments</h3>
@@ -5403,7 +5484,10 @@ onMount(() => {
   padding: 25px 15px 18px;
   background: #283a30;
   color: #eef0e9;
-  transition: width 0.2s ease, flex-basis 0.2s ease, padding 0.2s ease;
+  transition:
+    width 0.2s ease,
+    flex-basis 0.2s ease,
+    padding 0.2s ease;
 }
 .rail-collapsed.menu-open {
   overflow: visible;
@@ -7370,11 +7454,11 @@ onMount(() => {
   height: 22px;
   border-radius: 50%;
   background: #f0ece5;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 800;
 }
 .collection-group-header strong {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -7391,8 +7475,13 @@ onMount(() => {
   line-height: 1;
   text-align: center;
 }
+.collection-group {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+}
 .collection-group .collection-item {
-  margin-left: 8px;
+  margin-left: 4px;
 }
 .collection-item {
   appearance: none;

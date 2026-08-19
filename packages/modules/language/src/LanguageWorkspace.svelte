@@ -204,7 +204,7 @@ function dismissWelcomeTour() {
 }
 </script>
 
-<section class="language-workspace" class:language-workspace-embedded={context.embedded}>
+<section class="language-workspace">
   <div id="language-pane" class="language-panel language-main" role="tabpanel" aria-labelledby={`language-tab-${pane}`}>
     <div class="language-main-header">
       <nav class="language-breadcrumb" aria-label="Breadcrumb">
@@ -240,88 +240,98 @@ function dismissWelcomeTour() {
       </nav>
       <button type="button" class="language-help-button" onclick={openWelcomeTour} aria-label="Show welcome tour">?</button>
     </div>
-    <div bind:this={paneListEl} class="language-tabs" role="tablist" aria-label="Language workspace">
-      {#each TAB_GROUPS as group, groupIndex (group.label)}
-        <div class="language-tab-group">
-          <span class="language-tab-group-label">{group.label}</span>
-          <div class="language-tab-group-tabs">
-            {#each group.tabs as [id, label], tabIndex (id)}
-              {@const globalIndex = TAB_GROUPS.slice(0, groupIndex).reduce((acc, g) => acc + g.tabs.length, 0) + tabIndex}
-              <button
-                type="button"
-                role="tab"
-                id={`language-tab-${id}`}
-                aria-controls="language-pane"
-                aria-selected={pane === id}
-                tabindex={pane === id ? 0 : -1}
-                onclick={() => switchPane(id)}
-                onkeydown={(event) => roveTabs(event, globalIndex)}>{label}</button>
-            {/each}
+    {#if languageLoading && !selectedLanguage}
+      <p class="language-empty language-loading" role="status" aria-live="polite">Loading language…</p>
+    {:else if !selectedLanguage}
+      <div class="language-empty-screen" role="status">
+        <div class="language-empty-mark" aria-hidden="true">✦</div>
+        <h3>Your language workshop is waiting.</h3>
+        <p>Select a language from the list, or create your first language to begin building words, sounds, writing and grammar.</p>
+      </div>
+    {:else}
+      <div bind:this={paneListEl} class="language-tabs" role="tablist" aria-label="Language workspace">
+        {#each TAB_GROUPS as group, groupIndex (group.label)}
+          <div class="language-tab-group">
+            <span class="language-tab-group-label">{group.label}</span>
+            <div class="language-tab-group-tabs">
+              {#each group.tabs as [id, label], tabIndex (id)}
+                {@const globalIndex = TAB_GROUPS.slice(0, groupIndex).reduce((acc, g) => acc + g.tabs.length, 0) + tabIndex}
+                <button
+                  type="button"
+                  role="tab"
+                  id={`language-tab-${id}`}
+                  aria-controls="language-pane"
+                  aria-selected={pane === id}
+                  tabindex={pane === id ? 0 : -1}
+                  onclick={() => switchPane(id)}
+                  onkeydown={(event) => roveTabs(event, globalIndex)}>{label}</button>
+              {/each}
+            </div>
           </div>
-        </div>
-      {/each}
-    </div>
-    <div class="language-pane" hidden={pane !== "overview"}>
-      <Overview
-        {context}
-        {selectedLanguage}
-        active={pane === "overview"}
-        registerLeaveGuard={registerOverviewGuard}
-        {onLanguageChanged}
-        {onLanguageArchived} />
-    </div>
-    <div class="language-pane" hidden={pane !== "sounds"}>
-      <Sounds
-        {context}
-        {selectedLanguage}
-        active={pane === "sounds"}
-        registerLeaveGuard={registerSoundsGuard}
-        setMutationActive={setMutationActive} />
-    </div>
-    <div class="language-pane" hidden={pane !== "writing"}>
-      <Writing
-        {context}
-        {selectedLanguage}
-        active={pane === "writing"}
-        registerLeaveGuard={registerWritingGuard}
-        setMutationActive={setMutationActive} />
-    </div>
-    <div class="language-pane" hidden={pane !== "grammar"}>
-      <Grammar
-        {context}
-        {selectedLanguage}
-        active={pane === "grammar"}
-        registerLeaveGuard={registerGrammarGuard}
-        setMutationActive={setMutationActive}
-        {setBreadcrumbExtra} />
-    </div>
-    <div class="language-pane" hidden={pane !== "forms"}>
-      <Forms
-        {context}
-        {selectedLanguage}
-        active={pane === "forms"}
-        registerLeaveGuard={registerFormsGuard}
-        setMutationActive={setMutationActive} />
-    </div>
-    <div class="language-pane" hidden={pane !== "samples"}>
-      <Samples
-        {context}
-        {selectedLanguage}
-        active={pane === "samples"}
-        openLexeme={openLinkedLexeme}
-        registerLeaveGuard={registerSamplesGuard}
-        setMutationActive={setMutationActive} />
-    </div>
-    <div class="language-pane" hidden={pane !== "lexicon"}>
-      <Lexicon
-        {context}
-        {selectedLanguage}
-        active={pane === "lexicon"}
-        pendingLexemeId={pendingLexemeId}
-        onPendingLexemeHandled={clearPendingLexeme}
-        registerLeaveGuard={registerLexiconGuard}
-        setMutationActive={setMutationActive} />
-    </div>
+        {/each}
+      </div>
+      <div class="language-pane" hidden={pane !== "overview"}>
+        <Overview
+          {context}
+          {selectedLanguage}
+          active={pane === "overview"}
+          registerLeaveGuard={registerOverviewGuard}
+          {onLanguageChanged}
+          {onLanguageArchived} />
+      </div>
+      <div class="language-pane" hidden={pane !== "sounds"}>
+        <Sounds
+          {context}
+          {selectedLanguage}
+          active={pane === "sounds"}
+          registerLeaveGuard={registerSoundsGuard}
+          setMutationActive={setMutationActive} />
+      </div>
+      <div class="language-pane" hidden={pane !== "writing"}>
+        <Writing
+          {context}
+          {selectedLanguage}
+          active={pane === "writing"}
+          registerLeaveGuard={registerWritingGuard}
+          setMutationActive={setMutationActive} />
+      </div>
+      <div class="language-pane" hidden={pane !== "grammar"}>
+        <Grammar
+          {context}
+          {selectedLanguage}
+          active={pane === "grammar"}
+          registerLeaveGuard={registerGrammarGuard}
+          setMutationActive={setMutationActive}
+          {setBreadcrumbExtra} />
+      </div>
+      <div class="language-pane" hidden={pane !== "forms"}>
+        <Forms
+          {context}
+          {selectedLanguage}
+          active={pane === "forms"}
+          registerLeaveGuard={registerFormsGuard}
+          setMutationActive={setMutationActive} />
+      </div>
+      <div class="language-pane" hidden={pane !== "samples"}>
+        <Samples
+          {context}
+          {selectedLanguage}
+          active={pane === "samples"}
+          openLexeme={openLinkedLexeme}
+          registerLeaveGuard={registerSamplesGuard}
+          setMutationActive={setMutationActive} />
+      </div>
+      <div class="language-pane" hidden={pane !== "lexicon"}>
+        <Lexicon
+          {context}
+          {selectedLanguage}
+          active={pane === "lexicon"}
+          pendingLexemeId={pendingLexemeId}
+          onPendingLexemeHandled={clearPendingLexeme}
+          registerLeaveGuard={registerLexiconGuard}
+          setMutationActive={setMutationActive} />
+      </div>
+    {/if}
   </div>
 </section>
 
@@ -335,28 +345,25 @@ function dismissWelcomeTour() {
 
 <style>
 .language-workspace {
-  display: grid;
-  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
-  gap: 18px;
+  display: block;
   height: 100%;
   min-height: 0;
   color: var(--ink);
-}
-.language-workspace-embedded {
-  grid-template-columns: minmax(0, 1fr);
-  height: auto;
 }
 .language-panel {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  min-height: 0;
+  min-height: 650px;
+  height: 100%;
+  flex: 1;
   overflow: auto;
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 12px;
   background: var(--surface);
   padding: 22px 20px 24px;
   box-shadow: var(--shadow-sm, 0 2px 8px rgba(38, 42, 33, 0.05));
+  box-sizing: border-box;
 }
 
 @media (max-width: 760px) {
@@ -367,6 +374,12 @@ function dismissWelcomeTour() {
   }
   .language-main {
     min-height: 34rem;
+  }
+  .language-panel {
+    min-height: auto;
+  }
+  .language-empty-screen {
+    min-height: 420px;
   }
   .language-tabs {
     flex-wrap: nowrap;
@@ -502,6 +515,66 @@ function dismissWelcomeTour() {
   border-color: var(--accent-dark);
   background: var(--surface-muted);
   color: var(--accent-dark);
+}
+.language-empty-screen {
+  display: grid;
+  place-items: center;
+  place-content: center;
+  flex: 1;
+  min-height: 520px;
+  padding: 48px 24px;
+  text-align: center;
+}
+.language-empty-mark {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  background: #f2e4d2;
+  color: var(--accent);
+  font-size: 23px;
+}
+.language-empty-screen h3 {
+  margin: 18px 0 6px;
+  font: 500 23px var(--font-display);
+  color: var(--ink);
+}
+.language-empty-screen p {
+  max-width: 320px;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.language-empty.language-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 36px 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+.language-empty.language-loading::before {
+  content: "";
+  width: 11px;
+  height: 11px;
+  flex: 0 0 11px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: language-spin 0.75s linear infinite;
+}
+@keyframes language-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .language-empty.language-loading::before {
+    animation: none;
+  }
 }
 :global(.language-panel h2),
 :global(.language-panel h3) {

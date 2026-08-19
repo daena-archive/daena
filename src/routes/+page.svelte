@@ -4911,7 +4911,6 @@ onMount(() => {
               context={buildModuleContext(languageProjection.module.manifest, projectInfo?.root ?? "", {
                 focusEntityId: selected?.id as UUID | undefined,
                 availableServices: enabledServices(),
-                embedded: true,
                 onEntityDeleted: loadEntities,
               })}
               className="language-mount" />
@@ -6204,14 +6203,19 @@ onMount(() => {
   font-size: 13px;
 }
 :global(.module-mount.language-mount) {
+  display: flex;
+  flex-direction: column;
   min-height: 650px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--canvas);
-  box-shadow: var(--shadow-sm);
+  border: none;
+  background: transparent;
+  box-shadow: none;
 }
 :global(.module-mount.language-mount .language-workspace) {
-  height: auto;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  flex: 1;
 }
 .heading-actions {
   display: flex;

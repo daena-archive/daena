@@ -1,7 +1,7 @@
 <script lang="ts">
 import { onMount } from "svelte";
 import { project, type Entity } from "$lib/project/client";
-import { htmlToMarkdown } from "$lib/editor/markdown";
+import { htmlToMarkdown, markdownToPlainText } from "$lib/markdown";
 
 export let entities: Entity[] = [];
 export let onOpen: (entity: Entity) => void = () => {};
@@ -13,13 +13,7 @@ let hideTimer: number | null = null;
 
 function previewText(body: string, format: string): string {
   const markdown = format === "rich-text" ? htmlToMarkdown(body) : body;
-  const plainText = markdown
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[\[([^\]]+)\]\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/[`*_>#~]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const plainText = markdownToPlainText(markdown);
   return plainText.length > 240 ? `${plainText.slice(0, 237).trimEnd()}...` : plainText;
 }
 

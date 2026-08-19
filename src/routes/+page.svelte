@@ -70,8 +70,9 @@ import writingManifestJson from "../../packages/modules/writing/manifest.json";
 import languageManifestJson from "../../packages/modules/language/manifest.json";
 import { projectionModule } from "$lib/modules/projections";
 import RichTextEditor from "$lib/editor/RichTextEditor.svelte";
+import MarkdownArticle from "$lib/markdown/MarkdownArticle.svelte";
 import AiProposalPreview from "$lib/ai/AiProposalPreview.svelte";
-import { htmlToMarkdown } from "$lib/editor/markdown";
+import { htmlToMarkdown } from "$lib/markdown";
 import {
   formatCalendarDate,
   GREGORIAN_CALENDAR_ID,
@@ -124,6 +125,7 @@ let calendarDefinitions = $state<Record<string, CalendarDefinition>>({});
 let entities = $state<Entity[]>([]);
 let selected = $state<Entity | null>(null);
 let documentBody = $state("");
+let documentMode = $state<"read" | "edit">("edit");
 let fields = $state<Record<string, unknown>>({});
 let relationships = $state<Relationship[]>([]);
 let metadataDialog = $state<{ relationship: Relationship; definition: FieldDefinition | null } | null>(null);
@@ -4991,6 +4993,12 @@ onMount(() => {
                   </div>
                 </div>
               {/if}
+              {#if documentMode === "read"}
+                <MarkdownArticle markdown={documentBody} {entities} onOpenEntity={(id) => {
+                  const target = entities.find((entity) => entity.id === id && !entity.deleted);
+                  if (target) void selectEntity(target);
+                }} />
+              {:else}
               <RichTextEditor
                 bind:this={editorRef}
                 value={documentBody}
@@ -5008,9 +5016,17 @@ onMount(() => {
                   : section === "maps"
                     ? "Describe this map and the world it contains…"
                     : "Write the canonical story of this entry…"} />
+              {/if}
               <div class="editor-footer">
                 <span>{wordCount()} words</span>
-                <div><button class="quiet-button" onclick={archiveSelected}>Archive</button></div>
+                <div>
+                  <button
+                    class="quiet-button"
+                    type="button"
+                    onclick={() => (documentMode = documentMode === "read" ? "edit" : "read")}
+                    >{documentMode === "read" ? "Edit" : "View article"}</button>
+                  <button class="quiet-button" onclick={archiveSelected}>Archive</button>
+                </div>
               </div>
             {:else}
               <div class="editor-empty">

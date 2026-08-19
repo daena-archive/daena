@@ -17,7 +17,7 @@ import Text from "@tiptap/extension-text";
 import Underline from "@tiptap/extension-underline";
 import { UndoRedo } from "@tiptap/extensions";
 import { onMount } from "svelte";
-import { htmlToMarkdown, markdownToHtml } from "$lib/editor/markdown";
+import { htmlToMarkdown, markdownToHtml } from "$lib/markdown";
 import { promptDialog } from "$lib/dialogs.svelte";
 import type { Entity } from "$lib/project/client";
 import EntityReferenceDialog from "$lib/editor/EntityReferenceDialog.svelte";

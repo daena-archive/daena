@@ -54,6 +54,7 @@ import NativeVectorMapEditor from "$lib/maps/native-vector/NativeVectorMapEditor
 import PhysicalMapEditor from "$lib/maps/physical/PhysicalMapEditor.svelte";
 import { nativeVectorSession } from "$lib/maps/native-vector/session";
 import ProjectionView from "$lib/ProjectionView.svelte";
+import WikiView from "$lib/lore/WikiView.svelte";
 import ModuleMount from "$lib/ModuleMount.svelte";
 import SettingsView from "$lib/SettingsView.svelte";
 import SchemaSettingsPanel from "$lib/SchemaSettingsPanel.svelte";
@@ -311,6 +312,8 @@ let sandboxView = $state<{
   renderer: "maps" | "webview";
 } | null>(null);
 let projectionView = $state<{ title: string; module: DaenaModule; manifest: ModuleManifest } | null>(null);
+let loreWikiOpen = $state(false);
+let loreWikiEntityId = $state<string | null>(null);
 let adminBusy = $state(false);
 let pluginActionId = $state<string | null>(null);
 let installing = $state(false);
@@ -1493,6 +1496,8 @@ function entityTypeLabel(entityType: string | null) {
 async function openProjection() {
   if (!(await flushAutoSave())) return;
   if (!(await leavePluginView())) return;
+  loreWikiOpen = false;
+  loreWikiEntityId = null;
   const projection = projectionModule(section === "lore" ? "lore" : "timeline");
   projectionView = {
     title: projection.title,
@@ -1500,6 +1505,31 @@ async function openProjection() {
     manifest: (manifestForWorkspaceSection(section) ?? projection.module.manifest) as ModuleManifest,
   };
 }
+
+async function openLoreWiki() {
+  if (!(await flushAutoSave())) return;
+  if (!(await leavePluginView())) return;
+  loreWikiEntityId = selected?.entity_type && allEntityTypesForSection("lore").has(selected.entity_type) ? selected.id : null;
+  loreWikiOpen = true;
+  projectionView = null;
+}
+
+function allEntityTypesForSection(target: WorkspaceSection) {
+  return new Set(manifestForWorkspaceSection(target)?.schemas.flatMap((s) => s.entityTypes) ?? []);
+}
+
+function closeLoreWiki() {
+  loreWikiOpen = false;
+  loreWikiEntityId = null;
+}
+
+$effect(() => {
+  void section;
+  if (section !== "lore" && loreWikiOpen) {
+    loreWikiOpen = false;
+    loreWikiEntityId = null;
+  }
+});
 
 function normalizeDocument(body: string, format?: string) {
   if (format === "rich-text") return htmlToMarkdown(body);
@@ -4651,6 +4681,14 @@ onMount(() => {
         <button class="quiet-button host-view-back" onclick={() => void leavePluginView()}>Back to workspace</button
         ><HostView plugin={hostView.plugin} view={hostView.view} />
       </div>
+    {:else if loreWikiOpen}
+      <WikiView
+        initialEntityId={loreWikiEntityId}
+        onClose={closeLoreWiki}
+        onSelectEntity={(id) => {
+          const ent = entities.find((e) => e.id === id);
+          if (ent) void selectEntity(ent);
+        }} />
     {:else if sandboxView && sandboxView.renderer !== "maps"}
       {#key `${sandboxView.plugin.id}:${sandboxView.view?.id ?? "default"}`}
         <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={sandboxView.plugin.name} />
@@ -4721,9 +4759,12 @@ onMount(() => {
             {#if section === "language"}<button class="primary-button" type="button" onclick={toggleCreateForm}
                 >Create language</button
               >{/if}
-            {#if section !== "writing" && section !== "maps" && section !== "language"}<button
+            {#if section === "lore"}
+              <button class="quiet-button" type="button" onclick={openLoreWiki}>Open wiki ↗</button>
+              <button class="quiet-button" type="button" onclick={openProjection}>Open graph ↗</button>
+            {:else if section !== "writing" && section !== "maps" && section !== "language"}<button
                 class="quiet-button"
-                onclick={openProjection}>Open {section === "lore" ? "graph" : "timeline"} ↗</button
+                onclick={openProjection}>Open timeline ↗</button
               >{/if}
           </div>
         </div>

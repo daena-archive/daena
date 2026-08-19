@@ -6,7 +6,8 @@ use crate::project::{
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
@@ -1955,11 +1956,26 @@ pub fn write_checkpoint_manifest(
     let path = root.join(CHECKPOINT_MANIFEST_FILE);
     checkpoint.validate(&path)?;
     let bytes = canonical_json_bytes(checkpoint)?;
-    let temporary = root.join(".checkpoint.json.tmp");
-    std::fs::write(&temporary, bytes)
-        .map_err(|error| codec_error(&temporary, "checkpoint.write", error.to_string()))?;
-    std::fs::rename(&temporary, &path)
-        .map_err(|error| codec_error(&path, "checkpoint.install", error.to_string()))
+    let temporary = root.join(format!(".checkpoint.json.tmp-{}", Uuid::new_v4()));
+    let result = (|| {
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| codec_error(&temporary, "checkpoint.write", error.to_string()))?;
+        output
+            .write_all(&bytes)
+            .and_then(|_| output.sync_all())
+            .map_err(|error| codec_error(&temporary, "checkpoint.write", error.to_string()))?;
+        drop(output);
+        crate::sync::replace_staged_file(&temporary, &path)
+            .map_err(|error| codec_error(&path, "checkpoint.install", error.to_string()))?;
+        crate::sync::sync_directory(root)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }
 
 pub fn canonical_markdown(body: &str) -> String {

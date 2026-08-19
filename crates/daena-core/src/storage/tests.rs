@@ -40,8 +40,21 @@ fn checkpoint_manifest_is_deterministic_and_rejects_tampering() {
     assert_eq!(checkpoint.files.len(), 1);
     write_checkpoint_manifest(&root, &checkpoint).unwrap();
     validate_checkpoint(&root, &checkpoint).unwrap();
+    let replacement = build_checkpoint_manifest(&root, 8).unwrap();
+    write_checkpoint_manifest(&root, &replacement).unwrap();
+    assert_eq!(
+        read_json::<CheckpointManifest>(&root.join(CHECKPOINT_MANIFEST_FILE)).unwrap(),
+        replacement
+    );
+    assert!(!fs::read_dir(&root).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".checkpoint.json.tmp-")
+    }));
     std::fs::write(root.join("project.json"), b"tampered").unwrap();
-    assert!(validate_checkpoint(&root, &checkpoint).is_err());
+    assert!(validate_checkpoint(&root, &replacement).is_err());
     std::fs::remove_dir_all(root).unwrap();
 }
 

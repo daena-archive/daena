@@ -937,6 +937,7 @@ fn store_runtime_asset<R: Read>(
                 operation: "install runtime asset",
                 source,
             })?;
+            crate::sync::sync_directory(&directory)?;
         }
         Ok((content_hash, size))
     })();
@@ -1372,14 +1373,17 @@ impl ProjectStore {
         // Both paths are in .daena, so rename is atomic on the supported
         // local filesystems.  The old index is never opened or modified while
         // the new database is being built.
-        std::fs::rename(&next_path, &index_path).map_err(|error| CoreError::Io {
-            operation: "replace runtime index",
-            source: error,
+        crate::sync::replace_staged_file(&next_path, &index_path).map_err(|error| {
+            CoreError::Io {
+                operation: "replace runtime index",
+                source: error,
+            }
         })?;
         for suffix in ["-wal", "-shm", "-journal"] {
             let path = PathBuf::from(format!("{}{}", index_path.display(), suffix));
             let _ = std::fs::remove_file(path);
         }
+        crate::sync::sync_directory(&root.join(".daena"))?;
         Self::open_database(
             &index_path,
             Some(root.to_path_buf()),
@@ -1401,10 +1405,11 @@ impl ProjectStore {
         let connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(2))?;
         connection.pragma_update(None, "foreign_keys", true)?;
-        connection.pragma_update(None, "synchronous", "NORMAL")?;
         if existing_database {
             Self::validate_runtime_metadata(&connection, root.as_deref())?;
         }
+        connection.pragma_update(None, "journal_mode", "WAL")?;
+        connection.pragma_update(None, "synchronous", "NORMAL")?;
         let session_lock = match session_lock {
             Some(lock) => Some(lock),
             None if acquire_session_lock => root
@@ -1729,17 +1734,23 @@ impl ProjectStore {
         let old_connection = std::mem::replace(&mut self.connection, Connection::open_in_memory()?);
         drop(old_connection);
         let index_path = project_database_path(&root);
-        std::fs::rename(&next_path, &index_path).map_err(|error| CoreError::Io {
-            operation: "install checkpoint candidate database",
-            source: error,
+        crate::sync::replace_staged_file(&next_path, &index_path).map_err(|error| {
+            CoreError::Io {
+                operation: "install checkpoint candidate database",
+                source: error,
+            }
         })?;
         for suffix in ["-wal", "-shm", "-journal"] {
             let path = PathBuf::from(format!("{}{}", index_path.display(), suffix));
             let _ = std::fs::remove_file(path);
         }
+        crate::sync::sync_directory(&root.join(".daena"))?;
         self.connection = Connection::open(&index_path)?;
         self.connection.busy_timeout(Duration::from_secs(2))?;
         self.connection.pragma_update(None, "foreign_keys", true)?;
+        self.connection.pragma_update(None, "journal_mode", "WAL")?;
+        self.connection
+            .pragma_update(None, "synchronous", "NORMAL")?;
         self.database_epoch = self.connection.query_row(
             "SELECT database_epoch FROM runtime_meta WHERE key='runtime'",
             [],
@@ -3783,7 +3794,13 @@ impl ProjectStore {
                 .connection
                 .prepare("SELECT source_key FROM world_search LIMIT 0")
                 .is_ok();
+        let search_triggers_current: bool = self.connection.query_row(
+            "SELECT COUNT(*)=12 FROM sqlite_master WHERE type='trigger' AND name IN ('entities_search_insert','entities_search_update','entities_search_deleted','documents_search_insert','documents_search_update','documents_search_delete','entity_fields_search_insert','entity_fields_search_update','entity_fields_search_delete','module_records_search_insert','module_records_search_update','module_records_search_delete')",
+            [],
+            |row| row.get(0),
+        )?;
         let search_missing = !search_shape_current
+            || !search_triggers_current
             || self.connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM entities WHERE deleted=0) AND NOT EXISTS(SELECT 1 FROM world_search)",
                 [],
@@ -8645,6 +8662,7 @@ impl ProjectStore {
         self.connection.execute_batch(
             "DROP TRIGGER IF EXISTS entities_search_insert;
              DROP TRIGGER IF EXISTS entities_search_update;
+             DROP TRIGGER IF EXISTS entities_search_deleted;
              DROP TRIGGER IF EXISTS documents_search_insert;
              DROP TRIGGER IF EXISTS documents_search_update;
              DROP TRIGGER IF EXISTS documents_search_delete;
@@ -8661,7 +8679,8 @@ impl ProjectStore {
              INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT d.entity_id,'entities/' || d.entity_id || '/document.md','',d.body,'document:' || d.id FROM documents d JOIN entities e ON e.id=d.entity_id WHERE e.deleted=0;
              INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT f.entity_id,'entities/' || f.entity_id || '/fields','',f.namespace || ' ' || f.key || ' ' || f.value,'field:' || f.namespace || '/' || f.key FROM entity_fields f JOIN entities e ON e.id=f.entity_id WHERE e.deleted=0;
              CREATE TRIGGER entities_search_insert AFTER INSERT ON entities BEGIN INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT new.id,'entities/' || new.id || '/entity.json','',new.name || ' ' || COALESCE(new.entity_type,''),'entity' WHERE new.deleted=0; END;
-             CREATE TRIGGER entities_search_update AFTER UPDATE OF name,entity_type,deleted ON entities BEGIN DELETE FROM world_search WHERE entity_id=old.id; INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT new.id,'entities/' || new.id || '/entity.json','',new.name || ' ' || COALESCE(new.entity_type,''),'entity' WHERE new.deleted=0; INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT d.entity_id,'entities/' || d.entity_id || '/document.md','',d.body,'document:' || d.id FROM documents d WHERE d.entity_id=new.id AND new.deleted=0; INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT f.entity_id,'entities/' || f.entity_id || '/fields','',f.namespace || ' ' || f.key || ' ' || f.value,'field:' || f.namespace || '/' || f.key FROM entity_fields f WHERE f.entity_id=new.id AND new.deleted=0; END;
+             CREATE TRIGGER entities_search_update AFTER UPDATE OF name,entity_type ON entities BEGIN DELETE FROM world_search WHERE entity_id=old.id AND source_key='entity'; INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT new.id,'entities/' || new.id || '/entity.json','',new.name || ' ' || COALESCE(new.entity_type,''),'entity' WHERE new.deleted=0; END;
+             CREATE TRIGGER entities_search_deleted AFTER UPDATE OF deleted ON entities WHEN old.deleted <> new.deleted BEGIN DELETE FROM world_search WHERE entity_id=old.id; INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT new.id,'entities/' || new.id || '/entity.json','',new.name || ' ' || COALESCE(new.entity_type,''),'entity' WHERE new.deleted=0; INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT d.entity_id,'entities/' || d.entity_id || '/document.md','',d.body,'document:' || d.id FROM documents d WHERE d.entity_id=new.id AND new.deleted=0; INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT f.entity_id,'entities/' || f.entity_id || '/fields','',f.namespace || ' ' || f.key || ' ' || f.value,'field:' || f.namespace || '/' || f.key FROM entity_fields f WHERE f.entity_id=new.id AND new.deleted=0; END;
              CREATE TRIGGER documents_search_insert AFTER INSERT ON documents BEGIN INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT new.entity_id,'entities/' || new.entity_id || '/document.md','',new.body,'document:' || new.id FROM entities WHERE id=new.entity_id AND deleted=0; END;
              CREATE TRIGGER documents_search_update AFTER UPDATE OF body ON documents BEGIN DELETE FROM world_search WHERE entity_id=old.entity_id AND source_key='document:' || old.id; INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT new.entity_id,'entities/' || new.entity_id || '/document.md','',new.body,'document:' || new.id FROM entities WHERE id=new.entity_id AND deleted=0; END;
              CREATE TRIGGER documents_search_delete AFTER DELETE ON documents BEGIN DELETE FROM world_search WHERE entity_id=old.entity_id AND source_key='document:' || old.id; END;

@@ -227,17 +227,30 @@ impl SyncExporter {
             operation: "create sync staged asset",
             source,
         })?;
-        std::io::copy(&mut input, &mut output).map_err(|source| CoreError::Io {
-            operation: "stream asset into sync staging",
-            source,
-        })?;
+        let mut digest = Sha256::new();
+        let mut buffer = [0_u8; 128 * 1024];
+        loop {
+            let count =
+                std::io::Read::read(&mut input, &mut buffer).map_err(|source| CoreError::Io {
+                    operation: "read asset source for sync",
+                    source,
+                })?;
+            if count == 0 {
+                break;
+            }
+            output
+                .write_all(&buffer[..count])
+                .map_err(|source| CoreError::Io {
+                    operation: "stream asset into sync staging",
+                    source,
+                })?;
+            digest.update(&buffer[..count]);
+        }
         output.sync_all().map_err(|source| CoreError::Io {
             operation: "sync staged asset",
             source,
         })?;
-        let new_hash = hash_file(&staged)?.ok_or_else(|| {
-            CoreError::Validation(format!("staged asset is missing: {}", staged.display()))
-        })?;
+        let new_hash = format!("sha256:{:x}", digest.finalize());
         self.replacements.insert(
             target.into(),
             Replacement {
@@ -350,12 +363,12 @@ fn hash_file(path: &Path) -> Result<Option<String>, CoreError> {
 }
 
 #[cfg(not(windows))]
-fn replace_staged_file(staged: &Path, target: &Path) -> io::Result<()> {
+pub(crate) fn replace_staged_file(staged: &Path, target: &Path) -> io::Result<()> {
     fs::rename(staged, target)
 }
 
 #[cfg(windows)]
-fn replace_staged_file(staged: &Path, target: &Path) -> io::Result<()> {
+pub(crate) fn replace_staged_file(staged: &Path, target: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
 
     if !target.exists() {
@@ -403,7 +416,7 @@ pub(crate) fn hash_path(root: &Path, relative: &str) -> Result<Option<String>, C
 }
 
 #[cfg(not(windows))]
-fn sync_directory(path: &Path) -> Result<(), CoreError> {
+pub(crate) fn sync_directory(path: &Path) -> Result<(), CoreError> {
     let directory = File::open(path).map_err(|source| CoreError::Io {
         operation: "open sync directory",
         source,
@@ -415,7 +428,7 @@ fn sync_directory(path: &Path) -> Result<(), CoreError> {
 }
 
 #[cfg(windows)]
-fn sync_directory(_path: &Path) -> Result<(), CoreError> {
+pub(crate) fn sync_directory(_path: &Path) -> Result<(), CoreError> {
     Ok(())
 }
 

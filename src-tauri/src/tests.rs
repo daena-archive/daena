@@ -912,6 +912,7 @@ fn relationship_citations_use_metadata_labels_without_removing_raw_context() {
                     field_type: "date".into(),
                     required: None,
                     options: None,
+                    one_of: None,
                 },
                 MetadataFieldDefinition {
                     key: "validTo".into(),
@@ -919,6 +920,7 @@ fn relationship_citations_use_metadata_labels_without_removing_raw_context() {
                     field_type: "date".into(),
                     required: None,
                     options: None,
+                    one_of: None,
                 },
             ],
         )]))

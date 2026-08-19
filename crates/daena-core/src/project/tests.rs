@@ -85,6 +85,7 @@ fn update_relationship_metadata_validates_and_roundtrips() {
                     field_type: "date".into(),
                     required: Some(true),
                     options: None,
+                    one_of: None,
                 },
                 MetadataFieldDefinition {
                     key: "status".into(),
@@ -92,6 +93,7 @@ fn update_relationship_metadata_validates_and_roundtrips() {
                     field_type: "enum".into(),
                     required: None,
                     options: Some(vec!["active".into(), "ended".into()]),
+                    one_of: None,
                 },
             ],
         )]))
@@ -3244,6 +3246,11 @@ fn rebuild_initializes_clean_checkpoint_metadata() {
         )
         .unwrap();
     assert_eq!(generations, (0, 0));
+    let journal_mode: String = store
+        .connection
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(journal_mode, "wal");
     drop(store);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -3343,6 +3350,11 @@ fn checkpoint_import_uses_new_epoch_and_rejects_dirty_runtime() {
         )
         .unwrap();
     assert_ne!(epoch, new_epoch);
+    let journal_mode: String = store
+        .connection
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(journal_mode, "wal");
     drop(store);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -4557,6 +4569,42 @@ fn search_updates_only_the_changed_source_row() {
         after_document["field:test/second"],
         after_field["field:test/second"]
     );
+
+    store
+        .update_entity(entity.id.clone(), Some("Renamed search".into()), None)
+        .unwrap();
+    let after_entity = rowids(&store);
+    assert_ne!(after_field["entity"], after_entity["entity"]);
+    assert_eq!(after_field[document_key], after_entity[document_key]);
+    assert_eq!(
+        after_field["field:test/first"],
+        after_entity["field:test/first"]
+    );
+    assert_eq!(
+        after_field["field:test/second"],
+        after_entity["field:test/second"]
+    );
+}
+
+#[test]
+fn search_projection_repairs_missing_maintenance_triggers() {
+    let store = ProjectStore::in_memory().unwrap();
+    store
+        .connection
+        .execute_batch("DROP TRIGGER entities_search_deleted")
+        .unwrap();
+
+    store.ensure_search_projection().unwrap();
+
+    let trigger_exists: bool = store
+        .connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='entities_search_deleted')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(trigger_exists);
 }
 
 #[test]

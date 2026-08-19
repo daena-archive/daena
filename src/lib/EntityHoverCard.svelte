@@ -64,7 +64,9 @@ onMount(() => {
     target instanceof Node && document.querySelector(".entity-hover-card")?.contains(target);
   const resolveTarget = (target: EventTarget | null) =>
     target instanceof Element
-      ? target.closest<HTMLElement>("a[data-entity-id], .relationship-chip[data-entity-id]")
+      ? target.closest<HTMLElement>(
+          "a[data-entity-id], .relationship-chip[data-entity-id], .relationship-detail-row[data-entity-id]",
+        )
       : null;
   const onMouseOver = (event: MouseEvent) => {
     const target = resolveTarget(event.target);

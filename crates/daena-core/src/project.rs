@@ -526,6 +526,94 @@ fn is_rfc3339_date(value: &str) -> bool {
     }
 }
 
+fn is_gregorian_date_string(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.contains('T') {
+        // With time, require full date and use strict RFC3339 validation
+        return is_rfc3339_date(trimmed);
+    }
+    let parts: Vec<&str> = trimmed.split('-').collect();
+    match parts.len() {
+        1 => parts[0].parse::<u32>().is_ok(),
+        2 => {
+            let Ok(_year) = parts[0].parse::<u32>() else {
+                return false;
+            };
+            let Ok(month) = parts[1].parse::<u32>() else {
+                return false;
+            };
+            (1..=12).contains(&month)
+        }
+        3 => {
+            let Ok(year) = parts[0].parse::<u32>() else {
+                return false;
+            };
+            let Ok(month) = parts[1].parse::<u32>() else {
+                return false;
+            };
+            let Ok(day) = parts[2].parse::<u32>() else {
+                return false;
+            };
+            valid_calendar_date(year, month, day)
+        }
+        _ => false,
+    }
+}
+
+fn is_calendar_date_object(value: &serde_json::Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let Some(year) = object.get("year").and_then(|candidate| candidate.as_i64().or(candidate.as_u64().map(|value| value as i64))) else {
+        return false;
+    };
+    let _ = year;
+    if let Some(calendar) = object.get("calendar") {
+        if !calendar.is_string() {
+            return false;
+        }
+    }
+    for key in ["month", "day", "hour", "minute", "second"] {
+        if let Some(candidate) = object.get(key) {
+            if candidate.as_u64().is_none() && candidate.as_i64().is_none() {
+                return false;
+            }
+        }
+    }
+    if let Some(precision) = object.get("precision").and_then(|v| v.as_str()) {
+        let has_month = object.contains_key("month");
+        let has_day = object.contains_key("day");
+        let has_hour = object.contains_key("hour");
+        match precision {
+            "year" => {
+                if has_month || has_day || has_hour {
+                    return false;
+                }
+            }
+            "month" => {
+                if !has_month || has_day {
+                    return false;
+                }
+            }
+            "day" => {
+                if !has_month || !has_day {
+                    return false;
+                }
+            }
+            "hour" | "minute" | "second" => {
+                if !has_month || !has_day || !has_hour {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
 fn validate_relationship_metadata(
     relationship_type: &str,
     metadata: &serde_json::Value,
@@ -571,7 +659,9 @@ fn validate_relationship_metadata(
             "text" => value.as_str().is_some(),
             "number" => value.is_number(),
             "boolean" => value.is_boolean(),
-            "date" => value.as_str().is_some_and(is_rfc3339_date),
+            "date" => {
+                value.as_str().is_some_and(is_gregorian_date_string) || is_calendar_date_object(value)
+            }
             "enum" => value.as_str().is_some_and(|candidate| {
                 field
                     .options

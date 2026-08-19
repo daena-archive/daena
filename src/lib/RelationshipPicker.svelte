@@ -8,12 +8,14 @@ let {
   selectedIds,
   onChange,
   placeholder = "Search and select entities…",
+  hideChips = false,
 }: {
   field: FieldDefinition;
   entities: Entity[];
   selectedIds: string[];
   onChange: (ids: string[]) => void;
   placeholder?: string;
+  hideChips?: boolean;
 } = $props();
 
 let query = $state("");
@@ -62,7 +64,7 @@ function entityFor(id: string) {
       if (!picker.contains(document.activeElement)) open = false;
     }, 0);
   }}>
-  {#if selectedIds.length > 0}
+  {#if selectedIds.length > 0 && !hideChips}
     <div class="relationship-selection" aria-label={`Selected ${field.label}`}>
       {#each selectedIds as id}
         {@const entity = entityFor(id)}

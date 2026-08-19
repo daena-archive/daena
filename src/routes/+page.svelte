@@ -61,6 +61,7 @@ import { allowLeaveSchemaEditor, isSchemaEditorDirty } from "$lib/schemaEditorGu
 import GitSettingsPanel from "$lib/GitSettingsPanel.svelte";
 import RelationshipPicker from "$lib/RelationshipPicker.svelte";
 import RelationshipMetadataDialog from "$lib/RelationshipMetadataDialog.svelte";
+import CalendarPicker from "$lib/CalendarPicker.svelte";
 import EntityHoverCard from "$lib/EntityHoverCard.svelte";
 import { confirmDialog, promptDialog } from "$lib/dialogs.svelte";
 import DialogHost from "$lib/DialogHost.svelte";
@@ -812,15 +813,32 @@ function updateCreateDateField(key: string, patch: Partial<CalendarDate>) {
   const calendarId = calendarIdForStoredDate(createDateForField(key), createDateCalendarByField[key]);
   const previous = createDateForField(key);
   const currentParts = calendarDateToParts(
-    previous ?? { calendar: calendarId, era: "CE", year: 1, month: 1, day: 1, precision: "day" },
+    previous ?? { calendar: calendarId, era: "CE", year: 1, precision: "year" },
     calendar,
-  ) ?? { year: 1, month: 1, day: 1, precision: "day" as const };
+  ) ?? { year: 1, precision: "year" as const };
   const nextParts = { ...currentParts, ...patch };
+  if ((patch as Record<string, unknown>).precision === undefined) {
+    const hasMonth = (nextParts as Record<string, unknown>).month !== undefined;
+    const hasDay = (nextParts as Record<string, unknown>).day !== undefined;
+    if (!hasMonth) {
+      nextParts.precision = "year";
+      delete (nextParts as Record<string, unknown>).day;
+    } else if (!hasDay) {
+      nextParts.precision = "month";
+    } else {
+      if (nextParts.precision !== "hour" && nextParts.precision !== "minute" && nextParts.precision !== "second") {
+        nextParts.precision = "day";
+      }
+    }
+  }
   if (patch.precision === "year") {
     delete nextParts.month;
     delete nextParts.day;
   }
-  if (patch.precision === "month" && nextParts.month === undefined) nextParts.month = 1;
+  if (patch.precision === "month") {
+    delete nextParts.day;
+    if (nextParts.month === undefined) nextParts.month = 1;
+  }
   if (patch.precision === "day") {
     nextParts.month ??= 1;
     nextParts.day ??= 1;
@@ -842,7 +860,16 @@ function updateCreateDateField(key: string, patch: Partial<CalendarDate>) {
   setCreateField(key, serializeCalendarDate(stored));
 }
 function updateCreateDatePart(key: string, part: "year" | "month" | "day", raw: string, min: number, max?: number) {
-  if (!raw.trim()) return;
+  if (!raw.trim()) {
+    if (part === "month") {
+      updateCreateDateField(key, { precision: "year" });
+    } else if (part === "day") {
+      updateCreateDateField(key, { precision: "month" });
+    } else if (part === "year") {
+      clearCreateDateField(key);
+    }
+    return;
+  }
   const parsed = Math.floor(Number(raw));
   if (!Number.isFinite(parsed)) return;
   updateCreateDateField(key, { [part]: Math.min(max ?? parsed, Math.max(min, parsed)) });
@@ -1500,15 +1527,32 @@ function updateDateField(key: string, patch: Partial<CalendarDate>) {
   const calendarId = selectedCalendarId(key);
   const previous = dateForField(key);
   const currentParts = calendarDateToParts(
-    previous ?? { calendar: calendarId, era: "CE", year: 1, month: 1, day: 1, precision: "day" },
+    previous ?? { calendar: calendarId, era: "CE", year: 1, precision: "year" },
     calendar,
-  ) ?? { year: 1, month: 1, day: 1, precision: "day" as const };
+  ) ?? { year: 1, precision: "year" as const };
   const nextParts = { ...currentParts, ...patch };
+  if ((patch as Record<string, unknown>).precision === undefined) {
+    const hasMonth = (nextParts as Record<string, unknown>).month !== undefined;
+    const hasDay = (nextParts as Record<string, unknown>).day !== undefined;
+    if (!hasMonth) {
+      nextParts.precision = "year";
+      delete (nextParts as Record<string, unknown>).day;
+    } else if (!hasDay) {
+      nextParts.precision = "month";
+    } else {
+      if (nextParts.precision !== "hour" && nextParts.precision !== "minute" && nextParts.precision !== "second") {
+        nextParts.precision = "day";
+      }
+    }
+  }
   if (patch.precision === "year") {
     delete nextParts.month;
     delete nextParts.day;
   }
-  if (patch.precision === "month" && nextParts.month === undefined) nextParts.month = 1;
+  if (patch.precision === "month") {
+    delete nextParts.day;
+    if (nextParts.month === undefined) nextParts.month = 1;
+  }
   if (patch.precision === "day") {
     nextParts.month ??= 1;
     nextParts.day ??= 1;
@@ -1531,7 +1575,16 @@ function updateDateField(key: string, patch: Partial<CalendarDate>) {
   markEntryDirty();
 }
 function updateDatePart(key: string, part: "year" | "month" | "day", raw: string, min: number, max?: number) {
-  if (!raw.trim()) return;
+  if (!raw.trim()) {
+    if (part === "month") {
+      updateDateField(key, { precision: "year" });
+    } else if (part === "day") {
+      updateDateField(key, { precision: "month" });
+    } else if (part === "year") {
+      clearDateField(key);
+    }
+    return;
+  }
   const parsed = Math.floor(Number(raw));
   if (!Number.isFinite(parsed)) return;
   const value = Math.min(max ?? parsed, Math.max(min, parsed));
@@ -2585,21 +2638,6 @@ async function rebindMapLocation(location: MapLocation) {
   }
 }
 
-async function linkEntityToMap() {
-  if (!selected) return;
-  const maps = entities.filter((entity) => entity.entity_type === "daena.maps:map");
-  if (maps.length === 0) {
-    error = "Create or enable a Maps map before linking a location.";
-    return;
-  }
-  const map = maps.find((candidate) => candidate.id === currentMapId()) ?? maps[0];
-  try {
-    await beginMapPick({ kind: "link", entityId: selected.id, role: "story-location", mapEntityId: map.id });
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
-}
-
 async function selectEntity(entity: Entity) {
   if (selected?.id === entity.id) return;
   if (!(await flushAutoSave())) return;
@@ -2918,11 +2956,23 @@ function relationshipMetadataSummary(relationship: Relationship, definition: Fie
   } catch {
     return "Metadata needs repair";
   }
+  const fieldByKey = new Map((definition?.metadataFields ?? []).map((field) => [field.key, field]));
   const labels = new Map((definition?.metadataFields ?? []).map((field) => [field.key, field.label]));
   return Object.entries(metadata)
     .filter(([, value]) => value !== undefined && value !== null && value !== "")
     .slice(0, 3)
-    .map(([key, value]) => `${labels.get(key) ?? key}: ${fieldDisplayValue(value)}`)
+    .map(([key, value]) => {
+      const field = fieldByKey.get(key);
+      if (field?.type === "date") {
+        const parsed = parseCalendarDate(value);
+        if (parsed) {
+          const calendar = calendarDefinitionForId(parsed.calendar);
+          const formatted = formatWithCalendar(value, calendar);
+          if (formatted !== "Undated") return `${labels.get(key) ?? key}: ${formatted}`;
+        }
+      }
+      return `${labels.get(key) ?? key}: ${fieldDisplayValue(value)}`;
+    })
     .join(" · ");
 }
 function openRelationshipMetadata(relationship: Relationship) {
@@ -2933,6 +2983,23 @@ async function saveRelationshipMetadata(relationship: Relationship, metadata: Re
     expectedRevision: relationship.revision,
   });
   relationships = relationships.map((current) => (current.id === updated.id ? updated : current));
+}
+async function confirmRemoveRelationship(definition: FieldDefinition, relationship: Relationship) {
+  const target = relationshipTargetName(relationship);
+  const label = definition.label ?? relationship.relationship_type;
+  if (
+    !(await confirmDialog({
+      title: `Remove ${label}?`,
+      message: `${target} will be unlinked from ${selected?.name ?? "this entry"}. The relationship can be recreated.`,
+      confirmLabel: "Remove",
+      danger: true,
+    }))
+  )
+    return;
+  await updateRelationshipField(
+    definition,
+    selectedRelationshipIds(definition).filter((id) => id !== relationship.target_id),
+  );
 }
 async function updateRelationshipField(definition: FieldDefinition, targetIds: string[]) {
   if (projectDiagnostics.length > 0) return;
@@ -3978,21 +4045,15 @@ onMount(() => {
                           }}{@const parts = createDatePartsDraft(item.field.key)}{@const calendar =
                           createCalendarDefinition(item.field.key)}{@const months = calendar?.months ?? []}
                         <div class="date-editor">
-                          <label class="date-calendar" for={`create-${item.field.key}-calendar`}
-                            >Calendar<select
-                              id={`create-${item.field.key}-calendar`}
-                              aria-label={`${item.field.label} calendar`}
-                              value={calendarIdForStoredDate(
-                                createDateForField(item.field.key),
-                                createDateCalendarByField[item.field.key],
-                              )}
-                              onchange={(event) =>
-                                setCreateDateCalendar(item.field.key, (event.currentTarget as HTMLSelectElement).value)}
-                              ><option value={GREGORIAN_CALENDAR_ID}>Gregorian</option
-                              >{#each worldCalendars() as option}<option value={option.id}>{option.name}</option
-                                >{/each}</select
-                            ></label>
-                          <div class="date-fields">
+                           <CalendarPicker
+                             selectedId={calendarIdForStoredDate(
+                               createDateForField(item.field.key),
+                               createDateCalendarByField[item.field.key],
+                             )}
+                             calendars={worldCalendars()}
+                             onSelect={(id) => setCreateDateCalendar(item.field.key, id)}
+                           />
+                           <div class="date-fields">
                             <label for={`create-${item.field.key}-year`}
                               >Year<input
                                 id={`create-${item.field.key}-year`}
@@ -5181,17 +5242,11 @@ onMount(() => {
                         definition.key,
                       )}{@const months = calendar?.months ?? []}
                       <div class="date-editor">
-                        <label class="date-calendar" for={`${definition.key}-calendar`}
-                          >Calendar<select
-                            id={`${definition.key}-calendar`}
-                            aria-label={`${definition.label} calendar`}
-                            value={selectedCalendarId(definition.key)}
-                            onchange={(event) =>
-                              setDateCalendar(definition.key, (event.currentTarget as HTMLSelectElement).value)}
-                            ><option value={GREGORIAN_CALENDAR_ID}>Gregorian</option
-                            >{#each worldCalendars() as option}<option value={option.id}>{option.name}</option
-                              >{/each}</select
-                          ></label>
+                        <CalendarPicker
+                          selectedId={selectedCalendarId(definition.key)}
+                          calendars={worldCalendars()}
+                          onSelect={(id) => setDateCalendar(definition.key, id)}
+                        />
                         <div class="date-fields">
                           <label for={`${definition.key}-year`}
                             >Year<input
@@ -5337,27 +5392,45 @@ onMount(() => {
                   field={definition}
                   {entities}
                   selectedIds={selectedRelationshipIds(definition)}
+                  hideChips
                   onChange={(ids) => void updateRelationshipField(definition, ids)} />
-                {#if definition.metadataFields?.length && relationshipsForDefinition(definition).length > 0}<div
+                {#if relationshipsForDefinition(definition).length > 0}<div
                     class="relationship-detail-list"
                     aria-label={`${definition.label} details`}>
                     {#each relationshipsForDefinition(definition) as relationship (relationship.id)}
-                      <div class="relationship-detail-row">
+                      {@const relDefinition = definitionForRelationship(relationship) ?? definition}
+                      {@const summary = relationshipMetadataSummary(relationship, relDefinition)}
+                      <div class="relationship-detail-row" data-entity-id={relationship.target_id}>
                         <div class="relationship-detail-copy">
                           <strong>{relationshipTargetName(relationship)}</strong>
                           <small
                             >{entities.find((entity) => entity.id === relationship.target_id)?.entity_type ??
-                              "Entity"}{#if relationshipMetadataSummary(relationship, definitionForRelationship(relationship) ?? definition)}
-                              · {relationshipMetadataSummary(
-                                relationship,
-                                definitionForRelationship(relationship) ?? definition,
-                              )}{/if}</small>
+                              "Entity"}{#if summary} · {summary}{/if}</small>
                         </div>
-                        <button
-                          class="quiet-button relationship-details-button"
-                          type="button"
-                          aria-label={`Edit details for ${relationship.relationship_type} to ${relationshipTargetName(relationship)}`}
-                          onclick={() => openRelationshipMetadata(relationship)}>Details</button>
+                        <div class="relationship-detail-actions">
+                          {#if relDefinition.metadataFields?.length}
+                            <button
+                              class="quiet-button relationship-details-button"
+                              type="button"
+                              aria-label={`Edit details for ${relationship.relationship_type} to ${relationshipTargetName(relationship)}`}
+                              onclick={() => openRelationshipMetadata(relationship)}><svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="1.8"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path
+                                  d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg></button>
+                          {/if}
+                          <button
+                            class="quiet-button relationship-remove-button"
+                            type="button"
+                            aria-label={`Remove ${relationshipTargetName(relationship)} from ${definition.label}`}
+                            onclick={() => void confirmRemoveRelationship(definition, relationship)}>×</button>
+                        </div>
                       </div>
                     {/each}
                   </div>{/if}
@@ -5380,10 +5453,7 @@ onMount(() => {
                   <h3>Maps</h3>
                   <span>{mapLocations.length}</span>
                 </div>
-                <p>Click the map to link a place, or use Link location here to pick on the map.</p>
-                <button class="quiet-button" type="button" onclick={() => void linkEntityToMap()}
-                  >＋ Link location</button
-                >{#if mapLocations.length === 0}<small>No map links yet.</small
+                {#if mapLocations.length === 0}<small>No map links yet.</small
                   >{:else}{#each mapLocations as location (location.id)}<div class="map-location-row">
                       <div>
                         <strong>{location.label || location.role}</strong><small
@@ -5438,6 +5508,7 @@ onMount(() => {
     relationship={dialog.relationship}
     definition={dialog.definition}
     {entities}
+    calendarDefinitions={calendarDefinitions}
     onSave={(metadata) => saveRelationshipMetadata(dialog.relationship, metadata)}
     onClose={() => (metadataDialog = null)} />
 {/if}
@@ -6631,23 +6702,6 @@ onMount(() => {
   background: #fff0ec;
   color: #813d32;
 }
-.date-calendar {
-  display: grid;
-  gap: 4px;
-  color: var(--ink-faint);
-  font-size: 9px;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-.date-calendar select {
-  width: 100%;
-  padding: 8px 6px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--canvas);
-  color: var(--ink);
-  font-size: 11px;
-}
 .date-editor {
   display: grid;
   gap: 8px;
@@ -6812,10 +6866,48 @@ onMount(() => {
   color: var(--ink-faint);
   font-size: 9px;
 }
+.relationship-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
 .relationship-details-button {
   flex: none;
-  padding: 5px 8px;
-  font-size: 10px;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 7px;
+  line-height: 1;
+  color: var(--ink-faint);
+}
+.relationship-details-button:hover,
+.relationship-details-button:focus-visible {
+  background: #f0e6d8;
+  color: var(--ink);
+}
+.relationship-details-button svg {
+  width: 14px;
+  height: 14px;
+}
+.relationship-remove-button {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 7px;
+  font-size: 14px;
+  line-height: 1;
+  color: #a1482f;
+}
+.relationship-remove-button:hover,
+.relationship-remove-button:focus-visible {
+  background: #f8ece8;
+  color: #8f3f28;
 }
 .asset-row strong,
 .asset-row small {
@@ -6868,20 +6960,6 @@ onMount(() => {
   border-radius: 6px;
   background: #ede9e0;
   color: var(--accent);
-}
-.map-contribution p {
-  margin: 9px 0 10px;
-  color: var(--ink-soft);
-  font-size: 10px;
-  line-height: 1.5;
-}
-.map-contribution > .quiet-button {
-  margin: 0 0 8px;
-  padding: 6px 8px;
-  border: 1px solid #d9cdbd;
-  border-radius: 7px;
-  background: #fcf8f1;
-  font-size: 10px;
 }
 .map-contribution > small {
   display: block;

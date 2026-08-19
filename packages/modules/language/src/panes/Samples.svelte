@@ -505,24 +505,6 @@ async function handleSubmit(event: SubmitEvent) {
   font-family: var(--font-display);
   font-weight: 500;
 }
-.language-inline {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: 10px;
-}
-.language-inline .language-inline-fields {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.language-inline .language-inline-fields .language-field {
-  flex: 1 1 200px;
-}
-.language-inline > .language-button {
-  margin-bottom: 1px;
-  flex: 0 0 auto;
-}
 .language-button {
   padding: 8px 12px;
   border: 1px solid var(--accent-dark);
@@ -671,19 +653,6 @@ async function handleSubmit(event: SubmitEvent) {
   text-overflow: ellipsis;
   min-width: 0;
   text-align: left;
-}
-.sample-block {
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface-muted);
-  font-size: 13px;
-  line-height: 1.55;
-}
-.sample-block h3 {
-  margin: 0 0 8px;
-  font-family: var(--font-display);
-  font-weight: 500;
 }
 :global(.sample-interlinear) {
   display: flex;

@@ -359,22 +359,11 @@ function dismissWelcomeTour() {
   box-shadow: var(--shadow-sm, 0 2px 8px rgba(38, 42, 33, 0.05));
 }
 
-.language-field {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-  color: var(--ink-soft);
-  font-size: 11px;
-  letter-spacing: 0.01em;
-}
 @media (max-width: 760px) {
   .language-workspace {
     display: flex;
     flex-direction: column;
     overflow: auto;
-  }
-  .language-sidebar {
-    max-height: none;
   }
   .language-main {
     min-height: 34rem;
@@ -389,13 +378,6 @@ function dismissWelcomeTour() {
   .language-tabs button {
     flex: 0 0 auto;
   }
-}
-.language-panel h2 {
-  margin: 0;
-  font-family: var(--font-display);
-  font-weight: 500;
-  font-size: 24px;
-  line-height: 1.15;
 }
 .language-help-button {
   display: flex;
@@ -417,17 +399,6 @@ function dismissWelcomeTour() {
   background: var(--surface-muted);
   color: var(--ink);
   border-color: var(--accent);
-}
-.language-field input {
-  box-sizing: border-box;
-  width: 100%;
-  min-width: 0;
-  padding: 9px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--ink);
-  font: inherit;
 }
 .language-main-header {
   display: flex;
@@ -531,35 +502,6 @@ function dismissWelcomeTour() {
   border-color: var(--accent-dark);
   background: var(--surface-muted);
   color: var(--accent-dark);
-}
-.language-button {
-  padding: 8px 12px;
-  border: 1px solid var(--accent-dark);
-  border-radius: 8px;
-  background: var(--accent-dark);
-  color: #fff;
-  cursor: pointer;
-}
-.language-button:hover {
-  filter: brightness(1.06);
-}
-.language-button.secondary {
-  background: transparent;
-  color: var(--accent-dark);
-}
-.language-button.secondary:hover {
-  background: var(--surface-muted);
-}
-.language-button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-  filter: none;
-}
-.language-button:focus-visible,
-.language-tabs button:focus-visible,
-.language-list button:focus-visible {
-  outline: 3px solid rgba(180, 119, 63, 0.24);
-  outline-offset: 2px;
 }
 :global(.language-panel h2),
 :global(.language-panel h3) {

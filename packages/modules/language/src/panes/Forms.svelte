@@ -922,27 +922,10 @@ async function handleSubmit(event: SubmitEvent) {
   border-radius: 10px;
   background: var(--surface-muted);
 }
-.language-group .language-group {
-  background: var(--surface);
-}
-.language-group-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
 .language-inline {
   display: flex;
   align-items: end;
   gap: 8px;
-  min-width: 0;
-}
-.language-inline-fields {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 8px;
-  flex: 1;
   min-width: 0;
 }
 .language-inline > .language-button {

@@ -148,7 +148,7 @@ function loadCollectionQuery(sec: WorkspaceSection): CollectionQuery {
   return { ...DEFAULT_COLLECTION_QUERY, section: sec, viewMode: sec === "language" ? "flat" : DEFAULT_COLLECTION_QUERY.viewMode };
 }
 
-let collectionQuery = $state<CollectionQuery>(loadCollectionQuery(section));
+let collectionQuery = $state<CollectionQuery>(loadCollectionQuery("lore"));
 
 $effect(() => {
   const q = collectionQuery;
@@ -779,7 +779,7 @@ function createDatePartsDraft(key: string) {
   const stored = createDateForField(key);
   const calendar = createCalendarDefinition(key);
   if (stored) return calendarDateToParts(stored, calendar);
-  return createDateEditorOpen[key] ? { year: undefined as number | undefined, precision: "day" as const } : null;
+  return createDateEditorOpen[key] ? { year: undefined as number | undefined, month: undefined as number | undefined, day: undefined as number | undefined, precision: "day" as const } : null;
 }
 function setCreateDateCalendar(key: string, calendarId: string) {
   createDateCalendarByField = { ...createDateCalendarByField, [key]: calendarId };
@@ -1449,7 +1449,7 @@ function datePartsDraft(key: string) {
   const stored = dateForField(key);
   const calendar = definitionForDateField(key);
   if (stored) return calendarDateToParts(stored, calendar);
-  return dateEditorOpen[key] ? { year: undefined as number | undefined, precision: "day" as const } : null;
+  return dateEditorOpen[key] ? { year: undefined as number | undefined, month: undefined as number | undefined, day: undefined as number | undefined, precision: "day" as const } : null;
 }
 function setDateCalendar(key: string, calendarId: string) {
   dateCalendarByField = { ...dateCalendarByField, [key]: calendarId };
@@ -5250,7 +5250,7 @@ onMount(() => {
                   context={contextFor("timeline")}
                   entityId={selected.id as UUID}
                   onsaved={(definition) => {
-                    calendarDefinitions = { ...calendarDefinitions, [selected.id]: definition };
+                    if (selected) calendarDefinitions = { ...calendarDefinitions, [selected.id]: definition };
                   }} />
               </section>
             {/if}
@@ -7858,6 +7858,9 @@ onMount(() => {
 }
 .editor-fullscreen .editor-footer {
   padding-top: 12px;
+}
+.rail-collapsed ~ .app-main .editor-fullscreen {
+  inset: 0 0 0 56px;
 }
 .dialog {
   max-height: min(680px, calc(100vh - 32px));

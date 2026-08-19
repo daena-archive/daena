@@ -30,7 +30,15 @@ import type {
 } from "../../packages/module-api/src/index";
 import { buildModuleContext } from "$lib/modules/context";
 import { fieldAppliesToEntity as fieldAppliesToEnabledTypes } from "$lib/modules/fields";
-import { filterWorkspaceEntities, type TimelineView } from "$lib/modules/workspace";
+import {
+  queryCollection,
+  DEFAULT_COLLECTION_QUERY,
+  type TimelineView,
+  type WorkspaceSection,
+  type CollectionQuery,
+  type CollectionResult,
+  type WritingView,
+} from "$lib/modules/workspace";
 import CalendarEditor from "../../packages/modules/timeline/src/CalendarEditor.svelte";
 import {
   calendarDateToParts,
@@ -75,9 +83,7 @@ import {
 } from "$lib/date";
 
 type InstalledModule = ProjectModuleManifest;
-type WorkspaceSection = "lore" | "timeline" | "writing" | "language" | "maps";
 type SettingsSection = "general" | "ai" | "plugins" | "schema" | "git";
-type WritingView = "manuscripts" | "reference";
 type AiFieldSuggestion = { value: unknown; rationale: string; confidence: string };
 type RecentProject = { name: string; root: string };
 type CreateOption = { key: string; module: InstalledModule; template: EntityTemplate };
@@ -124,8 +130,36 @@ let metadataDialog = $state<{ relationship: Relationship; definition: FieldDefin
 let assets = $state<Asset[]>([]);
 let mapLocations = $state<MapLocation[]>([]);
 let modules = $state<InstalledModule[]>([]);
-let query = $state("");
 let globalQuery = $state("");
+let filterOpen = $state(false);
+let expandedGroups = $state<Set<string>>(new Set());
+let railCollapsed = $state(localStorage.getItem("daena:rail-collapsed") === "true");
+
+function loadCollectionQuery(sec: WorkspaceSection): CollectionQuery {
+  try {
+    const raw = localStorage.getItem(`daena:collection-query:${sec}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return { ...DEFAULT_COLLECTION_QUERY, ...parsed, section: sec, excludedTypes: parsed.excludedTypes ?? [] };
+    }
+  } catch {}
+  return { ...DEFAULT_COLLECTION_QUERY, section: sec, viewMode: sec === "language" ? "flat" : DEFAULT_COLLECTION_QUERY.viewMode };
+}
+
+let collectionQuery = $state<CollectionQuery>(loadCollectionQuery(section));
+
+$effect(() => {
+  const q = collectionQuery;
+  try {
+    const serializable = { ...q, excludedTypes: [...q.excludedTypes] };
+    localStorage.setItem(`daena:collection-query:${q.section}`, JSON.stringify(serializable));
+  } catch {}
+});
+
+$effect(() => {
+  collectionQuery = loadCollectionQuery(section);
+  expandedGroups = new Set();
+});
 let name = $state("");
 let selectedCreateKey = $state("");
 let createFieldValues = $state<Record<string, unknown>>({});
@@ -1138,7 +1172,7 @@ $effect(() => {
     .catch(() => {
       // Keep the current list on transient failures; retry on next visit.
     });
-  if (!selected && visibleEntities().length > 0) selected = visibleEntities()[0];
+  if (!selected && collectionResult().entities.length > 0) selected = collectionResult().entities[0];
 });
 
 function savedMaps() {
@@ -1190,21 +1224,49 @@ function mapConflictDetail(detail: unknown): { path?: string } {
   return typeof detail === "object" && detail !== null ? (detail as { path?: string }) : {};
 }
 
-function visibleEntities() {
-  const term = query.trim().toLowerCase();
-  if (section === "maps") {
-    return savedMaps().filter((map) => !term || map.name.toLowerCase().includes(term));
+function sectionEntityTypes(): string[] {
+  return manifestForWorkspaceSection(section)?.schemas.flatMap((schema) => schema.entityTypes) ?? [];
+}
+
+function toggleTypeFilter(type: string) {
+  const idx = collectionQuery.excludedTypes.indexOf(type);
+  if (idx >= 0) {
+    collectionQuery.excludedTypes = collectionQuery.excludedTypes.filter((t) => t !== type);
+  } else {
+    collectionQuery.excludedTypes = [...collectionQuery.excludedTypes, type];
   }
-  const entityTypes = new Set(
-    manifestForWorkspaceSection(section)?.schemas.flatMap((schema) => schema.entityTypes) ?? [],
-  );
-  return filterWorkspaceEntities({
-    entityTypes,
+}
+
+function toggleGroup(type: string) {
+  const next = new Set(expandedGroups);
+  if (next.has(type)) next.delete(type);
+  else next.add(type);
+  expandedGroups = next;
+}
+
+function entityGlyphClassForType(type: string) {
+  return `entity-glyph-${type === "__uncategorized" ? "unknown" : type}`;
+}
+
+function glyphForType(type: string) {
+  return entityGlyph({ entity_type: type === "__uncategorized" ? null : type });
+}
+
+function collectionResult(): CollectionResult {
+  if (section === "maps") {
+    const term = collectionQuery.textSearch.trim().toLowerCase();
+    const filtered = savedMaps().filter((map) => !term || map.name.toLowerCase().includes(term));
+    return { entities: filtered, total: filtered.length };
+  }
+  const entityTypes = new Set(sectionEntityTypes());
+  return queryCollection(
     entities,
-    query,
-    writingView: section === "writing" ? writingView : undefined,
-    timelineView: section === "timeline" ? timelineView : undefined,
-  });
+    collectionQuery,
+    entityTypes,
+    entityTypeLabel,
+    section === "writing" ? writingView : undefined,
+    section === "timeline" ? timelineView : undefined,
+  );
 }
 
 function entityGlyph(entity: Pick<Entity, "entity_type">) {
@@ -1238,7 +1300,7 @@ async function selectSearchResult(entity: Entity) {
   if (entity.entity_type === "calendar") timelineView = "calendars";
   if (entity.entity_type === "event" || entity.entity_type === "encounter") timelineView = "events";
   globalQuery = "";
-  query = "";
+  collectionQuery.textSearch = "";
   await selectEntity(entity);
 }
 
@@ -1249,7 +1311,7 @@ async function switchSection(next: WorkspaceSection) {
   if (!(await leavePluginView())) return;
   section = next;
   clearSelection();
-  query = "";
+  collectionQuery.textSearch = "";
 }
 
 async function reconcileWorkspaceSection() {
@@ -1257,7 +1319,7 @@ async function reconcileWorkspaceSection() {
   if (!(await leavePluginView())) return;
   section = enabledWorkspaceSections()[0] ?? "lore";
   clearSelection();
-  query = "";
+  collectionQuery.textSearch = "";
   editorFullscreen = false;
 }
 
@@ -1267,7 +1329,7 @@ async function switchWritingView(next: WritingView) {
   if (writingView === next) return;
   writingView = next;
   clearSelection();
-  query = "";
+  collectionQuery.textSearch = "";
 }
 
 async function switchTimelineView(next: TimelineView) {
@@ -1276,7 +1338,7 @@ async function switchTimelineView(next: TimelineView) {
   if (timelineView === next) return;
   timelineView = next;
   clearSelection();
-  query = "";
+  collectionQuery.textSearch = "";
 }
 
 function sectionLabel() {
@@ -3338,7 +3400,7 @@ function resetProjectSessionState() {
   mapPickNotice = "";
   searchMatches = null;
   globalQuery = "";
-  query = "";
+  collectionQuery.textSearch = "";
   showSettings = false;
   schemaPluginId = null;
   schemaPluginName = "";
@@ -3573,8 +3635,14 @@ onMount(() => {
       </div>
     </div>
   {/if}
-  <aside class:startup-rail={!ready} class="rail">
-    <div class="brand"><img class="brand-logo" src={logoUrl} alt="Daena Archive" /></div>
+  <aside class:startup-rail={!ready} class:rail-collapsed={railCollapsed && ready} class:menu-open={railCollapsed && ready && showProjectMenu} class="rail">
+    <div class="brand">
+      {#if railCollapsed && ready}
+        <img class="brand-icon" src="/branding/icon.png" alt="Daena" />
+      {:else}
+        <img class="brand-logo" src={logoUrl} alt="Daena Archive" />
+      {/if}
+    </div>
     {#if !ready}
       <div class="startup-actions">
         <button class="rail-button startup-primary" onclick={openProjectDirectory}
@@ -3609,6 +3677,10 @@ onMount(() => {
           <span class="project-chevron" aria-hidden="true">⌄</span>
         </button>
         {#if showProjectMenu}
+          {#if railCollapsed}<button
+            class="rail-backdrop"
+            aria-label="Close menu"
+            onclick={() => (showProjectMenu = false)}></button>{/if}
           <div class="project-menu" role="menu">
             <button class="rail-button" role="menuitem" onclick={openProjectDirectory}
               ><span class="rail-icon">↗</span><span>Open another folder</span></button>
@@ -3626,6 +3698,7 @@ onMount(() => {
       {#if enabledWorkspaceSections().length > 0}<button
           aria-expanded={showCreateForm}
           class="rail-create-button"
+          title="New entry"
           onclick={toggleCreateForm}><span class="rail-icon">＋</span><span>New entry</span></button
         >{/if}
       {#if workspaceNavigationItems().length > 0}
@@ -3633,7 +3706,7 @@ onMount(() => {
         <nav class="workspace-nav" aria-label="Workspace sections">
           {#each workspaceNavigationItems() as item (item.key)}
             <button
-              title={item.beta ? `${item.title} · Beta plugin — may be unstable` : undefined}
+              title={item.beta ? `${item.title} · Beta plugin — may be unstable` : item.title}
               aria-current={navigationActive(item) ? "page" : undefined}
               class:active={navigationActive(item)}
               class="rail-button"
@@ -3678,8 +3751,19 @@ onMount(() => {
       aria-expanded={showSettings}
       class:active={showSettings}
       class="rail-button muted-button"
+      title="Settings"
       onclick={() => void openSettings()}><span class="rail-icon">⚙</span><span>Settings</span></button>
-    <div class="rail-footer">v0.2 · local first</div>
+    {#if ready}<button
+      class="rail-button muted-button rail-collapse-toggle"
+      aria-label={railCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+      title={railCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+      onclick={() => {
+        railCollapsed = !railCollapsed;
+        localStorage.setItem("daena:rail-collapsed", String(railCollapsed));
+      }}
+      ><span class="rail-icon">{railCollapsed ? "»" : "«"}</span><span>{railCollapsed ? "Expand" : "Collapse"}</span></button
+    >{/if}
+    <div class="rail-footer">v0.1.0</div>
   </aside>
 
   <section class:sandbox-active={Boolean(sandboxView)} class:map-surface-open={mapSurfaceOpen} class="app-main">
@@ -4514,51 +4598,101 @@ onMount(() => {
                         : writingView === "manuscripts"
                           ? "MANUSCRIPTS"
                           : "REFERENCE PAGES"}</span
-              ><strong>{visibleEntities().length} {collectionLabel()}</strong>
+              ><strong>{collectionResult().total} {collectionLabel()}</strong>
+            </div>
+            <div class="view-mode-toggle">
+              <button
+                class:active={collectionQuery.viewMode === "flat"}
+                aria-label="Flat list"
+                onclick={() => (collectionQuery.viewMode = "flat")}>≡</button
+              ><button
+                class:active={collectionQuery.viewMode === "grouped"}
+                aria-label="Grouped by type"
+                onclick={() => (collectionQuery.viewMode = "grouped")}>⊟</button>
             </div>
           </div>
-          {#if section === "writing"}<div class="collection-tabs" role="tablist" aria-label="Writing collections">
-              <button
-                role="tab"
-                aria-selected={writingView === "manuscripts"}
-                class:active={writingView === "manuscripts"}
-                onclick={() => switchWritingView("manuscripts")}>Manuscripts</button
-              ><button
-                role="tab"
-                aria-selected={writingView === "reference"}
-                class:active={writingView === "reference"}
-                onclick={() => switchWritingView("reference")}>Reference pages</button>
-            </div>{/if}
-          {#if section === "timeline"}<div class="collection-tabs" role="tablist" aria-label="Timeline collections">
-              <button
-                role="tab"
-                aria-selected={timelineView === "events"}
-                class:active={timelineView === "events"}
-                onclick={() => void switchTimelineView("events")}>Events</button
-              ><button
-                role="tab"
-                aria-selected={timelineView === "eras"}
-                class:active={timelineView === "eras"}
-                onclick={() => void switchTimelineView("eras")}>Eras</button
-              ><button
-                role="tab"
-                aria-selected={timelineView === "calendars"}
-                class:active={timelineView === "calendars"}
-                onclick={() => void switchTimelineView("calendars")}>Calendars</button>
-            </div>{/if}
+
           <div class="collection-search">
             <span>⌕</span><input
-              aria-label={`Filter ${collectionLabel()}`}
-              bind:value={query}
-              placeholder={`Filter ${collectionLabel()}`} />
+              aria-label={`Search ${collectionLabel()}`}
+              bind:value={collectionQuery.textSearch}
+              placeholder={`Search ${collectionLabel()}`} /><button
+              class="filter-toggle"
+              class:active={filterOpen}
+              aria-label="Filters"
+              onclick={() => (filterOpen = !filterOpen)}>⫶</button>
+            {#if filterOpen}<div class="filter-popover" role="dialog" aria-label="Collection filters">
+                <fieldset class="filter-section">
+                  <legend>Sort by</legend>
+                  <div class="filter-row">
+                    <label
+                      ><input
+                        type="radio"
+                        name="sortField"
+                        value="name"
+                        checked={collectionQuery.sortField === "name"}
+                        onchange={() => (collectionQuery.sortField = "name")} /> Name</label
+                    ><label
+                      ><input
+                        type="radio"
+                        name="sortField"
+                        value="created_at"
+                        checked={collectionQuery.sortField === "created_at"}
+                        onchange={() => (collectionQuery.sortField = "created_at")} /> Created</label
+                    ><label
+                      ><input
+                        type="radio"
+                        name="sortField"
+                        value="updated_at"
+                        checked={collectionQuery.sortField === "updated_at"}
+                        onchange={() => (collectionQuery.sortField = "updated_at")} /> Updated</label
+                    ><button
+                      class="sort-dir-toggle"
+                      aria-label={collectionQuery.sortDir === "asc" ? "Ascending" : "Descending"}
+                      onclick={() =>
+                        (collectionQuery.sortDir = collectionQuery.sortDir === "asc" ? "desc" : "asc")}
+                      >{collectionQuery.sortDir === "asc" ? "↑" : "↓"}</button>
+                  </div>
+                </fieldset>
+                <fieldset class="filter-section">
+                  <legend>Per page</legend>
+                  <div class="filter-row">
+                    {#each [25, 50, 100] as size}<label
+                        ><input
+                          type="radio"
+                          name="pageSize"
+                          value={size}
+                          checked={collectionQuery.pageSize === size}
+                          onchange={() => (collectionQuery.pageSize = size)} /> {size}</label
+                      >{/each}<label
+                      ><input
+                        type="radio"
+                        name="pageSize"
+                        value={0}
+                        checked={collectionQuery.pageSize === 0}
+                        onchange={() => (collectionQuery.pageSize = 0)} /> All</label>
+                  </div>
+                </fieldset>
+                <fieldset class="filter-section">
+                  <legend>Entity types</legend>
+                  <div class="filter-type-list">
+                    {#each sectionEntityTypes() as type}<label
+                        ><input
+                          type="checkbox"
+                          checked={!collectionQuery.excludedTypes.includes(type)}
+                          onchange={() => toggleTypeFilter(type)} /> {entityTypeLabel(type)}</label
+                      >{/each}
+                  </div>
+                </fieldset>
+              </div>{/if}
           </div>
           <div class="collection-list">
-            {#if visibleEntities().length === 0}<div class="list-empty" role="status">
+            {#if collectionResult().total === 0}<div class="list-empty" role="status">
                 <span class="empty-mark" aria-hidden="true">✦</span><strong
-                  >{query ? `No ${collectionLabel()} match that filter.` : `No ${collectionLabel()} yet.`}</strong>
+                  >{collectionQuery.textSearch ? `No ${collectionLabel()} match that search.` : `No ${collectionLabel()} yet.`}</strong>
                 <p>
-                  {query
-                    ? "Try another filter or create something new."
+                  {collectionQuery.textSearch
+                    ? "Try another search or create something new."
                     : section === "maps"
                       ? "Create a map through an installed map integration."
                       : `Create your first ${createLabel()} to begin building this collection.`}
@@ -4587,15 +4721,31 @@ onMount(() => {
                 {:else}<button class="empty-create" type="button" onclick={toggleCreateForm}
                     >＋ Create {createLabel()}</button
                   >{/if}
-              </div>{:else}{#each visibleEntities() as entity}<button
-                  class:selected={selected?.id === entity.id}
-                  class="collection-item"
-                  onclick={() => selectEntity(entity)}
-                  ><span class={`entity-glyph ${entityGlyphClass(entity)}`}>{entityGlyph(entity)}</span><span
-                    class="item-copy"
-                    ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
-                  ><span class="item-arrow" aria-hidden="true">›</span></button
-                >{/each}{/if}
+              </div>{:else}{#if collectionQuery.viewMode === "grouped"}{#each collectionResult().groups ?? [] as group}<div class="collection-group">
+                    <button
+                      type="button"
+                      class="collection-group-header"
+                      onclick={() => toggleGroup(group.type)}
+                      ><span class="group-chevron">{expandedGroups.has(group.type) ? "⌄" : "›"}</span><span
+                        class={`entity-glyph ${entityGlyphClassForType(group.type)}`}>{glyphForType(group.type)}</span
+                      ><strong>{group.label}</strong><small>{group.count}</small></button
+                    >{#if expandedGroups.has(group.type)}{#each group.entities as entity}<button
+                        class:selected={selected?.id === entity.id}
+                        class="collection-item"
+                        onclick={() => selectEntity(entity)}
+                        ><span class={`entity-glyph ${entityGlyphClass(entity)}`}>{entityGlyph(entity)}</span><span
+                          class="item-copy"
+                          ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
+                        ><span class="item-arrow" aria-hidden="true">›</span></button
+                      >{/each}{/if}</div>{/each}{:else}{#each collectionResult().entities as entity}<button
+                    class:selected={selected?.id === entity.id}
+                    class="collection-item"
+                    onclick={() => selectEntity(entity)}
+                    ><span class={`entity-glyph ${entityGlyphClass(entity)}`}>{entityGlyph(entity)}</span><span
+                      class="item-copy"
+                      ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
+                    ><span class="item-arrow" aria-hidden="true">›</span></button
+                  >{/each}{/if}{/if}
           </div>
         </aside>
 
@@ -5237,6 +5387,10 @@ onMount(() => {
   padding: 25px 15px 18px;
   background: #283a30;
   color: #eef0e9;
+  transition: width 0.2s ease, flex-basis 0.2s ease, padding 0.2s ease;
+}
+.rail-collapsed.menu-open {
+  overflow: visible;
 }
 .startup-rail {
   padding-top: 34px;
@@ -5342,6 +5496,130 @@ onMount(() => {
   padding: 17px 10px 0;
   color: #708476;
   font-size: 11px;
+}
+.rail-collapsed {
+  width: 56px;
+  flex: 0 0 56px;
+  padding: 25px 8px 18px;
+  align-items: center;
+}
+.rail-collapsed .brand {
+  justify-content: center;
+  padding: 0 0 16px;
+}
+.brand-icon {
+  display: block;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  object-fit: contain;
+}
+.rail-collapsed .project-switcher {
+  position: relative;
+  margin-bottom: 10px;
+}
+.rail-collapsed .project-card {
+  justify-content: center;
+  padding: 8px;
+}
+.rail-collapsed .project-card .project-copy,
+.rail-collapsed .project-card .project-chevron {
+  display: none;
+}
+.rail-collapsed .project-menu {
+  position: absolute;
+  left: calc(100% + 6px);
+  top: 0;
+  z-index: 200;
+  min-width: 200px;
+  padding: 6px;
+  border-radius: 10px;
+  background: #2f4a38;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+.rail-collapsed .project-menu .rail-button {
+  width: 100%;
+  padding: 10px 11px;
+  justify-content: flex-start;
+}
+.rail-collapsed .project-menu .rail-button span:not(.rail-icon) {
+  display: inline;
+}
+.rail-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 199;
+  background: transparent;
+  border: 0;
+  cursor: default;
+}
+.rail-collapsed .rail-create-button {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  justify-content: center;
+  margin: 10px auto 12px;
+}
+.rail-collapsed .rail-create-button span:not(.rail-icon) {
+  display: none;
+}
+.rail-collapsed .rail-label {
+  display: none;
+}
+.rail-collapsed .rail-button {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  justify-content: center;
+  margin: 0 auto 5px;
+}
+.rail-collapsed .rail-button span:not(.rail-icon) {
+  display: none;
+}
+.rail-collapsed .rail-git-button .rail-git-count {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  margin: 0;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  font-size: 8px;
+}
+.rail-collapsed .rail-footer {
+  text-align: center;
+  font-size: 9px;
+  padding: 17px 0 0;
+}
+.rail-collapsed .rail-collapse-toggle span:not(.rail-icon) {
+  display: none;
+}
+.rail-collapsed .plugin-nav-row {
+  display: flex;
+  justify-content: center;
+}
+.rail-collapsed .workspace-nav {
+  align-items: center;
+  margin-top: 4px;
+}
+.rail-collapsed .rail-button[title]:hover::after {
+  content: attr(title);
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 200;
+  padding: 5px 10px;
+  border-radius: 6px;
+  background: #1a2a20;
+  color: #eef0e9;
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+.rail-collapsed .rail-button {
+  position: relative;
 }
 .project-switcher {
   margin-bottom: 18px;
@@ -5695,7 +5973,7 @@ onMount(() => {
   align-items: flex-end;
   justify-content: space-between;
   gap: 20px;
-  padding: 42px 40px 25px;
+  padding: 32px 40px 25px;
 }
 .workspace-heading h1 {
   margin: 8px 0 4px;
@@ -6715,6 +6993,9 @@ onMount(() => {
   .rail-button span:not(.rail-icon) {
     display: none;
   }
+  .rail-collapse-toggle {
+    display: none;
+  }
   .project-menu .rail-button {
     display: flex;
     width: 100%;
@@ -6916,6 +7197,7 @@ onMount(() => {
   color: #fff;
 }
 .collection-search {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -6941,6 +7223,160 @@ onMount(() => {
   background: transparent;
   color: var(--ink);
   font-size: 11px;
+}
+.filter-toggle {
+  appearance: none;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-faint);
+  font-size: 14px;
+  cursor: pointer;
+}
+.filter-toggle:hover,
+.filter-toggle.active {
+  background: #f0ece5;
+  color: var(--accent-dark);
+}
+.filter-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 100;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #ebe7de;
+  border-radius: 9px;
+  background: #fffefa;
+  box-shadow: var(--shadow-md, 0 4px 12px rgba(38, 42, 33, 0.12));
+}
+.filter-section {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.filter-section legend {
+  color: var(--ink-faint);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: center;
+}
+.filter-row label,
+.filter-type-list label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ink);
+  font-size: 11px;
+  cursor: pointer;
+}
+.filter-type-list {
+  display: grid;
+  gap: 4px;
+}
+.sort-dir-toggle {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid #ebe7de;
+  border-radius: 6px;
+  background: #fffefa;
+  color: var(--ink);
+  font-size: 13px;
+  cursor: pointer;
+}
+.sort-dir-toggle:hover {
+  background: #f0ece5;
+}
+.view-mode-toggle {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+.view-mode-toggle button {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-faint);
+  font-size: 14px;
+  cursor: pointer;
+}
+.view-mode-toggle button:hover,
+.view-mode-toggle button.active {
+  background: #f0ece5;
+  color: var(--accent-dark);
+}
+.collection-group-header {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 6px 0 2px;
+  padding: 6px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+.collection-group-header:hover {
+  background: #f8f5ef;
+  border-radius: 6px;
+}
+.collection-group-header .entity-glyph {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #f0ece5;
+  font-size: 9px;
+  font-weight: 800;
+}
+.collection-group-header strong {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.collection-group-header small {
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+.group-chevron {
+  flex: 0 0 auto;
+  width: 12px;
+  color: var(--ink-faint);
+  font-size: 13px;
+  line-height: 1;
+  text-align: center;
+}
+.collection-group .collection-item {
+  margin-left: 8px;
 }
 .collection-item {
   appearance: none;
@@ -7046,32 +7482,6 @@ onMount(() => {
 .entity-glyph-unknown {
   color: #837d73;
   background: #eeeae3 !important;
-}
-.collection-tabs {
-  display: flex;
-  gap: 4px;
-  margin: 0 10px 8px;
-  padding: 3px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface-muted);
-}
-.collection-tabs button {
-  flex: 1;
-  min-width: 0;
-  padding: 7px 5px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--ink-faint);
-  font-size: 10px;
-  cursor: pointer;
-}
-.collection-tabs button:hover,
-.collection-tabs button.active {
-  background: var(--surface);
-  color: var(--accent-dark);
-  box-shadow: var(--shadow-sm);
 }
 .collection-item .item-copy {
   display: grid;
@@ -7325,6 +7735,7 @@ onMount(() => {
   max-height: 100vh;
   overflow-y: auto;
   overscroll-behavior: contain;
+  z-index: 1;
 }
 .topbar {
   position: sticky;
@@ -7337,7 +7748,7 @@ onMount(() => {
 }
 .collection-panel,
 .editor-panel {
-  overflow: hidden;
+  overflow: clip;
 }
 .inspector-panel {
   overflow: visible;

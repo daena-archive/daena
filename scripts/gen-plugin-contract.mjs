@@ -163,6 +163,7 @@ const fieldTypeUnion = schemaToTs(manifestDefs.FieldDefinition?.properties?.type
 const MANIFEST_DEF_ORDER = [
   "Entrypoints",
   "Dependency",
+  "OneOfVariant",
   "MetadataFieldDefinition",
   "FieldDefinition",
   "SchemaContribution",

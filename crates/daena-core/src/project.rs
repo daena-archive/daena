@@ -668,6 +668,19 @@ fn validate_relationship_metadata(
                     .as_ref()
                     .is_some_and(|options| options.iter().any(|option| option == candidate))
             }),
+            "oneof" => {
+                let mut all_options = field.options.clone().unwrap_or_default();
+                if let Some(one_of) = &field.one_of {
+                    for variant in one_of {
+                        if let Some(opts) = &variant.options {
+                            all_options.extend(opts.clone());
+                        }
+                    }
+                }
+                value
+                    .as_str()
+                    .is_some_and(|candidate| all_options.iter().any(|opt| opt == candidate))
+            }
             _ => false,
         };
         if !valid {

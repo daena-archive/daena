@@ -37,6 +37,14 @@ function isSelected(id: string) {
 }
 
 function toggle(id: string) {
+  // For cardinality "one", treat as single-select (replace)
+  if ((field as any).cardinality === "one") {
+    if (selectedIds.includes(id)) onChange([]);
+    else onChange([id]);
+    query = "";
+    open = false;
+    return;
+  }
   const next = new Set(selectedIds);
   if (next.has(id)) next.delete(id);
   else next.add(id);

@@ -262,6 +262,18 @@ pub struct MetadataFieldDefinition {
     pub field_type: String,
     pub required: Option<bool>,
     pub options: Option<Vec<String>>,
+    #[serde(rename = "oneOf", default)]
+    pub one_of: Option<Vec<OneOfVariant>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct OneOfVariant {
+    pub label: String,
+    #[serde(rename = "type")]
+    pub field_type: String,
+    pub options: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -287,6 +299,10 @@ pub struct FieldDefinition {
     /// An enum field with multiple enabled values is stored as a string array.
     #[serde(default)]
     pub multiple: bool,
+    #[serde(default)]
+    pub cardinality: Option<String>,
+    #[serde(rename = "oneOf", default)]
+    pub one_of: Option<Vec<OneOfVariant>>,
     #[serde(rename = "metadataFields", default)]
     pub metadata_fields: Option<Vec<MetadataFieldDefinition>>,
 }
@@ -771,6 +787,52 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                     field.key
                 )));
             }
+            if let Some(card) = &field.cardinality {
+                if field.field_type != "relationship" {
+                    return Err(ContractError(format!(
+                        "field {}: cardinality is only allowed for relationship fields",
+                        field.key
+                    )));
+                }
+                if card != "one" && card != "many" {
+                    return Err(ContractError(format!(
+                        "field {}: cardinality must be 'one' or 'many'",
+                        field.key
+                    )));
+                }
+            }
+            if field.field_type == "oneof" {
+                let one_of = field.one_of.as_ref().ok_or_else(|| {
+                    ContractError(format!("oneof field {} must declare oneOf", field.key))
+                })?;
+                if one_of.is_empty() {
+                    return Err(ContractError(format!(
+                        "oneof field {} must have at least one variant",
+                        field.key
+                    )));
+                }
+                for variant in one_of {
+                    if variant.field_type == "relationship" || variant.field_type == "oneof" {
+                        return Err(ContractError(format!(
+                            "oneof variant for field {} cannot be relationship or oneof",
+                            field.key
+                        )));
+                    }
+                    if (variant.field_type == "enum" || variant.field_type == "oneof")
+                        && variant.options.is_none()
+                    {
+                        return Err(ContractError(format!(
+                            "oneof variant for field {} with type {} must declare options",
+                            field.key, variant.field_type
+                        )));
+                    }
+                }
+            } else if field.one_of.is_some() {
+                return Err(ContractError(format!(
+                    "field {}: oneOf is only allowed for oneof fields",
+                    field.key
+                )));
+            }
             validate_metadata_fields(
                 &field.field_type,
                 &field.key,
@@ -850,9 +912,21 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
             }
             let valid = match field.field_type.as_str() {
                 "text" | "entity-ref" => value.is_string(),
-                "relationship" => value
-                    .as_array()
-                    .is_some_and(|targets| targets.iter().all(serde_json::Value::is_string)),
+                "relationship" => {
+                    if field.cardinality.as_deref() == Some("one") {
+                        if value.is_string() {
+                            true
+                        } else if let Some(arr) = value.as_array() {
+                            arr.len() <= 1 && arr.iter().all(|v| v.is_string())
+                        } else {
+                            false
+                        }
+                    } else {
+                        value
+                            .as_array()
+                            .is_some_and(|targets| targets.iter().all(serde_json::Value::is_string))
+                    }
+                }
                 "number" => value.as_f64().is_some(),
                 "boolean" => value.is_boolean(),
                 "date" => value.is_string() || value.is_object(),
@@ -862,6 +936,32 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                         .as_ref()
                         .is_some_and(|options| options.contains(&candidate.to_owned()))
                 }),
+                "oneof" => {
+                    if let Some(one_of) = &field.one_of {
+                        let mut matches = 0;
+                        for variant in one_of {
+                            let variant_valid = match variant.field_type.as_str() {
+                                "text" | "entity-ref" => value.is_string(),
+                                "number" => value.as_f64().is_some(),
+                                "boolean" => value.is_boolean(),
+                                "date" => value.is_string() || value.is_object(),
+                                "enum" | "oneof" => value.as_str().is_some_and(|c| {
+                                    variant
+                                        .options
+                                        .as_ref()
+                                        .is_some_and(|o| o.contains(&c.to_owned()))
+                                }),
+                                _ => false,
+                            };
+                            if variant_valid {
+                                matches += 1;
+                            }
+                        }
+                        matches == 1
+                    } else {
+                        false
+                    }
+                }
                 _ => false,
             };
             if !valid {

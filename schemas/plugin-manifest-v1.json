@@ -267,6 +267,13 @@
     "FieldDefinition": {
       "additionalProperties": false,
       "properties": {
+        "cardinality": {
+          "enum": [
+            "one",
+            "many"
+          ],
+          "type": "string"
+        },
         "entityTypes": {
           "items": {
             "minLength": 1,
@@ -294,6 +301,12 @@
           "default": false,
           "description": "An enum field with multiple enabled values is stored as a string array.",
           "type": "boolean"
+        },
+        "oneOf": {
+          "items": {
+            "$ref": "#/$defs/OneOfVariant"
+          },
+          "type": "array"
         },
         "options": {
           "items": {
@@ -336,6 +349,7 @@
             "boolean",
             "date",
             "enum",
+            "oneof",
             "entity-ref",
             "relationship"
           ]
@@ -359,6 +373,12 @@
           "minLength": 1,
           "type": "string"
         },
+        "oneOf": {
+          "items": {
+            "$ref": "#/$defs/OneOfVariant"
+          },
+          "type": "array"
+        },
         "options": {
           "items": {
             "type": "string"
@@ -381,7 +401,8 @@
             "number",
             "boolean",
             "date",
-            "enum"
+            "enum",
+            "oneof"
           ]
         }
       },
@@ -525,6 +546,40 @@
           "type": "object"
         }
       ]
+    },
+    "OneOfVariant": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "type": {
+          "enum": [
+            "text",
+            "number",
+            "boolean",
+            "date",
+            "enum",
+            "oneof",
+            "entity-ref",
+            "relationship"
+          ]
+        }
+      },
+      "required": [
+        "label",
+        "type"
+      ],
+      "type": "object"
     },
     "PluginKind": {
       "enum": [

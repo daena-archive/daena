@@ -23,9 +23,10 @@ type Metadata = Record<string, unknown>;
 type MetadataField = {
   key: string;
   label: string;
-  type: "text" | "number" | "boolean" | "date" | "enum";
+  type: "text" | "number" | "boolean" | "date" | "enum" | "oneof";
   required?: boolean | null;
   options?: string[] | null;
+  oneOf?: Array<{ label: string; type: string; options?: string[] | null }>;
 };
 type RelationshipDefinition = FieldDefinition & { metadataFields?: MetadataField[] };
 
@@ -106,6 +107,13 @@ function invalidMessage(field: MetadataField, value: unknown): string {
   if (field.type === "date" && !isValidDate(value)) return `${field.label} must be a valid date.`;
   if (field.type === "enum" && !field.options?.includes(String(value))) {
     return `${field.label} must use one of the configured options.`;
+  }
+  if ((field as any).type === "oneof") {
+    const opts =
+      field.options ??
+      ((field as any).oneOf as Array<{ options?: string[] }> | undefined)?.flatMap((v) => v.options ?? []) ??
+      [];
+    if (!opts.includes(String(value))) return `${field.label} must use one of the configured options.`;
   }
   return "";
 }
@@ -486,6 +494,20 @@ onMount(() => {
                     onchange={(event) => setValue(field.key, (event.currentTarget as HTMLSelectElement).value)}>
                     <option value="">Choose {field.label.toLowerCase()}</option>
                     {#each field.options ?? [] as option}<option value={option}>{option}</option>{/each}
+                  </select>
+                </label>
+              {:else if (field as any).type === "oneof"}
+                <label for={`relationship-${relationship.id}-${field.key}`}>
+                  <span>{field.label}{#if field.required}<b aria-hidden="true"> *</b>{/if}</span>
+                  <select
+                    id={`relationship-${relationship.id}-${field.key}`}
+                    value={textValue(field.key)}
+                    onchange={(event) => setValue(field.key, (event.currentTarget as HTMLSelectElement).value)}>
+                    <option value="">Choose {field.label.toLowerCase()}</option>
+                    {#each field.options ?? [] as option}<option value={option}>{option}</option>{/each}
+                    {#each ((field as any).oneOf ?? []) as variant}
+                      {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option>{/each}
+                    {/each}
                   </select>
                 </label>
               {:else}

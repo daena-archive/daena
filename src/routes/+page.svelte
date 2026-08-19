@@ -561,6 +561,7 @@ function fieldDisplayValue(value: unknown): string {
 function fieldInputValue(definition: FieldDefinition, value: unknown): string | number | boolean | string[] {
   if (definition.type === "boolean") return value === true;
   if (definition.type === "number") return typeof value === "number" && Number.isFinite(value) ? value : "";
+  if ((definition as any).type === "oneof") return fieldDisplayValue(value);
   if (definition.multiple) return Array.isArray(value) ? value.map((item) => String(item)) : [];
   return fieldDisplayValue(value);
 }
@@ -571,6 +572,7 @@ function fieldValueForSave(definition: FieldDefinition, value: unknown) {
     return Number.isFinite(numberValue) ? numberValue : "";
   }
   if (definition.type === "boolean") return value === true || value === "true";
+  if ((definition as any).type === "oneof") return value;
   if (definition.multiple) return Array.isArray(value) ? value.map((item) => String(item)) : [];
   return value;
 }
@@ -588,6 +590,13 @@ function aiScalarValue(definition: FieldDefinition, raw: unknown): unknown | nul
   if (definition.type === "enum") {
     return typeof raw === "string" && definition.options?.includes(raw) ? raw : null;
   }
+  if ((definition as any).type === "oneof") {
+    const opts =
+      definition.options ??
+      ((definition as any).oneOf as Array<{ options?: string[] }> | undefined)?.flatMap((v) => v.options ?? []) ??
+      [];
+    return typeof raw === "string" && opts.includes(raw) ? raw : null;
+  }
   if (definition.type === "date") {
     if (typeof raw !== "string") return null;
     const date = parseCalendarDate(raw.trim());
@@ -596,10 +605,22 @@ function aiScalarValue(definition: FieldDefinition, raw: unknown): unknown | nul
   return typeof raw === "string" && raw.trim() ? raw : null;
 }
 function coerceAiFieldValue(definition: FieldDefinition, raw: unknown): unknown | null {
-  if (definition.multiple || definition.type === "relationship") {
-    if (!Array.isArray(raw) || raw.length === 0 || raw.length > 5) return null;
+  const isOne = (definition as any).cardinality === "one";
+  const isRelationship = definition.type === "relationship";
+  const isMultiple = definition.multiple || (isRelationship && !isOne);
+  if (isMultiple || isRelationship) {
+    // For cardinality "one", allow single string as well as array with 1
+    if (isOne && typeof raw === "string" && raw.trim()) {
+      return raw.trim();
+    }
+    if (!Array.isArray(raw) || raw.length === 0 || raw.length > 5) {
+      // For "one", also allow single string case already handled, so fail for array
+      if (isOne && typeof raw === "string") return null;
+      return null;
+    }
+    if (isOne && raw.length > 1) return null;
     const values = raw.map((item) =>
-      definition.type === "relationship"
+      isRelationship
         ? typeof item === "string" && item.trim()
           ? item
           : null
@@ -610,13 +631,21 @@ function coerceAiFieldValue(definition: FieldDefinition, raw: unknown): unknown 
   return aiScalarValue(definition, raw);
 }
 function aiJsonValueSchema(definition: FieldDefinition) {
+  const isOne = (definition as any).cardinality === "one";
   const scalarType = definition.type === "number" ? "number" : definition.type === "boolean" ? "boolean" : "string";
-  const scalar = {
+  const isOneOf = (definition as any).type === "oneof";
+  const enumOptions = isOneOf
+    ? ((definition as any).oneOf as Array<{ options?: string[] }> | undefined)?.flatMap((v) => v.options ?? []) ??
+      definition.options
+    : definition.options;
+  const scalar: any = {
     type: scalarType,
     ...(definition.type === "enum" && definition.options?.length ? { enum: definition.options } : {}),
+    ...(isOneOf && (enumOptions as string[])?.length ? { enum: enumOptions } : {}),
   };
-  return definition.multiple || definition.type === "relationship"
-    ? { type: "array", items: scalar, maxItems: 5, uniqueItems: true }
+  const isMulti = definition.multiple || (definition.type === "relationship" && !isOne);
+  return isMulti || definition.type === "relationship"
+    ? { type: "array", items: scalar, maxItems: isOne ? 1 : 5, uniqueItems: true }
     : scalar;
 }
 function suggestionDisplayValue(key: string, suggestion: AiFieldSuggestion) {
@@ -4027,6 +4056,16 @@ onMount(() => {
                         ><option value="">Choose {item.field.label.toLowerCase()}</option
                         >{#each item.field.options ?? [] as option}<option value={option}>{option}</option
                           >{/each}</select
+                      >{:else if (item.field as any).type === "oneof"}<select
+                        id={`create-${item.field.key}`}
+                        required={item.required}
+                        value={String(createFieldValues[item.field.key] ?? "")}
+                        onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}
+                        ><option value="">Choose {item.field.label.toLowerCase()}</option
+                        >{#each item.field.options ?? [] as option}<option value={option}>{option}</option>{/each}
+                        {#each ((item.field as any).oneOf ?? []) as variant}
+                          {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option>{/each}
+                        {/each}</select
                       >{:else if item.field.type === "entity-ref"}<select
                         id={`create-${item.field.key}`}
                         required={item.required}
@@ -5365,6 +5404,15 @@ onMount(() => {
                         : String(fields[definition.key] ?? "")}
                       onchange={(event) => updateField(definition, event)}
                       >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}</select
+                    >{:else if (definition as any).type === "oneof"}<select
+                      aria-label={definition.label}
+                      value={String(fields[definition.key] ?? "")}
+                      onchange={(event) => updateField(definition, event)}
+                      ><option value="">Choose {definition.label.toLowerCase()}</option
+                      >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}
+                      {#each ((definition as any).oneOf ?? []) as variant}
+                        {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option>{/each}
+                      {/each}</select
                     >{:else}<input
                       type="text"
                       value={fieldInputValue(definition, fields[definition.key])}

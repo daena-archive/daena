@@ -194,7 +194,7 @@ fn manifest_schema() -> Value {
         &mut root,
         "MetadataFieldDefinition",
         "type",
-        json!({"enum": ["text", "number", "boolean", "date", "enum"]}),
+        json!({"enum": ["text", "number", "boolean", "date", "enum", "oneof"]}),
     );
     {
         let defs = defs_entry(&mut root, "MetadataFieldDefinition");
@@ -211,7 +211,7 @@ fn manifest_schema() -> Value {
         &mut root,
         "FieldDefinition",
         "type",
-        json!({"enum": ["text", "number", "boolean", "date", "enum", "entity-ref", "relationship"]}),
+        json!({"enum": ["text", "number", "boolean", "date", "enum", "oneof", "entity-ref", "relationship"]}),
     );
     rule_on_prop(&mut root, "FieldDefinition", "key", "pattern", 0);
     {
@@ -252,6 +252,30 @@ fn manifest_schema() -> Value {
         "FieldDefinition",
         "metadataFields",
         json!({"type": "array", "items": ref_to("MetadataFieldDefinition")}),
+    );
+    set_prop(
+        &mut root,
+        "FieldDefinition",
+        "cardinality",
+        json!({"type": "string", "enum": ["one", "many"]}),
+    );
+    set_prop(
+        &mut root,
+        "FieldDefinition",
+        "oneOf",
+        json!({"type": "array", "items": ref_to("OneOfVariant")}),
+    );
+    set_prop(
+        &mut root,
+        "OneOfVariant",
+        "type",
+        json!({"enum": ["text", "number", "boolean", "date", "enum", "oneof", "entity-ref", "relationship"]}),
+    );
+    set_prop(
+        &mut root,
+        "MetadataFieldDefinition",
+        "oneOf",
+        json!({"type": "array", "items": ref_to("OneOfVariant")}),
     );
 
     // EntityTemplate.

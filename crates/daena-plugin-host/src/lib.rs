@@ -3042,7 +3042,43 @@ fn field_value_matches(
             .as_str()
             .zip(field.options.as_ref())
             .is_some_and(|(value, options)| options.iter().any(|option| option == value)),
-        "relationship" => value.is_array(),
+        "oneof" => {
+            if let Some(one_of) = &field.one_of {
+                let mut matches = 0;
+                for variant in one_of {
+                    let valid = match variant.field_type.as_str() {
+                        "text" | "entity-ref" => value.is_string(),
+                        "number" => value.is_number(),
+                        "boolean" => value.is_boolean(),
+                        "date" => value.is_string() || value.is_object(),
+                        "enum" | "oneof" => value.as_str().is_some_and(|v| {
+                            variant
+                                .options
+                                .as_ref()
+                                .is_some_and(|o| o.contains(&v.to_owned()))
+                        }),
+                        _ => false,
+                    };
+                    if valid {
+                        matches += 1;
+                    }
+                }
+                matches == 1
+            } else {
+                false
+            }
+        }
+        "relationship" => {
+            if field.cardinality.as_deref() == Some("one") {
+                if let Some(arr) = value.as_array() {
+                    arr.len() <= 1 && arr.iter().all(|v| v.is_string())
+                } else {
+                    value.is_string()
+                }
+            } else {
+                value.is_array()
+            }
+        }
         _ => false,
     }
 }

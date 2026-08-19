@@ -13,11 +13,12 @@ const ALLOWED_FIELD_TYPES: &[&str] = &[
     "boolean",
     "date",
     "enum",
+    "oneof",
     "entity-ref",
     "relationship",
 ];
 
-const ALLOWED_METADATA_FIELD_TYPES: &[&str] = &["text", "number", "boolean", "date", "enum"];
+const ALLOWED_METADATA_FIELD_TYPES: &[&str] = &["text", "number", "boolean", "date", "enum", "oneof"];
 
 /// Validate the relationship-only metadata declaration attached to a field.
 pub fn validate_metadata_fields(
@@ -57,6 +58,34 @@ pub fn validate_metadata_fields(
                 "relationship metadata enum field requires non-empty options: {}",
                 field.key
             ));
+        }
+        if field.field_type == "oneof" {
+            let one_of = field
+                .one_of
+                .as_ref()
+                .ok_or_else(|| format!("relationship metadata oneof field {} must declare oneOf", field.key))?;
+            if one_of.is_empty() {
+                return Err(format!(
+                    "relationship metadata oneof field {} must have at least one variant",
+                    field.key
+                ));
+            }
+            for variant in one_of {
+                if variant.field_type == "relationship" || variant.field_type == "oneof" {
+                    return Err(format!(
+                        "oneof variant for field {} cannot be relationship or oneof",
+                        field.key
+                    ));
+                }
+                if (variant.field_type == "enum" || variant.field_type == "oneof")
+                    && variant.options.is_none()
+                {
+                    return Err(format!(
+                        "relationship metadata oneof variant for field {} with type {} must declare options",
+                        field.key, variant.field_type
+                    ));
+                }
+            }
         }
     }
     Ok(())
@@ -431,6 +460,54 @@ pub fn validate_module_overlay(
                     field.key
                 ));
             }
+        }
+        if field.field_type == "oneof" {
+            let one_of = field
+                .one_of
+                .as_ref()
+                .ok_or_else(|| format!("custom oneof field requires oneOf: {}", field.key))?;
+            if one_of.is_empty() {
+                return Err(format!(
+                    "custom oneof field oneOf must be non-empty: {}",
+                    field.key
+                ));
+            }
+            for variant in one_of {
+                if variant.field_type == "relationship" || variant.field_type == "oneof" {
+                    return Err(format!(
+                        "oneof variant for field {} cannot be relationship or oneof",
+                        field.key
+                    ));
+                }
+                if (variant.field_type == "enum" || variant.field_type == "oneof")
+                    && variant.options.is_none()
+                {
+                    return Err(format!(
+                        "oneof variant for field {} with type {} must declare options",
+                        field.key, variant.field_type
+                    ));
+                }
+            }
+        }
+        if let Some(card) = &field.cardinality {
+            if field.field_type != "relationship" {
+                return Err(format!(
+                    "field {}: cardinality is only allowed for relationship fields",
+                    field.key
+                ));
+            }
+            if card != "one" && card != "many" {
+                return Err(format!(
+                    "field {}: cardinality must be 'one' or 'many'",
+                    field.key
+                ));
+            }
+        }
+        if field.field_type == "relationship" && field.one_of.is_some() {
+            return Err(format!(
+                "field {}: oneOf is only allowed for oneof fields",
+                field.key
+            ));
         }
         validate_metadata_fields(
             &field.field_type,

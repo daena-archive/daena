@@ -132,6 +132,8 @@ The initial capability vocabulary is:
 | `relationship.read`                  | Read relationships involving visible entities.                                         |
 | `relationship.write`                 | Create relationships using registered relationship types.                              |
 | `asset.read:self`                    | Read metadata for caller-owned assets; bytes require an explicit broker request.       |
+| `asset.read:shared`                  | Read project-visible assets (`referenceScope = project`) from another entity/namespace when the owning asset allows it. |
+| `asset.write:self`                   | Update metadata or replace bytes for caller-owned assets.                              |
 | `asset.register`                      | Register a plugin-supplied asset into a caller-owned namespace.                       |
 | `search.query`                       | Query the core search service.                                                         |
 | `event.publish:<type>`               | Publish a declared event type.                                                         |

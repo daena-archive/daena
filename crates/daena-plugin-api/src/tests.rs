@@ -109,6 +109,7 @@ fn relationship_metadata_fields_require_valid_enum_options() {
         field_type: "enum".into(),
         required: None,
         options: Some(Vec::new()),
+        one_of: None,
     }]);
     assert!(validate_manifest(&manifest).is_err());
 
@@ -137,6 +138,7 @@ fn non_relationship_field_rejects_metadata_fields() {
         field_type: "text".into(),
         required: None,
         options: None,
+        one_of: None,
     }]);
     assert!(validate_manifest(&manifest).is_err());
 }
@@ -152,6 +154,7 @@ fn relationship_metadata_field_keys_are_unique() {
             field_type: "date".into(),
             required: None,
             options: None,
+            one_of: None,
         },
         MetadataFieldDefinition {
             key: "validFrom".into(),
@@ -159,6 +162,7 @@ fn relationship_metadata_field_keys_are_unique() {
             field_type: "date".into(),
             required: None,
             options: None,
+            one_of: None,
         },
     ]);
     assert!(validate_manifest(&manifest).is_err());

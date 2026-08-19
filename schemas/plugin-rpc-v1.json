@@ -110,6 +110,26 @@
       ],
       "type": "object"
     },
+    "AssetDeletePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "assetId": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "assetId",
+        "expectedRevision",
+        "namespace"
+      ],
+      "type": "object"
+    },
     "AssetListPayload": {
       "additionalProperties": false,
       "properties": {
@@ -125,6 +145,44 @@
       },
       "required": [
         "entityId"
+      ],
+      "type": "object"
+    },
+    "AssetMetadataUpdatePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "assetId": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "string"
+        },
+        "filename": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "referenceScope": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "role": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "assetId",
+        "expectedRevision",
+        "namespace"
       ],
       "type": "object"
     },
@@ -1671,6 +1729,38 @@
           "if": {
             "properties": {
               "method": {
+                "const": "asset.update"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/AssetMetadataUpdatePayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "asset.delete"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/AssetDeletePayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
                 "const": "asset.read.begin"
               }
             }
@@ -2267,6 +2357,8 @@
             "relationship.delete",
             "asset.list",
             "asset.register",
+            "asset.update",
+            "asset.delete",
             "asset.read.begin",
             "asset.replace.begin",
             "asset.replace.commit",
@@ -2428,6 +2520,15 @@
       "payload": "AiRequestStartPayload",
       "requestId": "envelope"
     },
+    "asset.delete": {
+      "payload": "AssetDeletePayload",
+      "requestId": "envelope",
+      "requiredPayload": [
+        "assetId",
+        "expectedRevision",
+        "namespace"
+      ]
+    },
     "asset.list": {
       "payload": "AssetListPayload",
       "requestId": "envelope"
@@ -2468,6 +2569,15 @@
     "asset.transfer.cancel": {
       "payload": "AssetTransferCancelPayload",
       "requestId": "envelope"
+    },
+    "asset.update": {
+      "payload": "AssetMetadataUpdatePayload",
+      "requestId": "envelope",
+      "requiredPayload": [
+        "assetId",
+        "expectedRevision",
+        "namespace"
+      ]
     },
     "document.list": {
       "payload": "DocumentListPayload",
@@ -2560,15 +2670,30 @@
     },
     "maps.layer.create": {
       "payload": "MapsLayerCreatePayload",
-      "requestId": "envelope"
+      "requestId": "envelope",
+      "requiredPayload": [
+        "expectedRevision",
+        "mapEntityId",
+        "name"
+      ]
     },
     "maps.layer.delete": {
       "payload": "MapsLayerDeletePayload",
-      "requestId": "envelope"
+      "requestId": "envelope",
+      "requiredPayload": [
+        "expectedRevision",
+        "layerId",
+        "mapEntityId"
+      ]
     },
     "maps.layer.update": {
       "payload": "MapsLayerUpdatePayload",
-      "requestId": "envelope"
+      "requestId": "envelope",
+      "requiredPayload": [
+        "expectedRevision",
+        "layerId",
+        "mapEntityId"
+      ]
     },
     "maps.locations.create_and_link": {
       "payload": "MapsLocationsCreateAndLinkPayload",

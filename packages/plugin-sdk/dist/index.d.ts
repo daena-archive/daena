@@ -1,4 +1,4 @@
-import type { EntityRecord, Event, Migration, MigrationAuthoringOptions, MigrationOperation, PluginManifest, PluginRpcError, PluginBootstrap, Service, MutationOptions, AiRequestStartPayload, AiRequestIdPayload } from "./generated.js";
+import type { EntityRecord, Event, Migration, MigrationAuthoringOptions, MigrationOperation, PluginManifest, PluginRpcError, PluginBootstrap, Service, MutationOptions, AiRequestStartPayload, AiRequestIdPayload, AssetMetadataUpdatePayload, AssetDeletePayload } from "./generated.js";
 export * from "./generated.js";
 export type { MetadataFieldDefinition } from "./generated.js";
 export * from "./maps.js";
@@ -31,6 +31,8 @@ export interface PluginRpcClient {
     pollEvents<T = unknown>(name: string, version: number): Promise<T[]>;
     callService<T = unknown>(name: string, major: number, payload: unknown, deadlineMs?: number): Promise<T>;
     beginAssetRead(assetId: string, namespace: string): Promise<AssetReadHandle>;
+    updateAssetMetadata(input: AssetMetadataUpdatePayload, options?: MutationOptions): Promise<unknown>;
+    deleteAsset(input: AssetDeletePayload, options?: MutationOptions): Promise<void>;
     beginAssetReplace(input: AssetReplaceRequest, options?: MutationOptions): Promise<AssetReplaceHandle>;
     commitAssetReplace(handle: string, contentHash: string, options?: MutationOptions): Promise<unknown>;
     cancelAssetTransfer(handle: string): Promise<void>;

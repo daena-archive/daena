@@ -30,6 +30,20 @@ fn manifest_rejects_unknown_fields_and_duplicate_keys() {
 }
 
 #[test]
+fn canonical_assets_without_metadata_use_restrictive_defaults() {
+    let file: AssetsFile = parse_json(
+        Path::new("entities/id/assets.json"),
+        br#"{"assets":[{"id":"asset-1","namespace":"lore","filename":"portrait.png","contentHash":"sha256:abc","size":3,"mimeType":"image/png","path":"assets/images/portrait.png","createdAt":"now"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(file.assets[0].role, crate::project::ASSET_ROLE_ATTACHMENT);
+    assert_eq!(
+        file.assets[0].reference_scope,
+        crate::project::ASSET_REFERENCE_SCOPE_ENTITY
+    );
+}
+
+#[test]
 fn checkpoint_manifest_is_deterministic_and_rejects_tampering() {
     let root = std::env::temp_dir().join(format!("daena-checkpoint-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&root).unwrap();

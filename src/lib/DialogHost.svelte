@@ -101,7 +101,7 @@ function submitPrompt() {
 .dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  z-index: 300;
   display: grid;
   place-items: center;
   padding: 20px;

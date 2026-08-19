@@ -263,6 +263,8 @@ the broker permits the operation.
 | `field.read:shared` | Read fields explicitly shared by another plugin. |
 | `relationship.read` / `relationship.write` | Read or create relationships. |
 | `asset.read:self` | Read metadata for plugin-owned assets. |
+| `asset.read:shared` | Read project-visible assets (`referenceScope = project`) owned by another entity/namespace when authorized. |
+| `asset.write:self` | Update metadata or replace bytes for plugin-owned assets. |
 | `asset.register` | Register a plugin-supplied asset into a caller-owned namespace. |
 | `search.query` | Query the project search service. |
 | `event.publish:<type>` / `event.subscribe:<type>` | Publish or subscribe to declared events. |

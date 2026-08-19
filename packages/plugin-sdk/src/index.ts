@@ -12,6 +12,8 @@ import type {
   MutationOptions,
   AiRequestStartPayload,
   AiRequestIdPayload,
+  AssetMetadataUpdatePayload,
+  AssetDeletePayload,
 } from "./generated.js";
 
 export * from "./generated.js";
@@ -49,6 +51,8 @@ export interface PluginRpcClient {
   pollEvents<T = unknown>(name: string, version: number): Promise<T[]>;
   callService<T = unknown>(name: string, major: number, payload: unknown, deadlineMs?: number): Promise<T>;
   beginAssetRead(assetId: string, namespace: string): Promise<AssetReadHandle>;
+  updateAssetMetadata(input: AssetMetadataUpdatePayload, options?: MutationOptions): Promise<unknown>;
+  deleteAsset(input: AssetDeletePayload, options?: MutationOptions): Promise<void>;
   beginAssetReplace(input: AssetReplaceRequest, options?: MutationOptions): Promise<AssetReplaceHandle>;
   commitAssetReplace(handle: string, contentHash: string, options?: MutationOptions): Promise<unknown>;
   cancelAssetTransfer(handle: string): Promise<void>;
@@ -333,6 +337,10 @@ export function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcC
       callTransport<T>(transport, "service.call", { name, major, payload, deadlineMs }),
     beginAssetRead: (assetId, namespace) =>
       callTransport<AssetReadHandle>(transport, "asset.read.begin", { assetId, namespace }),
+    updateAssetMetadata: (input, options) =>
+      callTransport<unknown>(transport, "asset.update", input, options?.requestId),
+    deleteAsset: (input, options) =>
+      callTransport<void>(transport, "asset.delete", input, options?.requestId),
     beginAssetReplace: (input, options) =>
       callTransport<AssetReplaceHandle>(transport, "asset.replace.begin", input, options?.requestId),
     commitAssetReplace: (handle, contentHash, options) =>
@@ -377,9 +385,12 @@ const knownCapabilities = new Set([
   "field.read:self",
   "field.read:shared",
   "field.write:self",
+  "record.read:self",
+  "record.write:self",
   "relationship.read",
   "relationship.write",
   "asset.read:self",
+  "asset.read:shared",
   "asset.write:self",
   "asset.register",
   "search.query",

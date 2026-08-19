@@ -54,12 +54,14 @@ export type AiRetrievalMode = "none" | "explicit_only" | "related" | "project";
 export interface AiRetrievalPolicyPayload { allowedSourceKinds: string[]; includeSharedFields: boolean; mode: AiRetrievalMode; passageCount: number; query?: string | null; relationshipDepth: number; seedIds: string[] }
 export interface AiRequestIdPayload { requestId: string }
 export interface AiRequestStartPayload { deadlineMs?: number | null; immediateContext: unknown; operation: string; outputContract?: unknown; retrievalPolicy?: AiRetrievalPolicyPayload | null; taskId: string; userInstruction: string }
+export interface AssetDeletePayload { assetId: string; expectedRevision: string; namespace: string }
 export interface AssetListPayload { entityId: string; namespace?: string | null }
 export interface AssetReadBeginPayload { assetId: string; namespace: string }
 export interface AssetRegisterPayload { content_hash: string; entity_id: string; expectedRevision: string; filename: string; mime_type: string; namespace: string; path: string; size: number }
 export interface AssetReplaceBeginPayload { assetId: string; expectedRevision: string; mimeType: string; namespace: string; size: number }
 export interface AssetReplaceCommitPayload { contentHash: string; handle: string }
 export interface AssetTransferCancelPayload { handle: string }
+export interface AssetMetadataUpdatePayload { assetId: string; expectedRevision: string; filename?: string | null; namespace: string; referenceScope?: string | null; role?: string | null }
 export interface DocumentListPayload { entityId: string }
 export interface DocumentSavePayload { body: string; entityId: string; expectedRevision: string; format?: string | null }
 export interface EntityCreatePayload { document?: EntityCreateDocument | null; fields?: EntityCreateField[]; name: string; relationships?: EntityCreateRelationship[]; type?: string | null }
@@ -110,12 +112,14 @@ export interface BrokerMethodPayloads {
   "ai.request.poll": AiRequestIdPayload;
   "ai.request.result": AiRequestIdPayload;
   "ai.request.start": AiRequestStartPayload;
+  "asset.delete": AssetDeletePayload;
   "asset.list": AssetListPayload;
   "asset.read.begin": AssetReadBeginPayload;
   "asset.register": AssetRegisterPayload;
   "asset.replace.begin": AssetReplaceBeginPayload;
   "asset.replace.commit": AssetReplaceCommitPayload;
   "asset.transfer.cancel": AssetTransferCancelPayload;
+  "asset.update": AssetMetadataUpdatePayload;
   "document.list": DocumentListPayload;
   "document.save": DocumentSavePayload;
   "entity.create": EntityCreatePayload;

@@ -326,6 +326,18 @@ pub const RPC_METHOD_CATALOG: &[RpcMethodDef] = &[
         capability: RpcCapability::OwnedNamespace(&["asset.register"]),
     },
     RpcMethodDef {
+        name: "asset.update",
+        payload_schema: "AssetMetadataUpdatePayload",
+        requires_revision: true,
+        capability: RpcCapability::OwnedNamespace(&["asset.write:self"]),
+    },
+    RpcMethodDef {
+        name: "asset.delete",
+        payload_schema: "AssetDeletePayload",
+        requires_revision: true,
+        capability: RpcCapability::OwnedNamespace(&["asset.write:self"]),
+    },
+    RpcMethodDef {
         name: "asset.read.begin",
         payload_schema: "AssetReadBeginPayload",
         requires_revision: false,
@@ -442,19 +454,19 @@ pub const RPC_METHOD_CATALOG: &[RpcMethodDef] = &[
     RpcMethodDef {
         name: "maps.layer.create",
         payload_schema: "MapsLayerCreatePayload",
-        requires_revision: false,
+        requires_revision: true,
         capability: RpcCapability::Static(&["asset.write:self", "field.write:self"]),
     },
     RpcMethodDef {
         name: "maps.layer.delete",
         payload_schema: "MapsLayerDeletePayload",
-        requires_revision: false,
+        requires_revision: true,
         capability: RpcCapability::Static(&["asset.write:self", "field.write:self"]),
     },
     RpcMethodDef {
         name: "maps.layer.update",
         payload_schema: "MapsLayerUpdatePayload",
-        requires_revision: false,
+        requires_revision: true,
         capability: RpcCapability::Static(&["field.write:self"]),
     },
     RpcMethodDef {
@@ -583,7 +595,7 @@ mod tests {
             assert!(!entry.payload_schema.is_empty());
             assert!(!entry.name.is_empty());
         }
-        assert_eq!(RPC_METHOD_CATALOG.len(), 56);
+        assert_eq!(RPC_METHOD_CATALOG.len(), 58);
         let revision_methods = RPC_METHOD_CATALOG
             .iter()
             .filter(|entry| entry.requires_revision)
@@ -602,8 +614,13 @@ mod tests {
                 "relationship.update",
                 "relationship.delete",
                 "asset.register",
+                "asset.update",
+                "asset.delete",
                 "asset.replace.begin",
                 "maps.vector.replace.begin",
+                "maps.layer.create",
+                "maps.layer.delete",
+                "maps.layer.update",
             ]
         );
     }

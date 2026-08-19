@@ -114,6 +114,13 @@
       "resource": "plugin.assets"
     },
     {
+      "id": "asset.read:shared",
+      "operations": [
+        "read-shared"
+      ],
+      "resource": "plugin.assets"
+    },
+    {
       "id": "asset.write:self",
       "operations": [
         "replace"

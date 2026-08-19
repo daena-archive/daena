@@ -52,6 +52,17 @@ the validated metadata JSON, including metadata keys that are not currently
 rendered by the active UI, so a plugin schema change does not silently erase
 authored relationship context.
 
+`entities/<entity-uuid>/assets.json` stores attachment identity and typed
+metadata separately from the native bytes. `role` is `attachment` or
+`profile`; `referenceScope` is `entity` or `project`. At most one profile asset
+may exist for an entity and owning namespace, and profile media is restricted
+to supported raster image types. Renaming changes the portable asset path but
+not the asset UUID or content hash. Replacing bytes preserves the filename,
+role, reference scope, and UUID. References use the asset UUID;
+`referenceScope` records whether cross-entity consumers may offer the asset as
+a reference target. It never grants byte-read access or bypasses namespace
+authorization.
+
 `checkpoint.json` is generated output and records the portable format, project
 identity, content generation, and the sorted path, size, and SHA-256 digest of
 every other portable file. It is written after the complete checkpoint has
@@ -99,6 +110,10 @@ has changed. Derived-only maintenance does not create a portable generation.
 Request IDs make retries idempotent. Reusing a request ID with different input
 is a conflict. Revision-protected updates, deletes, document saves, field and
 relationship changes, and asset operations reject stale revisions.
+Metadata-only asset updates do not read or rewrite the native bytes. Trusted
+desktop file replacement streams generic attachments into content-addressed
+runtime storage; map raster replacements still load the bounded image for
+dimension and format validation.
 
 ## 5. Checkpoint export
 

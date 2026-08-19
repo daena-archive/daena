@@ -30,6 +30,7 @@ pub const KNOWN_CAPABILITIES: &[&str] = &[
     "relationship.read",
     "relationship.write",
     "asset.read:self",
+    "asset.read:shared",
     "asset.write:self",
     "asset.register",
     "search.query",
@@ -140,6 +141,12 @@ pub const CAPABILITY_REGISTRY: &[CapabilityEntry] = &[
         id: "asset.read:self",
         resource: "plugin.assets",
         operations: &["read-metadata"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "asset.read:shared",
+        resource: "plugin.assets",
+        operations: &["read-shared"],
         confirmation: None,
     },
     CapabilityEntry {

@@ -2935,7 +2935,12 @@ fn validate_schema_resource(
                 ));
             }
         }
-        "asset.list" | "asset.register" | "asset.read.begin" | "asset.replace.begin" => {
+        "asset.list"
+        | "asset.register"
+        | "asset.update"
+        | "asset.delete"
+        | "asset.read.begin"
+        | "asset.replace.begin" => {
             let namespace = payload
                 .get("namespace")
                 .and_then(serde_json::Value::as_str)

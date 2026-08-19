@@ -829,6 +829,8 @@ mod tests {
                 target_entity_types: None,
                 shared: false,
                 multiple: false,
+                cardinality: None,
+                one_of: None,
                 metadata_fields: None,
             }],
             ..ModuleSchemaOverlay::default()
@@ -854,6 +856,8 @@ mod tests {
                 target_entity_types: None,
                 shared: false,
                 multiple: false,
+                cardinality: None,
+                one_of: None,
                 metadata_fields: None,
             }],
             ..ModuleSchemaOverlay::default()
@@ -879,6 +883,8 @@ mod tests {
                 target_entity_types: None,
                 shared: false,
                 multiple: false,
+                cardinality: None,
+                one_of: None,
                 metadata_fields: None,
             }],
             ..ModuleSchemaOverlay::default()
@@ -929,6 +935,8 @@ mod tests {
                 target_entity_types: None,
                 shared: false,
                 multiple: false,
+                cardinality: None,
+                one_of: None,
                 metadata_fields: None,
             }],
             custom_templates: vec![EntityTemplate {
@@ -978,6 +986,8 @@ mod tests {
                 target_entity_types: None,
                 shared: false,
                 multiple: false,
+                cardinality: None,
+                one_of: None,
                 metadata_fields: None,
             }],
             ..ModuleSchemaOverlay::default()
@@ -1073,6 +1083,8 @@ mod tests {
                 target_entity_types: None,
                 shared: false,
                 multiple: false,
+                cardinality: None,
+                one_of: None,
                 metadata_fields: None,
             }],
             custom_templates: vec![EntityTemplate {

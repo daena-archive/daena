@@ -159,6 +159,81 @@ pub struct AssetReplaceInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetFileReplaceInput {
+    pub asset_id: String,
+    pub source_path: String,
+    pub mime_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetMetadataUpdate {
+    pub asset_id: String,
+    pub filename: Option<String>,
+    pub role: Option<String>,
+    pub reference_scope: Option<String>,
+}
+
+pub const ASSET_ROLE_ATTACHMENT: &str = "attachment";
+pub const ASSET_ROLE_PROFILE: &str = "profile";
+pub const ASSET_REFERENCE_SCOPE_ENTITY: &str = "entity";
+pub const ASSET_REFERENCE_SCOPE_PROJECT: &str = "project";
+
+fn validated_asset_filename(filename: &str) -> Result<String, CoreError> {
+    let filename = filename.trim();
+    if filename.is_empty()
+        || matches!(filename, "." | "..")
+        || filename.contains('/')
+        || filename.contains('\\')
+    {
+        return Err(CoreError::Validation("asset filename is invalid".into()));
+    }
+    Ok(filename.into())
+}
+
+fn validate_asset_role(role: &str) -> Result<(), CoreError> {
+    if matches!(role, ASSET_ROLE_ATTACHMENT | ASSET_ROLE_PROFILE) {
+        Ok(())
+    } else {
+        Err(CoreError::Validation(format!(
+            "unsupported asset role: {role}"
+        )))
+    }
+}
+
+fn validate_asset_reference_scope(reference_scope: &str) -> Result<(), CoreError> {
+    if matches!(
+        reference_scope,
+        ASSET_REFERENCE_SCOPE_ENTITY | ASSET_REFERENCE_SCOPE_PROJECT
+    ) {
+        Ok(())
+    } else {
+        Err(CoreError::Validation(format!(
+            "unsupported asset reference scope: {reference_scope}"
+        )))
+    }
+}
+
+fn asset_can_be_profile_media(mime_type: &str) -> bool {
+    matches!(
+        mime_type,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    )
+}
+
+fn renamed_asset_path(asset: &Asset, filename: &str) -> Result<String, CoreError> {
+    let (parent, _) = asset
+        .path
+        .rsplit_once('/')
+        .ok_or_else(|| CoreError::Validation("asset path has no parent directory".into()))?;
+    if parent.is_empty() {
+        return Err(CoreError::Validation(
+            "asset path has no parent directory".into(),
+        ));
+    }
+    Ok(format!("{parent}/{}-{filename}", asset.id))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Asset {
     pub id: String,
     pub entity_id: String,
@@ -169,6 +244,8 @@ pub struct Asset {
     pub mime_type: String,
     pub path: String,
     pub created_at: String,
+    pub role: String,
+    pub reference_scope: String,
     #[serde(default)]
     pub revision: String,
 }
@@ -981,7 +1058,7 @@ fn ensure_runtime_asset(
 }
 
 const RUNTIME_STORAGE_ROLE: &str = "daena.runtime";
-const RUNTIME_SCHEMA_VERSION: i64 = 5;
+const RUNTIME_SCHEMA_VERSION: i64 = 6;
 const EXPORTER_CONTRACT_VERSION: &str = "2";
 const BACKGROUND_EXPORT_IDLE_DELAY: Duration = Duration::from_secs(2);
 const BACKGROUND_EXPORT_MAX_DELAY: Duration = Duration::from_secs(30);
@@ -2247,7 +2324,7 @@ impl ProjectStore {
 
     fn revision_for_asset(&self, id: &str) -> Result<String, CoreError> {
         let value = self.connection.query_row(
-            "SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets WHERE id=?1",
+            "SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope FROM assets WHERE id=?1",
             params![id],
             |row| {
                 Ok((
@@ -2260,6 +2337,8 @@ impl ProjectStore {
                     row.get::<_, String>(6)?,
                     row.get::<_, String>(7)?,
                     row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
                 ))
             },
         )?;
@@ -2277,6 +2356,8 @@ impl ProjectStore {
             &asset.mime_type,
             &asset.path,
             &asset.created_at,
+            &asset.role,
+            &asset.reference_scope,
         ))
     }
 
@@ -3705,13 +3786,14 @@ impl ProjectStore {
               CREATE TABLE IF NOT EXISTS module_records(id TEXT PRIMARY KEY, module_id TEXT NOT NULL, collection TEXT NOT NULL, owner_entity_id TEXT NOT NULL REFERENCES entities(id), value TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(module_id, collection, id));
               CREATE INDEX IF NOT EXISTS module_records_owner_idx ON module_records(module_id, collection, owner_entity_id, id);
               CREATE TABLE IF NOT EXISTS entity_fields(entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(entity_id, namespace, key));
-             CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, filename TEXT NOT NULL, content_hash TEXT NOT NULL, size INTEGER NOT NULL, mime_type TEXT NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, filename TEXT NOT NULL, content_hash TEXT NOT NULL, size INTEGER NOT NULL, mime_type TEXT NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'attachment' CHECK(role IN ('attachment','profile')), reference_scope TEXT NOT NULL DEFAULT 'entity' CHECK(reference_scope IN ('entity','project')));
              CREATE TABLE IF NOT EXISTS map_projection (map_entity_id TEXT PRIMARY KEY, provider TEXT NOT NULL, source_asset_id TEXT NOT NULL, source_path TEXT, source_hash TEXT);
              CREATE TABLE IF NOT EXISTS map_location_projection (location_id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, map_entity_id TEXT NOT NULL, label TEXT, role TEXT NOT NULL, anchor_kind TEXT NOT NULL, provider TEXT, feature_kind TEXT, feature_id TEXT, min_x REAL, min_y REAL, max_x REAL, max_y REAL, valid_from TEXT, valid_to TEXT, resolution TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS map_feature_projection (map_entity_id TEXT NOT NULL, feature_id TEXT NOT NULL, layer_id TEXT NOT NULL, kind TEXT NOT NULL, min_x REAL NOT NULL, min_y REAL NOT NULL, max_x REAL NOT NULL, max_y REAL NOT NULL, PRIMARY KEY (map_entity_id, feature_id));
              CREATE INDEX IF NOT EXISTS map_location_entity_idx ON map_location_projection(entity_id);
              CREATE INDEX IF NOT EXISTS map_location_map_idx ON map_location_projection(map_entity_id);
-             CREATE INDEX IF NOT EXISTS assets_entity_created_idx ON assets(entity_id,created_at);")?;
+             CREATE INDEX IF NOT EXISTS assets_entity_created_idx ON assets(entity_id,created_at);
+             CREATE UNIQUE INDEX IF NOT EXISTS assets_profile_namespace_idx ON assets(entity_id,namespace) WHERE role='profile';")?;
         self.ensure_map_location_projection_schema()?;
         self.connection.execute_batch("CREATE TABLE IF NOT EXISTS migration_history(module_id TEXT NOT NULL, migration_id TEXT NOT NULL, from_version INTEGER NOT NULL, to_version INTEGER NOT NULL, checksum TEXT NOT NULL, package_digest TEXT NOT NULL DEFAULT '', applied_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(module_id, migration_id)); CREATE TABLE IF NOT EXISTS plugin_backups(id TEXT PRIMARY KEY, module_id TEXT NOT NULL, from_package_version TEXT, to_package_version TEXT, data_version INTEGER NOT NULL, path TEXT NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS module_schema_overlays(module_id TEXT PRIMARY KEY, overlay_json TEXT NOT NULL);")?;
         for table in [
@@ -4417,6 +4499,8 @@ impl ProjectStore {
             mime_type: crate::maps::VECTOR_MIME.into(),
             path: source_path.clone(),
             created_at: now.clone(),
+            role: ASSET_ROLE_ATTACHMENT.into(),
+            reference_scope: ASSET_REFERENCE_SCOPE_ENTITY.into(),
             revision: String::new(),
         };
         let preview_asset = Asset {
@@ -4429,6 +4513,8 @@ impl ProjectStore {
             mime_type: mime_type.clone(),
             path: preview_path.clone(),
             created_at: now.clone(),
+            role: ASSET_ROLE_ATTACHMENT.into(),
+            reference_scope: ASSET_REFERENCE_SCOPE_ENTITY.into(),
             revision: String::new(),
         };
         let imported = ImportedImageMap {
@@ -4575,6 +4661,8 @@ impl ProjectStore {
             mime_type: crate::maps::VECTOR_MIME.into(),
             path: relative_path.clone(),
             created_at: now.clone(),
+            role: ASSET_ROLE_ATTACHMENT.into(),
+            reference_scope: ASSET_REFERENCE_SCOPE_ENTITY.into(),
             revision: String::new(),
         };
         let accepted = AcceptedVectorMap {
@@ -4723,6 +4811,8 @@ impl ProjectStore {
             mime_type: crate::maps::PHYSICAL_MIME.into(),
             path: relative_path.clone(),
             created_at: now.clone(),
+            role: ASSET_ROLE_ATTACHMENT.into(),
+            reference_scope: ASSET_REFERENCE_SCOPE_ENTITY.into(),
             revision: String::new(),
         };
         let accepted = AcceptedPhysicalMap {
@@ -4984,6 +5074,8 @@ impl ProjectStore {
             mime_type: "image/png".into(),
             path: relative_path.clone(),
             created_at: now.clone(),
+            role: ASSET_ROLE_ATTACHMENT.into(),
+            reference_scope: ASSET_REFERENCE_SCOPE_ENTITY.into(),
             revision: String::new(),
         };
         let request_id = self.request_id(request_id)?;
@@ -6842,7 +6934,7 @@ impl ProjectStore {
             .collect::<Result<Vec<_>, _>>()?;
         let assets = self
             .connection
-            .prepare("SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets ORDER BY entity_id,created_at,id")?
+            .prepare("SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope FROM assets ORDER BY entity_id,created_at,id")?
             .query_map([], |row| {
                 Ok(Asset {
                     id: row.get(0)?,
@@ -6854,6 +6946,8 @@ impl ProjectStore {
                     mime_type: row.get(6)?,
                     path: row.get(7)?,
                     created_at: row.get(8)?,
+                    role: row.get(9)?,
+                    reference_scope: row.get(10)?,
                     revision: String::new(),
                 })
             })?
@@ -7030,7 +7124,14 @@ impl ProjectStore {
             transaction.execute("INSERT INTO relationships(id,source_id,target_id,relationship_type,metadata) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET source_id=excluded.source_id,target_id=excluded.target_id,relationship_type=excluded.relationship_type,metadata=excluded.metadata", params![relationship.id, relationship.source_id, relationship.target_id, relationship.relationship_type, relationship.metadata])?;
         }
         for asset in &snapshot.assets {
-            transaction.execute("INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(id) DO UPDATE SET entity_id=excluded.entity_id,namespace=excluded.namespace,filename=excluded.filename,content_hash=excluded.content_hash,size=excluded.size,mime_type=excluded.mime_type,path=excluded.path,created_at=excluded.created_at", params![asset.id, asset.entity_id, asset.namespace, asset.filename, asset.content_hash, asset.size, asset.mime_type, asset.path, asset.created_at])?;
+            validate_asset_role(&asset.role)?;
+            validate_asset_reference_scope(&asset.reference_scope)?;
+            if asset.role == ASSET_ROLE_PROFILE && !asset_can_be_profile_media(&asset.mime_type) {
+                return Err(CoreError::Validation(
+                    "profile assets must use a supported raster image MIME type".into(),
+                ));
+            }
+            transaction.execute("INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(id) DO UPDATE SET entity_id=excluded.entity_id,namespace=excluded.namespace,filename=excluded.filename,content_hash=excluded.content_hash,size=excluded.size,mime_type=excluded.mime_type,path=excluded.path,created_at=excluded.created_at,role=excluded.role,reference_scope=excluded.reference_scope", params![asset.id, asset.entity_id, asset.namespace, asset.filename, asset.content_hash, asset.size, asset.mime_type, asset.path, asset.created_at, asset.role, asset.reference_scope])?;
         }
         for module in &snapshot.modules {
             transaction.execute("INSERT INTO module_versions(module_id,version) VALUES (?1,?2) ON CONFLICT(module_id) DO UPDATE SET version=excluded.version", params![module.module_id, module.version])?;
@@ -7121,6 +7222,8 @@ impl ProjectStore {
             asset.revision = self.revision_for_asset_value(&asset)?;
             return Ok(asset);
         }
+        let mut input = input;
+        input.filename = validated_asset_filename(&input.filename)?;
         let exists: Option<String> = self
             .connection
             .query_row(
@@ -7158,6 +7261,8 @@ impl ProjectStore {
             mime_type: input.mime_type.clone(),
             path: input.path.clone(),
             created_at: now.clone(),
+            role: ASSET_ROLE_ATTACHMENT.into(),
+            reference_scope: ASSET_REFERENCE_SCOPE_ENTITY.into(),
             revision: String::new(),
         })
         .map_err(|error| CoreError::Serialization(error.to_string()))?;
@@ -7184,6 +7289,8 @@ impl ProjectStore {
             mime_type: input.mime_type,
             path: input.path,
             created_at: now,
+            role: ASSET_ROLE_ATTACHMENT.into(),
+            reference_scope: ASSET_REFERENCE_SCOPE_ENTITY.into(),
             revision,
         })
     }
@@ -7212,18 +7319,14 @@ impl ProjectStore {
         if !metadata.is_file() {
             return Err(CoreError::NotFound("asset source is not a file".into()));
         }
-        let filename = Path::new(&input.filename)
-            .file_name()
-            .and_then(|value| value.to_str())
-            .filter(|value| !value.is_empty() && *value != "." && *value != "..")
-            .ok_or_else(|| CoreError::NotFound("asset filename is invalid".into()))?;
+        let filename = validated_asset_filename(&input.filename)?;
         let category = if input.mime_type.starts_with("image/") {
             "images"
         } else if input.mime_type.starts_with("video/") {
             "videos"
         } else if input.mime_type.contains("map")
             || matches!(
-                Path::new(filename)
+                Path::new(&filename)
                     .extension()
                     .and_then(|value| value.to_str()),
                 Some("geojson" | "tmx" | "mbtiles")
@@ -7238,13 +7341,13 @@ impl ProjectStore {
         } else {
             streamed_file_digest(source)?
         };
-        let relative_path = format!("assets/{category}/{}-{}", Uuid::new_v4(), filename);
+        let relative_path = format!("assets/{category}/{}-{filename}", Uuid::new_v4());
         let request_id = self.request_id(request_id)?;
         self.register_asset_with_options(
             AssetInput {
                 entity_id: input.entity_id,
                 namespace: input.namespace,
-                filename: filename.into(),
+                filename,
                 content_hash,
                 size,
                 mime_type: input.mime_type,
@@ -7275,7 +7378,7 @@ impl ProjectStore {
         let mut asset = self
             .connection
             .query_row(
-                "SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets WHERE id=?1",
+                "SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope FROM assets WHERE id=?1",
                 params![asset_id],
                 |row| {
                     Ok(Asset {
@@ -7288,6 +7391,8 @@ impl ProjectStore {
                         mime_type: row.get(6)?,
                         path: row.get(7)?,
                         created_at: row.get(8)?,
+                        role: row.get(9)?,
+                        reference_scope: row.get(10)?,
                         revision: String::new(),
                     })
                 },
@@ -7305,10 +7410,17 @@ impl ProjectStore {
         expected_revision: &str,
         request_id: Option<&str>,
     ) -> Result<Asset, CoreError> {
-        if let Some(request_id) = request_id {
-            self.request_id(Some(request_id))?;
-        }
-        if let Some(mut asset) = self.committed_mutation::<Asset>(request_id)? {
+        let input_fingerprint = digest_bytes(
+            &serde_json::to_vec(&serde_json::json!({
+                "input": input,
+                "expectedRevision": expected_revision,
+            }))
+            .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if let Some(mut asset) = self.committed_mutation_with_fingerprint::<Asset>(
+            request_id,
+            Some(&input_fingerprint),
+        )? {
             asset.revision = self.revision_for_asset(&asset.id)?;
             return Ok(asset);
         }
@@ -7323,11 +7435,16 @@ impl ProjectStore {
                 "asset replacement content hash does not match bytes".into(),
             ));
         }
-        let mut asset = self.asset_unchecked(&input.asset_id)?;
+        let asset = self.asset_unchecked(&input.asset_id)?;
         Self::ensure_expected_revision(Some(expected_revision), asset.revision.clone(), "asset")?;
         if input.mime_type.trim().is_empty() {
             return Err(CoreError::Validation(
                 "asset replacement MIME type is required".into(),
+            ));
+        }
+        if asset.role == ASSET_ROLE_PROFILE && !asset_can_be_profile_media(&input.mime_type) {
+            return Err(CoreError::Validation(
+                "profile assets must use a supported raster image MIME type".into(),
             ));
         }
         if let Some((width, height)) = self.raster_layer_expected_size(&asset)? {
@@ -7351,10 +7468,102 @@ impl ProjectStore {
                 ));
             }
         }
-        let transaction = match self.begin_mutation(
+        self.commit_asset_replacement(asset, input, &request_id, &input_fingerprint)
+    }
+
+    pub fn replace_asset_file_with_request(
+        &self,
+        input: AssetFileReplaceInput,
+        expected_revision: &str,
+        request_id: Option<&str>,
+    ) -> Result<Asset, CoreError> {
+        let input_fingerprint = digest_bytes(
+            &serde_json::to_vec(&serde_json::json!({
+                "input": input,
+                "expectedRevision": expected_revision,
+            }))
+            .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if let Some(mut asset) = self.committed_mutation_with_fingerprint::<Asset>(
+            request_id,
+            Some(&input_fingerprint),
+        )? {
+            asset.revision = self.revision_for_asset(&asset.id)?;
+            return Ok(asset);
+        }
+        let source = Path::new(&input.source_path);
+        let metadata =
+            std::fs::metadata(source).map_err(|error| CoreError::NotFound(error.to_string()))?;
+        if !metadata.is_file() {
+            return Err(CoreError::NotFound(
+                "asset replacement source is not a file".into(),
+            ));
+        }
+        if input.mime_type.trim().is_empty() {
+            return Err(CoreError::Validation(
+                "asset replacement MIME type is required".into(),
+            ));
+        }
+        let asset = self.asset_unchecked(&input.asset_id)?;
+        Self::ensure_expected_revision(Some(expected_revision), asset.revision.clone(), "asset")?;
+        if asset.role == ASSET_ROLE_PROFILE && !asset_can_be_profile_media(&input.mime_type) {
+            return Err(CoreError::Validation(
+                "profile assets must use a supported raster image MIME type".into(),
+            ));
+        }
+        if let Some((width, height)) = self.raster_layer_expected_size(&asset)? {
+            if input.mime_type != "image/png" {
+                return Err(CoreError::Validation(
+                    "maps: painted layers must remain PNG assets".into(),
+                ));
+            }
+            let bytes = std::fs::read(source).map_err(|source| CoreError::Io {
+                operation: "read raster layer replacement",
+                source,
+            })?;
+            crate::maps::validate_raster_png(&bytes, width, height)?;
+        } else if self.is_immutable_image_source(&asset)? {
+            return Err(CoreError::Validation(
+                "maps: imported source assets cannot be replaced".into(),
+            ));
+        }
+        let (content_hash, size) = if let Some(root) = self.root.as_deref() {
+            store_runtime_asset_file(root, source, None)?
+        } else {
+            streamed_file_digest(source)?
+        };
+        let request_id = self.request_id(request_id)?;
+        self.commit_asset_replacement(
+            asset,
+            AssetReplaceInput {
+                asset_id: input.asset_id,
+                content_hash,
+                size,
+                mime_type: input.mime_type,
+            },
             &request_id,
-            Some(&serde_json::Value::Null),
+            &input_fingerprint,
+        )
+    }
+
+    fn commit_asset_replacement(
+        &self,
+        mut asset: Asset,
+        input: AssetReplaceInput,
+        request_id: &str,
+        input_fingerprint: &str,
+    ) -> Result<Asset, CoreError> {
+        asset.content_hash = input.content_hash.clone();
+        asset.size = input.size;
+        asset.mime_type = input.mime_type.clone();
+        asset.revision.clear();
+        let result = serde_json::to_value(&asset)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let transaction = match self.begin_mutation_with_fingerprint(
+            request_id,
+            Some(&result),
             &[format!("entities/{}/", asset.entity_id), asset.path.clone()],
+            input_fingerprint,
         ) {
             Ok(value) => value,
             Err(error) => {
@@ -7377,15 +7586,151 @@ impl ProjectStore {
         mutation?;
         self.refresh_maps_projection_for_entities(std::slice::from_ref(&asset.entity_id))?;
         self.notify_export_worker()?;
-        asset.content_hash = input.content_hash;
-        asset.size = input.size;
-        asset.mime_type = input.mime_type;
         asset.revision = self.revision_for_asset(&asset.id)?;
         Ok(asset)
     }
 
+    pub fn update_asset_metadata_with_request(
+        &self,
+        input: AssetMetadataUpdate,
+        expected_revision: &str,
+        request_id: Option<&str>,
+    ) -> Result<Asset, CoreError> {
+        let input_fingerprint = digest_bytes(
+            &serde_json::to_vec(&serde_json::json!({
+                "input": input,
+                "expectedRevision": expected_revision,
+            }))
+            .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if let Some(mut asset) =
+            self.committed_mutation_with_fingerprint::<Asset>(request_id, Some(&input_fingerprint))?
+        {
+            asset.revision = self.revision_for_asset(&asset.id)?;
+            return Ok(asset);
+        }
+
+        let mut asset = self.asset_unchecked(&input.asset_id)?;
+        Self::ensure_expected_revision(Some(expected_revision), asset.revision.clone(), "asset")?;
+
+        if let Some(filename) = input.filename.as_deref() {
+            let filename = validated_asset_filename(filename)?;
+            if filename != asset.filename {
+                asset.path = renamed_asset_path(&asset, &filename)?;
+                asset.filename = filename;
+            }
+        }
+        if let Some(role) = input.role.as_deref() {
+            validate_asset_role(role)?;
+            if role == ASSET_ROLE_PROFILE && !asset_can_be_profile_media(&asset.mime_type) {
+                return Err(CoreError::Validation(
+                    "profile assets must use a supported raster image MIME type".into(),
+                ));
+            }
+            asset.role = role.into();
+        }
+        if let Some(reference_scope) = input.reference_scope.as_deref() {
+            validate_asset_reference_scope(reference_scope)?;
+            asset.reference_scope = reference_scope.into();
+        }
+
+        let request_id = self.request_id(request_id)?;
+        let current = self.asset_unchecked(&input.asset_id)?;
+        let changed = asset.filename != current.filename
+            || asset.path != current.path
+            || asset.role != current.role
+            || asset.reference_scope != current.reference_scope;
+        asset.revision.clear();
+        let result = serde_json::to_value(&asset)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let affected_paths = [
+            format!("entities/{}/", asset.entity_id),
+            current.path.clone(),
+            asset.path.clone(),
+        ];
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&result),
+            &affected_paths,
+            &input_fingerprint,
+        )?;
+        if changed {
+            if asset.role == ASSET_ROLE_PROFILE {
+                transaction.execute(
+                    "UPDATE assets SET role=?1 WHERE entity_id=?2 AND namespace=?3 AND role=?4 AND id<>?5",
+                    params![
+                        ASSET_ROLE_ATTACHMENT,
+                        asset.entity_id,
+                        asset.namespace,
+                        ASSET_ROLE_PROFILE,
+                        asset.id
+                    ],
+                )?;
+            }
+            transaction.execute(
+                "UPDATE assets SET filename=?1,path=?2,role=?3,reference_scope=?4 WHERE id=?5",
+                params![
+                    asset.filename,
+                    asset.path,
+                    asset.role,
+                    asset.reference_scope,
+                    asset.id
+                ],
+            )?;
+        }
+        transaction.commit()?;
+
+        if changed {
+            self.refresh_maps_projection_for_entities(std::slice::from_ref(&asset.entity_id))?;
+            self.notify_export_worker()?;
+        }
+        asset.revision = self.revision_for_asset(&asset.id)?;
+        Ok(asset)
+    }
+
+    pub fn delete_asset_with_request(
+        &self,
+        asset_id: String,
+        expected_revision: &str,
+        request_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        let input_fingerprint = digest_bytes(
+            &serde_json::to_vec(&serde_json::json!({
+                "assetId": asset_id,
+                "expectedRevision": expected_revision,
+            }))
+            .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if self
+            .committed_mutation_with_fingerprint::<serde_json::Value>(request_id, Some(&input_fingerprint))?
+            .is_some()
+        {
+            return Ok(());
+        }
+        let asset = self.asset_unchecked(&asset_id)?;
+        Self::ensure_expected_revision(Some(expected_revision), asset.revision.clone(), "asset")?;
+        let request_id = self.request_id(request_id)?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&serde_json::Value::Null),
+            &[format!("entities/{}/", asset.entity_id), asset.path.clone()],
+            &input_fingerprint,
+        )?;
+        let deleted = transaction.execute(
+            "DELETE FROM assets WHERE id=?1",
+            params![asset_id],
+        )?;
+        if deleted == 0 {
+            return Err(CoreError::NotFound("asset not found".into()));
+        }
+        transaction.commit()?;
+        self.refresh_maps_projection_for_entities(std::slice::from_ref(&asset.entity_id))?;
+        self.notify_export_worker()?;
+        Ok(())
+    }
+
     fn list_assets_unchecked(&self, entity_id: String) -> Result<Vec<Asset>, CoreError> {
-        let mut statement = self.connection.prepare("SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets WHERE entity_id=?1 ORDER BY created_at")?;
+        let mut statement = self.connection.prepare("SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope FROM assets WHERE entity_id=?1 ORDER BY created_at")?;
         let rows = statement.query_map(params![entity_id], |row| {
             Ok(Asset {
                 id: row.get(0)?,
@@ -7397,6 +7742,8 @@ impl ProjectStore {
                 mime_type: row.get(6)?,
                 path: row.get(7)?,
                 created_at: row.get(8)?,
+                role: row.get(9)?,
+                reference_scope: row.get(10)?,
                 revision: String::new(),
             })
         })?;

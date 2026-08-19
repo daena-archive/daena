@@ -48,6 +48,27 @@ const ExternalLink = Link.extend({
   },
 });
 
+const Spoiler = Mark.create({
+  name: "spoiler",
+  addOptions() {
+    return { HTMLAttributes: {} };
+  },
+  parseHTML() {
+    return [{ tag: "span[data-spoiler]" }, { tag: "span.spoiler" }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ["span", { "data-spoiler": "", class: "spoiler", ...HTMLAttributes }, 0];
+  },
+  addCommands() {
+    return {
+      toggleSpoiler:
+        () =>
+        ({ commands }: any) =>
+          commands.toggleMark("spoiler"),
+    } as any;
+  },
+});
+
 export let value = "";
 export let placeholder = "Start writing…";
 export let onChange: (value: string) => void = () => {};
@@ -408,6 +429,7 @@ onMount(() => {
       BulletList,
       OrderedList,
       ListItem,
+      Spoiler,
       ExternalLink.configure({ openOnClick: false, autolink: true, linkOnPaste: true }),
       EntityReference,
       TextAlign.configure({ types: ["heading", "paragraph"], alignments: ["left", "center", "right"] }),
@@ -557,59 +579,30 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
         aria-pressed={editorState?.isActive("underline") ?? false}
         class:active={editorState?.isActive("underline")}
         onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleUnderline().run())}><u>U</u></button>
-      {#if isFullscreen}
-        <button
-          type="button"
-          title="Strikethrough"
-          aria-label="Strikethrough"
-          aria-pressed={editorState?.isActive("strike") ?? false}
-          class:active={editorState?.isActive("strike")}
-          onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleStrike().run())}><s>S</s></button>
-        <button
-          type="button"
-          title="Inline code"
-          aria-label="Inline code"
-          aria-pressed={editorState?.isActive("code") ?? false}
-          class:active={editorState?.isActive("code")}
-          onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleCode().run())}
-          ><code>&lt;/&gt;</code></button>
-        <button
-          type="button"
-          title="Add or edit link"
-          aria-label="Add or edit link"
-          aria-pressed={editorState?.isActive("link") ?? false}
-          class:active={editorState?.isActive("link")}
-          onclick={setLink}>↗</button>
-      {/if}
+      <button
+        type="button"
+        title="Strikethrough"
+        aria-label="Strikethrough"
+        aria-pressed={editorState?.isActive("strike") ?? false}
+        class:active={editorState?.isActive("strike")}
+        onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleStrike().run())}><s>S</s></button>
+      <button
+        type="button"
+        title="Spoiler (hidden text)"
+        aria-label="Spoiler"
+        aria-pressed={editorState?.isActive("spoiler") ?? false}
+        class:active={editorState?.isActive("spoiler")}
+        onclick={() => run((currentEditor) => (currentEditor.chain().focus() as any).toggleSpoiler().run())}>◼</button>
+      <button
+        type="button"
+        title="Link to lore entry (@)"
+        aria-label="Link to lore entry"
+        onclick={() => {
+          if (!editorState) return;
+          editorState.chain().focus().insertContent("@").run();
+        }}>@</button>
     </div>
-    {#if isFullscreen}
-      <span class="toolbar-divider"></span>
-
-      <div class="toolbar-group" aria-label="Paragraph alignment">
-        <button
-          type="button"
-          title="Align left"
-          aria-label="Align left"
-          aria-pressed={isAligned("left")}
-          class:active={isAligned("left")}
-          onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("left").run())}>≡</button>
-        <button
-          type="button"
-          title="Align center"
-          aria-label="Align center"
-          aria-pressed={isAligned("center")}
-          class:active={isAligned("center")}
-          onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("center").run())}>☰</button>
-        <button
-          type="button"
-          title="Align right"
-          aria-label="Align right"
-          aria-pressed={isAligned("right")}
-          class:active={isAligned("right")}
-          onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("right").run())}>≡</button>
-      </div>
-      <span class="toolbar-divider"></span>
-    {/if}
+    <span class="toolbar-divider"></span>
 
     <div class="toolbar-group" aria-label="Lists and blocks">
       <button
@@ -626,34 +619,24 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
         aria-pressed={editorState?.isActive("orderedList") ?? false}
         class:active={editorState?.isActive("orderedList")}
         onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleOrderedList().run())}>1≡</button>
-      {#if isFullscreen}
-        <button
-          type="button"
-          title="Quote"
-          aria-label="Quote"
-          aria-pressed={editorState?.isActive("blockquote") ?? false}
-          class:active={editorState?.isActive("blockquote")}
-          onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleBlockquote().run())}>“</button>
-        <button
-          type="button"
-          title="Code block"
-          aria-label="Code block"
-          aria-pressed={editorState?.isActive("codeBlock") ?? false}
-          class:active={editorState?.isActive("codeBlock")}
-          onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleCodeBlock().run())}
-          >&lt;/&gt;</button>
-        <button
-          type="button"
-          title="Horizontal rule"
-          aria-label="Horizontal rule"
-          onclick={() => run((currentEditor) => currentEditor.chain().focus().setHorizontalRule().run())}>—</button>
-        <button
-          type="button"
-          title="Clear formatting"
-          aria-label="Clear formatting"
-          onclick={() => run((currentEditor) => currentEditor.chain().focus().clearNodes().unsetAllMarks().run())}
-          >Tx</button>
-      {/if}
+      <button
+        type="button"
+        title="Quote"
+        aria-label="Quote"
+        aria-pressed={editorState?.isActive("blockquote") ?? false}
+        class:active={editorState?.isActive("blockquote")}
+        onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleBlockquote().run())}>“</button>
+      <button
+        type="button"
+        title="Horizontal rule"
+        aria-label="Horizontal rule"
+        onclick={() => run((currentEditor) => currentEditor.chain().focus().setHorizontalRule().run())}>—</button>
+      <button
+        type="button"
+        title="Clear formatting"
+        aria-label="Clear formatting"
+        onclick={() => run((currentEditor) => currentEditor.chain().focus().clearNodes().unsetAllMarks().run())}
+        >Tx</button>
     </div>
     <span class="toolbar-divider"></span>
     <div class="ai-toolbar-menu-control">
@@ -822,9 +805,6 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
   border-color: transparent;
   background: transparent;
 }
-.editor-toolbar button code {
-  font-size: 11px;
-}
 .ai-toolbar-menu-control {
   position: relative;
 }
@@ -933,14 +913,14 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
   opacity: 0.55;
 }
 .toolbar-group[aria-label="History"] {
-  gap: 4px;
+  gap: 2px;
 }
 .editor-toolbar button.history-button {
-  width: 36px;
-  min-width: 36px;
+  width: 32px;
+  min-width: 32px;
   padding: 0;
   font-family: "Apple Symbols", "Segoe UI Symbol", sans-serif;
-  font-size: 21px;
+  font-size: 17px;
   font-weight: 400;
   line-height: 1;
 }
@@ -956,13 +936,13 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
 }
 .style-select {
   height: 32px;
-  min-width: 112px;
-  padding: 0 8px;
+  min-width: 92px;
+  padding: 0 6px;
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
   color: var(--ink-soft, #77766d);
-  font: 500 12px/1 var(--font-body, system-ui, sans-serif);
+  font: 500 11px/1 var(--font-body, system-ui, sans-serif);
   cursor: pointer;
 }
 .style-select:hover,
@@ -1099,6 +1079,61 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+.editor-content :global(mark) {
+  background: #ffe8a3;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+.editor-content :global(span.spoiler) {
+  background: #2b2b2b;
+  color: transparent;
+  border-radius: 3px;
+  padding: 0 4px;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+.editor-content :global(span.spoiler:hover),
+.editor-content :global(span.spoiler:focus-visible) {
+  background: #3a3a3a;
+  color: var(--canvas, #f7f6f2);
+  outline: 0;
+}
+.editor-content :global(table) {
+  width: 100%;
+  margin: 1.2em 0;
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+.editor-content :global(th),
+.editor-content :global(td) {
+  min-width: 80px;
+  padding: 8px 10px;
+  border: 1px solid var(--line, #e4e1d8);
+  text-align: left;
+  vertical-align: top;
+}
+.editor-content :global(th) {
+  background: var(--surface-muted, #f4f2ec);
+  font-weight: 600;
+}
+.editor-content :global(ul[data-type="taskList"]) {
+  list-style: none;
+  padding-left: 0;
+}
+.editor-content :global(li[data-type="taskItem"]) {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.editor-content :global(li[data-type="taskItem"] > label) {
+  flex: 0 0 auto;
+  margin-top: 0.35em;
+}
+.editor-content :global(li[data-type="taskItem"] > div) {
+  flex: 1;
+}
 .editor-statusbar {
   display: flex;
   align-items: center;
@@ -1166,7 +1201,7 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
     left: 16px;
   }
   .style-select {
-    min-width: 104px;
+    min-width: 88px;
   }
 }
 </style>

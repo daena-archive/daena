@@ -1557,6 +1557,71 @@ fn broker_dispatch_uses_plugin_project_authority() {
 }
 
 #[test]
+fn broker_asset_metadata_update_matches_the_owned_namespace() {
+    let mut core = CoreService::new();
+    core.open_memory(AuthorityContext::trusted_shell()).unwrap();
+    let entity = dispatch_module_rpc(
+        &mut core,
+        None,
+        None,
+        "entity.create",
+        serde_json::json!({"name": "Asset owner", "type": "person"}),
+        None,
+    )
+    .unwrap();
+    let asset = dispatch_module_rpc(
+        &mut core,
+        None,
+        None,
+        "asset.register",
+        serde_json::json!({
+            "entity_id": entity["id"],
+            "namespace": "lore",
+            "filename": "portrait.png",
+            "content_hash": "sha256:portrait",
+            "size": 1,
+            "mime_type": "image/png",
+            "path": "assets/images/portrait.png",
+            "expectedRevision": entity["revision"],
+        }),
+        None,
+    )
+    .unwrap();
+
+    let denied = dispatch_module_rpc(
+        &mut core,
+        None,
+        None,
+        "asset.update",
+        serde_json::json!({
+            "assetId": asset["id"],
+            "namespace": "foreign",
+            "role": "profile",
+            "expectedRevision": asset["revision"],
+        }),
+        None,
+    )
+    .unwrap_err();
+    assert!(matches!(denied, CoreError::Unauthorized { .. }));
+
+    let updated = dispatch_module_rpc(
+        &mut core,
+        None,
+        None,
+        "asset.update",
+        serde_json::json!({
+            "assetId": asset["id"],
+            "namespace": "lore",
+            "role": "profile",
+            "expectedRevision": asset["revision"],
+        }),
+        None,
+    )
+    .unwrap();
+    assert_eq!(updated["role"], "profile");
+}
+
+#[test]
 fn broker_dispatch_enforces_module_record_owner_entity_types() {
     let mut core = CoreService::new();
     core.open_memory(AuthorityContext::trusted_shell()).unwrap();

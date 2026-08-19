@@ -520,6 +520,8 @@ export interface Asset {
   mime_type: string;
   path: string;
   created_at: string;
+  role: "attachment" | "profile";
+  reference_scope: "entity" | "project";
   revision: string;
 }
 export interface SyncSummary {
@@ -1096,6 +1098,44 @@ export const project = {
       bytes: Array.from(bytes),
       contentHash,
       mimeType,
+      expectedRevision,
+      requestId: requestId(options),
+    }),
+  replaceAssetFile: (
+    assetId: string,
+    sourcePath: string,
+    mimeType: string,
+    expectedRevision: string,
+    options?: MutationOptions,
+  ) =>
+    invoke<Asset>("project_replace_asset_file", {
+      assetId,
+      sourcePath,
+      mimeType,
+      expectedRevision,
+      requestId: requestId(options),
+    }),
+  updateAssetMetadata: (
+    assetId: string,
+    update: {
+      filename?: string;
+      role?: "attachment" | "profile";
+      referenceScope?: "entity" | "project";
+    },
+    expectedRevision: string,
+    options?: MutationOptions,
+  ) =>
+    invoke<Asset>("project_update_asset_metadata", {
+      assetId,
+      filename: update.filename ?? null,
+      role: update.role ?? null,
+      referenceScope: update.referenceScope ?? null,
+      expectedRevision,
+      requestId: requestId(options),
+    }),
+  deleteAsset: (assetId: string, expectedRevision: string, options?: MutationOptions) =>
+    invoke<void>("project_delete_asset", {
+      assetId,
       expectedRevision,
       requestId: requestId(options),
     }),

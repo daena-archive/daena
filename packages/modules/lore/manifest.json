@@ -18,6 +18,7 @@
     "relationship.read",
     "relationship.write",
     "asset.read:self",
+    "asset.write:self",
     "asset.register",
     "search.query",
     "schema.overlay",

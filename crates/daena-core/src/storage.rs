@@ -282,6 +282,18 @@ pub struct CanonicalAsset {
     pub mime_type: String,
     pub path: String,
     pub created_at: String,
+    #[serde(default = "default_asset_role")]
+    pub role: String,
+    #[serde(default = "default_asset_reference_scope")]
+    pub reference_scope: String,
+}
+
+fn default_asset_role() -> String {
+    crate::project::ASSET_ROLE_ATTACHMENT.into()
+}
+
+fn default_asset_reference_scope() -> String {
+    crate::project::ASSET_REFERENCE_SCOPE_ENTITY.into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -672,6 +684,8 @@ pub fn write_canonical_project(
                 mime_type: asset.mime_type.clone(),
                 path: asset.path.clone(),
                 created_at: asset.created_at.clone(),
+                role: asset.role.clone(),
+                reference_scope: asset.reference_scope.clone(),
             });
     }
 
@@ -979,6 +993,8 @@ pub(crate) fn write_canonical_entity(
             mime_type: asset.mime_type.clone(),
             path: asset.path.clone(),
             created_at: asset.created_at.clone(),
+            role: asset.role.clone(),
+            reference_scope: asset.reference_scope.clone(),
         })
         .collect::<Vec<_>>();
     assets.sort_by(|left, right| left.id.cmp(&right.id));
@@ -1270,6 +1286,7 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
                 normalized_project_path(root, &format!("entities/{name}/assets.json"))?;
             if assets_path.exists() {
                 let file: AssetsFile = read_json(&assets_path)?;
+                let mut profile_namespaces = BTreeSet::new();
                 for asset in file.assets {
                     validate_uuid(&assets_path, "asset.id", &asset.id)?;
                     validate_component(&asset.namespace, &assets_path, "asset.namespace")?;
@@ -1283,12 +1300,52 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
                             "asset size cannot be negative",
                         ));
                     }
-                    if asset.filename.trim().is_empty() {
+                    if asset.filename.trim().is_empty()
+                        || matches!(asset.filename.as_str(), "." | "..")
+                        || asset.filename.contains('/')
+                        || asset.filename.contains('\\')
+                    {
                         return Err(codec_error(
                             &assets_path,
                             "asset.filename",
-                            "asset filename cannot be empty",
+                            "asset filename must be a single non-empty path component",
                         ));
+                    }
+                    if !matches!(
+                        asset.role.as_str(),
+                        crate::project::ASSET_ROLE_ATTACHMENT | crate::project::ASSET_ROLE_PROFILE
+                    ) {
+                        return Err(codec_error(&assets_path, "asset.role", asset.role));
+                    }
+                    if !matches!(
+                        asset.reference_scope.as_str(),
+                        crate::project::ASSET_REFERENCE_SCOPE_ENTITY
+                            | crate::project::ASSET_REFERENCE_SCOPE_PROJECT
+                    ) {
+                        return Err(codec_error(
+                            &assets_path,
+                            "asset.reference-scope",
+                            asset.reference_scope,
+                        ));
+                    }
+                    if asset.role == crate::project::ASSET_ROLE_PROFILE {
+                        if !matches!(
+                            asset.mime_type.as_str(),
+                            "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+                        ) {
+                            return Err(codec_error(
+                                &assets_path,
+                                "asset.profile-mime",
+                                asset.mime_type,
+                            ));
+                        }
+                        if !profile_namespaces.insert(asset.namespace.clone()) {
+                            return Err(codec_error(
+                                &assets_path,
+                                "asset.profile-duplicate",
+                                asset.namespace,
+                            ));
+                        }
                     }
                     let asset_path = normalized_project_path(root, &asset.path)?;
                     if !asset.path.starts_with("assets/") || !asset_path.is_file() {
@@ -1321,6 +1378,8 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
                         mime_type: asset.mime_type,
                         path: asset.path,
                         created_at: asset.created_at,
+                        role: asset.role,
+                        reference_scope: asset.reference_scope,
                         revision: String::new(),
                     });
                 }

@@ -63,6 +63,8 @@ interface RawAsset {
   mime_type: string;
   path: string;
   created_at: string;
+  role: "attachment" | "profile";
+  reference_scope: "entity" | "project";
   revision: string;
 }
 interface RawModuleRecord {
@@ -136,6 +138,8 @@ function toAsset(asset: RawAsset): AssetRecord {
     mimeType: asset.mime_type,
     path: asset.path,
     createdAt: asset.created_at,
+    role: asset.role,
+    referenceScope: asset.reference_scope,
     revision: asset.revision,
   };
 }
@@ -501,6 +505,39 @@ export function buildModuleContext(
             },
             options?.requestId,
           ),
+        );
+      },
+      updateMetadata: async (asset, update, options?: MutationOptions) => {
+        checkCapability(manifest, "asset.write:self");
+        if (!manifest.schemas.some((schema) => schema.namespace === asset.namespace))
+          throw new Error(`Module ${manifest.id} does not own namespace: ${asset.namespace}`);
+        return toAsset(
+          await rpc.call<RawAsset>(
+            "asset.update",
+            {
+              assetId: asset.id,
+              namespace: asset.namespace,
+              filename: update.filename,
+              role: update.role,
+              referenceScope: update.referenceScope,
+              expectedRevision: options?.expectedRevision ?? asset.revision,
+            },
+            options?.requestId,
+          ),
+        );
+      },
+      delete: async (asset, options?: MutationOptions) => {
+        checkCapability(manifest, "asset.write:self");
+        if (!manifest.schemas.some((schema) => schema.namespace === asset.namespace))
+          throw new Error(`Module ${manifest.id} does not own namespace: ${asset.namespace}`);
+        await rpc.call<void>(
+          "asset.delete",
+          {
+            assetId: asset.id,
+            namespace: asset.namespace,
+            expectedRevision: options?.expectedRevision ?? asset.revision,
+          },
+          options?.requestId,
         );
       },
     },

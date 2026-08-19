@@ -62,6 +62,7 @@ import { allowLeaveSchemaEditor, isSchemaEditorDirty } from "$lib/schemaEditorGu
 import GitSettingsPanel from "$lib/GitSettingsPanel.svelte";
 import RelationshipPicker from "$lib/RelationshipPicker.svelte";
 import RelationshipMetadataDialog from "$lib/RelationshipMetadataDialog.svelte";
+import AssetDialog from "$lib/AssetDialog.svelte";
 import CalendarPicker from "$lib/CalendarPicker.svelte";
 import EntityHoverCard from "$lib/EntityHoverCard.svelte";
 import { confirmDialog, promptDialog } from "$lib/dialogs.svelte";
@@ -132,6 +133,8 @@ let fields = $state<Record<string, unknown>>({});
 let relationships = $state<Relationship[]>([]);
 let metadataDialog = $state<{ relationship: Relationship; definition: FieldDefinition | null } | null>(null);
 let assets = $state<Asset[]>([]);
+let assetBusyId = $state<string | null>(null);
+let assetDialog = $state<Asset | null>(null);
 let mapLocations = $state<MapLocation[]>([]);
 let modules = $state<InstalledModule[]>([]);
 let globalQuery = $state("");
@@ -362,7 +365,8 @@ $effect(() => {
     deleteTarget !== null ||
     installConsent !== null ||
     deleteBackupPath !== "" ||
-    metadataDialog !== null;
+    metadataDialog !== null ||
+    assetDialog !== null;
   document.body.classList.toggle("modal-open", modalOpen);
   if (!modalOpen) return;
   const onKey = (event: KeyboardEvent) => {
@@ -391,6 +395,9 @@ $effect(() => {
     } else if (metadataDialog) {
       event.preventDefault();
       metadataDialog = null;
+    } else if (assetDialog) {
+      event.preventDefault();
+      assetDialog = null;
     }
   };
   window.addEventListener("keydown", onKey, true);
@@ -2507,7 +2514,9 @@ async function loadSelectedState(entity: Entity) {
         mime_type: asset.mimeType,
         path: asset.path,
         created_at: asset.createdAt,
-        revision: "",
+        role: asset.role,
+        reference_scope: asset.referenceScope,
+        revision: asset.revision,
       }))
     : [];
   if (!isCurrent()) return;
@@ -3096,11 +3105,27 @@ function mimeTypeFor(filename: string) {
       ? "image/jpeg"
       : extension === "gif"
         ? "image/gif"
+        : extension === "webp"
+          ? "image/webp"
         : extension === "mp4"
           ? "video/mp4"
           : extension === "webm"
             ? "video/webm"
             : "application/octet-stream";
+}
+function canWriteAssets() {
+  return section === "lore" && (activeManifest()?.capabilities.includes("asset.write:self") ?? false);
+}
+function canUseAsProfile(asset: Asset) {
+  return ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(asset.mime_type);
+}
+async function refreshSelectedAssets() {
+  if (!selected) {
+    assets = [];
+    return;
+  }
+  const namespaces = new Set(activeManifest()?.schemas.map((schema) => schema.namespace) ?? []);
+  assets = (await project.listAssets(selected.id)).filter((asset) => namespaces.has(asset.namespace));
 }
 async function attachAsset() {
   if (projectDiagnostics.length > 0) return;
@@ -3120,6 +3145,76 @@ async function attachAsset() {
     assets = [...assets, asset];
   } catch (cause) {
     error = friendlyError(cause);
+  }
+}
+function openAssetDialog(asset: Asset) {
+  if (projectDiagnostics.length > 0) return;
+  assetDialog = asset;
+}
+async function handleAssetSave(update: { filename?: string; role?: "attachment" | "profile"; referenceScope?: "entity" | "project" }) {
+  const current = assetDialog;
+  if (!current) return;
+  assetBusyId = current.id;
+  try {
+    await project.updateAssetMetadata(current.id, update, current.revision);
+    await refreshSelectedAssets();
+  } catch (cause) {
+    error = friendlyError(cause);
+    throw cause;
+  } finally {
+    assetBusyId = null;
+  }
+}
+async function handleAssetDelete() {
+  const current = assetDialog;
+  if (!current) return;
+  if (
+    !(await confirmDialog({
+      title: `Delete ${current.filename}?`,
+      message: "This file will be permanently removed from the project and the checkpoint. This cannot be undone.",
+      confirmLabel: "Delete",
+      danger: true,
+    }))
+  )
+    return;
+  assetBusyId = current.id;
+  try {
+    await project.deleteAsset(current.id, current.revision);
+    await refreshSelectedAssets();
+  } catch (cause) {
+    error = friendlyError(cause);
+    throw cause;
+  } finally {
+    assetBusyId = null;
+  }
+}
+async function handleAssetReplace() {
+  const current = assetDialog;
+  if (!current) return;
+  const selection = await project.pickFile();
+  const source = typeof selection === "string" ? selection : null;
+  if (!source) return;
+  const replacementName = source.split(/[\\/]/).pop() ?? "replacement";
+  if (
+    !(await confirmDialog({
+      title: `Replace ${current.filename}?`,
+      message: `Use ${replacementName} as the new content? The attachment name and metadata will stay unchanged.`,
+      confirmLabel: "Replace",
+    }))
+  )
+    return;
+  assetBusyId = current.id;
+  try {
+    await project.replaceAssetFile(current.id, source, mimeTypeFor(replacementName), current.revision);
+    await refreshSelectedAssets();
+    // refresh dialog with new revision
+    const refreshed = assets.find((a) => a.id === current.id) ?? null;
+    if (refreshed) assetDialog = refreshed;
+  } catch (cause) {
+    error = friendlyError(cause);
+    throw cause;
+  } finally {
+    assetBusyId = null;
   }
 }
 async function toggleModule(id: ModuleId) {
@@ -5530,11 +5625,23 @@ onMount(() => {
               </div>
               <button class="drop-zone" type="button" onclick={attachAsset}
                 ><span>＋</span><strong>Attach a file</strong><small>Copied into this project</small></button
-              >{#each assets as asset}<div class="asset-row">
-                  <span class="asset-icon">□</span><span
-                    ><strong>{asset.filename}</strong><small>{Math.max(1, Math.round(asset.size / 1024))} KB</small
-                    ></span>
-                </div>{/each}
+              >{#each assets as asset (asset.id)}<button
+                  type="button"
+                  class:asset-main={asset.role === "profile"}
+                  class="asset-row asset-row-button"
+                  onclick={() => openAssetDialog(asset)}
+                  disabled={assetBusyId === asset.id}
+                  aria-label={`Edit ${asset.filename}`}>
+                  <span class="asset-icon" aria-hidden="true">{asset.role === "profile" ? "◆" : "□"}</span>
+                  <div class="asset-details">
+                    <strong>{asset.filename}</strong><small
+                      >{Math.max(1, Math.round(asset.size / 1024))} KB · {asset.reference_scope === "project"
+                        ? "Project references allowed"
+                        : "Entity only"} · {asset.mime_type}</small
+                    >{#if asset.role === "profile"}<span class="asset-role">Main file</span>{/if}
+                  </div>
+                  <span class="asset-row-edit-hint" aria-hidden="true">Edit →</span>
+                </button>{/each}
             </section>
             {#if mapsEnabled()}<section class="inspector-section map-contribution" aria-label="Maps contribution">
                 <div class="section-title">
@@ -5599,6 +5706,15 @@ onMount(() => {
     calendarDefinitions={calendarDefinitions}
     onSave={(metadata) => saveRelationshipMetadata(dialog.relationship, metadata)}
     onClose={() => (metadataDialog = null)} />
+{/if}
+{#if assetDialog}
+  <AssetDialog
+    asset={assetDialog}
+    editable={canWriteAssets()}
+    onSave={handleAssetSave}
+    onDelete={handleAssetDelete}
+    onReplace={handleAssetReplace}
+    onClose={() => (assetDialog = null)} />
 {/if}
 <DialogHost />
 
@@ -7016,11 +7132,13 @@ onMount(() => {
 }
 .drop-zone {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
   margin-top: 12px;
-  padding: 16px 8px;
+  padding: 10px 20px;
   border: 1px dashed #d3c0a9;
   border-radius: 8px;
   background: #fcf8f1;
@@ -7029,21 +7147,74 @@ onMount(() => {
   cursor: pointer;
 }
 .drop-zone span {
-  font-size: 22px;
+  font-size: 16px;
+  line-height: 1;
 }
 .drop-zone strong {
   color: var(--ink-soft);
-  font-size: 10px;
+  font-size: 11px;
+  white-space: nowrap;
 }
 .drop-zone small {
   color: var(--ink-faint);
   font-size: 9px;
+  white-space: nowrap;
 }
 .asset-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 9px;
+  padding: 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+.asset-row-button {
+  width: 100%;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.asset-row-button:hover {
+  border-color: var(--line, #e4e1d8);
+  background: var(--surface-muted, #f4f2ec);
+}
+.asset-row-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.asset-row-button:focus-visible {
+  border-color: #c99965;
+  box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
+  outline: none;
+}
+.asset-row.asset-main {
+  border-color: #d3c0a9;
+  background: #fcf8f1;
+}
+.asset-details {
+  min-width: 0;
+  flex: 1;
+}
+.asset-role {
+  display: inline-block;
+  margin-top: 5px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: #ede2d2;
+  color: var(--accent);
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.asset-row-edit-hint {
+  align-self: center;
+  color: var(--ink-faint, #aaa79d);
+  font-size: 10px;
+  font-weight: 600;
 }
 .asset-icon {
   display: grid;

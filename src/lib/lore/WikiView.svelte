@@ -1,7 +1,7 @@
 <script lang="ts">
 import { onMount } from "svelte";
 import MarkdownArticle from "$lib/markdown/MarkdownArticle.svelte";
-import { project, type Entity } from "$lib/project/client";
+import { project, type Asset, type Entity } from "$lib/project/client";
 import loreManifestJson from "../../../packages/modules/lore/manifest.json";
 import { formatCalendarDate, parseCalendarDate } from "$lib/date";
 
@@ -26,7 +26,8 @@ let entity = $state<Entity | null>(null);
 let documentBody = $state("");
 let fields = $state<Record<string, unknown>>({});
 let relationships = $state<any[]>([]);
-let assets = $state<any[]>([]);
+let assets = $state<Asset[]>([]);
+let profileMediaUrl = $state("");
 let mapLocations = $state<any[]>([]);
 let loading = $state(true);
 let tocSearch = $state("");
@@ -133,6 +134,49 @@ const grouped = $derived(
 // derived inbound/outbound
 const outbound = $derived(relationships.filter((r: any) => r.source_id === currentId));
 const inbound = $derived(relationships.filter((r: any) => r.target_id === currentId));
+const profileAssetAny = $derived(
+  assets.find((asset) => asset.namespace === "lore" && asset.role === "profile") ?? null,
+);
+const profileAsset = $derived(
+  profileAssetAny &&
+    ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(profileAssetAny.mime_type)
+    ? profileAssetAny
+    : null,
+);
+const profileFallback = $derived(profileAssetAny && !profileAsset ? profileAssetAny : null);
+
+$effect(() => {
+  const asset = profileAsset;
+  let disposed = false;
+  let objectUrl = "";
+  profileMediaUrl = "";
+  if (asset) {
+    void project
+      .readAssetBytes(asset.id)
+      .then((bytes) => {
+        if (disposed) return;
+        try {
+          const blob = new Blob([Uint8Array.from(bytes)], { type: asset.mime_type });
+          objectUrl = URL.createObjectURL(blob);
+          if (disposed) {
+            URL.revokeObjectURL(objectUrl);
+            objectUrl = "";
+            return;
+          }
+          profileMediaUrl = objectUrl;
+        } catch {
+          if (!disposed) profileMediaUrl = "";
+        }
+      })
+      .catch(() => {
+        if (!disposed) profileMediaUrl = "";
+      });
+  }
+  return () => {
+    disposed = true;
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+  };
+});
 
 // infobox visible fields (non-empty)
 const visibleFields = $derived(
@@ -197,7 +241,7 @@ async function loadEntity(id: string) {
     for (const f of flds as any[]) fieldMap[f.key] = f.value;
     fields = fieldMap;
     relationships = rels as any[];
-    assets = assts as any[];
+    assets = assts;
     try {
       mapLocations = await project.listMapLocations(id);
     } catch {
@@ -325,7 +369,6 @@ function handleClose() {
                     <li>
                       <button type="button" class="wiki-link" onclick={() => openEntity(ent.id)}>
                         <span class="wiki-link-name">{ent.name}</span>
-                        <span class="wiki-link-meta">{labelForType(ent.entity_type)}</span>
                       </button>
                     </li>
                   {/each}
@@ -408,6 +451,10 @@ function handleClose() {
 
         <aside class="wiki-infobox" aria-label="Infobox">
           <div class="wiki-infobox-card">
+            {#if profileMediaUrl}<img class="wiki-profile-media" src={profileMediaUrl} alt={`${entity.name} profile`} />{:else if profileFallback}<div class="wiki-profile-fallback" role="img" aria-label={`${entity.name} profile`}>
+                <span class="wiki-profile-fallback-icon" aria-hidden="true">◆</span>
+                <div><strong>{profileFallback.filename}</strong><small>Main file · {profileFallback.mime_type}</small></div>
+              </div>{/if}
             <div class="wiki-infobox-header">
               <h3>{entity.name}</h3>
               <small>{labelForType(entity.entity_type)}</small>
@@ -664,10 +711,6 @@ function handleClose() {
   font-weight: 500;
   color: var(--accent-dark);
 }
-.wiki-link-meta {
-  color: var(--ink-faint);
-  font-size: 10px;
-}
 .wiki-empty {
   color: var(--ink-soft);
   font-size: 12px;
@@ -818,6 +861,46 @@ function handleClose() {
   background: var(--surface);
   overflow: hidden;
   box-shadow: 0 2px 8px rgba(38, 42, 33, 0.06);
+}
+.wiki-profile-media {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  object-fit: cover;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-muted);
+}
+.wiki-profile-fallback {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-muted);
+}
+.wiki-profile-fallback-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: #ede2d2;
+  color: var(--accent);
+  font-size: 14px;
+}
+.wiki-profile-fallback div {
+  min-width: 0;
+}
+.wiki-profile-fallback strong {
+  display: block;
+  font-size: 12px;
+  color: var(--ink);
+}
+.wiki-profile-fallback small {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink-faint);
+  font-size: 11px;
 }
 .wiki-infobox-header {
   padding: 14px 16px;

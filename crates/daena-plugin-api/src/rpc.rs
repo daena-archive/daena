@@ -340,6 +340,32 @@ pub struct AssetRegisterPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
+pub struct AssetMetadataUpdatePayload {
+    #[serde(rename = "assetId")]
+    pub asset_id: String,
+    pub namespace: String,
+    pub filename: Option<String>,
+    pub role: Option<String>,
+    #[serde(rename = "referenceScope")]
+    pub reference_scope: Option<String>,
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AssetDeletePayload {
+    #[serde(rename = "assetId")]
+    pub asset_id: String,
+    pub namespace: String,
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct AssetReadBeginPayload {
     #[serde(rename = "assetId")]
     pub asset_id: String,
@@ -715,6 +741,34 @@ mod tests {
         let parsed: AssetRegisterPayload = serde_json::from_value(json.clone()).unwrap();
         let re_encoded = serde_json::to_value(parsed).unwrap();
         assert_eq!(re_encoded, json);
+    }
+
+    #[test]
+    fn asset_metadata_update_uses_explicit_wire_names() {
+        let json = serde_json::json!({
+            "assetId": "asset-1",
+            "namespace": "lore",
+            "filename": "portrait.png",
+            "role": "profile",
+            "referenceScope": "project",
+            "expectedRevision": "rev-4"
+        });
+        let parsed: AssetMetadataUpdatePayload = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(parsed.asset_id, "asset-1");
+        assert_eq!(parsed.reference_scope.as_deref(), Some("project"));
+        assert_eq!(serde_json::to_value(parsed).unwrap(), json);
+    }
+
+    #[test]
+    fn asset_delete_uses_explicit_wire_names() {
+        let json = serde_json::json!({
+            "assetId": "asset-1",
+            "namespace": "lore",
+            "expectedRevision": "rev-4"
+        });
+        let parsed: AssetDeletePayload = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(parsed.asset_id, "asset-1");
+        assert_eq!(serde_json::to_value(parsed).unwrap(), json);
     }
 
     #[test]

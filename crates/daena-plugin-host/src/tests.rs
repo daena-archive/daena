@@ -43,6 +43,8 @@ fn manifest(id: &str, namespace: &str) -> PluginManifest {
                 target_entity_types: None,
                 shared: false,
                 multiple: false,
+                cardinality: None,
+                one_of: None,
                 metadata_fields: None,
             }],
         }],
@@ -2112,6 +2114,16 @@ fn field_and_asset_capability_rules_are_stable() {
         )
         .unwrap(),
         vec!["asset.register".to_string()]
+    );
+    assert_eq!(
+        required_capabilities(
+            "asset.update",
+            &serde_json::json!({ "namespace": "owner" }),
+            &owner_session,
+            &host.namespaces,
+        )
+        .unwrap(),
+        vec!["asset.write:self".to_string()]
     );
     assert_eq!(
         required_capabilities(

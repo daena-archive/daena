@@ -497,7 +497,7 @@ fn fresh_runtime_starts_with_checkpoint_generation_metadata() {
             },
         )
         .unwrap();
-    assert_eq!(metadata.0, 5);
+    assert_eq!(metadata.0, RUNTIME_SCHEMA_VERSION);
     assert_eq!(metadata.1, 3);
     assert_eq!(metadata.2, 0);
     assert_eq!(metadata.3, 0);
@@ -1285,6 +1285,109 @@ fn asset_file_import_is_committed_with_canonical_metadata() {
         asset.revision
     );
     drop(store);
+    std::fs::remove_file(source).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn asset_metadata_survives_checkpoint_and_runtime_rebuild() {
+    let root = std::env::temp_dir().join(format!("daena-asset-metadata-{}", Uuid::new_v4()));
+    let source = root.with_extension("source.png");
+    let replacement = root.with_extension("replacement.webp");
+    std::fs::write(&source, b"profile bytes").unwrap();
+    std::fs::write(&replacement, b"replacement profile bytes").unwrap();
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Profile owner".into(),
+            entity_type: Some("person".into()),
+        })
+        .unwrap();
+    let asset = store
+        .register_asset_file(AssetFileInput {
+            entity_id: entity.id.clone(),
+            namespace: "lore".into(),
+            source_path: source.to_string_lossy().into_owned(),
+            filename: "source.png".into(),
+            mime_type: "image/png".into(),
+        })
+        .unwrap();
+    let original_path = asset.path.clone();
+    store.flush_checkpoint("initial asset export").unwrap();
+    assert!(root.join(&original_path).is_file());
+    let updated = store
+        .update_asset_metadata_with_request(
+            AssetMetadataUpdate {
+                asset_id: asset.id.clone(),
+                filename: Some("portrait.png".into()),
+                role: Some(ASSET_ROLE_PROFILE.into()),
+                reference_scope: Some(ASSET_REFERENCE_SCOPE_PROJECT.into()),
+            },
+            &asset.revision,
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+    let replace_request_id = Uuid::new_v4().to_string();
+    let replace_input = AssetFileReplaceInput {
+        asset_id: updated.id.clone(),
+        source_path: replacement.to_string_lossy().into_owned(),
+        mime_type: "image/webp".into(),
+    };
+    let replace_expected_revision = updated.revision.clone();
+    let updated = store
+        .replace_asset_file_with_request(
+            replace_input.clone(),
+            &replace_expected_revision,
+            Some(&replace_request_id),
+        )
+        .unwrap();
+    assert_eq!(updated.filename, "portrait.png");
+    assert_eq!(updated.role, ASSET_ROLE_PROFILE);
+    assert_eq!(updated.reference_scope, ASSET_REFERENCE_SCOPE_PROJECT);
+    std::fs::remove_file(&replacement).unwrap();
+    let replay = store
+        .replace_asset_file_with_request(
+            replace_input.clone(),
+            &replace_expected_revision,
+            Some(&replace_request_id),
+        )
+        .unwrap();
+    assert_eq!(replay.revision, updated.revision);
+    assert!(matches!(
+        store.replace_asset_file_with_request(
+            replace_input,
+            "different-input",
+            Some(&replace_request_id),
+        ),
+        Err(CoreError::Conflict(_))
+    ));
+    store.flush_checkpoint("asset metadata export").unwrap();
+
+    let canonical: crate::storage::AssetsFile =
+        crate::storage::read_json(&root.join("entities").join(&entity.id).join("assets.json"))
+            .unwrap();
+    assert_eq!(canonical.assets[0].filename, "portrait.png");
+    assert_eq!(canonical.assets[0].role, ASSET_ROLE_PROFILE);
+    assert_eq!(
+        canonical.assets[0].reference_scope,
+        ASSET_REFERENCE_SCOPE_PROJECT
+    );
+    assert_eq!(
+        std::fs::read(root.join(&updated.path)).unwrap(),
+        b"replacement profile bytes"
+    );
+    assert!(!root.join(original_path).exists());
+
+    drop(store);
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let reopened = ProjectStore::open_directory(&root).unwrap();
+    let rebuilt = reopened.asset(updated.id).unwrap();
+    assert_eq!(rebuilt.filename, "portrait.png");
+    assert_eq!(rebuilt.role, ASSET_ROLE_PROFILE);
+    assert_eq!(rebuilt.reference_scope, ASSET_REFERENCE_SCOPE_PROJECT);
+    assert_eq!(rebuilt.path, updated.path);
+
+    drop(reopened);
     std::fs::remove_file(source).unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -4412,6 +4515,208 @@ fn asset_replacement_rejects_wrong_hash_size_and_revision() {
         )
         .is_err());
 }
+
+#[test]
+fn asset_metadata_rename_profile_scope_and_replacement_are_consistent() {
+    let store = ProjectStore::in_memory().unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Portrait subject".into(),
+            entity_type: Some("person".into()),
+        })
+        .unwrap();
+    let first = store
+        .register_asset(AssetInput {
+            entity_id: entity.id.clone(),
+            namespace: "lore".into(),
+            filename: "first.png".into(),
+            content_hash: "sha256:first".into(),
+            size: 1,
+            mime_type: "image/png".into(),
+            path: "assets/images/original-first.png".into(),
+        })
+        .unwrap();
+    let second = store
+        .register_asset(AssetInput {
+            entity_id: entity.id.clone(),
+            namespace: "lore".into(),
+            filename: "second.webp".into(),
+            content_hash: "sha256:second".into(),
+            size: 1,
+            mime_type: "image/webp".into(),
+            path: "assets/images/original-second.webp".into(),
+        })
+        .unwrap();
+    let other_namespace = store
+        .register_asset(AssetInput {
+            entity_id: entity.id.clone(),
+            namespace: "writing".into(),
+            filename: "manuscript-cover.png".into(),
+            content_hash: "sha256:writing".into(),
+            size: 1,
+            mime_type: "image/png".into(),
+            path: "assets/images/manuscript-cover.png".into(),
+        })
+        .unwrap();
+
+    assert_eq!(first.role, ASSET_ROLE_ATTACHMENT);
+    assert_eq!(first.reference_scope, ASSET_REFERENCE_SCOPE_ENTITY);
+    let first_profile = store
+        .update_asset_metadata_with_request(
+            AssetMetadataUpdate {
+                asset_id: first.id.clone(),
+                filename: Some("portrait.png".into()),
+                role: Some(ASSET_ROLE_PROFILE.into()),
+                reference_scope: Some(ASSET_REFERENCE_SCOPE_PROJECT.into()),
+            },
+            &first.revision,
+            None,
+        )
+        .unwrap();
+    assert_eq!(first_profile.filename, "portrait.png");
+    assert_eq!(
+        first_profile.path,
+        format!("assets/images/{}-portrait.png", first.id)
+    );
+    assert_eq!(first_profile.content_hash, first.content_hash);
+    assert_eq!(first_profile.role, ASSET_ROLE_PROFILE);
+    assert_eq!(first_profile.reference_scope, ASSET_REFERENCE_SCOPE_PROJECT);
+    assert!(store
+        .update_asset_metadata_with_request(
+            AssetMetadataUpdate {
+                asset_id: first.id.clone(),
+                filename: None,
+                role: Some(ASSET_ROLE_ATTACHMENT.into()),
+                reference_scope: None,
+            },
+            &first.revision,
+            None,
+        )
+        .is_err());
+
+    store
+        .update_asset_metadata_with_request(
+            AssetMetadataUpdate {
+                asset_id: other_namespace.id.clone(),
+                filename: None,
+                role: Some(ASSET_ROLE_PROFILE.into()),
+                reference_scope: None,
+            },
+            &other_namespace.revision,
+            None,
+        )
+        .unwrap();
+
+    let second_profile = store
+        .update_asset_metadata_with_request(
+            AssetMetadataUpdate {
+                asset_id: second.id.clone(),
+                filename: None,
+                role: Some(ASSET_ROLE_PROFILE.into()),
+                reference_scope: None,
+            },
+            &second.revision,
+            None,
+        )
+        .unwrap();
+    let assets = store.list_assets(entity.id).unwrap();
+    assert_eq!(
+        assets
+            .iter()
+            .filter(|asset| asset.namespace == "lore" && asset.role == ASSET_ROLE_PROFILE)
+            .count(),
+        1
+    );
+    assert_eq!(
+        assets
+            .iter()
+            .filter(|asset| asset.namespace == "writing" && asset.role == ASSET_ROLE_PROFILE)
+            .count(),
+        1
+    );
+    assert_eq!(
+        assets
+            .iter()
+            .find(|asset| asset.id == first.id)
+            .unwrap()
+            .role,
+        ASSET_ROLE_ATTACHMENT
+    );
+
+    let replacement = b"replacement".to_vec();
+    let replacement_hash = format!("sha256:{:x}", Sha256::digest(&replacement));
+    let replaced = store
+        .replace_asset_bytes_with_request(
+            AssetReplaceInput {
+                asset_id: second_profile.id,
+                content_hash: replacement_hash,
+                size: replacement.len() as i64,
+                mime_type: "image/jpeg".into(),
+            },
+            replacement,
+            &second_profile.revision,
+            None,
+        )
+        .unwrap();
+    assert_eq!(replaced.role, ASSET_ROLE_PROFILE);
+    assert_eq!(replaced.reference_scope, ASSET_REFERENCE_SCOPE_ENTITY);
+    assert_eq!(replaced.filename, second.filename);
+    assert_eq!(replaced.path, second.path);
+}
+
+#[test]
+fn asset_metadata_rejects_invalid_values_and_non_image_profiles() {
+    let store = ProjectStore::in_memory().unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Attachment owner".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let asset = store
+        .register_asset(AssetInput {
+            entity_id: entity.id,
+            namespace: "lore".into(),
+            filename: "notes.txt".into(),
+            content_hash: "sha256:notes".into(),
+            size: 5,
+            mime_type: "text/plain".into(),
+            path: "assets/files/notes.txt".into(),
+        })
+        .unwrap();
+
+    for update in [
+        AssetMetadataUpdate {
+            asset_id: asset.id.clone(),
+            filename: Some("../notes.txt".into()),
+            role: None,
+            reference_scope: None,
+        },
+        AssetMetadataUpdate {
+            asset_id: asset.id.clone(),
+            filename: None,
+            role: Some("cover".into()),
+            reference_scope: None,
+        },
+        AssetMetadataUpdate {
+            asset_id: asset.id.clone(),
+            filename: None,
+            role: None,
+            reference_scope: Some("global".into()),
+        },
+        AssetMetadataUpdate {
+            asset_id: asset.id.clone(),
+            filename: None,
+            role: Some(ASSET_ROLE_PROFILE.into()),
+            reference_scope: None,
+        },
+    ] {
+        assert!(store
+            .update_asset_metadata_with_request(update, &asset.revision, None)
+            .is_err());
+    }
+}
+
 #[test]
 fn repeated_checkpoint_skips_unchanged_portable_files() {
     let root = std::env::temp_dir().join(format!("daena-checkpoint-skip-{}", Uuid::new_v4()));

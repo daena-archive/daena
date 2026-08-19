@@ -65,6 +65,8 @@ export interface AssetRecord {
   mimeType: string;
   path: string;
   createdAt: string;
+  role: "attachment" | "profile";
+  referenceScope: "entity" | "project";
   revision: string;
 }
 
@@ -310,9 +312,24 @@ export interface ModuleContext {
   assets: {
     list(entityId: UUID): Promise<AssetRecord[]>;
     register(
-      input: Omit<AssetRecord, "id" | "createdAt" | "revision" | "entityId"> & { entityId: UUID },
+      input: Omit<AssetRecord, "id" | "createdAt" | "role" | "referenceScope" | "revision" | "entityId"> & {
+        entityId: UUID;
+      },
       options?: MutationOptions,
     ): Promise<AssetRecord>;
+    updateMetadata(
+      asset: Pick<AssetRecord, "id" | "namespace" | "revision">,
+      update: {
+        filename?: string;
+        role?: "attachment" | "profile";
+        referenceScope?: "entity" | "project";
+      },
+      options?: MutationOptions,
+    ): Promise<AssetRecord>;
+    delete(
+      asset: Pick<AssetRecord, "id" | "namespace" | "revision">,
+      options?: MutationOptions,
+    ): Promise<void>;
   };
   search(query: string): Promise<EntitySummary[]>;
   ai: {

@@ -10,12 +10,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use daena_core::{
-    read_json, validate_checkpoint, Asset, AssetFileInput, AssetInput, AssetReplaceInput,
-    AuthorityContext, CheckpointHandle, CheckpointManifest, CoreError, CoreService, CreateEntity,
-    CreateEntry, CreateEntryField, CreateEntryRelationship, Entity, ExternalChangeReport,
-    FieldValue, GitLogEntry, GitPreflight, GitRemote, GitResetResult, GitStatus, GitToolInfo,
-    Migration, Operation, ProjectInfo, ProjectStore, Relationship, RelationshipInput, SaveDocument,
-    SaveEntry,
+    read_json, validate_checkpoint, Asset, AssetFileInput, AssetFileReplaceInput, AssetInput,
+    AssetMetadataUpdate, AssetReplaceInput, AuthorityContext, CheckpointHandle, CheckpointManifest,
+    CoreError, CoreService, CreateEntity, CreateEntry, CreateEntryField, CreateEntryRelationship,
+    Entity, ExternalChangeReport, FieldValue, GitLogEntry, GitPreflight, GitRemote, GitResetResult,
+    GitStatus, GitToolInfo, Migration, Operation, ProjectInfo, ProjectStore, Relationship,
+    RelationshipInput, SaveDocument, SaveEntry,
 };
 use daena_plugin_api::{
     merge_module_manifest, parse_module_overlay, supports_schema_overlay, CommandAction,
@@ -5287,6 +5287,11 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
             ],
             &[],
         ),
+        "asset.update" => (
+            &["assetId", "namespace", "expectedRevision"],
+            &["filename", "role", "referenceScope"],
+        ),
+        "asset.delete" => (&["assetId", "namespace", "expectedRevision"], &[]),
         "asset.read.begin" => (&["assetId", "namespace"], &[]),
         "asset.replace.begin" => (
             &[
@@ -5760,6 +5765,57 @@ fn dispatch_module_rpc(
             )?)
             .map_err(|error| CoreError::Validation(error.to_string()))
         }
+        "asset.update" => {
+            let expected_revision = required_payload_string(
+                &payload,
+                &["expectedRevision", "expected_revision", "revision"],
+                "expectedRevision",
+            )?;
+            let asset_id = payload_string(&payload, "assetId")?;
+            let namespace = payload_string(&payload, "namespace")?;
+            if project.asset(asset_id.clone())?.namespace != namespace {
+                return Err(CoreError::Unauthorized {
+                    operation: "update asset outside owned namespace",
+                });
+            }
+            let input = AssetMetadataUpdate {
+                asset_id,
+                filename: payload
+                    .get("filename")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                role: payload
+                    .get("role")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                reference_scope: payload
+                    .get("referenceScope")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            };
+            serde_json::to_value(project.update_asset_metadata_with_request(
+                input,
+                &expected_revision,
+                request_id,
+            )?)
+            .map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "asset.delete" => {
+            let expected_revision = required_payload_string(
+                &payload,
+                &["expectedRevision", "expected_revision", "revision"],
+                "expectedRevision",
+            )?;
+            let asset_id = payload_string(&payload, "assetId")?;
+            let namespace = payload_string(&payload, "namespace")?;
+            if project.asset(asset_id.clone())?.namespace != namespace {
+                return Err(CoreError::Unauthorized {
+                    operation: "delete asset outside owned namespace",
+                });
+            }
+            project.delete_asset_with_request(asset_id, &expected_revision, request_id)?;
+            Ok(serde_json::Value::Null)
+        }
         "search.query" => serde_json::to_value(project.search(payload_string(&payload, "query")?)?)
             .map_err(|error| CoreError::Validation(error.to_string())),
         "maps.recovery.list" => {
@@ -6042,6 +6098,8 @@ fn publish_core_mutation_event(
             | "relationship.update"
             | "relationship.delete"
             | "asset.register"
+            | "asset.update"
+            | "asset.delete"
     ) {
         return Ok(());
     }
@@ -8897,6 +8955,70 @@ async fn project_replace_asset_bytes(
 }
 
 #[tauri::command]
+async fn project_replace_asset_file(
+    state: tauri::State<'_, SharedCore>,
+    asset_id: String,
+    source_path: String,
+    mime_type: String,
+    expected_revision: String,
+    request_id: Option<String>,
+) -> Result<Asset, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .replace_asset_file_with_request(
+                AssetFileReplaceInput {
+                    asset_id,
+                    source_path,
+                    mime_type,
+                },
+                &expected_revision,
+                request_id.as_deref(),
+            )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_update_asset_metadata(
+    state: tauri::State<'_, SharedCore>,
+    asset_id: String,
+    filename: Option<String>,
+    role: Option<String>,
+    reference_scope: Option<String>,
+    expected_revision: String,
+    request_id: Option<String>,
+) -> Result<Asset, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .update_asset_metadata_with_request(
+                AssetMetadataUpdate {
+                    asset_id,
+                    filename,
+                    role,
+                    reference_scope,
+                },
+                &expected_revision,
+                request_id.as_deref(),
+            )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_delete_asset(
+    state: tauri::State<'_, SharedCore>,
+    asset_id: String,
+    expected_revision: String,
+    request_id: Option<String>,
+) -> Result<(), String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .delete_asset_with_request(asset_id, &expected_revision, request_id.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
 async fn project_map_location_projection(
     state: tauri::State<'_, SharedCore>,
     map_entity_id: String,
@@ -9298,6 +9420,9 @@ pub fn run() {
             project_delete_raster_layer,
             project_delete_semantic_layer,
             project_replace_asset_bytes,
+            project_replace_asset_file,
+            project_update_asset_metadata,
+            project_delete_asset,
             project_map_location_projection,
             project_query_map_locations,
             project_backup,

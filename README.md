@@ -123,8 +123,3 @@ all my needs, I decided to create my own app ([...with blackjack and hookers](ht
 
 If you find it useful, you can help by reporting bugs, contributing code, or
 sharing it with someone who enjoys worldbuilding.
-
-## For developers
-
-See [README.DEV.md](README.DEV.md) for development instructions. The project is
-licensed under the [Apache License 2.0](LICENSE).

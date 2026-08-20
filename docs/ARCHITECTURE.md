@@ -22,6 +22,8 @@ contracts remain in the focused plans below:
 - [`NATIVE_MAP_INTEGRATION.md`](./NATIVE_MAP_INTEGRATION.md) defines Daena-owned
   vector maps, landmass generation, and image import.
 - [`AI_INTEGRATION.md`](./AI_INTEGRATION.md) defines the future AI subsystem.
+- [`EXTERNAL_IMPORT_SYSTEM.md`](./EXTERNAL_IMPORT_SYSTEM.md) defines the
+  reviewable external-source migration pipeline and importer boundary.
 
 Those documents may add detail but must not contradict the boundaries here.
 ADRs in [`adr/`](./adr/) record narrower decisions and security constraints.

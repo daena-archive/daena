@@ -1,5 +1,6 @@
 mod authority;
 mod error;
+mod external_import;
 pub mod maps;
 mod migrations;
 mod project;
@@ -8,6 +9,13 @@ mod sync;
 
 pub use authority::{Authority, AuthorityContext};
 pub use error::CoreError;
+pub use external_import::{
+    analyze_generic_documents, GenericDocumentImportLimits, ImportAnalysisSummary,
+    ImportDiagnostic, ImportDiagnosticSeverity, ImportSource, ImportSourceKind, ImporterIdentity,
+    MappingHintKind, StagedAsset, StagedDocument, StagedImport, StagedLink, StagedLinkKind,
+    StagedLinkResolution, StagedMappingHint, StagedObject, UnsupportedSourceData,
+    GENERIC_DOCUMENT_IMPORTER_ID, GENERIC_DOCUMENT_IMPORTER_VERSION, STAGED_IMPORT_SCHEMA_VERSION,
+};
 pub use migrations::{FieldDefinition, Migration, Operation};
 pub use project::{
     AcceptedPhysicalMap, AcceptedVectorMap, Asset, AssetFileInput, AssetFileReplaceInput,

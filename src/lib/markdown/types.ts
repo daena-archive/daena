@@ -1,6 +1,7 @@
 export interface EntityReference {
   type: "entityReference";
   entityId: string;
+  isCustom?: boolean;
   children: Array<{ type: string; value?: string; children?: unknown[] }>;
   data?: { hName?: string; hProperties?: Record<string, unknown> };
 }

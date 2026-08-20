@@ -5370,23 +5370,25 @@ onMount(() => {
                       if (target) void selectEntity(target);
                     }} />
                 {:else}
-                  <RichTextEditor
-                    bind:this={editorRef}
-                    value={documentBody}
-                    {entities}
-                    editable={projectDiagnostics.length === 0 && !aiBusy && !aiRewriteOpen}
-                    fullscreen={editorFullscreen}
-                    onChange={updateDocumentBody}
-                    onSelectionChange={setAiSelection}
-                    onAiRequest={openAiAction}
-                    onFullscreenChange={setEditorFullscreen}
-                    placeholder={section === "writing"
-                      ? writingView === "manuscripts"
-                        ? "Write your manuscript…"
-                        : "Write this reference page…"
-                      : section === "maps"
-                        ? "Describe this map and the world it contains…"
-                        : "Write the canonical story of this entry…"} />
+                  {#key selected?.id}
+                    <RichTextEditor
+                      bind:this={editorRef}
+                      value={documentBody}
+                      {entities}
+                      editable={projectDiagnostics.length === 0 && !aiBusy && !aiRewriteOpen}
+                      fullscreen={editorFullscreen}
+                      onChange={updateDocumentBody}
+                      onSelectionChange={setAiSelection}
+                      onAiRequest={openAiAction}
+                      onFullscreenChange={setEditorFullscreen}
+                      placeholder={section === "writing"
+                        ? writingView === "manuscripts"
+                          ? "Write your manuscript…"
+                          : "Write this reference page…"
+                        : section === "maps"
+                          ? "Describe this map and the world it contains…"
+                          : "Write the canonical story of this entry…"} />
+                  {/key}
                 {/if}
                 <div class="editor-footer">
                   <div></div>

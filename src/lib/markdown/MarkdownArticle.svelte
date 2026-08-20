@@ -25,7 +25,7 @@ $: entityIds = new Set(entities.filter((entity) => !entity.deleted).map((entity)
   {/if}
   <div class="markdown-body">
     {#each tree.children as node}
-      <MarkdownNode node={node as never} {entityIds} {onOpenEntity} />
+      <MarkdownNode node={node as never} {entityIds} {entities} {onOpenEntity} />
     {/each}
   </div>
 </div>

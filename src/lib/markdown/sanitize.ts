@@ -20,7 +20,7 @@ export const daenaSanitizeSchema = {
   ],
   attributes: {
     ...defaultSchema.attributes,
-    a: [...(defaultSchema.attributes?.a ?? []), "dataEntityId", "className"],
+    a: [...(defaultSchema.attributes?.a ?? []), "dataEntityId", "dataIsCustom", "className"],
     code: [...(defaultSchema.attributes?.code ?? []), "className", "dataLanguage"],
     img: [...(defaultSchema.attributes?.img ?? []), "src", "alt", "title"],
     p: [...(defaultSchema.attributes?.p ?? []), "style", "dir"],

@@ -3,6 +3,7 @@ import type { Link, PhrasingContent } from "mdast";
 import { defaultHandlers } from "hast-util-to-mdast";
 import type { State as HastState } from "hast-util-to-mdast";
 import { entityIdFromHref } from "./urls.ts";
+import { nodeText } from "./text.ts";
 import type { AlignedParagraph, EntityReference, Spoiler, Underline } from "./types.ts";
 
 function classList(node: Element): string[] {
@@ -89,15 +90,21 @@ const alignedBlock = (state: HastState, node: Element) => {
 const entityOrLink = (state: HastState, node: Element) => {
   const entityId = propertyString(node, "dataEntityId") || entityIdFromHref(propertyString(node, "href"));
   if (entityId) {
+    const children = state.all(node) as PhrasingContent[];
+    const rawIsCustom = (node.properties as Record<string, unknown> | undefined)?.["dataIsCustom"] ?? (node.properties as Record<string, unknown> | undefined)?.["data-is-custom"];
+    const hasFlag = rawIsCustom != null;
+    const isCustom = hasFlag ? String(rawIsCustom) === "true" : children.length > 0 && nodeText({ children } as never).trim().length > 0;
     const result: EntityReference = {
       type: "entityReference",
       entityId,
-      children: state.all(node) as PhrasingContent[],
+      isCustom,
+      children,
       data: {
         hName: "a",
         hProperties: {
           href: `daena://entity/${encodeURIComponent(entityId)}`,
           dataEntityId: entityId,
+          ...(isCustom ? { dataIsCustom: "true" } : {}),
           className: ["entity-reference"],
         },
       },

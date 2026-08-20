@@ -31,15 +31,20 @@ export function applyDaenaEntities(tree: Root): void {
     if (index == null || !parent) return;
     const entityId = entityIdFromLink(node);
     if (!entityId) return;
+    const unwrapped = unwrapBracketLabel(node.children) as EntityReference["children"];
+    const labelText = nodeText({ children: unwrapped }).trim();
+    const isCustom = labelText.length > 0;
     const next: EntityReference = {
       type: "entityReference",
       entityId,
-      children: unwrapBracketLabel(node.children) as EntityReference["children"],
+      isCustom,
+      children: unwrapped,
       data: {
         hName: "a",
         hProperties: {
           href: `daena://entity/${encodeURIComponent(entityId)}`,
           dataEntityId: entityId,
+          dataIsCustom: isCustom ? "true" : "false",
           className: ["entity-reference"],
         },
       },
@@ -56,5 +61,7 @@ export function remarkDaenaEntities() {
 
 export const entityReferenceToMarkdown: ToMarkdownHandle = (node, _parent, state, info) => {
   const reference = node as EntityReference;
+  const isCustom = reference.isCustom ?? (nodeText(reference as never).trim().length > 0);
+  if (!isCustom) return `[[]](${reference.entityId})`;
   return `[[${state.containerPhrasing(reference as never, info)}]](${reference.entityId})`;
 };

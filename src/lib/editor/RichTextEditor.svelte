@@ -55,9 +55,10 @@ import {
 } from "@lucide/svelte";
 import { onMount, tick } from "svelte";
 import { htmlToMarkdown, markdownToHtml } from "$lib/markdown";
-import { promptDialog } from "$lib/dialogs.svelte";
 import type { Entity } from "$lib/project/client";
 import EntityReferenceDialog from "$lib/editor/EntityReferenceDialog.svelte";
+import LinkDialog from "$lib/editor/LinkDialog.svelte";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 const EntityReference = Mark.create({
   name: "entityReference",
@@ -319,6 +320,13 @@ let entityReferenceEdit: {
   left: number;
 } | null = null;
 let aiRequestRange: { from: number; to: number } | null = null;
+let linkDialogOpen = false;
+let linkDialogInitialText = "";
+let linkDialogInitialUrl = "";
+let linkDialogHasSelection = false;
+let linkDialogRange: { from: number; to: number } | null = null;
+let linkPopover: { href: string; text: string; from: number; to: number; top: number; left: number } | null = null;
+let linkPopoverEl: HTMLDivElement | null = null;
 let isFullscreen = false;
 let searchOpen = false;
 let searchReplaceOpen = false;
@@ -458,6 +466,16 @@ function handleFullscreenKeydown(event: KeyboardEvent) {
   if (isMod && event.key.toLowerCase() === "g") {
     event.preventDefault();
     if (searchOpen) goSearch(event.shiftKey ? -1 : 1);
+    return;
+  }
+  if (event.key === "Escape" && linkPopover) {
+    event.preventDefault();
+    hideLinkPopover();
+    return;
+  }
+  if (event.key === "Escape" && linkDialogOpen) {
+    event.preventDefault();
+    cancelLink();
     return;
   }
   if (event.key === "Escape" && searchOpen) {
@@ -607,28 +625,219 @@ function changeBlockStyle(event: Event) {
 }
 
 function setLink() {
-  if (!editorState) return;
+  if (!editorState || !editor) return;
+  const { from, to, empty } = editor.state.selection;
   const previousUrl = editorState.getAttributes("link").href ?? "";
-  void promptDialog({
-    title: "Link URL",
-    message: "Enter the destination for this link.",
-    value: previousUrl,
-    placeholder: "https://…",
-    confirmLabel: "Set link",
-  }).then((nextUrl) => {
-    if (nextUrl === null) return;
-    const url = nextUrl.trim();
-    if (!url) {
-      editorState?.chain().focus().unsetLink().run();
+
+  if (!empty) {
+    const selectedText = editor.state.doc.textBetween(from, to, " ");
+    if (selectedText.trim()) {
+      linkDialogInitialText = selectedText;
+      linkDialogInitialUrl = previousUrl;
+      linkDialogHasSelection = true;
+      linkDialogRange = { from, to };
+      linkDialogOpen = true;
       return;
     }
-    editorState
-      ?.chain()
-      .focus()
-      .extendMarkRange("link")
-      .setLink({ href: url, target: "_blank", rel: "noopener noreferrer" })
-      .run();
+  }
+
+  const $pos = editor.state.doc.resolve(from);
+  const linkType = editor.state.schema.marks.link;
+  const linkRange = linkType ? getMarkRange($pos, linkType) : null;
+  if (linkRange) {
+    const linkText = editor.state.doc.textBetween(linkRange.from, linkRange.to, " ");
+    const href = editorState.getAttributes("link").href ?? "";
+    linkDialogInitialText = linkText;
+    linkDialogInitialUrl = href;
+    linkDialogHasSelection = false;
+    linkDialogRange = { from: linkRange.from, to: linkRange.to };
+    linkDialogOpen = true;
+    return;
+  }
+
+  linkDialogInitialText = "";
+  linkDialogInitialUrl = "";
+  linkDialogHasSelection = false;
+  linkDialogRange = { from, to };
+  linkDialogOpen = true;
+}
+
+function confirmLink(displayText: string, url: string) {
+  if (!editorState || !editor || !linkDialogRange) {
+    linkDialogOpen = false;
+    return;
+  }
+  const href = url.trim();
+  if (!href) {
+    if (linkDialogInitialUrl) editorState.chain().focus().extendMarkRange("link").unsetLink().run();
+    linkDialogOpen = false;
+    return;
+  }
+  const range = linkDialogRange;
+  const wasSelection = linkDialogHasSelection;
+  // close before transaction to avoid focus issues; keep range copy
+  linkDialogOpen = false;
+  if (wasSelection) {
+    // Apply link to the original selection; preserve inline marks via extendMarkRange
+    editorState.chain().focus().setTextSelection(range).extendMarkRange("link").setLink({ href, target: "_blank", rel: "noopener noreferrer" }).run();
+  } else {
+    const text = displayText.trim();
+    if (!text) return;
+    const isEditingExisting = !!linkDialogInitialUrl && range.from !== range.to;
+    if (isEditingExisting) {
+      editorState
+        .chain()
+        .focus()
+        .insertContentAt(range, [{ type: "text", text, marks: [{ type: "link", attrs: { href, target: "_blank", rel: "noopener noreferrer" } }] }])
+        .run();
+    } else {
+      editorState
+        .chain()
+        .focus()
+        .insertContentAt(range.from, [{ type: "text", text, marks: [{ type: "link", attrs: { href, target: "_blank", rel: "noopener noreferrer" } }] }])
+        .run();
+    }
+  }
+}
+
+function cancelLink() {
+  linkDialogOpen = false;
+  editor?.commands.focus();
+}
+
+function removeLink() {
+  if (!editorState) {
+    linkDialogOpen = false;
+    return;
+  }
+  if (linkDialogRange && linkDialogRange.from !== linkDialogRange.to) {
+    editorState.chain().focus().setTextSelection(linkDialogRange).extendMarkRange("link").unsetLink().run();
+  } else {
+    editorState.chain().focus().extendMarkRange("link").unsetLink().run();
+  }
+  linkDialogOpen = false;
+}
+
+function showLinkPopover(href: string, text: string, from: number, to: number, bounds: DOMRect) {
+  linkPopover = { href, text, from, to, top: bounds.bottom + 6, left: bounds.left };
+  tick().then(() => {
+    if (!linkPopover || !linkPopoverEl) return;
+    const rect = linkPopoverEl.getBoundingClientRect();
+    let left = linkPopover.left;
+    let top = linkPopover.top;
+    left = Math.max(8, Math.min(left, window.innerWidth - rect.width - 8));
+    if (top + rect.height > window.innerHeight - 8) top = bounds.top - rect.height - 6;
+    top = Math.max(8, Math.min(top, window.innerHeight - rect.height - 8));
+    if (top !== linkPopover.top || left !== linkPopover.left) linkPopover = { ...linkPopover, top, left };
   });
+}
+
+function hideLinkPopover() {
+  linkPopover = null;
+}
+
+async function openLinkExternal() {
+  if (!linkPopover) return;
+  const rawHref = linkPopover.href.trim();
+  if (!rawHref) return;
+  const href = /^https?:\/\//i.test(rawHref) || /^mailto:/i.test(rawHref) || /^ftp:/i.test(rawHref) ? rawHref : `https://${rawHref}`;
+  hideLinkPopover();
+  const isTauri = typeof window !== "undefined" && ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__);
+  if (isTauri) {
+    try {
+      await openUrl(href);
+      return;
+    } catch (e) {
+      console.warn("openUrl failed, fallback to window.open", e);
+    }
+    try {
+      window.open(href, "_blank", "noopener,noreferrer");
+      return;
+    } catch (e) {
+      console.warn("window.open fallback failed", e);
+    }
+  } else {
+    try {
+      const w = window.open(href, "_blank", "noopener,noreferrer");
+      if (w) return;
+    } catch (e) {
+      console.warn("window.open failed", e);
+    }
+    try {
+      await openUrl(href);
+      return;
+    } catch (e) {
+      console.warn("openUrl fallback failed", e);
+    }
+    try {
+      const a = document.createElement("a");
+      a.href = href;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (e) {
+      console.warn("anchor fallback failed", e);
+    }
+  }
+}
+
+function editLinkFromPopover() {
+  if (!linkPopover) return;
+  const { href, text, from, to } = linkPopover;
+  hideLinkPopover();
+  linkDialogInitialText = text;
+  linkDialogInitialUrl = href;
+  linkDialogHasSelection = false;
+  linkDialogRange = { from, to };
+  linkDialogOpen = true;
+}
+
+function unlinkFromPopover() {
+  if (!linkPopover || !editorState) return;
+  const range = { from: linkPopover.from, to: linkPopover.to };
+  hideLinkPopover();
+  editorState.chain().focus().setTextSelection(range).extendMarkRange("link").unsetLink().run();
+}
+
+function syncLinkPopover(nextEditor: Editor) {
+  if (!linkPopover || linkDialogOpen) return;
+  const { from, to } = nextEditor.state.selection;
+  // hide if selection moves outside the popover link range
+  if (from < linkPopover.from || from > linkPopover.to) {
+    // also check if still on same link href
+    const $pos = nextEditor.state.doc.resolve(from);
+    const linkType = nextEditor.state.schema.marks.link;
+    const range = linkType ? getMarkRange($pos, linkType) : null;
+    const href = nextEditor.getAttributes("link").href ?? "";
+    if (!range || range.from !== linkPopover.from || range.to !== linkPopover.to || href !== linkPopover.href) {
+      hideLinkPopover();
+    }
+  }
+}
+
+function getExternalLinkAnchor(target: EventTarget | null): HTMLAnchorElement | null {
+  if (!target) return null;
+  const el = target as HTMLElement;
+  if ((el as any)?.closest) {
+    const found = (el as HTMLElement).closest<HTMLAnchorElement>("a[href]:not([data-entity-id])");
+    if (found) return found;
+  }
+  const parent = (target as any)?.parentElement as HTMLElement | null;
+  if (parent?.closest) return parent.closest<HTMLAnchorElement>("a[href]:not([data-entity-id])");
+  return null;
+}
+
+function getSpoilerEl(target: EventTarget | null): HTMLElement | null {
+  if (!target) return null;
+  const el = target as HTMLElement;
+  if ((el as any)?.closest) {
+    const found = (el as HTMLElement).closest<HTMLElement>("span[data-spoiler]");
+    if (found) return found;
+  }
+  const parent = (target as any)?.parentElement as HTMLElement | null;
+  return parent?.closest?.("span[data-spoiler]") ?? null;
 }
 
 function insertEntityReference(entity: Entity, label: string) {
@@ -893,6 +1102,15 @@ onMount(() => {
   moreMenuHydrated = true;
   window.addEventListener("keydown", handleFullscreenKeydown);
   window.addEventListener("resize", handleResize);
+  const handleLinkPopoverOutside = (event: MouseEvent) => {
+    if (!linkPopover) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest(".link-popover") || target?.closest(".link-dialog")) return;
+    if (target?.closest("a[href]:not([data-entity-id])")) return;
+    hideLinkPopover();
+  };
+  window.addEventListener("mousedown", handleLinkPopoverOutside);
+  window.addEventListener("resize", hideLinkPopover);
   editor = new Editor({
     element: editorElement,
     extensions: [
@@ -928,11 +1146,38 @@ onMount(() => {
         spellcheck: "true",
       },
       handleClick: (_view, _position, event) => {
-        const spoilerEl = (event.target as HTMLElement | null)?.closest<HTMLElement>("span[data-spoiler]");
+        const spoilerEl = getSpoilerEl(event.target);
         if (spoilerEl) {
           event.preventDefault();
           const revealed = spoilerEl.classList.toggle("revealed");
           spoilerEl.setAttribute("aria-expanded", revealed ? "true" : "false");
+          return true;
+        }
+        const linkAnchor = getExternalLinkAnchor(event.target);
+        if (linkAnchor) {
+          event.preventDefault();
+          event.stopPropagation();
+          const href = linkAnchor.getAttribute("href") ?? "";
+          if (!href) return true;
+          const targetEditor = editor ?? editorState;
+          const linkType = targetEditor?.state.schema.marks.link;
+          const doc = targetEditor?.state.doc;
+          let from = _position;
+          let to = _position;
+          let text = linkAnchor.textContent ?? "";
+          if (linkType && doc) {
+            try {
+              const $pos = doc.resolve(_position);
+              const range = getMarkRange($pos, linkType);
+              if (range) {
+                from = range.from;
+                to = range.to;
+                text = doc.textBetween(range.from, range.to, " ");
+              }
+            } catch {}
+          }
+          if (linkPopover && linkPopover.href === href && linkPopover.from === from && linkPopover.to === to) hideLinkPopover();
+          else showLinkPopover(href, text, from, to, linkAnchor.getBoundingClientRect());
           return true;
         }
         const anchor = (event.target as HTMLElement | null)?.closest<HTMLAnchorElement>("a[data-entity-id]");
@@ -953,6 +1198,24 @@ onMount(() => {
               _view.posAtDOM(anchor, 0),
               anchor.getBoundingClientRect(),
             );
+          }
+          return false;
+        },
+        click: (_view, event) => {
+          const linkAnchor = getExternalLinkAnchor(event.target);
+          if (linkAnchor) {
+            event.preventDefault();
+            event.stopPropagation();
+            return true;
+          }
+          return false;
+        },
+        auxclick: (_view, event) => {
+          const linkAnchor = getExternalLinkAnchor(event.target);
+          if (linkAnchor) {
+            event.preventDefault();
+            event.stopPropagation();
+            return true;
           }
           return false;
         },
@@ -995,11 +1258,24 @@ onMount(() => {
       updateEntityReferenceTrigger(nextEditor);
       syncEntityReferenceEditor(nextEditor);
       syncSearchState(nextEditor);
+      syncLinkPopover(nextEditor);
     },
   });
   editorState = editor;
   currentMarkdown = htmlToMarkdown(editor.getHTML());
   editorText = editor.view.dom.textContent ?? "";
+  const preventLinkNavigationCapture = (event: MouseEvent) => {
+    const anchor = getExternalLinkAnchor(event.target);
+    if (anchor) event.preventDefault();
+  };
+  const preventWindowLinkClickCapture = (event: MouseEvent) => {
+    const anchor = getExternalLinkAnchor(event.target);
+    if (anchor && editorElement.contains(anchor as Node)) event.preventDefault();
+  };
+  editorElement.addEventListener("click", preventLinkNavigationCapture, true);
+  editorElement.addEventListener("auxclick", preventLinkNavigationCapture, true);
+  window.addEventListener("click", preventWindowLinkClickCapture, true);
+  window.addEventListener("auxclick", preventWindowLinkClickCapture, true);
   const initialTextFrame = requestAnimationFrame(() => {
     editorText = editor?.view.dom.textContent ?? "";
   });
@@ -1007,6 +1283,12 @@ onMount(() => {
   return () => {
     window.removeEventListener("keydown", handleFullscreenKeydown);
     window.removeEventListener("resize", handleResize);
+    window.removeEventListener("mousedown", handleLinkPopoverOutside);
+    window.removeEventListener("resize", hideLinkPopover);
+    window.removeEventListener("click", preventWindowLinkClickCapture, true);
+    window.removeEventListener("auxclick", preventWindowLinkClickCapture, true);
+    editorElement.removeEventListener("click", preventLinkNavigationCapture, true);
+    editorElement.removeEventListener("auxclick", preventLinkNavigationCapture, true);
     cancelAnimationFrame(initialTextFrame);
     editor?.destroy();
   };
@@ -1592,6 +1874,27 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
       onmousedown={(event) => event.preventDefault()}
       onclick={openEntityReferenceEditor}>Edit reference</button>
   {/if}
+  {#if linkPopover && !linkDialogOpen}
+    <div
+      use:portal
+      class="link-popover"
+      bind:this={linkPopoverEl}
+      style={`top: ${linkPopover.top}px; left: ${linkPopover.left}px;`}
+      role="dialog"
+      aria-label="Link actions">
+      <div class="link-popover-url" title={linkPopover.href}>{linkPopover.href}</div>
+      <div class="link-popover-actions">
+        <button type="button" class="link-popover-btn" onmousedown={(event) => event.preventDefault()} onclick={openLinkExternal}
+          >Open</button>
+        <button type="button" class="link-popover-btn primary" onmousedown={(event) => event.preventDefault()} onclick={editLinkFromPopover}
+          >Edit</button>
+        <button type="button" class="link-popover-btn danger" onmousedown={(event) => event.preventDefault()} onclick={unlinkFromPopover}
+          >Unlink</button>
+      </div>
+      <button type="button" class="link-popover-close" aria-label="Close link popover" onmousedown={(event) => event.preventDefault()} onclick={hideLinkPopover}
+        ><XIcon size={12} strokeWidth={1.8} /></button>
+    </div>
+  {/if}
 
   <div class="editor-statusbar" aria-live="polite">
     <span>{wordCountValue} {wordCountValue === 1 ? "word" : "words"}</span>
@@ -1608,6 +1911,14 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
     initialLabel={entityReferenceDialogMode === "edit" ? (entityReferenceEdit?.label ?? "") : ""}
     onInsert={saveEntityReference}
     onCancel={cancelEntityReference} />
+  <LinkDialog
+    open={linkDialogOpen}
+    initialText={linkDialogInitialText}
+    initialUrl={linkDialogInitialUrl}
+    hasSelection={linkDialogHasSelection}
+    onConfirm={confirmLink}
+    onCancel={cancelLink}
+    onRemove={linkDialogInitialUrl ? removeLink : null} />
 </div>
 
 <style>
@@ -1769,8 +2080,8 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  min-width: 320px;
-  max-width: min(480px, 92vw);
+  min-width: min(500px, 92vw);
+  max-width: min(540px, 92vw);
   padding: 10px;
   border: 1px solid #d8cdbd;
   border-radius: 10px;
@@ -1932,6 +2243,94 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
 .entity-reference-edit:focus-visible {
   border-color: #b4773f;
   background: #f2e4d2;
+  outline: 0;
+}
+.link-popover {
+  position: fixed;
+  z-index: 76;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(380px, calc(100vw - 16px));
+  min-height: 36px;
+  padding: 6px 8px 6px 12px;
+  border: 1px solid #d3c0a9;
+  border-radius: 8px;
+  background: var(--surface, #fffefa);
+  box-shadow: 0 10px 24px rgba(48, 45, 38, 0.18);
+}
+.link-popover-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent-dark, #365342);
+  font: 500 12px/1 var(--font-body, system-ui, sans-serif);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.link-popover-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.link-popover-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid #d3c0a9;
+  border-radius: 6px;
+  background: var(--surface, #fffefa);
+  color: var(--ink-soft, #77766d);
+  font: 600 11px/1 var(--font-body, system-ui, sans-serif);
+  cursor: pointer;
+}
+.link-popover-btn:hover,
+.link-popover-btn:focus-visible {
+  border-color: #b4773f;
+  background: var(--surface-muted, #f4f2ec);
+  color: var(--ink, #25251f);
+  outline: 0;
+}
+.link-popover-btn.primary {
+  border-color: var(--accent-dark, #365342);
+  background: var(--accent-dark, #365342);
+  color: #fff;
+}
+.link-popover-btn.primary:hover {
+  filter: brightness(1.06);
+}
+.link-popover-btn.danger {
+  border-color: transparent;
+  color: #a14f42;
+}
+.link-popover-btn.danger:hover {
+  border-color: #e8c0b8;
+  background: #fdf0ed;
+  color: #8a3a2f;
+}
+.link-popover-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-faint, #aaa79d);
+  cursor: pointer;
+}
+.link-popover-close:hover,
+.link-popover-close:focus-visible {
+  background: var(--surface-muted, #f4f2ec);
+  color: var(--ink, #25251f);
   outline: 0;
 }
 .editor-toolbar button.ai-toolbar-button {

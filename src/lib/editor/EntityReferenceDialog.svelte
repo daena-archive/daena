@@ -1,5 +1,6 @@
 <script lang="ts">
 import { tick } from "svelte";
+import { X } from "@lucide/svelte";
 import type { Entity } from "$lib/project/client";
 
 export let open = false;
@@ -90,7 +91,7 @@ $: if (!open && lastFocused) {
           <span>ENTITY REFERENCE</span>
           <h2 id="entity-reference-title">Link to another entity</h2>
         </div>
-        <button type="button" aria-label="Close entity reference dialog" onclick={onCancel}>×</button>
+        <button type="button" aria-label="Close entity reference dialog" onclick={onCancel}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </header>
       <label class="entity-reference-search">
         <span>Search entities</span>

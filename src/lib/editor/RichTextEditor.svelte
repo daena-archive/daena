@@ -1,5 +1,8 @@
 <script lang="ts">
-import { Editor, Mark, getMarkRange } from "@tiptap/core";
+import { Editor, Mark, Extension, getMarkRange } from "@tiptap/core";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
+import type { EditorState, Transaction } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import Code from "@tiptap/extension-code";
 import CodeBlock from "@tiptap/extension-code-block";
 import Blockquote from "@tiptap/extension-blockquote";
@@ -44,6 +47,11 @@ import {
   GripVertical,
   RectangleVertical,
   RectangleHorizontal,
+  Link as LinkIcon,
+  Search as SearchIcon,
+  ChevronUp,
+  ChevronDown,
+  Replace as ReplaceIcon,
 } from "@lucide/svelte";
 import { onMount, tick } from "svelte";
 import { htmlToMarkdown, markdownToHtml } from "$lib/markdown";
@@ -109,6 +117,162 @@ const Spoiler = Mark.create({
   },
 });
 
+type SearchState = {
+  query: string;
+  caseSensitive: boolean;
+  wholeWord: boolean;
+  useRegex: boolean;
+  decorations: DecorationSet;
+  matches: Array<{ from: number; to: number }>;
+  activeIndex: number;
+};
+
+const searchPluginKey = new PluginKey<SearchState>("search");
+
+function escapeRegExp(s: string) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildSearchRegex(query: string, caseSensitive: boolean, wholeWord: boolean, useRegex: boolean): RegExp | null {
+  if (!query) return null;
+  try {
+    let pattern = useRegex ? query : escapeRegExp(query);
+    if (wholeWord) pattern = `\\b${pattern}\\b`;
+    return new RegExp(pattern, caseSensitive ? "g" : "gi");
+  } catch {
+    return null;
+  }
+}
+
+function findMatches(
+  doc: any,
+  query: string,
+  caseSensitive: boolean,
+  wholeWord: boolean,
+  useRegex: boolean,
+): Array<{ from: number; to: number }> {
+  const regex = buildSearchRegex(query, caseSensitive, wholeWord, useRegex);
+  if (!regex) return [];
+  const matches: Array<{ from: number; to: number }> = [];
+  doc.descendants((node: any, pos: number) => {
+    if (!node.isText || !node.text) return;
+    const text = node.text as string;
+    let m: RegExpExecArray | null;
+    regex.lastIndex = 0;
+    while ((m = regex.exec(text))) {
+      if (m[0].length === 0) {
+        regex.lastIndex++;
+        continue;
+      }
+      const from = pos + m.index;
+      const to = from + m[0].length;
+      matches.push({ from, to });
+      if (m[0].length === 0) break;
+    }
+  });
+  return matches;
+}
+
+function createDecorations(doc: any, matches: Array<{ from: number; to: number }>, activeIndex: number): DecorationSet {
+  if (matches.length === 0) return DecorationSet.empty;
+  const decos = matches.map((m, idx) =>
+    Decoration.inline(m.from, m.to, { class: idx === activeIndex ? "search-match-active" : "search-match" }),
+  );
+  return DecorationSet.create(doc, decos);
+}
+
+function createSearchPlugin() {
+  return new Plugin<SearchState>({
+    key: searchPluginKey,
+    state: {
+      init(): SearchState {
+        return {
+          query: "",
+          caseSensitive: false,
+          wholeWord: false,
+          useRegex: false,
+          decorations: DecorationSet.empty,
+          matches: [],
+          activeIndex: -1,
+        };
+      },
+      apply(tr: Transaction, prev: SearchState, _oldState: EditorState, newState: EditorState): SearchState {
+        let query = prev.query;
+        let caseSensitive = prev.caseSensitive;
+        let wholeWord = prev.wholeWord;
+        let useRegex = prev.useRegex;
+        let activeIndex = prev.activeIndex;
+        const meta = tr.getMeta(searchPluginKey) as
+          Partial<SearchState & { activeDelta?: number; setActiveIndex?: number }> | undefined;
+        let queryChanged = false;
+        if (meta) {
+          if (typeof meta.query === "string") {
+            query = meta.query;
+            queryChanged = true;
+          }
+          if (typeof meta.caseSensitive === "boolean") {
+            caseSensitive = meta.caseSensitive;
+            queryChanged = true;
+          }
+          if (typeof meta.wholeWord === "boolean") {
+            wholeWord = meta.wholeWord;
+            queryChanged = true;
+          }
+          if (typeof meta.useRegex === "boolean") {
+            useRegex = meta.useRegex;
+            queryChanged = true;
+          }
+          if (typeof meta.setActiveIndex === "number") {
+            activeIndex = meta.setActiveIndex;
+          } else if (typeof meta.activeDelta === "number") {
+            if (prev.matches.length > 0) {
+              activeIndex = (activeIndex + meta.activeDelta + prev.matches.length) % prev.matches.length;
+            }
+          }
+        }
+        const docChanged = tr.docChanged;
+        const needRecompute = queryChanged || docChanged;
+        let matches = prev.matches;
+        let decorations = prev.decorations;
+        if (needRecompute) {
+          if (!query) {
+            matches = [];
+            decorations = DecorationSet.empty;
+            activeIndex = -1;
+          } else {
+            matches = findMatches(newState.doc, query, caseSensitive, wholeWord, useRegex);
+            if (matches.length === 0) {
+              activeIndex = -1;
+            } else if (activeIndex < 0 || activeIndex >= matches.length) {
+              activeIndex = 0;
+            } else if (queryChanged) {
+              activeIndex = 0;
+            }
+            decorations = createDecorations(newState.doc, matches, activeIndex);
+          }
+        } else if (meta && (typeof meta.setActiveIndex === "number" || typeof meta.activeDelta === "number")) {
+          decorations = createDecorations(newState.doc, matches, activeIndex);
+        } else if (decorations !== DecorationSet.empty) {
+          decorations = decorations.map(tr.mapping, tr.doc);
+        }
+        return { query, caseSensitive, wholeWord, useRegex, decorations, matches, activeIndex };
+      },
+    },
+    props: {
+      decorations(state: EditorState) {
+        return searchPluginKey.getState(state)?.decorations ?? DecorationSet.empty;
+      },
+    },
+  });
+}
+
+const SearchAndReplace = Extension.create({
+  name: "searchAndReplace",
+  addProseMirrorPlugins() {
+    return [createSearchPlugin()];
+  },
+});
+
 export let value = "";
 export let placeholder = "Start writing…";
 export let onChange: (value: string) => void = () => {};
@@ -156,6 +320,17 @@ let entityReferenceEdit: {
 } | null = null;
 let aiRequestRange: { from: number; to: number } | null = null;
 let isFullscreen = false;
+let searchOpen = false;
+let searchReplaceOpen = false;
+let searchQuery = "";
+let replaceQuery = "";
+let searchCaseSensitive = false;
+let searchWholeWord = false;
+let searchUseRegex = false;
+let searchMatchCount = 0;
+let searchActiveIndex = -1;
+let searchInputEl: HTMLInputElement | null = null;
+let replaceInputEl: HTMLInputElement | null = null;
 $: wordCountValue = editorText.trim() ? editorText.trim().split(/\s+/).length : 0;
 $: characterCountValue = editorText.length;
 $: if (fullscreen !== isFullscreen) isFullscreen = fullscreen;
@@ -269,6 +444,27 @@ function toggleFullscreen() {
 }
 
 function handleFullscreenKeydown(event: KeyboardEvent) {
+  const isMod = event.metaKey || event.ctrlKey;
+  if (isMod && event.key.toLowerCase() === "f") {
+    event.preventDefault();
+    openSearch(false);
+    return;
+  }
+  if (isMod && event.key.toLowerCase() === "h") {
+    event.preventDefault();
+    openSearch(true);
+    return;
+  }
+  if (isMod && event.key.toLowerCase() === "g") {
+    event.preventDefault();
+    if (searchOpen) goSearch(event.shiftKey ? -1 : 1);
+    return;
+  }
+  if (event.key === "Escape" && searchOpen) {
+    event.preventDefault();
+    closeSearch();
+    return;
+  }
   if (event.key === "Escape" && moreMenuOpen) {
     event.preventDefault();
     moreMenuOpen = false;
@@ -577,6 +773,111 @@ function isDirection(direction: string): boolean {
   );
 }
 
+function syncSearchState(nextEditor: Editor) {
+  const state = searchPluginKey.getState(nextEditor.state);
+  if (!state) return;
+  searchMatchCount = state.matches.length;
+  searchActiveIndex = state.activeIndex;
+  if (state.matches.length > 0 && state.activeIndex >= 0) {
+    tick().then(() => {
+      try {
+        const matchEl = document.querySelector(".search-match-active") as HTMLElement | null;
+        matchEl?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      } catch {}
+    });
+  }
+}
+
+function dispatchSearch() {
+  if (!editor) return;
+  editor.view.dispatch(
+    editor.view.state.tr.setMeta(searchPluginKey, {
+      query: searchQuery,
+      caseSensitive: searchCaseSensitive,
+      wholeWord: searchWholeWord,
+      useRegex: searchUseRegex,
+    }),
+  );
+  // sync will happen via onTransaction
+}
+
+function openSearch(withReplace = false) {
+  searchOpen = true;
+  if (withReplace) searchReplaceOpen = true;
+  tick().then(() => searchInputEl?.focus());
+  if (searchQuery) dispatchSearch();
+}
+
+function closeSearch() {
+  searchOpen = false;
+  searchReplaceOpen = false;
+  if (editor) {
+    editor.view.dispatch(editor.view.state.tr.setMeta(searchPluginKey, { query: "" }));
+  }
+  editor?.commands.focus();
+}
+
+function goSearch(delta: number) {
+  if (!editor) return;
+  editor.view.dispatch(editor.view.state.tr.setMeta(searchPluginKey, { activeDelta: delta }));
+  tick().then(() => editor && syncSearchState(editor));
+}
+
+function replaceOne() {
+  if (!editor || !searchQuery) return;
+  const state = searchPluginKey.getState(editor.state);
+  if (!state || state.matches.length === 0 || state.activeIndex < 0) return;
+  const { from, to } = state.matches[state.activeIndex];
+  let replacement = replaceQuery;
+  if (searchUseRegex) {
+    try {
+      const regex = buildSearchRegex(searchQuery, searchCaseSensitive, searchWholeWord, true);
+      if (regex) {
+        const text = editor.state.doc.textBetween(from, to, "\n");
+        const nonGlobal = new RegExp(regex.source, regex.flags.replace(/g/g, ""));
+        replacement = text.replace(nonGlobal, replaceQuery);
+      }
+    } catch {}
+  }
+  const tr = editor.state.tr.insertText(replacement, from, to);
+  editor.view.dispatch(tr);
+  editor.commands.focus();
+}
+
+function replaceAll() {
+  if (!editor || !searchQuery) return;
+  const state = searchPluginKey.getState(editor.state);
+  if (!state || state.matches.length === 0) return;
+  const matches = [...state.matches].sort((a, b) => b.from - a.from);
+  let tr = editor.state.tr;
+  for (const m of matches) {
+    let replacement = replaceQuery;
+    if (searchUseRegex) {
+      try {
+        const regex = buildSearchRegex(searchQuery, searchCaseSensitive, searchWholeWord, true);
+        if (regex) {
+          const text = editor.state.doc.textBetween(m.from, m.to, "\n");
+          const nonGlobal = new RegExp(regex.source, regex.flags.replace(/g/g, ""));
+          replacement = text.replace(nonGlobal, replaceQuery);
+        }
+      } catch {}
+    }
+    tr = tr.insertText(replacement, m.from, m.to);
+  }
+  editor.view.dispatch(tr);
+  editor.commands.focus();
+}
+
+function handleSearchKeydown(event: KeyboardEvent) {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    goSearch(event.shiftKey ? -1 : 1);
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    closeSearch();
+  }
+}
+
 onMount(() => {
   try {
     const savedOpen = localStorage.getItem("daena:moreMenuOpen");
@@ -611,6 +912,7 @@ onMount(() => {
       OrderedList,
       ListItem,
       Spoiler,
+      SearchAndReplace,
       ExternalLink.configure({ openOnClick: false, autolink: true, linkOnPaste: true }),
       EntityReference,
       TextAlign.configure({ types: ["heading", "paragraph"], alignments: ["left", "center", "right"] }),
@@ -692,6 +994,7 @@ onMount(() => {
       emitSelection();
       updateEntityReferenceTrigger(nextEditor);
       syncEntityReferenceEditor(nextEditor);
+      syncSearchState(nextEditor);
     },
   });
   editorState = editor;
@@ -1009,6 +1312,7 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
                     type="button"
                     title={moreMenuVertical ? "Switch to horizontal layout" : "Switch to vertical layout"}
                     aria-label="Toggle layout"
+                    aria-pressed={moreMenuVertical}
                     onclick={(e) => {
                       e.stopPropagation();
                       moreMenuVertical = !moreMenuVertical;
@@ -1050,6 +1354,13 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
                 class:active={editorState?.isActive("spoiler")}
                 onclick={() => run((currentEditor) => (currentEditor.chain().focus() as any).toggleSpoiler().run())}
                 ><EyeOff size={14} strokeWidth={1.8} /></button>
+              <button
+                type="button"
+                title="Link (⌘/Ctrl + K)"
+                aria-label="Link"
+                aria-pressed={editorState?.isActive("link") ?? false}
+                class:active={editorState?.isActive("link")}
+                onclick={setLink}><LinkIcon size={14} strokeWidth={1.8} /></button>
               <span class="toolbar-divider"></span>
               <button
                 type="button"
@@ -1127,6 +1438,15 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
       {/if}
 
       <button
+        class="search-toggle"
+        type="button"
+        title="Find and replace (⌘/Ctrl + F)"
+        aria-label="Find and replace"
+        aria-pressed={searchOpen}
+        class:active={searchOpen}
+        onclick={() => (searchOpen ? closeSearch() : openSearch(false))}
+        ><SearchIcon size={14} strokeWidth={1.8} /></button>
+      <button
         class="fullscreen-toggle"
         type="button"
         title={isFullscreen ? "Exit full screen editor (Esc)" : "Open full screen editor"}
@@ -1138,6 +1458,113 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
             strokeWidth={1.8} />{/if}</button>
     </div>
   </div>
+  {#if searchOpen}
+    <div class="search-bar" role="search" aria-label="Find and replace">
+      <div class="search-row">
+        <div class="search-input-group">
+          <SearchIcon size={12} strokeWidth={1.8} class="search-input-icon" />
+          <input
+            bind:this={searchInputEl}
+            type="text"
+            placeholder="Find"
+            aria-label="Find"
+            bind:value={searchQuery}
+            oninput={dispatchSearch}
+            onkeydown={handleSearchKeydown} />
+          <div class="search-inline-options">
+            <button
+              type="button"
+              class="search-inline-btn"
+              title="Match case (Aa)"
+              aria-label="Match case"
+              aria-pressed={searchCaseSensitive}
+              class:active={searchCaseSensitive}
+              onclick={() => {
+                searchCaseSensitive = !searchCaseSensitive;
+                dispatchSearch();
+              }}>Aa</button>
+            <button
+              type="button"
+              class="search-inline-btn"
+              title="Match whole word"
+              aria-label="Match whole word"
+              aria-pressed={searchWholeWord}
+              class:active={searchWholeWord}
+              onclick={() => {
+                searchWholeWord = !searchWholeWord;
+                dispatchSearch();
+              }}>wd</button>
+            <button
+              type="button"
+              class="search-inline-btn"
+              title="Use regular expression"
+              aria-label="Use regular expression"
+              aria-pressed={searchUseRegex}
+              class:active={searchUseRegex}
+              onclick={() => {
+                searchUseRegex = !searchUseRegex;
+                dispatchSearch();
+              }}>.*</button>
+          </div>
+        </div>
+        <button
+          type="button"
+          class="search-icon-btn"
+          title={searchReplaceOpen ? "Hide replace" : "Show replace (⌘/Ctrl + H)"}
+          aria-label="Toggle replace"
+          aria-pressed={searchReplaceOpen}
+          class:active={searchReplaceOpen}
+          onclick={() => {
+            searchReplaceOpen = !searchReplaceOpen;
+            tick().then(() => (searchReplaceOpen ? replaceInputEl?.focus() : searchInputEl?.focus()));
+          }}><ReplaceIcon size={14} strokeWidth={1.8} /></button>
+        <div class="search-nav-group">
+          <button
+            type="button"
+            class="search-nav"
+            title="Previous (Shift+Enter)"
+            aria-label="Previous match"
+            disabled={!searchMatchCount}
+            onclick={() => goSearch(-1)}>‹</button>
+          <button
+            type="button"
+            class="search-nav"
+            title="Next (Enter)"
+            aria-label="Next match"
+            disabled={!searchMatchCount}
+            onclick={() => goSearch(1)}>›</button>
+          <span class="search-count"
+            >{searchQuery ? `${searchMatchCount ? searchActiveIndex + 1 : 0}/${searchMatchCount}` : "0/0"}</span>
+        </div>
+        <button type="button" class="search-close" title="Close (Esc)" aria-label="Close search" onclick={closeSearch}
+          ><XIcon size={14} strokeWidth={1.8} /></button>
+      </div>
+      {#if searchReplaceOpen}
+        <div class="search-row replace-row">
+          <div class="search-input-group">
+            <ReplaceIcon size={12} strokeWidth={1.8} class="search-input-icon" />
+            <input
+              bind:this={replaceInputEl}
+              type="text"
+              placeholder="Replace"
+              aria-label="Replace"
+              bind:value={replaceQuery}
+              onkeydown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  replaceOne();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  closeSearch();
+                }
+              }} />
+          </div>
+          <button type="button" class="search-action" disabled={!searchMatchCount} onclick={replaceOne}>Replace</button>
+          <button type="button" class="search-action" disabled={!searchMatchCount} onclick={replaceAll}>All</button>
+        </div>
+      {/if}
+    </div>
+  {/if}
 
   <div
     class="editor-content"
@@ -1187,7 +1614,7 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
 .editor-shell {
   position: relative;
   display: grid;
-  grid-template-rows: auto minmax(390px, 1fr) auto;
+  grid-template-rows: auto auto minmax(390px, 1fr) auto;
   overflow: hidden;
   border: 1px solid var(--line, #e4e1d8);
   border-radius: 10px;
@@ -1195,6 +1622,7 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
   box-shadow: var(--shadow-sm, 0 2px 8px rgba(38, 42, 33, 0.05));
 }
 .editor-toolbar {
+  grid-row: 1;
   position: relative;
   display: flex;
   align-items: center;
@@ -1595,6 +2023,7 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
   outline: 0;
 }
 .editor-content {
+  grid-row: 3;
   position: relative;
   min-width: 0;
   padding: 24px 26px 36px;
@@ -1722,6 +2151,19 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+.editor-content :global(.search-match) {
+  background: #ffe8a3;
+  padding: 0 1px;
+  border-radius: 2px;
+  border-bottom: 1px solid #e6c87a;
+}
+.editor-content :global(.search-match-active) {
+  background: #ffb84d;
+  padding: 0 1px;
+  border-radius: 2px;
+  border-bottom: 1px solid #d98a1f;
+  box-shadow: 0 0 0 1px #ffb84d;
+}
 .editor-content :global(mark) {
   background: #ffe8a3;
   padding: 0 2px;
@@ -1781,6 +2223,7 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
   flex: 1;
 }
 .editor-statusbar {
+  grid-row: 4;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1810,6 +2253,188 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
   white-space: nowrap;
   border: 0;
 }
+.search-bar {
+  grid-row: 2;
+  display: grid;
+  gap: 4px;
+  padding: 8px 12px;
+  background: var(--surface-muted, #f4f2ec);
+  border-bottom: 1px solid var(--line, #e4e1d8);
+}
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  width: 100%;
+}
+.search-input-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 28px;
+  padding: 0 2px 0 6px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 6px;
+  background: var(--canvas, #f7f6f2);
+  overflow: hidden;
+}
+.search-input-group:focus-within {
+  border-color: #d3c0a9;
+  box-shadow: 0 0 0 2px rgba(211, 192, 169, 0.18);
+}
+.search-input-group input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 22px;
+  border: 0;
+  background: transparent;
+  color: var(--ink, #25251f);
+  font: 12px/1 var(--font-body, system-ui, sans-serif);
+  outline: 0;
+}
+.search-input-group :global(svg) {
+  flex: 0 0 auto;
+  color: var(--ink-faint, #aaa79d);
+  opacity: 0.7;
+}
+.search-inline-options {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  margin-left: 6px;
+  padding-left: 6px;
+  border-left: 1px solid var(--line, #e4e1d8);
+  height: 22px;
+}
+.search-inline-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-soft, #77766d);
+  font: 600 11px/1 var(--font-body, system-ui, sans-serif);
+  cursor: pointer;
+}
+.search-inline-btn:hover,
+.search-inline-btn:focus-visible {
+  background: #f2e4d2;
+  color: var(--accent-dark, #365342);
+  outline: 0;
+}
+.search-inline-btn.active {
+  background: #f2e4d2;
+  border-color: #d3c0a9;
+  color: var(--accent-dark, #365342);
+}
+.search-inline-btn[aria-label="Match whole word"].active {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1.4px;
+}
+.search-close,
+.search-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-soft, #77766d);
+  font: 500 10px/1 var(--font-body, system-ui, sans-serif);
+  cursor: pointer;
+}
+.search-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 5px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft, #77766d);
+  font: 500 11px/1 var(--font-body, system-ui, sans-serif);
+  cursor: pointer;
+}
+.search-nav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-soft, #77766d);
+  font: 500 10px/1 var(--font-body, system-ui, sans-serif);
+  cursor: pointer;
+}
+.search-icon-btn.active {
+  border-color: #d3c0a9;
+  background: #f2e4d2;
+  color: var(--accent-dark, #365342);
+}
+.search-icon-btn:hover,
+.search-nav:hover,
+.search-close:hover,
+.search-action:hover,
+.search-icon-btn:focus-visible,
+.search-nav:focus-visible,
+.search-close:focus-visible,
+.search-action:focus-visible {
+  border-color: #d3c0a9;
+  background: #f2e4d2;
+  color: var(--accent-dark, #365342);
+  outline: 0;
+}
+.search-nav:disabled,
+.search-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.search-nav-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  flex: 0 0 auto;
+}
+.search-nav-group .search-nav {
+  min-width: 24px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+}
+.search-count {
+  min-width: 42px;
+  text-align: center;
+  color: var(--ink-soft, #77766d);
+  font: 11px/1 var(--font-body, system-ui, sans-serif);
+  white-space: nowrap;
+}
+.search-close {
+  flex: 0 0 auto;
+}
+.search-action {
+  min-width: 56px;
+  height: 22px;
+  font-size: 11px;
+}
 @media (max-width: 760px) {
   .editor-toolbar {
     padding: 7px;
@@ -1823,7 +2448,7 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
 }
 @media (max-width: 560px) {
   .editor-shell {
-    grid-template-rows: auto minmax(300px, 1fr) auto;
+    grid-template-rows: auto auto minmax(300px, 1fr) auto;
   }
   .editor-toolbar {
     overflow-x: auto;

@@ -1,6 +1,7 @@
 <script lang="ts">
 import type { Snippet } from "svelte";
 import { onMount } from "svelte";
+import { X } from "@lucide/svelte";
 import { setSchemaEditorDiscardPrompt } from "$lib/schemaEditorGuard";
 import { confirmDialog } from "$lib/dialogs.svelte";
 
@@ -410,7 +411,7 @@ async function handleClose() {
             <p class="settings-note settings-note-error" role="alert">
               {storageError}
               <button type="button" class="settings-note-dismiss" aria-label="Dismiss error" onclick={() => (storageError = "")}
-                >×</button>
+                ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
             </p>
           {/if}
           {#if storageMessage}<p class="settings-note" role="status">{storageMessage}</p>{/if}

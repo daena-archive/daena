@@ -1,5 +1,6 @@
 <script lang="ts">
 import { onMount, tick } from "svelte";
+import { X, ArrowRight } from "@lucide/svelte";
 import type { FieldDefinition } from "../../packages/module-api/src/index";
 import type { Entity, Relationship } from "$lib/project/client";
 import {
@@ -339,13 +340,13 @@ onMount(() => {
       <div>
         <span class="relationship-metadata-kicker">RELATIONSHIP DETAILS</span>
         <h2 id={titleId()}>{relationship.relationship_type}</h2>
-        <p>→ {targetName()}</p>
+        <p><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"><ArrowRight size={12} strokeWidth={1.8} /></span> {targetName()}</p>
       </div>
       <button
         type="button"
         class="relationship-metadata-close"
         aria-label="Close relationship details"
-        onclick={onClose}>×</button>
+        onclick={onClose}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
     </header>
 
     {#if metadataFields().length === 0}

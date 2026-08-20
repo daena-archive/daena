@@ -1,4 +1,5 @@
 <script lang="ts">
+import { Search } from "@lucide/svelte";
 import { GREGORIAN_CALENDAR_ID } from "$lib/date";
 import type { Entity } from "$lib/project/client";
 
@@ -73,7 +74,7 @@ function select(id: string) {
   {#if open}
     <div class="calendar-picker-menu" role="listbox" aria-label="{label} options">
       <div class="calendar-picker-search">
-        <span aria-hidden="true">⌕</span>
+        <span aria-hidden="true"><Search size={14} strokeWidth={1.8} aria-hidden="true" /></span>
         <input
           type="text"
           placeholder="Search calendars…"

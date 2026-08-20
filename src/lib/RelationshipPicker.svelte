@@ -1,4 +1,5 @@
 <script lang="ts">
+import { X, Search } from "@lucide/svelte";
 import type { Entity } from "$lib/project/client";
 import type { FieldDefinition } from "../../packages/module-api/src/index";
 
@@ -83,14 +84,14 @@ function entityFor(id: string) {
             data-entity-id={id}
             onclick={() => remove(id)}
             title={`Remove ${entity.name}`}>
-            <span>{entity.name}</span><b aria-hidden="true">×</b>
+            <span>{entity.name}</span><b aria-hidden="true"><X size={12} strokeWidth={1.8} aria-hidden="true" /></b>
           </button>
         {/if}
       {/each}
     </div>
   {/if}
   <div class="relationship-search">
-    <span aria-hidden="true">⌕</span>
+    <span aria-hidden="true"><Search size={14} strokeWidth={1.8} aria-hidden="true" /></span>
     <input
       aria-label={field.label}
       value={query}

@@ -1,4 +1,5 @@
 <script lang="ts">
+import { X, Sparkles, ChevronDown, ChevronRight } from "@lucide/svelte";
 import { listen } from "@tauri-apps/api/event";
 import {
   project,
@@ -926,7 +927,10 @@ function restoreFromRemote() {
               title={aiMessageBusy ? "Cancel generation" : "Generate snapshot message with AI"}
               disabled={busy || (!aiMessageBusy && (!preflight?.ready || selectedPaths.length === 0))}
               onclick={() => void (aiMessageBusy ? cancelAiMessage() : generateAiMessage())}
-              >{aiMessageBusy ? "×" : "✦"}</button>
+              >{#if aiMessageBusy}<X size={14} strokeWidth={1.8} aria-hidden="true" />{:else}<Sparkles
+                  size={14}
+                  strokeWidth={1.8}
+                  aria-hidden="true" />{/if}</button>
           </label>
           <div class="git-commit-actions">
             <button type="button" class="quiet-button" onclick={generateMessage}>Generate message</button>
@@ -994,7 +998,7 @@ function restoreFromRemote() {
                 type="button"
                 class="new-form-close"
                 aria-label="Close snapshot details"
-                onclick={closeSnapshotModal}>×</button>
+                onclick={closeSnapshotModal}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
             </div>
             <div class="git-snapshot-summary">
               <strong>{snapshotChanges.length} changed {snapshotChanges.length === 1 ? "file" : "files"}</strong>
@@ -1016,7 +1020,13 @@ function restoreFromRemote() {
                         class="git-change-category-toggle"
                         onclick={() => toggleSnapshotGroup(group.label)}>
                         <span class="git-tree-chevron" aria-hidden="true"
-                          >{snapshotGroupExpanded(group.label) ? "⌄" : "›"}</span>
+                          >{#if snapshotGroupExpanded(group.label)}<ChevronDown
+                              size={14}
+                              strokeWidth={1.8}
+                              aria-hidden="true" />{:else}<ChevronRight
+                              size={14}
+                              strokeWidth={1.8}
+                              aria-hidden="true" />{/if}</span>
                         <span class="git-change-kind">{group.kind === "other" ? "Changes" : group.kind}</span>
                         <span>{group.label}</span>
                         <small>{group.changes.length}</small>
@@ -1080,7 +1090,7 @@ function restoreFromRemote() {
           <span class="panel-kicker">SNAPSHOT REMOTE</span>
           <strong>{remoteModalMode === "add" ? "Add remote" : `Edit ${editingRemoteName}`}</strong>
         </div>
-        <button type="button" class="new-form-close" onclick={closeRemoteModal}>×</button>
+        <button type="button" class="new-form-close" onclick={closeRemoteModal}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>
       <div class="git-remote-form">
         {#if remoteModalMode === "add"}
@@ -1121,7 +1131,7 @@ function restoreFromRemote() {
           <span class="panel-kicker">CONFIRM SNAPSHOT ACTION</span>
           <strong id="git-confirm-title">{confirmation.title}</strong>
         </div>
-        <button type="button" class="new-form-close" disabled={confirmationBusy} onclick={closeConfirmation}>×</button>
+        <button type="button" class="new-form-close" disabled={confirmationBusy} onclick={closeConfirmation}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>
       <p class="dialog-body-copy">{confirmation.message}</p>
       {#if confirmation.squash}

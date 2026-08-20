@@ -1,4 +1,6 @@
 <script lang="ts">
+import { ChevronDown } from "@lucide/svelte";
+
 let {
   zoom,
   min = 0,
@@ -32,7 +34,7 @@ function zoomOut() {
       <button type="button" class="west" aria-label="Pan west" title="Pan west" onclick={() => onpan(-30, 0)}>‹</button>
       <button type="button" class="east" aria-label="Pan east" title="Pan east" onclick={() => onpan(30, 0)}>›</button>
       <button type="button" class="south" aria-label="Pan south" title="Pan south" onclick={() => onpan(0, -15)}
-        >⌄</button>
+        ><ChevronDown size={12} strokeWidth={1.8} aria-hidden="true" /></button>
     </div>
   {/if}
   <div class="zoom-stack" role="group" aria-label="Zoom">

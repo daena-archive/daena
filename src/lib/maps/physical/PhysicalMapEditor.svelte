@@ -1,5 +1,6 @@
 <script lang="ts">
 import { onMount, tick } from "svelte";
+import { X } from "@lucide/svelte";
 import {
   project,
   type Entity,
@@ -293,7 +294,7 @@ onMount(() => {
         <span>PHYSICAL WORLD</span>
         <strong>{headline()}</strong>
       </div>
-      <button class="icon-button" type="button" aria-label="Close" onclick={() => void cancel()}>×</button>
+      <button class="icon-button" type="button" aria-label="Close" onclick={() => void cancel()}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
     </header>
     <div class="physical-map-controls">
       <label>Map name<input bind:value={name} disabled={busy} /></label>

@@ -71,6 +71,29 @@ import loreManifestJson from "../../packages/modules/lore/manifest.json";
 import timelineManifestJson from "../../packages/modules/timeline/manifest.json";
 import writingManifestJson from "../../packages/modules/writing/manifest.json";
 import languageManifestJson from "../../packages/modules/language/manifest.json";
+import {
+  Library,
+  CalendarRange,
+  Pencil,
+  Languages,
+  Map as MapIcon,
+  FolderOpen,
+  Download,
+  DatabaseZap,
+  FlaskConical,
+  LogOut,
+  Plus,
+  Puzzle,
+  GitBranch,
+  Settings as SettingsIcon,
+  PanelLeftClose,
+  PanelLeftOpen,
+  X,
+  Search,
+  ChevronDown,
+  ChevronRight,
+  ArrowUpRight,
+} from "@lucide/svelte";
 import { projectionModule } from "$lib/modules/projections";
 import RichTextEditor from "$lib/editor/RichTextEditor.svelte";
 import MarkdownArticle from "$lib/markdown/MarkdownArticle.svelte";
@@ -100,7 +123,7 @@ type WorkspaceNavigationItem = {
   key: string;
   section: WorkspaceSection;
   title: string;
-  icon: string;
+  icon: any;
   beta: boolean;
   renderer: "workspace" | "maps";
   view?: PluginAdminEntry["views"][number];
@@ -458,15 +481,11 @@ function enabledWorkspaceSections() {
   );
 }
 function sectionIcon(target: WorkspaceSection) {
-  return target === "lore"
-    ? "◈"
-    : target === "timeline"
-      ? "◷"
-      : target === "writing"
-        ? "✎"
-        : target === "language"
-          ? "Aa"
-          : "▧";
+  if (target === "lore") return Library;
+  if (target === "timeline") return CalendarRange;
+  if (target === "writing") return Pencil;
+  if (target === "language") return Languages;
+  return MapIcon;
 }
 function workspaceSectionLabel(target: WorkspaceSection) {
   return target === "lore"
@@ -630,11 +649,7 @@ function coerceAiFieldValue(definition: FieldDefinition, raw: unknown): unknown 
     }
     if (isOne && raw.length > 1) return null;
     const values = raw.map((item) =>
-      isRelationship
-        ? typeof item === "string" && item.trim()
-          ? item
-          : null
-        : aiScalarValue(definition, item),
+      isRelationship ? (typeof item === "string" && item.trim() ? item : null) : aiScalarValue(definition, item),
     );
     return values.every((value) => value !== null) ? values : null;
   }
@@ -645,8 +660,8 @@ function aiJsonValueSchema(definition: FieldDefinition) {
   const scalarType = definition.type === "number" ? "number" : definition.type === "boolean" ? "boolean" : "string";
   const isOneOf = (definition as any).type === "oneof";
   const enumOptions = isOneOf
-    ? ((definition as any).oneOf as Array<{ options?: string[] }> | undefined)?.flatMap((v) => v.options ?? []) ??
-      definition.options
+    ? (((definition as any).oneOf as Array<{ options?: string[] }> | undefined)?.flatMap((v) => v.options ?? []) ??
+      definition.options)
     : definition.options;
   const scalar: any = {
     type: scalarType,
@@ -1355,7 +1370,7 @@ function collectionResult(): CollectionResult {
 }
 
 function entityGlyph(entity: Pick<Entity, "entity_type">) {
-  if (entity.entity_type === "daena.maps:map") return "▧";
+  if (entity.entity_type === "daena.maps:map") return "";
   if (!entity.entity_type) return "?";
   for (const target of workspaceSectionOrder) {
     const template = manifestForWorkspaceSection(target)?.templates.find(
@@ -1516,7 +1531,8 @@ async function openProjection() {
 async function openLoreWiki() {
   if (!(await flushAutoSave())) return;
   if (!(await leavePluginView())) return;
-  loreWikiEntityId = selected?.entity_type && allEntityTypesForSection("lore").has(selected.entity_type) ? selected.id : null;
+  loreWikiEntityId =
+    selected?.entity_type && allEntityTypesForSection("lore").has(selected.entity_type) ? selected.id : null;
   loreWikiOpen = true;
   projectionView = null;
 }
@@ -1674,13 +1690,6 @@ function clearDateField(key: string) {
   markEntryDirty();
 }
 
-function wordCount() {
-  return documentBody
-    .replace(/[`*_>#\[\]()]/g, " ")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean).length;
-}
 function cancelAutoSave() {
   if (autoSaveTimer !== null) {
     window.clearTimeout(autoSaveTimer);
@@ -3107,11 +3116,11 @@ function mimeTypeFor(filename: string) {
         ? "image/gif"
         : extension === "webp"
           ? "image/webp"
-        : extension === "mp4"
-          ? "video/mp4"
-          : extension === "webm"
-            ? "video/webm"
-            : "application/octet-stream";
+          : extension === "mp4"
+            ? "video/mp4"
+            : extension === "webm"
+              ? "video/webm"
+              : "application/octet-stream";
 }
 function canWriteAssets() {
   return section === "lore" && (activeManifest()?.capabilities.includes("asset.write:self") ?? false);
@@ -3151,7 +3160,11 @@ function openAssetDialog(asset: Asset) {
   if (projectDiagnostics.length > 0) return;
   assetDialog = asset;
 }
-async function handleAssetSave(update: { filename?: string; role?: "attachment" | "profile"; referenceScope?: "entity" | "project" }) {
+async function handleAssetSave(update: {
+  filename?: string;
+  role?: "attachment" | "profile";
+  referenceScope?: "entity" | "project";
+}) {
   const current = assetDialog;
   if (!current) return;
   assetBusyId = current.id;
@@ -3920,7 +3933,8 @@ onMount(() => {
     {#if !ready}
       <div class="startup-actions">
         <button class="rail-button startup-primary" onclick={openProjectDirectory}
-          ><span class="rail-icon">↗</span><span>Open project folder</span></button>
+          ><span class="rail-icon"><FolderOpen size={16} strokeWidth={1.8} /></span><span>Open project folder</span
+          ></button>
       </div>
       {#if recentProjects.length > 0}
         <div class="rail-label recent-label">RECENT PROJECTS</div>
@@ -3933,7 +3947,8 @@ onMount(() => {
                 class="recent-project-remove"
                 aria-label={`Remove ${recent.name} from recent projects`}
                 title="Remove from recent projects"
-                onclick={() => removeRecentProject(recent.root)}>×</button>
+                onclick={() => removeRecentProject(recent.root)}
+                ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
             </div>{/each}
         </div>
       {/if}
@@ -3948,7 +3963,8 @@ onMount(() => {
           onclick={() => (showProjectMenu = !showProjectMenu)}>
           <span class:online={ready} class="project-dot"></span>
           <span class="project-copy"><strong>{projectInfo?.name ?? "Local project"}</strong></span>
-          <span class="project-chevron" aria-hidden="true">⌄</span>
+          <span class="project-chevron" aria-hidden="true"
+            ><ChevronDown size={14} strokeWidth={1.8} aria-hidden="true" /></span>
         </button>
         {#if showProjectMenu}
           {#if railCollapsed}<button
@@ -3958,15 +3974,19 @@ onMount(() => {
             >{/if}
           <div class="project-menu" role="menu">
             <button class="rail-button" role="menuitem" onclick={openProjectDirectory}
-              ><span class="rail-icon">↗</span><span>Open another folder</span></button>
+              ><span class="rail-icon"><FolderOpen size={16} strokeWidth={1.8} /></span><span>Open another folder</span
+              ></button>
             <button class="rail-button" role="menuitem" onclick={() => void exportMarkdownProject()}
-              ><span class="rail-icon">⇩</span><span>Export Markdown</span></button>
+              ><span class="rail-icon"><Download size={16} strokeWidth={1.8} /></span><span>Export Markdown</span
+              ></button>
             <button class="rail-button" role="menuitem" onclick={() => void rebuildSearchIndex()}
-              ><span class="rail-icon">⌕</span><span>Rebuild index</span></button>
+              ><span class="rail-icon"><DatabaseZap size={16} strokeWidth={1.8} /></span><span>Rebuild index</span
+              ></button>
             <button class="rail-button" role="menuitem" onclick={seedExample}
-              ><span class="rail-icon">✣</span><span>Seed example</span></button>
+              ><span class="rail-icon"><FlaskConical size={16} strokeWidth={1.8} /></span><span>Seed example</span
+              ></button>
             <button class="rail-button" role="menuitem" onclick={closeProject}
-              ><span class="rail-icon">×</span><span>Close project</span></button>
+              ><span class="rail-icon"><LogOut size={16} strokeWidth={1.8} /></span><span>Close project</span></button>
           </div>
         {/if}
       </div>
@@ -3974,19 +3994,33 @@ onMount(() => {
           aria-expanded={showCreateForm}
           class="rail-create-button"
           title="New entry"
-          onclick={toggleCreateForm}><span class="rail-icon">＋</span><span>New entry</span></button
+          onclick={toggleCreateForm}
+          ><span class="rail-icon"><Plus size={16} strokeWidth={1.8} /></span><span>New entry</span></button
         >{/if}
       {#if workspaceNavigationItems().length > 0}
         <div class="rail-label">WORKSPACE</div>
         <nav class="workspace-nav" aria-label="Workspace sections">
           {#each workspaceNavigationItems() as item (item.key)}
+            {@const Icon = item.icon}
             <button
               title={item.beta ? `${item.title} · Beta plugin — may be unstable` : item.title}
               aria-current={navigationActive(item) ? "page" : undefined}
               class:active={navigationActive(item)}
               class="rail-button"
               onclick={() => void openNavigationItem(item)}
-              ><span class="rail-icon">{item.icon}</span><span
+              >{#if item.section === "lore"}
+                <span class="rail-icon"><Library size={16} strokeWidth={1.8} /></span>
+              {:else if item.section === "timeline"}
+                <span class="rail-icon"><CalendarRange size={16} strokeWidth={1.8} /></span>
+              {:else if item.section === "writing"}
+                <span class="rail-icon"><Pencil size={16} strokeWidth={1.8} /></span>
+              {:else if item.section === "language"}
+                <span class="rail-icon"><Languages size={16} strokeWidth={1.8} /></span>
+              {:else if item.section === "maps"}
+                <span class="rail-icon"><MapIcon size={16} strokeWidth={1.8} /></span>
+              {:else}
+                <span class="rail-icon"><Icon size={16} strokeWidth={1.8} /></span>
+              {/if}<span
                 >{item.title}{#if item.beta}<em class="workspace-beta">Beta</em>{/if}</span
               ></button>
           {/each}
@@ -4004,7 +4038,9 @@ onMount(() => {
                 aria-current={navigationActive(item) ? "page" : undefined}
                 aria-label={`Open ${item.plugin.name}: ${item.view.title}`}
                 onclick={() => void openNavigationItem(item)}
-                ><span class="rail-icon">◇</span><span class="plugin-nav-title">{pluginViewLabel(item)}</span></button>
+                ><span class="rail-icon"><Puzzle size={16} strokeWidth={1.8} /></span><span class="plugin-nav-title"
+                  >{pluginViewLabel(item)}</span
+                ></button>
             </div>
           {/each}
         </nav>
@@ -4017,7 +4053,7 @@ onMount(() => {
         title={gitMessage ||
           (gitStatus?.repository ? `Snapshots · ${gitStatus.branch || "detached"}` : "Open Snapshots settings")}
         onclick={() => void openSettings("git")}
-        ><span class="rail-icon">⑂</span><span>Snapshots</span
+        ><span class="rail-icon"><GitBranch size={16} strokeWidth={1.8} /></span><span>Snapshots</span
         >{#if gitStatus?.repository && gitStatus.changes.length > 0}<small class="rail-git-count"
             >{gitStatus.changes.length}</small
           >{/if}</button>
@@ -4027,7 +4063,8 @@ onMount(() => {
       class:active={showSettings}
       class="rail-button muted-button"
       title="Settings"
-      onclick={() => void openSettings()}><span class="rail-icon">⚙</span><span>Settings</span></button>
+      onclick={() => void openSettings()}
+      ><span class="rail-icon"><SettingsIcon size={16} strokeWidth={1.8} /></span><span>Settings</span></button>
     {#if ready}<button
         class="rail-button muted-button rail-collapse-toggle"
         aria-label={railCollapsed ? "Expand sidebar" : "Collapse sidebar"}
@@ -4036,8 +4073,11 @@ onMount(() => {
           railCollapsed = !railCollapsed;
           localStorage.setItem("daena:rail-collapsed", String(railCollapsed));
         }}
-        ><span class="rail-icon">{railCollapsed ? "»" : "«"}</span><span>{railCollapsed ? "Expand" : "Collapse"}</span
-        ></button
+        ><span class="rail-icon"
+          >{#if railCollapsed}<PanelLeftOpen size={16} strokeWidth={1.8} />{:else}<PanelLeftClose
+              size={16}
+              strokeWidth={1.8} />{/if}</span
+        ><span>{railCollapsed ? "Expand" : "Collapse"}</span></button
       >{/if}
     <div class="rail-footer">v0.1.0</div>
   </aside>
@@ -4053,7 +4093,7 @@ onMount(() => {
       </div>
       <div class="top-actions">
         {#if ready}<label class="global-search"
-            ><span aria-hidden="true">⌕</span><input
+            ><span aria-hidden="true"><Search size={14} strokeWidth={1.8} aria-hidden="true" /></span><input
               aria-label="Search your world"
               bind:value={globalQuery}
               placeholder="Search whole world" /></label
@@ -4065,15 +4105,19 @@ onMount(() => {
           <strong>Search results</strong><button
             class="quiet-button"
             aria-label="Close search"
-            onclick={() => (globalQuery = "")}>×</button>
+            onclick={() => (globalQuery = "")}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
         </div>
         {#if searchMatches === null}<p class="search-state">
             Searching the whole world…
           </p>{:else if searchMatches.length === 0}<p class="search-state">No matches found.</p>{:else}<div
             class="search-results">
             {#each searchMatches as result}<button class="search-result" onclick={() => selectSearchResult(result)}
-                ><span class={`entity-glyph ${entityGlyphClass(result)}`}>{entityGlyph(result)}</span><span
-                  ><strong>{result.name}</strong><small>{result.entity_type ?? "Uncategorized"}</small></span
+                ><span class={`entity-glyph ${entityGlyphClass(result)}`}
+                  >{#if result.entity_type === "daena.maps:map"}<MapIcon
+                      size={14}
+                      strokeWidth={1.8}
+                      aria-hidden="true" />{:else}{entityGlyph(result)}{/if}</span
+                ><span><strong>{result.name}</strong><small>{result.entity_type ?? "Uncategorized"}</small></span
                 ></button
               >{/each}
           </div>{/if}
@@ -4087,7 +4131,7 @@ onMount(() => {
               <p>Templates set the shape of your new entry. You can fill in the details before it is saved.</p>
             </div>
             <button type="button" class="new-form-close" aria-label="Close create dialog" onclick={closeCreateForm}
-              >×</button>
+              ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
           </div>
           <div class="create-dialog-body">
             <aside class="create-template-panel">
@@ -4185,10 +4229,11 @@ onMount(() => {
                         id={`create-${item.field.key}`}
                         required={item.required}
                         value={String(createFieldValues[item.field.key] ?? "")}
-                        onchange={(event) => setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}
+                        onchange={(event) =>
+                          setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}
                         ><option value="">Choose {item.field.label.toLowerCase()}</option
                         >{#each item.field.options ?? [] as option}<option value={option}>{option}</option>{/each}
-                        {#each ((item.field as any).oneOf ?? []) as variant}
+                        {#each (item.field as any).oneOf ?? [] as variant}
                           {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option>{/each}
                         {/each}</select
                       >{:else if item.field.type === "entity-ref"}<select
@@ -4209,15 +4254,14 @@ onMount(() => {
                           }}{@const parts = createDatePartsDraft(item.field.key)}{@const calendar =
                           createCalendarDefinition(item.field.key)}{@const months = calendar?.months ?? []}
                         <div class="date-editor">
-                           <CalendarPicker
-                             selectedId={calendarIdForStoredDate(
-                               createDateForField(item.field.key),
-                               createDateCalendarByField[item.field.key],
-                             )}
-                             calendars={worldCalendars()}
-                             onSelect={(id) => setCreateDateCalendar(item.field.key, id)}
-                           />
-                           <div class="date-fields">
+                          <CalendarPicker
+                            selectedId={calendarIdForStoredDate(
+                              createDateForField(item.field.key),
+                              createDateCalendarByField[item.field.key],
+                            )}
+                            calendars={worldCalendars()}
+                            onSelect={(id) => setCreateDateCalendar(item.field.key, id)} />
+                          <div class="date-fields">
                             <label for={`create-${item.field.key}-year`}
                               >Year<input
                                 id={`create-${item.field.key}-year`}
@@ -4354,7 +4398,8 @@ onMount(() => {
               <span class="panel-kicker">UPDATE PLUGIN</span><strong
                 >Update {preview.entry.name} to v{preview.version}</strong>
             </div>
-            <button type="button" class="new-form-close" onclick={() => (upgradePreview = null)}>×</button>
+            <button type="button" class="new-form-close" onclick={() => (upgradePreview = null)}
+              ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
           </div>
           <p class="dialog-body-copy">
             From <code>v{preview.plan.fromVersion ?? preview.entry.version}</code> to
@@ -4411,7 +4456,8 @@ onMount(() => {
         <div class="dialog" role="alertdialog" aria-modal="true">
           <div class="new-form-heading">
             <div><span class="panel-kicker">CONFIRM ACTION</span><strong>{confirmAction.title}</strong></div>
-            <button type="button" class="new-form-close" onclick={() => (confirmAction = null)}>×</button>
+            <button type="button" class="new-form-close" onclick={() => (confirmAction = null)}
+              ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
           </div>
           <p class="dialog-body-copy">{confirmAction.message}</p>
           {#if confirmAction.capabilities}
@@ -4442,7 +4488,8 @@ onMount(() => {
             <div>
               <span class="panel-kicker">DELETE PROJECT DATA</span><strong>Delete {deleteTarget.name} data?</strong>
             </div>
-            <button type="button" class="new-form-close" onclick={() => (deleteTarget = null)}>×</button>
+            <button type="button" class="new-form-close" onclick={() => (deleteTarget = null)}
+              ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
           </div>
           <p class="dialog-body-copy">
             All entities, documents, fields, relationships, and assets owned by <code>{deleteTarget.id}</code> in this project
@@ -4466,7 +4513,8 @@ onMount(() => {
         <div class="dialog" role="alertdialog" aria-modal="true">
           <div class="new-form-heading">
             <div><span class="panel-kicker">DATA DELETED</span><strong>Plugin data deleted</strong></div>
-            <button type="button" class="new-form-close" onclick={() => (deleteBackupPath = "")}>×</button>
+            <button type="button" class="new-form-close" onclick={() => (deleteBackupPath = "")}
+              ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
           </div>
           <p class="dialog-body-copy">A backup was kept at:</p>
           <code class="backup-path">{deleteBackupPath}</code>
@@ -4855,11 +4903,14 @@ onMount(() => {
                 >Create language</button
               >{/if}
             {#if section === "lore"}
-              <button class="quiet-button" type="button" onclick={openLoreWiki}>Open wiki ↗</button>
-              <button class="quiet-button" type="button" onclick={openProjection}>Open graph ↗</button>
+              <button class="quiet-button" type="button" onclick={openLoreWiki}
+                >Open wiki <ArrowUpRight size={14} strokeWidth={1.8} aria-hidden="true" /></button>
+              <button class="quiet-button" type="button" onclick={openProjection}
+                >Open graph <ArrowUpRight size={14} strokeWidth={1.8} aria-hidden="true" /></button>
             {:else if section !== "writing" && section !== "maps" && section !== "language"}<button
                 class="quiet-button"
-                onclick={openProjection}>Open timeline ↗</button
+                onclick={openProjection}
+                >Open timeline <ArrowUpRight size={14} strokeWidth={1.8} aria-hidden="true" /></button
               >{/if}
           </div>
         </div>
@@ -4903,7 +4954,7 @@ onMount(() => {
           </div>
 
           <div class="collection-search">
-            <span>⌕</span><input
+            <span><Search size={14} strokeWidth={1.8} aria-hidden="true" /></span><input
               aria-label={`Search ${collectionLabel()}`}
               bind:value={collectionQuery.textSearch}
               placeholder={`Search ${collectionLabel()}`} /><button
@@ -4997,7 +5048,8 @@ onMount(() => {
                       aria-haspopup="menu"
                       aria-expanded={mapProviderMenuOpen === "empty"}
                       onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "empty" ? null : "empty")}
-                      >＋ Create map</button>
+                      ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
+                        ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /></span> Create map</button>
                     {#if mapProviderMenuOpen === "empty"}<div
                         class="map-provider-menu empty-map-provider-menu"
                         role="menu">
@@ -5010,31 +5062,56 @@ onMount(() => {
                       </div>{/if}
                   </div>
                 {:else}<button class="empty-create" type="button" onclick={toggleCreateForm}
-                    >＋ Create {createLabel()}</button
+                    ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
+                      ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+                    Create {createLabel()}</button
                   >{/if}
               </div>{:else if collectionQuery.viewMode === "grouped"}{#each collectionResult().groups ?? [] as group}<div
                   class="collection-group">
                   <button type="button" class="collection-group-header" onclick={() => toggleGroup(group.type)}
-                    ><span class="group-chevron">{expandedGroups.has(group.type) ? "⌄" : "›"}</span><span
-                      class={`entity-glyph ${entityGlyphClassForType(group.type)}`}>{glyphForType(group.type)}</span
+                    ><span class="group-chevron"
+                      >{#if expandedGroups.has(group.type)}<ChevronDown
+                          size={12}
+                          strokeWidth={1.8}
+                          aria-hidden="true" />{:else}<ChevronRight
+                          size={12}
+                          strokeWidth={1.8}
+                          aria-hidden="true" />{/if}</span
+                    ><span class={`entity-glyph ${entityGlyphClassForType(group.type)}`}
+                      >{#if group.type === "daena.maps:map"}<MapIcon
+                          size={14}
+                          strokeWidth={1.8}
+                          aria-hidden="true" />{:else}{glyphForType(group.type)}{/if}</span
                     ><strong>{group.label}</strong><small>{group.count}</small></button
                   >{#if expandedGroups.has(group.type)}{#each group.entities as entity}<button
                         class:selected={selected?.id === entity.id}
                         class="collection-item"
                         onclick={() => selectEntity(entity)}
-                        ><span class={`entity-glyph ${entityGlyphClass(entity)}`}>{entityGlyph(entity)}</span><span
-                          class="item-copy"
+                        ><span class={`entity-glyph ${entityGlyphClass(entity)}`}
+                          >{#if entity.entity_type === "daena.maps:map"}<MapIcon
+                              size={14}
+                              strokeWidth={1.8}
+                              aria-hidden="true" />{:else}{entityGlyph(entity)}{/if}</span
+                        ><span class="item-copy"
                           ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
-                        ><span class="item-arrow" aria-hidden="true">›</span></button
+                        ><span class="item-arrow" aria-hidden="true"
+                          ><ChevronRight size={12} strokeWidth={1.8} aria-hidden="true" /></span
+                        ></button
                       >{/each}{/if}
                 </div>{/each}{:else}{#each collectionResult().entities as entity}<button
                   class:selected={selected?.id === entity.id}
                   class="collection-item"
                   onclick={() => selectEntity(entity)}
-                  ><span class={`entity-glyph ${entityGlyphClass(entity)}`}>{entityGlyph(entity)}</span><span
-                    class="item-copy"
+                  ><span class={`entity-glyph ${entityGlyphClass(entity)}`}
+                    >{#if entity.entity_type === "daena.maps:map"}<MapIcon
+                        size={14}
+                        strokeWidth={1.8}
+                        aria-hidden="true" />{:else}{entityGlyph(entity)}{/if}</span
+                  ><span class="item-copy"
                     ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
-                  ><span class="item-arrow" aria-hidden="true">›</span></button
+                  ><span class="item-arrow" aria-hidden="true"
+                    ><ChevronRight size={12} strokeWidth={1.8} aria-hidden="true" /></span
+                  ></button
                 >{/each}{/if}
           </div>
         </aside>
@@ -5312,7 +5389,7 @@ onMount(() => {
                         : "Write the canonical story of this entry…"} />
                 {/if}
                 <div class="editor-footer">
-                  <span>{wordCount()} words</span>
+                  <div></div>
                   <div>
                     <button
                       class="quiet-button"
@@ -5419,8 +5496,7 @@ onMount(() => {
                         <CalendarPicker
                           selectedId={selectedCalendarId(definition.key)}
                           calendars={worldCalendars()}
-                          onSelect={(id) => setDateCalendar(definition.key, id)}
-                        />
+                          onSelect={(id) => setDateCalendar(definition.key, id)} />
                         <div class="date-fields">
                           <label for={`${definition.key}-year`}
                             >Year<input
@@ -5545,7 +5621,7 @@ onMount(() => {
                       onchange={(event) => updateField(definition, event)}
                       ><option value="">Choose {definition.label.toLowerCase()}</option
                       >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}
-                      {#each ((definition as any).oneOf ?? []) as variant}
+                      {#each (definition as any).oneOf ?? [] as variant}
                         {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option>{/each}
                       {/each}</select
                     >{:else}<input
@@ -5588,7 +5664,8 @@ onMount(() => {
                           <strong>{relationshipTargetName(relationship)}</strong>
                           <small
                             >{entities.find((entity) => entity.id === relationship.target_id)?.entity_type ??
-                              "Entity"}{#if summary} · {summary}{/if}</small>
+                              "Entity"}{#if summary}
+                              · {summary}{/if}</small>
                         </div>
                         <div class="relationship-detail-actions">
                           {#if relDefinition.metadataFields?.length}
@@ -5596,23 +5673,15 @@ onMount(() => {
                               class="quiet-button relationship-details-button"
                               type="button"
                               aria-label={`Edit details for ${relationship.relationship_type} to ${relationshipTargetName(relationship)}`}
-                              onclick={() => openRelationshipMetadata(relationship)}><svg
-                                width="14"
-                                height="14"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="1.8"
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path
-                                  d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg></button>
+                              onclick={() => openRelationshipMetadata(relationship)}
+                              ><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button>
                           {/if}
                           <button
                             class="quiet-button relationship-remove-button"
                             type="button"
                             aria-label={`Remove ${relationshipTargetName(relationship)} from ${definition.label}`}
-                            onclick={() => void confirmRemoveRelationship(definition, relationship)}>×</button>
+                            onclick={() => void confirmRemoveRelationship(definition, relationship)}
+                            ><X size={14} strokeWidth={1.8} aria-hidden="true" /></button>
                         </div>
                       </div>
                     {/each}
@@ -5624,7 +5693,8 @@ onMount(() => {
                 <span>{assets.length}</span>
               </div>
               <button class="drop-zone" type="button" onclick={attachAsset}
-                ><span>＋</span><strong>Attach a file</strong><small>Copied into this project</small></button
+                ><span><Plus size={14} strokeWidth={1.8} aria-hidden="true" /></span><strong>Attach a file</strong
+                ><small>Copied into this project</small></button
               >{#each assets as asset (asset.id)}<button
                   type="button"
                   class:asset-main={asset.role === "profile"}
@@ -5686,7 +5756,8 @@ onMount(() => {
       </section>
     {/if}
     {#if error}<div class="toast" role="alert" aria-live="assertive">
-        {error}<button aria-label="Dismiss" onclick={() => (error = "")}>×</button>
+        {error}<button aria-label="Dismiss" onclick={() => (error = "")}
+          ><X size={14} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>{/if}
   </section>
   {#if ready}<EntityHoverCard {entities} onOpen={(entity) => void selectEntity(entity)} />
@@ -5694,7 +5765,7 @@ onMount(() => {
       class="mobile-create-button"
       aria-label="New entry"
       aria-expanded={showCreateForm}
-      onclick={toggleCreateForm}>＋</button
+      onclick={toggleCreateForm}><Plus size={18} strokeWidth={1.8} aria-hidden="true" /></button
     >{/if}
 </main>
 {#if metadataDialog}
@@ -5703,7 +5774,7 @@ onMount(() => {
     relationship={dialog.relationship}
     definition={dialog.definition}
     {entities}
-    calendarDefinitions={calendarDefinitions}
+    {calendarDefinitions}
     onSave={(metadata) => saveRelationshipMetadata(dialog.relationship, metadata)}
     onClose={() => (metadataDialog = null)} />
 {/if}
@@ -5839,8 +5910,12 @@ onMount(() => {
 }
 .rail-icon {
   width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: #d5ab6c;
-  text-align: center;
+  flex: 0 0 18px;
 }
 .startup-primary .rail-icon {
   color: #2c4032;
@@ -7097,7 +7172,7 @@ onMount(() => {
   background: #f0e6d8;
   color: var(--ink);
 }
-.relationship-details-button svg {
+.relationship-details-button :global(svg) {
   width: 14px;
   height: 14px;
 }
@@ -8270,7 +8345,7 @@ onMount(() => {
   min-height: 0;
   flex: 1 1 auto;
   align-self: center;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
 }
 .editor-fullscreen :global(.editor-content) {
   overflow: auto;

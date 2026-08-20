@@ -1,5 +1,6 @@
 <script lang="ts">
 import { onMount, tick } from "svelte";
+import { X } from "@lucide/svelte";
 import type { Asset } from "$lib/project/client";
 import { project } from "$lib/project/client";
 
@@ -233,7 +234,7 @@ onMount(() => {
         <h2 id="asset-dialog-title">Edit file</h2>
         <p>Manage this attachment. Changes are versioned and synced via the checkpoint.</p>
       </div>
-      <button type="button" class="asset-dialog-close" aria-label="Close file details" onclick={onClose}>×</button>
+      <button type="button" class="asset-dialog-close" aria-label="Close file details" onclick={onClose}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
     </header>
 
     <div class="asset-dialog-preview">

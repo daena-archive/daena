@@ -1,6 +1,6 @@
 <script lang="ts">
 import { onMount } from "svelte";
-import { House, ArrowLeft, ArrowRight, Pencil } from "@lucide/svelte";
+import { House, ArrowLeft, ArrowRight, Pencil, Search, Diamond } from "@lucide/svelte";
 import MarkdownArticle from "$lib/markdown/MarkdownArticle.svelte";
 import { project, type Asset, type Entity } from "$lib/project/client";
 import loreManifestJson from "../../../packages/modules/lore/manifest.json";
@@ -323,7 +323,7 @@ function handleClose() {
 <section class="wiki-shell" aria-label="Lore wiki">
   <header class="wiki-header">
     <div class="wiki-header-left">
-      <button class="quiet-button" type="button" onclick={handleClose}>← Back to workspace</button>
+      <button class="quiet-button" type="button" onclick={handleClose}><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"><ArrowLeft size={14} strokeWidth={1.8} /></span> Back to workspace</button>
       <div class="wiki-title">
         <span class="overline">LORE WIKI</span>
         {#if currentId && entity}
@@ -349,7 +349,7 @@ function handleClose() {
             — each article shows its infobox, story, and what links to it.
           </p>
           <div class="wiki-search">
-            <span aria-hidden="true">⌕</span><input
+            <span aria-hidden="true"><Search size={14} strokeWidth={1.8} aria-hidden="true" /></span><input
               placeholder="Search articles"
               bind:value={tocSearch}
               aria-label="Search wiki" />
@@ -427,7 +427,7 @@ function handleClose() {
               <ul class="wiki-assets">
                 {#each assets as a}
                   <li>
-                    <span class="wiki-asset-icon">◈</span><strong>{a.filename}</strong><small
+                    <span class="wiki-asset-icon"><Diamond size={12} strokeWidth={1.8} aria-hidden="true" /></span><strong>{a.filename}</strong><small
                       >{Math.max(1, Math.round(a.size / 1024))} KB</small>
                   </li>
                 {/each}
@@ -499,7 +499,7 @@ function handleClose() {
                       {@const otherType = entityTypeOf(otherId)}
                       <li>
                         <span class="wiki-rel-label">{humanizeType(rel.relationship_type)}</span>
-                        <span class="wiki-rel-arrow" aria-hidden="true">→</span>
+                        <span class="wiki-rel-arrow" aria-hidden="true"><ArrowRight size={12} strokeWidth={1.8} aria-hidden="true" /></span>
                         <button type="button" class="wiki-link small" onclick={() => openEntity(otherId)}>
                           {entityName(otherId)} <small>{otherType ? `· ${labelForType(otherType)}` : ""}</small>
                         </button>
@@ -514,7 +514,7 @@ function handleClose() {
                       {@const otherId = rel.source_id}
                       {@const otherType = entityTypeOf(otherId)}
                       <li>
-                        <span class="wiki-rel-arrow" aria-hidden="true">←</span>
+                        <span class="wiki-rel-arrow" aria-hidden="true"><ArrowLeft size={12} strokeWidth={1.8} aria-hidden="true" /></span>
                         <button type="button" class="wiki-link small" onclick={() => openEntity(otherId)}
                           >{entityName(otherId)}</button>
                         <span class="wiki-backlink-meta"

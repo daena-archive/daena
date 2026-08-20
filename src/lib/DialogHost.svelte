@@ -1,4 +1,5 @@
 <script lang="ts">
+import { X } from "@lucide/svelte";
 import { dialogState, resolveDialog } from "./dialogs.svelte";
 
 let promptInput = $state<HTMLInputElement | null>(null);
@@ -60,7 +61,7 @@ function submitPrompt() {
         <div>
           <span class="panel-kicker">DAENA</span><strong id="shared-dialog-title">{dialogState.current.title}</strong>
         </div>
-        <button type="button" class="dialog-close" aria-label="Cancel dialog" onclick={() => settle(null)}>×</button>
+        <button type="button" class="dialog-close" aria-label="Cancel dialog" onclick={() => settle(null)}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>
       <p id="shared-dialog-message" class="dialog-message">{dialogState.current.message}</p>
       {#if dialogState.current.kind === "prompt"}

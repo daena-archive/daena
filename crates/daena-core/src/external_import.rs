@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 
 pub const STAGED_IMPORT_SCHEMA_VERSION: u32 = 1;
+pub const IMPORT_CANDIDATE_PLAN_SCHEMA_VERSION: u32 = 1;
 pub const GENERIC_DOCUMENT_IMPORTER_ID: &str = "daena.generic-documents";
 pub const GENERIC_DOCUMENT_IMPORTER_VERSION: &str = "1";
 pub const EXTERNAL_IMPORT_ANALYSIS_CANCELLED: &str = "external import analysis cancelled";
@@ -213,6 +214,222 @@ pub struct StagedImport {
     #[serde(default)]
     pub diagnostics: Vec<ImportDiagnostic>,
     pub summary: ImportAnalysisSummary,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImportMappingDecision {
+    #[serde(default)]
+    pub entity_type: Option<String>,
+    #[serde(default)]
+    pub field_mappings: BTreeMap<String, String>,
+    #[serde(default)]
+    pub relationship_mappings: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImportMappingOverrides {
+    #[serde(default)]
+    pub global: ImportMappingDecision,
+    #[serde(default)]
+    pub folders: BTreeMap<String, ImportMappingDecision>,
+    #[serde(default)]
+    pub items: BTreeMap<String, ImportMappingDecision>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportCandidateMapping {
+    pub entity_type: Option<String>,
+    pub field_mappings: BTreeMap<String, String>,
+    pub relationship_mappings: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportCandidateIssue {
+    pub code: String,
+    pub message: String,
+    #[serde(default)]
+    pub source_path: Option<String>,
+    #[serde(default)]
+    pub object_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportCandidateObject {
+    pub staged_object_id: String,
+    pub source_id: String,
+    pub source_path: String,
+    pub title: String,
+    pub decision: String,
+    pub mapping: ImportCandidateMapping,
+    pub issues: Vec<ImportCandidateIssue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportCandidatePlan {
+    pub schema_version: u32,
+    pub plan_id: String,
+    pub session_id: String,
+    pub importer: ImporterIdentity,
+    pub source: ImportSource,
+    pub captured_content_generation: i64,
+    pub current_content_generation: i64,
+    pub manifest_fingerprint: String,
+    pub objects: Vec<ImportCandidateObject>,
+    pub unsupported_count: usize,
+    pub diagnostics: Vec<ImportDiagnostic>,
+    pub issues: Vec<ImportCandidateIssue>,
+    pub unresolved_decision_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportCandidatePlanBuild {
+    pub session_id: String,
+    pub importer: ImporterIdentity,
+    pub source: ImportSource,
+    pub captured_content_generation: i64,
+    pub current_content_generation: i64,
+    pub manifest_fingerprint: String,
+    pub objects: Vec<StagedObject>,
+    pub unsupported_count: usize,
+    pub diagnostics: Vec<ImportDiagnostic>,
+}
+
+pub fn build_import_candidate_plan(
+    input: ImportCandidatePlanBuild,
+    overrides: &ImportMappingOverrides,
+) -> Result<ImportCandidatePlan, CoreError> {
+    let ImportCandidatePlanBuild {
+        session_id,
+        importer,
+        source,
+        captured_content_generation,
+        current_content_generation,
+        manifest_fingerprint,
+        objects,
+        unsupported_count,
+        diagnostics,
+    } = input;
+    if session_id.trim().is_empty() || manifest_fingerprint.trim().is_empty() {
+        return Err(CoreError::Validation(
+            "candidate plan requires a session and manifest fingerprint".into(),
+        ));
+    }
+    let mut seen_ids = BTreeSet::new();
+    let mut candidate_objects = Vec::with_capacity(objects.len());
+    let mut unresolved_decision_count = 0;
+    for object in &objects {
+        if !seen_ids.insert(&object.id) {
+            return Err(CoreError::Validation(format!(
+                "duplicate staged object id in candidate plan: {}",
+                object.id
+            )));
+        }
+        validate_source_path(&object.source_path)?;
+        let mapping = resolve_import_mapping(object, overrides);
+        let mut issues = Vec::new();
+        if mapping.entity_type.is_none() {
+            issues.push(ImportCandidateIssue {
+                code: "entity_type_required".into(),
+                message: "Choose an enabled entity type for this item.".into(),
+                source_path: Some(object.source_path.clone()),
+                object_id: Some(object.id.clone()),
+            });
+            unresolved_decision_count += 1;
+        }
+        candidate_objects.push(ImportCandidateObject {
+            staged_object_id: object.id.clone(),
+            source_id: object.source_id.clone(),
+            source_path: object.source_path.clone(),
+            title: object.title.clone(),
+            decision: "create".into(),
+            mapping,
+            issues,
+        });
+    }
+    let mut issues = Vec::new();
+    if captured_content_generation != current_content_generation {
+        issues.push(ImportCandidateIssue {
+            code: "project_generation_changed".into(),
+            message: "The project changed after analysis; analyze the source again before commit."
+                .into(),
+            source_path: None,
+            object_id: None,
+        });
+    }
+    let mut plan = ImportCandidatePlan {
+        schema_version: IMPORT_CANDIDATE_PLAN_SCHEMA_VERSION,
+        plan_id: String::new(),
+        session_id,
+        importer,
+        source,
+        captured_content_generation,
+        current_content_generation,
+        manifest_fingerprint,
+        objects: candidate_objects,
+        unsupported_count,
+        diagnostics,
+        issues,
+        unresolved_decision_count,
+    };
+    let bytes = serde_json::to_vec(&plan).map_err(|error| {
+        CoreError::Validation(format!("candidate plan serialization failed: {error}"))
+    })?;
+    plan.plan_id = format!("sha256:{:x}", Sha256::digest(bytes));
+    Ok(plan)
+}
+
+fn resolve_import_mapping(
+    object: &StagedObject,
+    overrides: &ImportMappingOverrides,
+) -> ImportCandidateMapping {
+    let mut resolved = ImportCandidateMapping {
+        entity_type: None,
+        field_mappings: BTreeMap::new(),
+        relationship_mappings: BTreeMap::new(),
+    };
+    apply_mapping_decision(&mut resolved, &overrides.global);
+    let segments = object.source_path.split('/').collect::<Vec<_>>();
+    for end in 1..segments.len() {
+        let folder = segments[..end].join("/");
+        if let Some(decision) = overrides.folders.get(&folder) {
+            apply_mapping_decision(&mut resolved, decision);
+        }
+    }
+    if let Some(decision) = overrides.items.get(&object.id) {
+        apply_mapping_decision(&mut resolved, decision);
+    }
+    resolved
+}
+
+fn apply_mapping_decision(target: &mut ImportCandidateMapping, decision: &ImportMappingDecision) {
+    if let Some(entity_type) = decision
+        .entity_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        target.entity_type = Some(entity_type.into());
+    }
+    for (source, destination) in &decision.field_mappings {
+        if !source.trim().is_empty() && !destination.trim().is_empty() {
+            target
+                .field_mappings
+                .insert(source.clone(), destination.clone());
+        }
+    }
+    for (source, destination) in &decision.relationship_mappings {
+        if !source.trim().is_empty() && !destination.trim().is_empty() {
+            target
+                .relationship_mappings
+                .insert(source.clone(), destination.clone());
+        }
+    }
 }
 
 impl StagedImport {
@@ -1159,6 +1376,131 @@ mod tests {
             raw: None,
         });
         assert!(staged.validate().is_err());
+    }
+
+    #[test]
+    fn candidate_plan_resolves_global_folder_and_item_overrides_deterministically() {
+        let source = TestDirectory::new();
+        fs::create_dir_all(source.path().join("People/Heroes")).unwrap();
+        fs::write(source.path().join("People/Heroes/Alice.md"), "Alice").unwrap();
+        fs::write(source.path().join("People/Bob.md"), "Bob").unwrap();
+        let staged =
+            analyze_generic_documents(source.path(), GenericDocumentImportLimits::default())
+                .unwrap();
+        let alice = staged
+            .objects
+            .iter()
+            .find(|object| object.title == "Alice")
+            .unwrap();
+        let mut overrides = ImportMappingOverrides::default();
+        overrides.global.entity_type = Some("note".into());
+        overrides
+            .global
+            .field_mappings
+            .insert("tag".into(), "core:tag".into());
+        overrides.folders.insert(
+            "People".into(),
+            ImportMappingDecision {
+                entity_type: Some("person".into()),
+                field_mappings: BTreeMap::from([("tag".into(), "lore:tag".into())]),
+                relationship_mappings: BTreeMap::new(),
+            },
+        );
+        overrides.folders.insert(
+            "People/Heroes".into(),
+            ImportMappingDecision {
+                entity_type: Some("hero".into()),
+                ..ImportMappingDecision::default()
+            },
+        );
+        overrides.items.insert(
+            alice.id.clone(),
+            ImportMappingDecision {
+                entity_type: Some("protagonist".into()),
+                ..ImportMappingDecision::default()
+            },
+        );
+
+        let first = build_import_candidate_plan(
+            ImportCandidatePlanBuild {
+                session_id: "session".into(),
+                importer: staged.importer.clone(),
+                source: staged.source.clone(),
+                captured_content_generation: 7,
+                current_content_generation: 7,
+                manifest_fingerprint: "manifest-v1".into(),
+                objects: staged.objects.clone(),
+                unsupported_count: staged.unsupported.len(),
+                diagnostics: staged.diagnostics.clone(),
+            },
+            &overrides,
+        )
+        .unwrap();
+        let second = build_import_candidate_plan(
+            ImportCandidatePlanBuild {
+                session_id: "session".into(),
+                importer: staged.importer,
+                source: staged.source,
+                captured_content_generation: 7,
+                current_content_generation: 7,
+                manifest_fingerprint: "manifest-v1".into(),
+                objects: staged.objects.clone(),
+                unsupported_count: staged.unsupported.len(),
+                diagnostics: staged.diagnostics,
+            },
+            &overrides,
+        )
+        .unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(first.unresolved_decision_count, 0);
+        assert_eq!(
+            first
+                .objects
+                .iter()
+                .find(|object| object.title == "Alice")
+                .unwrap()
+                .mapping
+                .entity_type
+                .as_deref(),
+            Some("protagonist")
+        );
+        let bob = first
+            .objects
+            .iter()
+            .find(|object| object.title == "Bob")
+            .unwrap();
+        assert_eq!(bob.mapping.entity_type.as_deref(), Some("person"));
+        assert_eq!(bob.mapping.field_mappings["tag"], "lore:tag");
+    }
+
+    #[test]
+    fn candidate_plan_surfaces_unresolved_types_and_stale_generation() {
+        let source = TestDirectory::new();
+        fs::write(source.path().join("note.md"), "note").unwrap();
+        let staged =
+            analyze_generic_documents(source.path(), GenericDocumentImportLimits::default())
+                .unwrap();
+
+        let plan = build_import_candidate_plan(
+            ImportCandidatePlanBuild {
+                session_id: "session".into(),
+                importer: staged.importer,
+                source: staged.source,
+                captured_content_generation: 1,
+                current_content_generation: 2,
+                manifest_fingerprint: "manifest-v1".into(),
+                objects: staged.objects,
+                unsupported_count: 0,
+                diagnostics: Vec::new(),
+            },
+            &ImportMappingOverrides::default(),
+        )
+        .unwrap();
+
+        assert_eq!(plan.unresolved_decision_count, 1);
+        assert_eq!(plan.objects[0].issues[0].code, "entity_type_required");
+        assert_eq!(plan.issues[0].code, "project_generation_changed");
     }
 
     #[cfg(unix)]

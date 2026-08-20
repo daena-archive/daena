@@ -9356,6 +9356,7 @@ pub fn run() {
             external_import_jobs::project_external_import_analysis_status,
             external_import_jobs::project_external_import_analysis_cancel,
             external_import_jobs::project_external_import_analysis_page,
+            external_import_jobs::project_external_import_candidate_plan,
             project_save_recovery_copy,
             project_git_status,
             project_git_preflight,

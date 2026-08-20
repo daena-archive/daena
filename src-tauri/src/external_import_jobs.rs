@@ -9,9 +9,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use daena_core::{
-    analyze_generic_documents_with_progress, CoreError, GenericDocumentImportLimits,
-    ImportAnalysisProgress, ImportAnalysisSummary, ImportDiagnostic, ImportSource,
-    ImporterIdentity, StagedAsset, StagedImport, StagedObject, UnsupportedSourceData,
+    analyze_generic_documents_with_progress, build_import_candidate_plan, CoreError,
+    GenericDocumentImportLimits, ImportAnalysisProgress, ImportAnalysisSummary,
+    ImportCandidatePlan, ImportCandidatePlanBuild, ImportDiagnostic, ImportMappingOverrides,
+    ImportSource, ImporterIdentity, StagedAsset, StagedImport, StagedObject, UnsupportedSourceData,
     EXTERNAL_IMPORT_ANALYSIS_CANCELLED, GENERIC_DOCUMENT_IMPORTER_ID,
     GENERIC_DOCUMENT_IMPORTER_VERSION,
 };
@@ -134,6 +135,15 @@ pub struct ExternalImportBeginInput {
     pub limits: Option<ExternalImportLimitsInput>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExternalImportCandidatePlanInput {
+    pub session_id: String,
+    pub manifest_fingerprint: String,
+    #[serde(default)]
+    pub mappings: ImportMappingOverrides,
+}
+
 #[derive(Debug)]
 struct SourceSelection {
     project_id: String,
@@ -183,6 +193,13 @@ impl ImportResultStorage {
             remove_spill_file(path)?;
         }
         Ok(())
+    }
+
+    fn candidate_material(&self) -> Result<(Vec<StagedObject>, Vec<ImportDiagnostic>), String> {
+        match self {
+            Self::Memory { items, .. } => Ok(candidate_material_from_items(items.iter())),
+            Self::Spill { path, .. } => read_spill_candidate_material(path),
+        }
     }
 }
 
@@ -519,6 +536,51 @@ pub async fn project_external_import_analysis_page(
     .map_err(|error| format!("external import paging worker failed: {error}"))?
 }
 
+#[tauri::command]
+pub async fn project_external_import_candidate_plan(
+    core: tauri::State<'_, SharedCore>,
+    imports: tauri::State<'_, SharedExternalImports>,
+    input: ExternalImportCandidatePlanInput,
+) -> Result<ImportCandidatePlan, String> {
+    let project_id = current_project_id(core.inner())?;
+    let current_content_generation =
+        with_read_project(core, |project| project.content_generation()).await?;
+    let imports = imports.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut manager = imports
+            .lock()
+            .map_err(|_| "external import state is unavailable".to_string())?;
+        manager.reap()?;
+        let job = project_job(&manager, &project_id, &input.session_id)?;
+        if job.status.state != "ready" {
+            return Err("external_import.not_ready: analysis result is not ready".into());
+        }
+        let result = job
+            .result
+            .as_ref()
+            .ok_or_else(|| "external_import.not_ready: analysis result is missing".to_string())?;
+        let metadata = result.metadata().clone();
+        let (objects, diagnostics) = result.candidate_material()?;
+        build_import_candidate_plan(
+            ImportCandidatePlanBuild {
+                session_id: input.session_id,
+                importer: metadata.importer,
+                source: metadata.source,
+                captured_content_generation: job.status.captured_content_generation,
+                current_content_generation,
+                manifest_fingerprint: input.manifest_fingerprint,
+                objects,
+                unsupported_count: metadata.summary.unsupported_count,
+                diagnostics,
+            },
+            &input.mappings,
+        )
+        .map_err(|error| format!("external_import.invalid_candidate_plan: {error}"))
+    })
+    .await
+    .map_err(|error| format!("external import planning worker failed: {error}"))?
+}
+
 pub fn cancel_external_imports(imports: &SharedExternalImports) -> Result<(), String> {
     imports
         .lock()
@@ -844,6 +906,51 @@ fn read_spill_page(
                 .map_err(|error| format!("external_import.local_storage_failed: {error}"))
         })
         .collect()
+}
+
+fn candidate_material_from_items<'a>(
+    items: impl Iterator<Item = &'a ExternalImportPageItem>,
+) -> (Vec<StagedObject>, Vec<ImportDiagnostic>) {
+    let mut objects = Vec::new();
+    let mut diagnostics = Vec::new();
+    for item in items {
+        match item {
+            ExternalImportPageItem::Object(object) => objects.push(object.clone()),
+            ExternalImportPageItem::Diagnostic(diagnostic) => {
+                diagnostics.push(diagnostic.clone());
+            }
+            ExternalImportPageItem::Asset(_) | ExternalImportPageItem::Unsupported(_) => {}
+        }
+    }
+    (objects, diagnostics)
+}
+
+fn read_spill_candidate_material(
+    path: &Path,
+) -> Result<(Vec<StagedObject>, Vec<ImportDiagnostic>), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("external_import.local_storage_failed: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(
+            "external_import.local_storage_failed: staging result is not a real file".into(),
+        );
+    }
+    let file = fs::File::open(path)
+        .map_err(|error| format!("external_import.local_storage_failed: {error}"))?;
+    let mut objects = Vec::new();
+    let mut diagnostics = Vec::new();
+    for line in BufReader::new(file).lines() {
+        let line =
+            line.map_err(|error| format!("external_import.local_storage_failed: {error}"))?;
+        let item: ExternalImportPageItem = serde_json::from_str(&line)
+            .map_err(|error| format!("external_import.local_storage_failed: {error}"))?;
+        match item {
+            ExternalImportPageItem::Object(object) => objects.push(object),
+            ExternalImportPageItem::Diagnostic(diagnostic) => diagnostics.push(diagnostic),
+            ExternalImportPageItem::Asset(_) | ExternalImportPageItem::Unsupported(_) => {}
+        }
+    }
+    Ok((objects, diagnostics))
 }
 
 fn remove_spill_file(path: &Path) -> Result<(), String> {

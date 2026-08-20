@@ -864,6 +864,50 @@ export interface ExternalImportLimits {
   maxDepth: number;
   maxDiagnostics: number;
 }
+export interface ImportMappingDecision {
+  entityType?: string | null;
+  fieldMappings?: Record<string, string>;
+  relationshipMappings?: Record<string, string>;
+}
+export interface ImportMappingOverrides {
+  global?: ImportMappingDecision;
+  folders?: Record<string, ImportMappingDecision>;
+  items?: Record<string, ImportMappingDecision>;
+}
+export interface ImportCandidateIssue {
+  code: string;
+  message: string;
+  sourcePath?: string | null;
+  objectId?: string | null;
+}
+export interface ImportCandidatePlanObject {
+  stagedObjectId: string;
+  sourceId: string;
+  sourcePath: string;
+  title: string;
+  decision: "create";
+  mapping: {
+    entityType: string | null;
+    fieldMappings: Record<string, string>;
+    relationshipMappings: Record<string, string>;
+  };
+  issues: ImportCandidateIssue[];
+}
+export interface ImportCandidatePlan {
+  schemaVersion: number;
+  planId: string;
+  sessionId: string;
+  importer: ImporterIdentity;
+  source: ExternalImportSource;
+  capturedContentGeneration: number;
+  currentContentGeneration: number;
+  manifestFingerprint: string;
+  objects: ImportCandidatePlanObject[];
+  unsupportedCount: number;
+  diagnostics: ImportDiagnostic[];
+  issues: ImportCandidateIssue[];
+  unresolvedDecisionCount: number;
+}
 export interface MutationOptions {
   expectedRevision?: string;
   requestId?: string;
@@ -899,6 +943,14 @@ export const project = {
     invoke<ExternalImportAnalysisStatus>("project_external_import_analysis_cancel", { sessionId }),
   externalImportAnalysisPage: (sessionId: string, offset: number, limit: number) =>
     invoke<ExternalImportPage>("project_external_import_analysis_page", { sessionId, offset, limit }),
+  externalImportCandidatePlan: (
+    sessionId: string,
+    manifestFingerprint: string,
+    mappings: ImportMappingOverrides,
+  ) =>
+    invoke<ImportCandidatePlan>("project_external_import_candidate_plan", {
+      input: { sessionId, manifestFingerprint, mappings },
+    }),
   saveRecoveryCopy: (entityId: string, body: string) =>
     invoke<string>("project_save_recovery_copy", { entityId, body }),
   gitStatus: () => invoke<GitStatus>("project_git_status"),

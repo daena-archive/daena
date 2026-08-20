@@ -63,6 +63,7 @@ import GitSettingsPanel from "$lib/GitSettingsPanel.svelte";
 import RelationshipPicker from "$lib/RelationshipPicker.svelte";
 import RelationshipMetadataDialog from "$lib/RelationshipMetadataDialog.svelte";
 import AssetDialog from "$lib/AssetDialog.svelte";
+import ExternalImportDialog from "$lib/ExternalImportDialog.svelte";
 import CalendarPicker from "$lib/CalendarPicker.svelte";
 import EntityHoverCard from "$lib/EntityHoverCard.svelte";
 import { confirmDialog, promptDialog } from "$lib/dialogs.svelte";
@@ -79,6 +80,7 @@ import {
   Map as MapIcon,
   FolderOpen,
   Download,
+  Import as ImportIcon,
   DatabaseZap,
   FlaskConical,
   LogOut,
@@ -364,6 +366,7 @@ let projectInfo = $state<ProjectInfo | null>(null);
 let gitStatus = $state<GitStatus | null>(null);
 let gitMessage = $state("");
 let showProjectMenu = $state(false);
+let showExternalImport = $state(false);
 let recentProjects = $state<RecentProject[]>([]);
 let searchMatches = $state<Entity[] | null>(null);
 let searchRequest = 0;
@@ -390,7 +393,8 @@ $effect(() => {
     installConsent !== null ||
     deleteBackupPath !== "" ||
     metadataDialog !== null ||
-    assetDialog !== null;
+    assetDialog !== null ||
+    showExternalImport;
   document.body.classList.toggle("modal-open", modalOpen);
   if (!modalOpen) return;
   const onKey = (event: KeyboardEvent) => {
@@ -3665,6 +3669,7 @@ function resetProjectSessionState() {
   closeAiFieldFill();
   closeAiRewrite();
   clearSelection();
+  showExternalImport = false;
   projectInfo = null;
   modules = [];
   adminPlugins = null;
@@ -3694,6 +3699,10 @@ function resetProjectSessionState() {
   schemaEditorDirty = false;
   schemaOverlayLoadToken += 1;
   ready = false;
+}
+function openExternalImport() {
+  showProjectMenu = false;
+  showExternalImport = true;
 }
 async function seedExample() {
   try {
@@ -3979,6 +3988,9 @@ onMount(() => {
               ></button>
             <button class="rail-button" role="menuitem" onclick={() => void exportMarkdownProject()}
               ><span class="rail-icon"><Download size={16} strokeWidth={1.8} /></span><span>Export Markdown</span
+              ></button>
+            <button class="rail-button" role="menuitem" onclick={openExternalImport}
+              ><span class="rail-icon"><ImportIcon size={16} strokeWidth={1.8} /></span><span>Import external material</span
               ></button>
             <button class="rail-button" role="menuitem" onclick={() => void rebuildSearchIndex()}
               ><span class="rail-icon"><DatabaseZap size={16} strokeWidth={1.8} /></span><span>Rebuild index</span
@@ -5789,6 +5801,9 @@ onMount(() => {
     onDelete={handleAssetDelete}
     onReplace={handleAssetReplace}
     onClose={() => (assetDialog = null)} />
+{/if}
+{#if showExternalImport}
+  <ExternalImportDialog {modules} onClose={() => (showExternalImport = false)} />
 {/if}
 <DialogHost />
 

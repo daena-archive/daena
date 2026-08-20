@@ -11,11 +11,15 @@ pub use authority::{Authority, AuthorityContext};
 pub use error::CoreError;
 pub use external_import::{
     analyze_generic_documents, analyze_generic_documents_with_progress,
-    GenericDocumentImportLimits, ImportAnalysisProgress, ImportAnalysisSummary, ImportDiagnostic,
-    ImportDiagnosticSeverity, ImportSource, ImportSourceKind, ImporterIdentity, MappingHintKind,
-    StagedAsset, StagedDocument, StagedImport, StagedLink, StagedLinkKind, StagedLinkResolution,
-    StagedMappingHint, StagedObject, UnsupportedSourceData, EXTERNAL_IMPORT_ANALYSIS_CANCELLED,
-    GENERIC_DOCUMENT_IMPORTER_ID, GENERIC_DOCUMENT_IMPORTER_VERSION, STAGED_IMPORT_SCHEMA_VERSION,
+    build_import_candidate_plan, GenericDocumentImportLimits, ImportAnalysisProgress,
+    ImportAnalysisSummary, ImportCandidateIssue, ImportCandidateMapping, ImportCandidateObject,
+    ImportCandidatePlan, ImportCandidatePlanBuild, ImportDiagnostic, ImportDiagnosticSeverity,
+    ImportMappingDecision, ImportMappingOverrides, ImportSource, ImportSourceKind,
+    ImporterIdentity, MappingHintKind, StagedAsset, StagedDocument, StagedImport, StagedLink,
+    StagedLinkKind, StagedLinkResolution, StagedMappingHint, StagedObject, UnsupportedSourceData,
+    EXTERNAL_IMPORT_ANALYSIS_CANCELLED, GENERIC_DOCUMENT_IMPORTER_ID,
+    GENERIC_DOCUMENT_IMPORTER_VERSION, IMPORT_CANDIDATE_PLAN_SCHEMA_VERSION,
+    STAGED_IMPORT_SCHEMA_VERSION,
 };
 pub use migrations::{FieldDefinition, Migration, Operation};
 pub use project::{

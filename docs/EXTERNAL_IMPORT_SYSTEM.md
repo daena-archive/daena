@@ -337,4 +337,9 @@ bundled and plugin output pass identical core validation.
   background sessions, progress/cancellation, paged results, lifecycle cleanup,
   bounded local spill storage, Tauri commands, and frontend client types are in
   place.
-- Iterations 3-8: planned, not yet implemented.
+- Iteration 3: implemented; the project menu opens a shared import workflow with
+  importer/source selection, live progress, paged item inspection, diagnostics,
+  enabled-manifest-derived entity/field/relationship choices, global/folder/item
+  overrides, and a deterministic generation-bound candidate plan. Closing or
+  cancelling cleans the session without mutating project content.
+- Iterations 4-8: planned, not yet implemented.

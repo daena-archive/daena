@@ -8,6 +8,7 @@ use std::path::Path;
 pub const STAGED_IMPORT_SCHEMA_VERSION: u32 = 1;
 pub const GENERIC_DOCUMENT_IMPORTER_ID: &str = "daena.generic-documents";
 pub const GENERIC_DOCUMENT_IMPORTER_VERSION: &str = "1";
+pub const EXTERNAL_IMPORT_ANALYSIS_CANCELLED: &str = "external import analysis cancelled";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -186,6 +187,16 @@ pub struct ImportAnalysisSummary {
     pub warning_count: usize,
     pub error_count: usize,
     pub total_source_bytes: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImportAnalysisProgress {
+    pub processed_entries: usize,
+    pub staged_object_count: usize,
+    pub unsupported_count: usize,
+    pub source_bytes: u64,
+    #[serde(default)]
+    pub source_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -439,6 +450,8 @@ impl StagedImport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GenericDocumentImportLimits {
+    #[serde(default = "default_max_entries")]
+    pub max_entries: usize,
     pub max_files: usize,
     pub max_file_bytes: u64,
     pub max_total_bytes: u64,
@@ -449,6 +462,7 @@ pub struct GenericDocumentImportLimits {
 impl Default for GenericDocumentImportLimits {
     fn default() -> Self {
         Self {
+            max_entries: default_max_entries(),
             max_files: 10_000,
             max_file_bytes: 16 * 1024 * 1024,
             max_total_bytes: 512 * 1024 * 1024,
@@ -458,9 +472,21 @@ impl Default for GenericDocumentImportLimits {
     }
 }
 
+fn default_max_entries() -> usize {
+    20_000
+}
+
 pub fn analyze_generic_documents(
     source: impl AsRef<Path>,
     limits: GenericDocumentImportLimits,
+) -> Result<StagedImport, CoreError> {
+    analyze_generic_documents_with_progress(source, limits, |_| Ok(()))
+}
+
+pub fn analyze_generic_documents_with_progress(
+    source: impl AsRef<Path>,
+    limits: GenericDocumentImportLimits,
+    mut progress: impl FnMut(ImportAnalysisProgress) -> Result<(), CoreError>,
 ) -> Result<StagedImport, CoreError> {
     validate_limits(&limits)?;
     let source = source.as_ref();
@@ -515,15 +541,21 @@ pub fn analyze_generic_documents(
             diagnostics: Vec::new(),
             summary: ImportAnalysisSummary::default(),
         },
+        discovered_entries: if metadata.is_file() { 1 } else { 0 },
         discovered_files: 0,
+        processed_entries: 0,
         total_source_bytes: 0,
         folders: BTreeSet::new(),
+        progress: &mut progress,
     };
+
+    analyzer.report_progress(None)?;
 
     if metadata.is_dir() {
         analyzer.analyze_directory(source, &[], 0)?;
     } else {
         analyzer.analyze_file(source, &source_name, &metadata)?;
+        analyzer.finish_entry(Some(source_name))?;
     }
     analyzer
         .import
@@ -540,15 +572,18 @@ pub fn analyze_generic_documents(
     Ok(analyzer.import)
 }
 
-struct GenericDocumentAnalyzer {
+struct GenericDocumentAnalyzer<'a> {
     limits: GenericDocumentImportLimits,
     import: StagedImport,
+    discovered_entries: usize,
     discovered_files: usize,
+    processed_entries: usize,
     total_source_bytes: u64,
     folders: BTreeSet<String>,
+    progress: &'a mut dyn FnMut(ImportAnalysisProgress) -> Result<(), CoreError>,
 }
 
-impl GenericDocumentAnalyzer {
+impl GenericDocumentAnalyzer<'_> {
     fn analyze_directory(
         &mut self,
         directory: &Path,
@@ -567,10 +602,18 @@ impl GenericDocumentAnalyzer {
         })?;
         let mut named_entries = Vec::new();
         for entry in entries {
+            self.report_progress(None)?;
             let entry = entry.map_err(|source| CoreError::Io {
                 operation: "read import source directory entry",
                 source,
             })?;
+            self.discovered_entries = self.discovered_entries.saturating_add(1);
+            if self.discovered_entries > self.limits.max_entries {
+                return Err(CoreError::Validation(format!(
+                    "import source exceeds the maximum entry count of {}",
+                    self.limits.max_entries
+                )));
+            }
             let name = match entry.file_name().into_string() {
                 Ok(name) if !name.is_empty() => name,
                 _ => {
@@ -590,28 +633,30 @@ impl GenericDocumentAnalyzer {
             let mut child_parts = relative_parts.to_vec();
             child_parts.push(name);
             let relative_path = child_parts.join("/");
+            self.report_progress(Some(relative_path.clone()))?;
             let metadata = fs::symlink_metadata(&path).map_err(|source| CoreError::Io {
                 operation: "read import source entry metadata",
                 source,
             })?;
             if metadata.file_type().is_symlink() {
                 self.record_unsupported(
-                    relative_path,
+                    relative_path.clone(),
                     "symlink",
                     "symbolic links are not followed during import analysis",
                 )?;
             } else if metadata.is_dir() {
-                self.folders.insert(relative_path);
+                self.folders.insert(relative_path.clone());
                 self.analyze_directory(&path, &child_parts, depth + 1)?;
             } else if metadata.is_file() {
                 self.analyze_file(&path, &relative_path, &metadata)?;
             } else {
                 self.record_unsupported(
-                    relative_path,
+                    relative_path.clone(),
                     "filesystem_entry",
                     "entry is not a regular file or directory",
                 )?;
             }
+            self.finish_entry(Some(relative_path))?;
         }
         Ok(())
     }
@@ -751,10 +796,26 @@ impl GenericDocumentAnalyzer {
         self.import.diagnostics.push(diagnostic);
         Ok(())
     }
+
+    fn finish_entry(&mut self, source_path: Option<String>) -> Result<(), CoreError> {
+        self.processed_entries = self.processed_entries.saturating_add(1);
+        self.report_progress(source_path)
+    }
+
+    fn report_progress(&mut self, source_path: Option<String>) -> Result<(), CoreError> {
+        (self.progress)(ImportAnalysisProgress {
+            processed_entries: self.processed_entries,
+            staged_object_count: self.import.objects.len(),
+            unsupported_count: self.import.unsupported.len(),
+            source_bytes: self.total_source_bytes,
+            source_path,
+        })
+    }
 }
 
 fn validate_limits(limits: &GenericDocumentImportLimits) -> Result<(), CoreError> {
-    if limits.max_files == 0
+    if limits.max_entries == 0
+        || limits.max_files == 0
         || limits.max_file_bytes == 0
         || limits.max_total_bytes == 0
         || limits.max_diagnostics == 0
@@ -995,6 +1056,35 @@ mod tests {
     }
 
     #[test]
+    fn progress_is_incremental_and_can_cancel_analysis() {
+        let source = TestDirectory::new();
+        fs::write(source.path().join("one.md"), "one").unwrap();
+        fs::write(source.path().join("two.md"), "two").unwrap();
+        let mut updates = Vec::new();
+
+        let error = analyze_generic_documents_with_progress(
+            source.path(),
+            GenericDocumentImportLimits::default(),
+            |progress| {
+                updates.push(progress.clone());
+                if progress.processed_entries >= 1 {
+                    Err(CoreError::Conflict(
+                        EXTERNAL_IMPORT_ANALYSIS_CANCELLED.into(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), EXTERNAL_IMPORT_ANALYSIS_CANCELLED);
+        assert_eq!(updates[0].processed_entries, 0);
+        assert_eq!(updates.last().unwrap().processed_entries, 1);
+        assert!(updates.last().unwrap().staged_object_count <= 1);
+    }
+
+    #[test]
     fn analysis_enforces_file_and_total_byte_limits() {
         let source = TestDirectory::new();
         fs::write(source.path().join("one.md"), "1234").unwrap();
@@ -1029,6 +1119,13 @@ mod tests {
         assert!(error
             .to_string()
             .contains("exceeds the maximum folder depth of 0"));
+
+        let mut limits = GenericDocumentImportLimits::default();
+        limits.max_entries = 1;
+        let error = analyze_generic_documents(source.path(), limits).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("exceeds the maximum entry count of 1"));
     }
 
     #[test]

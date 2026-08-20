@@ -316,6 +316,7 @@ export interface PhysicalHistoricalProgress {
 export const PHYSICAL_HISTORICAL_PROGRESS_EVENT = "physical-historical-progress";
 export const ATLAS_PROGRESS_EVENT = "atlas-progress";
 export const ATLAS_STUDIO_PROGRESS_EVENT = "atlas-studio-progress";
+export const EXTERNAL_IMPORT_PROGRESS_EVENT = "external-import-progress";
 export interface AtlasLayerChoice {
   id: string;
   name: string;
@@ -724,6 +725,145 @@ export interface PluginUpgradePlan {
   target: { signed: boolean; publisher: string };
 }
 type DialogSelection = string | string[] | null;
+export interface ExternalImporterDescriptor {
+  id: string;
+  version: string;
+  name: string;
+  description: string;
+  sourceKinds: Array<"file" | "folder">;
+  extensions: string[];
+}
+export interface ExternalImportSourceHandle {
+  sourceHandle: string;
+  sourceKind: "file" | "folder";
+  displayName: string;
+}
+export interface ImporterIdentity {
+  id: string;
+  version: string;
+  name: string;
+}
+export interface ExternalImportSource {
+  id: string;
+  kind: "file" | "folder" | "archive" | "vault" | "wiki_dump" | "plugin";
+  display_name: string;
+}
+export interface ImportDiagnostic {
+  severity: "fatal" | "error" | "warning";
+  code: string;
+  message: string;
+  source_path?: string | null;
+  object_id?: string | null;
+}
+export interface StagedLink {
+  kind: "internal" | "external" | "embed";
+  target: string;
+  label?: string | null;
+  resolution: "unresolved" | "resolved" | "ambiguous" | "missing" | "not_applicable";
+  resolved_object_id?: string | null;
+  candidate_object_ids?: string[];
+  raw?: string | null;
+}
+export interface StagedMappingHint {
+  kind: "entity_type" | "field" | "relationship" | "hierarchy" | "asset_relationship" | "source_category";
+  source_key?: string | null;
+  suggested_value: unknown;
+  confidence?: number | null;
+  reason?: string | null;
+}
+export interface StagedObject {
+  id: string;
+  source_id: string;
+  source_kind: string;
+  source_path: string;
+  content_hash: string;
+  title: string;
+  body?: { format: string; body: string } | null;
+  parent_source_path?: string | null;
+  tags?: string[];
+  aliases?: string[];
+  fields?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  raw_source_data?: Record<string, unknown>;
+  links?: StagedLink[];
+  mapping_hints?: StagedMappingHint[];
+  diagnostics?: ImportDiagnostic[];
+}
+export interface StagedAsset {
+  id: string;
+  source_path: string;
+  filename: string;
+  size: number;
+  mime_type?: string | null;
+  content_hash?: string | null;
+  owner_object_id?: string | null;
+  relationship?: string | null;
+  raw_metadata?: Record<string, unknown>;
+  diagnostics?: ImportDiagnostic[];
+}
+export interface UnsupportedSourceData {
+  source_path: string;
+  source_kind: string;
+  reason: string;
+  raw_metadata?: Record<string, unknown>;
+}
+export interface ImportAnalysisSummary {
+  document_count: number;
+  candidate_entity_count: number;
+  folder_count: number;
+  asset_count: number;
+  link_count: number;
+  unresolved_link_count: number;
+  unsupported_count: number;
+  warning_count: number;
+  error_count: number;
+  total_source_bytes: number;
+}
+export interface ExternalImportResultMetadata {
+  schemaVersion: number;
+  importer: ImporterIdentity;
+  source: ExternalImportSource;
+  summary: ImportAnalysisSummary;
+  totalItems: number;
+  spilledToLocalStorage: boolean;
+}
+export interface ExternalImportAnalysisStatus {
+  sessionId: string;
+  importerId: string;
+  state: "queued" | "analyzing" | "ready" | "failed" | "cancelled";
+  stage: string;
+  processedEntries: number;
+  stagedObjectCount: number;
+  unsupportedCount: number;
+  sourceBytes: number;
+  sequence: number;
+  currentSourcePath: string | null;
+  error: string | null;
+  errorCode: string | null;
+  capturedContentGeneration: number;
+  currentContentGeneration: number | null;
+  result: ExternalImportResultMetadata | null;
+}
+export type ExternalImportPageItem =
+  | { kind: "object"; value: StagedObject }
+  | { kind: "asset"; value: StagedAsset }
+  | { kind: "unsupported"; value: UnsupportedSourceData }
+  | { kind: "diagnostic"; value: ImportDiagnostic };
+export interface ExternalImportPage {
+  sessionId: string;
+  offset: number;
+  limit: number;
+  totalItems: number;
+  items: ExternalImportPageItem[];
+}
+export interface ExternalImportLimits {
+  maxEntries: number;
+  maxFiles: number;
+  maxFileBytes: number;
+  maxTotalBytes: number;
+  maxDepth: number;
+  maxDiagnostics: number;
+}
 export interface MutationOptions {
   expectedRevision?: string;
   requestId?: string;
@@ -742,6 +882,23 @@ export const project = {
   close: () => invoke<void>("project_close"),
   info: () => invoke<ProjectInfo | null>("project_info"),
   importCheckpoint: () => invoke<ExternalChangeReport>("project_import_checkpoint"),
+  externalImporters: () => invoke<ExternalImporterDescriptor[]>("project_external_importers"),
+  externalImportSelectSource: (sourceKind: "file" | "folder") =>
+    invoke<ExternalImportSourceHandle | null>("project_external_import_select_source", { sourceKind }),
+  externalImportAnalyzeBegin: (
+    sourceHandle: string,
+    importerId: string,
+    limits?: ExternalImportLimits,
+  ) =>
+    invoke<ExternalImportAnalysisStatus>("project_external_import_analyze_begin", {
+      input: { sourceHandle, importerId, limits: limits ?? null },
+    }),
+  externalImportAnalysisStatus: (sessionId: string) =>
+    invoke<ExternalImportAnalysisStatus>("project_external_import_analysis_status", { sessionId }),
+  externalImportAnalysisCancel: (sessionId: string) =>
+    invoke<ExternalImportAnalysisStatus>("project_external_import_analysis_cancel", { sessionId }),
+  externalImportAnalysisPage: (sessionId: string, offset: number, limit: number) =>
+    invoke<ExternalImportPage>("project_external_import_analysis_page", { sessionId, offset, limit }),
   saveRecoveryCopy: (entityId: string, body: string) =>
     invoke<string>("project_save_recovery_copy", { entityId, body }),
   gitStatus: () => invoke<GitStatus>("project_git_status"),

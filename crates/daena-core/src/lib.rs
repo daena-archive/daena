@@ -10,10 +10,11 @@ mod sync;
 pub use authority::{Authority, AuthorityContext};
 pub use error::CoreError;
 pub use external_import::{
-    analyze_generic_documents, GenericDocumentImportLimits, ImportAnalysisSummary,
-    ImportDiagnostic, ImportDiagnosticSeverity, ImportSource, ImportSourceKind, ImporterIdentity,
-    MappingHintKind, StagedAsset, StagedDocument, StagedImport, StagedLink, StagedLinkKind,
-    StagedLinkResolution, StagedMappingHint, StagedObject, UnsupportedSourceData,
+    analyze_generic_documents, analyze_generic_documents_with_progress,
+    GenericDocumentImportLimits, ImportAnalysisProgress, ImportAnalysisSummary, ImportDiagnostic,
+    ImportDiagnosticSeverity, ImportSource, ImportSourceKind, ImporterIdentity, MappingHintKind,
+    StagedAsset, StagedDocument, StagedImport, StagedLink, StagedLinkKind, StagedLinkResolution,
+    StagedMappingHint, StagedObject, UnsupportedSourceData, EXTERNAL_IMPORT_ANALYSIS_CANCELLED,
     GENERIC_DOCUMENT_IMPORTER_ID, GENERIC_DOCUMENT_IMPORTER_VERSION, STAGED_IMPORT_SCHEMA_VERSION,
 };
 pub use migrations::{FieldDefinition, Migration, Operation};

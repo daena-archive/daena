@@ -34,6 +34,7 @@ use tauri::{Emitter, Manager};
 mod ai;
 mod atlas_jobs;
 mod atlas_studio;
+mod external_import_jobs;
 mod settings;
 
 use settings::{AppSettings, AppSettingsUpdate, SettingsStore};
@@ -49,6 +50,7 @@ type SharedBinaryTransfers = Arc<Mutex<BinaryTransferManager>>;
 type SharedPhysicalJobs = Arc<Mutex<PhysicalJobManager>>;
 type SharedAtlasJobs = Arc<Mutex<crate::atlas_jobs::AtlasJobManager>>;
 type SharedAtlasStudio = Arc<Mutex<crate::atlas_studio::AtlasStudioManager>>;
+type SharedExternalImports = Arc<Mutex<crate::external_import_jobs::ExternalImportJobManager>>;
 type SharedSettings = Arc<Mutex<SettingsStore>>;
 const READ_CONNECTION_POOL_CAPACITY: usize = 4;
 const PHYSICAL_JOB_TTL: Duration = Duration::from_secs(15 * 60);
@@ -61,6 +63,7 @@ const PHYSICAL_HISTORICAL_PROGRESS_EVENT: &str = "physical-historical-progress";
 const ATLAS_PROGRESS_EVENT: &str = "atlas-progress";
 const ATLAS_STUDIO_PROGRESS_EVENT: &str = "atlas-studio-progress";
 static ATLAS_STUDIO: OnceLock<SharedAtlasStudio> = OnceLock::new();
+static EXTERNAL_IMPORTS: OnceLock<SharedExternalImports> = OnceLock::new();
 
 fn new_shared_core() -> SharedCore {
     Arc::new(Mutex::new(Arc::new(ProjectSession {
@@ -333,6 +336,13 @@ fn cancel_physical_jobs(jobs: &SharedPhysicalJobs) -> Result<(), String> {
     }
     if let Some(studio) = ATLAS_STUDIO.get() {
         atlas_studio::cancel_atlas_studio(studio)?;
+    }
+    Ok(())
+}
+
+fn cancel_external_import_jobs() -> Result<(), String> {
+    if let Some(imports) = EXTERNAL_IMPORTS.get() {
+        external_import_jobs::cancel_external_imports(imports)?;
     }
     Ok(())
 }
@@ -6127,6 +6137,7 @@ async fn project_open(
     path: String,
 ) -> Result<(), String> {
     cancel_physical_jobs(jobs.inner())?;
+    cancel_external_import_jobs()?;
     flush_project_checkpoint(state.clone(), "project lifecycle transition").await?;
     let plugins = plugins.inner().clone();
     let ai_runtime = ai_runtime.inner().clone();
@@ -6168,6 +6179,7 @@ async fn project_open_directory(
     path: String,
 ) -> Result<ProjectInfo, String> {
     cancel_physical_jobs(jobs.inner())?;
+    cancel_external_import_jobs()?;
     flush_project_checkpoint(state.clone(), "project lifecycle transition").await?;
     let plugins = plugins.inner().clone();
     let ai_runtime = ai_runtime.inner().clone();
@@ -6209,6 +6221,7 @@ async fn project_new(
     path: String,
 ) -> Result<ProjectInfo, String> {
     cancel_physical_jobs(jobs.inner())?;
+    cancel_external_import_jobs()?;
     flush_project_checkpoint(state.clone(), "project lifecycle transition").await?;
     let plugins = plugins.inner().clone();
     let ai_runtime = ai_runtime.inner().clone();
@@ -6249,6 +6262,7 @@ async fn project_close(
     watcher: tauri::State<'_, SharedProjectWatcher>,
 ) -> Result<(), String> {
     cancel_physical_jobs(jobs.inner())?;
+    cancel_external_import_jobs()?;
     let plugins = plugins.inner().clone();
     let ai_runtime = ai_runtime.inner().clone();
     let app = app.clone();
@@ -6271,6 +6285,7 @@ fn close_project_for_app(
     watcher: &SharedProjectWatcher,
 ) -> Result<(), String> {
     cancel_physical_jobs(jobs)?;
+    cancel_external_import_jobs()?;
     stop_project_watcher(watcher)?;
     flush_checkpoint_for_shared_core(core, "project lifecycle transition")?;
     let session = current_session(core)?;
@@ -6542,6 +6557,7 @@ async fn project_open_memory(
     watcher: tauri::State<'_, SharedProjectWatcher>,
 ) -> Result<(), String> {
     cancel_physical_jobs(jobs.inner())?;
+    cancel_external_import_jobs()?;
     stop_project_watcher(watcher.inner())?;
     flush_project_checkpoint(state.clone(), "project lifecycle transition").await?;
     let core = state.inner().clone();
@@ -6573,6 +6589,7 @@ async fn project_open_default(
     watcher: tauri::State<'_, SharedProjectWatcher>,
 ) -> Result<(), String> {
     cancel_physical_jobs(jobs.inner())?;
+    cancel_external_import_jobs()?;
     let directory = app
         .path()
         .app_data_dir()
@@ -9189,6 +9206,10 @@ pub fn run() {
     let _ = ATLAS_JOBS.set(atlas_jobs.clone());
     let atlas_studio = Arc::new(Mutex::new(atlas_studio::AtlasStudioManager::default()));
     let _ = ATLAS_STUDIO.set(atlas_studio.clone());
+    let external_imports = Arc::new(Mutex::new(
+        external_import_jobs::ExternalImportJobManager::default(),
+    ));
+    let _ = EXTERNAL_IMPORTS.set(external_imports.clone());
     let protocol_studio = atlas_studio.clone();
     let protocol_studio_core = core.clone();
     let protocol_ai_runtime = Arc::new(Mutex::new(ai::AiRuntime::default()));
@@ -9275,6 +9296,7 @@ pub fn run() {
         .manage(physical_jobs)
         .manage(atlas_jobs)
         .manage(atlas_studio)
+        .manage(external_imports)
         .manage(watcher)
         .manage(ai_runtime)
         .invoke_handler(tauri::generate_handler![
@@ -9328,6 +9350,12 @@ pub fn run() {
             project_close,
             project_info,
             project_import_checkpoint,
+            external_import_jobs::project_external_importers,
+            external_import_jobs::project_external_import_select_source,
+            external_import_jobs::project_external_import_analyze_begin,
+            external_import_jobs::project_external_import_analysis_status,
+            external_import_jobs::project_external_import_analysis_cancel,
+            external_import_jobs::project_external_import_analysis_page,
             project_save_recovery_copy,
             project_git_status,
             project_git_preflight,

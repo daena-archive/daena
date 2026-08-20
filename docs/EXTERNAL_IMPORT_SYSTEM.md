@@ -333,4 +333,8 @@ bundled and plugin output pass identical core validation.
 
 - Iteration 1: implemented in the core; the initial slice covers the neutral
   contract and deterministic generic Markdown/plain-text/folder analysis.
-- Iterations 2-8: planned, not yet implemented.
+- Iteration 2: implemented; trusted-shell source handles, project-bound
+  background sessions, progress/cancellation, paged results, lifecycle cleanup,
+  bounded local spill storage, Tauri commands, and frontend client types are in
+  place.
+- Iterations 3-8: planned, not yet implemented.

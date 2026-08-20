@@ -16,7 +16,36 @@ import TextAlign from "@tiptap/extension-text-align";
 import Text from "@tiptap/extension-text";
 import Underline from "@tiptap/extension-underline";
 import { UndoRedo } from "@tiptap/extensions";
-import { onMount } from "svelte";
+import TextDirection from "tiptap-text-direction";
+import {
+  TextAlignStart,
+  TextAlignCenter,
+  TextAlignEnd,
+  ArrowRightToLine,
+  ArrowLeftToLine,
+  Undo2,
+  Redo2,
+  Bold as BoldIcon,
+  Italic as ItalicIcon,
+  Underline as UnderlineIcon,
+  Strikethrough as StrikethroughIcon,
+  EyeOff,
+  AtSign,
+  List,
+  ListOrdered,
+  Quote as QuoteIcon,
+  SeparatorHorizontal,
+  Eraser,
+  Sparkles as SparklesIcon,
+  Maximize2,
+  Minimize2,
+  Ellipsis,
+  X as XIcon,
+  GripVertical,
+  RectangleVertical,
+  RectangleHorizontal,
+} from "@lucide/svelte";
+import { onMount, tick } from "svelte";
 import { htmlToMarkdown, markdownToHtml } from "$lib/markdown";
 import { promptDialog } from "$lib/dialogs.svelte";
 import type { Entity } from "$lib/project/client";
@@ -57,7 +86,18 @@ const Spoiler = Mark.create({
     return [{ tag: "span[data-spoiler]" }, { tag: "span.spoiler" }];
   },
   renderHTML({ HTMLAttributes }) {
-    return ["span", { "data-spoiler": "", class: "spoiler", ...HTMLAttributes }, 0];
+    return [
+      "span",
+      {
+        "data-spoiler": "",
+        class: "spoiler",
+        role: "button",
+        tabindex: "0",
+        title: "Click to reveal spoiler",
+        ...HTMLAttributes,
+      },
+      0,
+    ];
   },
   addCommands() {
     return {
@@ -92,6 +132,14 @@ let editorText = "";
 let selectionText = "";
 let selectionMarkdown = "";
 let aiMenuOpen = false;
+let moreMenuOpen = false;
+let moreMenuControl: HTMLDivElement | null = null;
+let moreMenuPosition = { top: 0, left: 0 };
+let moreMenuEl: HTMLDivElement | null = null;
+let isDraggingMoreMenu = false;
+let moreMenuDragOffset = { x: 0, y: 0 };
+let moreMenuHydrated = false;
+let moreMenuVertical = false;
 let entityReferenceMenuOpen = false;
 let entityReferenceQuery = "";
 let entityReferenceRange: { from: number; to: number } | null = null;
@@ -111,6 +159,48 @@ let isFullscreen = false;
 $: wordCountValue = editorText.trim() ? editorText.trim().split(/\s+/).length : 0;
 $: characterCountValue = editorText.length;
 $: if (fullscreen !== isFullscreen) isFullscreen = fullscreen;
+// Do not clear moreMenuOpen on fullscreen — {#if !isFullscreen} already hides the More button/menu,
+// and clearing would persist "closed" and lose the user's open-state when they exit fullscreen.
+$: if (moreMenuOpen) {
+  tick().then(() => {
+    if (!moreMenuControl) return;
+    const menu = document.querySelector(".more-toolbar-menu") as HTMLElement | null;
+    if (!menu) return;
+    const menuRect = menu.getBoundingClientRect();
+    if (moreMenuPosition.top !== 0 || moreMenuPosition.left !== 0) {
+      let { top, left } = moreMenuPosition;
+      left = Math.max(8, Math.min(left, window.innerWidth - menuRect.width - 8));
+      top = Math.max(8, Math.min(top, window.innerHeight - menuRect.height - 8));
+      if (top !== moreMenuPosition.top || left !== moreMenuPosition.left) moreMenuPosition = { top, left };
+      return;
+    }
+    const rect = moreMenuControl.getBoundingClientRect();
+    let top = rect.top - menuRect.height - 8;
+    let left = rect.right - menuRect.width;
+    if (top < 8) top = rect.bottom + 8;
+    if (left < 8) left = 8;
+    if (left + menuRect.width > window.innerWidth - 8) left = window.innerWidth - menuRect.width - 8;
+    moreMenuPosition = { top, left };
+  });
+}
+$: if (moreMenuHydrated && typeof window !== "undefined") {
+  try {
+    localStorage.setItem("daena:moreMenuOpen", String(moreMenuOpen));
+  } catch {}
+}
+$: if (moreMenuHydrated && typeof window !== "undefined") {
+  try {
+    localStorage.setItem("daena:moreMenuPosition", JSON.stringify(moreMenuPosition));
+  } catch {}
+}
+$: if (moreMenuHydrated && typeof window !== "undefined") {
+  try {
+    localStorage.setItem("daena:moreMenuVertical", String(moreMenuVertical));
+  } catch {}
+}
+$: if (moreMenuOpen && moreMenuVertical !== undefined) {
+  tick().then(() => handleResize());
+}
 
 function sanitizeHtml(value: string): string {
   if (typeof document === "undefined") return value;
@@ -179,10 +269,81 @@ function toggleFullscreen() {
 }
 
 function handleFullscreenKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape" && moreMenuOpen) {
+    event.preventDefault();
+    moreMenuOpen = false;
+    return;
+  }
   if (event.key === "Escape" && isFullscreen) {
     event.preventDefault();
     setFullscreen(false);
   }
+}
+
+function startMoreMenuDrag(event: MouseEvent | TouchEvent) {
+  if (!moreMenuEl) return;
+  const target = event.target as HTMLElement | null;
+  if (target?.closest(".more-menu-close")) return;
+  isDraggingMoreMenu = true;
+  const clientX = (event as TouchEvent).touches
+    ? (event as TouchEvent).touches[0].clientX
+    : (event as MouseEvent).clientX;
+  const clientY = (event as TouchEvent).touches
+    ? (event as TouchEvent).touches[0].clientY
+    : (event as MouseEvent).clientY;
+  const rect = moreMenuEl.getBoundingClientRect();
+  moreMenuDragOffset = { x: clientX - rect.left, y: clientY - rect.top };
+  window.addEventListener("mousemove", onMoreMenuDrag);
+  window.addEventListener("mouseup", stopMoreMenuDrag);
+  window.addEventListener("touchmove", onMoreMenuDrag, { passive: false });
+  window.addEventListener("touchend", stopMoreMenuDrag);
+  event.preventDefault();
+}
+
+function onMoreMenuDrag(event: MouseEvent | TouchEvent) {
+  if (!isDraggingMoreMenu || !moreMenuEl) return;
+  const clientX = (event as TouchEvent).touches
+    ? (event as TouchEvent).touches[0].clientX
+    : (event as MouseEvent).clientX;
+  const clientY = (event as TouchEvent).touches
+    ? (event as TouchEvent).touches[0].clientY
+    : (event as MouseEvent).clientY;
+  const menuRect = moreMenuEl.getBoundingClientRect();
+  let left = clientX - moreMenuDragOffset.x;
+  let top = clientY - moreMenuDragOffset.y;
+  left = Math.max(8, Math.min(left, window.innerWidth - menuRect.width - 8));
+  top = Math.max(8, Math.min(top, window.innerHeight - menuRect.height - 8));
+  moreMenuPosition = { top, left };
+  if (event.cancelable) event.preventDefault();
+}
+
+function stopMoreMenuDrag() {
+  if (!isDraggingMoreMenu) return;
+  isDraggingMoreMenu = false;
+  window.removeEventListener("mousemove", onMoreMenuDrag);
+  window.removeEventListener("mouseup", stopMoreMenuDrag);
+  window.removeEventListener("touchmove", onMoreMenuDrag);
+  window.removeEventListener("touchend", stopMoreMenuDrag);
+}
+
+function handleResize() {
+  if (!moreMenuOpen || !moreMenuEl) return;
+  const menuRect = moreMenuEl.getBoundingClientRect();
+  let { top, left } = moreMenuPosition;
+  left = Math.max(8, Math.min(left, window.innerWidth - menuRect.width - 8));
+  top = Math.max(8, Math.min(top, window.innerHeight - menuRect.height - 8));
+  if (top !== moreMenuPosition.top || left !== moreMenuPosition.left) moreMenuPosition = { top, left };
+}
+
+function portal(node: HTMLElement) {
+  if (typeof document !== "undefined" && document.body) {
+    document.body.appendChild(node);
+  }
+  return {
+    destroy() {
+      if (node.parentNode) node.remove();
+    },
+  };
 }
 
 function focusEditorSurface(event: MouseEvent) {
@@ -409,8 +570,28 @@ function isAligned(alignment: string): boolean {
   );
 }
 
+function isDirection(direction: string): boolean {
+  if (!editorState) return false;
+  return (
+    editorState.getAttributes("paragraph").dir === direction || editorState.getAttributes("heading").dir === direction
+  );
+}
+
 onMount(() => {
+  try {
+    const savedOpen = localStorage.getItem("daena:moreMenuOpen");
+    if (savedOpen !== null) moreMenuOpen = savedOpen === "true";
+    const savedPos = localStorage.getItem("daena:moreMenuPosition");
+    if (savedPos) {
+      const parsed = JSON.parse(savedPos);
+      if (typeof parsed.top === "number" && typeof parsed.left === "number") moreMenuPosition = parsed;
+    }
+    const savedVertical = localStorage.getItem("daena:moreMenuVertical");
+    if (savedVertical !== null) moreMenuVertical = savedVertical === "true";
+  } catch {}
+  moreMenuHydrated = true;
   window.addEventListener("keydown", handleFullscreenKeydown);
+  window.addEventListener("resize", handleResize);
   editor = new Editor({
     element: editorElement,
     extensions: [
@@ -433,6 +614,7 @@ onMount(() => {
       ExternalLink.configure({ openOnClick: false, autolink: true, linkOnPaste: true }),
       EntityReference,
       TextAlign.configure({ types: ["heading", "paragraph"], alignments: ["left", "center", "right"] }),
+      TextDirection.configure({ types: ["heading", "paragraph"] }),
       UndoRedo,
     ],
     content: sanitizeHtml(markdownToHtml(value)),
@@ -444,6 +626,13 @@ onMount(() => {
         spellcheck: "true",
       },
       handleClick: (_view, _position, event) => {
+        const spoilerEl = (event.target as HTMLElement | null)?.closest<HTMLElement>("span[data-spoiler]");
+        if (spoilerEl) {
+          event.preventDefault();
+          const revealed = spoilerEl.classList.toggle("revealed");
+          spoilerEl.setAttribute("aria-expanded", revealed ? "true" : "false");
+          return true;
+        }
         const anchor = (event.target as HTMLElement | null)?.closest<HTMLAnchorElement>("a[data-entity-id]");
         const entityId = anchor?.dataset.entityId;
         if (!entityId) return false;
@@ -467,6 +656,16 @@ onMount(() => {
         },
       },
       handleKeyDown: (_view, event) => {
+        if (
+          (event.key === "Enter" || event.key === " ") &&
+          (event.target as HTMLElement | null)?.closest("span[data-spoiler]")
+        ) {
+          event.preventDefault();
+          const el = (event.target as HTMLElement).closest("span[data-spoiler]") as HTMLElement;
+          const revealed = el.classList.toggle("revealed");
+          el.setAttribute("aria-expanded", revealed ? "true" : "false");
+          return true;
+        }
         if (entityReferenceMenuOpen && (event.key === "Enter" || event.key === "Escape")) {
           event.preventDefault();
           if (event.key === "Enter") openEntityReferenceDialog();
@@ -504,6 +703,7 @@ onMount(() => {
 
   return () => {
     window.removeEventListener("keydown", handleFullscreenKeydown);
+    window.removeEventListener("resize", handleResize);
     cancelAnimationFrame(initialTextFrame);
     editor?.destroy();
   };
@@ -520,188 +720,423 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
 
 <div class="editor-shell">
   <div class="editor-toolbar" role="toolbar" aria-label="Formatting tools">
-    <div class="toolbar-group" aria-label="History">
-      <button
-        class="history-button"
-        type="button"
-        title="Undo (⌘/Ctrl + Z)"
-        aria-label="Undo"
-        disabled={!editorState?.can().undo()}
-        onclick={() => run((currentEditor) => currentEditor.chain().focus().undo().run())}>↶</button>
-      <button
-        class="history-button"
-        type="button"
-        title="Redo (⌘/Ctrl + Shift + Z)"
-        aria-label="Redo"
-        disabled={!editorState?.can().redo()}
-        onclick={() => run((currentEditor) => currentEditor.chain().focus().redo().run())}>↷</button>
-    </div>
-    <span class="toolbar-divider"></span>
+    <div class="editor-toolbar-scroll">
+      <div class="toolbar-group" aria-label="History">
+        <button
+          class="history-button"
+          type="button"
+          title="Undo (⌘/Ctrl + Z)"
+          aria-label="Undo"
+          disabled={!editorState?.can().undo()}
+          onclick={() => run((currentEditor) => currentEditor.chain().focus().undo().run())}
+          ><Undo2 size={14} strokeWidth={1.8} /></button>
+        <button
+          class="history-button"
+          type="button"
+          title="Redo (⌘/Ctrl + Shift + Z)"
+          aria-label="Redo"
+          disabled={!editorState?.can().redo()}
+          onclick={() => run((currentEditor) => currentEditor.chain().focus().redo().run())}
+          ><Redo2 size={14} strokeWidth={1.8} /></button>
+      </div>
+      <span class="toolbar-divider"></span>
 
-    <div class="toolbar-group">
-      <label class="sr-only" for="block-style">Text style</label>
-      <select
-        id="block-style"
-        class="style-select"
-        aria-label="Text style"
-        value={blockStyle()}
-        onchange={changeBlockStyle}>
-        <option value="paragraph">Normal text</option>
-        <option value="heading-1">Heading 1</option>
-        <option value="heading-2">Heading 2</option>
-        <option value="heading-3">Heading 3</option>
-        <option value="blockquote">Quote</option>
-        <option value="codeBlock">Code block</option>
-      </select>
-    </div>
-    <span class="toolbar-divider"></span>
+      <div class="toolbar-group">
+        <label class="sr-only" for="block-style">Text style</label>
+        <select
+          id="block-style"
+          class="style-select"
+          aria-label="Text style"
+          value={blockStyle()}
+          onchange={changeBlockStyle}>
+          <option value="paragraph">Normal text</option>
+          <option value="heading-1">Heading 1</option>
+          <option value="heading-2">Heading 2</option>
+          <option value="heading-3">Heading 3</option>
+          <option value="blockquote">Quote</option>
+          <option value="codeBlock">Code block</option>
+        </select>
+      </div>
+      <span class="toolbar-divider"></span>
 
-    <div class="toolbar-group" aria-label="Text formatting">
-      <button
-        type="button"
-        title="Bold (⌘/Ctrl + B)"
-        aria-label="Bold"
-        aria-pressed={editorState?.isActive("bold") ?? false}
-        class:active={editorState?.isActive("bold")}
-        onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleBold().run())}
-        ><strong>B</strong></button>
-      <button
-        type="button"
-        title="Italic (⌘/Ctrl + I)"
-        aria-label="Italic"
-        aria-pressed={editorState?.isActive("italic") ?? false}
-        class:active={editorState?.isActive("italic")}
-        onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleItalic().run())}><em>I</em></button>
-      <button
-        type="button"
-        title="Underline (⌘/Ctrl + U)"
-        aria-label="Underline"
-        aria-pressed={editorState?.isActive("underline") ?? false}
-        class:active={editorState?.isActive("underline")}
-        onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleUnderline().run())}><u>U</u></button>
-      <button
-        type="button"
-        title="Strikethrough"
-        aria-label="Strikethrough"
-        aria-pressed={editorState?.isActive("strike") ?? false}
-        class:active={editorState?.isActive("strike")}
-        onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleStrike().run())}><s>S</s></button>
-      <button
-        type="button"
-        title="Spoiler (hidden text)"
-        aria-label="Spoiler"
-        aria-pressed={editorState?.isActive("spoiler") ?? false}
-        class:active={editorState?.isActive("spoiler")}
-        onclick={() => run((currentEditor) => (currentEditor.chain().focus() as any).toggleSpoiler().run())}>◼</button>
-      <button
-        type="button"
-        title="Link to lore entry (@)"
-        aria-label="Link to lore entry"
-        onclick={() => {
-          if (!editorState) return;
-          editorState.chain().focus().insertContent("@").run();
-        }}>@</button>
-    </div>
-    <span class="toolbar-divider"></span>
+      <div class="toolbar-group" aria-label="Text formatting">
+        <button
+          type="button"
+          title="Bold (⌘/Ctrl + B)"
+          aria-label="Bold"
+          aria-pressed={editorState?.isActive("bold") ?? false}
+          class:active={editorState?.isActive("bold")}
+          onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleBold().run())}
+          ><BoldIcon size={14} strokeWidth={1.8} /></button>
+        <button
+          type="button"
+          title="Italic (⌘/Ctrl + I)"
+          aria-label="Italic"
+          aria-pressed={editorState?.isActive("italic") ?? false}
+          class:active={editorState?.isActive("italic")}
+          onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleItalic().run())}
+          ><ItalicIcon size={14} strokeWidth={1.8} /></button>
+        {#if isFullscreen}
+          <button
+            type="button"
+            title="Underline (⌘/Ctrl + U)"
+            aria-label="Underline"
+            aria-pressed={editorState?.isActive("underline") ?? false}
+            class:active={editorState?.isActive("underline")}
+            onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleUnderline().run())}
+            ><UnderlineIcon size={14} strokeWidth={1.8} /></button>
+          <button
+            type="button"
+            title="Strikethrough"
+            aria-label="Strikethrough"
+            aria-pressed={editorState?.isActive("strike") ?? false}
+            class:active={editorState?.isActive("strike")}
+            onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleStrike().run())}
+            ><StrikethroughIcon size={14} strokeWidth={1.8} /></button>
+          <button
+            type="button"
+            title="Spoiler (hidden text)"
+            aria-label="Spoiler"
+            aria-pressed={editorState?.isActive("spoiler") ?? false}
+            class:active={editorState?.isActive("spoiler")}
+            onclick={() => run((currentEditor) => (currentEditor.chain().focus() as any).toggleSpoiler().run())}
+            ><EyeOff size={14} strokeWidth={1.8} /></button>
+        {/if}
+        <button
+          type="button"
+          title="Link to lore entry (@)"
+          aria-label="Link to lore entry"
+          onclick={() => {
+            if (!editorState) return;
+            editorState.chain().focus().insertContent("@").run();
+          }}><AtSign size={14} strokeWidth={1.8} /></button>
+      </div>
+      <span class="toolbar-divider"></span>
+      {#if isFullscreen}
+        <div class="toolbar-group" aria-label="Text alignment">
+          <button
+            type="button"
+            title="Align left"
+            aria-label="Align left"
+            aria-pressed={isAligned("left")}
+            class:active={isAligned("left")}
+            onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("left").run())}
+            ><TextAlignStart size={14} strokeWidth={1.8} /></button>
+          <button
+            type="button"
+            title="Align center"
+            aria-label="Align center"
+            aria-pressed={isAligned("center")}
+            class:active={isAligned("center")}
+            onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("center").run())}
+            ><TextAlignCenter size={14} strokeWidth={1.8} /></button>
+          <button
+            type="button"
+            title="Align right"
+            aria-label="Align right"
+            aria-pressed={isAligned("right")}
+            class:active={isAligned("right")}
+            onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("right").run())}
+            ><TextAlignEnd size={14} strokeWidth={1.8} /></button>
+        </div>
+        <span class="toolbar-divider"></span>
+      {/if}
+      {#if isFullscreen}
+        <div class="toolbar-group" aria-label="Text direction">
+          <button
+            type="button"
+            title="Left to right (⌘/Ctrl + Alt + L) — click again to auto"
+            aria-label="Left to right"
+            aria-pressed={isDirection("ltr")}
+            class:active={isDirection("ltr")}
+            onclick={() =>
+              run((currentEditor) =>
+                isDirection("ltr")
+                  ? (currentEditor.chain().focus() as any).unsetTextDirection().run()
+                  : (currentEditor.chain().focus() as any).setTextDirection("ltr").run(),
+              )}><ArrowRightToLine size={14} strokeWidth={1.8} /></button>
+          <button
+            type="button"
+            title="Right to left (⌘/Ctrl + Alt + R) — click again to auto"
+            aria-label="Right to left"
+            aria-pressed={isDirection("rtl")}
+            class:active={isDirection("rtl")}
+            onclick={() =>
+              run((currentEditor) =>
+                isDirection("rtl")
+                  ? (currentEditor.chain().focus() as any).unsetTextDirection().run()
+                  : (currentEditor.chain().focus() as any).setTextDirection("rtl").run(),
+              )}><ArrowLeftToLine size={14} strokeWidth={1.8} /></button>
+        </div>
+        <span class="toolbar-divider"></span>
+      {/if}
 
-    <div class="toolbar-group" aria-label="Lists and blocks">
-      <button
-        type="button"
-        title="Bulleted list"
-        aria-label="Bulleted list"
-        aria-pressed={editorState?.isActive("bulletList") ?? false}
-        class:active={editorState?.isActive("bulletList")}
-        onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleBulletList().run())}>•≡</button>
-      <button
-        type="button"
-        title="Numbered list"
-        aria-label="Numbered list"
-        aria-pressed={editorState?.isActive("orderedList") ?? false}
-        class:active={editorState?.isActive("orderedList")}
-        onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleOrderedList().run())}>1≡</button>
-      <button
-        type="button"
-        title="Quote"
-        aria-label="Quote"
-        aria-pressed={editorState?.isActive("blockquote") ?? false}
-        class:active={editorState?.isActive("blockquote")}
-        onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleBlockquote().run())}>“</button>
-      <button
-        type="button"
-        title="Horizontal rule"
-        aria-label="Horizontal rule"
-        onclick={() => run((currentEditor) => currentEditor.chain().focus().setHorizontalRule().run())}>—</button>
-      <button
-        type="button"
-        title="Clear formatting"
-        aria-label="Clear formatting"
-        onclick={() => run((currentEditor) => currentEditor.chain().focus().clearNodes().unsetAllMarks().run())}
-        >Tx</button>
+      <div class="toolbar-group" aria-label="Lists and blocks">
+        <button
+          type="button"
+          title="Bulleted list"
+          aria-label="Bulleted list"
+          aria-pressed={editorState?.isActive("bulletList") ?? false}
+          class:active={editorState?.isActive("bulletList")}
+          onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleBulletList().run())}
+          ><List size={14} strokeWidth={1.8} /></button>
+        <button
+          type="button"
+          title="Numbered list"
+          aria-label="Numbered list"
+          aria-pressed={editorState?.isActive("orderedList") ?? false}
+          class:active={editorState?.isActive("orderedList")}
+          onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleOrderedList().run())}
+          ><ListOrdered size={14} strokeWidth={1.8} /></button>
+        {#if isFullscreen}
+          <button
+            type="button"
+            title="Quote"
+            aria-label="Quote"
+            aria-pressed={editorState?.isActive("blockquote") ?? false}
+            class:active={editorState?.isActive("blockquote")}
+            onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleBlockquote().run())}
+            ><QuoteIcon size={14} strokeWidth={1.8} /></button>
+          <button
+            type="button"
+            title="Horizontal rule"
+            aria-label="Horizontal rule"
+            onclick={() => run((currentEditor) => currentEditor.chain().focus().setHorizontalRule().run())}
+            ><SeparatorHorizontal size={14} strokeWidth={1.8} /></button>
+          <button
+            type="button"
+            title="Clear formatting"
+            aria-label="Clear formatting"
+            onclick={() => run((currentEditor) => currentEditor.chain().focus().clearNodes().unsetAllMarks().run())}
+            ><Eraser size={14} strokeWidth={1.8} /></button>
+        {/if}
+      </div>
     </div>
-    <span class="toolbar-divider"></span>
-    <div class="ai-toolbar-menu-control">
-      <button
-        class="ai-toolbar-button"
-        type="button"
-        title="Ask AI"
-        aria-label="Ask AI"
-        aria-haspopup="menu"
-        aria-expanded={aiMenuOpen}
-        disabled={!editable}
-        onmousedown={(event) => event.preventDefault()}
-        onclick={() => (aiMenuOpen = !aiMenuOpen)}>✦</button>
-      {#if aiMenuOpen}
-        <div class="ai-toolbar-menu" role="menu" aria-label="Ask AI">
+    <div class="editor-toolbar-actions">
+      <div class="ai-toolbar-menu-control">
+        <button
+          class="ai-toolbar-button"
+          type="button"
+          title="Ask AI"
+          aria-label="Ask AI"
+          aria-haspopup="menu"
+          aria-expanded={aiMenuOpen}
+          disabled={!editable}
+          onmousedown={(event) => event.preventDefault()}
+          onclick={() => (aiMenuOpen = !aiMenuOpen)}><SparklesIcon size={14} strokeWidth={1.8} /></button>
+        {#if aiMenuOpen}
+          <div class="ai-toolbar-menu" role="menu" aria-label="Ask AI">
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!selectionText.trim()}
+              onmousedown={(event) => event.preventDefault()}
+              onclick={() => requestAi("rewrite")}>Rewrite selection</button>
+            <button
+              type="button"
+              role="menuitem"
+              onmousedown={(event) => event.preventDefault()}
+              onclick={() => requestAi("generate")}>Generate text</button>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!selectionText.trim()}
+              onmousedown={(event) => event.preventDefault()}
+              onclick={() => requestAi("concise")}>Make concise</button>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!selectionText.trim()}
+              onmousedown={(event) => event.preventDefault()}
+              onclick={() => requestAi("expand")}>Expand</button>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!selectionText.trim()}
+              onmousedown={(event) => event.preventDefault()}
+              onclick={() => requestAi("grammar")}>Fix grammar</button>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!selectionText.trim()}
+              onmousedown={(event) => event.preventDefault()}
+              onclick={() => requestAi("tone")}>Change tone</button>
+            <button
+              type="button"
+              role="menuitem"
+              onmousedown={(event) => event.preventDefault()}
+              onclick={() => requestAi("custom")}>Custom instruction</button>
+          </div>
+        {/if}
+      </div>
+      <span class="toolbar-divider"></span>
+      {#if !isFullscreen}
+        <div class="more-toolbar-menu-control" bind:this={moreMenuControl}>
           <button
+            class="more-toolbar-button"
             type="button"
-            role="menuitem"
-            disabled={!selectionText.trim()}
-            onmousedown={(event) => event.preventDefault()}
-            onclick={() => requestAi("rewrite")}>Rewrite selection</button>
-          <button
-            type="button"
-            role="menuitem"
-            onmousedown={(event) => event.preventDefault()}
-            onclick={() => requestAi("generate")}>Generate text</button>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={!selectionText.trim()}
-            onmousedown={(event) => event.preventDefault()}
-            onclick={() => requestAi("concise")}>Make concise</button>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={!selectionText.trim()}
-            onmousedown={(event) => event.preventDefault()}
-            onclick={() => requestAi("expand")}>Expand</button>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={!selectionText.trim()}
-            onmousedown={(event) => event.preventDefault()}
-            onclick={() => requestAi("grammar")}>Fix grammar</button>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={!selectionText.trim()}
-            onmousedown={(event) => event.preventDefault()}
-            onclick={() => requestAi("tone")}>Change tone</button>
-          <button
-            type="button"
-            role="menuitem"
-            onmousedown={(event) => event.preventDefault()}
-            onclick={() => requestAi("custom")}>Custom instruction</button>
+            title="More formatting"
+            aria-label="More formatting"
+            aria-haspopup="menu"
+            aria-expanded={moreMenuOpen}
+            class:active={moreMenuOpen}
+            onclick={() => (moreMenuOpen = !moreMenuOpen)}
+            onmousedown={(event) => event.preventDefault()}><Ellipsis size={16} strokeWidth={1.8} /></button>
+          {#if moreMenuOpen}
+            <div
+              use:portal
+              class="more-toolbar-menu {moreMenuVertical ? 'more-toolbar-menu--vertical' : ''}"
+              role="menu"
+              aria-label="More formatting"
+              bind:this={moreMenuEl}
+              style="top: {moreMenuPosition.top}px; left: {moreMenuPosition.left}px; {isDraggingMoreMenu
+                ? 'cursor: grabbing;'
+                : ''}">
+              <div
+                class="more-menu-header"
+                role="button"
+                tabindex="0"
+                aria-label="Drag to move More tools"
+                onmousedown={startMoreMenuDrag}
+                ontouchstart={startMoreMenuDrag}
+                style="cursor: {isDraggingMoreMenu ? 'grabbing' : 'grab'}; touch-action: none;">
+                <span style="display: inline-flex; align-items: center; gap: 6px;"
+                  ><GripVertical size={12} strokeWidth={1.8} />{#if !moreMenuVertical}
+                    More tools{/if}</span>
+                <span style="display: inline-flex; align-items: center; gap: 4px;">
+                  <button
+                    class="more-menu-layout-toggle"
+                    type="button"
+                    title={moreMenuVertical ? "Switch to horizontal layout" : "Switch to vertical layout"}
+                    aria-label="Toggle layout"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      moreMenuVertical = !moreMenuVertical;
+                    }}
+                    onmousedown={(e) => e.preventDefault()}
+                    >{#if moreMenuVertical}<RectangleHorizontal size={14} strokeWidth={1.8} />{:else}<RectangleVertical
+                        size={14}
+                        strokeWidth={1.8} />{/if}</button>
+                  <button
+                    class="more-menu-close"
+                    type="button"
+                    title="Close"
+                    aria-label="Close more menu"
+                    onclick={() => (moreMenuOpen = false)}
+                    onmousedown={(event) => event.preventDefault()}><XIcon size={14} strokeWidth={1.8} /></button>
+                </span>
+              </div>
+              <button
+                type="button"
+                title="Underline (⌘/Ctrl + U)"
+                aria-label="Underline"
+                aria-pressed={editorState?.isActive("underline") ?? false}
+                class:active={editorState?.isActive("underline")}
+                onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleUnderline().run())}
+                ><UnderlineIcon size={14} strokeWidth={1.8} /></button>
+              <button
+                type="button"
+                title="Strikethrough"
+                aria-label="Strikethrough"
+                aria-pressed={editorState?.isActive("strike") ?? false}
+                class:active={editorState?.isActive("strike")}
+                onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleStrike().run())}
+                ><StrikethroughIcon size={14} strokeWidth={1.8} /></button>
+              <button
+                type="button"
+                title="Spoiler (hidden text)"
+                aria-label="Spoiler"
+                aria-pressed={editorState?.isActive("spoiler") ?? false}
+                class:active={editorState?.isActive("spoiler")}
+                onclick={() => run((currentEditor) => (currentEditor.chain().focus() as any).toggleSpoiler().run())}
+                ><EyeOff size={14} strokeWidth={1.8} /></button>
+              <span class="toolbar-divider"></span>
+              <button
+                type="button"
+                title="Align left"
+                aria-label="Align left"
+                aria-pressed={isAligned("left")}
+                class:active={isAligned("left")}
+                onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("left").run())}
+                ><TextAlignStart size={14} strokeWidth={1.8} /></button>
+              <button
+                type="button"
+                title="Align center"
+                aria-label="Align center"
+                aria-pressed={isAligned("center")}
+                class:active={isAligned("center")}
+                onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("center").run())}
+                ><TextAlignCenter size={14} strokeWidth={1.8} /></button>
+              <button
+                type="button"
+                title="Align right"
+                aria-label="Align right"
+                aria-pressed={isAligned("right")}
+                class:active={isAligned("right")}
+                onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("right").run())}
+                ><TextAlignEnd size={14} strokeWidth={1.8} /></button>
+              <span class="toolbar-divider"></span>
+              <button
+                type="button"
+                title="Left to right"
+                aria-label="Left to right"
+                aria-pressed={isDirection("ltr")}
+                class:active={isDirection("ltr")}
+                onclick={() =>
+                  run((currentEditor) =>
+                    isDirection("ltr")
+                      ? (currentEditor.chain().focus() as any).unsetTextDirection().run()
+                      : (currentEditor.chain().focus() as any).setTextDirection("ltr").run(),
+                  )}><ArrowRightToLine size={14} strokeWidth={1.8} /></button>
+              <button
+                type="button"
+                title="Right to left"
+                aria-label="Right to left"
+                aria-pressed={isDirection("rtl")}
+                class:active={isDirection("rtl")}
+                onclick={() =>
+                  run((currentEditor) =>
+                    isDirection("rtl")
+                      ? (currentEditor.chain().focus() as any).unsetTextDirection().run()
+                      : (currentEditor.chain().focus() as any).setTextDirection("rtl").run(),
+                  )}><ArrowLeftToLine size={14} strokeWidth={1.8} /></button>
+              <span class="toolbar-divider"></span>
+              <button
+                type="button"
+                title="Quote"
+                aria-label="Quote"
+                aria-pressed={editorState?.isActive("blockquote") ?? false}
+                class:active={editorState?.isActive("blockquote")}
+                onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleBlockquote().run())}
+                ><QuoteIcon size={14} strokeWidth={1.8} /></button>
+              <button
+                type="button"
+                title="Horizontal rule"
+                aria-label="Horizontal rule"
+                onclick={() => run((currentEditor) => currentEditor.chain().focus().setHorizontalRule().run())}
+                ><SeparatorHorizontal size={14} strokeWidth={1.8} /></button>
+              <button
+                type="button"
+                title="Clear formatting"
+                aria-label="Clear formatting"
+                onclick={() => run((currentEditor) => currentEditor.chain().focus().clearNodes().unsetAllMarks().run())}
+                ><Eraser size={14} strokeWidth={1.8} /></button>
+            </div>
+          {/if}
         </div>
       {/if}
+
+      <button
+        class="fullscreen-toggle"
+        type="button"
+        title={isFullscreen ? "Exit full screen editor (Esc)" : "Open full screen editor"}
+        aria-label={isFullscreen ? "Exit full screen editor" : "Open full screen editor"}
+        aria-pressed={isFullscreen}
+        onclick={toggleFullscreen}
+        >{#if isFullscreen}<Minimize2 size={14} strokeWidth={1.8} />{:else}<Maximize2
+            size={14}
+            strokeWidth={1.8} />{/if}</button>
     </div>
-    <button
-      class="fullscreen-toggle"
-      type="button"
-      title={isFullscreen ? "Exit full screen editor (Esc)" : "Open full screen editor"}
-      aria-label={isFullscreen ? "Exit full screen editor" : "Open full screen editor"}
-      aria-pressed={isFullscreen}
-      onclick={toggleFullscreen}>{isFullscreen ? "×" : "⛶"}</button>
   </div>
 
   <div
@@ -760,19 +1195,54 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
   box-shadow: var(--shadow-sm, 0 2px 8px rgba(38, 42, 33, 0.05));
 }
 .editor-toolbar {
+  position: relative;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 2px;
   min-height: 48px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--line, #e4e1d8);
   background: var(--surface-muted, #f4f2ec);
+  overflow: visible;
+}
+.editor-toolbar-scroll {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  mask-image: linear-gradient(to right, black calc(100% - 28px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - 28px), transparent 100%);
+}
+.editor-toolbar-scroll::-webkit-scrollbar {
+  display: none;
+}
+.editor-toolbar-actions {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background: var(--surface-muted, #f4f2ec);
+  box-shadow: -6px 0 8px var(--surface-muted, #f4f2ec);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  margin-left: 6px;
+  padding-left: 6px;
 }
 .toolbar-group {
   display: inline-flex;
   align-items: center;
   gap: 2px;
+  flex: 0 0 auto;
 }
 .editor-toolbar button {
   display: inline-flex;
@@ -805,8 +1275,180 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
   border-color: transparent;
   background: transparent;
 }
+.more-toolbar-menu button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft, #77766d);
+  font: 500 13px/1 var(--font-body, system-ui, sans-serif);
+  cursor: pointer;
+}
+.more-toolbar-menu button:hover,
+.more-toolbar-menu button:focus-visible,
+.more-toolbar-menu button.active {
+  border-color: #d3c0a9;
+  background: #f2e4d2;
+  color: var(--accent-dark, #365342);
+  outline: 0;
+}
+.more-toolbar-menu button:disabled {
+  color: var(--ink-faint, #aaa79d);
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+.more-toolbar-menu button:disabled:hover {
+  border-color: transparent;
+  background: transparent;
+}
 .ai-toolbar-menu-control {
   position: relative;
+  flex: 0 0 auto;
+}
+.more-toolbar-menu-control {
+  position: relative;
+  flex: 0 0 auto;
+}
+.more-toolbar-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft, #77766d);
+  cursor: pointer;
+}
+.more-toolbar-button:hover,
+.more-toolbar-button:focus-visible,
+.more-toolbar-button.active {
+  border-color: #d3c0a9;
+  background: #f2e4d2;
+  color: var(--accent-dark, #365342);
+  outline: 0;
+}
+.more-toolbar-menu {
+  position: fixed;
+  z-index: 75;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 320px;
+  max-width: min(480px, 92vw);
+  padding: 10px;
+  border: 1px solid #d8cdbd;
+  border-radius: 10px;
+  background: var(--surface, #fffefa);
+  box-shadow: 0 12px 28px rgba(48, 45, 38, 0.18);
+}
+.more-toolbar-menu .toolbar-divider {
+  align-self: center;
+}
+.more-menu-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line, #e4e1d8);
+  font: 600 11px/1 var(--font-body, system-ui, sans-serif);
+  color: var(--ink-soft, #77766d);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.more-menu-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-faint, #aaa79d);
+  cursor: pointer;
+}
+.more-menu-close:hover,
+.more-menu-close:focus-visible {
+  border-color: #d3c0a9;
+  background: #f2e4d2;
+  color: var(--ink, #25251f);
+  outline: 0;
+}
+.more-menu-layout-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-faint, #aaa79d);
+  cursor: pointer;
+}
+.more-menu-layout-toggle:hover,
+.more-menu-layout-toggle:focus-visible {
+  border-color: #d3c0a9;
+  background: #f2e4d2;
+  color: var(--ink, #25251f);
+  outline: 0;
+}
+.more-menu-layout-toggle[aria-pressed="true"] {
+  border-color: #d3c0a9;
+  background: #f2e4d2;
+  color: var(--accent-dark, #365342);
+}
+.more-toolbar-menu--vertical {
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  width: 48px;
+  max-width: 48px;
+  padding: 8px 6px;
+  gap: 4px;
+}
+.more-toolbar-menu--vertical .toolbar-divider {
+  width: 28px;
+  height: 1px;
+  margin: 4px 0;
+  align-self: center;
+}
+.more-toolbar-menu--vertical > button {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  padding: 0;
+  justify-content: center;
+}
+.more-toolbar-menu--vertical .more-menu-header {
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  width: 100%;
+  margin-bottom: 2px;
+  padding-bottom: 6px;
+}
+.more-toolbar-menu--vertical .more-menu-header > span:first-child {
+  justify-content: center;
+}
+.more-toolbar-menu--vertical .more-menu-header > span:last-child {
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
 }
 .entity-reference-menu {
   position: fixed;
@@ -925,7 +1567,7 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
   line-height: 1;
 }
 .fullscreen-toggle {
-  margin-left: auto;
+  flex: 0 0 32px;
   font-size: 16px !important;
 }
 .toolbar-divider {
@@ -933,6 +1575,7 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
   height: 22px;
   margin: 0 6px;
   background: var(--line, #e4e1d8);
+  flex: 0 0 1px;
 }
 .style-select {
   height: 32px;
@@ -1090,15 +1733,18 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
   border-radius: 3px;
   padding: 0 4px;
   cursor: pointer;
+  user-select: none;
   transition:
     color 0.15s ease,
     background 0.15s ease;
 }
-.editor-content :global(span.spoiler:hover),
-.editor-content :global(span.spoiler:focus-visible) {
+.editor-content :global(span.spoiler.revealed) {
   background: #3a3a3a;
   color: var(--canvas, #f7f6f2);
-  outline: 0;
+}
+.editor-content :global(span.spoiler:focus-visible) {
+  outline: 2px solid var(--accent, #b4773f);
+  outline-offset: 2px;
 }
 .editor-content :global(table) {
   width: 100%;

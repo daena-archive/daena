@@ -9,6 +9,7 @@ type MdNode = {
   value?: string;
   depth?: number;
   align?: string;
+  dir?: string;
   lang?: string | null;
   url?: string;
   alt?: string;
@@ -16,7 +17,7 @@ type MdNode = {
   ordered?: boolean;
   start?: number | null;
   checked?: boolean | null;
-  data?: { hProperties?: { id?: string } };
+  data?: { hProperties?: { id?: string; dir?: string; style?: string } };
 };
 
 export let node: MdNode;
@@ -37,7 +38,17 @@ function children(): MdNode[] {
 }
 
 function alignStyle(): string {
+  if (node.data?.hProperties?.style && /^text-align\s*:\s*(?:left|center|right)/i.test(node.data.hProperties.style))
+    return node.data.hProperties.style;
   return node.align === "center" || node.align === "right" ? `text-align: ${node.align}` : "";
+}
+
+function dir(): string {
+  const fromData = node.data?.hProperties?.dir;
+  if (fromData === "rtl" || fromData === "ltr") return fromData;
+  const direct = (node as { dir?: string }).dir;
+  if (direct === "rtl" || direct === "ltr") return direct;
+  return "";
 }
 
 function language(): string {
@@ -80,11 +91,15 @@ function openEntity(event: MouseEvent) {
 </script>
 
 {#if node.type === "heading"}
-  <svelte:element this={headingTag()} id={headingId()}>
+  <svelte:element
+    this={headingTag()}
+    id={headingId()}
+    dir={(dir() as any) || undefined}
+    style={alignStyle() || (node.data?.hProperties?.style as string) || undefined}>
     {#each children() as child}<MarkdownNode node={child} {entityIds} {onOpenEntity} />{/each}
   </svelte:element>
 {:else if node.type === "paragraph" || node.type === "alignedParagraph"}
-  <p style={alignStyle()}>
+  <p style={alignStyle()} dir={(dir() as any) || undefined}>
     {#each children() as child}<MarkdownNode node={child} {entityIds} {onOpenEntity} />{/each}
   </p>
 {:else if node.type === "blockquote"}
@@ -142,6 +157,23 @@ function openEntity(event: MouseEvent) {
   <u>
     {#each children() as child}<MarkdownNode node={child} {entityIds} {onOpenEntity} />{/each}
   </u>
+{:else if node.type === "spoiler"}
+  <span
+    class="spoiler"
+    data-spoiler
+    role="button"
+    tabindex="0"
+    title="Click to reveal spoiler"
+    aria-label="Spoiler, click to reveal"
+    onclick={(event: MouseEvent) => (event.currentTarget as HTMLElement).classList.toggle("revealed")}
+    onkeydown={(event: KeyboardEvent) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        (event.currentTarget as HTMLElement).classList.toggle("revealed");
+      }
+    }}>
+    {#each children() as child}<MarkdownNode node={child} {entityIds} {onOpenEntity} />{/each}
+  </span>
 {:else if node.type === "inlineCode"}
   <code>{value()}</code>
 {:else if node.type === "link"}

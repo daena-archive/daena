@@ -1,5 +1,6 @@
 <script lang="ts">
 import { onMount } from "svelte";
+import { House, ArrowLeft, ArrowRight, Pencil } from "@lucide/svelte";
 import MarkdownArticle from "$lib/markdown/MarkdownArticle.svelte";
 import { project, type Asset, type Entity } from "$lib/project/client";
 import loreManifestJson from "../../../packages/modules/lore/manifest.json";
@@ -382,20 +383,20 @@ function handleClose() {
       <div class="wiki-layout">
         <article class="wiki-article">
           <div class="wiki-nav-history">
-            <button type="button" class="quiet-button small icon" onclick={goToMain} aria-label="Wiki home">⌂</button>
+            <button type="button" class="quiet-button small icon" onclick={goToMain} aria-label="Wiki home"><House size={14} strokeWidth={1.8} /></button>
             <button
               type="button"
               class="quiet-button small icon"
               onclick={goBack}
               disabled={historyIndex <= 0}
-              aria-label="Back">←</button>
+              aria-label="Back"><ArrowLeft size={14} strokeWidth={1.8} /></button>
             <button
               type="button"
               class="quiet-button small icon"
               onclick={goForward}
               disabled={historyIndex >= history.length - 1}
-              aria-label="Forward">→</button>
-            <button type="button" class="quiet-button small icon" onclick={handleEdit} aria-label="Edit">✎</button>
+              aria-label="Forward"><ArrowRight size={14} strokeWidth={1.8} /></button>
+            <button type="button" class="quiet-button small icon" onclick={handleEdit} aria-label="Edit"><Pencil size={14} strokeWidth={1.8} /></button>
           </div>
           <nav class="wiki-breadcrumb" aria-label="Breadcrumb">
             <button type="button" class="wiki-crumb" onclick={goToMain}>Wiki</button>
@@ -601,6 +602,9 @@ function handleClose() {
   font-size: 11px;
 }
 .quiet-button.small.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 4px 9px;
   line-height: 1;
   font-size: 14px;

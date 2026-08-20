@@ -13,7 +13,13 @@ import { visit } from "unist-util-visit";
 import { hastToMdastHandlers } from "./from-html.ts";
 import { remarkDaenaAssets } from "./plugins/assets.ts";
 import { entityReferenceToMarkdown, remarkDaenaEntities } from "./plugins/entities.ts";
-import { alignedParagraphToMarkdown, underlineToMarkdown } from "./plugins/html.ts";
+import {
+  alignedParagraphToMarkdown,
+  headingToMarkdown,
+  paragraphToMarkdown,
+  spoilerToMarkdown,
+  underlineToMarkdown,
+} from "./plugins/html.ts";
 import {
   daenaSanitizeSchema,
   rehypeEntityReferenceClass,
@@ -27,7 +33,10 @@ import type { EntityReferenceInfo, HeadingOutlineItem } from "./types.ts";
 const stringifyHandlers = {
   entityReference: entityReferenceToMarkdown,
   underline: underlineToMarkdown,
+  spoiler: spoilerToMarkdown,
   alignedParagraph: alignedParagraphToMarkdown,
+  paragraph: paragraphToMarkdown,
+  heading: headingToMarkdown,
 };
 
 function rehypeAlignedDivs() {

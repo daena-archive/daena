@@ -1,6 +1,7 @@
 {
   "version": "5",
   "specifiers": {
+    "npm:@lucide/svelte@^1.32.0": "1.32.0_svelte@5.56.8",
     "npm:@sveltejs/adapter-static@^3.0.6": "3.0.10_@sveltejs+kit@2.70.2__@sveltejs+vite-plugin-svelte@5.1.1___svelte@5.56.8___vite@6.4.3__svelte@5.56.8__typescript@5.6.3__vite@6.4.3_@sveltejs+vite-plugin-svelte@5.1.1__svelte@5.56.8__vite@6.4.3_svelte@5.56.8_typescript@5.6.3_vite@6.4.3",
     "npm:@sveltejs/kit@^2.9.0": "2.70.2_@sveltejs+vite-plugin-svelte@5.1.1__svelte@5.56.8__vite@6.4.3_svelte@5.56.8_typescript@5.6.3_vite@6.4.3",
     "npm:@sveltejs/vite-plugin-svelte@5": "5.1.1_svelte@5.56.8_vite@6.4.3",
@@ -47,6 +48,7 @@
     "npm:svelte@5": "5.56.8",
     "npm:terra-draw-maplibre-gl-adapter@^1.4.1": "1.4.1_maplibre-gl@5.24.0_terra-draw@1.32.3",
     "npm:terra-draw@^1.32.3": "1.32.3",
+    "npm:tiptap-text-direction@0.5": "0.5.0_@tiptap+core@3.29.2__@tiptap+pm@3.29.2_@tiptap+pm@3.29.2",
     "npm:typescript@~5.6.2": "5.6.3",
     "npm:unified@^11.0.5": "11.0.5",
     "npm:unist-util-visit@^5.1.0": "5.1.0",
@@ -216,6 +218,12 @@
       "dependencies": [
         "@jridgewell/resolve-uri",
         "@jridgewell/sourcemap-codec"
+      ]
+    },
+    "@lucide/svelte@1.32.0_svelte@5.56.8": {
+      "integrity": "sha512-fiiaK7PSIndDmYxxf1otAl1rlybF+x1pUxFFJr0Ov7OCgp/CKOXum90t/1YaRbadGAi25Mue+UgifZmufUi+Cw==",
+      "dependencies": [
+        "svelte"
       ]
     },
     "@mapbox/jsonlint-lines-primitives@2.0.3": {
@@ -1917,6 +1925,13 @@
     "tinyqueue@3.0.0": {
       "integrity": "sha512-gRa9gwYU3ECmQYv3lslts5hxuIa90veaEcxDYuu3QGOIAEM2mOZkVHp48ANJuu1CURtRdHKUBY5Lm1tHV+sD4g=="
     },
+    "tiptap-text-direction@0.5.0_@tiptap+core@3.29.2__@tiptap+pm@3.29.2_@tiptap+pm@3.29.2": {
+      "integrity": "sha512-KpUyNKeQWg42RrytLKPU2IZMXGhYv4ZtRvCL8m3c1VWLq1SkqHto0LINTlGSSP2Q9jNi8a7SWf5jCn33eRD5ow==",
+      "dependencies": [
+        "@tiptap/core",
+        "@tiptap/pm"
+      ]
+    },
     "totalist@3.0.1": {
       "integrity": "sha512-sf4i37nQ2LBx4m3wB74y+ubopq6W/dIzXg0FDGjsYnZHVa1Da8FH853wlL2gtUhg+xJXjfk3kUZS3BRoQeoQBQ=="
     },
@@ -2086,6 +2101,7 @@
   "workspace": {
     "packageJson": {
       "dependencies": [
+        "npm:@lucide/svelte@^1.32.0",
         "npm:@sveltejs/adapter-static@^3.0.6",
         "npm:@sveltejs/kit@^2.9.0",
         "npm:@sveltejs/vite-plugin-svelte@5",
@@ -2131,6 +2147,7 @@
         "npm:svelte@5",
         "npm:terra-draw-maplibre-gl-adapter@^1.4.1",
         "npm:terra-draw@^1.32.3",
+        "npm:tiptap-text-direction@0.5",
         "npm:typescript@~5.6.2",
         "npm:unified@^11.0.5",
         "npm:unist-util-visit@^5.1.0",

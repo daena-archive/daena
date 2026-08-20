@@ -11,9 +11,16 @@ export interface Underline {
   data?: { hName?: string; hProperties?: Record<string, unknown> };
 }
 
+export interface Spoiler {
+  type: "spoiler";
+  children: Array<{ type: string; value?: string; children?: unknown[] }>;
+  data?: { hName?: string; hProperties?: Record<string, unknown> };
+}
+
 export interface AlignedParagraph {
   type: "alignedParagraph";
   align: "center" | "right";
+  dir?: "ltr" | "rtl";
   children: Array<{ type: string; value?: string; children?: unknown[] }>;
   data?: { hName?: string; hProperties?: Record<string, unknown> };
 }

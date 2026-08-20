@@ -101,6 +101,25 @@ $: entityIds = new Set(entities.filter((entity) => !entity.deleted).map((entity)
   border-left: 3px solid var(--line, #e4e1d8);
   color: var(--ink-soft, #77766d);
 }
+.markdown-body :global(span.spoiler) {
+  background: #2b2b2b;
+  color: transparent;
+  border-radius: 3px;
+  padding: 0 4px;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+.markdown-body :global(span.spoiler.revealed) {
+  background: #3a3a3a;
+  color: var(--canvas, #f7f6f2);
+}
+.markdown-body :global(span.spoiler:focus-visible) {
+  outline: 2px solid var(--accent, #b4773f);
+  outline-offset: 2px;
+}
 .markdown-body :global(pre) {
   overflow: auto;
   padding: 10px 12px;

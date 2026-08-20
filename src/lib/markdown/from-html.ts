@@ -3,7 +3,7 @@ import type { Link, PhrasingContent } from "mdast";
 import { defaultHandlers } from "hast-util-to-mdast";
 import type { State as HastState } from "hast-util-to-mdast";
 import { entityIdFromHref } from "./urls.ts";
-import type { AlignedParagraph, EntityReference, Underline } from "./types.ts";
+import type { AlignedParagraph, EntityReference, Spoiler, Underline } from "./types.ts";
 
 function classList(node: Element): string[] {
   const className = node.properties?.className;
@@ -21,6 +21,12 @@ function textAlign(node: Element): "center" | "right" | "" {
   return attr === "center" || attr === "right" ? attr : "";
 }
 
+function textDir(node: Element): "ltr" | "rtl" | "" {
+  const dir = String(node.properties?.dir ?? "").toLowerCase();
+  if (dir === "ltr" || dir === "rtl") return dir;
+  return "";
+}
+
 function propertyString(node: Element, key: string): string {
   const value = node.properties?.[key];
   return value == null ? "" : String(value);
@@ -28,15 +34,53 @@ function propertyString(node: Element, key: string): string {
 
 const alignedBlock = (state: HastState, node: Element) => {
   const align = textAlign(node);
+  const dir = textDir(node);
+  const isHeading = /^h[1-6]$/.test(node.tagName);
   if (align) {
-    const result: AlignedParagraph = {
-      type: "alignedParagraph",
-      align,
-      children: state.all(node) as PhrasingContent[],
-      data: { hName: "p", hProperties: { style: `text-align: ${align}` } },
-    };
-    state.patch(node, result as never);
-    return result;
+    if (isHeading) {
+      const fallback = defaultHandlers[node.tagName as keyof typeof defaultHandlers];
+      const mdNode = fallback ? (fallback(state, node) as unknown as Record<string, unknown>) : undefined;
+      if (mdNode && typeof mdNode === "object") {
+        const data = (mdNode.data as Record<string, unknown> | undefined) ?? {};
+        const hProps = (data.hProperties as Record<string, unknown> | undefined) ?? {};
+        const newHProps: Record<string, unknown> = { ...hProps, style: `text-align: ${align}` };
+        if (dir) newHProps.dir = dir;
+        (mdNode as Record<string, unknown>).data = { ...data, hProperties: newHProps };
+        if (dir) (mdNode as Record<string, unknown>).dir = dir;
+        // keep align for rendering symmetry, though heading uses style
+        (mdNode as Record<string, unknown>).align = align;
+        state.patch(node, mdNode as never);
+        return mdNode;
+      }
+    } else {
+      const hProperties: Record<string, unknown> = { style: `text-align: ${align}` };
+      if (dir) hProperties.dir = dir;
+      const result: AlignedParagraph = {
+        type: "alignedParagraph",
+        align,
+        ...(dir ? { dir } : {}),
+        children: state.all(node) as PhrasingContent[],
+        data: { hName: "p", hProperties },
+      };
+      state.patch(node, result as never);
+      return result;
+    }
+  }
+  if (dir) {
+    const fallback = defaultHandlers[node.tagName as keyof typeof defaultHandlers];
+    const mdNode = fallback ? (fallback(state, node) as unknown as Record<string, unknown>) : undefined;
+    if (mdNode && typeof mdNode === "object") {
+      const data = (mdNode.data as Record<string, unknown> | undefined) ?? {};
+      const hProps = (data.hProperties as Record<string, unknown> | undefined) ?? {};
+      (mdNode as Record<string, unknown>).data = {
+        ...data,
+        hProperties: { ...hProps, dir },
+      };
+      // expose dir directly for easier stringify / rendering
+      (mdNode as Record<string, unknown>).dir = dir;
+      state.patch(node, mdNode as never);
+      return mdNode;
+    }
   }
   const fallback = defaultHandlers[node.tagName as keyof typeof defaultHandlers];
   return fallback ? fallback(state, node) : undefined;
@@ -74,9 +118,27 @@ const underline = (state: HastState, node: Element) => {
   return result;
 };
 
+const spoiler = (state: HastState, node: Element) => {
+  const isSpoiler = node.properties?.dataSpoiler != null || classList(node).includes("spoiler");
+  if (!isSpoiler) {
+    const fallback = (defaultHandlers as Record<string, unknown>).span as
+      | ((state: HastState, node: Element) => unknown)
+      | undefined;
+    return fallback ? fallback(state, node) : undefined;
+  }
+  const result: Spoiler = {
+    type: "spoiler",
+    children: state.all(node) as Spoiler["children"],
+    data: { hName: "span", hProperties: { dataSpoiler: "", className: ["spoiler"] } },
+  };
+  state.patch(node, result as never);
+  return result;
+};
+
 export const hastToMdastHandlers = {
   a: entityOrLink,
   u: underline,
+  span: spoiler,
   p: alignedBlock,
   div: alignedBlock,
   h1: alignedBlock,

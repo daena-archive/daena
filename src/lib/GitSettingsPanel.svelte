@@ -1,5 +1,5 @@
 <script lang="ts">
-import { X, Sparkles, ChevronDown, ChevronRight } from "@lucide/svelte";
+import { X, Sparkles, ChevronDown, ChevronRight, GitBranch, DatabaseZap, ShieldCheck, History, Cable, FileText } from "@lucide/svelte";
 import { listen } from "@tauri-apps/api/event";
 import {
   project,
@@ -790,13 +790,24 @@ function restoreFromRemote() {
 </script>
 
 <div class="git-settings">
-  <div class="settings-section-heading">
-    <strong>Snapshots</strong>
-    <p>Save named versions of this project's canonical files.</p>
+  <div class="panel-hero">
+    <div class="hero-icon">
+      <GitBranch size={18} strokeWidth={1.8} aria-hidden="true" />
+    </div>
+    <div class="hero-copy">
+      <span class="kicker">VERSIONING</span>
+      <strong>Snapshots</strong>
+      <p>Save named versions of this project’s canonical files. Every snapshot is a Git commit you can restore.</p>
+    </div>
+    <div class="hero-stats" aria-label="Snapshot summary">
+      <span class="stat-pill"><GitBranch size={12} strokeWidth={1.8} aria-hidden="true" /> {status?.branch || "No repo"}</span>
+      <span class="stat-pill"><History size={12} strokeWidth={1.8} aria-hidden="true" /> {log.length} snapshots</span>
+      <span class="stat-pill"><Cable size={12} strokeWidth={1.8} aria-hidden="true" /> {remotes.length} remotes</span>
+    </div>
   </div>
 
-  <section class="git-block">
-    <h3>Version control</h3>
+  <section class="git-block elevated">
+    <div class="block-heading"><div class="heading-left"><span class="heading-icon"><DatabaseZap size={14} strokeWidth={1.8} aria-hidden="true" /></span><h3>Version control</h3></div><span class="block-hint">Git availability</span></div>
     {#if tool === null}
       <p class="settings-empty">Checking Git…</p>
     {:else if tool.available}
@@ -808,18 +819,18 @@ function restoreFromRemote() {
   </section>
 
   {#if !projectOpen}
-    <p class="settings-empty">Open a project to manage snapshots, remotes, and history.</p>
+    <div class="empty-inline"><GitBranch size={16} strokeWidth={1.7} aria-hidden="true" /><div><strong>Open a project to manage snapshots</strong><span>Snapshots, remotes, and history are per-project.</span></div></div>
   {:else if tool && !tool.available}
-    <p class="settings-empty">Install Git to save snapshots for this project.</p>
+    <div class="empty-inline"><DatabaseZap size={16} strokeWidth={1.7} aria-hidden="true" /><div><strong>Git not available</strong><span>Install Git to save snapshots for this project.</span></div></div>
   {:else if status && !status.repository}
-    <section class="git-block">
-      <h3>Repository</h3>
-      <p class="settings-empty">Snapshots are not enabled for this project yet.</p>
+    <section class="git-block elevated">
+      <div class="block-heading"><div class="heading-left"><span class="heading-icon"><ShieldCheck size={14} strokeWidth={1.8} aria-hidden="true" /></span><h3>Repository</h3></div></div>
+      <div class="empty-inline"><ShieldCheck size={16} strokeWidth={1.7} aria-hidden="true" /><div><strong>Snapshots not enabled yet</strong><span>Enable snapshots to start versioning this project.</span></div></div>
       <button type="button" class="primary-button" disabled={busy} onclick={() => void initializeGit()}
         >Enable snapshots</button>
     </section>
   {:else if status}
-    <section class="git-overview" aria-label="Repository status">
+    <section class="git-overview elevated" aria-label="Repository status">
       <div>
         <span class="panel-kicker">REPOSITORY</span>
         <strong>{status.branch || "Detached HEAD"}</strong>
@@ -833,7 +844,7 @@ function restoreFromRemote() {
       <button type="button" class="quiet-button" disabled={busy} onclick={() => void refresh()}>Refresh</button>
     </section>
     {#if recoveryUpstream}
-      <section class="git-recovery" role="status">
+      <section class="git-recovery elevated" role="status">
         <strong>Remote history diverged after restore</strong>
         <p>
           Local HEAD no longer matches {recoveryUpstream.remote}/{recoveryUpstream.branch}. Force-push with lease
@@ -849,9 +860,8 @@ function restoreFromRemote() {
       </section>
     {/if}
 
-    <section class="git-block">
-      <div class="git-block-heading">
-        <h3>Remotes</h3>
+    <section class="git-block elevated">
+      <div class="block-heading"><div class="heading-left"><span class="heading-icon"><Cable size={14} strokeWidth={1.8} aria-hidden="true" /></span><h3>Remotes</h3><span class="count-badge">{remotes.length}</span></div>
         <button type="button" class="primary-button" disabled={busy} onclick={openAddRemoteModal}>Add remote</button>
       </div>
       {#if remotes.length === 0}
@@ -879,8 +889,8 @@ function restoreFromRemote() {
       {/if}
     </section>
 
-    <section class="git-block">
-      <h3>Changes</h3>
+    <section class="git-block elevated">
+      <div class="block-heading"><div class="heading-left"><span class="heading-icon"><FileText size={14} strokeWidth={1.8} aria-hidden="true" /></span><h3>Changes</h3><span class="count-badge">{changeGroups.length}</span></div><span class="block-hint">Canonical files only</span></div>
       <p class="git-section-copy">Choose the canonical project changes to include in the next snapshot.</p>
       {#if preflight && !preflight.ready}
         <p class="plugin-warning">{preflight.diagnostics[0] ?? "Commit preflight blocked."}</p>
@@ -945,14 +955,11 @@ function restoreFromRemote() {
       {/if}
     </section>
 
-    <section class="git-block">
-      <div class="git-block-heading">
-        <div>
-          <h3>Snapshot history</h3>
+    <section class="git-block elevated">
+      <div class="block-heading"><div class="heading-left"><span class="heading-icon"><History size={14} strokeWidth={1.8} aria-hidden="true" /></span><h3>Snapshot history</h3><span class="count-badge">{log.length}</span></div>
           {#if preflight?.staging_paths.length}<small class="git-section-note"
               >Commit pending changes before squashing history.</small
             >{/if}
-        </div>
         {#if log.length > 1}<button
             type="button"
             class="quiet-button"
@@ -1160,6 +1167,8 @@ function restoreFromRemote() {
 }
 .git-overview,
 .git-block {
+  display: grid;
+  gap: 12px;
   padding: 17px 18px;
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -1827,4 +1836,125 @@ function restoreFromRemote() {
     flex-direction: column;
   }
 }
+
+.panel-hero {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 14px;
+  padding: 16px 16px 14px;
+  border: 1px solid var(--line, #e9e1d4);
+  border-radius: 14px;
+  background: var(--surface, #fffefa);
+}
+.hero-icon {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  background: var(--accent-dark);
+  color: #fffefa;
+}
+.hero-copy .kicker {
+  color: #b4773f;
+  font: 700 10px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.hero-copy strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--ink);
+  font: 600 16px/1.15 var(--font-display, Georgia, serif);
+}
+.hero-copy p {
+  margin: 6px 0 0;
+  max-width: 640px;
+  color: var(--ink-soft, #8f897e);
+  font: 400 12.5px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
+}
+.hero-stats {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+.stat-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #f4eee3;
+  border: 1px solid #e9e1d4;
+  color: #62594e;
+  font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif;
+}
+.block-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #f0e8d9;
+}
+.heading-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.heading-icon {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #f4eee3;
+  border: 1px solid #e9e1d4;
+  color: #62594e;
+}
+.count-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: #f4eee3;
+  border: 1px solid #e9e1d4;
+  color: #62594e;
+  font: 700 11px Inter, sans-serif;
+}
+.block-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-faint, #b0a89c);
+  font: 500 11.5px Inter, ui-sans-serif, system-ui, sans-serif;
+}
+.empty-inline {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 14px;
+  border: 1px dashed #d9cdbd;
+  border-radius: 11px;
+  background: #fffcf7;
+  color: #8f897e;
+}
+.empty-inline strong {
+  display: block;
+  color: var(--ink);
+  font: 600 13px Inter, sans-serif;
+  margin-bottom: 3px;
+}
+.empty-inline span {
+  font: 400 12px/1.5 Inter, sans-serif;
+}
+.git-block.elevated, .git-overview.elevated, .git-recovery.elevated {
+  box-shadow: 0 1px 0 rgba(48,44,38,0.03), 0 8px 24px rgba(48,44,38,0.04);
+}
 </style>
+

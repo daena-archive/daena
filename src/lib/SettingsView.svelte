@@ -1,7 +1,7 @@
 <script lang="ts">
 import type { Snippet } from "svelte";
 import { onMount } from "svelte";
-import { X } from "@lucide/svelte";
+import { X, Settings2, FolderOpen, DatabaseZap, Sparkles, Bot, GitBranch, Puzzle, ChevronLeft, Layers, Cpu, Globe, ShieldCheck, Wrench } from "@lucide/svelte";
 import { setSchemaEditorDiscardPrompt } from "$lib/schemaEditorGuard";
 import { confirmDialog } from "$lib/dialogs.svelte";
 
@@ -321,12 +321,17 @@ async function handleClose() {
 
 <section class="settings-view" aria-label="Settings">
   <header class="settings-header">
-    <div>
-      <span class="panel-kicker">APPLICATION</span>
-      <h1>Settings</h1>
-      <p>App preferences and the plugins that power this project.</p>
+    <div class="header-left">
+      <div class="header-icon">
+        <Settings2 size={18} strokeWidth={1.8} aria-hidden="true" />
+      </div>
+      <div>
+        <span class="panel-kicker">APPLICATION</span>
+        <h1>Settings</h1>
+        <p>App preferences and the plugins that power this project.</p>
+      </div>
     </div>
-    <button type="button" class="quiet-button" onclick={() => void handleClose()}>Back</button>
+    <button type="button" class="quiet-button header-back" onclick={() => void handleClose()}><ChevronLeft size={14} strokeWidth={1.9} aria-hidden="true" /> Back</button>
   </header>
 
   <div class="settings-layout">
@@ -335,94 +340,138 @@ async function handleClose() {
         type="button"
         class:active={section === "general"}
         class="settings-nav-button"
-        onclick={() => void goToSection("general")}>General</button>
+        onclick={() => void goToSection("general")}><FolderOpen size={14} strokeWidth={1.8} aria-hidden="true" /> General</button>
       <button
         type="button"
         class:active={section === "ai"}
         class="settings-nav-button"
-        onclick={() => void goToSection("ai")}>AI</button>
+        onclick={() => void goToSection("ai")}><Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /> AI</button>
       <button
         type="button"
         class:active={section === "plugins"}
         class="settings-nav-button"
-        onclick={() => void goToSection("plugins")}>Plugins</button>
+        onclick={() => void goToSection("plugins")}><Puzzle size={14} strokeWidth={1.8} aria-hidden="true" /> Plugins</button>
       <button
         type="button"
         class:active={section === "schema"}
         class="settings-nav-button"
-        onclick={() => void goToSection("schema")}>Schema</button>
+        onclick={() => void goToSection("schema")}><Layers size={14} strokeWidth={1.8} aria-hidden="true" /> Schema</button>
       <button
         type="button"
         class:active={section === "git"}
         class="settings-nav-button"
-        onclick={() => void goToSection("git")}>Snapshots</button>
+        onclick={() => void goToSection("git")}><GitBranch size={14} strokeWidth={1.8} aria-hidden="true" /> Snapshots</button>
     </nav>
 
     <div class="settings-panel">
       {#if section === "general"}
-        <div class="settings-section-heading">
-          <strong>General</strong>
-          <p>Recent projects are stored in your application profile.</p>
+        <div class="panel-hero">
+          <div class="hero-icon">
+            <FolderOpen size={18} strokeWidth={1.8} aria-hidden="true" />
+          </div>
+          <div class="hero-copy">
+            <span class="kicker">APPLICATION</span>
+            <strong>General</strong>
+            <p>Recent projects and portable storage. Everything stays local-first.</p>
+          </div>
+          <div class="hero-stats">
+            <span class="stat-pill"><FolderOpen size={12} strokeWidth={1.8} aria-hidden="true" /> {recentProjects.length} recent</span>
+            <span class="stat-pill"><ShieldCheck size={12} strokeWidth={1.8} aria-hidden="true" /> {projectOpen ? "Project open" : "No project"}</span>
+          </div>
         </div>
-        {#if recentProjects.length === 0}
-          <p class="settings-empty">No recent projects yet. Open a project to begin.</p>
-        {:else}
-          <ul class="settings-recent-list">
-            {#each recentProjects as recent}
-              <li>
-                <div>
-                  <strong>{recent.name}</strong>
-                  <small>{recent.root}</small>
-                </div>
-                <button type="button" class="quiet-button" onclick={() => onRemoveRecent(recent.root)}>Remove</button>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-        {#if projectOpen}
-          <div class="settings-section-heading">
-            <strong>Project storage</strong>
-            <p>
-              Portable backups contain canonical files. Recovery backups retain the runtime queue and staged payloads.
-            </p>
+
+        <div class="block elevated">
+          <div class="block-heading">
+            <div class="heading-left">
+              <span class="heading-icon"><FolderOpen size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+              <h4>Recent projects</h4>
+              <span class="count-badge">{recentProjects.length}</span>
+            </div>
+            <span class="block-hint">Stored in your application profile</span>
           </div>
-          <div class="settings-actions">
-            <button
-              type="button"
-              class="primary-button"
-              disabled={storageBusy}
-              onclick={() => void createPortableBackup()}>Portable backup</button>
-            <button
-              type="button"
-              class="quiet-button"
-              disabled={storageBusy}
-              onclick={() => void createRecoveryBackup()}>Recovery backup</button>
-          </div>
-          <label class="settings-path-field"
-            >Recovery backup path<input
-              bind:value={recoveryPath}
-              placeholder="Paste a recovery backup directory" /></label>
-          <button
-            type="button"
-            class="quiet-button"
-            disabled={storageBusy || !recoveryPath.trim()}
-            onclick={() => void restoreRecoveryBackup()}>Restore recovery backup</button>
-          {#if storageError}
-            <p class="settings-note settings-note-error" role="alert">
-              {storageError}
-              <button type="button" class="settings-note-dismiss" aria-label="Dismiss error" onclick={() => (storageError = "")}
-                ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
-            </p>
+          {#if recentProjects.length === 0}
+            <div class="empty-inline">
+              <FolderOpen size={16} strokeWidth={1.7} aria-hidden="true" />
+              <div>
+                <strong>No recent projects yet</strong>
+                <span>Open a project to begin. Recent projects appear here for quick access.</span>
+              </div>
+            </div>
+          {:else}
+            <ul class="settings-recent-list">
+              {#each recentProjects as recent}
+                <li>
+                  <div class="recent-copy">
+                    <strong>{recent.name}</strong>
+                    <small>{recent.root}</small>
+                  </div>
+                  <button type="button" class="quiet icon" aria-label="Remove {recent.name}" onclick={() => onRemoveRecent(recent.root)}><X size={14} strokeWidth={1.8} aria-hidden="true" /></button>
+                </li>
+              {/each}
+            </ul>
           {/if}
-          {#if storageMessage}<p class="settings-note" role="status">{storageMessage}</p>{/if}
+        </div>
+
+        {#if projectOpen}
+          <div class="block elevated">
+            <div class="block-heading">
+              <div class="heading-left">
+                <span class="heading-icon accent"><DatabaseZap size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+                <h4>Project storage</h4>
+              </div>
+              <span class="block-hint">Portable vs recovery</span>
+            </div>
+            <p class="subtle-note">Portable backups contain canonical files. Recovery backups retain the runtime queue and staged payloads.</p>
+            <div class="settings-actions">
+              <button
+                type="button"
+                class="primary"
+                disabled={storageBusy}
+                onclick={() => void createPortableBackup()}><DatabaseZap size={14} strokeWidth={1.8} aria-hidden="true" /> Portable backup</button>
+              <button
+                type="button"
+                class="action"
+                disabled={storageBusy}
+                onclick={() => void createRecoveryBackup()}><Wrench size={14} strokeWidth={1.8} aria-hidden="true" /> Recovery backup</button>
+            </div>
+            <label class="settings-path-field">
+              <span>Recovery backup path</span>
+              <input
+                bind:value={recoveryPath}
+                placeholder="Paste a recovery backup directory" />
+            </label>
+            <button
+              type="button"
+              class="quiet"
+              disabled={storageBusy || !recoveryPath.trim()}
+              onclick={() => void restoreRecoveryBackup()}>Restore recovery backup</button>
+            {#if storageError}
+              <div class="inline-alert error" role="alert">
+                <span>{storageError}</span>
+                <button type="button" class="quiet icon" aria-label="Dismiss error" onclick={() => (storageError = "")}><X size={14} strokeWidth={1.8} aria-hidden="true" /></button>
+              </div>
+            {/if}
+            {#if storageMessage}<div class="inline-alert success" role="status">{storageMessage}</div>{/if}
+          </div>
         {/if}
       {:else if section === "ai"}
-        <div class="settings-section-heading">
-          <strong>AI provider</strong>
-          <p>Configure one provider. Every AI action uses the active provider.</p>
+        <div class="panel-hero">
+          <div class="hero-icon">
+            <Sparkles size={18} strokeWidth={1.8} aria-hidden="true" />
+          </div>
+          <div class="hero-copy">
+            <span class="kicker">INTELLIGENCE</span>
+            <strong>AI provider</strong>
+            <p>Configure one provider. Every generation, rewrite, and field-fill uses the active provider.</p>
+          </div>
+          <div class="hero-stats">
+            <span class="stat-pill"><Bot size={12} strokeWidth={1.8} aria-hidden="true" /> {aiSettings.provider.name || "No provider"}</span>
+            <span class="stat-pill"><Globe size={12} strokeWidth={1.8} aria-hidden="true" /> {aiSettings.provider.model || "No model"}</span>
+          </div>
         </div>
+
         <div class="ai-settings-form">
-          <section class="ai-settings-card ai-overview-card" aria-labelledby="ai-overview-heading">
+          <section class="ai-settings-card ai-overview-card elevated" aria-labelledby="ai-overview-heading">
             <div class="ai-card-heading">
               <div>
                 <span class="ai-card-kicker">ACTIVE PROVIDER</span>
@@ -434,8 +483,7 @@ async function handleClose() {
               </div>
               <span class="ai-card-badge">{isRemoteEndpoint(aiSettings.provider.endpoint) ? "Remote" : "Local"}</span>
             </div>
-            <button type="button" class="primary-button" onclick={() => (providerModalOpen = true)}
-              >Configure provider</button>
+            <button type="button" class="primary" onclick={() => (providerModalOpen = true)}><Settings2 size={14} strokeWidth={1.8} aria-hidden="true" /> Configure provider</button>
           </section>
           {#if providerModalOpen}
             <div class="ai-modal-backdrop">
@@ -448,9 +496,9 @@ async function handleClose() {
                   </div>
                   <button
                     type="button"
-                    class="quiet-button"
+                    class="quiet"
                     aria-label="Close provider configuration"
-                    onclick={() => (providerModalOpen = false)}>Close</button>
+                    onclick={() => (providerModalOpen = false)}><X size={14} strokeWidth={1.8} aria-hidden="true" /> Close</button>
                 </div>
                 <section class="ai-settings-card ai-providers-card">
                   <div class="ai-provider-choice">
@@ -567,9 +615,9 @@ async function handleClose() {
                   <div class="ai-action-group">
                     <span class="ai-action-label">Connection</span>
                     <div class="ai-settings-actions ai-card-actions">
-                      <button type="button" class="primary-button" onclick={onAiModelsLoad} disabled={aiModelsBusy}
+                      <button type="button" class="primary" onclick={onAiModelsLoad} disabled={aiModelsBusy}
                         >{aiModelsBusy ? "Loading models…" : "Load available models"}</button>
-                      <button type="button" class="quiet-button" onclick={onAiCheck}>Test connection</button>
+                      <button type="button" class="quiet" onclick={onAiCheck}>Test connection</button>
                       {#if aiStatus}<span class:ok={aiStatus.available && aiStatus.modelAvailable} class="ai-status"
                           >{aiStatus.available && !aiStatus.credentialAvailable
                             ? "Provider reachable; credential missing"
@@ -590,7 +638,7 @@ async function handleClose() {
                       <div class="ai-settings-actions ai-card-actions">
                         {#if remoteCredential?.configured}
                           <span class="ai-status ai-status-badge ok">Credential stored in OS keychain</span>
-                        {:else}<button type="button" class="quiet-button" onclick={onAiRemoteImport}
+                        {:else}<button type="button" class="quiet" onclick={onAiRemoteImport}
                             >Import environment key</button
                           ><span class="ai-status ai-status-badge">No OS credential configured</span>{/if}
                       </div>
@@ -599,9 +647,9 @@ async function handleClose() {
                       <div class="ai-action-group">
                         <span class="ai-action-label">Project access</span>
                         <div class="ai-settings-actions ai-card-actions">
-                          <button type="button" class="primary-button" onclick={() => onAiRemoteConsent(true)}
+                          <button type="button" class="primary" onclick={() => onAiRemoteConsent(true)}
                             >Allow for this project</button>
-                          <button type="button" class="quiet-button" onclick={() => onAiRemoteConsent(false)}
+                          <button type="button" class="quiet" onclick={() => onAiRemoteConsent(false)}
                             >Revoke</button>
                         </div>
                       </div>
@@ -611,19 +659,20 @@ async function handleClose() {
               </div>
             </div>
           {/if}
-          <section class="ai-settings-card" aria-labelledby="retrieval-index-heading">
+          <section class="ai-settings-card elevated" aria-labelledby="retrieval-index-heading">
             <div class="ai-card-heading ai-card-heading-compact">
               <div>
                 <span class="ai-card-kicker">PROJECT CONTEXT</span>
                 <strong id="retrieval-index-heading">Semantic retrieval</strong>
                 <p>Embeddings use the active provider when supported; lexical retrieval remains available otherwise.</p>
               </div>
+              <Cpu size={18} strokeWidth={1.7} aria-hidden="true" />
             </div>
             <div class="ai-settings-actions">
-              <button type="button" class="quiet-button" onclick={onAiIndexRefresh}>Refresh status</button>
-              <button type="button" class="primary-button" onclick={onAiIndexRebuild} disabled={aiIndexBusy}
+              <button type="button" class="quiet" onclick={onAiIndexRefresh}>Refresh status</button>
+              <button type="button" class="primary" onclick={onAiIndexRebuild} disabled={aiIndexBusy}
                 >{aiIndexBusy ? "Building index…" : "Build semantic index"}</button>
-              {#if aiIndexBusy}<button type="button" class="quiet-button" onclick={onAiIndexCancel}>Cancel</button>{/if}
+              {#if aiIndexBusy}<button type="button" class="quiet" onclick={onAiIndexCancel}>Cancel</button>{/if}
               {#if aiIndexStatus}<span class="ai-status"
                   >{aiIndexStatus.message ?? aiIndexStatus.state ?? "Unavailable"}</span
                 >{/if}
@@ -633,11 +682,21 @@ async function handleClose() {
         </div>
       {:else if section === "plugins"}
         {#if !projectOpen}
-          <div class="settings-section-heading">
-            <strong>Plugins</strong>
-            <p>Open a project to install, enable, and review plugin capabilities.</p>
+          <div class="panel-hero">
+            <div class="hero-icon">
+              <Puzzle size={18} strokeWidth={1.8} aria-hidden="true" />
+            </div>
+            <div class="hero-copy">
+              <span class="kicker">EXTENSIONS</span>
+              <strong>Plugins</strong>
+              <p>Open a project to install, enable, and review plugin capabilities.</p>
+            </div>
           </div>
-          <p class="settings-empty">No project is open.</p>
+          <div class="empty-card">
+            <div class="empty-icon"><Puzzle size={20} strokeWidth={1.7} aria-hidden="true" /></div>
+            <strong>No project is open</strong>
+            <p>Plugins are installed per-project. Open a project to manage them.</p>
+          </div>
         {:else}
           {@render plugins()}
         {/if}
@@ -652,11 +711,14 @@ async function handleClose() {
   {#if schemaDiscardOpen}
     <div class="schema-discard-backdrop" role="presentation">
       <div class="schema-discard-dialog" role="alertdialog" aria-modal="true" aria-labelledby="schema-discard-title">
+        <div class="dialog-icon warn">
+          <GitBranch size={18} strokeWidth={1.8} aria-hidden="true" />
+        </div>
         <strong id="schema-discard-title">Discard unsaved schema changes?</strong>
         <p>Your edits to types, fields, and templates will be lost.</p>
         <div class="schema-discard-actions">
-          <button type="button" class="quiet-button" onclick={() => resolveSchemaDiscard(false)}>Keep editing</button>
-          <button type="button" class="danger-button" onclick={() => resolveSchemaDiscard(true)}>Discard</button>
+          <button type="button" class="quiet" onclick={() => resolveSchemaDiscard(false)}>Keep editing</button>
+          <button type="button" class="danger" onclick={() => resolveSchemaDiscard(true)}>Discard</button>
         </div>
       </div>
     </div>
@@ -677,7 +739,9 @@ async function handleClose() {
   z-index: 200;
   display: grid;
   place-items: center;
+  padding: 16px;
   background: rgba(48, 44, 38, 0.35);
+  backdrop-filter: blur(4px);
 }
 .schema-discard-dialog {
   width: min(420px, calc(100vw - 32px));
@@ -704,103 +768,419 @@ async function handleClose() {
   gap: 8px;
   margin-top: 6px;
 }
-.danger-button {
-  border: 1px solid #c9897d;
-  border-radius: 8px;
-  padding: 6px 12px;
-  background: #f7ebe7;
+.dialog-icon.warn {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: #fdf2ef;
+  border: 1px solid #e7c4bc;
   color: #9a4d3f;
-  font:
-    600 11px Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
+}
+.danger {
+  border: 1px solid #e0b8ad;
+  border-radius: 9px;
+  padding: 7px 12px;
+  background: #fdf2ef;
+  color: #9a4d3f;
+  font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif;
   cursor: pointer;
+}
+.danger:hover {
+  background: #f3ddd6;
+  border-color: #c9897d;
 }
 .settings-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 28px;
+  margin-bottom: 22px;
+  padding: 16px 16px 14px;
+  border: 1px solid var(--line, #e9e1d4);
+  border-radius: 14px;
+  background: var(--surface, #fffefa);
+}
+.header-left {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.header-icon {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  background: var(--accent-dark);
+  color: #fffefa;
+  flex: 0 0 40px;
 }
 .settings-header h1 {
-  margin: 6px 0 8px;
-  font: 500 34px var(--font-display);
-  color: var(--ink);
+  margin: 2px 0 6px;
+  font: 600 22px/1.1 var(--font-display, Georgia, serif);
+  color: var(--ink, #25251f);
+  letter-spacing: -0.01em;
 }
 .settings-header p {
   margin: 0;
   max-width: 520px;
-  color: var(--ink-soft);
-  font-size: 13px;
-  line-height: 1.55;
+  color: var(--ink-soft, #8f897e);
+  font: 400 12.5px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
+}
+.panel-kicker {
+  color: #b4773f;
+  font: 700 10px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.header-back {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
 }
 .settings-layout {
   display: grid;
-  grid-template-columns: 180px minmax(0, 1fr);
+  grid-template-columns: 200px minmax(0, 1fr);
   gap: 22px;
   align-items: start;
 }
 .settings-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  display: grid;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--line, #e9e1d4);
+  border-radius: 12px;
+  background: #f7f3ec;
+  position: sticky;
+  top: 16px;
 }
 .settings-nav-button {
   width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   padding: 10px 12px;
-  border: 0;
-  border-radius: 8px;
+  border: 1px solid transparent;
+  border-radius: 9px;
   background: transparent;
-  color: var(--ink-soft);
+  color: var(--ink-soft, #8f897e);
   text-align: left;
   cursor: pointer;
-  font-size: 13px;
+  font: 600 13px Inter, ui-sans-serif, system-ui, sans-serif;
+  transition: all 0.14s ease;
 }
-.settings-nav-button.active,
 .settings-nav-button:hover {
-  background: #efe6d6;
-  color: var(--ink);
+  background: #efe8d9;
+  color: var(--ink, #25251f);
+}
+.settings-nav-button.active {
+  background: var(--accent-dark);
+  border-color: var(--accent-dark);
+  color: #fffefa;
+  box-shadow: 0 1px 0 rgba(48,44,38,0.12);
 }
 .settings-panel {
   min-width: 0;
+  display: grid;
+  gap: 18px;
   padding: 22px 24px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line, #e9e1d4);
   border-radius: 14px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm, 0 1px 2px rgb(40 40 20 / 4%));
+  background: var(--surface, #fffefa);
+  box-shadow: 0 1px 0 rgba(40 40 20 / 4%), 0 8px 24px rgba(48,44,38,0.04);
+}
+.panel-hero {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 14px;
+  padding: 16px 16px 14px;
+  border: 1px solid var(--line, #e9e1d4);
+  border-radius: 14px;
+  background: var(--surface, #fffefa);
+}
+.panel-hero .hero-icon {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  background: var(--accent-dark);
+  color: #fffefa;
+}
+.hero-copy .kicker {
+  color: #b4773f;
+  font: 700 10px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.hero-copy strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--ink);
+  font: 600 16px/1.15 var(--font-display, Georgia, serif);
+}
+.hero-copy p {
+  margin: 6px 0 0;
+  max-width: 640px;
+  color: var(--ink-soft, #8f897e);
+  font: 400 12.5px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
+}
+.hero-stats {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+.stat-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #f4eee3;
+  border: 1px solid #e9e1d4;
+  color: #62594e;
+  font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif;
+}
+.block {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--line, #e9e1d4);
+  border-radius: 14px;
+  background: #fffefa;
+}
+.block.elevated {
+  box-shadow: 0 1px 0 rgba(48,44,38,0.03), 0 8px 24px rgba(48,44,38,0.04);
+}
+.block-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #f0e8d9;
+}
+.heading-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.heading-icon {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #f4eee3;
+  border: 1px solid #e9e1d4;
+  color: #62594e;
+}
+.heading-icon.accent {
+  background: var(--accent-dark);
+  border-color: var(--accent-dark);
+  color: #fffefa;
+}
+.heading-left h4 {
+  margin: 0;
+  font: 600 13px Inter, ui-sans-serif, system-ui, sans-serif;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+.count-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: #f4eee3;
+  border: 1px solid #e9e1d4;
+  color: #62594e;
+  font: 700 11px Inter, sans-serif;
+}
+.count-badge.accent {
+  background: #fff3df;
+  border-color: #e9c9a6;
+  color: #8b5c2e;
+}
+.block-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-faint, #b0a89c);
+  font: 500 11.5px Inter, ui-sans-serif, system-ui, sans-serif;
+}
+.subtle-note {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: #f7f3ec;
+  border: 1px solid #f0e8d9;
+  color: #8f897e;
+  font: 400 11.5px/1.5 Inter, sans-serif;
+}
+.empty-inline {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 14px;
+  border: 1px dashed #d9cdbd;
+  border-radius: 11px;
+  background: #fffcf7;
+  color: #8f897e;
+}
+.empty-inline strong {
+  display: block;
+  color: var(--ink);
+  font: 600 13px Inter, sans-serif;
+  margin-bottom: 3px;
+}
+.empty-inline span {
+  font: 400 12px/1.5 Inter, sans-serif;
+}
+.empty-card {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  padding: 22px 18px;
+  border: 1px dashed #d9cdbd;
+  border-radius: 14px;
+  background: #fffcf7;
+}
+.empty-card .empty-icon {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: #f4eee3;
+  border: 1px solid #e9e1d4;
+  color: #8f897e;
+}
+.empty-card strong {
+  color: var(--ink);
+  font: 600 15px var(--font-display, Georgia, serif);
+}
+.empty-card p {
+  margin: 0;
+  max-width: 520px;
+  color: var(--ink-soft, #8f897e);
+  font: 400 12.5px/1.5 Inter, sans-serif;
 }
 .settings-section-heading {
-  margin-bottom: 18px;
-}
-.settings-section-heading strong {
-  display: block;
-  font-size: 16px;
-}
-.settings-section-heading p {
-  margin: 6px 0 0;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.5;
+  display: none;
 }
 .settings-empty {
   margin: 0;
   color: var(--ink-soft);
   font-size: 13px;
 }
+.settings-recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.settings-recent-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid #ebe3d6;
+  border-radius: 12px;
+  background: #fffcf7;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+.settings-recent-list li:hover {
+  border-color: #e0d6c4;
+  box-shadow: 0 4px 14px rgba(48,44,38,0.05);
+}
+.recent-copy strong,
+.recent-copy small {
+  display: block;
+}
+.recent-copy small {
+  margin-top: 3px;
+  color: var(--ink-soft);
+  font: 500 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.settings-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 4px 0;
+}
+.settings-path-field {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+  color: #6d625d;
+  font-size: 12px;
+}
+.settings-path-field span {
+  color: #8f897e;
+  font: 600 10px Inter, sans-serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.settings-path-field input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 11px;
+  border: 1px solid #d9cec7;
+  border-radius: 9px;
+  background: #fff;
+  color: #302a27;
+  font: 400 13px Inter, sans-serif;
+}
+.settings-path-field input:focus {
+  outline: none;
+  border-color: #b4773f;
+  box-shadow: 0 0 0 3px rgba(180,119,63,0.12);
+}
+.inline-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font: 400 12px Inter, sans-serif;
+}
+.inline-alert.error {
+  border: 1px solid #e7c4bc;
+  background: #fdf2ef;
+  color: #9a4d3f;
+}
+.inline-alert.success {
+  border: 1px solid #d8e9cc;
+  background: #f0f6e8;
+  color: #3f6b4c;
+}
 .ai-settings-form {
   display: grid;
-  gap: 14px;
+  gap: 18px;
   width: 100%;
 }
 .ai-settings-card {
   display: grid;
-  gap: 18px;
+  gap: 16px;
   padding: 18px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: #fdfbf7;
+  border: 1px solid var(--line, #e9e1d4);
+  border-radius: 14px;
+  background: #fffefa;
+}
+.ai-settings-card.elevated {
+  box-shadow: 0 1px 0 rgba(48,44,38,0.03), 0 8px 24px rgba(48,44,38,0.04);
 }
 .ai-overview-card {
   gap: 16px;
@@ -813,6 +1193,7 @@ async function handleClose() {
   place-items: center;
   padding: 24px;
   background: rgba(37, 37, 31, 0.34);
+  backdrop-filter: blur(4px);
 }
 .ai-provider-modal {
   width: min(820px, 100%);
@@ -821,7 +1202,7 @@ async function handleClose() {
   padding: 22px;
   border: 1px solid #d8cdbd;
   border-radius: 14px;
-  background: var(--surface);
+  background: var(--surface, #fffefa);
   box-shadow: 0 24px 80px rgba(37, 37, 31, 0.24);
 }
 .ai-provider-modal > .ai-settings-card {
@@ -879,16 +1260,20 @@ async function handleClose() {
   min-height: 62px;
   padding: 10px 11px;
   border: 1px solid #d8cdbd;
-  border-radius: 9px;
-  background: var(--surface);
+  border-radius: 11px;
+  background: var(--surface, #fffefa);
   color: var(--ink);
   text-align: left;
   cursor: pointer;
+  transition: all 0.14s ease;
 }
 .ai-provider-preset:hover,
 .ai-provider-preset.active {
-  border-color: #bc8d5d;
-  background: #fbf2e5;
+  border-color: var(--accent-dark);
+  background: var(--accent-dark);
+  color: #fffefa;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(48,44,38,0.12);
 }
 .ai-provider-preset strong {
   margin: 0;
@@ -898,6 +1283,9 @@ async function handleClose() {
   color: var(--ink-soft);
   font-size: 10px;
   line-height: 1.35;
+}
+.ai-provider-preset.active span {
+  color: rgba(255,255,255,0.7);
 }
 .ai-label-note {
   display: inline-block;
@@ -922,7 +1310,10 @@ async function handleClose() {
   gap: 5px;
 }
 .ai-capabilities-help {
-  padding-top: 2px;
+  padding: 12px;
+  border: 1px solid #f0e8d9;
+  border-radius: 11px;
+  background: #f7f3ec;
   color: var(--ink-soft);
   font-size: 11px;
 }
@@ -947,8 +1338,8 @@ async function handleClose() {
   min-width: 0;
   padding: 8px 10px;
   border: 1px solid #e2d8c9;
-  border-radius: 8px;
-  background: var(--surface);
+  border-radius: 9px;
+  background: var(--surface, #fffefa);
   color: var(--ink);
   font-size: 11px;
   font-weight: 600;
@@ -995,9 +1386,10 @@ async function handleClose() {
 }
 .ai-card-badge {
   flex: 0 0 auto;
-  padding: 5px 8px;
+  padding: 5px 9px;
   border: 1px solid #d8c6ad;
   border-radius: 999px;
+  background: #fbf2e5;
   color: var(--accent-dark);
   font-size: 10px;
   font-weight: 700;
@@ -1022,30 +1414,18 @@ async function handleClose() {
   min-width: 0;
   padding: 10px 11px;
   border: 1px solid #d8cdbd;
-  border-radius: 8px;
+  border-radius: 9px;
   outline: 0;
-  background: var(--surface);
+  background: var(--surface, #fffefa);
   color: var(--ink);
-  font: 12px var(--font-body);
-  font-weight: 400;
+  font: 400 12px var(--font-body, Inter, sans-serif);
   transition:
     border-color 0.15s ease,
     box-shadow 0.15s ease;
 }
 .ai-settings-form input:focus {
-  border-color: #bc8d5d;
+  border-color: #b4773f;
   box-shadow: 0 0 0 3px rgb(188 141 93 / 12%);
-}
-.ai-settings-form input:disabled {
-  border-color: #e1dcd3;
-  background: #f2efe9;
-  color: var(--ink-faint);
-  cursor: not-allowed;
-  opacity: 0.7;
-}
-.ai-settings-form input:disabled:hover {
-  border-color: #e1dcd3;
-  box-shadow: none;
 }
 .ai-model-field {
   position: relative;
@@ -1065,17 +1445,17 @@ async function handleClose() {
   overflow-y: auto;
   padding: 4px;
   border: 1px solid #d8cdbd;
-  border-radius: 8px;
-  background: var(--surface);
+  border-radius: 9px;
+  background: var(--surface, #fffefa);
   box-shadow: 0 10px 24px rgb(48 44 38 / 14%);
 }
 .ai-model-suggestions button {
   padding: 7px 8px;
   border: 0;
-  border-radius: 5px;
+  border-radius: 6px;
   background: transparent;
   color: var(--ink);
-  font: 11px var(--font-body);
+  font: 11px var(--font-body, Inter, sans-serif);
   text-align: left;
   cursor: pointer;
 }
@@ -1099,11 +1479,6 @@ async function handleClose() {
   letter-spacing: 0.1em;
   text-transform: uppercase;
 }
-.ai-providers-card .primary-button,
-.ai-providers-card .quiet-button {
-  padding: 8px 11px;
-  font-size: 11px;
-}
 .ai-status-badge {
   display: inline-flex;
   align-items: center;
@@ -1121,28 +1496,6 @@ async function handleClose() {
   background: #eef5ef;
   color: #557d63;
 }
-.settings-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin: 12px 0;
-}
-.settings-path-field {
-  display: grid;
-  gap: 6px;
-  margin: 10px 0;
-  color: #6d625d;
-  font-size: 12px;
-}
-.settings-path-field input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 9px 10px;
-  border: 1px solid #d9cec7;
-  border-radius: 8px;
-  background: #fffdfb;
-  color: #302a27;
-}
 .settings-note {
   margin: 10px 0;
   color: #6d625d;
@@ -1156,7 +1509,7 @@ async function handleClose() {
   gap: 10px;
   padding: 8px 10px;
   border: 1px solid #e3b9b1;
-  border-radius: 8px;
+  border-radius: 9px;
   background: #fbf1ef;
   color: #a14f42;
 }
@@ -1165,89 +1518,126 @@ async function handleClose() {
   border: 0;
   background: transparent;
   color: inherit;
-  font-size: 16px;
-  line-height: 1;
   cursor: pointer;
 }
 .ai-card-actions {
   padding-top: 2px;
 }
-.primary-button {
-  padding: 10px 15px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
+.primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 14px;
+  border: 1px solid var(--accent-dark);
+  border-radius: 9px;
   background: var(--accent-dark);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 700;
-  box-shadow:
-    0 2px 0 #263d30,
-    0 7px 16px rgba(42, 68, 51, 0.16);
+  color: #fffefa;
+  font: 700 12px Inter, sans-serif;
   cursor: pointer;
-  transition:
-    background 0.16s ease,
-    box-shadow 0.16s ease,
-    transform 0.16s ease;
+  box-shadow: 0 1px 0 rgba(48,44,38,0.12);
+  transition: all 0.14s ease;
+}
+.primary:hover {
+  background: #4a6b57;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(48,44,38,0.12);
+}
+.primary:active {
+  transform: translateY(0);
+  box-shadow: none;
+}
+.primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+.quiet {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px solid #d9cdbd;
+  border-radius: 9px;
+  background: #fffefa;
+  color: #62594e;
+  font: 600 11.5px Inter, sans-serif;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+.quiet:hover {
+  border-color: #b7a88f;
+  background: #f4eee4;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(48,44,38,0.06);
+}
+.quiet:active {
+  transform: translateY(0);
+  box-shadow: none;
+}
+.quiet.icon {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+}
+.quiet:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+.action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px solid #e9dfd0;
+  border-radius: 9px;
+  background: #f7f1e7;
+  color: #62594e;
+  font: 600 11.5px Inter, sans-serif;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+.action:hover {
+  border-color: #b7a88f;
+  background: #f4eee4;
+}
+.primary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 14px;
+  border: 1px solid var(--accent-dark);
+  border-radius: 9px;
+  background: var(--accent-dark);
+  color: #fffefa;
+  font: 700 12px Inter, sans-serif;
+  cursor: pointer;
+  transition: all 0.14s ease;
 }
 .primary-button:hover {
-  background: #2b4535;
-  box-shadow:
-    0 2px 0 #263d30,
-    0 10px 20px rgba(42, 68, 51, 0.2);
-  transform: translateY(-1px);
-}
-.primary-button:active {
-  box-shadow:
-    0 1px 0 #263d30,
-    0 3px 8px rgba(42, 68, 51, 0.14);
-  transform: translateY(1px);
-}
-.primary-button:focus-visible {
-  outline: 3px solid rgba(180, 119, 63, 0.32);
-  outline-offset: 2px;
-}
-.primary-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  box-shadow: none;
-  transform: none;
+  background: #4a6b57;
 }
 .quiet-button {
-  padding: 10px 12px;
-  border: 1px solid #ded8cd;
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--ink-soft);
-  font-size: 12px;
-  box-shadow: 0 1px 2px rgba(48, 45, 38, 0.05);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px solid #d9cdbd;
+  border-radius: 9px;
+  background: #fffefa;
+  color: #62594e;
+  font: 600 11.5px Inter, sans-serif;
   cursor: pointer;
-  transition:
-    background 0.16s ease,
-    border-color 0.16s ease,
-    box-shadow 0.16s ease,
-    color 0.16s ease,
-    transform 0.16s ease;
+  transition: all 0.14s ease;
 }
 .quiet-button:hover {
-  border-color: #cbbda9;
-  background: var(--surface-muted);
-  color: var(--ink);
-  box-shadow: 0 3px 8px rgba(48, 45, 38, 0.08);
-  transform: translateY(-1px);
-}
-.quiet-button:active {
-  box-shadow: 0 1px 2px rgba(48, 45, 38, 0.05);
-  transform: translateY(1px);
-}
-.quiet-button:focus-visible {
-  outline: 3px solid rgba(180, 119, 63, 0.24);
-  outline-offset: 2px;
-}
-.quiet-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  box-shadow: none;
-  transform: none;
+  background: #f4eee4;
+  border-color: #b7a88f;
 }
 .ai-status {
   color: #9d5b42;
@@ -1257,33 +1647,6 @@ async function handleClose() {
 .ai-status.ok {
   color: #557d63;
   font-weight: 700;
-}
-.settings-recent-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 10px;
-}
-.settings-recent-list li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--line);
-}
-.settings-recent-list li:last-child {
-  border-bottom: 0;
-}
-.settings-recent-list strong,
-.settings-recent-list small {
-  display: block;
-}
-.settings-recent-list small {
-  margin-top: 3px;
-  color: var(--ink-soft);
-  font-size: 11px;
 }
 @media (max-width: 760px) {
   .settings-view {
@@ -1295,9 +1658,10 @@ async function handleClose() {
   .settings-nav {
     flex-direction: row;
     flex-wrap: wrap;
+    position: static;
   }
-  .settings-nav-button {
-    width: auto;
+  .settings-panel {
+    padding: 16px;
   }
   .ai-field-grid {
     grid-template-columns: 1fr;
@@ -1315,16 +1679,11 @@ async function handleClose() {
     flex-direction: column;
     gap: 10px;
   }
-  .ai-modal-backdrop {
-    padding: 12px;
+  .panel-hero {
+    grid-template-columns: 1fr;
   }
-  .ai-provider-modal {
-    max-height: calc(100vh - 24px);
-    padding: 17px;
-  }
-  .ai-modal-heading {
-    flex-direction: column;
-    gap: 10px;
+  .hero-stats {
+    grid-column: 1;
   }
 }
 </style>

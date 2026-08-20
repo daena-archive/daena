@@ -88,6 +88,7 @@ import {
   Settings as SettingsIcon,
   PanelLeftClose,
   PanelLeftOpen,
+  ShieldCheck,
   X,
   Search,
   ChevronDown,
@@ -4553,9 +4554,19 @@ onMount(() => {
         onRecoveryBackup={createRecoveryBackup}
         onRestoreRecoveryBackup={restoreRecoveryBackup}>
         {#snippet plugins()}
-          <div class="settings-section-heading plugins-settings-heading">
-            <strong>Plugins</strong>
-            <p>Extensions that power this project. Every install, upgrade, and rollback is verified and reversible.</p>
+          <div class="panel-hero">
+            <div class="hero-icon">
+              <Puzzle size={18} strokeWidth={1.8} aria-hidden="true" />
+            </div>
+            <div class="hero-copy">
+              <span class="kicker">EXTENSIONS</span>
+              <strong>Plugins</strong>
+              <p>Extensions that power this project. Every install, upgrade, and rollback is verified and reversible.</p>
+            </div>
+            <div class="hero-stats">
+              <span class="stat-pill"><Puzzle size={12} strokeWidth={1.8} aria-hidden="true" /> {adminPlugins ? adminPlugins.length : 0} installed</span>
+              <span class="stat-pill"><ShieldCheck size={12} strokeWidth={1.8} aria-hidden="true" /> {adminPlugins ? adminPlugins.filter(p=>p.enabled).length : 0} enabled</span>
+            </div>
           </div>
           <div class="plugins-toolbar">
             <button
@@ -6953,7 +6964,7 @@ onMount(() => {
   padding: 8px 9px;
   border: 1px solid #d9cdbd;
   border-radius: 7px;
-  background: #302c26;
+  background: var(--ink);
   color: #fffefa !important;
   font-size: 10px !important;
   font-weight: 400;
@@ -9148,6 +9159,60 @@ onMount(() => {
   overflow-y: auto;
   padding: 4px 0 8px;
 }
+.panel-hero {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 14px;
+  padding: 16px 16px 14px;
+  border: 1px solid var(--line, #e9e1d4);
+  border-radius: 14px;
+  background: var(--surface, #fffefa);
+}
+.panel-hero .hero-icon {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  background: var(--accent-dark);
+  color: #fffefa;
+}
+.hero-copy .kicker {
+  color: #b4773f;
+  font: 700 10px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.hero-copy strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--ink);
+  font: 600 16px/1.15 var(--font-display, Georgia, serif);
+}
+.hero-copy p {
+  margin: 6px 0 0;
+  max-width: 640px;
+  color: var(--ink-soft, #8f897e);
+  font: 400 12.5px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
+}
+.hero-stats {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+.stat-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #f4eee3;
+  border: 1px solid #e9e1d4;
+  color: #62594e;
+  font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif;
+}
 .plugins-settings-heading {
   margin-bottom: 14px;
 }
@@ -9162,14 +9227,20 @@ onMount(() => {
   line-height: 1.5;
 }
 .plugin-card {
-  padding: 16px 17px;
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
+  padding: 18px;
+  border: 1px solid var(--line, #e9e1d4);
+  border-radius: 14px;
+  background: #fffefa;
+  box-shadow: 0 1px 0 rgba(48,44,38,0.03), 0 8px 24px rgba(48,44,38,0.04);
+  transition: border-color 0.14s ease, box-shadow 0.14s ease, transform 0.14s ease;
+}
+.plugin-card:hover {
+  border-color: #e0d6c4;
+  box-shadow: 0 8px 24px rgba(48,44,38,0.08);
+  transform: translateY(-1px);
 }
 .plugin-card + .plugin-card {
-  margin-top: 11px;
+  margin-top: 14px;
 }
 .plugin-card-head {
   display: flex;

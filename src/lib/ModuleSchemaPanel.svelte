@@ -2,6 +2,25 @@
 import type { EntityTemplate, FieldDefinition, ModuleSchemaOverlay } from "$lib/project/client";
 import { onMount } from "svelte";
 import { setSchemaEditorDirtyCheck } from "$lib/schemaEditorGuard";
+import {
+  Layers,
+  Type,
+  TextQuote,
+  Blocks,
+  LayoutTemplate,
+  Plus,
+  Pencil,
+  Trash2,
+  Check,
+  X,
+  Settings2,
+  Sparkles,
+  Eye,
+  EyeOff,
+  ChevronDown,
+  Save,
+  AlertTriangle,
+} from "@lucide/svelte";
 
 type PackageManifest = {
   schemas: Array<{
@@ -147,6 +166,7 @@ let draft = $state<ModuleSchemaOverlay>(draftPlain);
 /** Synced on every setDraft; read by the leave guard (plain bool, not $state). */
 let dirtyFlag = false;
 let dirty = $state(false);
+let activeTab = $state<"types" | "fields" | "templates">("types");
 
 let newType = $state("");
 let editingTypeId = $state<string | null>(null);
@@ -665,361 +685,363 @@ function removeCustomTemplate(id: string) {
   });
 }
 </script>
-
 <section class="module-schema-panel">
-  <header>
-    <strong>Types & fields</strong>
-    <p>
-      Package defaults stay intact. Disable builtins you do not need, and add project-specific types, fields, and
-      templates.
-    </p>
+  <header class="panel-hero">
+    <div class="hero-icon">
+      <Settings2 size={18} strokeWidth={1.8} aria-hidden="true" />
+    </div>
+    <div class="hero-copy">
+      <span class="kicker">PROJECT OVERLAY</span>
+      <strong>Types &amp; fields</strong>
+      <p>Package defaults stay intact. Disable what you don’t need and layer project-specific types, fields, and templates. Nothing you do here modifies the installed plugin.</p>
+    </div>
+    <div class="hero-stats" aria-label="Overlay summary">
+      <span class="stat-pill"><Layers size={12} strokeWidth={1.8} aria-hidden="true" /> {effectiveTypes().length} types</span>
+      <span class="stat-pill"><TextQuote size={12} strokeWidth={1.8} aria-hidden="true" /> {(draft.customFields ?? []).length + packageFields.length - (draft.disabledFields?.length ?? 0)} fields</span>
+      <span class="stat-pill"><LayoutTemplate size={12} strokeWidth={1.8} aria-hidden="true" /> {(draft.customTemplates ?? []).length + packageTemplates.length - (draft.disabledTemplates?.length ?? 0)} templates</span>
+    </div>
   </header>
 
   {#if !projectOpen}
-    <p class="muted">Open a project to customize this schema.</p>
+    <div class="empty-card">
+      <div class="empty-icon"><Blocks size={20} strokeWidth={1.7} aria-hidden="true" /></div>
+      <strong>Open a project to customize this schema</strong>
+      <p>Overlays are stored in <code>.daena/overlays</code> and move with the project. Open a project to start editing.</p>
+    </div>
   {:else}
-    <div class="block">
-      <div class="block-heading">
-        <h4>Builtin entity types</h4>
-        <span class="block-hint">Click to enable or disable</span>
-      </div>
-      <div class="chip-row">
-        {#each packageTypes as type}
-          <button
-            type="button"
-            class="chip"
-            class:is-hidden={isDisabled(draft.disabledEntityTypes, type)}
-            aria-pressed={!isDisabled(draft.disabledEntityTypes, type)}
-            title={type}
-            onclick={() => toggleDisabled("disabledEntityTypes", type)}>
-            {humanizeId(type)}
-          </button>
-        {/each}
-      </div>
+    <div class="tab-bar" role="tablist" aria-label="Schema sections">
+      <button
+        type="button"
+        role="tab"
+        class="tab"
+        class:active={activeTab === "types"}
+        aria-selected={activeTab === "types"}
+        onclick={() => (activeTab = "types")}>
+        <Layers size={14} strokeWidth={1.8} aria-hidden="true" />
+        Types
+        <span class="tab-count">{effectiveTypes().length}</span>
+      </button>
+      <button
+        type="button"
+        role="tab"
+        class="tab"
+        class:active={activeTab === "fields"}
+        aria-selected={activeTab === "fields"}
+        onclick={() => (activeTab = "fields")}>
+        <TextQuote size={14} strokeWidth={1.8} aria-hidden="true" />
+        Fields
+        <span class="tab-count">{[...packageFields, ...(draft.customFields ?? [])].filter(f=>!isDisabled(draft.disabledFields,f.key)).length}</span>
+      </button>
+      <button
+        type="button"
+        role="tab"
+        class="tab"
+        class:active={activeTab === "templates"}
+        aria-selected={activeTab === "templates"}
+        onclick={() => (activeTab = "templates")}>
+        <LayoutTemplate size={14} strokeWidth={1.8} aria-hidden="true" />
+        Templates
+        <span class="tab-count">{[...packageTemplates, ...(draft.customTemplates ?? [])].filter(t=>!isDisabled(draft.disabledTemplates,t.id)).length}</span>
+      </button>
     </div>
 
-    <div class="block">
-      <div class="block-heading">
-        <h4>Builtin fields</h4>
-        <span class="block-hint">Enable fields and choose the entity types they apply to</span>
-      </div>
-      <div class="chip-row">
-        {#each packageFields as field}
-          <button
-            type="button"
-            class="chip"
-            class:is-hidden={isDisabled(draft.disabledFields, field.key)}
-            aria-pressed={!isDisabled(draft.disabledFields, field.key)}
-            title={`${field.key} · ${fieldTypeLabel(field.type)}`}
-            onclick={() => toggleDisabled("disabledFields", field.key)}>
-            {field.label || humanizeId(field.key)}
-          </button>
-        {/each}
-      </div>
-      <ul class="list compact-list">
-        {#each packageFields as field}
-          <li class="list-item">
-            {#if editingBuiltinFieldKey === field.key}
-              <div class="edit-form">
-                <div class="type-select" role="group" aria-label={`Entity types for ${field.label}`}>
-                  <span class="type-select-label">Applies to</span>
-                  <div class="chip-row compact">
-                    {#each effectiveTypes() as type}
-                      <button
-                        type="button"
-                        class="chip select"
-                        class:selected={builtinFieldScope(field).includes(type)}
-                        aria-pressed={builtinFieldScope(field).includes(type)}
-                        onclick={() => updateBuiltinFieldScope(field, toggleInList(builtinFieldScope(field), type))}
-                        >{humanizeId(type)}</button>
-                    {/each}
-                  </div>
-                </div>
-                <div class="edit-actions">
-                  <button type="button" class="quiet" onclick={() => (editingBuiltinFieldKey = null)}>Done</button>
-                </div>
-              </div>
-            {:else}
-              <div class="item-main">
-                <strong>{field.label || humanizeId(field.key)}</strong><span class="meta"
-                  >{scopeLabel(builtinFieldScope(field))}</span>
-              </div>
-              <div class="item-actions">
-                <button type="button" class="quiet" onclick={() => (editingBuiltinFieldKey = field.key)}
-                  >Edit scope</button>
-              </div>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-    </div>
-
-    <div class="block">
-      <div class="block-heading">
-        <h4>Builtin templates</h4>
-        <span class="block-hint">Enable templates and choose their included fields</span>
-      </div>
-      <div class="chip-row">
-        {#each packageTemplates as template}
-          <button
-            type="button"
-            class="chip"
-            class:is-hidden={isDisabled(draft.disabledTemplates, template.id)}
-            aria-pressed={!isDisabled(draft.disabledTemplates, template.id)}
-            title={template.description || template.id}
-            onclick={() => toggleDisabled("disabledTemplates", template.id)}>
-            {template.name}
-          </button>
-        {/each}
-      </div>
-      <ul class="list compact-list">
-        {#each packageTemplates as template}
-          <li class="list-item">
-            {#if editingBuiltinTemplateId === template.id}
-              <div class="edit-form">
-                <div class="type-select" role="group" aria-label={`Fields for ${template.name}`}>
-                  <span class="type-select-label">Included fields</span>
-                  <div class="chip-row compact">
-                    {#each effectiveFieldsForType(template.entityType) as field}
-                      <button
-                        type="button"
-                        class="chip select"
-                        class:selected={editingTemplateFieldKeys.includes(field.key)}
-                        aria-pressed={editingTemplateFieldKeys.includes(field.key)}
-                        onclick={() => {
-                          editingTemplateFieldKeys = toggleInList(editingTemplateFieldKeys, field.key);
-                          if (!editingTemplateFieldKeys.includes(field.key))
-                            editingTemplateRequiredFields = editingTemplateRequiredFields.filter(
-                              (key) => key !== field.key,
-                            );
-                        }}>{field.label || humanizeId(field.key)}</button>
-                    {/each}
-                  </div>
-                </div>
-                <div class="type-select" role="group" aria-label={`Required fields for ${template.name}`}>
-                  <span class="type-select-label">Required fields</span>
-                  <div class="chip-row compact">
-                    {#each editingTemplateFieldKeys as key}
-                      <button
-                        type="button"
-                        class="chip select"
-                        class:selected={editingTemplateRequiredFields.includes(key)}
-                        aria-pressed={editingTemplateRequiredFields.includes(key)}
-                        onclick={() =>
-                          (editingTemplateRequiredFields = toggleInList(editingTemplateRequiredFields, key))}
-                        >{packageFields.find((field) => field.key === key)?.label || humanizeId(key)}</button>
-                    {/each}
-                  </div>
-                </div>
-                <div class="edit-actions">
-                  <button type="button" class="action" onclick={commitBuiltinTemplateEdit}>Save fields</button><button
-                    type="button"
-                    class="quiet"
-                    onclick={cancelTemplateFieldEdit}>Cancel</button>
-                </div>
-              </div>
-            {:else}
-              <div class="item-main">
-                <strong>{template.name}</strong><span class="meta"
-                  >{Object.keys(fieldsForTemplate(template, true)).length} fields</span>
-              </div>
-              <div class="item-actions">
-                <button type="button" class="quiet" onclick={() => beginTemplateFieldEdit(template, true)}
-                  >Customize fields</button>
-              </div>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-    </div>
-
-    <div class="block">
-      <div class="block-heading">
-        <h4>Custom entity types</h4>
-        <span class="block-hint">Project-only types layered on the package</span>
-      </div>
-      {#if (draft.customEntityTypes ?? []).length === 0}
-        <p class="empty">No custom types yet.</p>
-      {:else}
-        <ul class="list">
-          {#each draft.customEntityTypes ?? [] as type}
-            <li class="list-item">
-              {#if editingTypeId === type}
-                <div class="edit-form">
-                  <label>
-                    <span>Name</span>
-                    <input bind:value={editTypeValue} placeholder="Species" />
-                  </label>
-                  <div class="edit-actions">
-                    <button type="button" class="action" onclick={commitTypeEdit}>Save</button>
-                    <button type="button" class="quiet" onclick={cancelTypeEdit}>Cancel</button>
-                  </div>
-                </div>
-              {:else}
-                <div class="item-main">
-                  <strong>{humanizeId(type)}</strong>
-                  <code>{type}</code>
-                </div>
-                <div class="item-actions">
-                  <button type="button" class="quiet" onclick={() => startTypeEdit(type)}>Edit</button>
-                  <button type="button" class="danger" onclick={() => requestRemoveCustomType(type)}>Remove</button>
-                </div>
-              {/if}
-            </li>
+    {#if activeTab === "types"}
+      <div class="block elevated">
+        <div class="block-heading">
+          <div class="heading-left">
+            <span class="heading-icon"><Layers size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+            <h4>Builtin entity types</h4>
+            <span class="count-badge">{packageTypes.length}</span>
+          </div>
+          <span class="block-hint"><Eye size={12} strokeWidth={1.8} aria-hidden="true" /> Click to enable or disable</span>
+        </div>
+        <div class="chip-row">
+          {#each packageTypes as type}
+            {@const disabled = isDisabled(draft.disabledEntityTypes, type)}
+            <button
+              type="button"
+              class="chip"
+              class:is-hidden={disabled}
+              aria-pressed={!disabled}
+              title={type}
+              onclick={() => toggleDisabled("disabledEntityTypes", type)}>
+              {#if !disabled}<Check size={11} strokeWidth={2.2} aria-hidden="true" />{:else}<EyeOff size={11} strokeWidth={1.8} aria-hidden="true" />{/if}
+              {humanizeId(type)}
+            </button>
           {/each}
-        </ul>
-      {/if}
-      <div class="add-form">
-        <label>
-          <span>New type</span>
-          <input
-            bind:value={newType}
-            placeholder="Species"
-            onkeydown={(event) => event.key === "Enter" && addCustomType()} />
-        </label>
-        <button type="button" class="action" onclick={addCustomType}>Add type</button>
+        </div>
+        <p class="subtle-note">Disabled types and their exclusive fields/templates are hidden from create menus. Re-enable to bring them back.</p>
       </div>
-    </div>
 
-    <div class="block">
-      <div class="block-heading">
-        <h4>Custom fields</h4>
-        <span class="block-hint">Choose at least one entity type for each field</span>
+      <div class="block elevated">
+        <div class="block-heading">
+          <div class="heading-left">
+            <span class="heading-icon accent"><Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+            <h4>Custom entity types</h4>
+            <span class="count-badge accent">{(draft.customEntityTypes ?? []).length}</span>
+          </div>
+          <span class="block-hint">Project-only types layered on the package</span>
+        </div>
+        {#if (draft.customEntityTypes ?? []).length === 0}
+          <div class="empty-inline">
+            <Type size={16} strokeWidth={1.7} aria-hidden="true" />
+            <div>
+              <strong>No custom types yet</strong>
+              <span>Create a project type like “Species”, “Artifact” or “Language” — IDs are normalized to <code>kebab-case</code>.</span>
+            </div>
+          </div>
+        {:else}
+          <ul class="list">
+            {#each draft.customEntityTypes ?? [] as type}
+              <li class="list-item">
+                {#if editingTypeId === type}
+                  <div class="edit-form">
+                    <label>
+                      <span>Name</span>
+                      <input bind:value={editTypeValue} placeholder="Species" />
+                    </label>
+                    <div class="edit-actions">
+                      <button type="button" class="action" onclick={commitTypeEdit}><Check size={14} strokeWidth={2} aria-hidden="true" /> Save</button>
+                      <button type="button" class="quiet" onclick={cancelTypeEdit}>Cancel</button>
+                    </div>
+                  </div>
+                {:else}
+                  <div class="item-main">
+                    <strong>{humanizeId(type)}</strong>
+                    <code>{type}</code>
+                  </div>
+                  <div class="item-actions">
+                    <button type="button" class="quiet icon" aria-label="Edit {type}" onclick={() => startTypeEdit(type)}><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button>
+                    <button type="button" class="danger icon" aria-label="Remove {type}" onclick={() => requestRemoveCustomType(type)}><Trash2 size={14} strokeWidth={1.8} aria-hidden="true" /></button>
+                  </div>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        <div class="add-form">
+          <label>
+            <span>New type</span>
+            <input
+              bind:value={newType}
+              placeholder="Species"
+              onkeydown={(event) => event.key === "Enter" && addCustomType()} />
+          </label>
+          <button type="button" class="action primary-action" onclick={addCustomType}><Plus size={14} strokeWidth={2} aria-hidden="true" /> Add type</button>
+        </div>
       </div>
-      {#if (draft.customFields ?? []).length === 0}
-        <p class="empty">No custom fields yet.</p>
-      {:else}
-        <ul class="list">
-          {#each draft.customFields ?? [] as field}
-            <li class="list-item">
-              {#if editingFieldKey === field.key}
-                <div class="edit-form">
-                  <label>
-                    <span>Label</span>
-                    <input bind:value={editFieldLabel} placeholder="Word count" />
-                  </label>
-                  <label>
-                    <span>Type</span>
-                    <select bind:value={editFieldType}>
-                      {#each FIELD_TYPES as type}
-                        <option value={type}>{fieldTypeLabel(type)}</option>
-                      {/each}
-                    </select>
-                  </label>
-                  <div class="type-select" role="group" aria-label="Applies to entity types">
-                    <span class="type-select-label">Applies to <em>(required)</em></span>
+    {:else if activeTab === "fields"}
+      <div class="block elevated">
+        <div class="block-heading">
+          <div class="heading-left">
+            <span class="heading-icon"><TextQuote size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+            <h4>Builtin fields</h4>
+            <span class="count-badge">{packageFields.length}</span>
+          </div>
+          <span class="block-hint">Enable fields and choose the entity types they apply to</span>
+        </div>
+        <div class="chip-row">
+          {#each packageFields as field}
+            {@const disabled = isDisabled(draft.disabledFields, field.key)}
+            <button
+              type="button"
+              class="chip"
+              class:is-hidden={disabled}
+              aria-pressed={!disabled}
+              title={`${field.key} · ${fieldTypeLabel(field.type)}`}
+              onclick={() => toggleDisabled("disabledFields", field.key)}>
+              {#if !disabled}<Check size={11} strokeWidth={2.2} aria-hidden="true" />{:else}<EyeOff size={11} strokeWidth={1.8} aria-hidden="true" />{/if}
+              {field.label || humanizeId(field.key)}
+            </button>
+          {/each}
+        </div>
+        <ul class="list compact-list">
+          {#each packageFields as field}
+            <li class="list-item compact">
+              {#if editingBuiltinFieldKey === field.key}
+                <div class="edit-form wide">
+                  <div class="type-select" role="group" aria-label={`Entity types for ${field.label}`}>
+                    <span class="type-select-label">Applies to</span>
                     <div class="chip-row compact">
                       {#each effectiveTypes() as type}
                         <button
                           type="button"
                           class="chip select"
-                          class:selected={editFieldEntityTypes.includes(type)}
-                          aria-pressed={editFieldEntityTypes.includes(type)}
-                          onclick={() => (editFieldEntityTypes = toggleInList(editFieldEntityTypes, type))}>
-                          {humanizeId(type)}
-                        </button>
+                          class:selected={builtinFieldScope(field).includes(type)}
+                          aria-pressed={builtinFieldScope(field).includes(type)}
+                          onclick={() => updateBuiltinFieldScope(field, toggleInList(builtinFieldScope(field), type))}
+                          >{humanizeId(type)}</button>
                       {/each}
                     </div>
                   </div>
                   <div class="edit-actions">
-                    <button
-                      type="button"
-                      class="action"
-                      disabled={!editFieldLabel.trim() || editFieldEntityTypes.length === 0}
-                      onclick={commitFieldEdit}>Save</button>
-                    <button type="button" class="quiet" onclick={cancelFieldEdit}>Cancel</button>
+                    <button type="button" class="action" onclick={() => (editingBuiltinFieldKey = null)}><Check size={14} strokeWidth={2} aria-hidden="true" /> Done</button>
                   </div>
                 </div>
               {:else}
                 <div class="item-main">
-                  <strong>{field.label}</strong>
-                  <span class="meta">
-                    {fieldTypeLabel(field.type)}
-                    <span aria-hidden="true">·</span>
-                    {scopeLabel(field.entityTypes)}
-                  </span>
-                  <code>{field.key}</code>
+                  <div class="item-title-row">
+                    <strong>{field.label || humanizeId(field.key)}</strong>
+                    <span class="type-pill">{fieldTypeLabel(field.type)}</span>
+                    {#if isDisabled(draft.disabledFields, field.key)}<span class="disabled-pill"><EyeOff size={10} strokeWidth={1.8} aria-hidden="true" /> Disabled</span>{/if}
+                  </div>
+                  <span class="meta">{scopeLabel(builtinFieldScope(field))} <span class="dot">·</span> <code>{field.key}</code></span>
                 </div>
                 <div class="item-actions">
-                  <button type="button" class="quiet" onclick={() => startFieldEdit(field)}>Edit</button>
-                  <button type="button" class="danger" onclick={() => removeCustomField(field.key)}>Remove</button>
+                  <button type="button" class="quiet" onclick={() => (editingBuiltinFieldKey = field.key)}>Edit scope</button>
                 </div>
               {/if}
             </li>
           {/each}
         </ul>
-      {/if}
-      <div class="add-form stacked">
-        <div class="add-row">
-          <label>
-            <span>Label</span>
-            <input
-              bind:value={newFieldLabel}
-              placeholder="Word count"
-              onkeydown={(event) => event.key === "Enter" && addCustomField()} />
-          </label>
-          <label>
-            <span>Type</span>
-            <select bind:value={newFieldType}>
-              {#each FIELD_TYPES as type}
-                <option value={type}>{fieldTypeLabel(type)}</option>
-              {/each}
-            </select>
-          </label>
-          <button
-            type="button"
-            class="action"
-            disabled={!newFieldLabel.trim() || newFieldEntityTypes.length === 0}
-            onclick={addCustomField}>Add field</button>
+      </div>
+
+      <div class="block elevated">
+        <div class="block-heading">
+          <div class="heading-left">
+            <span class="heading-icon accent"><Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+            <h4>Custom fields</h4>
+            <span class="count-badge accent">{(draft.customFields ?? []).length}</span>
+          </div>
+          <span class="block-hint">Choose at least one entity type for each field</span>
         </div>
-        <div class="type-select" role="group" aria-label="Applies to entity types">
-          <span class="type-select-label">Applies to <em>(required)</em></span>
-          <div class="chip-row compact">
-            {#each effectiveTypes() as type}
-              <button
-                type="button"
-                class="chip select"
-                class:selected={newFieldEntityTypes.includes(type)}
-                aria-pressed={newFieldEntityTypes.includes(type)}
-                onclick={() => (newFieldEntityTypes = toggleInList(newFieldEntityTypes, type))}>
-                {humanizeId(type)}
-              </button>
+        {#if (draft.customFields ?? []).length === 0}
+          <div class="empty-inline">
+            <Blocks size={16} strokeWidth={1.7} aria-hidden="true" />
+            <div>
+              <strong>No custom fields yet</strong>
+              <span>Add a field like “Word count” or “Origin”. Keys become <code>snake_case</code> automatically.</span>
+            </div>
+          </div>
+        {:else}
+          <ul class="list">
+            {#each draft.customFields ?? [] as field}
+              <li class="list-item">
+                {#if editingFieldKey === field.key}
+                  <div class="edit-form">
+                    <label>
+                      <span>Label</span>
+                      <input bind:value={editFieldLabel} placeholder="Word count" />
+                    </label>
+                    <label>
+                      <span>Type</span>
+                      <select bind:value={editFieldType}>
+                        {#each FIELD_TYPES as type}
+                          <option value={type}>{fieldTypeLabel(type)}</option>
+                        {/each}
+                      </select>
+                    </label>
+                    <div class="type-select" role="group" aria-label="Applies to entity types">
+                      <span class="type-select-label">Applies to <em>(required)</em></span>
+                      <div class="chip-row compact">
+                        {#each effectiveTypes() as type}
+                          <button
+                            type="button"
+                            class="chip select"
+                            class:selected={editFieldEntityTypes.includes(type)}
+                            aria-pressed={editFieldEntityTypes.includes(type)}
+                            onclick={() => (editFieldEntityTypes = toggleInList(editFieldEntityTypes, type))}>
+                            {humanizeId(type)}
+                          </button>
+                        {/each}
+                      </div>
+                    </div>
+                    <div class="edit-actions">
+                      <button
+                        type="button"
+                        class="action"
+                        disabled={!editFieldLabel.trim() || editFieldEntityTypes.length === 0}
+                        onclick={commitFieldEdit}><Check size={14} strokeWidth={2} aria-hidden="true" /> Save</button>
+                      <button type="button" class="quiet" onclick={cancelFieldEdit}>Cancel</button>
+                    </div>
+                  </div>
+                {:else}
+                  <div class="item-main">
+                    <div class="item-title-row">
+                      <strong>{field.label}</strong>
+                      <span class="type-pill">{fieldTypeLabel(field.type)}</span>
+                    </div>
+                    <span class="meta">{scopeLabel(field.entityTypes)} <span class="dot">·</span> <code>{field.key}</code></span>
+                  </div>
+                  <div class="item-actions">
+                    <button type="button" class="quiet icon" aria-label="Edit {field.label}" onclick={() => startFieldEdit(field)}><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button>
+                    <button type="button" class="danger icon" aria-label="Remove {field.label}" onclick={() => removeCustomField(field.key)}><Trash2 size={14} strokeWidth={1.8} aria-hidden="true" /></button>
+                  </div>
+                {/if}
+              </li>
             {/each}
+          </ul>
+        {/if}
+        <div class="add-form stacked">
+          <div class="add-row">
+            <label>
+              <span>Label</span>
+              <input
+                bind:value={newFieldLabel}
+                placeholder="Word count"
+                onkeydown={(event) => event.key === "Enter" && addCustomField()} />
+            </label>
+            <label>
+              <span>Type</span>
+              <select bind:value={newFieldType}>
+                {#each FIELD_TYPES as type}
+                  <option value={type}>{fieldTypeLabel(type)}</option>
+                {/each}
+              </select>
+            </label>
+            <button
+              type="button"
+              class="action primary-action"
+              disabled={!newFieldLabel.trim() || newFieldEntityTypes.length === 0}
+              onclick={addCustomField}><Plus size={14} strokeWidth={2} aria-hidden="true" /> Add field</button>
+          </div>
+          <div class="type-select" role="group" aria-label="Applies to entity types">
+            <span class="type-select-label">Applies to <em>(required)</em></span>
+            <div class="chip-row compact">
+              {#each effectiveTypes() as type}
+                <button
+                  type="button"
+                  class="chip select"
+                  class:selected={newFieldEntityTypes.includes(type)}
+                  aria-pressed={newFieldEntityTypes.includes(type)}
+                  onclick={() => (newFieldEntityTypes = toggleInList(newFieldEntityTypes, type))}>
+                  {humanizeId(type)}
+                </button>
+              {/each}
+            </div>
           </div>
         </div>
       </div>
-    </div>
-
-    <div class="block">
-      <div class="block-heading">
-        <h4>Custom templates</h4>
-        <span class="block-hint">Create shortcuts with optional descriptions</span>
-      </div>
-      {#if (draft.customTemplates ?? []).length === 0}
-        <p class="empty">No custom templates yet.</p>
-      {:else}
-        <ul class="list">
-          {#each draft.customTemplates ?? [] as template}
-            <li class="list-item">
-              {#if editingTemplateId === template.id}
-                <div class="edit-form">
-                  <label>
-                    <span>Name</span>
-                    <input bind:value={editTemplateName} placeholder="Species profile" />
-                  </label>
-                  <label>
-                    <span>Entity type</span>
-                    <select bind:value={editTemplateEntityType}>
-                      <option value="">Choose type</option>
-                      {#each effectiveTypes() as type}
-                        <option value={type}>{humanizeId(type)}</option>
-                      {/each}
-                    </select>
-                  </label>
-                  <label class="grow">
-                    <span>Description <em>(optional)</em></span>
-                    <input bind:value={editTemplateDescription} placeholder="A kind of being in this world." />
-                  </label>
+    {:else}
+      <div class="block elevated">
+        <div class="block-heading">
+          <div class="heading-left">
+            <span class="heading-icon"><LayoutTemplate size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+            <h4>Builtin templates</h4>
+            <span class="count-badge">{packageTemplates.length}</span>
+          </div>
+          <span class="block-hint">Enable templates and choose their included fields</span>
+        </div>
+        <div class="chip-row">
+          {#each packageTemplates as template}
+            {@const disabled = isDisabled(draft.disabledTemplates, template.id)}
+            <button
+              type="button"
+              class="chip"
+              class:is-hidden={disabled}
+              aria-pressed={!disabled}
+              title={template.description || template.id}
+              onclick={() => toggleDisabled("disabledTemplates", template.id)}>
+              {#if !disabled}<Check size={11} strokeWidth={2.2} aria-hidden="true" />{:else}<EyeOff size={11} strokeWidth={1.8} aria-hidden="true" />{/if}
+              {template.name}
+            </button>
+          {/each}
+        </div>
+        <ul class="list compact-list">
+          {#each packageTemplates as template}
+            <li class="list-item compact">
+              {#if editingBuiltinTemplateId === template.id}
+                <div class="edit-form wide">
                   <div class="type-select" role="group" aria-label={`Fields for ${template.name}`}>
                     <span class="type-select-label">Included fields</span>
                     <div class="chip-row compact">
@@ -1050,76 +1072,194 @@ function removeCustomTemplate(id: string) {
                           aria-pressed={editingTemplateRequiredFields.includes(key)}
                           onclick={() =>
                             (editingTemplateRequiredFields = toggleInList(editingTemplateRequiredFields, key))}
-                          >{[...packageFields, ...(draft.customFields ?? [])].find((field) => field.key === key)
-                            ?.label || humanizeId(key)}</button>
+                          >{packageFields.find((field) => field.key === key)?.label || humanizeId(key)}</button>
                       {/each}
                     </div>
                   </div>
                   <div class="edit-actions">
-                    <button type="button" class="action" onclick={commitTemplateEdit}>Save</button>
-                    <button type="button" class="quiet" onclick={cancelTemplateEdit}>Cancel</button>
+                    <button type="button" class="action" onclick={commitBuiltinTemplateEdit}><Check size={14} strokeWidth={2} aria-hidden="true" /> Save fields</button><button
+                      type="button"
+                      class="quiet"
+                      onclick={cancelTemplateFieldEdit}>Cancel</button>
                   </div>
                 </div>
               {:else}
                 <div class="item-main">
-                  <strong>{template.name}</strong>
-                  <span class="meta">
-                    {humanizeId(template.entityType)}
-                    {#if template.description}
-                      <span aria-hidden="true">·</span>
-                      {template.description}
-                    {/if}
-                  </span>
+                  <div class="item-title-row">
+                    <strong>{template.name}</strong>
+                    <span class="type-pill ghost">{humanizeId(template.entityType)}</span>
+                    {#if isDisabled(draft.disabledTemplates, template.id)}<span class="disabled-pill"><EyeOff size={10} strokeWidth={1.8} aria-hidden="true" /> Disabled</span>{/if}
+                  </div>
+                  <span class="meta">{Object.keys(fieldsForTemplate(template, true)).length} fields <span class="dot">·</span> {template.description || template.id}</span>
                 </div>
                 <div class="item-actions">
-                  <button type="button" class="quiet" onclick={() => startTemplateEdit(template)}>Edit</button>
-                  <button type="button" class="danger" onclick={() => removeCustomTemplate(template.id)}>Remove</button>
+                  <button type="button" class="quiet" onclick={() => beginTemplateFieldEdit(template, true)}>Customize fields</button>
                 </div>
               {/if}
             </li>
           {/each}
         </ul>
-      {/if}
-      <div class="add-form stacked">
-        <div class="add-row">
-          <label>
-            <span>Name</span>
-            <input bind:value={newTemplateName} placeholder="Species profile" />
-          </label>
-          <label>
-            <span>Entity type</span>
-            <select bind:value={newTemplateEntityType}>
-              <option value="">Choose type</option>
-              {#each effectiveTypes() as type}
-                <option value={type}>{humanizeId(type)}</option>
-              {/each}
-            </select>
-          </label>
-          <button type="button" class="action" onclick={addCustomTemplate}>Add template</button>
-        </div>
-        <label class="grow">
-          <span>Description <em>(optional)</em></span>
-          <input bind:value={newTemplateDescription} placeholder="A kind of being in this world." />
-        </label>
       </div>
-    </div>
 
-    <div class="actions">
-      <button type="button" class="primary" disabled={busy} onclick={() => void save()}>
-        {busy ? "Saving…" : "Save schema"}
+      <div class="block elevated">
+        <div class="block-heading">
+          <div class="heading-left">
+            <span class="heading-icon accent"><Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+            <h4>Custom templates</h4>
+            <span class="count-badge accent">{(draft.customTemplates ?? []).length}</span>
+          </div>
+          <span class="block-hint">Create shortcuts with optional descriptions</span>
+        </div>
+        {#if (draft.customTemplates ?? []).length === 0}
+          <div class="empty-inline">
+            <LayoutTemplate size={16} strokeWidth={1.7} aria-hidden="true" />
+            <div>
+              <strong>No custom templates yet</strong>
+              <span>Templates bundle fields for quick creation — e.g., “Species profile” for a custom Species type.</span>
+            </div>
+          </div>
+        {:else}
+          <ul class="list">
+            {#each draft.customTemplates ?? [] as template}
+              <li class="list-item">
+                {#if editingTemplateId === template.id}
+                  <div class="edit-form">
+                    <label>
+                      <span>Name</span>
+                      <input bind:value={editTemplateName} placeholder="Species profile" />
+                    </label>
+                    <label>
+                      <span>Entity type</span>
+                      <select bind:value={editTemplateEntityType}>
+                        <option value="">Choose type</option>
+                        {#each effectiveTypes() as type}
+                          <option value={type}>{humanizeId(type)}</option>
+                        {/each}
+                      </select>
+                    </label>
+                    <label class="grow">
+                      <span>Description <em>(optional)</em></span>
+                      <input bind:value={editTemplateDescription} placeholder="A kind of being in this world." />
+                    </label>
+                    <div class="type-select" role="group" aria-label={`Fields for ${template.name}`}>
+                      <span class="type-select-label">Included fields</span>
+                      <div class="chip-row compact">
+                        {#each effectiveFieldsForType(template.entityType) as field}
+                          <button
+                            type="button"
+                            class="chip select"
+                            class:selected={editingTemplateFieldKeys.includes(field.key)}
+                            aria-pressed={editingTemplateFieldKeys.includes(field.key)}
+                            onclick={() => {
+                              editingTemplateFieldKeys = toggleInList(editingTemplateFieldKeys, field.key);
+                              if (!editingTemplateFieldKeys.includes(field.key))
+                                editingTemplateRequiredFields = editingTemplateRequiredFields.filter(
+                                  (key) => key !== field.key,
+                                );
+                            }}>{field.label || humanizeId(field.key)}</button>
+                        {/each}
+                      </div>
+                    </div>
+                    <div class="type-select" role="group" aria-label={`Required fields for ${template.name}`}>
+                      <span class="type-select-label">Required fields</span>
+                      <div class="chip-row compact">
+                        {#each editingTemplateFieldKeys as key}
+                          <button
+                            type="button"
+                            class="chip select"
+                            class:selected={editingTemplateRequiredFields.includes(key)}
+                            aria-pressed={editingTemplateRequiredFields.includes(key)}
+                            onclick={() =>
+                              (editingTemplateRequiredFields = toggleInList(editingTemplateRequiredFields, key))}
+                            >{[...packageFields, ...(draft.customFields ?? [])].find((field) => field.key === key)
+                              ?.label || humanizeId(key)}</button>
+                        {/each}
+                      </div>
+                    </div>
+                    <div class="edit-actions">
+                      <button type="button" class="action" onclick={commitTemplateEdit}><Check size={14} strokeWidth={2} aria-hidden="true" /> Save</button>
+                      <button type="button" class="quiet" onclick={cancelTemplateEdit}>Cancel</button>
+                    </div>
+                  </div>
+                {:else}
+                  <div class="item-main">
+                    <div class="item-title-row">
+                      <strong>{template.name}</strong>
+                      <span class="type-pill ghost">{humanizeId(template.entityType)}</span>
+                    </div>
+                    <span class="meta">
+                      {humanizeId(template.entityType)}
+                      {#if template.description}
+                        <span class="dot">·</span>
+                        {template.description}
+                      {/if}
+                    </span>
+                  </div>
+                  <div class="item-actions">
+                    <button type="button" class="quiet icon" aria-label="Edit {template.name}" onclick={() => startTemplateEdit(template)}><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button>
+                    <button type="button" class="danger icon" aria-label="Remove {template.name}" onclick={() => removeCustomTemplate(template.id)}><Trash2 size={14} strokeWidth={1.8} aria-hidden="true" /></button>
+                  </div>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        <div class="add-form stacked">
+          <div class="add-row">
+            <label>
+              <span>Name</span>
+              <input bind:value={newTemplateName} placeholder="Species profile" />
+            </label>
+            <label>
+              <span>Entity type</span>
+              <select bind:value={newTemplateEntityType}>
+                <option value="">Choose type</option>
+                {#each effectiveTypes() as type}
+                  <option value={type}>{humanizeId(type)}</option>
+                {/each}
+              </select>
+            </label>
+            <button type="button" class="action primary-action" onclick={addCustomTemplate}><Plus size={14} strokeWidth={2} aria-hidden="true" /> Add template</button>
+          </div>
+          <label class="grow">
+            <span>Description <em>(optional)</em></span>
+            <input bind:value={newTemplateDescription} placeholder="A kind of being in this world." />
+          </label>
+        </div>
+      </div>
+    {/if}
+
+    <div class="save-bar" class:has-dirty={dirty} class:is-busy={busy}>
+      <div class="save-copy">
+        {#if dirty}
+          <span class="dirty-dot" aria-hidden="true"></span>
+          <strong>Unsaved changes</strong>
+          <span>Review types, fields, and templates before saving.</span>
+        {:else if message}
+          <span class="save-message" class:error={message.startsWith("Could")}>
+            {#if message.startsWith("Could")}<AlertTriangle size={13} strokeWidth={1.8} aria-hidden="true" />{/if}
+            {message}
+          </span>
+        {:else}
+          <Check size={13} strokeWidth={2} aria-hidden="true" />
+          <span>All changes saved to the project overlay.</span>
+        {/if}
+      </div>
+      <button type="button" class="primary save-button" disabled={busy || !dirty} onclick={() => void save()}>
+        {#if busy}<span class="spinner" aria-hidden="true"></span> Saving…{:else}<Save size={14} strokeWidth={2} aria-hidden="true" /> Save schema{/if}
       </button>
-      {#if dirty && !message}
-        <small class="dirty">Unsaved changes</small>
-      {/if}
-      {#if message}
-        <small class:error={message.startsWith("Could")}>{message}</small>
-      {/if}
     </div>
   {/if}
 
   {#if typeRemovalPrompt}
-    <div class="type-remove-backdrop" role="presentation">
-      <div class="type-remove-dialog" role="alertdialog" aria-modal="true" aria-labelledby="type-remove-title">
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="type-remove-backdrop" role="presentation" tabindex="-1" onclick={() => cancelTypeRemoval()} onkeydown={(e)=> e.key==="Escape" && cancelTypeRemoval()}>
+      <!-- svelte-ignore a11y_autofocus -->
+      <div class="type-remove-dialog" role="alertdialog" aria-modal="true" tabindex="-1" aria-labelledby="type-remove-title" onclick={(e)=>e.stopPropagation()} onkeydown={(e)=>e.key==="Escape" && cancelTypeRemoval()}>
+        <div class="dialog-icon warn">
+          <AlertTriangle size={18} strokeWidth={1.8} aria-hidden="true" />
+        </div>
         <strong id="type-remove-title">Remove {humanizeId(typeRemovalPrompt.typeId)}?</strong>
         <p>
           Fields must keep at least one entity type. Templates for this type, and fields that only target it, are
@@ -1130,7 +1270,7 @@ function removeCustomTemplate(id: string) {
             <span>Templates to remove</span>
             <ul>
               {#each typeRemovalPrompt.templates as template}
-                <li>{template.name}</li>
+                <li><LayoutTemplate size={12} strokeWidth={1.7} aria-hidden="true" /> {template.name}</li>
               {/each}
             </ul>
           </div>
@@ -1140,7 +1280,7 @@ function removeCustomTemplate(id: string) {
             <span>Fields to remove (only this type)</span>
             <ul>
               {#each typeRemovalPrompt.exclusiveFields as field}
-                <li>{field.label}</li>
+                <li><TextQuote size={12} strokeWidth={1.7} aria-hidden="true" /> {field.label} <code>{field.key}</code></li>
               {/each}
             </ul>
           </div>
@@ -1151,7 +1291,7 @@ function removeCustomTemplate(id: string) {
             <ul>
               {#each typeRemovalPrompt.sharedFields as field}
                 <li>
-                  {field.label}
+                  <span class="field-label">{field.label}</span>
                   <small>
                     also {(field.entityTypes ?? [])
                       .filter((type) => type !== typeRemovalPrompt?.typeId)
@@ -1173,8 +1313,8 @@ function removeCustomTemplate(id: string) {
           </div>
         {/if}
         <div class="type-remove-actions">
-          <button type="button" class="quiet" onclick={cancelTypeRemoval}>Cancel</button>
-          <button type="button" class="danger" onclick={confirmTypeRemoval}>Remove</button>
+          <button type="button" class="quiet" onclick={cancelTypeRemoval}>Keep type</button>
+          <button type="button" class="danger" onclick={confirmTypeRemoval}><Trash2 size={14} strokeWidth={1.8} aria-hidden="true" /> Remove</button>
         </div>
       </div>
     </div>
@@ -1184,55 +1324,260 @@ function removeCustomTemplate(id: string) {
 <style>
 .module-schema-panel {
   display: grid;
-  gap: 16px;
+  gap: 18px;
 }
-header strong {
+.panel-hero {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 14px;
+  padding: 16px 16px 14px;
+  border: 1px solid var(--line, #e9e1d4);
+  border-radius: 14px;
+  background: var(--surface, #fffefa);
+}
+.hero-icon {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  background: var(--accent-dark);
+  color: #fffefa;
+}
+.hero-copy .kicker {
+  color: #b4773f;
+  font: 700 10px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.hero-copy strong {
   display: block;
-  font: 500 18px var(--font-display, Georgia, serif);
+  margin-top: 3px;
+  color: var(--ink);
+  font: 600 16px/1.15 var(--font-display, Georgia, serif);
 }
-header p,
-.muted,
-.empty,
-.block-hint {
-  margin: 0;
+.hero-copy p {
+  margin: 6px 0 0;
+  max-width: 640px;
   color: var(--ink-soft, #8f897e);
-  font-size: 12px;
-  line-height: 1.45;
+  font: 400 12.5px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
 }
-header p,
-.muted {
-  margin-top: 6px;
+.hero-stats {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+.stat-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #f4eee3;
+  border: 1px solid #e9e1d4;
+  color: #62594e;
+  font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif;
+}
+.empty-card {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  padding: 22px 18px;
+  border: 1px dashed #d9cdbd;
+  border-radius: 14px;
+  background: #fffcf7;
+}
+.empty-card .empty-icon {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: #f4eee3;
+  border: 1px solid #e9e1d4;
+  color: #8f897e;
+}
+.empty-card strong {
+  color: var(--ink);
+  font: 600 15px var(--font-display, Georgia, serif);
+}
+.empty-card p {
+  margin: 0;
+  max-width: 520px;
+  color: var(--ink-soft, #8f897e);
+  font: 400 12.5px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
+}
+.empty-card code {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #f1ebe1;
+  border: 1px solid #e9e1d4;
+  color: #6f675c;
+  font: 500 11px ui-monospace, monospace;
+}
+.tab-bar {
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--line, #e9e1d4);
+  border-radius: 12px;
+  background: #f7f3ec;
+  overflow-x: auto;
+}
+.tab {
+  flex: 1 1 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 7px 12px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: #8f897e;
+  font: 600 13px Inter, ui-sans-serif, system-ui, sans-serif;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.14s ease;
+}
+.tab:hover {
+  background: #efe8d9;
+  color: #62594e;
+}
+.tab.active {
+  background: var(--accent-dark);
+  border-color: var(--accent-dark);
+  color: #fffefa;
+  box-shadow: 0 1px 0 rgba(48,44,38,0.12);
+}
+.tab-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.14);
+  color: inherit;
+  font: 700 11px Inter, sans-serif;
+}
+.tab.active .tab-count {
+  background: rgba(255,255,255,0.18);
 }
 .block {
   display: grid;
-  gap: 12px;
-  padding: 16px;
+  gap: 14px;
+  padding: 18px;
   border: 1px solid var(--line, #e9e1d4);
-  border-radius: 12px;
+  border-radius: 14px;
   background: #fffefa;
+}
+.block.elevated {
+  box-shadow: 0 1px 0 rgba(48,44,38,0.03), 0 8px 24px rgba(48,44,38,0.04);
 }
 .block-heading {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  gap: 8px 16px;
+  gap: 10px 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #f0e8d9;
 }
-h4 {
-  margin: 0;
-  font:
-    600 12px Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
-  letter-spacing: 0.02em;
+.heading-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.heading-icon {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #f4eee3;
+  border: 1px solid #e9e1d4;
   color: #62594e;
 }
+.heading-icon.accent {
+  background: var(--accent-dark);
+  border-color: var(--accent-dark);
+  color: #fffefa;
+}
+.block-heading h4 {
+  margin: 0;
+  font: 600 13px Inter, ui-sans-serif, system-ui, sans-serif;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+.count-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: #f4eee3;
+  border: 1px solid #e9e1d4;
+  color: #62594e;
+  font: 700 11px Inter, sans-serif;
+}
+.count-badge.accent {
+  background: #fff3df;
+  border-color: #e9c9a6;
+  color: #8b5c2e;
+}
+.block-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-faint, #b0a89c);
+  font: 500 11.5px Inter, ui-sans-serif, system-ui, sans-serif;
+}
+.subtle-note {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: #f7f3ec;
+  border: 1px solid #f0e8d9;
+  color: #8f897e;
+  font: 400 11.5px/1.5 Inter, sans-serif;
+}
+.empty-inline {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 14px;
+  border: 1px dashed #d9cdbd;
+  border-radius: 11px;
+  background: #fffcf7;
+  color: #8f897e;
+}
+.empty-inline strong {
+  display: block;
+  color: var(--ink);
+  font: 600 13px Inter, sans-serif;
+  margin-bottom: 3px;
+}
+.empty-inline span {
+  font: 400 12px/1.5 Inter, sans-serif;
+}
+.empty-inline code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: #f1ebe1;
+  border: 1px solid #e9e1d4;
+  font: 500 11px ui-monospace, monospace;
+  color: #6f675c;
+}
+
 .chip-row,
 .add-row,
 .edit-actions,
-.item-actions,
-.actions {
+.item-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -1246,56 +1591,112 @@ h4 {
 .danger,
 .primary {
   border: 1px solid #d9cdbd;
-  border-radius: 8px;
-  padding: 6px 11px;
+  border-radius: 9px;
+  padding: 7px 11px;
   background: #fffefa;
   color: #62594e;
-  font:
-    600 11px Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
+  font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif;
   cursor: pointer;
+  transition: all 0.14s ease;
 }
 .chip {
   border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 6px 12px;
+  font: 600 12px Inter, sans-serif;
+}
+.chip:hover,
+.action:hover,
+.quiet:hover {
+  border-color: #b7a88f;
+  background: #f4eee4;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(48,44,38,0.06);
+}
+.chip:active,
+.action:active,
+.quiet:active,
+.danger:active {
+  transform: translateY(0);
+  box-shadow: none;
+}
+.chip:focus-visible,
+.action:focus-visible,
+.quiet:focus-visible,
+.danger:focus-visible,
+.primary:focus-visible {
+  outline: 2px solid #b4773f;
+  outline-offset: 2px;
 }
 .chip.is-hidden {
-  opacity: 0.42;
+  opacity: 0.52;
   border-style: dashed;
   text-decoration: line-through;
   text-decoration-thickness: 1px;
+  background: #fdf8ef;
 }
 .chip.select.selected,
 .chip[aria-pressed="true"]:not(.is-hidden) {
   border-color: #b7a88f;
   background: #f4eee4;
   color: #3f3830;
+  box-shadow: 0 1px 0 rgba(48,44,38,0.12);
 }
 .chip.select:not(.selected) {
-  opacity: 0.78;
+  opacity: 0.9;
+  background: #fff;
 }
 .action {
   background: #f7f1e7;
+  border-color: #e9dfd0;
 }
-.primary {
-  border-color: #c4b49a;
-  background: #302c26;
+.action.primary-action {
+  background: var(--accent-dark);
+  border-color: var(--accent-dark);
   color: #fffefa;
 }
+.action.primary-action:hover {
+  background: #4a6b57;
+  border-color: #4a6b57;
+}
+.primary {
+  border-color: var(--accent-dark);
+  background: var(--accent-dark);
+  color: #fffefa;
+}
+.primary:hover {
+  background: #4a6b57;
+}
 .action:disabled,
-.primary:disabled {
-  opacity: 0.55;
+.primary:disabled,
+.quiet:disabled,
+.danger:disabled,
+.chip:disabled {
+  opacity: 0.45;
   cursor: default;
+  transform: none;
+  box-shadow: none;
 }
 .danger {
-  border-color: #d7a59a;
-  background: #f8ece8;
+  border-color: #e0b8ad;
+  background: #fdf2ef;
   color: #9a4d3f;
 }
 .danger:hover {
   border-color: #c9897d;
   background: #f3ddd6;
+}
+.quiet.icon,
+.danger.icon {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
 }
 .list {
   display: grid;
@@ -1309,57 +1710,123 @@ h4 {
   flex-wrap: wrap;
   justify-content: space-between;
   gap: 10px 16px;
-  align-items: flex-start;
-  padding: 10px 12px;
+  align-items: center;
+  padding: 12px 14px;
   border: 1px solid #ebe3d6;
-  border-radius: 10px;
+  border-radius: 12px;
   background: #fffcf7;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+.list-item:hover {
+  border-color: #e0d6c4;
+  box-shadow: 0 4px 14px rgba(48,44,38,0.05);
+}
+.list-item.compact {
+  padding: 10px 14px;
 }
 .item-main {
   display: grid;
-  gap: 3px;
+  gap: 4px;
   min-width: 0;
+  flex: 1;
+}
+.item-title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .item-main strong {
-  font:
-    600 13px Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
-  color: #302c26;
+  font: 600 13px Inter, ui-sans-serif, system-ui, sans-serif;
+  color: var(--ink);
 }
 .meta {
   color: #8f897e;
-  font-size: 12px;
-  line-height: 1.4;
+  font: 400 12px/1.4 Inter, sans-serif;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.meta code {
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: #f1ebe1;
+  border: 1px solid #e9e1d4;
+  color: #6f675c;
+  font: 500 11px ui-monospace, monospace;
+}
+.type-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #f4eee3;
+  border: 1px solid #e9e1d4;
+  color: #62594e;
+  font: 600 10px Inter, sans-serif;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.type-pill.ghost {
+  background: #fff;
+  border-color: #e9e1d4;
+  color: #8f897e;
+}
+.disabled-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #fdf2ef;
+  border: 1px solid #e7c4bc;
+  color: #9a4d3f;
+  font: 600 10px Inter, sans-serif;
+}
+.dot {
+  color: #cbbda9;
 }
 code {
   width: fit-content;
-  padding: 1px 6px;
-  border-radius: 5px;
+  padding: 2px 6px;
+  border-radius: 6px;
   background: #f1ebe1;
+  border: 1px solid #e9e1d4;
   color: #6f675c;
-  font:
-    500 10px ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    monospace;
+  font: 500 11px ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .add-form,
 .edit-form,
 .stacked {
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 .add-form {
-  padding-top: 2px;
+  padding: 14px;
+  border: 1px dashed #d9cdbd;
+  border-radius: 11px;
+  background: #fdf8ef;
+  margin-top: 2px;
+}
+.edit-form {
+  width: 100%;
+}
+.edit-form.wide {
+  gap: 10px;
 }
 .add-row {
   align-items: end;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.add-row > label {
+  flex: 1 1 160px;
 }
 label {
   display: grid;
-  gap: 4px;
+  gap: 5px;
   min-width: 140px;
 }
 label.grow {
@@ -1368,11 +1835,7 @@ label.grow {
 }
 label span {
   color: #8f897e;
-  font:
-    600 10px Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
+  font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -1385,15 +1848,11 @@ label em {
 }
 .type-select {
   display: grid;
-  gap: 6px;
+  gap: 7px;
 }
 .type-select-label {
   color: #8f897e;
-  font:
-    600 10px Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
+  font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -1407,118 +1866,241 @@ label em {
 input,
 select {
   min-width: 140px;
-  padding: 8px 10px;
+  height: 36px;
+  padding: 0 11px;
   border: 1px solid #d9cdbd;
-  border-radius: 8px;
+  border-radius: 9px;
   background: #fff;
-  color: #302c26;
-  font:
-    12px Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
+  color: var(--ink);
+  font: 400 13px Inter, ui-sans-serif, system-ui, sans-serif;
+  line-height: 1;
+  box-sizing: border-box;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
 }
-.actions {
+select {
+  padding-right: 28px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #8f897e 50%),
+    linear-gradient(135deg, #8f897e 50%, transparent 50%);
+  background-position:
+    calc(100% - 16px) calc(50% - 2px),
+    calc(100% - 11px) calc(50% - 2px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+input:focus,
+select:focus {
+  outline: none;
+  border-color: #b4773f;
+  box-shadow: 0 0 0 3px rgba(180,119,63,0.12);
+}
+input::placeholder {
+  color: #b0a89c;
+}
+.save-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--line, #e9e1d4);
+  border-radius: 12px;
+  background: rgba(255,254,250,0.96);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 24px rgba(48,44,38,0.08);
 }
-.actions small {
+.save-bar.has-dirty {
+  border-color: #e7c4bc;
+  background: linear-gradient(#fffefa, #fff6f1);
+}
+.save-copy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
   color: #8f897e;
+  font: 400 12.5px Inter, sans-serif;
 }
-.actions small.dirty {
+.save-copy strong {
   color: #9a4d3f;
-  font-weight: 600;
+  font: 700 12.5px Inter, sans-serif;
 }
-.actions small.error {
+.save-copy .dirty-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #c35a46;
+  box-shadow: 0 0 0 4px rgba(195,90,70,0.14);
+}
+.save-message {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #62594e;
+}
+.save-message.error {
   color: #9a4d3f;
 }
+.save-button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 8px 16px;
+  border-radius: 9px;
+  font: 700 13px Inter, sans-serif;
+}
+.spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid rgba(255,255,255,0.35);
+  border-top-color: #fff;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 .type-remove-backdrop {
   position: fixed;
   inset: 0;
   z-index: 200;
   display: grid;
   place-items: center;
-  background: rgba(48, 44, 38, 0.35);
+  padding: 16px;
+  background: rgba(48, 44, 38, 0.38);
+  backdrop-filter: blur(4px);
 }
 .type-remove-dialog {
-  width: min(440px, calc(100vw - 32px));
+  width: min(460px, calc(100vw - 32px));
   display: grid;
   gap: 12px;
-  padding: 18px 20px;
+  padding: 20px 20px 16px;
   border: 1px solid #d9cdbd;
-  border-radius: 14px;
+  border-radius: 16px;
   background: #fffefa;
-  box-shadow: 0 18px 40px rgba(48, 44, 38, 0.18);
+  box-shadow: 0 20px 44px rgba(48, 44, 38, 0.2);
+  animation: dialogIn 0.16s ease;
+}
+@keyframes dialogIn { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+.dialog-icon.warn {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: #fdf2ef;
+  border: 1px solid #e7c4bc;
+  color: #9a4d3f;
 }
 .type-remove-dialog strong {
   font: 600 16px var(--font-display, Georgia, serif);
+  color: var(--ink);
 }
 .type-remove-dialog > p,
 .type-remove-note {
   margin: 0;
   color: #8f897e;
-  font-size: 13px;
-  line-height: 1.45;
+  font: 400 13px/1.5 Inter, sans-serif;
 }
 .type-remove-group {
   display: grid;
-  gap: 6px;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid #f0e8d9;
+  border-radius: 11px;
+  background: #fffcf7;
 }
 .type-remove-group > span {
   color: #62594e;
-  font:
-    600 11px Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
+  font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
 }
 .type-remove-group ul {
   display: grid;
-  gap: 4px;
+  gap: 6px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 .type-remove-group li {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px 10px;
-  align-items: baseline;
-  padding: 7px 9px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
   border: 1px solid #ebe3d6;
-  border-radius: 8px;
-  background: #fffcf7;
-  font-size: 12px;
-  color: #302c26;
+  border-radius: 9px;
+  background: #fff;
+  font: 500 12px Inter, sans-serif;
+  color: var(--ink);
+}
+.type-remove-group li code {
+  margin-left: auto;
+  font: 500 10px ui-monospace, monospace;
+}
+.field-label {
+  font-weight: 600;
 }
 .type-remove-group small {
   color: #8f897e;
+  font: 400 11px Inter, sans-serif;
 }
 .type-remove-check {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
-  margin-top: 2px;
-  color: #302c26;
-  font:
-    600 12px Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
+  margin-top: 4px;
+  color: var(--ink);
+  font: 600 12px Inter, ui-sans-serif, system-ui, sans-serif;
   text-transform: none;
   letter-spacing: 0;
+  cursor: pointer;
 }
 .type-remove-check input {
   min-width: 0;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   padding: 0;
+  accent-color: #9a4d3f;
 }
 .type-remove-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 4px;
+}
+@media (max-width: 720px) {
+  .panel-hero {
+    grid-template-columns: 1fr;
+  }
+  .hero-stats {
+    grid-column: 1;
+  }
+  .tab {
+    flex: 1 1 0;
+    min-height: 34px;
+    padding: 6px 10px;
+    font-size: 12.5px;
+  }
+  .save-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .save-button {
+    width: 100%;
+    justify-content: center;
+  }
+  .add-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 </style>

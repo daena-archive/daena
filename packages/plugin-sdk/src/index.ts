@@ -862,7 +862,6 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
           let valid = false;
           switch (field.type) {
             case "text":
-            case "entity-ref":
               valid = typeof preset === "string";
               break;
             case "relationship":

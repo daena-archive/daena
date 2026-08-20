@@ -350,7 +350,6 @@
             "date",
             "enum",
             "oneof",
-            "entity-ref",
             "relationship"
           ]
         }
@@ -570,7 +569,6 @@
             "date",
             "enum",
             "oneof",
-            "entity-ref",
             "relationship"
           ]
         }

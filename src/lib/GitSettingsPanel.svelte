@@ -1229,9 +1229,7 @@ function restoreFromRemote() {
   gap: 12px;
   margin-bottom: 10px;
 }
-.git-block-heading h3 {
-  margin: 0;
-}
+
 .git-tool-ok {
   margin: 0 0 10px;
   color: var(--ink-soft);
@@ -1591,19 +1589,6 @@ function restoreFromRemote() {
 .git-recovery p {
   margin: 8px 0 12px;
   color: #7a4a36;
-  font-size: 12px;
-  line-height: 1.5;
-}
-.settings-section-heading {
-  margin-bottom: 0;
-}
-.settings-section-heading strong {
-  display: block;
-  font-size: 16px;
-}
-.settings-section-heading p {
-  margin: 6px 0 0;
-  color: var(--ink-soft);
   font-size: 12px;
   line-height: 1.5;
 }

@@ -1,7 +1,7 @@
 <script lang="ts">
 import type { Snippet } from "svelte";
 import { onMount } from "svelte";
-import { X, Settings2, FolderOpen, DatabaseZap, Sparkles, Bot, GitBranch, Puzzle, ChevronLeft, Layers, Cpu, Globe, ShieldCheck, Wrench } from "@lucide/svelte";
+import { X, Settings2, FolderOpen, DatabaseZap, Sparkles, Bot, GitBranch, Puzzle, ChevronLeft, Layers, Cpu, Globe, ShieldCheck, Wrench, SlidersHorizontal } from "@lucide/svelte";
 import { setSchemaEditorDiscardPrompt } from "$lib/schemaEditorGuard";
 import { confirmDialog } from "$lib/dialogs.svelte";
 
@@ -355,7 +355,7 @@ async function handleClose() {
         type="button"
         class:active={section === "schema"}
         class="settings-nav-button"
-        onclick={() => void goToSection("schema")}><Layers size={14} strokeWidth={1.8} aria-hidden="true" /> Schema</button>
+        onclick={() => void goToSection("schema")}><SlidersHorizontal size={14} strokeWidth={1.8} aria-hidden="true" /> Schema</button>
       <button
         type="button"
         class:active={section === "git"}
@@ -1005,11 +1005,7 @@ async function handleClose() {
   color: #62594e;
   font: 700 11px Inter, sans-serif;
 }
-.count-badge.accent {
-  background: #fff3df;
-  border-color: #e9c9a6;
-  color: #8b5c2e;
-}
+
 .block-hint {
   display: inline-flex;
   align-items: center;
@@ -1074,14 +1070,8 @@ async function handleClose() {
   color: var(--ink-soft, #8f897e);
   font: 400 12.5px/1.5 Inter, sans-serif;
 }
-.settings-section-heading {
-  display: none;
-}
-.settings-empty {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 13px;
-}
+
+
 .settings-recent-list {
   list-style: none;
   margin: 0;
@@ -1496,30 +1486,6 @@ async function handleClose() {
   background: #eef5ef;
   color: #557d63;
 }
-.settings-note {
-  margin: 10px 0;
-  color: #6d625d;
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-.settings-note-error {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 8px 10px;
-  border: 1px solid #e3b9b1;
-  border-radius: 9px;
-  background: #fbf1ef;
-  color: #a14f42;
-}
-.settings-note-dismiss {
-  flex: 0 0 auto;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-}
 .ai-card-actions {
   padding-top: 2px;
 }
@@ -1605,22 +1571,6 @@ async function handleClose() {
 .action:hover {
   border-color: #b7a88f;
   background: #f4eee4;
-}
-.primary-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 9px 14px;
-  border: 1px solid var(--accent-dark);
-  border-radius: 9px;
-  background: var(--accent-dark);
-  color: #fffefa;
-  font: 700 12px Inter, sans-serif;
-  cursor: pointer;
-  transition: all 0.14s ease;
-}
-.primary-button:hover {
-  background: #4a6b57;
 }
 .quiet-button {
   display: inline-flex;

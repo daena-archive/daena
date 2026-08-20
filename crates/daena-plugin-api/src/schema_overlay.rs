@@ -14,7 +14,6 @@ const ALLOWED_FIELD_TYPES: &[&str] = &[
     "date",
     "enum",
     "oneof",
-    "entity-ref",
     "relationship",
 ];
 
@@ -395,24 +394,14 @@ pub fn validate_module_overlay(
         if !custom_field_keys.insert(field.key.as_str()) {
             return Err(format!("duplicate custom field key: {}", field.key));
         }
-        let entity_types = field.entity_types.as_ref().ok_or_else(|| {
-            format!(
-                "custom field requires at least one entity type: {}",
-                field.key
-            )
-        })?;
-        if entity_types.is_empty() {
-            return Err(format!(
-                "custom field requires at least one entity type: {}",
-                field.key
-            ));
-        }
-        for entity_type in entity_types {
-            if !effective_types.contains(entity_type.as_str()) {
-                return Err(format!(
-                    "custom field {} references unknown entity type: {entity_type}",
-                    field.key
-                ));
+        if let Some(entity_types) = &field.entity_types {
+            for entity_type in entity_types {
+                if !effective_types.contains(entity_type.as_str()) {
+                    return Err(format!(
+                        "custom field {} references unknown entity type: {entity_type}",
+                        field.key
+                    ));
+                }
             }
         }
         if field.field_type == "relationship" {
@@ -841,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_custom_field_without_entity_types() {
+    fn allows_custom_field_without_entity_types() {
         let package = lore_manifest();
         let overlay = ModuleSchemaOverlay {
             version: SCHEMA_OVERLAY_VERSION,
@@ -862,13 +851,11 @@ mod tests {
             }],
             ..ModuleSchemaOverlay::default()
         };
-        assert!(validate_module_overlay(&package, &overlay)
-            .unwrap_err()
-            .contains("at least one entity type"));
+        assert!(validate_module_overlay(&package, &overlay).is_ok());
     }
 
     #[test]
-    fn rejects_custom_field_with_empty_entity_types() {
+    fn allows_custom_field_with_empty_entity_types() {
         let package = lore_manifest();
         let overlay = ModuleSchemaOverlay {
             version: SCHEMA_OVERLAY_VERSION,
@@ -889,9 +876,7 @@ mod tests {
             }],
             ..ModuleSchemaOverlay::default()
         };
-        assert!(validate_module_overlay(&package, &overlay)
-            .unwrap_err()
-            .contains("at least one entity type"));
+        assert!(validate_module_overlay(&package, &overlay).is_ok());
     }
 
     #[test]

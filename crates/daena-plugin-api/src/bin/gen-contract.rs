@@ -213,7 +213,7 @@ fn manifest_schema() -> Value {
         &mut root,
         "FieldDefinition",
         "type",
-        json!({"enum": ["text", "number", "boolean", "date", "enum", "oneof", "entity-ref", "relationship"]}),
+        json!({"enum": ["text", "number", "boolean", "date", "enum", "oneof", "relationship"]}),
     );
     rule_on_prop(&mut root, "FieldDefinition", "key", "pattern", 0);
     {
@@ -271,7 +271,7 @@ fn manifest_schema() -> Value {
         &mut root,
         "OneOfVariant",
         "type",
-        json!({"enum": ["text", "number", "boolean", "date", "enum", "oneof", "entity-ref", "relationship"]}),
+        json!({"enum": ["text", "number", "boolean", "date", "enum", "oneof", "relationship"]}),
     );
     set_prop(
         &mut root,

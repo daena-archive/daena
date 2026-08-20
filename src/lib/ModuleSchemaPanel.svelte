@@ -2,6 +2,7 @@
 import type { EntityTemplate, FieldDefinition, ModuleSchemaOverlay } from "$lib/project/client";
 import { onMount } from "svelte";
 import { setSchemaEditorDirtyCheck } from "$lib/schemaEditorGuard";
+import { confirmDialog } from "$lib/dialogs.svelte";
 import {
   Layers,
   Type,
@@ -13,11 +14,13 @@ import {
   Trash2,
   Check,
   X,
+  SlidersHorizontal,
   Settings2,
   Sparkles,
   Eye,
   EyeOff,
   ChevronDown,
+  ChevronRight,
   Save,
   AlertTriangle,
 } from "@lucide/svelte";
@@ -33,7 +36,7 @@ type PackageManifest = {
 
 type FieldType = FieldDefinition["type"];
 
-const FIELD_TYPES: FieldType[] = ["text", "number", "boolean", "date"];
+const FIELD_TYPES: FieldType[] = ["text", "number", "boolean", "date", "enum", "oneof", "relationship"];
 
 let {
   projectOpen,
@@ -74,7 +77,30 @@ function humanizeId(value: string): string {
 }
 
 function fieldTypeLabel(type: FieldType): string {
+  if (type === "oneof") return "One of";
   return type.charAt(0).toUpperCase() + type.slice(1);
+}
+
+function parseOptions(value: string): string[] {
+  return value
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function formatOptions(options?: string[] | null): string {
+  return (options ?? []).join(", ");
+}
+
+function parseOneOfVariants(value: string): Array<{ label: string; type: FieldType; options?: string[] }> | null {
+  if (!value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed;
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /** Entity/template ids: lowercase kebab (`Test` → `test`, `My Type` → `my-type`). */
@@ -163,10 +189,15 @@ const baseline = fingerprint(overlay);
 let draftPlain = normalizeOverlay(overlay);
 // svelte-ignore state_referenced_locally
 let draft = $state<ModuleSchemaOverlay>(draftPlain);
+// Keep initial for discard
+const initialPlain = draftPlain;
 /** Synced on every setDraft; read by the leave guard (plain bool, not $state). */
 let dirtyFlag = false;
 let dirty = $state(false);
 let activeTab = $state<"types" | "fields" | "templates">("types");
+let builtinTypesCollapsed = $state(false);
+let builtinFieldsCollapsed = $state(false);
+let builtinTemplatesCollapsed = $state(false);
 
 let newType = $state("");
 let editingTypeId = $state<string | null>(null);
@@ -175,15 +206,29 @@ let editTypeValue = $state("");
 let newFieldLabel = $state("");
 let newFieldType = $state<FieldType>("text");
 let newFieldEntityTypes = $state<string[]>([]);
+let newFieldOptions = $state("");
+let newFieldMultiple = $state(false);
+let newFieldTargetEntityTypes = $state<string[]>([]);
+let newFieldRelationshipType = $state("");
+let newFieldCardinality = $state<"one" | "many">("many");
+let newFieldOneOfVariants = $state<Array<{ label: string; type: FieldType; options: string }>>([]);
 let editingFieldKey = $state<string | null>(null);
 let editFieldLabel = $state("");
 let editFieldType = $state<FieldType>("text");
 let editFieldEntityTypes = $state<string[]>([]);
+let editFieldOptions = $state("");
+let editFieldMultiple = $state(false);
+let editFieldTargetEntityTypes = $state<string[]>([]);
+let editFieldRelationshipType = $state("");
+let editFieldCardinality = $state<"one" | "many">("many");
+let editFieldOneOfVariants = $state<Array<{ label: string; type: FieldType; options: string }>>([]);
 let editingBuiltinFieldKey = $state<string | null>(null);
 
 let newTemplateName = $state("");
 let newTemplateEntityType = $state("");
 let newTemplateDescription = $state("");
+let newTemplateFieldKeys = $state<string[]>([]);
+let newTemplateRequiredFields = $state<string[]>([]);
 let editingTemplateId = $state<string | null>(null);
 let editTemplateName = $state("");
 let editTemplateEntityType = $state("");
@@ -191,6 +236,54 @@ let editTemplateDescription = $state("");
 let editingBuiltinTemplateId = $state<string | null>(null);
 let editingTemplateFieldKeys = $state<string[]>([]);
 let editingTemplateRequiredFields = $state<string[]>([]);
+
+function syncNewTemplateFields() {
+  if (!newTemplateEntityType || !effectiveTypes().includes(newTemplateEntityType)) {
+    if (newTemplateFieldKeys.length !== 0 || newTemplateRequiredFields.length !== 0) {
+      newTemplateFieldKeys = [];
+      newTemplateRequiredFields = [];
+    }
+    return;
+  }
+  const available = effectiveFieldsForType(newTemplateEntityType).map((f) => f.key).sort();
+  const filtered = newTemplateFieldKeys.filter((k) => available.includes(k));
+  const filteredReq = newTemplateRequiredFields.filter((k) => filtered.includes(k));
+  if (filtered.length !== newTemplateFieldKeys.length) newTemplateFieldKeys = filtered;
+  if (filteredReq.length !== newTemplateRequiredFields.length) newTemplateRequiredFields = filteredReq;
+}
+
+function syncEditTemplateFields() {
+  if (!editingTemplateId || !editTemplateEntityType) return;
+  if (!effectiveTypes().includes(editTemplateEntityType)) return;
+  const original = (draft.customTemplates ?? []).find((t) => t.id === editingTemplateId);
+  const originalType = original?.entityType;
+  const available = effectiveFieldsForType(editTemplateEntityType).map((f) => f.key).sort();
+  if (originalType && originalType !== editTemplateEntityType) {
+    const filtered = editingTemplateFieldKeys.filter((k) => available.includes(k));
+    const filteredReq = editingTemplateRequiredFields.filter((k) => filtered.includes(k));
+    editingTemplateFieldKeys = filtered;
+    editingTemplateRequiredFields = filteredReq;
+    return;
+  }
+  const filtered = editingTemplateFieldKeys.filter((k) => available.includes(k));
+  const filteredReq = editingTemplateRequiredFields.filter((k) => filtered.includes(k));
+  if (filtered.length !== editingTemplateFieldKeys.length) editingTemplateFieldKeys = filtered;
+  if (filteredReq.length !== editingTemplateRequiredFields.length) editingTemplateRequiredFields = filteredReq;
+}
+
+$effect(() => {
+  // Track entity type and available types to keep field selection valid
+  void newTemplateEntityType;
+  void effectiveTypes();
+  syncNewTemplateFields();
+});
+
+$effect(() => {
+  void editTemplateEntityType;
+  void editingTemplateId;
+  void effectiveTypes();
+  if (editingTemplateId) syncEditTemplateFields();
+});
 
 function reportDirty(next: boolean) {
   dirtyFlag = next;
@@ -233,13 +326,16 @@ function effectiveTypes() {
 
 function builtinFieldScope(field: FieldDefinition): string[] {
   const override = (draft.fieldScopeOverrides ?? []).find((scope) => scope.fieldKey === field.key);
-  return override ? override.entityTypes : field.entityTypes?.length ? [...field.entityTypes] : effectiveTypes();
+  if (override) return [...override.entityTypes];
+  if (field.entityTypes?.length) return [...field.entityTypes];
+  // Builtin fields with no explicit scope historically meant "all builtin types" — not automatically new custom types
+  return [...packageTypes.filter((type) => !isDisabled(draft.disabledEntityTypes, type))];
 }
 
 function fieldAppliesTo(field: FieldDefinition, entityType: string): boolean {
   const scope = packageFields.some((candidate) => candidate.key === field.key)
     ? builtinFieldScope(field)
-    : (field.entityTypes ?? []);
+    : (field.entityTypes && field.entityTypes.length ? field.entityTypes : effectiveTypes());
   return scope.includes(entityType);
 }
 
@@ -293,7 +389,7 @@ function updateBuiltinFieldScope(field: FieldDefinition, entityTypes: string[]) 
 }
 
 function scopeLabel(entityTypes: string[] | undefined): string {
-  if (!entityTypes || entityTypes.length === 0) return "No types";
+  if (!entityTypes || entityTypes.length === 0) return "All types";
   return entityTypes.map(humanizeId).join(", ");
 }
 
@@ -324,7 +420,7 @@ function defaultTemplateFields(entityType: string): Record<string, unknown> {
 
 function defaultFieldValue(field: FieldDefinition): unknown {
   if (field.type === "boolean") return false;
-  if (field.type === "relationship" || (field.type === "entity-ref" && field.multiple)) return [];
+  if (field.type === "relationship") return [];
   return "";
 }
 
@@ -373,6 +469,54 @@ function cancelTemplateFieldEdit() {
 
 async function save() {
   await onSave(normalizeOverlay(draft));
+}
+
+async function discardChanges() {
+  if (!dirty) return;
+  const confirmed = await confirmDialog({
+    title: "Discard unsaved changes?",
+    message: "All unsaved types, fields, and templates will be reverted to the last saved schema.",
+    confirmLabel: "Discard",
+    danger: true,
+  });
+  if (!confirmed) return;
+  setDraft(initialPlain);
+  newType = "";
+  editingTypeId = null;
+  editTypeValue = "";
+  newFieldLabel = "";
+  newFieldType = "text";
+  newFieldEntityTypes = [];
+  newFieldOptions = "";
+  newFieldMultiple = false;
+  newFieldTargetEntityTypes = [];
+  newFieldRelationshipType = "";
+  newFieldCardinality = "many";
+  newFieldOneOfVariants = [];
+  editingFieldKey = null;
+  editFieldLabel = "";
+  editFieldType = "text";
+  editFieldEntityTypes = [];
+  editFieldOptions = "";
+  editFieldMultiple = false;
+  editFieldTargetEntityTypes = [];
+  editFieldRelationshipType = "";
+  editFieldCardinality = "many";
+  editFieldOneOfVariants = [];
+  editingBuiltinFieldKey = null;
+  newTemplateName = "";
+  newTemplateEntityType = "";
+  newTemplateDescription = "";
+  newTemplateFieldKeys = [];
+  newTemplateRequiredFields = [];
+  editingTemplateId = null;
+  editTemplateName = "";
+  editTemplateEntityType = "";
+  editTemplateDescription = "";
+  editingBuiltinTemplateId = null;
+  editingTemplateFieldKeys = [];
+  editingTemplateRequiredFields = [];
+  typeRemovalPrompt = null;
 }
 
 function cancelTypeEdit() {
@@ -489,7 +633,7 @@ function confirmTypeRemoval() {
       .filter((field) => {
         const scoped = field.entityTypes ?? [];
         if (!scoped.includes(typeId)) return false;
-        if (scoped.length === 1) return true;
+        if (scoped.length === 1) return false;
         return removeSharedFields;
       })
       .map((field) => field.key),
@@ -524,6 +668,12 @@ function cancelFieldEdit() {
   editFieldLabel = "";
   editFieldType = "text";
   editFieldEntityTypes = [];
+  editFieldOptions = "";
+  editFieldMultiple = false;
+  editFieldTargetEntityTypes = [];
+  editFieldRelationshipType = "";
+  editFieldCardinality = "many";
+  editFieldOneOfVariants = [];
 }
 
 function startFieldEdit(field: FieldDefinition) {
@@ -533,43 +683,159 @@ function startFieldEdit(field: FieldDefinition) {
   editFieldLabel = field.label;
   editFieldType = FIELD_TYPES.includes(field.type) ? field.type : "text";
   editFieldEntityTypes = [...(field.entityTypes ?? [])].sort();
+  editFieldOptions = formatOptions(field.options as string[] | undefined);
+  editFieldMultiple = Boolean((field as any).multiple);
+  editFieldTargetEntityTypes = [...((field as any).targetEntityTypes ?? [])].sort();
+  editFieldRelationshipType = humanizeId((field as any).relationshipType ?? "");
+  editFieldCardinality = (field as any).cardinality === "one" ? "one" : "many";
+  const rawOneOf = (field as any).oneOf as Array<{ label: string; type: string; options?: string[] }> | undefined;
+  editFieldOneOfVariants = (rawOneOf ?? []).map((v) => ({
+    label: v.label,
+    type: (FIELD_TYPES.includes(v.type as FieldType) ? v.type : "text") as FieldType,
+    options: formatOptions(v.options as string[] | undefined),
+  }));
 }
 
 function addCustomField() {
   const label = newFieldLabel.trim();
-  if (!label || newFieldEntityTypes.length === 0) return;
+  if (!label) return;
   const key = ensureFieldKey(label);
   if (packageFields.some((field) => field.key === key)) return;
   if ((draft.customFields ?? []).some((field) => field.key === key)) return;
-  const field: FieldDefinition = {
+
+  const base: any = {
     key,
     label,
     type: newFieldType,
-    entityTypes: [...newFieldEntityTypes].sort(),
+    entityTypes: newFieldEntityTypes.length ? [...newFieldEntityTypes].sort() : undefined,
   };
+
+  if (newFieldType === "enum") {
+    const options = parseOptions(newFieldOptions);
+    if (options.length === 0) return;
+    base.options = options;
+    if (newFieldMultiple) base.multiple = true;
+  } else if (newFieldType === "oneof") {
+    if (newFieldOneOfVariants.length === 0) return;
+    const oneOf = newFieldOneOfVariants
+      .filter((v) => v.label.trim())
+      .map((v) => {
+        const variant: any = { label: v.label.trim(), type: v.type };
+        if (v.type === "enum") {
+          const opts = parseOptions(v.options);
+          if (opts.length === 0) return null;
+          variant.options = opts;
+        }
+        return variant;
+      })
+      .filter(Boolean);
+    if (oneOf.length === 0) return;
+    // Validate enum variants have options
+    for (const v of oneOf) if (v.type === "enum" && (!v.options || v.options.length === 0)) return;
+    // oneof and relationship not allowed as variant type already enforced by UI
+    base.oneOf = oneOf;
+
+  } else if (newFieldType === "relationship") {
+    const relType = ensureFieldKey(newFieldRelationshipType.trim() || label);
+    if (!relType || newFieldTargetEntityTypes.length === 0) return;
+    base.relationshipType = relType;
+    base.targetEntityTypes = [...newFieldTargetEntityTypes].sort();
+    base.cardinality = newFieldCardinality;
+  }
+
+  const field: FieldDefinition = base as FieldDefinition;
   setDraft({ ...draft, customFields: [...(draft.customFields ?? []), field] });
   newFieldLabel = "";
   newFieldEntityTypes = [];
   newFieldType = "text";
+  newFieldOptions = "";
+  newFieldMultiple = false;
+  newFieldTargetEntityTypes = [];
+  newFieldRelationshipType = "";
+  newFieldCardinality = "many";
+  newFieldOneOfVariants = [];
 }
 
 function commitFieldEdit() {
   if (!editingFieldKey) return;
   const key = editingFieldKey;
   const label = editFieldLabel.trim();
-  if (!label || editFieldEntityTypes.length === 0) return;
+  if (!label) return;
+
+  // Validate per type
+  let extra: Record<string, unknown> = {};
+  if (editFieldType === "enum") {
+    const options = parseOptions(editFieldOptions);
+    if (options.length === 0) return;
+    extra.options = options;
+    extra.multiple = editFieldMultiple ? true : undefined;
+    extra.targetEntityTypes = undefined;
+    extra.relationshipType = undefined;
+    extra.cardinality = undefined;
+    extra.oneOf = undefined;
+  } else if (editFieldType === "oneof") {
+    if (editFieldOneOfVariants.length === 0) return;
+    const oneOf = editFieldOneOfVariants
+      .filter((v) => v.label.trim())
+      .map((v) => {
+        const variant: any = { label: v.label.trim(), type: v.type };
+        if (v.type === "enum") {
+          const opts = parseOptions(v.options);
+          if (opts.length === 0) return null;
+          variant.options = opts;
+        }
+        return variant;
+      })
+      .filter(Boolean);
+    if (oneOf.length === 0) return;
+    for (const v of oneOf as any[]) if (v.type === "enum" && (!v.options || v.options.length === 0)) return;
+    extra.oneOf = oneOf;
+    extra.options = undefined;
+    extra.multiple = undefined;
+    extra.targetEntityTypes = undefined;
+    extra.relationshipType = undefined;
+    extra.cardinality = undefined;
+
+  } else if (editFieldType === "relationship") {
+    const relType = ensureFieldKey(editFieldRelationshipType.trim() || label);
+    if (!relType || editFieldTargetEntityTypes.length === 0) return;
+    extra.relationshipType = relType;
+    extra.targetEntityTypes = [...editFieldTargetEntityTypes].sort();
+    extra.cardinality = editFieldCardinality;
+    extra.options = undefined;
+    extra.multiple = undefined;
+    extra.oneOf = undefined;
+  } else {
+    extra.options = undefined;
+    extra.multiple = undefined;
+    extra.targetEntityTypes = undefined;
+    extra.relationshipType = undefined;
+    extra.cardinality = undefined;
+    extra.oneOf = undefined;
+  }
+
   setDraft({
     ...draft,
-    customFields: (draft.customFields ?? []).map((field) =>
-      field.key === key
-        ? {
-            ...field,
-            label,
-            type: editFieldType,
-            entityTypes: [...editFieldEntityTypes].sort(),
-          }
-        : field,
-    ),
+    customFields: (draft.customFields ?? []).map((field) => {
+      if (field.key !== key) return field;
+      const next: any = {
+        ...field,
+        label,
+        type: editFieldType,
+        entityTypes: editFieldEntityTypes.length ? [...editFieldEntityTypes].sort() : undefined,
+      };
+      // Clear previous type-specific keys then apply new
+      delete next.options;
+      delete next.multiple;
+      delete next.targetEntityTypes;
+      delete next.relationshipType;
+      delete next.cardinality;
+      delete next.oneOf;
+      Object.assign(next, extra);
+      // Remove undefined
+      for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k];
+      return next;
+    }),
   });
   cancelFieldEdit();
 }
@@ -589,6 +855,59 @@ function removeCustomField(key: string) {
       };
     }),
   });
+}
+
+function addNewFieldOneOfVariant() {
+  newFieldOneOfVariants = [...newFieldOneOfVariants, { label: "", type: "text" as FieldType, options: "" }];
+}
+function removeNewFieldOneOfVariant(index: number) {
+  newFieldOneOfVariants = newFieldOneOfVariants.filter((_, i) => i !== index);
+}
+function addEditFieldOneOfVariant() {
+  editFieldOneOfVariants = [...editFieldOneOfVariants, { label: "", type: "text" as FieldType, options: "" }];
+}
+function removeEditFieldOneOfVariant(index: number) {
+  editFieldOneOfVariants = editFieldOneOfVariants.filter((_, i) => i !== index);
+}
+
+function canAddField(): boolean {
+  if (!newFieldLabel.trim()) return false;
+  if (newFieldType === "enum") return parseOptions(newFieldOptions).length > 0;
+  if (newFieldType === "oneof")
+    return newFieldOneOfVariants.some((v) => v.label.trim() && (v.type !== "enum" || parseOptions(v.options).length > 0));
+  if (newFieldType === "relationship")
+    return Boolean(ensureTypeId(newFieldRelationshipType.trim() || newFieldLabel.trim(), "relationship")) && newFieldTargetEntityTypes.length > 0;
+  return true;
+}
+
+function canSaveFieldEdit(): boolean {
+  if (!editingFieldKey || !editFieldLabel.trim()) return false;
+  if (editFieldType === "enum") return parseOptions(editFieldOptions).length > 0;
+  if (editFieldType === "oneof")
+    return editFieldOneOfVariants.some((v) => v.label.trim() && (v.type !== "enum" || parseOptions(v.options).length > 0));
+  if (editFieldType === "relationship")
+    return Boolean(ensureTypeId(editFieldRelationshipType.trim() || editFieldLabel.trim(), "relationship")) && editFieldTargetEntityTypes.length > 0;
+  return true;
+}
+
+function fieldExtrasLabel(field: FieldDefinition): string {
+  const f: any = field;
+  if (field.type === "enum") {
+    const opts = (f.options as string[] | undefined) ?? [];
+    return `${opts.length} options${f.multiple ? " · multiple" : ""}`;
+  }
+  if (field.type === "oneof") {
+    const variants = (f.oneOf as any[] | undefined) ?? [];
+    return `${variants.length} variants`;
+  }
+
+  if (field.type === "relationship") {
+    const rel = f.relationshipType ? humanizeId(f.relationshipType) : "Relationship";
+    const targets = (f.targetEntityTypes as string[] | undefined) ?? [];
+    const card = f.cardinality ?? "many";
+    return `${rel} → ${targets.map(humanizeId).join(", ") || "any"} · ${card}`;
+  }
+  return "";
 }
 
 function cancelTemplateEdit() {
@@ -620,19 +939,30 @@ function addCustomTemplate() {
     id = `${id}-${suffix}`;
   }
   const description = newTemplateDescription.trim();
+  const availableFields = effectiveFieldsForType(entityType);
+  const fields: Record<string, unknown> = {};
+  for (const key of newTemplateFieldKeys) {
+    const field = availableFields.find((f) => f.key === key);
+    if (!field) continue;
+    fields[key] = defaultFieldValue(field);
+  }
+  const finalFields = fields;
+  const finalRequired = newTemplateRequiredFields.filter((k) => k in finalFields);
   const template: EntityTemplate = {
     id,
     name,
     entityType,
     description: description || null,
     icon: name.slice(0, 1).toUpperCase(),
-    fields: defaultTemplateFields(entityType),
-    requiredFields: [],
+    fields: finalFields,
+    requiredFields: finalRequired,
   };
   setDraft({ ...draft, customTemplates: [...(draft.customTemplates ?? []), template] });
   newTemplateName = "";
   newTemplateEntityType = "";
   newTemplateDescription = "";
+  newTemplateFieldKeys = [];
+  newTemplateRequiredFields = [];
 }
 
 function commitTemplateEdit() {
@@ -642,20 +972,27 @@ function commitTemplateEdit() {
   const entityType = editTemplateEntityType.trim();
   if (!name || !entityType || !effectiveTypes().includes(entityType)) return;
   const description = editTemplateDescription.trim();
+  const availableFields = effectiveFieldsForType(entityType);
+  const fields: Record<string, unknown> = {};
+  for (const key of editingTemplateFieldKeys) {
+    if (!availableFields.some((f) => f.key === key)) continue;
+    const field = availableFields.find((f) => f.key === key)!;
+    const existing = (draft.customTemplates ?? []).find((t) => t.id === id)?.fields as Record<string, unknown> | undefined;
+    const hasExisting = existing && key in existing;
+    fields[key] = hasExisting ? (existing as Record<string, unknown>)[key] : defaultFieldValue(field);
+  }
+  const finalRequired = editingTemplateRequiredFields.filter((k) => k in fields);
   setDraft({
     ...draft,
     customTemplates: (draft.customTemplates ?? []).map((template) => {
       if (template.id !== id) return template;
-      const entityChanged = template.entityType !== entityType;
       return {
         ...template,
         name,
         entityType,
         description: description || null,
-        fields: entityChanged ? defaultTemplateFields(entityType) : templateFieldsFromSelection(template),
-        requiredFields: entityChanged
-          ? []
-          : editingTemplateRequiredFields.filter((key) => editingTemplateFieldKeys.includes(key)),
+        fields,
+        requiredFields: finalRequired,
       };
     }),
   });
@@ -688,7 +1025,7 @@ function removeCustomTemplate(id: string) {
 <section class="module-schema-panel">
   <header class="panel-hero">
     <div class="hero-icon">
-      <Settings2 size={18} strokeWidth={1.8} aria-hidden="true" />
+      <SlidersHorizontal size={18} strokeWidth={1.8} aria-hidden="true" />
     </div>
     <div class="hero-copy">
       <span class="kicker">PROJECT OVERLAY</span>
@@ -706,7 +1043,7 @@ function removeCustomTemplate(id: string) {
     <div class="empty-card">
       <div class="empty-icon"><Blocks size={20} strokeWidth={1.7} aria-hidden="true" /></div>
       <strong>Open a project to customize this schema</strong>
-      <p>Overlays are stored in <code>.daena/overlays</code> and move with the project. Open a project to start editing.</p>
+      <p>Schema overlays are saved inside the project’s folder and travel with the project.</p>
     </div>
   {:else}
     <div class="tab-bar" role="tablist" aria-label="Schema sections">
@@ -747,30 +1084,33 @@ function removeCustomTemplate(id: string) {
 
     {#if activeTab === "types"}
       <div class="block elevated">
-        <div class="block-heading">
+        <button type="button" class="block-heading collapsible" aria-expanded={!builtinTypesCollapsed} onclick={() => (builtinTypesCollapsed = !builtinTypesCollapsed)}>
           <div class="heading-left">
             <span class="heading-icon"><Layers size={14} strokeWidth={1.8} aria-hidden="true" /></span>
             <h4>Builtin entity types</h4>
             <span class="count-badge">{packageTypes.length}</span>
           </div>
           <span class="block-hint"><Eye size={12} strokeWidth={1.8} aria-hidden="true" /> Click to enable or disable</span>
-        </div>
-        <div class="chip-row">
-          {#each packageTypes as type}
-            {@const disabled = isDisabled(draft.disabledEntityTypes, type)}
-            <button
-              type="button"
-              class="chip"
-              class:is-hidden={disabled}
-              aria-pressed={!disabled}
-              title={type}
-              onclick={() => toggleDisabled("disabledEntityTypes", type)}>
-              {#if !disabled}<Check size={11} strokeWidth={2.2} aria-hidden="true" />{:else}<EyeOff size={11} strokeWidth={1.8} aria-hidden="true" />{/if}
-              {humanizeId(type)}
-            </button>
-          {/each}
-        </div>
-        <p class="subtle-note">Disabled types and their exclusive fields/templates are hidden from create menus. Re-enable to bring them back.</p>
+          <span class="collapse-icon" aria-hidden="true">{#if builtinTypesCollapsed}<ChevronRight size={14} strokeWidth={1.8} />{:else}<ChevronDown size={14} strokeWidth={1.8} />{/if}</span>
+        </button>
+        {#if !builtinTypesCollapsed}
+          <div class="chip-row">
+            {#each packageTypes as type}
+              {@const disabled = isDisabled(draft.disabledEntityTypes, type)}
+              <button
+                type="button"
+                class="chip"
+                class:is-hidden={disabled}
+                aria-pressed={!disabled}
+                title={type}
+                onclick={() => toggleDisabled("disabledEntityTypes", type)}>
+                {#if !disabled}<Check size={11} strokeWidth={2.2} aria-hidden="true" />{:else}<EyeOff size={11} strokeWidth={1.8} aria-hidden="true" />{/if}
+                {humanizeId(type)}
+              </button>
+            {/each}
+          </div>
+          <p class="subtle-note">Disabled types and their exclusive fields/templates are hidden from create menus. Re-enable to bring them back.</p>
+        {/if}
       </div>
 
       <div class="block elevated">
@@ -787,7 +1127,7 @@ function removeCustomTemplate(id: string) {
             <Type size={16} strokeWidth={1.7} aria-hidden="true" />
             <div>
               <strong>No custom types yet</strong>
-              <span>Create a project type like “Species”, “Artifact” or “Language” — IDs are normalized to <code>kebab-case</code>.</span>
+              <span>Create a project type like “Species”, “Artifact” or “Language”.</span>
             </div>
           </div>
         {:else}
@@ -832,30 +1172,32 @@ function removeCustomTemplate(id: string) {
       </div>
     {:else if activeTab === "fields"}
       <div class="block elevated">
-        <div class="block-heading">
+        <button type="button" class="block-heading collapsible" aria-expanded={!builtinFieldsCollapsed} onclick={() => (builtinFieldsCollapsed = !builtinFieldsCollapsed)}>
           <div class="heading-left">
             <span class="heading-icon"><TextQuote size={14} strokeWidth={1.8} aria-hidden="true" /></span>
             <h4>Builtin fields</h4>
             <span class="count-badge">{packageFields.length}</span>
           </div>
           <span class="block-hint">Enable fields and choose the entity types they apply to</span>
-        </div>
-        <div class="chip-row">
-          {#each packageFields as field}
-            {@const disabled = isDisabled(draft.disabledFields, field.key)}
-            <button
-              type="button"
-              class="chip"
-              class:is-hidden={disabled}
-              aria-pressed={!disabled}
-              title={`${field.key} · ${fieldTypeLabel(field.type)}`}
-              onclick={() => toggleDisabled("disabledFields", field.key)}>
-              {#if !disabled}<Check size={11} strokeWidth={2.2} aria-hidden="true" />{:else}<EyeOff size={11} strokeWidth={1.8} aria-hidden="true" />{/if}
-              {field.label || humanizeId(field.key)}
-            </button>
-          {/each}
-        </div>
-        <ul class="list compact-list">
+          <span class="collapse-icon" aria-hidden="true">{#if builtinFieldsCollapsed}<ChevronRight size={14} strokeWidth={1.8} />{:else}<ChevronDown size={14} strokeWidth={1.8} />{/if}</span>
+        </button>
+        {#if !builtinFieldsCollapsed}
+          <div class="chip-row">
+            {#each packageFields as field}
+              {@const disabled = isDisabled(draft.disabledFields, field.key)}
+              <button
+                type="button"
+                class="chip"
+                class:is-hidden={disabled}
+                aria-pressed={!disabled}
+                title={`${field.key} · ${fieldTypeLabel(field.type)}`}
+                onclick={() => toggleDisabled("disabledFields", field.key)}>
+                {#if !disabled}<Check size={11} strokeWidth={2.2} aria-hidden="true" />{:else}<EyeOff size={11} strokeWidth={1.8} aria-hidden="true" />{/if}
+                {field.label || humanizeId(field.key)}
+              </button>
+            {/each}
+          </div>
+          <ul class="list compact-list">
           {#each packageFields as field}
             <li class="list-item compact">
               {#if editingBuiltinFieldKey === field.key}
@@ -894,6 +1236,7 @@ function removeCustomTemplate(id: string) {
             </li>
           {/each}
         </ul>
+        {/if}
       </div>
 
       <div class="block elevated">
@@ -910,7 +1253,7 @@ function removeCustomTemplate(id: string) {
             <Blocks size={16} strokeWidth={1.7} aria-hidden="true" />
             <div>
               <strong>No custom fields yet</strong>
-              <span>Add a field like “Word count” or “Origin”. Keys become <code>snake_case</code> automatically.</span>
+              <span>Add a field like “Word count” or “Origin”.</span>
             </div>
           </div>
         {:else}
@@ -931,8 +1274,65 @@ function removeCustomTemplate(id: string) {
                         {/each}
                       </select>
                     </label>
+                    {#if editFieldType === "enum"}
+                      <label>
+                        <span>Options <em>(comma separated)</em></span>
+                        <input bind:value={editFieldOptions} placeholder="idea, drafting, revising, complete" />
+                      </label>
+                      <label class="inline-check">
+                        <input type="checkbox" bind:checked={editFieldMultiple} />
+                        <span>Allow multiple values</span>
+                      </label>
+                    {:else if editFieldType === "oneof"}
+                      <div class="type-select" role="group" aria-label="One-of variants">
+                        <span class="type-select-label">Variants <em>(at least one)</em></span>
+                        {#each editFieldOneOfVariants as variant, idx}
+                          <div class="variant-row">
+                            <input bind:value={variant.label} placeholder="Variant label" />
+                            <select bind:value={variant.type}>
+                              {#each ["text","number","boolean","date","enum"] as vt}
+                                <option value={vt}>{fieldTypeLabel(vt as FieldType)}</option>
+                              {/each}
+                            </select>
+                            {#if variant.type === "enum"}
+                              <input bind:value={variant.options} placeholder="Options, comma separated" />
+                            {/if}
+                            <button type="button" class="quiet icon" onclick={() => removeEditFieldOneOfVariant(idx)}><X size={14} strokeWidth={1.8} aria-hidden="true" /></button>
+                          </div>
+                        {/each}
+                        <button type="button" class="quiet" onclick={addEditFieldOneOfVariant}><Plus size={14} strokeWidth={1.8} aria-hidden="true" /> Add variant</button>
+                      </div>
+
+                    {:else if editFieldType === "relationship"}
+                      <label>
+                        <span>Relationship type</span>
+                        <input bind:value={editFieldRelationshipType} placeholder="Related to" />
+                      </label>
+                      <div class="type-select" role="group" aria-label="Target entity types">
+                        <span class="type-select-label">Target types <em>(required)</em></span>
+                        <div class="chip-row compact">
+                          {#each effectiveTypes() as type}
+                            <button
+                              type="button"
+                              class="chip select"
+                              class:selected={editFieldTargetEntityTypes.includes(type)}
+                              aria-pressed={editFieldTargetEntityTypes.includes(type)}
+                              onclick={() => (editFieldTargetEntityTypes = toggleInList(editFieldTargetEntityTypes, type))}>
+                              {humanizeId(type)}
+                            </button>
+                          {/each}
+                        </div>
+                      </div>
+                      <label>
+                        <span>Cardinality</span>
+                        <select bind:value={editFieldCardinality}>
+                          <option value="many">Many</option>
+                          <option value="one">One</option>
+                        </select>
+                      </label>
+                    {/if}
                     <div class="type-select" role="group" aria-label="Applies to entity types">
-                      <span class="type-select-label">Applies to <em>(required)</em></span>
+                      <span class="type-select-label">Applies to <em>(optional)</em></span>
                       <div class="chip-row compact">
                         {#each effectiveTypes() as type}
                           <button
@@ -950,7 +1350,7 @@ function removeCustomTemplate(id: string) {
                       <button
                         type="button"
                         class="action"
-                        disabled={!editFieldLabel.trim() || editFieldEntityTypes.length === 0}
+                        disabled={!canSaveFieldEdit()}
                         onclick={commitFieldEdit}><Check size={14} strokeWidth={2} aria-hidden="true" /> Save</button>
                       <button type="button" class="quiet" onclick={cancelFieldEdit}>Cancel</button>
                     </div>
@@ -960,6 +1360,9 @@ function removeCustomTemplate(id: string) {
                     <div class="item-title-row">
                       <strong>{field.label}</strong>
                       <span class="type-pill">{fieldTypeLabel(field.type)}</span>
+                      {#if fieldExtrasLabel(field)}
+                        <span class="meta">{fieldExtrasLabel(field)}</span>
+                      {/if}
                     </div>
                     <span class="meta">{scopeLabel(field.entityTypes)} <span class="dot">·</span> <code>{field.key}</code></span>
                   </div>
@@ -992,11 +1395,68 @@ function removeCustomTemplate(id: string) {
             <button
               type="button"
               class="action primary-action"
-              disabled={!newFieldLabel.trim() || newFieldEntityTypes.length === 0}
+              disabled={!canAddField()}
               onclick={addCustomField}><Plus size={14} strokeWidth={2} aria-hidden="true" /> Add field</button>
           </div>
+          {#if newFieldType === "enum"}
+            <label>
+              <span>Options <em>(comma separated)</em></span>
+              <input bind:value={newFieldOptions} placeholder="idea, drafting, revising, complete" />
+            </label>
+            <label class="inline-check">
+              <input type="checkbox" bind:checked={newFieldMultiple} />
+              <span>Allow multiple values</span>
+            </label>
+          {:else if newFieldType === "oneof"}
+            <div class="type-select" role="group" aria-label="One-of variants">
+              <span class="type-select-label">Variants <em>(at least one)</em></span>
+              {#each newFieldOneOfVariants as variant, idx}
+                <div class="variant-row">
+                  <input bind:value={variant.label} placeholder="Variant label" />
+                  <select bind:value={variant.type}>
+                    {#each ["text","number","boolean","date","enum"] as vt}
+                      <option value={vt}>{fieldTypeLabel(vt as FieldType)}</option>
+                    {/each}
+                  </select>
+                  {#if variant.type === "enum"}
+                    <input bind:value={variant.options} placeholder="Options, comma separated" />
+                  {/if}
+                  <button type="button" class="quiet icon" onclick={() => removeNewFieldOneOfVariant(idx)}><X size={14} strokeWidth={1.8} aria-hidden="true" /></button>
+                </div>
+              {/each}
+              <button type="button" class="quiet" onclick={addNewFieldOneOfVariant}><Plus size={14} strokeWidth={1.8} aria-hidden="true" /> Add variant</button>
+            </div>
+
+          {:else if newFieldType === "relationship"}
+            <label>
+              <span>Relationship type</span>
+              <input bind:value={newFieldRelationshipType} placeholder="Related to" />
+            </label>
+            <div class="type-select" role="group" aria-label="Target entity types">
+              <span class="type-select-label">Target types <em>(required)</em></span>
+              <div class="chip-row compact">
+                {#each effectiveTypes() as type}
+                  <button
+                    type="button"
+                    class="chip select"
+                    class:selected={newFieldTargetEntityTypes.includes(type)}
+                    aria-pressed={newFieldTargetEntityTypes.includes(type)}
+                    onclick={() => (newFieldTargetEntityTypes = toggleInList(newFieldTargetEntityTypes, type))}>
+                    {humanizeId(type)}
+                  </button>
+                {/each}
+              </div>
+            </div>
+            <label>
+              <span>Cardinality</span>
+              <select bind:value={newFieldCardinality}>
+                <option value="many">Many</option>
+                <option value="one">One</option>
+              </select>
+            </label>
+          {/if}
           <div class="type-select" role="group" aria-label="Applies to entity types">
-            <span class="type-select-label">Applies to <em>(required)</em></span>
+            <span class="type-select-label">Applies to <em>(optional)</em></span>
             <div class="chip-row compact">
               {#each effectiveTypes() as type}
                 <button
@@ -1014,17 +1474,19 @@ function removeCustomTemplate(id: string) {
       </div>
     {:else}
       <div class="block elevated">
-        <div class="block-heading">
+        <button type="button" class="block-heading collapsible" aria-expanded={!builtinTemplatesCollapsed} onclick={() => (builtinTemplatesCollapsed = !builtinTemplatesCollapsed)}>
           <div class="heading-left">
             <span class="heading-icon"><LayoutTemplate size={14} strokeWidth={1.8} aria-hidden="true" /></span>
             <h4>Builtin templates</h4>
             <span class="count-badge">{packageTemplates.length}</span>
           </div>
           <span class="block-hint">Enable templates and choose their included fields</span>
-        </div>
-        <div class="chip-row">
-          {#each packageTemplates as template}
-            {@const disabled = isDisabled(draft.disabledTemplates, template.id)}
+          <span class="collapse-icon" aria-hidden="true">{#if builtinTemplatesCollapsed}<ChevronRight size={14} strokeWidth={1.8} />{:else}<ChevronDown size={14} strokeWidth={1.8} />{/if}</span>
+        </button>
+        {#if !builtinTemplatesCollapsed}
+          <div class="chip-row">
+            {#each packageTemplates as template}
+              {@const disabled = isDisabled(draft.disabledTemplates, template.id)}
             <button
               type="button"
               class="chip"
@@ -1064,15 +1526,15 @@ function removeCustomTemplate(id: string) {
                   <div class="type-select" role="group" aria-label={`Required fields for ${template.name}`}>
                     <span class="type-select-label">Required fields</span>
                     <div class="chip-row compact">
-                      {#each editingTemplateFieldKeys as key}
+                      {#each effectiveFieldsForType(template.entityType).filter((f) => editingTemplateFieldKeys.includes(f.key)) as field}
                         <button
                           type="button"
                           class="chip select"
-                          class:selected={editingTemplateRequiredFields.includes(key)}
-                          aria-pressed={editingTemplateRequiredFields.includes(key)}
+                          class:selected={editingTemplateRequiredFields.includes(field.key)}
+                          aria-pressed={editingTemplateRequiredFields.includes(field.key)}
                           onclick={() =>
-                            (editingTemplateRequiredFields = toggleInList(editingTemplateRequiredFields, key))}
-                          >{packageFields.find((field) => field.key === key)?.label || humanizeId(key)}</button>
+                            (editingTemplateRequiredFields = toggleInList(editingTemplateRequiredFields, field.key))}
+                          >{field.label || humanizeId(field.key)}</button>
                       {/each}
                     </div>
                   </div>
@@ -1099,6 +1561,7 @@ function removeCustomTemplate(id: string) {
             </li>
           {/each}
         </ul>
+        {/if}
       </div>
 
       <div class="block elevated">
@@ -1141,10 +1604,10 @@ function removeCustomTemplate(id: string) {
                       <span>Description <em>(optional)</em></span>
                       <input bind:value={editTemplateDescription} placeholder="A kind of being in this world." />
                     </label>
-                    <div class="type-select" role="group" aria-label={`Fields for ${template.name}`}>
+                    <div class="type-select" role="group" aria-label={`Fields for ${editTemplateName || template.name}`}>
                       <span class="type-select-label">Included fields</span>
                       <div class="chip-row compact">
-                        {#each effectiveFieldsForType(template.entityType) as field}
+                        {#each effectiveFieldsForType(editTemplateEntityType) as field}
                           <button
                             type="button"
                             class="chip select"
@@ -1163,16 +1626,15 @@ function removeCustomTemplate(id: string) {
                     <div class="type-select" role="group" aria-label={`Required fields for ${template.name}`}>
                       <span class="type-select-label">Required fields</span>
                       <div class="chip-row compact">
-                        {#each editingTemplateFieldKeys as key}
+                        {#each effectiveFieldsForType(editTemplateEntityType).filter((f) => editingTemplateFieldKeys.includes(f.key)) as field}
                           <button
                             type="button"
                             class="chip select"
-                            class:selected={editingTemplateRequiredFields.includes(key)}
-                            aria-pressed={editingTemplateRequiredFields.includes(key)}
+                            class:selected={editingTemplateRequiredFields.includes(field.key)}
+                            aria-pressed={editingTemplateRequiredFields.includes(field.key)}
                             onclick={() =>
-                              (editingTemplateRequiredFields = toggleInList(editingTemplateRequiredFields, key))}
-                            >{[...packageFields, ...(draft.customFields ?? [])].find((field) => field.key === key)
-                              ?.label || humanizeId(key)}</button>
+                              (editingTemplateRequiredFields = toggleInList(editingTemplateRequiredFields, field.key))}
+                            >{field.label || humanizeId(field.key)}</button>
                         {/each}
                       </div>
                     </div>
@@ -1219,12 +1681,48 @@ function removeCustomTemplate(id: string) {
                 {/each}
               </select>
             </label>
-            <button type="button" class="action primary-action" onclick={addCustomTemplate}><Plus size={14} strokeWidth={2} aria-hidden="true" /> Add template</button>
+            <button type="button" class="action primary-action" onclick={addCustomTemplate} disabled={!newTemplateName.trim() || !newTemplateEntityType.trim()}><Plus size={14} strokeWidth={2} aria-hidden="true" /> Add template</button>
           </div>
           <label class="grow">
             <span>Description <em>(optional)</em></span>
             <input bind:value={newTemplateDescription} placeholder="A kind of being in this world." />
           </label>
+          {#if newTemplateEntityType && effectiveTypes().includes(newTemplateEntityType)}
+            <div class="type-select" role="group" aria-label="Included fields">
+              <span class="type-select-label">Included fields</span>
+              <div class="chip-row compact">
+                {#each effectiveFieldsForType(newTemplateEntityType) as field}
+                  <button
+                    type="button"
+                    class="chip select"
+                    class:selected={newTemplateFieldKeys.includes(field.key)}
+                    aria-pressed={newTemplateFieldKeys.includes(field.key)}
+                    onclick={() => {
+                      newTemplateFieldKeys = toggleInList(newTemplateFieldKeys, field.key);
+                      if (!newTemplateFieldKeys.includes(field.key))
+                        newTemplateRequiredFields = newTemplateRequiredFields.filter((k) => k !== field.key);
+                    }}>{field.label || humanizeId(field.key)}</button>
+                {/each}
+              </div>
+            </div>
+            <div class="type-select" role="group" aria-label="Required fields">
+              <span class="type-select-label">Required fields</span>
+              <div class="chip-row compact">
+                {#each effectiveFieldsForType(newTemplateEntityType).filter((f) => newTemplateFieldKeys.includes(f.key)) as field}
+                  <button
+                    type="button"
+                    class="chip select"
+                    class:selected={newTemplateRequiredFields.includes(field.key)}
+                    aria-pressed={newTemplateRequiredFields.includes(field.key)}
+                    onclick={() => (newTemplateRequiredFields = toggleInList(newTemplateRequiredFields, field.key))}
+                    >{field.label || humanizeId(field.key)}</button>
+                {/each}
+                {#if newTemplateFieldKeys.length === 0}
+                  <span class="meta">Select at least one included field to mark as required.</span>
+                {/if}
+              </div>
+            </div>
+          {/if}
         </div>
       </div>
     {/if}
@@ -1245,9 +1743,12 @@ function removeCustomTemplate(id: string) {
           <span>All changes saved to the project overlay.</span>
         {/if}
       </div>
-      <button type="button" class="primary save-button" disabled={busy || !dirty} onclick={() => void save()}>
-        {#if busy}<span class="spinner" aria-hidden="true"></span> Saving…{:else}<Save size={14} strokeWidth={2} aria-hidden="true" /> Save schema{/if}
-      </button>
+      <div class="save-actions">
+        <button type="button" class="quiet" disabled={busy || !dirty} onclick={() => void discardChanges()}><X size={14} strokeWidth={1.8} aria-hidden="true" /> Discard</button>
+        <button type="button" class="primary save-button" disabled={busy || !dirty} onclick={() => void save()}>
+          {#if busy}<span class="spinner" aria-hidden="true"></span> Saving…{:else}<Save size={14} strokeWidth={2} aria-hidden="true" /> Save schema{/if}
+        </button>
+      </div>
     </div>
   {/if}
 
@@ -1262,8 +1763,8 @@ function removeCustomTemplate(id: string) {
         </div>
         <strong id="type-remove-title">Remove {humanizeId(typeRemovalPrompt.typeId)}?</strong>
         <p>
-          Fields must keep at least one entity type. Templates for this type, and fields that only target it, are
-          removed with the type.
+          Templates for this type are removed with the type. Fields that only target it will be kept and will now
+          apply to all types until you reassign them.
         </p>
         {#if typeRemovalPrompt.templates.length > 0}
           <div class="type-remove-group">
@@ -1277,10 +1778,10 @@ function removeCustomTemplate(id: string) {
         {/if}
         {#if typeRemovalPrompt.exclusiveFields.length > 0}
           <div class="type-remove-group">
-            <span>Fields to remove (only this type)</span>
+            <span>Fields that only target this type (will be kept)</span>
             <ul>
               {#each typeRemovalPrompt.exclusiveFields as field}
-                <li><TextQuote size={12} strokeWidth={1.7} aria-hidden="true" /> {field.label} <code>{field.key}</code></li>
+                <li><TextQuote size={12} strokeWidth={1.7} aria-hidden="true" /> {field.label} <code>{field.key}</code> <small>— now applies to all types</small></li>
               {/each}
             </ul>
           </div>
@@ -1409,14 +1910,6 @@ function removeCustomTemplate(id: string) {
   color: var(--ink-soft, #8f897e);
   font: 400 12.5px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
 }
-.empty-card code {
-  padding: 1px 6px;
-  border-radius: 6px;
-  background: #f1ebe1;
-  border: 1px solid #e9e1d4;
-  color: #6f675c;
-  font: 500 11px ui-monospace, monospace;
-}
 .tab-bar {
   display: flex;
   gap: 6px;
@@ -1486,6 +1979,33 @@ function removeCustomTemplate(id: string) {
   gap: 10px 16px;
   padding-bottom: 12px;
   border-bottom: 1px solid #f0e8d9;
+}
+.block-heading.collapsible {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #f0e8d9;
+  padding: 0 0 12px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 0;
+}
+.block-heading.collapsible:hover {
+  opacity: 0.92;
+}
+.collapse-icon {
+  margin-left: auto;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--ink-soft, #8f897e);
+  flex: 0 0 24px;
+}
+.block-heading.collapsible:hover .collapse-icon {
+  background: #f4eee3;
+  color: var(--ink);
 }
 .heading-left {
   display: inline-flex;
@@ -1565,14 +2085,7 @@ function removeCustomTemplate(id: string) {
 .empty-inline span {
   font: 400 12px/1.5 Inter, sans-serif;
 }
-.empty-inline code {
-  padding: 1px 5px;
-  border-radius: 5px;
-  background: #f1ebe1;
-  border: 1px solid #e9e1d4;
-  font: 500 11px ui-monospace, monospace;
-  color: #6f675c;
-}
+
 
 .chip-row,
 .add-row,
@@ -1590,12 +2103,17 @@ function removeCustomTemplate(id: string) {
 .quiet,
 .danger,
 .primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   border: 1px solid #d9cdbd;
   border-radius: 9px;
   padding: 7px 11px;
   background: #fffefa;
   color: #62594e;
   font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif;
+  line-height: 1;
   cursor: pointer;
   transition: all 0.14s ease;
 }
@@ -1939,6 +2457,12 @@ input::placeholder {
   background: #c35a46;
   box-shadow: 0 0 0 4px rgba(195,90,70,0.14);
 }
+.save-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
 .save-message {
   display: inline-flex;
   align-items: center;
@@ -2070,6 +2594,36 @@ input::placeholder {
   height: 16px;
   padding: 0;
   accent-color: #9a4d3f;
+}
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  color: var(--ink);
+  font: 500 12px Inter, ui-sans-serif, system-ui, sans-serif;
+  cursor: pointer;
+}
+.inline-check input {
+  width: 16px;
+  height: 16px;
+  min-width: 0;
+  accent-color: var(--accent-dark);
+}
+.variant-row {
+  display: grid;
+  grid-template-columns: 1fr 140px 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+.variant-row input,
+.variant-row select {
+  min-width: 0;
+}
+@media (max-width: 720px) {
+  .variant-row {
+    grid-template-columns: 1fr;
+  }
 }
 .type-remove-actions {
   display: flex;

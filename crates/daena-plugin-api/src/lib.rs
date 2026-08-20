@@ -918,7 +918,7 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                 continue;
             }
             let valid = match field.field_type.as_str() {
-                "text" | "entity-ref" => value.is_string(),
+                "text" => value.is_string(),
                 "relationship" => {
                     if field.cardinality.as_deref() == Some("one") {
                         if value.is_string() {
@@ -948,7 +948,7 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                         let mut matches = 0;
                         for variant in one_of {
                             let variant_valid = match variant.field_type.as_str() {
-                                "text" | "entity-ref" => value.is_string(),
+                                "text" => value.is_string(),
                                 "number" => value.as_f64().is_some(),
                                 "boolean" => value.is_boolean(),
                                 "date" => value.is_string() || value.is_object(),

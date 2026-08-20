@@ -95,7 +95,7 @@ function pluginInitial(name: string) {
           <Layers size={20} strokeWidth={1.7} aria-hidden="true" />
         </div>
         <strong>Open a project to customize schemas</strong>
-        <p>Schema overlays are saved inside the project’s <code>.daena</code> folder and travel with the project.</p>
+        <p>Schema overlays are saved inside the project’s folder and travel with the project.</p>
       </div>
     {:else if candidates.length === 0}
       <div class="empty-state">

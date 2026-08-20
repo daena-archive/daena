@@ -3038,7 +3038,7 @@ fn field_value_matches(
         return true;
     }
     match field.field_type.as_str() {
-        "text" | "date" | "entity-ref" => {
+        "text" | "date" => {
             value.is_string() || (field.field_type == "date" && value.is_object())
         }
         "number" => value.is_number(),
@@ -3052,7 +3052,7 @@ fn field_value_matches(
                 let mut matches = 0;
                 for variant in one_of {
                     let valid = match variant.field_type.as_str() {
-                        "text" | "entity-ref" => value.is_string(),
+                        "text" => value.is_string(),
                         "number" => value.is_number(),
                         "boolean" => value.is_boolean(),
                         "date" => value.is_string() || value.is_object(),

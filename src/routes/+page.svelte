@@ -788,7 +788,7 @@ function isCreateValuePopulated(value: unknown) {
   return value !== "" && value !== null && value !== undefined && value !== false;
 }
 function isCreateDropdownField(field: FieldDefinition) {
-  return field.type === "enum" || field.type === "entity-ref";
+  return field.type === "enum";
 }
 function hasCreateValues() {
   const hasNonDropdownValues = createFieldsFor().some(
@@ -4225,7 +4225,7 @@ onMount(() => {
                         onchange={(event) => updateCreateEnumField(item.field.key, event, item.field.multiple ?? false)}
                         ><option value="">Choose {item.field.label.toLowerCase()}</option
                         >{#each item.field.options ?? [] as option}<option value={option}>{option}</option
-                          >{/each}</select
+                          >{/each}</select>
                       >{:else if (item.field as any).type === "oneof"}<select
                         id={`create-${item.field.key}`}
                         required={item.required}
@@ -4236,17 +4236,7 @@ onMount(() => {
                         >{#each item.field.options ?? [] as option}<option value={option}>{option}</option>{/each}
                         {#each (item.field as any).oneOf ?? [] as variant}
                           {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option>{/each}
-                        {/each}</select
-                      >{:else if item.field.type === "entity-ref"}<select
-                        id={`create-${item.field.key}`}
-                        required={item.required}
-                        value={String(createFieldValues[item.field.key] ?? "")}
-                        onchange={(event) =>
-                          setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}
-                        ><option value="">Choose an entity</option
-                        >{#each entities.filter((entity) => !entity.deleted) as entity}<option value={entity.id}
-                            >{entity.name} · {entity.entity_type ?? "Uncategorized"}</option
-                          >{/each}</select
+                        {/each}</select>
                       >{:else if item.field.type === "date"}{#if createDateForField(item.field.key) || createDateEditorOpen[item.field.key]}{@const date =
                           createDateDraftForField(item.field.key) ?? {
                             calendar: GREGORIAN_CALENDAR_ID,
@@ -4291,7 +4281,7 @@ onMount(() => {
                                     )}
                                   ><option value="">Month</option>{#each months as month, index}<option
                                       value={index + 1}>{month.name}</option
-                                    >{/each}</select
+                                    >{/each}</select>
                                 ></label
                               >{:else}<label for={`create-${item.field.key}-month`}
                                 >Month<input
@@ -5539,7 +5529,7 @@ onMount(() => {
                                   )}
                                 ><option value="">Month</option>{#each months as month, index}<option value={index + 1}
                                     >{month.name}</option
-                                  >{/each}</select
+                                  >{/each}</select>
                               ></label
                             >{:else}<label for={`${definition.key}-month`}
                               >Month<input
@@ -5627,7 +5617,7 @@ onMount(() => {
                           : []
                         : String(fields[definition.key] ?? "")}
                       onchange={(event) => updateField(definition, event)}
-                      >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}</select
+                      >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}</select>
                     >{:else if (definition as any).type === "oneof"}<select
                       aria-label={definition.label}
                       value={String(fields[definition.key] ?? "")}
@@ -5636,7 +5626,7 @@ onMount(() => {
                       >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}
                       {#each (definition as any).oneOf ?? [] as variant}
                         {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option>{/each}
-                      {/each}</select
+                      {/each}</select>
                     >{:else}<input
                       type="text"
                       value={fieldInputValue(definition, fields[definition.key])}
@@ -9212,19 +9202,6 @@ onMount(() => {
   border: 1px solid #e9e1d4;
   color: #62594e;
   font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif;
-}
-.plugins-settings-heading {
-  margin-bottom: 14px;
-}
-.plugins-settings-heading strong {
-  display: block;
-  font-size: 16px;
-}
-.plugins-settings-heading p {
-  margin: 6px 0 0;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.5;
 }
 .plugin-card {
   padding: 18px;

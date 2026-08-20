@@ -7,10 +7,10 @@
  */
 
 export type PluginKind = "declarative" | "sandboxed";
-export type FieldType = "text" | "number" | "boolean" | "date" | "enum" | "oneof" | "entity-ref" | "relationship";
+export type FieldType = "text" | "number" | "boolean" | "date" | "enum" | "oneof" | "relationship";
 export interface Entrypoints { ui?: string; wasm?: string }
 export interface Dependency { required: boolean; version: string }
-export interface OneOfVariant { label: string; options?: string[] | null; type: "text" | "number" | "boolean" | "date" | "enum" | "oneof" | "entity-ref" | "relationship" }
+export interface OneOfVariant { label: string; options?: string[] | null; type: "text" | "number" | "boolean" | "date" | "enum" | "oneof" | "relationship" }
 export interface MetadataFieldDefinition { key: string; label: string; oneOf?: OneOfVariant[]; options?: string[] | null; required?: boolean | null; type: "text" | "number" | "boolean" | "date" | "enum" | "oneof" }
 export interface FieldDefinition { cardinality?: "one" | "many"; entityTypes?: string[]; key: string; label: string; metadataFields?: MetadataFieldDefinition[]; multiple?: boolean; oneOf?: OneOfVariant[]; options?: string[] | null; relationshipType?: string; required?: boolean | null; shared?: boolean; targetEntityTypes?: string[]; type: FieldType }
 export interface SchemaContribution { entityTypes: string[]; fields: FieldDefinition[]; namespace: string }

@@ -2138,23 +2138,29 @@ mod tests {
         let source = TestDirectory::new();
         fs::write(source.path().join("one.md"), "1234").unwrap();
         fs::write(source.path().join("two.txt"), "5678").unwrap();
-        let mut limits = GenericDocumentImportLimits::default();
-        limits.max_total_bytes = 7;
+        let limits = GenericDocumentImportLimits {
+            max_total_bytes: 7,
+            ..Default::default()
+        };
 
         let error = analyze_generic_documents(source.path(), limits).unwrap_err();
         assert!(error
             .to_string()
             .contains("exceeds the maximum total size of 7 bytes"));
 
-        let mut limits = GenericDocumentImportLimits::default();
-        limits.max_files = 1;
+        let limits = GenericDocumentImportLimits {
+            max_files: 1,
+            ..Default::default()
+        };
         let error = analyze_generic_documents(source.path(), limits).unwrap_err();
         assert!(error
             .to_string()
             .contains("exceeds the maximum file count of 1"));
 
-        let mut limits = GenericDocumentImportLimits::default();
-        limits.max_file_bytes = 3;
+        let limits = GenericDocumentImportLimits {
+            max_file_bytes: 3,
+            ..Default::default()
+        };
         let error = analyze_generic_documents(source.path(), limits).unwrap_err();
         assert!(error
             .to_string()
@@ -2162,15 +2168,19 @@ mod tests {
 
         fs::create_dir(source.path().join("nested")).unwrap();
         fs::write(source.path().join("nested/deep.md"), "deep").unwrap();
-        let mut limits = GenericDocumentImportLimits::default();
-        limits.max_depth = 0;
+        let limits = GenericDocumentImportLimits {
+            max_depth: 0,
+            ..Default::default()
+        };
         let error = analyze_generic_documents(source.path(), limits).unwrap_err();
         assert!(error
             .to_string()
             .contains("exceeds the maximum folder depth of 0"));
 
-        let mut limits = GenericDocumentImportLimits::default();
-        limits.max_entries = 1;
+        let limits = GenericDocumentImportLimits {
+            max_entries: 1,
+            ..Default::default()
+        };
         let error = analyze_generic_documents(source.path(), limits).unwrap_err();
         assert!(error
             .to_string()

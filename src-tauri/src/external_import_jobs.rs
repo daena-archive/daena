@@ -40,6 +40,8 @@ const MAX_PAGE_ITEMS: usize = 200;
 const SPILL_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 const SPILL_ITEM_COUNT: usize = 1_000;
 
+type CandidateMaterial = (Vec<StagedObject>, Vec<StagedAsset>, Vec<ImportDiagnostic>);
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExternalImporterDescriptor {
@@ -236,9 +238,7 @@ impl ImportResultStorage {
         Ok(())
     }
 
-    fn candidate_material(
-        &self,
-    ) -> Result<(Vec<StagedObject>, Vec<StagedAsset>, Vec<ImportDiagnostic>), String> {
+    fn candidate_material(&self) -> Result<CandidateMaterial, String> {
         match self {
             Self::Memory { items, .. } => Ok(candidate_material_from_items(items.iter())),
             Self::Spill { path, .. } => read_spill_candidate_material(path),
@@ -1214,9 +1214,7 @@ fn candidate_material_from_items<'a>(
     (objects, assets, diagnostics)
 }
 
-fn read_spill_candidate_material(
-    path: &Path,
-) -> Result<(Vec<StagedObject>, Vec<StagedAsset>, Vec<ImportDiagnostic>), String> {
+fn read_spill_candidate_material(path: &Path) -> Result<CandidateMaterial, String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("external_import.local_storage_failed: {error}"))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {

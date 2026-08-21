@@ -142,8 +142,7 @@ function definitionForDateKey(key: string): CalendarDefinition | null {
 }
 function dateDraftForKey(key: string): Partial<CalendarDate> | null {
   return (
-    dateForKey(key) ??
-    (dateEditorOpen[key] ? { calendar: selectedCalendarId(key), era: "CE", precision: "day" } : null)
+    dateForKey(key) ?? (dateEditorOpen[key] ? { calendar: selectedCalendarId(key), era: "CE", precision: "day" } : null)
   );
 }
 function datePartsDraft(key: string) {
@@ -340,7 +339,11 @@ onMount(() => {
       <div>
         <span class="relationship-metadata-kicker">RELATIONSHIP DETAILS</span>
         <h2 id={titleId()}>{relationship.relationship_type}</h2>
-        <p><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"><ArrowRight size={12} strokeWidth={1.8} /></span> {targetName()}</p>
+        <p>
+          <span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
+            ><ArrowRight size={12} strokeWidth={1.8} /></span>
+          {targetName()}
+        </p>
       </div>
       <button
         type="button"
@@ -368,10 +371,13 @@ onMount(() => {
           <div class="relationship-metadata-field">
             {#if field.type === "date"}
               <span class="relationship-metadata-field-label"
-                >{field.label}{#if field.required}<b aria-hidden="true"> *</b>{/if}</span
-              >
+                >{field.label}{#if field.required}<b aria-hidden="true"> *</b>{/if}</span>
               {#if dateForKey(field.key) || dateEditorOpen[field.key]}
-                {@const date = dateDraftForKey(field.key) ?? { calendar: GREGORIAN_CALENDAR_ID, era: "CE", precision: "day" }}
+                {@const date = dateDraftForKey(field.key) ?? {
+                  calendar: GREGORIAN_CALENDAR_ID,
+                  era: "CE",
+                  precision: "day",
+                }}
                 {@const parts = datePartsDraft(field.key)}
                 {@const calendar = definitionForDateKey(field.key)}
                 {@const months = calendar?.months ?? []}
@@ -379,8 +385,7 @@ onMount(() => {
                   <CalendarPicker
                     selectedId={selectedCalendarId(field.key)}
                     calendars={worldCalendars()}
-                    onSelect={(id) => setDateCalendar(field.key, id)}
-                  />
+                    onSelect={(id) => setDateCalendar(field.key, id)} />
                   <div class="date-fields">
                     <label for={`relationship-${relationship.id}-${field.key}-year`}
                       >Year<input
@@ -395,14 +400,19 @@ onMount(() => {
                             (event.currentTarget as HTMLInputElement).value,
                             Number.MIN_SAFE_INTEGER,
                           )} /></label
-                    >{#if months.length > 0}<label
-                          for={`relationship-${relationship.id}-${field.key}-month`}
+                    >{#if months.length > 0}<label for={`relationship-${relationship.id}-${field.key}-month`}
                         >Month<select
                           id={`relationship-${relationship.id}-${field.key}-month`}
                           aria-label={`${field.label} month`}
                           value={parts?.month ?? ""}
                           onchange={(event) =>
-                            updateDatePart(field.key, "month", (event.currentTarget as HTMLSelectElement).value, 1, months.length)}
+                            updateDatePart(
+                              field.key,
+                              "month",
+                              (event.currentTarget as HTMLSelectElement).value,
+                              1,
+                              months.length,
+                            )}
                           ><option value="">Month</option>{#each months as month, index}<option value={index + 1}
                               >{month.name}</option
                             >{/each}</select
@@ -423,14 +433,17 @@ onMount(() => {
                               1,
                               12,
                             )} /></label
-                      >{/if}<label
-                        for={`relationship-${relationship.id}-${field.key}-day`}
+                      >{/if}<label for={`relationship-${relationship.id}-${field.key}-day`}
                       >Day<input
                         id={`relationship-${relationship.id}-${field.key}-day`}
                         aria-label={`${field.label} day`}
                         type="number"
                         min="1"
-                        max={daysInCalendarMonth(calendar, parts?.year ?? date.year ?? 1, parts?.month ?? date.month ?? 1)}
+                        max={daysInCalendarMonth(
+                          calendar,
+                          parts?.year ?? date.year ?? 1,
+                          parts?.month ?? date.month ?? 1,
+                        )}
                         value={parts?.day ?? date.day ?? ""}
                         onchange={(event) =>
                           updateDatePart(
@@ -438,19 +451,21 @@ onMount(() => {
                             "day",
                             (event.currentTarget as HTMLInputElement).value,
                             1,
-                            daysInCalendarMonth(calendar, parts?.year ?? date.year ?? 1, parts?.month ?? date.month ?? 1),
+                            daysInCalendarMonth(
+                              calendar,
+                              parts?.year ?? date.year ?? 1,
+                              parts?.month ?? date.month ?? 1,
+                            ),
                           )} /></label
-                      ><label
-                          class="date-time-field"
-                          for={`relationship-${relationship.id}-${field.key}-time`}
-                        >Time<input
-                          id={`relationship-${relationship.id}-${field.key}-time`}
-                          aria-label={`${field.label} time`}
-                          type="time"
-                          step="1"
-                          value={calendarTimeValue(date)}
-                          onchange={(event) =>
-                            updateDateTime(field.key, (event.currentTarget as HTMLInputElement).value)} /></label>
+                    ><label class="date-time-field" for={`relationship-${relationship.id}-${field.key}-time`}
+                      >Time<input
+                        id={`relationship-${relationship.id}-${field.key}-time`}
+                        aria-label={`${field.label} time`}
+                        type="time"
+                        step="1"
+                        value={calendarTimeValue(date)}
+                        onchange={(event) =>
+                          updateDateTime(field.key, (event.currentTarget as HTMLInputElement).value)} /></label>
                   </div>
                   <small class="date-preview"
                     >{typeof (parts?.year ?? date.year) === "number"
@@ -460,68 +475,74 @@ onMount(() => {
                           ? formatCalendarDate(draft[field.key])
                           : "Add a date"
                       : "Add a date"}</small
-                  ><button class="date-clear" type="button" onclick={() => clearDateField(field.key)}>Clear date</button>
+                  ><button class="date-clear" type="button" onclick={() => clearDateField(field.key)}
+                    >Clear date</button>
                 </div>
               {:else}<button class="date-empty" type="button" onclick={() => openDateEditor(field.key)}
                   >Add a date</button
                 >{/if}
-              {:else if field.type === "boolean"}
-                <label for={`relationship-${relationship.id}-${field.key}`}>
-                  <span>{field.label}{#if field.required}<b aria-hidden="true"> *</b>{/if}</span>
-                  <input
-                    id={`relationship-${relationship.id}-${field.key}`}
-                    type="checkbox"
-                    checked={valueFor(field.key) === true}
-                    onchange={(event) => setValue(field.key, (event.currentTarget as HTMLInputElement).checked)} />
-                </label>
-              {:else if field.type === "number"}
-                <label for={`relationship-${relationship.id}-${field.key}`}>
-                  <span>{field.label}{#if field.required}<b aria-hidden="true"> *</b>{/if}</span>
-                  <input
-                    id={`relationship-${relationship.id}-${field.key}`}
-                    type="number"
-                    value={textValue(field.key)}
-                    oninput={(event) => {
-                      const raw = (event.currentTarget as HTMLInputElement).value;
-                      setValue(field.key, raw === "" ? "" : Number(raw));
-                    }} />
-                </label>
-              {:else if field.type === "enum"}
-                <label for={`relationship-${relationship.id}-${field.key}`}>
-                  <span>{field.label}{#if field.required}<b aria-hidden="true"> *</b>{/if}</span>
-                  <select
-                    id={`relationship-${relationship.id}-${field.key}`}
-                    value={textValue(field.key)}
-                    onchange={(event) => setValue(field.key, (event.currentTarget as HTMLSelectElement).value)}>
-                    <option value="">Choose {field.label.toLowerCase()}</option>
-                    {#each field.options ?? [] as option}<option value={option}>{option}</option>{/each}
-                  </select>
-                </label>
-              {:else if (field as any).type === "oneof"}
-                <label for={`relationship-${relationship.id}-${field.key}`}>
-                  <span>{field.label}{#if field.required}<b aria-hidden="true"> *</b>{/if}</span>
-                  <select
-                    id={`relationship-${relationship.id}-${field.key}`}
-                    value={textValue(field.key)}
-                    onchange={(event) => setValue(field.key, (event.currentTarget as HTMLSelectElement).value)}>
-                    <option value="">Choose {field.label.toLowerCase()}</option>
-                    {#each field.options ?? [] as option}<option value={option}>{option}</option>{/each}
-                    {#each ((field as any).oneOf ?? []) as variant}
-                      {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option>{/each}
-                    {/each}
-                  </select>
-                </label>
-              {:else}
-                <label for={`relationship-${relationship.id}-${field.key}`}>
-                  <span>{field.label}{#if field.required}<b aria-hidden="true"> *</b>{/if}</span>
-                  <input
-                    id={`relationship-${relationship.id}-${field.key}`}
-                    type="text"
-                    value={textValue(field.key)}
-                    placeholder={`Add ${field.label.toLowerCase()}`}
-                    oninput={(event) => setValue(field.key, (event.currentTarget as HTMLInputElement).value)} />
-                </label>
-              {/if}
+            {:else if field.type === "boolean"}
+              <label for={`relationship-${relationship.id}-${field.key}`}>
+                <span
+                  >{field.label}{#if field.required}<b aria-hidden="true"> *</b>{/if}</span>
+                <input
+                  id={`relationship-${relationship.id}-${field.key}`}
+                  type="checkbox"
+                  checked={valueFor(field.key) === true}
+                  onchange={(event) => setValue(field.key, (event.currentTarget as HTMLInputElement).checked)} />
+              </label>
+            {:else if field.type === "number"}
+              <label for={`relationship-${relationship.id}-${field.key}`}>
+                <span
+                  >{field.label}{#if field.required}<b aria-hidden="true"> *</b>{/if}</span>
+                <input
+                  id={`relationship-${relationship.id}-${field.key}`}
+                  type="number"
+                  value={textValue(field.key)}
+                  oninput={(event) => {
+                    const raw = (event.currentTarget as HTMLInputElement).value;
+                    setValue(field.key, raw === "" ? "" : Number(raw));
+                  }} />
+              </label>
+            {:else if field.type === "enum"}
+              <label for={`relationship-${relationship.id}-${field.key}`}>
+                <span
+                  >{field.label}{#if field.required}<b aria-hidden="true"> *</b>{/if}</span>
+                <select
+                  id={`relationship-${relationship.id}-${field.key}`}
+                  value={textValue(field.key)}
+                  onchange={(event) => setValue(field.key, (event.currentTarget as HTMLSelectElement).value)}>
+                  <option value="">Choose {field.label.toLowerCase()}</option>
+                  {#each field.options ?? [] as option}<option value={option}>{option}</option>{/each}
+                </select>
+              </label>
+            {:else if (field as any).type === "oneof"}
+              <label for={`relationship-${relationship.id}-${field.key}`}>
+                <span
+                  >{field.label}{#if field.required}<b aria-hidden="true"> *</b>{/if}</span>
+                <select
+                  id={`relationship-${relationship.id}-${field.key}`}
+                  value={textValue(field.key)}
+                  onchange={(event) => setValue(field.key, (event.currentTarget as HTMLSelectElement).value)}>
+                  <option value="">Choose {field.label.toLowerCase()}</option>
+                  {#each field.options ?? [] as option}<option value={option}>{option}</option>{/each}
+                  {#each (field as any).oneOf ?? [] as variant}
+                    {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option>{/each}
+                  {/each}
+                </select>
+              </label>
+            {:else}
+              <label for={`relationship-${relationship.id}-${field.key}`}>
+                <span
+                  >{field.label}{#if field.required}<b aria-hidden="true"> *</b>{/if}</span>
+                <input
+                  id={`relationship-${relationship.id}-${field.key}`}
+                  type="text"
+                  value={textValue(field.key)}
+                  placeholder={`Add ${field.label.toLowerCase()}`}
+                  oninput={(event) => setValue(field.key, (event.currentTarget as HTMLInputElement).value)} />
+              </label>
+            {/if}
             {#if fieldErrors[field.key]}<small class="relationship-metadata-error" role="alert"
                 >{fieldErrors[field.key]}</small
               >{/if}

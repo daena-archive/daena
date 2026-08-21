@@ -65,7 +65,10 @@ export function isGrammarDirty(session: GrammarEditSession | null) {
   return grammarRecordSnapshot(session.draft) !== session.baseline;
 }
 
-export function confirmGrammarLeave(session: GrammarEditSession | null, confirm: (message: string) => Promise<boolean>) {
+export function confirmGrammarLeave(
+  session: GrammarEditSession | null,
+  confirm: (message: string) => Promise<boolean>,
+) {
   if (!isGrammarDirty(session)) return true;
   return confirm("You have unsaved grammar changes. Leave anyway?");
 }

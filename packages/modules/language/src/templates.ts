@@ -27,12 +27,7 @@ export const LANGUAGE_TEMPLATES: LanguageTemplate[] = [
       family: "Constructed",
       notes: "A naturalistic constructed language with features inspired by real-world languages.",
     },
-    starterSystems: [
-      "syntax.basic-word-order",
-      "nouns.number",
-      "verbs.marking-strategy",
-      "verbs.tense",
-    ],
+    starterSystems: ["syntax.basic-word-order", "nouns.number", "verbs.marking-strategy", "verbs.tense"],
   },
   {
     id: "artistic",
@@ -43,9 +38,7 @@ export const LANGUAGE_TEMPLATES: LanguageTemplate[] = [
       status: "active",
       notes: "An artistic constructed language focused on aesthetic qualities and unique features.",
     },
-    starterSystems: [
-      "syntax.basic-word-order",
-    ],
+    starterSystems: ["syntax.basic-word-order"],
   },
   {
     id: "engineered",
@@ -56,10 +49,7 @@ export const LANGUAGE_TEMPLATES: LanguageTemplate[] = [
       status: "active",
       notes: "An engineered language designed for logical precision and clarity.",
     },
-    starterSystems: [
-      "syntax.basic-word-order",
-      "nouns.case",
-    ],
+    starterSystems: ["syntax.basic-word-order", "nouns.case"],
   },
   {
     id: "proto-language",

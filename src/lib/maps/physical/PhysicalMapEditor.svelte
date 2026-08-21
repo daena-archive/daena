@@ -294,7 +294,8 @@ onMount(() => {
         <span>PHYSICAL WORLD</span>
         <strong>{headline()}</strong>
       </div>
-      <button class="icon-button" type="button" aria-label="Close" onclick={() => void cancel()}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
+      <button class="icon-button" type="button" aria-label="Close" onclick={() => void cancel()}
+        ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
     </header>
     <div class="physical-map-controls">
       <label>Map name<input bind:value={name} disabled={busy} /></label>
@@ -319,7 +320,17 @@ onMount(() => {
         {/each}
       </div>
       <span class="physical-map-help">
-        <button type="button" aria-describedby="physical-map-hint" aria-label="About this preview" class:unread={!helpSeen} onmouseenter={() => { helpSeen = true; }} onfocus={() => { helpSeen = true; }}>?</button>
+        <button
+          type="button"
+          aria-describedby="physical-map-hint"
+          aria-label="About this preview"
+          class:unread={!helpSeen}
+          onmouseenter={() => {
+            helpSeen = true;
+          }}
+          onfocus={() => {
+            helpSeen = true;
+          }}>?</button>
         <p id="physical-map-hint" role="tooltip">
           This preview locks the world’s physical shape—coasts, climate, ice, rivers, and the rest. The accepted,
           exportable map is a high-resolution render with far more detail and quality.

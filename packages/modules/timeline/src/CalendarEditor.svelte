@@ -23,7 +23,11 @@ import {
   type YearPresetId,
 } from "./calendar";
 
-let { context, entityId, onsaved }: { context: ModuleContext; entityId: UUID; onsaved?: (definition: CalendarDefinition) => void } = $props();
+let {
+  context,
+  entityId,
+  onsaved,
+}: { context: ModuleContext; entityId: UUID; onsaved?: (definition: CalendarDefinition) => void } = $props();
 
 let saved = $state<CalendarDefinition>(emptyCalendarDefinition());
 let draft = $state<CalendarDefinition>(emptyCalendarDefinition());
@@ -208,7 +212,8 @@ $effect(() => {
           <strong id="calendar-modal-title">Configure calendar</strong>
           <p>Pick a year shape, then edit months, epoch, and how dates should read.</p>
         </div>
-        <button type="button" class="calendar-close" aria-label="Close calendar configuration" onclick={closeModal}>×</button>
+        <button type="button" class="calendar-close" aria-label="Close calendar configuration" onclick={closeModal}
+          >×</button>
       </div>
       <div class="calendar-modal-body">
         {#if error}<p class="calendar-error" role="alert">{error}</p>{/if}
@@ -264,9 +269,19 @@ $effect(() => {
                       setDraft({ ...draft, months });
                     }} />
                   <span>days</span>
-                  <button type="button" disabled={index === 0} onclick={() => setDraft({ ...draft, months: move(draft.months, index, -1) })}>Up</button>
-                  <button type="button" disabled={index === draft.months.length - 1} onclick={() => setDraft({ ...draft, months: move(draft.months, index, 1) })}>Down</button>
-                  <button type="button" onclick={() => setDraft({ ...draft, months: draft.months.filter((_, itemIndex) => itemIndex !== index) })}>Remove</button>
+                  <button
+                    type="button"
+                    disabled={index === 0}
+                    onclick={() => setDraft({ ...draft, months: move(draft.months, index, -1) })}>Up</button>
+                  <button
+                    type="button"
+                    disabled={index === draft.months.length - 1}
+                    onclick={() => setDraft({ ...draft, months: move(draft.months, index, 1) })}>Down</button>
+                  <button
+                    type="button"
+                    onclick={() =>
+                      setDraft({ ...draft, months: draft.months.filter((_, itemIndex) => itemIndex !== index) })}
+                    >Remove</button>
                 </li>
               {/each}
             </ol>
@@ -275,7 +290,9 @@ $effect(() => {
 
         <section>
           <h4>Epoch</h4>
-          <p class="calendar-note">Year numbering and the Gregorian timeline day that counts as the first day of that year.</p>
+          <p class="calendar-note">
+            Year numbering and the Gregorian timeline day that counts as the first day of that year.
+          </p>
           <div class="calendar-grid">
             <label>
               First year number
@@ -283,19 +300,35 @@ $effect(() => {
                 type="number"
                 value={draft.startingYear ?? 1}
                 onchange={(event) =>
-                  setDraft({ ...draft, startingYear: integerField(event.currentTarget.value, 1, Number.MIN_SAFE_INTEGER) })} />
+                  setDraft({
+                    ...draft,
+                    startingYear: integerField(event.currentTarget.value, 1, Number.MIN_SAFE_INTEGER),
+                  })} />
             </label>
             <label>
               Gregorian year
-              <input type="number" value={draft.epoch?.year ?? 1} onchange={(event) => setEpoch("year", event.currentTarget.value)} />
+              <input
+                type="number"
+                value={draft.epoch?.year ?? 1}
+                onchange={(event) => setEpoch("year", event.currentTarget.value)} />
             </label>
             <label>
               Month
-              <input type="number" min="1" max="12" value={draft.epoch?.month ?? 1} onchange={(event) => setEpoch("month", event.currentTarget.value)} />
+              <input
+                type="number"
+                min="1"
+                max="12"
+                value={draft.epoch?.month ?? 1}
+                onchange={(event) => setEpoch("month", event.currentTarget.value)} />
             </label>
             <label>
               Day
-              <input type="number" min="1" max="31" value={draft.epoch?.day ?? 1} onchange={(event) => setEpoch("day", event.currentTarget.value)} />
+              <input
+                type="number"
+                min="1"
+                max="31"
+                value={draft.epoch?.day ?? 1}
+                onchange={(event) => setEpoch("day", event.currentTarget.value)} />
             </label>
           </div>
         </section>
@@ -313,7 +346,10 @@ $effect(() => {
               </button>
               <div id="calendar-format-help" role="tooltip" class="calendar-help-box">
                 <p>Write a pattern with these tokens. Spaces, slashes, dashes, and commas stay as you type them.</p>
-                <p>If a date has no month, day, weekday, or season, that token is dropped and leftover punctuation is cleaned up.</p>
+                <p>
+                  If a date has no month, day, weekday, or season, that token is dropped and leftover punctuation is
+                  cleaned up.
+                </p>
                 <dl>
                   {#each DATE_FORMAT_GUIDE as item}
                     <div>
@@ -365,9 +401,19 @@ $effect(() => {
                       );
                       setDraft({ ...draft, weekdays });
                     }} />
-                  <button type="button" disabled={index === 0} onclick={() => setDraft({ ...draft, weekdays: move(draft.weekdays, index, -1) })}>Up</button>
-                  <button type="button" disabled={index === draft.weekdays.length - 1} onclick={() => setDraft({ ...draft, weekdays: move(draft.weekdays, index, 1) })}>Down</button>
-                  <button type="button" onclick={() => setDraft({ ...draft, weekdays: draft.weekdays.filter((_, itemIndex) => itemIndex !== index) })}>Remove</button>
+                  <button
+                    type="button"
+                    disabled={index === 0}
+                    onclick={() => setDraft({ ...draft, weekdays: move(draft.weekdays, index, -1) })}>Up</button>
+                  <button
+                    type="button"
+                    disabled={index === draft.weekdays.length - 1}
+                    onclick={() => setDraft({ ...draft, weekdays: move(draft.weekdays, index, 1) })}>Down</button>
+                  <button
+                    type="button"
+                    onclick={() =>
+                      setDraft({ ...draft, weekdays: draft.weekdays.filter((_, itemIndex) => itemIndex !== index) })}
+                    >Remove</button>
                 </li>
               {/each}
             </ol>
@@ -394,23 +440,67 @@ $effect(() => {
                       );
                       setDraft({ ...draft, seasons });
                     }} />
-                  <label>From month<input type="number" min="1" value={season.startMonth} onchange={(event) => {
-                    const startMonth = integerField(event.currentTarget.value, season.startMonth);
-                    setDraft({ ...draft, seasons: draft.seasons.map((item, itemIndex) => itemIndex === index ? { ...item, startMonth } : item) });
-                  }} /></label>
-                  <label>Day<input type="number" min="1" value={season.startDay} onchange={(event) => {
-                    const startDay = integerField(event.currentTarget.value, season.startDay);
-                    setDraft({ ...draft, seasons: draft.seasons.map((item, itemIndex) => itemIndex === index ? { ...item, startDay } : item) });
-                  }} /></label>
-                  <label>To month<input type="number" min="1" value={season.endMonth} onchange={(event) => {
-                    const endMonth = integerField(event.currentTarget.value, season.endMonth);
-                    setDraft({ ...draft, seasons: draft.seasons.map((item, itemIndex) => itemIndex === index ? { ...item, endMonth } : item) });
-                  }} /></label>
-                  <label>Day<input type="number" min="1" value={season.endDay} onchange={(event) => {
-                    const endDay = integerField(event.currentTarget.value, season.endDay);
-                    setDraft({ ...draft, seasons: draft.seasons.map((item, itemIndex) => itemIndex === index ? { ...item, endDay } : item) });
-                  }} /></label>
-                  <button type="button" onclick={() => setDraft({ ...draft, seasons: draft.seasons.filter((_, itemIndex) => itemIndex !== index) })}>Remove</button>
+                  <label
+                    >From month<input
+                      type="number"
+                      min="1"
+                      value={season.startMonth}
+                      onchange={(event) => {
+                        const startMonth = integerField(event.currentTarget.value, season.startMonth);
+                        setDraft({
+                          ...draft,
+                          seasons: draft.seasons.map((item, itemIndex) =>
+                            itemIndex === index ? { ...item, startMonth } : item,
+                          ),
+                        });
+                      }} /></label>
+                  <label
+                    >Day<input
+                      type="number"
+                      min="1"
+                      value={season.startDay}
+                      onchange={(event) => {
+                        const startDay = integerField(event.currentTarget.value, season.startDay);
+                        setDraft({
+                          ...draft,
+                          seasons: draft.seasons.map((item, itemIndex) =>
+                            itemIndex === index ? { ...item, startDay } : item,
+                          ),
+                        });
+                      }} /></label>
+                  <label
+                    >To month<input
+                      type="number"
+                      min="1"
+                      value={season.endMonth}
+                      onchange={(event) => {
+                        const endMonth = integerField(event.currentTarget.value, season.endMonth);
+                        setDraft({
+                          ...draft,
+                          seasons: draft.seasons.map((item, itemIndex) =>
+                            itemIndex === index ? { ...item, endMonth } : item,
+                          ),
+                        });
+                      }} /></label>
+                  <label
+                    >Day<input
+                      type="number"
+                      min="1"
+                      value={season.endDay}
+                      onchange={(event) => {
+                        const endDay = integerField(event.currentTarget.value, season.endDay);
+                        setDraft({
+                          ...draft,
+                          seasons: draft.seasons.map((item, itemIndex) =>
+                            itemIndex === index ? { ...item, endDay } : item,
+                          ),
+                        });
+                      }} /></label>
+                  <button
+                    type="button"
+                    onclick={() =>
+                      setDraft({ ...draft, seasons: draft.seasons.filter((_, itemIndex) => itemIndex !== index) })}
+                    >Remove</button>
                 </li>
               {/each}
             </ol>
@@ -449,19 +539,31 @@ $effect(() => {
 .calendar-modal-body h4 {
   margin: 0;
   color: #302c26;
-  font: 650 12px Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    650 12px Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .calendar-summary p,
 .calendar-note,
 .calendar-modal-heading p {
   margin: 0;
   color: #8f897e;
-  font: 12px/1.45 Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    12px/1.45 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .calendar-error {
   margin: 0;
   color: #a14f42;
-  font: 12px/1.45 Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    12px/1.45 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .calendar-backdrop {
   position: fixed;
@@ -490,13 +592,19 @@ $effect(() => {
 }
 .calendar-modal-heading span {
   color: #8f897e;
-  font: 700 10px Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    700 10px Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
   letter-spacing: 0.06em;
 }
 .calendar-modal-heading strong {
   display: block;
   margin-top: 4px;
-  font: 500 24px/1.15 Georgia, serif;
+  font:
+    500 24px/1.15 Georgia,
+    serif;
 }
 .calendar-modal-body {
   gap: 18px;
@@ -537,7 +645,11 @@ $effect(() => {
   display: grid;
   gap: 4px;
   color: #62594e;
-  font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    600 10px Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .calendar-format-help {
   position: relative;
@@ -547,7 +659,9 @@ $effect(() => {
   height: 28px;
   padding: 0;
   border-radius: 999px;
-  font: 650 14px Georgia, serif;
+  font:
+    650 14px Georgia,
+    serif;
   line-height: 1;
 }
 .calendar-help-box {
@@ -563,7 +677,11 @@ $effect(() => {
   background: #fffefa;
   box-shadow: 0 12px 32px rgba(37, 37, 31, 0.16);
   color: #302c26;
-  font: 12px/1.45 Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    12px/1.45 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .calendar-format-help:hover .calendar-help-box,
 .calendar-format-help:focus-within .calendar-help-box {
@@ -590,7 +708,11 @@ $effect(() => {
 }
 .calendar-help-box code {
   color: #b4773f;
-  font: 650 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    650 12px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
 }
 .calendar-help-box dd {
   margin: 0;
@@ -603,13 +725,19 @@ $effect(() => {
   border-radius: 8px;
   background: #fcf8f1;
   color: #302c26;
-  font: 500 13px Georgia, serif;
+  font:
+    500 13px Georgia,
+    serif;
 }
 .calendar-preview span {
   display: block;
   margin-bottom: 4px;
   color: #8f897e;
-  font: 700 10px Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    700 10px Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -636,7 +764,11 @@ $effect(() => {
   border-radius: 7px;
   background: #fffefa;
   color: #55351f;
-  font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    600 11px Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .calendar-modal input {
   min-width: 0;

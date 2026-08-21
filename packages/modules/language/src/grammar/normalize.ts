@@ -1104,7 +1104,8 @@ export function indexGrammarRecords(records: { id: string; revision?: string; va
     const result = source ? normalizeGrammarRecord(source.value) : null;
     if (result?.ok && result.record.recordKind === "system" && first) {
       systems.set(systemId, { id: first.id, revision: first.revision || source?.revision || "", value: result.record });
-      for (const item of result.issues) diagnostics.push({ ...item, recordIds: ids.map((entry) => entry.id), systemId });
+      for (const item of result.issues)
+        diagnostics.push({ ...item, recordIds: ids.map((entry) => entry.id), systemId });
     }
   }
 

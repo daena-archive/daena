@@ -38,8 +38,7 @@ function handleBlur() {
   onmouseenter={handleMouseEnter}
   onmouseleave={handleMouseLeave}
   onfocus={handleFocus}
-  onblur={handleBlur}
->
+  onblur={handleBlur}>
   {@render children()}
   {#if showTooltip}
     <div
@@ -50,8 +49,7 @@ function handleBlur() {
       class:bottom={position === "bottom"}
       class:left={position === "left"}
       class:right={position === "right"}
-      role="tooltip"
-    >
+      role="tooltip">
       {content}
       <div class="help-tooltip-arrow"></div>
     </div>

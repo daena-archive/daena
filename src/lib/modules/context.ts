@@ -231,7 +231,12 @@ function createRelationships(manifest: ModuleManifest, relationships: Record<str
 export function buildModuleContext(
   manifest: ModuleManifest,
   projectId: string,
-  options?: { focusEntityId?: UUID; availableServices?: ReadonlySet<string>; embedded?: boolean; onEntityDeleted?: () => void },
+  options?: {
+    focusEntityId?: UUID;
+    availableServices?: ReadonlySet<string>;
+    embedded?: boolean;
+    onEntityDeleted?: () => void;
+  },
 ): ModuleContext {
   void projectId;
   const onEntityDeleted = options?.onEntityDeleted;

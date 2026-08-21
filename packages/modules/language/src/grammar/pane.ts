@@ -25,7 +25,7 @@ export async function tryLeaveGrammar(state: GrammarUiState, confirm: (message: 
 }
 
 export async function goHome(state: GrammarUiState, confirm: (message: string) => Promise<boolean>) {
-  if (!await tryLeaveGrammar(state, confirm)) return false;
+  if (!(await tryLeaveGrammar(state, confirm))) return false;
   state.editing = null;
   state.section = null;
   state.query = "";
@@ -33,8 +33,12 @@ export async function goHome(state: GrammarUiState, confirm: (message: string) =
   return true;
 }
 
-export async function goSection(state: GrammarUiState, sectionId: GrammarSectionId, confirm: (message: string) => Promise<boolean>) {
-  if (!await tryLeaveGrammar(state, confirm)) return false;
+export async function goSection(
+  state: GrammarUiState,
+  sectionId: GrammarSectionId,
+  confirm: (message: string) => Promise<boolean>,
+) {
+  if (!(await tryLeaveGrammar(state, confirm))) return false;
   state.editing = null;
   state.section = sectionId;
   state.query = "";
@@ -64,8 +68,12 @@ function grammarFocusSelector(draft: GrammarEditSession["draft"], recordId?: str
   return '[data-grammar-id="section:agreement"]';
 }
 
-export async function goSystem(state: GrammarUiState, systemId: GrammarSystemId, confirm: (message: string) => Promise<boolean>) {
-  if (!await tryLeaveGrammar(state, confirm)) return false;
+export async function goSystem(
+  state: GrammarUiState,
+  systemId: GrammarSystemId,
+  confirm: (message: string) => Promise<boolean>,
+) {
+  if (!(await tryLeaveGrammar(state, confirm))) return false;
   state.query = "";
   state.starterCurrent = undefined;
   state.section = grammarSystemDescriptor(systemId)?.sectionId ?? state.section;
@@ -112,7 +120,7 @@ export async function deleteGrammarEditor(state: GrammarUiState, ctx: GrammarPan
       : "title" in session.draft
         ? session.draft.title
         : "this record";
-  if (!await ctx.confirm(`Delete “${title}”?`)) return "";
+  if (!(await ctx.confirm(`Delete “${title}”?`))) return "";
   const result = await deleteGrammarRecord(ctx.records, ctx.ownerId, {
     recordId,
     revision: session.revision,

@@ -91,9 +91,13 @@ const entityOrLink = (state: HastState, node: Element) => {
   const entityId = propertyString(node, "dataEntityId") || entityIdFromHref(propertyString(node, "href"));
   if (entityId) {
     const children = state.all(node) as PhrasingContent[];
-    const rawIsCustom = (node.properties as Record<string, unknown> | undefined)?.["dataIsCustom"] ?? (node.properties as Record<string, unknown> | undefined)?.["data-is-custom"];
+    const rawIsCustom =
+      (node.properties as Record<string, unknown> | undefined)?.["dataIsCustom"] ??
+      (node.properties as Record<string, unknown> | undefined)?.["data-is-custom"];
     const hasFlag = rawIsCustom != null;
-    const isCustom = hasFlag ? String(rawIsCustom) === "true" : children.length > 0 && nodeText({ children } as never).trim().length > 0;
+    const isCustom = hasFlag
+      ? String(rawIsCustom) === "true"
+      : children.length > 0 && nodeText({ children } as never).trim().length > 0;
     const result: EntityReference = {
       type: "entityReference",
       entityId,
@@ -129,8 +133,7 @@ const spoiler = (state: HastState, node: Element) => {
   const isSpoiler = node.properties?.dataSpoiler != null || classList(node).includes("spoiler");
   if (!isSpoiler) {
     const fallback = (defaultHandlers as Record<string, unknown>).span as
-      | ((state: HastState, node: Element) => unknown)
-      | undefined;
+      ((state: HastState, node: Element) => unknown) | undefined;
     return fallback ? fallback(state, node) : undefined;
   }
   const result: Spoiler = {

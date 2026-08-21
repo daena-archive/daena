@@ -88,7 +88,7 @@ const registerSamplesGuard = registerLeaveGuard("samples");
 async function canLeave() {
   for (const paneId of PANES.map(([id]) => id)) {
     const guard = leaveGuards[paneId];
-    if (guard && !await guard()) return false;
+    if (guard && !(await guard())) return false;
   }
   return true;
 }
@@ -108,7 +108,7 @@ onMount(() => {
   if (context.focusEntityId) {
     void loadLanguage(context.focusEntityId);
   }
-  
+
   // Show welcome tour for first-time users
   try {
     const tourCompleted = localStorage.getItem("daena-language-tour-completed");
@@ -116,7 +116,7 @@ onMount(() => {
       showWelcomeTour = true;
     }
   } catch {}
-  
+
   return () => {
     cancelled = true;
   };
@@ -140,14 +140,14 @@ async function loadLanguage(entityId: string) {
 
 async function switchPane(id: Pane) {
   if (pane === id) return;
-  if (!await canLeave()) return;
+  if (!(await canLeave())) return;
   pane = id;
 }
 
 async function openLinkedLexeme(lexemeId: string) {
   pendingLexemeId = lexemeId;
   if (pane === "lexicon") return;
-  if (!await canLeave()) {
+  if (!(await canLeave())) {
     pendingLexemeId = null;
     return;
   }
@@ -210,17 +210,20 @@ function dismissWelcomeTour() {
       <nav class="language-breadcrumb" aria-label="Breadcrumb">
         <ol>
           <li>
-            <button type="button" class="language-breadcrumb-link" onclick={() => switchPane("overview")}>Languages</button>
+            <button type="button" class="language-breadcrumb-link" onclick={() => switchPane("overview")}
+              >Languages</button>
           </li>
           {#if selectedLanguage}
             <li>
               <span class="language-breadcrumb-sep" aria-hidden="true">›</span>
-              <button type="button" class="language-breadcrumb-link" onclick={() => switchPane("overview")}>{selectedLanguage.name}</button>
+              <button type="button" class="language-breadcrumb-link" onclick={() => switchPane("overview")}
+                >{selectedLanguage.name}</button>
             </li>
             <li>
               <span class="language-breadcrumb-sep" aria-hidden="true">›</span>
               {#if breadcrumbExtra.length > 0}
-                <button type="button" class="language-breadcrumb-link" onclick={() => switchPane(pane)}>{PANES.find(([id]) => id === pane)?.[1] ?? ""}</button>
+                <button type="button" class="language-breadcrumb-link" onclick={() => switchPane(pane)}
+                  >{PANES.find(([id]) => id === pane)?.[1] ?? ""}</button>
               {:else}
                 <span class="language-breadcrumb-current">{PANES.find(([id]) => id === pane)?.[1] ?? ""}</span>
               {/if}
@@ -238,7 +241,8 @@ function dismissWelcomeTour() {
           {/if}
         </ol>
       </nav>
-      <button type="button" class="language-help-button" onclick={openWelcomeTour} aria-label="Show welcome tour">?</button>
+      <button type="button" class="language-help-button" onclick={openWelcomeTour} aria-label="Show welcome tour"
+        >?</button>
     </div>
     {#if languageLoading && !selectedLanguage}
       <p class="language-empty language-loading" role="status" aria-live="polite">Loading language…</p>
@@ -246,7 +250,10 @@ function dismissWelcomeTour() {
       <div class="language-empty-screen" role="status">
         <div class="language-empty-mark" aria-hidden="true">✦</div>
         <h3>Your language workshop is waiting.</h3>
-        <p>Select a language from the list, or create your first language to begin building words, sounds, writing and grammar.</p>
+        <p>
+          Select a language from the list, or create your first language to begin building words, sounds, writing and
+          grammar.
+        </p>
       </div>
     {:else}
       <div bind:this={paneListEl} class="language-tabs" role="tablist" aria-label="Language workspace">
@@ -255,7 +262,8 @@ function dismissWelcomeTour() {
             <span class="language-tab-group-label">{group.label}</span>
             <div class="language-tab-group-tabs">
               {#each group.tabs as [id, label], tabIndex (id)}
-                {@const globalIndex = TAB_GROUPS.slice(0, groupIndex).reduce((acc, g) => acc + g.tabs.length, 0) + tabIndex}
+                {@const globalIndex =
+                  TAB_GROUPS.slice(0, groupIndex).reduce((acc, g) => acc + g.tabs.length, 0) + tabIndex}
                 <button
                   type="button"
                   role="tab"
@@ -285,7 +293,7 @@ function dismissWelcomeTour() {
           {selectedLanguage}
           active={pane === "sounds"}
           registerLeaveGuard={registerSoundsGuard}
-          setMutationActive={setMutationActive} />
+          {setMutationActive} />
       </div>
       <div class="language-pane" hidden={pane !== "writing"}>
         <Writing
@@ -293,7 +301,7 @@ function dismissWelcomeTour() {
           {selectedLanguage}
           active={pane === "writing"}
           registerLeaveGuard={registerWritingGuard}
-          setMutationActive={setMutationActive} />
+          {setMutationActive} />
       </div>
       <div class="language-pane" hidden={pane !== "grammar"}>
         <Grammar
@@ -301,7 +309,7 @@ function dismissWelcomeTour() {
           {selectedLanguage}
           active={pane === "grammar"}
           registerLeaveGuard={registerGrammarGuard}
-          setMutationActive={setMutationActive}
+          {setMutationActive}
           {setBreadcrumbExtra} />
       </div>
       <div class="language-pane" hidden={pane !== "forms"}>
@@ -310,7 +318,7 @@ function dismissWelcomeTour() {
           {selectedLanguage}
           active={pane === "forms"}
           registerLeaveGuard={registerFormsGuard}
-          setMutationActive={setMutationActive} />
+          {setMutationActive} />
       </div>
       <div class="language-pane" hidden={pane !== "samples"}>
         <Samples
@@ -319,17 +327,17 @@ function dismissWelcomeTour() {
           active={pane === "samples"}
           openLexeme={openLinkedLexeme}
           registerLeaveGuard={registerSamplesGuard}
-          setMutationActive={setMutationActive} />
+          {setMutationActive} />
       </div>
       <div class="language-pane" hidden={pane !== "lexicon"}>
         <Lexicon
           {context}
           {selectedLanguage}
           active={pane === "lexicon"}
-          pendingLexemeId={pendingLexemeId}
+          {pendingLexemeId}
           onPendingLexemeHandled={clearPendingLexeme}
           registerLeaveGuard={registerLexiconGuard}
-          setMutationActive={setMutationActive} />
+          {setMutationActive} />
       </div>
     {/if}
   </div>
@@ -338,9 +346,7 @@ function dismissWelcomeTour() {
 <ConfirmModal />
 
 {#if showWelcomeTour}
-  <WelcomeTour
-    onComplete={completeWelcomeTour}
-    onDismiss={dismissWelcomeTour} />
+  <WelcomeTour onComplete={completeWelcomeTour} onDismiss={dismissWelcomeTour} />
 {/if}
 
 <style>
@@ -456,7 +462,9 @@ function dismissWelcomeTour() {
   font-size: 13px;
   cursor: pointer;
   text-decoration: none;
-  transition: background 0.15s, color 0.15s;
+  transition:
+    background 0.15s,
+    color 0.15s;
 }
 .language-breadcrumb-link:hover {
   background: var(--surface-muted);

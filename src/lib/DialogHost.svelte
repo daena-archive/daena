@@ -6,17 +6,17 @@ let promptInput = $state<HTMLInputElement | null>(null);
 let confirmButton = $state<HTMLButtonElement | null>(null);
 let lastFocused: Element | null = null;
 
-  $effect(() => {
-    const open = dialogState.open;
-    const current = dialogState.current;
-    if (!open || !current) return;
-    lastFocused = document.activeElement;
-    const frame = window.requestAnimationFrame(() => {
-      if (current.kind === "prompt") promptInput?.focus();
-      else confirmButton?.focus();
-    });
-    return () => window.cancelAnimationFrame(frame);
+$effect(() => {
+  const open = dialogState.open;
+  const current = dialogState.current;
+  if (!open || !current) return;
+  lastFocused = document.activeElement;
+  const frame = window.requestAnimationFrame(() => {
+    if (current.kind === "prompt") promptInput?.focus();
+    else confirmButton?.focus();
   });
+  return () => window.cancelAnimationFrame(frame);
+});
 
 $effect(() => {
   if (!dialogState.open) return;
@@ -30,15 +30,15 @@ $effect(() => {
   return () => window.removeEventListener("keydown", onKey, true);
 });
 
-  function settle(value: boolean | string | null) {
-    resolveDialog(value);
-    if (dialogState.open) return;
-    const focused = lastFocused;
-    lastFocused = null;
-    window.requestAnimationFrame(() => {
-      if (focused instanceof HTMLElement && focused.isConnected) focused.focus();
-    });
-  }
+function settle(value: boolean | string | null) {
+  resolveDialog(value);
+  if (dialogState.open) return;
+  const focused = lastFocused;
+  lastFocused = null;
+  window.requestAnimationFrame(() => {
+    if (focused instanceof HTMLElement && focused.isConnected) focused.focus();
+  });
+}
 
 function submitPrompt() {
   const value = promptInput?.value ?? "";
@@ -61,7 +61,8 @@ function submitPrompt() {
         <div>
           <span class="panel-kicker">DAENA</span><strong id="shared-dialog-title">{dialogState.current.title}</strong>
         </div>
-        <button type="button" class="dialog-close" aria-label="Cancel dialog" onclick={() => settle(null)}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
+        <button type="button" class="dialog-close" aria-label="Cancel dialog" onclick={() => settle(null)}
+          ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>
       <p id="shared-dialog-message" class="dialog-message">{dialogState.current.message}</p>
       {#if dialogState.current.kind === "prompt"}

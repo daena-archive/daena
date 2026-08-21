@@ -1195,251 +1195,252 @@ onMount(() => {
     {/if}
     <div class="editor-body" class:studio={studioOpen} style={`--sidebar-width: ${sidebarWidth}px`}>
       {#if !studioOpen}
-      <aside aria-label="Map layers">
-        {#if studioSupported}
-          <button
-            type="button"
-            class="studio-open"
-            class:active={studioOpen}
-            aria-pressed={studioOpen}
-            onclick={() => (studioOpen = !studioOpen)}>Atlas Studio</button>
-        {/if}
-        <button
-          type="button"
-          class="aside-toggle"
-          aria-expanded={!layersCollapsed}
-          onclick={() => (layersCollapsed = !layersCollapsed)}>
-          <strong id="vector-layers-heading">Vector layers</strong>
-          <span class="aside-chevron" class:collapsed={layersCollapsed}>{@render glyph(icons.chevron)}</span>
-        </button>
-        {#if !layersCollapsed}
-          {#if physicalMap}
-            <p class="hazard-legend">
-              Hazard layers show relative generated rates; they are not real-world predictions.
-            </p>
+        <aside aria-label="Map layers">
+          {#if studioSupported}
+            <button
+              type="button"
+              class="studio-open"
+              class:active={studioOpen}
+              aria-pressed={studioOpen}
+              onclick={() => (studioOpen = !studioOpen)}>Atlas Studio</button>
           {/if}
-          {#if listedLayers.length === 0}
-            <p class="hint">Add a vector layer to draw points, lines, and regions. Base geography stays read-only.</p>
-          {/if}
-          <div class="layer-list" role="list" aria-labelledby="vector-layers-heading">
-            {#each listedLayers as layer (layer.id)}
-              <div class="layer" class:active={layer.id === activeLayerId} role="listitem">
-                <button
-                  class="layer-name"
-                  type="button"
-                  aria-pressed={layer.id === activeLayerId}
-                  onclick={() => switchLayer(layer.id)}>
-                  {#if renamingId === layer.id}
-                    <input
-                      value={layer.name}
-                      aria-label="Layer name"
-                      onblur={(event) => void renameLayer(layer, event.currentTarget.value)}
-                      onkeydown={(event) => {
-                        if (event.key === "Enter") void renameLayer(layer, event.currentTarget.value);
-                        if (event.key === "Escape") renamingId = null;
-                      }} />
-                  {:else}{layer.name}{/if}
-                </button>
-                <div class="layer-row">
-                  <button
-                    type="button"
-                    class="icon-button"
-                    aria-pressed={layer.defaultVisible}
-                    aria-label={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
-                    title={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
-                    onclick={() => void toggleVisible(layer)}
-                    >{@render glyph(layer.defaultVisible ? icons.show : icons.hide)}</button>
-                  {#if !immutablePhysicalLayerIds.has(layer.id)}
-                    <button
-                      type="button"
-                      class="icon-button"
-                      aria-pressed={layer.locked}
-                      aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
-                      title={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
-                      onclick={() => void toggleLock(layer)}
-                      >{@render glyph(layer.locked ? icons.lock : icons.unlock)}</button>
-                    <button
-                      type="button"
-                      class="icon-button"
-                      aria-label={`Rename ${layer.name}`}
-                      title="Rename"
-                      onclick={() => (renamingId = layer.id)}>{@render glyph(icons.rename)}</button>
-                    <button
-                      type="button"
-                      class="icon-button"
-                      aria-label={`Move ${layer.name} up`}
-                      title="Up"
-                      onclick={() => void moveLayer(layer, -1)}>{@render glyph(icons.up)}</button>
-                    <button
-                      type="button"
-                      class="icon-button"
-                      aria-label={`Move ${layer.name} down`}
-                      title="Down"
-                      onclick={() => void moveLayer(layer, 1)}>{@render glyph(icons.down)}</button>
-                    <button
-                      type="button"
-                      class="icon-button"
-                      aria-label={`Delete ${layer.name}`}
-                      title="Delete"
-                      onclick={() => void removeLayer(layer)}>{@render glyph(icons.remove)}</button>
-                  {/if}
-                </div>
-                {#if layer.id === activeLayerId && !immutablePhysicalLayerIds.has(layer.id)}
-                  <div class="style-row">
-                    <label>
-                      Fill
-                      <input
-                        type="color"
-                        value={layer.style.fill}
-                        aria-label={`${layer.name} fill`}
-                        onchange={(event) => void updateStyle(layer, { fill: event.currentTarget.value })} />
-                    </label>
-                    <label>
-                      Stroke
-                      <input
-                        type="color"
-                        value={layer.style.stroke}
-                        aria-label={`${layer.name} stroke`}
-                        onchange={(event) => void updateStyle(layer, { stroke: event.currentTarget.value })} />
-                    </label>
-                    <label>
-                      Fill opacity
-                      <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.05"
-                        value={layer.style.fillOpacity}
-                        aria-label={`${layer.name} fill opacity`}
-                        oninput={(event) =>
-                          void updateStyle(layer, { fillOpacity: Number(event.currentTarget.value) })} />
-                    </label>
-                    <label>
-                      Stroke width
-                      <input
-                        type="number"
-                        min="0"
-                        max="32"
-                        step="0.25"
-                        value={layer.style.strokeWidth}
-                        aria-label={`${layer.name} stroke width`}
-                        onchange={(event) =>
-                          void updateStyle(layer, { strokeWidth: Number(event.currentTarget.value) })} />
-                    </label>
-                    <label>
-                      Point radius
-                      <input
-                        type="number"
-                        min="1"
-                        max="64"
-                        step="1"
-                        value={layer.style.pointRadius}
-                        aria-label={`${layer.name} point radius`}
-                        onchange={(event) =>
-                          void updateStyle(layer, { pointRadius: Number(event.currentTarget.value) })} />
-                    </label>
-                  </div>
-                {/if}
-              </div>
-            {/each}
-          </div>
-        {/if}
-        {#if physicalMap}
           <button
             type="button"
             class="aside-toggle"
-            aria-expanded={!historyCollapsed}
-            onclick={() => (historyCollapsed = !historyCollapsed)}>
-            <strong>Natural history</strong>
-            <span class="aside-chevron" class:collapsed={historyCollapsed}>{@render glyph(icons.chevron)}</span>
+            aria-expanded={!layersCollapsed}
+            onclick={() => (layersCollapsed = !layersCollapsed)}>
+            <strong id="vector-layers-heading">Vector layers</strong>
+            <span class="aside-chevron" class:collapsed={layersCollapsed}>{@render glyph(icons.chevron)}</span>
           </button>
-          {#if !historyCollapsed}
-            <div class="event-control" aria-label="Materialize natural history">
-              <label>
-                Event
-                <select bind:value={eventKind} disabled={eventBusy || busy}>
-                  <option value="earthquake">Earthquake</option>
-                  <option value="eruption">Eruption</option>
-                </select>
-              </label>
-              <label>
-                From (years)
-                <input
-                  type="number"
-                  min="-100000"
-                  max="100000"
-                  step="1"
-                  bind:value={eventStartYears}
-                  disabled={eventBusy || busy} />
-              </label>
-              <label>
-                To (years)
-                <input
-                  type="number"
-                  min="-100000"
-                  max="100000"
-                  step="1"
-                  bind:value={eventEndYears}
-                  disabled={eventBusy || busy} />
-              </label>
-              <label>
-                Max events
-                <input
-                  type="number"
-                  min="1"
-                  max="128"
-                  step="1"
-                  bind:value={eventMaxEvents}
-                  disabled={eventBusy || busy} />
-              </label>
-              <label>
-                Hazard seed
-                <input type="number" min="0" step="1" bind:value={eventHazardSeed} disabled={eventBusy || busy} />
-              </label>
-              <button type="button" disabled={eventBusy || busy} onclick={() => void materializePhysicalEvents()}>
-                {eventBusy ? "Committing…" : "Commit events"}
-              </button>
-              <small
-                >Creates revisioned entities and map links; generated hazards remain read-only and are not predictions.</small>
-              {#if eventNotice}<small role="status">{eventNotice}</small>{/if}
+          {#if !layersCollapsed}
+            {#if physicalMap}
+              <p class="hazard-legend">
+                Hazard layers show relative generated rates; they are not real-world predictions.
+              </p>
+            {/if}
+            {#if listedLayers.length === 0}
+              <p class="hint">Add a vector layer to draw points, lines, and regions. Base geography stays read-only.</p>
+            {/if}
+            <div class="layer-list" role="list" aria-labelledby="vector-layers-heading">
+              {#each listedLayers as layer (layer.id)}
+                <div class="layer" class:active={layer.id === activeLayerId} role="listitem">
+                  <button
+                    class="layer-name"
+                    type="button"
+                    aria-pressed={layer.id === activeLayerId}
+                    onclick={() => switchLayer(layer.id)}>
+                    {#if renamingId === layer.id}
+                      <input
+                        value={layer.name}
+                        aria-label="Layer name"
+                        onblur={(event) => void renameLayer(layer, event.currentTarget.value)}
+                        onkeydown={(event) => {
+                          if (event.key === "Enter") void renameLayer(layer, event.currentTarget.value);
+                          if (event.key === "Escape") renamingId = null;
+                        }} />
+                    {:else}{layer.name}{/if}
+                  </button>
+                  <div class="layer-row">
+                    <button
+                      type="button"
+                      class="icon-button"
+                      aria-pressed={layer.defaultVisible}
+                      aria-label={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
+                      title={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
+                      onclick={() => void toggleVisible(layer)}
+                      >{@render glyph(layer.defaultVisible ? icons.show : icons.hide)}</button>
+                    {#if !immutablePhysicalLayerIds.has(layer.id)}
+                      <button
+                        type="button"
+                        class="icon-button"
+                        aria-pressed={layer.locked}
+                        aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
+                        title={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
+                        onclick={() => void toggleLock(layer)}
+                        >{@render glyph(layer.locked ? icons.lock : icons.unlock)}</button>
+                      <button
+                        type="button"
+                        class="icon-button"
+                        aria-label={`Rename ${layer.name}`}
+                        title="Rename"
+                        onclick={() => (renamingId = layer.id)}>{@render glyph(icons.rename)}</button>
+                      <button
+                        type="button"
+                        class="icon-button"
+                        aria-label={`Move ${layer.name} up`}
+                        title="Up"
+                        onclick={() => void moveLayer(layer, -1)}>{@render glyph(icons.up)}</button>
+                      <button
+                        type="button"
+                        class="icon-button"
+                        aria-label={`Move ${layer.name} down`}
+                        title="Down"
+                        onclick={() => void moveLayer(layer, 1)}>{@render glyph(icons.down)}</button>
+                      <button
+                        type="button"
+                        class="icon-button"
+                        aria-label={`Delete ${layer.name}`}
+                        title="Delete"
+                        onclick={() => void removeLayer(layer)}>{@render glyph(icons.remove)}</button>
+                    {/if}
+                  </div>
+                  {#if layer.id === activeLayerId && !immutablePhysicalLayerIds.has(layer.id)}
+                    <div class="style-row">
+                      <label>
+                        Fill
+                        <input
+                          type="color"
+                          value={layer.style.fill}
+                          aria-label={`${layer.name} fill`}
+                          onchange={(event) => void updateStyle(layer, { fill: event.currentTarget.value })} />
+                      </label>
+                      <label>
+                        Stroke
+                        <input
+                          type="color"
+                          value={layer.style.stroke}
+                          aria-label={`${layer.name} stroke`}
+                          onchange={(event) => void updateStyle(layer, { stroke: event.currentTarget.value })} />
+                      </label>
+                      <label>
+                        Fill opacity
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={layer.style.fillOpacity}
+                          aria-label={`${layer.name} fill opacity`}
+                          oninput={(event) =>
+                            void updateStyle(layer, { fillOpacity: Number(event.currentTarget.value) })} />
+                      </label>
+                      <label>
+                        Stroke width
+                        <input
+                          type="number"
+                          min="0"
+                          max="32"
+                          step="0.25"
+                          value={layer.style.strokeWidth}
+                          aria-label={`${layer.name} stroke width`}
+                          onchange={(event) =>
+                            void updateStyle(layer, { strokeWidth: Number(event.currentTarget.value) })} />
+                      </label>
+                      <label>
+                        Point radius
+                        <input
+                          type="number"
+                          min="1"
+                          max="64"
+                          step="1"
+                          value={layer.style.pointRadius}
+                          aria-label={`${layer.name} point radius`}
+                          onchange={(event) =>
+                            void updateStyle(layer, { pointRadius: Number(event.currentTarget.value) })} />
+                      </label>
+                    </div>
+                  {/if}
+                </div>
+              {/each}
             </div>
           {/if}
-        {/if}
-        {#if selectedFeature && !physicalMap}
-          <div class="inspector" aria-label="Selected feature">
-            <strong>Selected feature</strong>
+          {#if physicalMap}
+            <button
+              type="button"
+              class="aside-toggle"
+              aria-expanded={!historyCollapsed}
+              onclick={() => (historyCollapsed = !historyCollapsed)}>
+              <strong>Natural history</strong>
+              <span class="aside-chevron" class:collapsed={historyCollapsed}>{@render glyph(icons.chevron)}</span>
+            </button>
+            {#if !historyCollapsed}
+              <div class="event-control" aria-label="Materialize natural history">
+                <label>
+                  Event
+                  <select bind:value={eventKind} disabled={eventBusy || busy}>
+                    <option value="earthquake">Earthquake</option>
+                    <option value="eruption">Eruption</option>
+                  </select>
+                </label>
+                <label>
+                  From (years)
+                  <input
+                    type="number"
+                    min="-100000"
+                    max="100000"
+                    step="1"
+                    bind:value={eventStartYears}
+                    disabled={eventBusy || busy} />
+                </label>
+                <label>
+                  To (years)
+                  <input
+                    type="number"
+                    min="-100000"
+                    max="100000"
+                    step="1"
+                    bind:value={eventEndYears}
+                    disabled={eventBusy || busy} />
+                </label>
+                <label>
+                  Max events
+                  <input
+                    type="number"
+                    min="1"
+                    max="128"
+                    step="1"
+                    bind:value={eventMaxEvents}
+                    disabled={eventBusy || busy} />
+                </label>
+                <label>
+                  Hazard seed
+                  <input type="number" min="0" step="1" bind:value={eventHazardSeed} disabled={eventBusy || busy} />
+                </label>
+                <button type="button" disabled={eventBusy || busy} onclick={() => void materializePhysicalEvents()}>
+                  {eventBusy ? "Committing…" : "Commit events"}
+                </button>
+                <small
+                  >Creates revisioned entities and map links; generated hazards remain read-only and are not
+                  predictions.</small>
+                {#if eventNotice}<small role="status">{eventNotice}</small>{/if}
+              </div>
+            {/if}
+          {/if}
+          {#if selectedFeature && !physicalMap}
+            <div class="inspector" aria-label="Selected feature">
+              <strong>Selected feature</strong>
+              <p class="hint">
+                {selectedFeature.properties.kind} · {selectedFeature.properties.daenaLayerId === "base"
+                  ? "base geography"
+                  : "authored"}
+              </p>
+              <label>
+                Name
+                <input
+                  value={selectedFeature.properties.name ?? ""}
+                  maxlength="256"
+                  aria-label="Feature name"
+                  disabled={selectedFeature.properties.daenaLayerId === "base" || activeLayer?.locked}
+                  onchange={(event) => {
+                    const next = event.currentTarget.value.trim() || null;
+                    editor?.updateSelectedName(next);
+                  }} />
+              </label>
+            </div>
+          {/if}
+          {#if !physicalMap}
             <p class="hint">
-              {selectedFeature.properties.kind} · {selectedFeature.properties.daenaLayerId === "base"
-                ? "base geography"
-                : "authored"}
+              Base geography is read-only. Point, line, polygon, and freehand edits save through the canonical GeoJSON
+              source. Delete removes the selected feature.
             </p>
-            <label>
-              Name
-              <input
-                value={selectedFeature.properties.name ?? ""}
-                maxlength="256"
-                aria-label="Feature name"
-                disabled={selectedFeature.properties.daenaLayerId === "base" || activeLayer?.locked}
-                onchange={(event) => {
-                  const next = event.currentTarget.value.trim() || null;
-                  editor?.updateSelectedName(next);
-                }} />
-            </label>
-          </div>
-        {/if}
-        {#if !physicalMap}
-          <p class="hint">
-            Base geography is read-only. Point, line, polygon, and freehand edits save through the canonical GeoJSON
-            source. Delete removes the selected feature.
-          </p>
-        {/if}
-      </aside>
-      <button
-        type="button"
-        class="sidebar-resizer"
-        aria-label="Resize sidebar"
-        title="Drag to resize"
-        onpointerdown={startSidebarResize}></button>
+          {/if}
+        </aside>
+        <button
+          type="button"
+          class="sidebar-resizer"
+          aria-label="Resize sidebar"
+          title="Drag to resize"
+          onpointerdown={startSidebarResize}></button>
       {/if}
       {#if physicalMap && !studioOpen}
         <div class="canvas" role="img" aria-label="Physical world map">

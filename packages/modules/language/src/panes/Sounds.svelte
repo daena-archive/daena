@@ -221,7 +221,7 @@ async function savePhoneme(): Promise<"ok" | "symbol" | "error" | "none"> {
 
 async function deletePhoneme() {
   if (!selectedLanguage || !phonemeEditing) return;
-  if (!await confirm("Delete", `Delete “${phonemeEditing.value.symbol}”?`)) return;
+  if (!(await confirm("Delete", `Delete “${phonemeEditing.value.symbol}”?`))) return;
   const ownerLanguageId = selectedLanguage.id;
   error = "";
   try {
@@ -301,7 +301,11 @@ function handleNotesSubmit(event: SubmitEvent) {
         <input type="checkbox" bind:checked={beginnerMode} />
         <span>Beginner mode</span>
       </label>
-      <button type="button" class="language-button secondary" disabled={!selectedLanguage || phonemes.length === 0} onclick={() => (chartsOpen = true)}>View charts</button>
+      <button
+        type="button"
+        class="language-button secondary"
+        disabled={!selectedLanguage || phonemes.length === 0}
+        onclick={() => (chartsOpen = true)}>View charts</button>
       <button type="button" class="language-button" disabled={!selectedLanguage} onclick={addPhoneme}>Add sound</button>
     {/if}
   </div>
@@ -372,15 +376,27 @@ function handleNotesSubmit(event: SubmitEvent) {
         <div class="language-section-grid">
           <label class="language-field">
             <span>Place</span>
-            <input name="place" list="language-place" bind:value={phonemeDraft.place} placeholder="e.g. bilabial, alveolar" />
+            <input
+              name="place"
+              list="language-place"
+              bind:value={phonemeDraft.place}
+              placeholder="e.g. bilabial, alveolar" />
           </label>
           <label class="language-field">
             <span>Manner</span>
-            <input name="manner" list="language-manner" bind:value={phonemeDraft.manner} placeholder="e.g. plosive, fricative" />
+            <input
+              name="manner"
+              list="language-manner"
+              bind:value={phonemeDraft.manner}
+              placeholder="e.g. plosive, fricative" />
           </label>
           <label class="language-field">
             <span>Voicing</span>
-            <input name="voicing" list="language-voice" bind:value={phonemeDraft.voicing} placeholder="e.g. voiced, voiceless" />
+            <input
+              name="voicing"
+              list="language-voice"
+              bind:value={phonemeDraft.voicing}
+              placeholder="e.g. voiced, voiceless" />
           </label>
         </div>
       </div>
@@ -390,15 +406,27 @@ function handleNotesSubmit(event: SubmitEvent) {
         <div class="language-section-grid">
           <label class="language-field">
             <span>Height</span>
-            <input name="height" list="language-height" bind:value={phonemeDraft.height} placeholder="e.g. high, mid, low" />
+            <input
+              name="height"
+              list="language-height"
+              bind:value={phonemeDraft.height}
+              placeholder="e.g. high, mid, low" />
           </label>
           <label class="language-field">
             <span>Backness</span>
-            <input name="backness" list="language-backness" bind:value={phonemeDraft.backness} placeholder="e.g. front, central, back" />
+            <input
+              name="backness"
+              list="language-backness"
+              bind:value={phonemeDraft.backness}
+              placeholder="e.g. front, central, back" />
           </label>
           <label class="language-field">
             <span>Rounding</span>
-            <input name="rounding" list="language-rounding" bind:value={phonemeDraft.rounding} placeholder="e.g. rounded, unrounded" />
+            <input
+              name="rounding"
+              list="language-rounding"
+              bind:value={phonemeDraft.rounding}
+              placeholder="e.g. rounded, unrounded" />
           </label>
         </div>
       </div>
@@ -412,7 +440,8 @@ function handleNotesSubmit(event: SubmitEvent) {
       </label>
       <label class="language-field">
         <span>Notes</span>
-        <textarea name="notes" bind:value={phonemeDraft.notes} placeholder="Any additional notes about this sound"></textarea>
+        <textarea name="notes" bind:value={phonemeDraft.notes} placeholder="Any additional notes about this sound"
+        ></textarea>
       </label>
     </div>
     {#if error}
@@ -421,9 +450,11 @@ function handleNotesSubmit(event: SubmitEvent) {
     <div class="language-actions">
       <span>
         {#if phonemeEditing}
-          <button type="button" class="language-button secondary language-danger" onclick={deletePhoneme}
-            disabled={phonemeSaving}
-            >Delete</button>
+          <button
+            type="button"
+            class="language-button secondary language-danger"
+            onclick={deletePhoneme}
+            disabled={phonemeSaving}>Delete</button>
         {/if}
       </span>
       <span>
@@ -522,7 +553,13 @@ function handleNotesSubmit(event: SubmitEvent) {
 {#if chartsOpen}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="language-modal-backdrop" role="presentation" onclick={() => (chartsOpen = false)}>
-    <div class="language-charts-modal" role="dialog" aria-modal="true" aria-label="Sound charts" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+    <div
+      class="language-charts-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Sound charts"
+      tabindex="-1"
+      onclick={(e) => e.stopPropagation()}>
       <div class="language-charts-modal-header">
         <h3>Sound charts</h3>
         <button type="button" class="language-button secondary" onclick={() => (chartsOpen = false)}>Close</button>

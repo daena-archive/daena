@@ -146,11 +146,14 @@ export const headingToMarkdown: ToMarkdownHandle = (node, _parent, state, info) 
   const subexit = state.enter("phrasing");
   const tracker = state.createTracker(info as never);
   tracker.move(sequence + " ");
-  let value = state.containerPhrasing(node as never, {
-    before: "# ",
-    after: "\n",
-    ...tracker.current(),
-  } as never);
+  let value = state.containerPhrasing(
+    node as never,
+    {
+      before: "# ",
+      after: "\n",
+      ...tracker.current(),
+    } as never,
+  );
   if (/^[\t ]/.test(value)) {
     const first = value.charCodeAt(0);
     // encodeCharacterReference fallback

@@ -14,7 +14,11 @@ let {
 }: {
   asset: Asset;
   editable?: boolean;
-  onSave: (update: { filename?: string; role?: "attachment" | "profile"; referenceScope?: "entity" | "project" }) => Promise<void>;
+  onSave: (update: {
+    filename?: string;
+    role?: "attachment" | "profile";
+    referenceScope?: "entity" | "project";
+  }) => Promise<void>;
   onDelete: () => Promise<void>;
   onReplace: () => Promise<void>;
   onClose: () => void;
@@ -51,7 +55,8 @@ const canBeProfile = ["image/png", "image/jpeg", "image/gif", "image/webp"].incl
 // svelte-ignore state_referenced_locally
 const original = { filename: asset.filename, role: asset.role, referenceScope: asset.reference_scope };
 const reconstructedFilename = () => (readonlyExt ? `${filenameBase.trim()}.${readonlyExt}` : filenameBase.trim());
-const hasChanges = () => reconstructedFilename() !== original.filename || role !== original.role || referenceScope !== original.referenceScope;
+const hasChanges = () =>
+  reconstructedFilename() !== original.filename || role !== original.role || referenceScope !== original.referenceScope;
 
 function formatCreatedAt(value: string): string {
   // created_at is stored as nanoseconds since epoch (chrono_like_now)
@@ -60,7 +65,13 @@ function formatCreatedAt(value: string): string {
     const ms = Math.floor(n / 1_000_000);
     const d = new Date(ms);
     if (!Number.isNaN(d.getTime())) {
-      return d.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      return d.toLocaleString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
     }
   }
   const fallback = new Date(value);
@@ -234,7 +245,8 @@ onMount(() => {
         <h2 id="asset-dialog-title">Edit file</h2>
         <p>Manage this attachment. Changes are versioned and synced via the checkpoint.</p>
       </div>
-      <button type="button" class="asset-dialog-close" aria-label="Close file details" onclick={onClose}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
+      <button type="button" class="asset-dialog-close" aria-label="Close file details" onclick={onClose}
+        ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
     </header>
 
     <div class="asset-dialog-preview">
@@ -248,10 +260,13 @@ onMount(() => {
           <span class="asset-dialog-preview-icon">🖼</span><span>Preview unavailable</span>
         </div>
       {:else if isImage(asset.mime_type)}
-        <div class="asset-dialog-preview-fallback"><span class="asset-dialog-preview-icon">🖼</span><span>Loading preview…</span></div>
+        <div class="asset-dialog-preview-fallback">
+          <span class="asset-dialog-preview-icon">🖼</span><span>Loading preview…</span>
+        </div>
       {:else}
         <div class="asset-dialog-preview-fallback" aria-hidden="true">
-          <span class="asset-dialog-preview-icon">{asset.mime_type.includes("pdf") ? "📄" : asset.mime_type.includes("audio") ? "🎵" : "📎"}</span>
+          <span class="asset-dialog-preview-icon"
+            >{asset.mime_type.includes("pdf") ? "📄" : asset.mime_type.includes("audio") ? "🎵" : "📎"}</span>
           <span>{asset.mime_type}</span>
         </div>
       {/if}
@@ -280,7 +295,9 @@ onMount(() => {
             placeholder={readonlyExt ? `name without .${readonlyExt}` : "portrait"} />
           {#if readonlyExt}<span class="asset-filename-ext">.{readonlyExt}</span>{/if}
         </div>
-        <small class="asset-dialog-hint">Extension <strong>.{readonlyExt || "—"}</strong> is preserved and cannot be changed. Renaming keeps the same file content and identity, only the portable path changes.</small>
+        <small class="asset-dialog-hint"
+          >Extension <strong>.{readonlyExt || "—"}</strong> is preserved and cannot be changed. Renaming keeps the same file
+          content and identity, only the portable path changes.</small>
       </label>
 
       <label class="asset-dialog-field">
@@ -303,20 +320,35 @@ onMount(() => {
           checked={referenceScope === "project"}
           disabled={!editable}
           onchange={(e) => (referenceScope = (e.currentTarget as HTMLInputElement).checked ? "project" : "entity")} />
-        <span>Allow references from other entities/modules <small>When enabled, other modules may offer this file as a reference target.</small></span>
+        <span
+          >Allow references from other entities/modules <small
+            >When enabled, other modules may offer this file as a reference target.</small
+          ></span>
       </label>
 
       {#if saveError}<p class="asset-dialog-error" role="alert">{saveError}</p>{/if}
 
       <div class="asset-dialog-actions">
         <div class="asset-dialog-actions-left">
-          <button type="button" class="asset-dialog-secondary" onclick={onClose} disabled={saving || deleting || replacing}>Cancel</button>
-          {#if editable}<button type="button" class="asset-dialog-danger" onclick={handleDelete} disabled={saving || deleting || replacing}>
+          <button
+            type="button"
+            class="asset-dialog-secondary"
+            onclick={onClose}
+            disabled={saving || deleting || replacing}>Cancel</button>
+          {#if editable}<button
+              type="button"
+              class="asset-dialog-danger"
+              onclick={handleDelete}
+              disabled={saving || deleting || replacing}>
               {deleting ? "Deleting…" : "Delete file"}
             </button>{/if}
         </div>
         <div class="asset-dialog-actions-right">
-          {#if editable}<button type="button" class="asset-dialog-secondary" onclick={handleReplace} disabled={saving || deleting || replacing}>
+          {#if editable}<button
+              type="button"
+              class="asset-dialog-secondary"
+              onclick={handleReplace}
+              disabled={saving || deleting || replacing}>
               {replacing ? "Replacing…" : "Replace file"}
             </button>{/if}
           {#if editable}<button

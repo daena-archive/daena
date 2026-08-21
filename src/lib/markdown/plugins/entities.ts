@@ -61,7 +61,7 @@ export function remarkDaenaEntities() {
 
 export const entityReferenceToMarkdown: ToMarkdownHandle = (node, _parent, state, info) => {
   const reference = node as EntityReference;
-  const isCustom = reference.isCustom ?? (nodeText(reference as never).trim().length > 0);
+  const isCustom = reference.isCustom ?? nodeText(reference as never).trim().length > 0;
   if (!isCustom) return `[[]](${reference.entityId})`;
   return `[[${state.containerPhrasing(reference as never, info)}]](${reference.entityId})`;
 };

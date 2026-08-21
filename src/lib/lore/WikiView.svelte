@@ -139,8 +139,7 @@ const profileAssetAny = $derived(
   assets.find((asset) => asset.namespace === "lore" && asset.role === "profile") ?? null,
 );
 const profileAsset = $derived(
-  profileAssetAny &&
-    ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(profileAssetAny.mime_type)
+  profileAssetAny && ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(profileAssetAny.mime_type)
     ? profileAssetAny
     : null,
 );
@@ -323,7 +322,9 @@ function handleClose() {
 <section class="wiki-shell" aria-label="Lore wiki">
   <header class="wiki-header">
     <div class="wiki-header-left">
-      <button class="quiet-button" type="button" onclick={handleClose}><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"><ArrowLeft size={14} strokeWidth={1.8} /></span> Back to workspace</button>
+      <button class="quiet-button" type="button" onclick={handleClose}
+        ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
+          ><ArrowLeft size={14} strokeWidth={1.8} /></span> Back to workspace</button>
       <div class="wiki-title">
         <span class="overline">LORE WIKI</span>
         {#if currentId && entity}
@@ -383,7 +384,8 @@ function handleClose() {
       <div class="wiki-layout">
         <article class="wiki-article">
           <div class="wiki-nav-history">
-            <button type="button" class="quiet-button small icon" onclick={goToMain} aria-label="Wiki home"><House size={14} strokeWidth={1.8} /></button>
+            <button type="button" class="quiet-button small icon" onclick={goToMain} aria-label="Wiki home"
+              ><House size={14} strokeWidth={1.8} /></button>
             <button
               type="button"
               class="quiet-button small icon"
@@ -396,7 +398,8 @@ function handleClose() {
               onclick={goForward}
               disabled={historyIndex >= history.length - 1}
               aria-label="Forward"><ArrowRight size={14} strokeWidth={1.8} /></button>
-            <button type="button" class="quiet-button small icon" onclick={handleEdit} aria-label="Edit"><Pencil size={14} strokeWidth={1.8} /></button>
+            <button type="button" class="quiet-button small icon" onclick={handleEdit} aria-label="Edit"
+              ><Pencil size={14} strokeWidth={1.8} /></button>
           </div>
           <nav class="wiki-breadcrumb" aria-label="Breadcrumb">
             <button type="button" class="wiki-crumb" onclick={goToMain}>Wiki</button>
@@ -427,8 +430,8 @@ function handleClose() {
               <ul class="wiki-assets">
                 {#each assets as a}
                   <li>
-                    <span class="wiki-asset-icon"><Diamond size={12} strokeWidth={1.8} aria-hidden="true" /></span><strong>{a.filename}</strong><small
-                      >{Math.max(1, Math.round(a.size / 1024))} KB</small>
+                    <span class="wiki-asset-icon"><Diamond size={12} strokeWidth={1.8} aria-hidden="true" /></span
+                    ><strong>{a.filename}</strong><small>{Math.max(1, Math.round(a.size / 1024))} KB</small>
                   </li>
                 {/each}
               </ul>
@@ -452,9 +455,17 @@ function handleClose() {
 
         <aside class="wiki-infobox" aria-label="Infobox">
           <div class="wiki-infobox-card">
-            {#if profileMediaUrl}<img class="wiki-profile-media" src={profileMediaUrl} alt={`${entity.name} profile`} />{:else if profileFallback}<div class="wiki-profile-fallback" role="img" aria-label={`${entity.name} profile`}>
+            {#if profileMediaUrl}<img
+                class="wiki-profile-media"
+                src={profileMediaUrl}
+                alt={`${entity.name} profile`} />{:else if profileFallback}<div
+                class="wiki-profile-fallback"
+                role="img"
+                aria-label={`${entity.name} profile`}>
                 <span class="wiki-profile-fallback-icon" aria-hidden="true">◆</span>
-                <div><strong>{profileFallback.filename}</strong><small>Main file · {profileFallback.mime_type}</small></div>
+                <div>
+                  <strong>{profileFallback.filename}</strong><small>Main file · {profileFallback.mime_type}</small>
+                </div>
               </div>{/if}
             <div class="wiki-infobox-header">
               <h3>{entity.name}</h3>
@@ -499,7 +510,8 @@ function handleClose() {
                       {@const otherType = entityTypeOf(otherId)}
                       <li>
                         <span class="wiki-rel-label">{humanizeType(rel.relationship_type)}</span>
-                        <span class="wiki-rel-arrow" aria-hidden="true"><ArrowRight size={12} strokeWidth={1.8} aria-hidden="true" /></span>
+                        <span class="wiki-rel-arrow" aria-hidden="true"
+                          ><ArrowRight size={12} strokeWidth={1.8} aria-hidden="true" /></span>
                         <button type="button" class="wiki-link small" onclick={() => openEntity(otherId)}>
                           {entityName(otherId)} <small>{otherType ? `· ${labelForType(otherType)}` : ""}</small>
                         </button>
@@ -514,7 +526,8 @@ function handleClose() {
                       {@const otherId = rel.source_id}
                       {@const otherType = entityTypeOf(otherId)}
                       <li>
-                        <span class="wiki-rel-arrow" aria-hidden="true"><ArrowLeft size={12} strokeWidth={1.8} aria-hidden="true" /></span>
+                        <span class="wiki-rel-arrow" aria-hidden="true"
+                          ><ArrowLeft size={12} strokeWidth={1.8} aria-hidden="true" /></span>
                         <button type="button" class="wiki-link small" onclick={() => openEntity(otherId)}
                           >{entityName(otherId)}</button>
                         <span class="wiki-backlink-meta"

@@ -18,37 +18,43 @@ const TOUR_STEPS: TourStep[] = [
   {
     id: "welcome",
     title: "Welcome to Language Studio",
-    description: "This is your workspace for creating and documenting fictional languages. Let's take a quick tour to get you started.",
+    description:
+      "This is your workspace for creating and documenting fictional languages. Let's take a quick tour to get you started.",
     icon: " ",
   },
   {
     id: "create",
     title: "Create a Language",
-    description: "Start by creating a new language from the sidebar. You only need a name to begin - everything else is optional.",
+    description:
+      "Start by creating a new language from the sidebar. You only need a name to begin - everything else is optional.",
     icon: "✏️",
   },
   {
     id: "overview",
     title: "Overview Pane",
-    description: "Add details about your language like its family, writing system, and notes. This information helps organize your project.",
+    description:
+      "Add details about your language like its family, writing system, and notes. This information helps organize your project.",
     icon: " ",
   },
   {
     id: "lexicon",
     title: "Build Your Lexicon",
-    description: "Add words with their meanings, pronunciations, and examples. Search and filter to find what you need.",
+    description:
+      "Add words with their meanings, pronunciations, and examples. Search and filter to find what you need.",
     icon: " ",
   },
   {
     id: "sounds",
     title: "Document Sounds",
-    description: "Define the phonemes in your language with IPA symbols and features. Visual charts help you see the full inventory.",
+    description:
+      "Define the phonemes in your language with IPA symbols and features. Visual charts help you see the full inventory.",
     icon: " ",
   },
   {
     id: "grammar",
     title: "Sketch Grammar",
-    description: "Document word order, noun/verb systems, and other grammatical features. Use the starter to begin with the basics.",
+    description:
+      "Document word order, noun/verb systems, and other grammatical features. Use the starter to begin with the basics.",
     icon: " ️",
   },
   {
@@ -96,12 +102,12 @@ function handleKeydown(event: KeyboardEvent) {
     <div class="tour-progress">
       <div class="tour-progress-bar" style="width: {progress}%"></div>
     </div>
-    
+
     <div class="tour-content">
       <div class="tour-icon">{step.icon}</div>
       <h2 class="tour-title">{step.title}</h2>
       <p class="tour-description">{step.description}</p>
-      
+
       <div class="tour-dots">
         {#each TOUR_STEPS as _, i (i)}
           <button
@@ -209,7 +215,9 @@ function handleKeydown(event: KeyboardEvent) {
   border-radius: 50%;
   background: var(--line);
   cursor: pointer;
-  transition: background 0.2s, transform 0.2s;
+  transition:
+    background 0.2s,
+    transform 0.2s;
 }
 
 .tour-dot:hover {
@@ -245,7 +253,9 @@ function handleKeydown(event: KeyboardEvent) {
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition:
+    background 0.15s,
+    color 0.15s;
 }
 
 .tour-button.primary {

@@ -2,11 +2,7 @@
 import { onMount } from "svelte";
 import type { ModuleContext, ModuleView } from "../../packages/module-api/src/index";
 
-let {
-  view,
-  context,
-  className = "",
-}: { view: ModuleView; context: ModuleContext; className?: string } = $props();
+let { view, context, className = "" }: { view: ModuleView; context: ModuleContext; className?: string } = $props();
 
 let container = $state<HTMLElement | null>(null);
 let error = $state("");

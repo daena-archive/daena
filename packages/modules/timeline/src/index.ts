@@ -429,7 +429,8 @@ export const timeline: DaenaModule = {
               if (!entityTypes.has(entry.entity.type ?? "") && entry.relativeYear === null) continue;
               const start = toJsDate(entry.fields.startsAt) ?? toJsDate(entry.fields.endsAt);
               if (!start) {
-                if (entry.entity.type !== "era") undated.push({ ...entry, relativeYear: entry.relativeYear ?? undefined });
+                if (entry.entity.type !== "era")
+                  undated.push({ ...entry, relativeYear: entry.relativeYear ?? undefined });
                 continue;
               }
               const end = entry.fields.endsAt ? toJsDate(entry.fields.endsAt) : null;

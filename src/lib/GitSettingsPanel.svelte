@@ -1,5 +1,16 @@
 <script lang="ts">
-import { X, Sparkles, ChevronDown, ChevronRight, GitBranch, DatabaseZap, ShieldCheck, History, Cable, FileText } from "@lucide/svelte";
+import {
+  X,
+  Sparkles,
+  ChevronDown,
+  ChevronRight,
+  GitBranch,
+  DatabaseZap,
+  ShieldCheck,
+  History,
+  Cable,
+  FileText,
+} from "@lucide/svelte";
 import { listen } from "@tauri-apps/api/event";
 import {
   project,
@@ -800,14 +811,21 @@ function restoreFromRemote() {
       <p>Save named versions of this project’s canonical files. Every snapshot is a Git commit you can restore.</p>
     </div>
     <div class="hero-stats" aria-label="Snapshot summary">
-      <span class="stat-pill"><GitBranch size={12} strokeWidth={1.8} aria-hidden="true" /> {status?.branch || "No repo"}</span>
+      <span class="stat-pill"
+        ><GitBranch size={12} strokeWidth={1.8} aria-hidden="true" /> {status?.branch || "No repo"}</span>
       <span class="stat-pill"><History size={12} strokeWidth={1.8} aria-hidden="true" /> {log.length} snapshots</span>
       <span class="stat-pill"><Cable size={12} strokeWidth={1.8} aria-hidden="true" /> {remotes.length} remotes</span>
     </div>
   </div>
 
   <section class="git-block elevated">
-    <div class="block-heading"><div class="heading-left"><span class="heading-icon"><DatabaseZap size={14} strokeWidth={1.8} aria-hidden="true" /></span><h3>Version control</h3></div><span class="block-hint">Git availability</span></div>
+    <div class="block-heading">
+      <div class="heading-left">
+        <span class="heading-icon"><DatabaseZap size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+        <h3>Version control</h3>
+      </div>
+      <span class="block-hint">Git availability</span>
+    </div>
     {#if tool === null}
       <p class="settings-empty">Checking Git…</p>
     {:else if tool.available}
@@ -819,13 +837,31 @@ function restoreFromRemote() {
   </section>
 
   {#if !projectOpen}
-    <div class="empty-inline"><GitBranch size={16} strokeWidth={1.7} aria-hidden="true" /><div><strong>Open a project to manage snapshots</strong><span>Snapshots, remotes, and history are per-project.</span></div></div>
+    <div class="empty-inline">
+      <GitBranch size={16} strokeWidth={1.7} aria-hidden="true" />
+      <div>
+        <strong>Open a project to manage snapshots</strong><span>Snapshots, remotes, and history are per-project.</span>
+      </div>
+    </div>
   {:else if tool && !tool.available}
-    <div class="empty-inline"><DatabaseZap size={16} strokeWidth={1.7} aria-hidden="true" /><div><strong>Git not available</strong><span>Install Git to save snapshots for this project.</span></div></div>
+    <div class="empty-inline">
+      <DatabaseZap size={16} strokeWidth={1.7} aria-hidden="true" />
+      <div><strong>Git not available</strong><span>Install Git to save snapshots for this project.</span></div>
+    </div>
   {:else if status && !status.repository}
     <section class="git-block elevated">
-      <div class="block-heading"><div class="heading-left"><span class="heading-icon"><ShieldCheck size={14} strokeWidth={1.8} aria-hidden="true" /></span><h3>Repository</h3></div></div>
-      <div class="empty-inline"><ShieldCheck size={16} strokeWidth={1.7} aria-hidden="true" /><div><strong>Snapshots not enabled yet</strong><span>Enable snapshots to start versioning this project.</span></div></div>
+      <div class="block-heading">
+        <div class="heading-left">
+          <span class="heading-icon"><ShieldCheck size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+          <h3>Repository</h3>
+        </div>
+      </div>
+      <div class="empty-inline">
+        <ShieldCheck size={16} strokeWidth={1.7} aria-hidden="true" />
+        <div>
+          <strong>Snapshots not enabled yet</strong><span>Enable snapshots to start versioning this project.</span>
+        </div>
+      </div>
       <button type="button" class="primary-button" disabled={busy} onclick={() => void initializeGit()}
         >Enable snapshots</button>
     </section>
@@ -861,7 +897,12 @@ function restoreFromRemote() {
     {/if}
 
     <section class="git-block elevated">
-      <div class="block-heading"><div class="heading-left"><span class="heading-icon"><Cable size={14} strokeWidth={1.8} aria-hidden="true" /></span><h3>Remotes</h3><span class="count-badge">{remotes.length}</span></div>
+      <div class="block-heading">
+        <div class="heading-left">
+          <span class="heading-icon"><Cable size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+          <h3>Remotes</h3>
+          <span class="count-badge">{remotes.length}</span>
+        </div>
         <button type="button" class="primary-button" disabled={busy} onclick={openAddRemoteModal}>Add remote</button>
       </div>
       {#if remotes.length === 0}
@@ -890,7 +931,14 @@ function restoreFromRemote() {
     </section>
 
     <section class="git-block elevated">
-      <div class="block-heading"><div class="heading-left"><span class="heading-icon"><FileText size={14} strokeWidth={1.8} aria-hidden="true" /></span><h3>Changes</h3><span class="count-badge">{changeGroups.length}</span></div><span class="block-hint">Canonical files only</span></div>
+      <div class="block-heading">
+        <div class="heading-left">
+          <span class="heading-icon"><FileText size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+          <h3>Changes</h3>
+          <span class="count-badge">{changeGroups.length}</span>
+        </div>
+        <span class="block-hint">Canonical files only</span>
+      </div>
       <p class="git-section-copy">Choose the canonical project changes to include in the next snapshot.</p>
       {#if preflight && !preflight.ready}
         <p class="plugin-warning">{preflight.diagnostics[0] ?? "Commit preflight blocked."}</p>
@@ -956,10 +1004,15 @@ function restoreFromRemote() {
     </section>
 
     <section class="git-block elevated">
-      <div class="block-heading"><div class="heading-left"><span class="heading-icon"><History size={14} strokeWidth={1.8} aria-hidden="true" /></span><h3>Snapshot history</h3><span class="count-badge">{log.length}</span></div>
-          {#if preflight?.staging_paths.length}<small class="git-section-note"
-              >Commit pending changes before squashing history.</small
-            >{/if}
+      <div class="block-heading">
+        <div class="heading-left">
+          <span class="heading-icon"><History size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+          <h3>Snapshot history</h3>
+          <span class="count-badge">{log.length}</span>
+        </div>
+        {#if preflight?.staging_paths.length}<small class="git-section-note"
+            >Commit pending changes before squashing history.</small
+          >{/if}
         {#if log.length > 1}<button
             type="button"
             class="quiet-button"
@@ -1097,7 +1150,8 @@ function restoreFromRemote() {
           <span class="panel-kicker">SNAPSHOT REMOTE</span>
           <strong>{remoteModalMode === "add" ? "Add remote" : `Edit ${editingRemoteName}`}</strong>
         </div>
-        <button type="button" class="new-form-close" onclick={closeRemoteModal}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
+        <button type="button" class="new-form-close" onclick={closeRemoteModal}
+          ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>
       <div class="git-remote-form">
         {#if remoteModalMode === "add"}
@@ -1138,7 +1192,8 @@ function restoreFromRemote() {
           <span class="panel-kicker">CONFIRM SNAPSHOT ACTION</span>
           <strong id="git-confirm-title">{confirmation.title}</strong>
         </div>
-        <button type="button" class="new-form-close" disabled={confirmationBusy} onclick={closeConfirmation}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
+        <button type="button" class="new-form-close" disabled={confirmationBusy} onclick={closeConfirmation}
+          ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>
       <p class="dialog-body-copy">{confirmation.message}</p>
       {#if confirmation.squash}
@@ -1842,7 +1897,11 @@ function restoreFromRemote() {
 }
 .hero-copy .kicker {
   color: #b4773f;
-  font: 700 10px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    700 10px/1 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -1856,7 +1915,11 @@ function restoreFromRemote() {
   margin: 6px 0 0;
   max-width: 640px;
   color: var(--ink-soft, #8f897e);
-  font: 400 12.5px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    400 12.5px/1.5 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .hero-stats {
   grid-column: 2;
@@ -1874,7 +1937,11 @@ function restoreFromRemote() {
   background: #f4eee3;
   border: 1px solid #e9e1d4;
   color: #62594e;
-  font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    600 11px Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .block-heading {
   display: flex;
@@ -1910,14 +1977,20 @@ function restoreFromRemote() {
   background: #f4eee3;
   border: 1px solid #e9e1d4;
   color: #62594e;
-  font: 700 11px Inter, sans-serif;
+  font:
+    700 11px Inter,
+    sans-serif;
 }
 .block-hint {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   color: var(--ink-faint, #b0a89c);
-  font: 500 11.5px Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    500 11.5px Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .empty-inline {
   display: flex;
@@ -1932,14 +2005,21 @@ function restoreFromRemote() {
 .empty-inline strong {
   display: block;
   color: var(--ink);
-  font: 600 13px Inter, sans-serif;
+  font:
+    600 13px Inter,
+    sans-serif;
   margin-bottom: 3px;
 }
 .empty-inline span {
-  font: 400 12px/1.5 Inter, sans-serif;
+  font:
+    400 12px/1.5 Inter,
+    sans-serif;
 }
-.git-block.elevated, .git-overview.elevated, .git-recovery.elevated {
-  box-shadow: 0 1px 0 rgba(48,44,38,0.03), 0 8px 24px rgba(48,44,38,0.04);
+.git-block.elevated,
+.git-overview.elevated,
+.git-recovery.elevated {
+  box-shadow:
+    0 1px 0 rgba(48, 44, 38, 0.03),
+    0 8px 24px rgba(48, 44, 38, 0.04);
 }
 </style>
-

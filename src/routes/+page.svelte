@@ -3990,7 +3990,8 @@ onMount(() => {
               ><span class="rail-icon"><Download size={16} strokeWidth={1.8} /></span><span>Export Markdown</span
               ></button>
             <button class="rail-button" role="menuitem" onclick={openExternalImport}
-              ><span class="rail-icon"><ImportIcon size={16} strokeWidth={1.8} /></span><span>Import external material</span
+              ><span class="rail-icon"><ImportIcon size={16} strokeWidth={1.8} /></span><span
+                >Import external material</span
               ></button>
             <button class="rail-button" role="menuitem" onclick={() => void rebuildSearchIndex()}
               ><span class="rail-icon"><DatabaseZap size={16} strokeWidth={1.8} /></span><span>Rebuild index</span
@@ -4563,11 +4564,17 @@ onMount(() => {
             <div class="hero-copy">
               <span class="kicker">EXTENSIONS</span>
               <strong>Plugins</strong>
-              <p>Extensions that power this project. Every install, upgrade, and rollback is verified and reversible.</p>
+              <p>
+                Extensions that power this project. Every install, upgrade, and rollback is verified and reversible.
+              </p>
             </div>
             <div class="hero-stats">
-              <span class="stat-pill"><Puzzle size={12} strokeWidth={1.8} aria-hidden="true" /> {adminPlugins ? adminPlugins.length : 0} installed</span>
-              <span class="stat-pill"><ShieldCheck size={12} strokeWidth={1.8} aria-hidden="true" /> {adminPlugins ? adminPlugins.filter(p=>p.enabled).length : 0} enabled</span>
+              <span class="stat-pill"
+                ><Puzzle size={12} strokeWidth={1.8} aria-hidden="true" />
+                {adminPlugins ? adminPlugins.length : 0} installed</span>
+              <span class="stat-pill"
+                ><ShieldCheck size={12} strokeWidth={1.8} aria-hidden="true" />
+                {adminPlugins ? adminPlugins.filter((p) => p.enabled).length : 0} enabled</span>
             </div>
           </div>
           <div class="plugins-toolbar">
@@ -5629,7 +5636,8 @@ onMount(() => {
                           : []
                         : String(fields[definition.key] ?? "")}
                       onchange={(event) => updateField(definition, event)}
-                      >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}</select>
+                      >{#each definition.options ?? [] as option}<option value={option}>{option}</option
+                        >{/each}</select>
                     >{:else if (definition as any).type === "oneof"}<select
                       aria-label={definition.label}
                       value={String(fields[definition.key] ?? "")}
@@ -9191,7 +9199,11 @@ onMount(() => {
 }
 .hero-copy .kicker {
   color: #b4773f;
-  font: 700 10px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    700 10px/1 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -9205,7 +9217,11 @@ onMount(() => {
   margin: 6px 0 0;
   max-width: 640px;
   color: var(--ink-soft, #8f897e);
-  font: 400 12.5px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    400 12.5px/1.5 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .hero-stats {
   grid-column: 2;
@@ -9223,19 +9239,28 @@ onMount(() => {
   background: #f4eee3;
   border: 1px solid #e9e1d4;
   color: #62594e;
-  font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    600 11px Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .plugin-card {
   padding: 18px;
   border: 1px solid var(--line, #e9e1d4);
   border-radius: 14px;
   background: #fffefa;
-  box-shadow: 0 1px 0 rgba(48,44,38,0.03), 0 8px 24px rgba(48,44,38,0.04);
-  transition: border-color 0.14s ease, box-shadow 0.14s ease, transform 0.14s ease;
+  box-shadow:
+    0 1px 0 rgba(48, 44, 38, 0.03),
+    0 8px 24px rgba(48, 44, 38, 0.04);
+  transition:
+    border-color 0.14s ease,
+    box-shadow 0.14s ease,
+    transform 0.14s ease;
 }
 .plugin-card:hover {
   border-color: #e0d6c4;
-  box-shadow: 0 8px 24px rgba(48,44,38,0.08);
+  box-shadow: 0 8px 24px rgba(48, 44, 38, 0.08);
   transform: translateY(-1px);
 }
 .plugin-card + .plugin-card {

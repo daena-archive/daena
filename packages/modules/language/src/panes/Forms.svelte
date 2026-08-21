@@ -208,7 +208,7 @@ async function saveParadigm(): Promise<"ok" | "name" | "error" | "none"> {
 
 async function deleteParadigm() {
   if (!selectedLanguage || !paradigmEditing) return;
-  if (!await confirm("Delete", `Delete “${paradigmEditing.value.name}”?`)) return;
+  if (!(await confirm("Delete", `Delete “${paradigmEditing.value.name}”?`))) return;
   const ownerLanguageId = selectedLanguage.id;
   error = "";
   try {
@@ -234,16 +234,10 @@ async function persistLexemeForms(record: ModuleRecord<LexemeValue>, forms: Lexe
   const value = normalizeLexeme({ ...record.value, forms });
   setMutationActive(true);
   try {
-    const updated = await context.records.update(
-      "lexemes",
-      record.id,
-      ownerLanguageId,
-      serializeLexeme(value),
-      {
-        expectedRevision: record.revision,
-        requestId: crypto.randomUUID(),
-      },
-    );
+    const updated = await context.records.update("lexemes", record.id, ownerLanguageId, serializeLexeme(value), {
+      expectedRevision: record.revision,
+      requestId: crypto.randomUUID(),
+    });
     const next = { ...updated, value: normalizeLexeme(updated.value) };
     records = records.map((item) => (item.id === next.id ? next : item));
     if (ownerLanguageId !== selectedLanguage?.id) throw new Error("Language changed while updating lexeme.");
@@ -269,10 +263,10 @@ async function clearPreviewOverride(record: ModuleRecord<LexemeValue>, slot: Par
   const target = overrideTarget(record.value.forms, paradigmId, slot);
   if (target?.legacy) {
     if (
-      !await confirm(
+      !(await confirm(
         "Clear legacy form",
         `“${target.form}” is an unscoped form matched by label “${slot.label}”. Removing it also deletes a manually authored form. Remove it anyway?`,
-      )
+      ))
     ) {
       return;
     }
@@ -382,7 +376,9 @@ async function handleSubmit(event: SubmitEvent) {
       </div>
       {#if paradigmDraft.slots.length === 0}
         <div class="language-empty-card">
-          <p class="language-empty" role="status">No slots defined yet. Add cells such as 1sg, plural, or comparative.</p>
+          <p class="language-empty" role="status">
+            No slots defined yet. Add cells such as 1sg, plural, or comparative.
+          </p>
         </div>
       {:else}
         <div class="forms-slots-grid">
@@ -390,7 +386,11 @@ async function handleSubmit(event: SubmitEvent) {
             <div class="forms-slot-card">
               <div class="forms-slot-header">
                 <span class="forms-slot-number">{index + 1}</span>
-                <button type="button" class="forms-slot-remove" onclick={() => removeSlot(index)} aria-label="Remove slot">&times;</button>
+                <button
+                  type="button"
+                  class="forms-slot-remove"
+                  onclick={() => removeSlot(index)}
+                  aria-label="Remove slot">&times;</button>
               </div>
               <label class="language-field">
                 <span>Label</span>
@@ -398,7 +398,10 @@ async function handleSubmit(event: SubmitEvent) {
               </label>
               <label class="language-field">
                 <span>Features (optional)</span>
-                <input name={`slot-features-${index}`} bind:value={slot.features} placeholder="e.g. person=1, number=sg" />
+                <input
+                  name={`slot-features-${index}`}
+                  bind:value={slot.features}
+                  placeholder="e.g. person=1, number=sg" />
               </label>
             </div>
           {/each}
@@ -423,8 +426,16 @@ async function handleSubmit(event: SubmitEvent) {
             <details class="forms-rule-item" open={index === 0}>
               <summary>
                 <span class="forms-rule-name">{rule.name || `Rule ${index + 1}`}</span>
-                <span class="forms-rule-kind">{PARADIGM_KINDS.find(k => k.id === rule.kind)?.label ?? rule.kind}</span>
-                <button type="button" class="forms-rule-remove" onclick={(e) => { e.preventDefault(); removeRule(index); }} aria-label="Remove rule">&times;</button>
+                <span class="forms-rule-kind"
+                  >{PARADIGM_KINDS.find((k) => k.id === rule.kind)?.label ?? rule.kind}</span>
+                <button
+                  type="button"
+                  class="forms-rule-remove"
+                  onclick={(e) => {
+                    e.preventDefault();
+                    removeRule(index);
+                  }}
+                  aria-label="Remove rule">&times;</button>
               </summary>
               <div class="forms-rule-content">
                 <div class="language-section-grid">
@@ -443,19 +454,29 @@ async function handleSubmit(event: SubmitEvent) {
                 </div>
                 <label class="language-field">
                   <span>Match lemma ending (optional)</span>
-                  <input name={`rule-match-${index}`} bind:value={rule.match} placeholder="e.g. -ar (matches verbs ending in -ar)" />
+                  <input
+                    name={`rule-match-${index}`}
+                    bind:value={rule.match}
+                    placeholder="e.g. -ar (matches verbs ending in -ar)" />
                 </label>
                 <label class="language-field">
                   <span>Notes (optional)</span>
-                  <textarea name={`rule-notes-${index}`} rows={2} bind:value={rule.notes} placeholder="Explain when this rule applies"></textarea>
+                  <textarea
+                    name={`rule-notes-${index}`}
+                    rows={2}
+                    bind:value={rule.notes}
+                    placeholder="Explain when this rule applies"></textarea>
                 </label>
                 <div class="forms-operations">
                   <div class="forms-operations-header">
                     <h4>Operations</h4>
-                    <button type="button" class="language-button secondary" onclick={() => addOperation(index)}>Add operation</button>
+                    <button type="button" class="language-button secondary" onclick={() => addOperation(index)}
+                      >Add operation</button>
                   </div>
                   {#if rule.operations.length === 0}
-                    <p class="language-empty" role="status">No operations defined. Add suffix, prefix, or replacement rules.</p>
+                    <p class="language-empty" role="status">
+                      No operations defined. Add suffix, prefix, or replacement rules.
+                    </p>
                   {:else}
                     <div class="forms-operations-list">
                       {#each rule.operations as operation, operationIndex (operation.id)}
@@ -487,12 +508,22 @@ async function handleSubmit(event: SubmitEvent) {
                             {#if operation.op === "replace-suffix"}
                               <label class="language-field">
                                 <span>Replace from</span>
-                                <input name={`op-from-${index}-${operationIndex}`} bind:value={operation.from} placeholder="e.g. -ar" />
+                                <input
+                                  name={`op-from-${index}-${operationIndex}`}
+                                  bind:value={operation.from}
+                                  placeholder="e.g. -ar" />
                               </label>
                             {/if}
                             <label class="language-field">
                               <span>{operation.op === "replace-suffix" ? "Replace with" : "Affix"}</span>
-                              <input name={`op-value-${index}-${operationIndex}`} bind:value={operation.value} placeholder={operation.op === "prefix" ? "e.g. un-" : operation.op === "suffix" ? "e.g. -ed" : "e.g. -ó"} />
+                              <input
+                                name={`op-value-${index}-${operationIndex}`}
+                                bind:value={operation.value}
+                                placeholder={operation.op === "prefix"
+                                  ? "e.g. un-"
+                                  : operation.op === "suffix"
+                                    ? "e.g. -ed"
+                                    : "e.g. -ó"} />
                             </label>
                           </div>
                           <button
@@ -593,14 +624,15 @@ async function handleSubmit(event: SubmitEvent) {
     <div class="language-actions">
       <span>
         {#if paradigmEditing}
-          <button type="button" class="language-button secondary language-danger" onclick={deleteParadigm}
-            disabled={paradigmSaving}
-            >Delete</button>
+          <button
+            type="button"
+            class="language-button secondary language-danger"
+            onclick={deleteParadigm}
+            disabled={paradigmSaving}>Delete</button>
         {/if}
       </span>
       <span>
-        <button type="button" class="language-button secondary" onclick={closeParadigmEditor}
-          disabled={paradigmSaving}
+        <button type="button" class="language-button secondary" onclick={closeParadigmEditor} disabled={paradigmSaving}
           >Cancel</button>
         <button type="submit" class="language-button" disabled={paradigmSaving}
           >{paradigmSaving ? "Saving…" : "Save paradigm"}</button>

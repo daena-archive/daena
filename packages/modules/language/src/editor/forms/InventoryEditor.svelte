@@ -54,9 +54,9 @@ let {
 async function applyRemoval(result: InventoryMutation) {
   if (result.blocked) {
     if (
-      !await confirm(
+      !(await confirm(
         `“${result.blocked.label}” is referenced by agreement. Remove it anyway? Agreement will keep the broken reference until you edit it.`,
-      )
+      ))
     ) {
       return;
     }

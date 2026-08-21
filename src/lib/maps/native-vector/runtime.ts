@@ -184,7 +184,11 @@ function featureBounds(feature: VectorFeature): [[number, number], [number, numb
     for (const item of position) visit(item);
   };
   visit(feature.geometry.coordinates);
-  if (!Number.isFinite(minX)) return [[0, 0], [0, 0]];
+  if (!Number.isFinite(minX))
+    return [
+      [0, 0],
+      [0, 0],
+    ];
   return [
     [minX, minY],
     [maxX, maxY],

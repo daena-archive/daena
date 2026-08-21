@@ -420,8 +420,10 @@ export function calendarDateToParts(value: unknown, definition: CalendarDefiniti
     year,
     ...parts,
     ...(weekday !== undefined ? { weekday } : {}),
-    ...(seasonName(definition, parts.month, parts.day) ? { season: seasonName(definition, parts.month, parts.day) } : {}),
-    precision: date.day === undefined ? "month" : date.precision ?? "day",
+    ...(seasonName(definition, parts.month, parts.day)
+      ? { season: seasonName(definition, parts.month, parts.day) }
+      : {}),
+    precision: date.day === undefined ? "month" : (date.precision ?? "day"),
   };
 }
 
@@ -520,7 +522,10 @@ export function formatWithCalendar(value: unknown, definition: CalendarDefinitio
   return formatCalendarParts(parts, definition) || formatCalendarDate(date);
 }
 
-export function serializeStoredDate(parts: CalendarParts, definition: CalendarDefinition | null): string | CalendarDate {
+export function serializeStoredDate(
+  parts: CalendarParts,
+  definition: CalendarDefinition | null,
+): string | CalendarDate {
   return serializeCalendarDate(partsToCalendarDate(parts, definition));
 }
 

@@ -239,7 +239,7 @@ $effect(() => {
       crumbs.push({
         label: section.label,
         onclick: async () => {
-          if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
+          if (!(await tryLeaveGrammar(grammarUi, windowConfirm))) return;
           grammarUi.editing = null;
           grammarUi.starterCurrent = undefined;
         },
@@ -287,7 +287,7 @@ function grammarFocusSelector(draftValue: GrammarEditSession["draft"], recordId?
 async function leaveEditor() {
   const current = session;
   if (grammarSaving) return false;
-  if (!current || !await tryLeaveGrammar(grammarUi, windowConfirm)) return false;
+  if (!current || !(await tryLeaveGrammar(grammarUi, windowConfirm))) return false;
   const origin = current.originSection;
   const focus = grammarFocusSelector(current.draft, current.recordId);
   grammarUi.editing = null;
@@ -306,7 +306,8 @@ async function handleStatusChange(status: GrammarStatus) {
   const value = current?.draft;
   if (!current || !value || value.recordKind !== "system" || current.locked) return;
   if (value.status === "configured" && status !== "configured") {
-    if (!await windowConfirm("Reset this system's configuration? Unsaved settings in this editor will be cleared.")) return;
+    if (!(await windowConfirm("Reset this system's configuration? Unsaved settings in this editor will be cleared.")))
+      return;
   }
   current.draft = setSystemStatus(value, status);
 }
@@ -328,19 +329,19 @@ function advanceStarter(current: GrammarSystemId) {
 }
 
 async function handleSkip() {
-  if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
+  if (!(await tryLeaveGrammar(grammarUi, windowConfirm))) return;
   if (grammarUi.starterCurrent) advanceStarter(grammarUi.starterCurrent);
 }
 
 async function handleExitStarter() {
-  if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
+  if (!(await tryLeaveGrammar(grammarUi, windowConfirm))) return;
   grammarUi.starterDismissed = true;
   grammarUi.starterCurrent = undefined;
   grammarUi.editing = null;
 }
 
 async function handleStartStarter() {
-  if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
+  if (!(await tryLeaveGrammar(grammarUi, windowConfirm))) return;
   const next = nextStarterSystem(grammarUi.index);
   if (!next) {
     grammarUi.starterDismissed = true;
@@ -354,19 +355,19 @@ async function handleStartStarter() {
 }
 
 async function handleDismissStarter() {
-  if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
+  if (!(await tryLeaveGrammar(grammarUi, windowConfirm))) return;
   grammarUi.starterDismissed = true;
   grammarUi.starterCurrent = undefined;
   grammarUi.editing = null;
 }
 
 async function handleStartAgreement() {
-  if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
+  if (!(await tryLeaveGrammar(grammarUi, windowConfirm))) return;
   if (grammarUi.index.sectionStates.get("agreement")) {
     if (
-      !await windowConfirm(
+      !(await windowConfirm(
         "This section is marked not used. Create an agreement system anyway? Saving it will clear the not-used marker.",
-      )
+      ))
     ) {
       return;
     }
@@ -379,12 +380,12 @@ async function handleStartAgreement() {
 }
 
 async function handleOpenAgreementNotUsed() {
-  if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
+  if (!(await tryLeaveGrammar(grammarUi, windowConfirm))) return;
   grammarUi.editing = openAgreementNotUsedEditor(grammarUi.index);
 }
 
 async function handleAddCustomRule() {
-  if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
+  if (!(await tryLeaveGrammar(grammarUi, windowConfirm))) return;
   grammarUi.editing = openCustomRuleEditor(grammarUi.index);
 }
 
@@ -392,12 +393,12 @@ async function handleSearchHit(hit: GrammarSearchHit) {
   if (hit.kind === "system" && hit.systemId) {
     await goSystem(grammarUi, hit.systemId, windowConfirm);
   } else if (hit.kind === "custom-rule") {
-    if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
+    if (!(await tryLeaveGrammar(grammarUi, windowConfirm))) return;
     grammarUi.section = "other";
     grammarUi.query = "";
     grammarUi.editing = openCustomRuleEditor(grammarUi.index, hit.recordId);
   } else if (hit.kind === "agreement" && hit.recordId) {
-    if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
+    if (!(await tryLeaveGrammar(grammarUi, windowConfirm))) return;
     grammarUi.section = "agreement";
     grammarUi.query = "";
     grammarUi.editing = openAgreementEditor(grammarUi.index, hit.recordId);
@@ -447,7 +448,12 @@ async function resolveDuplicate(recordId: string, revision: string) {
   if (!ownerLanguageId) return;
   if (session.draft.recordKind !== "system") return;
   const systemId = session.draft.systemId;
-  if (!await windowConfirm(`Remove duplicate record ${recordId.slice(0, 8)}…? The other records for this system are kept.`)) return;
+  if (
+    !(await windowConfirm(
+      `Remove duplicate record ${recordId.slice(0, 8)}…? The other records for this system are kept.`,
+    ))
+  )
+    return;
   grammarSaving = true;
   setMutationActive(true);
   try {
@@ -595,11 +601,19 @@ function removeLink(index: number) {
         {/if}
         {#if systemDraft.status === "not-used"}
           <div class="language-inline">
-            <button type="button" class="language-button" disabled={session.locked} onclick={() => handleStatusChange("configured")}>Configure this section</button>
+            <button
+              type="button"
+              class="language-button"
+              disabled={session.locked}
+              onclick={() => handleStatusChange("configured")}>Configure this section</button>
           </div>
         {:else}
           <div class="language-inline">
-            <button type="button" class="language-button secondary language-danger" disabled={session.locked} onclick={() => handleStatusChange("not-used")}>Mark as not used</button>
+            <button
+              type="button"
+              class="language-button secondary language-danger"
+              disabled={session.locked}
+              onclick={() => handleStatusChange("not-used")}>Mark as not used</button>
           </div>
         {/if}
       {:else if session.draft.recordKind === "agreement"}
@@ -797,7 +811,9 @@ function removeLink(index: number) {
             <button
               type="button"
               class="language-button secondary"
-              onclick={async () => { await goSystem(grammarUi, diagnostic.systemId!, windowConfirm); }}
+              onclick={async () => {
+                await goSystem(grammarUi, diagnostic.systemId!, windowConfirm);
+              }}
               >Open
               {grammarSystemDescriptor(diagnostic.systemId)?.label ?? diagnostic.systemId}</button>
           {:else if diagnostic.recordIds[0] && grammarUi.index.agreements.some((item) => item.id === diagnostic.recordIds[0])}
@@ -805,7 +821,7 @@ function removeLink(index: number) {
               type="button"
               class="language-button secondary"
               onclick={async () => {
-                if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
+                if (!(await tryLeaveGrammar(grammarUi, windowConfirm))) return;
                 grammarUi.section = "agreement";
                 grammarUi.editing = openAgreementEditor(grammarUi.index, diagnostic.recordIds[0]);
                 grammarUi.focusTarget = "#grammar-editor-heading";
@@ -860,7 +876,9 @@ function removeLink(index: number) {
               class="grammar-card"
               data-grammar-id={`section:${entry.id}`}
               aria-label={`${summary.label}: ${summary.detail}${notUsed}`}
-              onclick={async () => { await goSection(grammarUi, entry.id, windowConfirm); }}>
+              onclick={async () => {
+                await goSection(grammarUi, entry.id, windowConfirm);
+              }}>
               <div class="grammar-card-header">
                 <strong>{summary.label}</strong>
                 {#if summary.total > 0}
@@ -916,7 +934,7 @@ function removeLink(index: number) {
                   data-grammar-id={`agreement:${record.id}`}
                   aria-label={`${record.value.title}: ${summarizeAgreement(record.value)}`}
                   onclick={async () => {
-                    if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
+                    if (!(await tryLeaveGrammar(grammarUi, windowConfirm))) return;
                     grammarUi.editing = openAgreementEditor(grammarUi.index, record.id);
                     grammarUi.focusTarget = "#grammar-editor-heading";
                   }}>
@@ -944,7 +962,7 @@ function removeLink(index: number) {
                   data-grammar-id={`rule:${record.id}`}
                   aria-label={record.value.title}
                   onclick={async () => {
-                    if (!await tryLeaveGrammar(grammarUi, windowConfirm)) return;
+                    if (!(await tryLeaveGrammar(grammarUi, windowConfirm))) return;
                     grammarUi.editing = openCustomRuleEditor(grammarUi.index, record.id);
                     grammarUi.focusTarget = "#grammar-editor-heading";
                   }}>
@@ -965,7 +983,9 @@ function removeLink(index: number) {
                   <button
                     type="button"
                     class="language-button"
-                    onclick={async () => { await goSystem(grammarUi, first.id, windowConfirm); }}>{first.emptyAction}</button>
+                    onclick={async () => {
+                      await goSystem(grammarUi, first.id, windowConfirm);
+                    }}>{first.emptyAction}</button>
                 </div>
               {/if}
             </div>
@@ -984,7 +1004,9 @@ function removeLink(index: number) {
                 class="grammar-system"
                 data-grammar-id={`system:${system.id}`}
                 aria-label={`${system.label}: ${summary}`}
-                onclick={async () => { await goSystem(grammarUi, system.id, windowConfirm); }}>
+                onclick={async () => {
+                  await goSystem(grammarUi, system.id, windowConfirm);
+                }}>
                 <strong>{system.label}</strong>
                 <span>{summary}</span>
               </button>

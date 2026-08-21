@@ -116,7 +116,8 @@ $: if (!open && lastFocused) {
           <span>ENTITY REFERENCE</span>
           <h2 id="entity-reference-title">Link to another entity</h2>
         </div>
-        <button type="button" aria-label="Close entity reference dialog" onclick={onCancel}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
+        <button type="button" aria-label="Close entity reference dialog" onclick={onCancel}
+          ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </header>
       <label class="entity-reference-search">
         <span>Search entities</span>
@@ -142,8 +143,15 @@ $: if (!open && lastFocused) {
           <span>Use custom display text</span>
         </label>
         <div class="hint-wrapper">
-          <button type="button" class="hint-button" aria-label="About custom display text" aria-describedby="custom-hint-tooltip">?</button>
-          <div id="custom-hint-tooltip" class="hint-tooltip" role="tooltip">When using the entity name, the link updates automatically when the entity is renamed. Custom labels stay as written.</div>
+          <button
+            type="button"
+            class="hint-button"
+            aria-label="About custom display text"
+            aria-describedby="custom-hint-tooltip">?</button>
+          <div id="custom-hint-tooltip" class="hint-tooltip" role="tooltip">
+            When using the entity name, the link updates automatically when the entity is renamed. Custom labels stay as
+            written.
+          </div>
         </div>
       </div>
       <label class="entity-reference-label">
@@ -151,7 +159,9 @@ $: if (!open && lastFocused) {
         <input
           bind:this={labelInput}
           bind:value={label}
-          placeholder={isCustom ? "How this reference appears in the document" : (selectedEntity()?.name ?? "Entity name (auto)")}
+          placeholder={isCustom
+            ? "How this reference appears in the document"
+            : (selectedEntity()?.name ?? "Entity name (auto)")}
           disabled={!isCustom} />
       </label>
       <footer>

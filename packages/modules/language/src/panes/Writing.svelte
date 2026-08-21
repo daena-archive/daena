@@ -150,13 +150,10 @@ async function saveOrthography(): Promise<"ok" | "name" | "error" | "none"> {
   try {
     const payload = serializeOrthography(orthographyDraft);
     if (orthographyEditing) {
-      const updated = await context.records.update(
-        "orthographies",
-        orthographyEditing.id,
-        ownerLanguageId,
-        payload,
-        { expectedRevision: orthographyEditing.revision, requestId: crypto.randomUUID() },
-      );
+      const updated = await context.records.update("orthographies", orthographyEditing.id, ownerLanguageId, payload, {
+        expectedRevision: orthographyEditing.revision,
+        requestId: crypto.randomUUID(),
+      });
       orthographyEditing = { ...updated, value: normalizeOrthography(updated.value) };
     } else {
       const created = await context.records.create("orthographies", ownerLanguageId, payload, {
@@ -180,7 +177,7 @@ async function saveOrthography(): Promise<"ok" | "name" | "error" | "none"> {
 
 async function deleteOrthography() {
   if (!selectedLanguage || !orthographyEditing) return;
-  if (!await confirm("Delete", `Delete “${orthographyEditing.value.name}”?`)) return;
+  if (!(await confirm("Delete", `Delete “${orthographyEditing.value.name}”?`))) return;
   const ownerLanguageId = selectedLanguage.id;
   error = "";
   try {
@@ -296,15 +293,19 @@ function handleSubmit(event: SubmitEvent) {
     <div class="language-actions">
       <span>
         {#if orthographyEditing}
-          <button type="button" class="language-button secondary language-danger" onclick={deleteOrthography}
-            disabled={orthographySaving}
-            >Delete</button>
+          <button
+            type="button"
+            class="language-button secondary language-danger"
+            onclick={deleteOrthography}
+            disabled={orthographySaving}>Delete</button>
         {/if}
       </span>
       <span>
-        <button type="button" class="language-button secondary" onclick={closeOrthographyEditor}
-          disabled={orthographySaving}
-          >Cancel</button>
+        <button
+          type="button"
+          class="language-button secondary"
+          onclick={closeOrthographyEditor}
+          disabled={orthographySaving}>Cancel</button>
         <button type="submit" class="language-button" disabled={orthographySaving}
           >{orthographySaving ? "Saving…" : "Save writing system"}</button>
       </span>

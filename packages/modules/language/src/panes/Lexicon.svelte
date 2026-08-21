@@ -327,7 +327,7 @@ async function saveLexeme(): Promise<"ok" | "lemma" | "error" | "none"> {
 
 async function deleteLexeme() {
   if (!selectedLanguage || !editing) return;
-  if (!await confirm("Delete", `Delete “${editing.value.lemma}”?`)) return;
+  if (!(await confirm("Delete", `Delete “${editing.value.lemma}”?`))) return;
   const ownerLanguageId = selectedLanguage.id;
   try {
     setMutationActive(true);
@@ -469,10 +469,10 @@ async function clearSlotOverride(slot: ParadigmSlot) {
   const target = overrideTarget(draft.forms, attached.id, slot);
   if (target?.legacy) {
     if (
-      !await confirm(
+      !(await confirm(
         "Clear legacy form",
         `“${target.form}” is an unscoped form matched by label “${slot.label}”. Removing it also deletes a manually authored form. Remove it anyway?`,
-      )
+      ))
     ) {
       return;
     }
@@ -752,8 +752,11 @@ async function handleSubmit(event: SubmitEvent) {
         aria-label="Import lexicon JSON"
         bind:this={fileInput}
         onchange={handleImportChange} />
-      <button type="button" class="language-button secondary" disabled={!selectedLanguage || lexiconExporting} onclick={exportLexicon}
-        >{lexiconExporting ? "Exporting…" : "Export JSON"}</button>
+      <button
+        type="button"
+        class="language-button secondary"
+        disabled={!selectedLanguage || lexiconExporting}
+        onclick={exportLexicon}>{lexiconExporting ? "Exporting…" : "Export JSON"}</button>
       <button
         type="button"
         class="language-button secondary"
@@ -766,12 +769,21 @@ async function handleSubmit(event: SubmitEvent) {
     <div class="language-search-row">
       <label class="language-field language-search-field">
         <span>Search lemma or meaning</span>
-        <input name="search" class="language-search" type="search" bind:value={search} placeholder="Type to search..." />
+        <input
+          name="search"
+          class="language-search"
+          type="search"
+          bind:value={search}
+          placeholder="Type to search..." />
       </label>
       {#if filtered}
         <div class="language-filter-badge">
           {activeFilterCount} filter{activeFilterCount !== 1 ? "s" : ""} active
-          <button type="button" class="language-filter-badge-clear" onclick={clearFilters} aria-label="Clear all filters">&times;</button>
+          <button
+            type="button"
+            class="language-filter-badge-clear"
+            onclick={clearFilters}
+            aria-label="Clear all filters">&times;</button>
         </div>
       {/if}
     </div>
@@ -785,7 +797,11 @@ async function handleSubmit(event: SubmitEvent) {
       <div class="language-filters">
         <label class="language-field">
           <span>Status</span>
-          <input name="statusFilter" list="language-filter-status" bind:value={statusFilterInput} placeholder="Any status" />
+          <input
+            name="statusFilter"
+            list="language-filter-status"
+            bind:value={statusFilterInput}
+            placeholder="Any status" />
         </label>
         <label class="language-field">
           <span>Tag</span>
@@ -809,10 +825,7 @@ async function handleSubmit(event: SubmitEvent) {
         </datalist>
         {#if activeFilterCount > 0}
           <div class="language-filter-actions">
-            <button
-              type="button"
-              class="language-button secondary"
-              onclick={clearFilters}>Clear all filters</button>
+            <button type="button" class="language-button secondary" onclick={clearFilters}>Clear all filters</button>
           </div>
         {/if}
       </div>

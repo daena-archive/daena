@@ -2,8 +2,12 @@
 import { onMount } from "svelte";
 import type { ModuleContext, ModuleView } from "../../packages/module-api/src/index";
 
-let { title, view, context, onClose }: { title: string; view: ModuleView; context: ModuleContext; onClose: () => void } =
-  $props();
+let {
+  title,
+  view,
+  context,
+  onClose,
+}: { title: string; view: ModuleView; context: ModuleContext; onClose: () => void } = $props();
 
 let container = $state<HTMLElement | null>(null);
 let error = $state("");
@@ -21,12 +25,12 @@ onMount(() => {
 
 <section class="projection-view-shell" aria-label={title}>
   <header class="projection-view-header">
-      <button class="quiet-button" type="button" onclick={onClose}>Back to workspace</button>
-      <div>
-        <span class="overline">Workspace projection</span>
-        <h1>{title}</h1>
-      </div>
-    </header>
+    <button class="quiet-button" type="button" onclick={onClose}>Back to workspace</button>
+    <div>
+      <span class="overline">Workspace projection</span>
+      <h1>{title}</h1>
+    </div>
+  </header>
   <div bind:this={container} class="projection-view-container">
     {#if error}<p class="projection-view-error">{error}</p>{/if}
   </div>

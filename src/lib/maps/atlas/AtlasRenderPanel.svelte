@@ -156,10 +156,10 @@ function setOffsetYearsAbs(raw: string) {
 function exportBusy() {
   return Boolean(
     exportJob &&
-      exportJob.state !== "ready-to-save" &&
-      exportJob.state !== "saved" &&
-      exportJob.state !== "failed" &&
-      exportJob.state !== "cancelled",
+    exportJob.state !== "ready-to-save" &&
+    exportJob.state !== "saved" &&
+    exportJob.state !== "failed" &&
+    exportJob.state !== "cancelled",
   );
 }
 
@@ -424,7 +424,8 @@ onDestroy(() => {
       {/if}
     </div>
     <p class="preview-note">
-      Rivers include atlas-only minor tributaries. They are not canonical geography and are never promoted automatically.
+      Rivers include atlas-only minor tributaries. They are not canonical geography and are never promoted
+      automatically.
     </p>
     <div class="epoch-control" aria-label="World epoch">
       <input

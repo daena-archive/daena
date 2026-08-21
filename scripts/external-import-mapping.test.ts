@@ -1,15 +1,7 @@
-import {
-  buildExternalImportMappingCatalog,
-  importFolderFor,
-} from "../src/lib/externalImport.ts";
+import { buildExternalImportMappingCatalog, importFolderFor } from "../src/lib/externalImport.ts";
 import type { ProjectModuleManifest } from "../src/lib/project/client.ts";
 
-function manifest(
-  id: string,
-  enabled: boolean,
-  entityType: string,
-  fieldKey: string,
-): ProjectModuleManifest {
+function manifest(id: string, enabled: boolean, entityType: string, fieldKey: string): ProjectModuleManifest {
   return {
     id,
     enabled,

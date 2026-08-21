@@ -326,10 +326,7 @@ export interface ModuleContext {
       },
       options?: MutationOptions,
     ): Promise<AssetRecord>;
-    delete(
-      asset: Pick<AssetRecord, "id" | "namespace" | "revision">,
-      options?: MutationOptions,
-    ): Promise<void>;
+    delete(asset: Pick<AssetRecord, "id" | "namespace" | "revision">, options?: MutationOptions): Promise<void>;
   };
   search(query: string): Promise<EntitySummary[]>;
   ai: {

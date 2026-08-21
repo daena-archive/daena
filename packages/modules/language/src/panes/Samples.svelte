@@ -200,7 +200,7 @@ async function saveSample(): Promise<"ok" | "text" | "error" | "none"> {
 
 async function deleteSample() {
   if (!selectedLanguage || !sampleEditing) return;
-  if (!await confirm("Delete", `Delete “${sampleTitle(sampleEditing.value)}”?`)) return;
+  if (!(await confirm("Delete", `Delete “${sampleTitle(sampleEditing.value)}”?`))) return;
   const ownerLanguageId = selectedLanguage.id;
   error = "";
   try {
@@ -290,7 +290,10 @@ async function handleSubmit(event: SubmitEvent) {
       <div class="language-form-section-header">
         <div>
           <h3>Interlinear tokens</h3>
-          <p>Tokenize splits the sample on whitespace. Matching surface forms keep their glosses, grammar tags, and lexeme links.</p>
+          <p>
+            Tokenize splits the sample on whitespace. Matching surface forms keep their glosses, grammar tags, and
+            lexeme links.
+          </p>
         </div>
         <div class="samples-token-actions">
           <button type="button" class="language-button secondary" onclick={tokenize}>Tokenize text</button>
@@ -299,7 +302,9 @@ async function handleSubmit(event: SubmitEvent) {
       </div>
       {#if sampleDraft.tokens.length === 0}
         <div class="language-empty-card">
-          <p class="language-empty" role="status">No tokens defined. Use "Tokenize text" to split on whitespace, or add tokens manually.</p>
+          <p class="language-empty" role="status">
+            No tokens defined. Use "Tokenize text" to split on whitespace, or add tokens manually.
+          </p>
         </div>
       {:else}
         <div class="samples-tokens-table">
@@ -339,7 +344,11 @@ async function handleSubmit(event: SubmitEvent) {
                 </select>
               </label>
               <span class="samples-tokens-col samples-tokens-actions">
-                <button type="button" class="samples-token-remove" onclick={() => removeToken(index)} aria-label="Remove token">&times;</button>
+                <button
+                  type="button"
+                  class="samples-token-remove"
+                  onclick={() => removeToken(index)}
+                  aria-label="Remove token">&times;</button>
               </span>
             </div>
           {/each}
@@ -369,9 +378,11 @@ async function handleSubmit(event: SubmitEvent) {
     <div class="language-actions">
       <span>
         {#if sampleEditing}
-          <button type="button" class="language-button secondary language-danger" onclick={deleteSample}
-            disabled={sampleSaving}
-            >Delete</button>
+          <button
+            type="button"
+            class="language-button secondary language-danger"
+            onclick={deleteSample}
+            disabled={sampleSaving}>Delete</button>
         {/if}
       </span>
       <span>

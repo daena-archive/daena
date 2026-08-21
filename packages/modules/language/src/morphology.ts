@@ -203,9 +203,7 @@ export function authoredOverride(forms: LexemeForm[], paradigmId: string, slot: 
 }
 
 export function legacyOverride(forms: LexemeForm[], slot: ParadigmSlot) {
-  return (
-    forms.find((item) => !item.slotId && item.kind === slot.label && item.provenance !== "override") ?? null
-  );
+  return forms.find((item) => !item.slotId && item.kind === slot.label && item.provenance !== "override") ?? null;
 }
 
 export function previewParadigm(

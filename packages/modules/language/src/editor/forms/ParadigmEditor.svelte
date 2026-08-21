@@ -65,9 +65,9 @@ async function applyMutation(result: ParadigmMutation) {
   if (result.blocked) {
     const extra = result.blocked.references ? ` ${result.blocked.references} agreement reference(s) will break.` : "";
     if (
-      !await confirm(
+      !(await confirm(
         `Removing ${result.blocked.label} will discard ${result.blocked.populated} filled cell(s).${extra} Continue?`,
-      )
+      ))
     ) {
       return;
     }

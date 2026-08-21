@@ -32,9 +32,7 @@ function candidates() {
   const q = query.trim().toLowerCase();
   const all: Array<{ id: string; name: string; sub?: string }> = [
     { id: GREGORIAN_CALENDAR_ID, name: "Default", sub: "Default calendar" },
-    ...calendars
-      .filter((e) => !e.deleted)
-      .map((e) => ({ id: e.id, name: e.name, sub: e.entity_type ?? "calendar" })),
+    ...calendars.filter((e) => !e.deleted).map((e) => ({ id: e.id, name: e.name, sub: e.entity_type ?? "calendar" })),
   ];
   if (!q) return all;
   return all.filter((c) => `${c.name} ${c.sub ?? ""}`.toLowerCase().includes(q));
@@ -56,8 +54,7 @@ function select(id: string) {
     window.setTimeout(() => {
       if (!root.contains(document.activeElement)) open = false;
     }, 0);
-  }}
->
+  }}>
   <label class="calendar-picker-label" for="calendar-picker-trigger">{label}</label>
   <button
     id="calendar-picker-trigger"
@@ -65,8 +62,7 @@ function select(id: string) {
     class="calendar-picker-trigger"
     aria-haspopup="listbox"
     aria-expanded={open}
-    onclick={() => (open = !open)}
-  >
+    onclick={() => (open = !open)}>
     <span class="calendar-picker-value">{selectedName()}</span>
     <span class="calendar-picker-chevron" aria-hidden="true">{open ? "▴" : "▾"}</span>
   </button>
@@ -91,8 +87,7 @@ function select(id: string) {
               open = false;
               (document.getElementById("calendar-picker-trigger") as HTMLElement | null)?.focus();
             }
-          }}
-        />
+          }} />
       </div>
       <div class="calendar-picker-options">
         {#each candidates() as cal}
@@ -110,8 +105,7 @@ function select(id: string) {
                 e.preventDefault();
                 select(cal.id);
               }
-            }}
-          >
+            }}>
             <span>
               <strong>{cal.name}</strong>
               {#if cal.sub}<small>{cal.sub}</small>{/if}

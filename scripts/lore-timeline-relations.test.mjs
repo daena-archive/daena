@@ -2,11 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  parseCalendarDate,
-  serializeCalendarDate,
-  GREGORIAN_CALENDAR_ID,
-} from "../src/lib/date.ts";
+import { parseCalendarDate, serializeCalendarDate, GREGORIAN_CALENDAR_ID } from "../src/lib/date.ts";
 import { fieldAppliesToEntity } from "../src/lib/modules/fields.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");

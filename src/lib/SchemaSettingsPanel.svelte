@@ -85,7 +85,10 @@ function pluginInitial(name: string) {
       <div class="heading-copy">
         <span class="kicker">PROJECT OVERLAYS</span>
         <strong>Schema</strong>
-        <p>Extend installed plugins without forking them. Disable built-ins you don’t need and add your own types, fields, and create-templates — stored as a project overlay.</p>
+        <p>
+          Extend installed plugins without forking them. Disable built-ins you don’t need and add your own types,
+          fields, and create-templates — stored as a project overlay.
+        </p>
       </div>
     </div>
 
@@ -104,14 +107,16 @@ function pluginInitial(name: string) {
         </div>
         <strong>No customizable plugins found</strong>
         <p>
-          No enabled plugin declares <code>schema.overlay</code>. Enable a plugin that supports overlays — like <strong>Lore</strong> — or install one from Settings → Plugins.
+          No enabled plugin declares <code>schema.overlay</code>. Enable a plugin that supports overlays — like
+          <strong>Lore</strong> — or install one from Settings → Plugins.
         </p>
       </div>
     {:else}
       <div class="plugin-grid-meta">
         <span class="meta-count">
           <Sparkles size={12} strokeWidth={1.8} aria-hidden="true" />
-          {candidates.length} {candidates.length === 1 ? "plugin" : "plugins"} customizable
+          {candidates.length}
+          {candidates.length === 1 ? "plugin" : "plugins"} customizable
         </span>
         <span class="meta-hint">Changes are project-local and never modify the installed plugin.</span>
       </div>
@@ -122,7 +127,8 @@ function pluginInitial(name: string) {
               <span class="card-icon" aria-hidden="true">{pluginInitial(plugin.name)}</span>
               <span class="card-copy">
                 <strong>{plugin.name}</strong>
-                <span class="card-desc">Customize types, fields, and create-templates. Built-ins stay intact — toggle what you need.</span>
+                <span class="card-desc"
+                  >Customize types, fields, and create-templates. Built-ins stay intact — toggle what you need.</span>
                 <span class="card-id">{plugin.id}</span>
               </span>
               <span class="card-arrow" aria-hidden="true">
@@ -134,7 +140,8 @@ function pluginInitial(name: string) {
       </ul>
       <div class="helper-row">
         <Info size={13} strokeWidth={1.8} aria-hidden="true" />
-        <span>Tip: overlays are versioned with the project. Disable a type and its fields/templates hide automatically.</span>
+        <span
+          >Tip: overlays are versioned with the project. Disable a type and its fields/templates hide automatically.</span>
       </div>
     {/if}
   {:else if packageManifest}
@@ -199,7 +206,11 @@ function pluginInitial(name: string) {
 .kicker {
   display: inline-block;
   color: #b4773f;
-  font: 700 10px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    700 10px/1 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -214,7 +225,11 @@ function pluginInitial(name: string) {
   margin: 7px 0 0;
   max-width: 640px;
   color: var(--ink-soft, #8f897e);
-  font: 400 12.5px/1.55 Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    400 12.5px/1.55 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .empty-state {
   display: grid;
@@ -243,7 +258,11 @@ function pluginInitial(name: string) {
   margin: 0;
   max-width: 560px;
   color: var(--ink-soft, #8f897e);
-  font: 400 12.5px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    400 12.5px/1.5 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .empty-state code {
   padding: 1px 6px;
@@ -251,7 +270,11 @@ function pluginInitial(name: string) {
   background: #f1ebe1;
   border: 1px solid #e9e1d4;
   color: #6f675c;
-  font: 500 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    500 11px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
 }
 .plugin-grid-meta {
   display: flex;
@@ -270,11 +293,19 @@ function pluginInitial(name: string) {
   background: #f4eee3;
   border: 1px solid #e9e1d4;
   color: #62594e;
-  font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    600 11px Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .meta-hint {
   color: var(--ink-faint, #b0a89c);
-  font: 400 11.5px/1.4 Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    400 11.5px/1.4 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .helper-row {
   display: flex;
@@ -285,7 +316,11 @@ function pluginInitial(name: string) {
   background: #f7f3ec;
   border: 1px solid #ebe3d6;
   color: #8f897e;
-  font: 400 11.5px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    400 11.5px/1.5 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .schema-plugin-list {
   display: grid;
@@ -347,7 +382,11 @@ function pluginInitial(name: string) {
 }
 .card-desc {
   color: var(--ink-soft, #8f897e);
-  font: 400 12px/1.45 Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    400 12px/1.45 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
   display: -webkit-box;
   line-clamp: 2;
   -webkit-line-clamp: 2;
@@ -356,7 +395,11 @@ function pluginInitial(name: string) {
 }
 .card-id {
   color: var(--ink-faint, #b0a89c);
-  font: 500 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    500 11px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
 }
 .card-arrow {
   flex: 0 0 28px;
@@ -400,7 +443,11 @@ function pluginInitial(name: string) {
   border-radius: 999px;
   background: #fffefa;
   color: #62594e;
-  font: 600 11.5px Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    600 11.5px Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
   cursor: pointer;
 }
 .crumb-button:hover,
@@ -411,7 +458,9 @@ function pluginInitial(name: string) {
 }
 .crumb-divider {
   color: #cbbda9;
-  font: 300 14px Inter, sans-serif;
+  font:
+    300 14px Inter,
+    sans-serif;
 }
 .schema-plugin-crumb {
   display: inline-flex;
@@ -439,7 +488,11 @@ function pluginInitial(name: string) {
   padding: 5px 9px;
   border-radius: 999px;
   border: 1px solid transparent;
-  font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    600 11px Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .schema-dirty-hint {
   background: #f8ece8;

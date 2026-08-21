@@ -1,7 +1,23 @@
 <script lang="ts">
 import type { Snippet } from "svelte";
 import { onMount } from "svelte";
-import { X, Settings2, FolderOpen, DatabaseZap, Sparkles, Bot, GitBranch, Puzzle, ChevronLeft, Layers, Cpu, Globe, ShieldCheck, Wrench, SlidersHorizontal } from "@lucide/svelte";
+import {
+  X,
+  Settings2,
+  FolderOpen,
+  DatabaseZap,
+  Sparkles,
+  Bot,
+  GitBranch,
+  Puzzle,
+  ChevronLeft,
+  Layers,
+  Cpu,
+  Globe,
+  ShieldCheck,
+  Wrench,
+  SlidersHorizontal,
+} from "@lucide/svelte";
 import { setSchemaEditorDiscardPrompt } from "$lib/schemaEditorGuard";
 import { confirmDialog } from "$lib/dialogs.svelte";
 
@@ -331,7 +347,8 @@ async function handleClose() {
         <p>App preferences and the plugins that power this project.</p>
       </div>
     </div>
-    <button type="button" class="quiet-button header-back" onclick={() => void handleClose()}><ChevronLeft size={14} strokeWidth={1.9} aria-hidden="true" /> Back</button>
+    <button type="button" class="quiet-button header-back" onclick={() => void handleClose()}
+      ><ChevronLeft size={14} strokeWidth={1.9} aria-hidden="true" /> Back</button>
   </header>
 
   <div class="settings-layout">
@@ -340,7 +357,8 @@ async function handleClose() {
         type="button"
         class:active={section === "general"}
         class="settings-nav-button"
-        onclick={() => void goToSection("general")}><FolderOpen size={14} strokeWidth={1.8} aria-hidden="true" /> General</button>
+        onclick={() => void goToSection("general")}
+        ><FolderOpen size={14} strokeWidth={1.8} aria-hidden="true" /> General</button>
       <button
         type="button"
         class:active={section === "ai"}
@@ -350,17 +368,20 @@ async function handleClose() {
         type="button"
         class:active={section === "plugins"}
         class="settings-nav-button"
-        onclick={() => void goToSection("plugins")}><Puzzle size={14} strokeWidth={1.8} aria-hidden="true" /> Plugins</button>
+        onclick={() => void goToSection("plugins")}
+        ><Puzzle size={14} strokeWidth={1.8} aria-hidden="true" /> Plugins</button>
       <button
         type="button"
         class:active={section === "schema"}
         class="settings-nav-button"
-        onclick={() => void goToSection("schema")}><SlidersHorizontal size={14} strokeWidth={1.8} aria-hidden="true" /> Schema</button>
+        onclick={() => void goToSection("schema")}
+        ><SlidersHorizontal size={14} strokeWidth={1.8} aria-hidden="true" /> Schema</button>
       <button
         type="button"
         class:active={section === "git"}
         class="settings-nav-button"
-        onclick={() => void goToSection("git")}><GitBranch size={14} strokeWidth={1.8} aria-hidden="true" /> Snapshots</button>
+        onclick={() => void goToSection("git")}
+        ><GitBranch size={14} strokeWidth={1.8} aria-hidden="true" /> Snapshots</button>
     </nav>
 
     <div class="settings-panel">
@@ -375,8 +396,11 @@ async function handleClose() {
             <p>Recent projects and portable storage. Everything stays local-first.</p>
           </div>
           <div class="hero-stats">
-            <span class="stat-pill"><FolderOpen size={12} strokeWidth={1.8} aria-hidden="true" /> {recentProjects.length} recent</span>
-            <span class="stat-pill"><ShieldCheck size={12} strokeWidth={1.8} aria-hidden="true" /> {projectOpen ? "Project open" : "No project"}</span>
+            <span class="stat-pill"
+              ><FolderOpen size={12} strokeWidth={1.8} aria-hidden="true" /> {recentProjects.length} recent</span>
+            <span class="stat-pill"
+              ><ShieldCheck size={12} strokeWidth={1.8} aria-hidden="true" />
+              {projectOpen ? "Project open" : "No project"}</span>
           </div>
         </div>
 
@@ -405,7 +429,12 @@ async function handleClose() {
                     <strong>{recent.name}</strong>
                     <small>{recent.root}</small>
                   </div>
-                  <button type="button" class="quiet icon" aria-label="Remove {recent.name}" onclick={() => onRemoveRecent(recent.root)}><X size={14} strokeWidth={1.8} aria-hidden="true" /></button>
+                  <button
+                    type="button"
+                    class="quiet icon"
+                    aria-label="Remove {recent.name}"
+                    onclick={() => onRemoveRecent(recent.root)}
+                    ><X size={14} strokeWidth={1.8} aria-hidden="true" /></button>
                 </li>
               {/each}
             </ul>
@@ -421,24 +450,18 @@ async function handleClose() {
               </div>
               <span class="block-hint">Portable vs recovery</span>
             </div>
-            <p class="subtle-note">Portable backups contain canonical files. Recovery backups retain the runtime queue and staged payloads.</p>
+            <p class="subtle-note">
+              Portable backups contain canonical files. Recovery backups retain the runtime queue and staged payloads.
+            </p>
             <div class="settings-actions">
-              <button
-                type="button"
-                class="primary"
-                disabled={storageBusy}
-                onclick={() => void createPortableBackup()}><DatabaseZap size={14} strokeWidth={1.8} aria-hidden="true" /> Portable backup</button>
-              <button
-                type="button"
-                class="action"
-                disabled={storageBusy}
-                onclick={() => void createRecoveryBackup()}><Wrench size={14} strokeWidth={1.8} aria-hidden="true" /> Recovery backup</button>
+              <button type="button" class="primary" disabled={storageBusy} onclick={() => void createPortableBackup()}
+                ><DatabaseZap size={14} strokeWidth={1.8} aria-hidden="true" /> Portable backup</button>
+              <button type="button" class="action" disabled={storageBusy} onclick={() => void createRecoveryBackup()}
+                ><Wrench size={14} strokeWidth={1.8} aria-hidden="true" /> Recovery backup</button>
             </div>
             <label class="settings-path-field">
               <span>Recovery backup path</span>
-              <input
-                bind:value={recoveryPath}
-                placeholder="Paste a recovery backup directory" />
+              <input bind:value={recoveryPath} placeholder="Paste a recovery backup directory" />
             </label>
             <button
               type="button"
@@ -448,7 +471,8 @@ async function handleClose() {
             {#if storageError}
               <div class="inline-alert error" role="alert">
                 <span>{storageError}</span>
-                <button type="button" class="quiet icon" aria-label="Dismiss error" onclick={() => (storageError = "")}><X size={14} strokeWidth={1.8} aria-hidden="true" /></button>
+                <button type="button" class="quiet icon" aria-label="Dismiss error" onclick={() => (storageError = "")}
+                  ><X size={14} strokeWidth={1.8} aria-hidden="true" /></button>
               </div>
             {/if}
             {#if storageMessage}<div class="inline-alert success" role="status">{storageMessage}</div>{/if}
@@ -465,8 +489,10 @@ async function handleClose() {
             <p>Configure one provider. Every generation, rewrite, and field-fill uses the active provider.</p>
           </div>
           <div class="hero-stats">
-            <span class="stat-pill"><Bot size={12} strokeWidth={1.8} aria-hidden="true" /> {aiSettings.provider.name || "No provider"}</span>
-            <span class="stat-pill"><Globe size={12} strokeWidth={1.8} aria-hidden="true" /> {aiSettings.provider.model || "No model"}</span>
+            <span class="stat-pill"
+              ><Bot size={12} strokeWidth={1.8} aria-hidden="true" /> {aiSettings.provider.name || "No provider"}</span>
+            <span class="stat-pill"
+              ><Globe size={12} strokeWidth={1.8} aria-hidden="true" /> {aiSettings.provider.model || "No model"}</span>
           </div>
         </div>
 
@@ -483,7 +509,8 @@ async function handleClose() {
               </div>
               <span class="ai-card-badge">{isRemoteEndpoint(aiSettings.provider.endpoint) ? "Remote" : "Local"}</span>
             </div>
-            <button type="button" class="primary" onclick={() => (providerModalOpen = true)}><Settings2 size={14} strokeWidth={1.8} aria-hidden="true" /> Configure provider</button>
+            <button type="button" class="primary" onclick={() => (providerModalOpen = true)}
+              ><Settings2 size={14} strokeWidth={1.8} aria-hidden="true" /> Configure provider</button>
           </section>
           {#if providerModalOpen}
             <div class="ai-modal-backdrop">
@@ -498,7 +525,8 @@ async function handleClose() {
                     type="button"
                     class="quiet"
                     aria-label="Close provider configuration"
-                    onclick={() => (providerModalOpen = false)}><X size={14} strokeWidth={1.8} aria-hidden="true" /> Close</button>
+                    onclick={() => (providerModalOpen = false)}
+                    ><X size={14} strokeWidth={1.8} aria-hidden="true" /> Close</button>
                 </div>
                 <section class="ai-settings-card ai-providers-card">
                   <div class="ai-provider-choice">
@@ -649,8 +677,7 @@ async function handleClose() {
                         <div class="ai-settings-actions ai-card-actions">
                           <button type="button" class="primary" onclick={() => onAiRemoteConsent(true)}
                             >Allow for this project</button>
-                          <button type="button" class="quiet" onclick={() => onAiRemoteConsent(false)}
-                            >Revoke</button>
+                          <button type="button" class="quiet" onclick={() => onAiRemoteConsent(false)}>Revoke</button>
                         </div>
                       </div>
                     {/if}
@@ -784,7 +811,11 @@ async function handleClose() {
   padding: 7px 12px;
   background: #fdf2ef;
   color: #9a4d3f;
-  font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    600 11px Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
   cursor: pointer;
 }
 .danger:hover {
@@ -827,11 +858,19 @@ async function handleClose() {
   margin: 0;
   max-width: 520px;
   color: var(--ink-soft, #8f897e);
-  font: 400 12.5px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    400 12.5px/1.5 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .panel-kicker {
   color: #b4773f;
-  font: 700 10px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    700 10px/1 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -870,7 +909,11 @@ async function handleClose() {
   color: var(--ink-soft, #8f897e);
   text-align: left;
   cursor: pointer;
-  font: 600 13px Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    600 13px Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
   transition: all 0.14s ease;
 }
 .settings-nav-button:hover {
@@ -881,7 +924,7 @@ async function handleClose() {
   background: var(--accent-dark);
   border-color: var(--accent-dark);
   color: #fffefa;
-  box-shadow: 0 1px 0 rgba(48,44,38,0.12);
+  box-shadow: 0 1px 0 rgba(48, 44, 38, 0.12);
 }
 .settings-panel {
   min-width: 0;
@@ -891,7 +934,9 @@ async function handleClose() {
   border: 1px solid var(--line, #e9e1d4);
   border-radius: 14px;
   background: var(--surface, #fffefa);
-  box-shadow: 0 1px 0 rgba(40 40 20 / 4%), 0 8px 24px rgba(48,44,38,0.04);
+  box-shadow:
+    0 1px 0 rgba(40 40 20 / 4%),
+    0 8px 24px rgba(48, 44, 38, 0.04);
 }
 .panel-hero {
   display: grid;
@@ -913,7 +958,11 @@ async function handleClose() {
 }
 .hero-copy .kicker {
   color: #b4773f;
-  font: 700 10px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    700 10px/1 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -927,7 +976,11 @@ async function handleClose() {
   margin: 6px 0 0;
   max-width: 640px;
   color: var(--ink-soft, #8f897e);
-  font: 400 12.5px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    400 12.5px/1.5 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .hero-stats {
   grid-column: 2;
@@ -945,7 +998,11 @@ async function handleClose() {
   background: #f4eee3;
   border: 1px solid #e9e1d4;
   color: #62594e;
-  font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    600 11px Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .block {
   display: grid;
@@ -956,7 +1013,9 @@ async function handleClose() {
   background: #fffefa;
 }
 .block.elevated {
-  box-shadow: 0 1px 0 rgba(48,44,38,0.03), 0 8px 24px rgba(48,44,38,0.04);
+  box-shadow:
+    0 1px 0 rgba(48, 44, 38, 0.03),
+    0 8px 24px rgba(48, 44, 38, 0.04);
 }
 .block-heading {
   display: flex;
@@ -989,7 +1048,11 @@ async function handleClose() {
 }
 .heading-left h4 {
   margin: 0;
-  font: 600 13px Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    600 13px Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
   color: var(--ink);
   letter-spacing: -0.01em;
 }
@@ -1003,7 +1066,9 @@ async function handleClose() {
   background: #f4eee3;
   border: 1px solid #e9e1d4;
   color: #62594e;
-  font: 700 11px Inter, sans-serif;
+  font:
+    700 11px Inter,
+    sans-serif;
 }
 
 .block-hint {
@@ -1011,7 +1076,11 @@ async function handleClose() {
   align-items: center;
   gap: 5px;
   color: var(--ink-faint, #b0a89c);
-  font: 500 11.5px Inter, ui-sans-serif, system-ui, sans-serif;
+  font:
+    500 11.5px Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
 }
 .subtle-note {
   margin: 0;
@@ -1020,7 +1089,9 @@ async function handleClose() {
   background: #f7f3ec;
   border: 1px solid #f0e8d9;
   color: #8f897e;
-  font: 400 11.5px/1.5 Inter, sans-serif;
+  font:
+    400 11.5px/1.5 Inter,
+    sans-serif;
 }
 .empty-inline {
   display: flex;
@@ -1035,11 +1106,15 @@ async function handleClose() {
 .empty-inline strong {
   display: block;
   color: var(--ink);
-  font: 600 13px Inter, sans-serif;
+  font:
+    600 13px Inter,
+    sans-serif;
   margin-bottom: 3px;
 }
 .empty-inline span {
-  font: 400 12px/1.5 Inter, sans-serif;
+  font:
+    400 12px/1.5 Inter,
+    sans-serif;
 }
 .empty-card {
   display: grid;
@@ -1068,9 +1143,10 @@ async function handleClose() {
   margin: 0;
   max-width: 520px;
   color: var(--ink-soft, #8f897e);
-  font: 400 12.5px/1.5 Inter, sans-serif;
+  font:
+    400 12.5px/1.5 Inter,
+    sans-serif;
 }
-
 
 .settings-recent-list {
   list-style: none;
@@ -1088,11 +1164,13 @@ async function handleClose() {
   border: 1px solid #ebe3d6;
   border-radius: 12px;
   background: #fffcf7;
-  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+  transition:
+    border-color 0.14s ease,
+    box-shadow 0.14s ease;
 }
 .settings-recent-list li:hover {
   border-color: #e0d6c4;
-  box-shadow: 0 4px 14px rgba(48,44,38,0.05);
+  box-shadow: 0 4px 14px rgba(48, 44, 38, 0.05);
 }
 .recent-copy strong,
 .recent-copy small {
@@ -1101,7 +1179,11 @@ async function handleClose() {
 .recent-copy small {
   margin-top: 3px;
   color: var(--ink-soft);
-  font: 500 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    500 11px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
 }
 .settings-actions {
   display: flex;
@@ -1118,7 +1200,9 @@ async function handleClose() {
 }
 .settings-path-field span {
   color: #8f897e;
-  font: 600 10px Inter, sans-serif;
+  font:
+    600 10px Inter,
+    sans-serif;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -1130,12 +1214,14 @@ async function handleClose() {
   border-radius: 9px;
   background: #fff;
   color: #302a27;
-  font: 400 13px Inter, sans-serif;
+  font:
+    400 13px Inter,
+    sans-serif;
 }
 .settings-path-field input:focus {
   outline: none;
   border-color: #b4773f;
-  box-shadow: 0 0 0 3px rgba(180,119,63,0.12);
+  box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.12);
 }
 .inline-alert {
   display: flex;
@@ -1144,7 +1230,9 @@ async function handleClose() {
   gap: 10px;
   padding: 10px 12px;
   border-radius: 10px;
-  font: 400 12px Inter, sans-serif;
+  font:
+    400 12px Inter,
+    sans-serif;
 }
 .inline-alert.error {
   border: 1px solid #e7c4bc;
@@ -1170,7 +1258,9 @@ async function handleClose() {
   background: #fffefa;
 }
 .ai-settings-card.elevated {
-  box-shadow: 0 1px 0 rgba(48,44,38,0.03), 0 8px 24px rgba(48,44,38,0.04);
+  box-shadow:
+    0 1px 0 rgba(48, 44, 38, 0.03),
+    0 8px 24px rgba(48, 44, 38, 0.04);
 }
 .ai-overview-card {
   gap: 16px;
@@ -1263,7 +1353,7 @@ async function handleClose() {
   background: var(--accent-dark);
   color: #fffefa;
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(48,44,38,0.12);
+  box-shadow: 0 4px 12px rgba(48, 44, 38, 0.12);
 }
 .ai-provider-preset strong {
   margin: 0;
@@ -1275,7 +1365,7 @@ async function handleClose() {
   line-height: 1.35;
 }
 .ai-provider-preset.active span {
-  color: rgba(255,255,255,0.7);
+  color: rgba(255, 255, 255, 0.7);
 }
 .ai-label-note {
   display: inline-block;
@@ -1498,15 +1588,17 @@ async function handleClose() {
   border-radius: 9px;
   background: var(--accent-dark);
   color: #fffefa;
-  font: 700 12px Inter, sans-serif;
+  font:
+    700 12px Inter,
+    sans-serif;
   cursor: pointer;
-  box-shadow: 0 1px 0 rgba(48,44,38,0.12);
+  box-shadow: 0 1px 0 rgba(48, 44, 38, 0.12);
   transition: all 0.14s ease;
 }
 .primary:hover {
   background: #4a6b57;
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(48,44,38,0.12);
+  box-shadow: 0 4px 12px rgba(48, 44, 38, 0.12);
 }
 .primary:active {
   transform: translateY(0);
@@ -1527,7 +1619,9 @@ async function handleClose() {
   border-radius: 9px;
   background: #fffefa;
   color: #62594e;
-  font: 600 11.5px Inter, sans-serif;
+  font:
+    600 11.5px Inter,
+    sans-serif;
   cursor: pointer;
   transition: all 0.14s ease;
 }
@@ -1535,7 +1629,7 @@ async function handleClose() {
   border-color: #b7a88f;
   background: #f4eee4;
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(48,44,38,0.06);
+  box-shadow: 0 4px 12px rgba(48, 44, 38, 0.06);
 }
 .quiet:active {
   transform: translateY(0);
@@ -1564,7 +1658,9 @@ async function handleClose() {
   border-radius: 9px;
   background: #f7f1e7;
   color: #62594e;
-  font: 600 11.5px Inter, sans-serif;
+  font:
+    600 11.5px Inter,
+    sans-serif;
   cursor: pointer;
   transition: all 0.14s ease;
 }
@@ -1581,7 +1677,9 @@ async function handleClose() {
   border-radius: 9px;
   background: #fffefa;
   color: #62594e;
-  font: 600 11.5px Inter, sans-serif;
+  font:
+    600 11.5px Inter,
+    sans-serif;
   cursor: pointer;
   transition: all 0.14s ease;
 }

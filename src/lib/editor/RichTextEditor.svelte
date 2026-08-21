@@ -696,7 +696,13 @@ function confirmLink(displayText: string, url: string) {
   linkDialogOpen = false;
   if (wasSelection) {
     // Apply link to the original selection; preserve inline marks via extendMarkRange
-    editorState.chain().focus().setTextSelection(range).extendMarkRange("link").setLink({ href, target: "_blank", rel: "noopener noreferrer" }).run();
+    editorState
+      .chain()
+      .focus()
+      .setTextSelection(range)
+      .extendMarkRange("link")
+      .setLink({ href, target: "_blank", rel: "noopener noreferrer" })
+      .run();
   } else {
     const text = displayText.trim();
     if (!text) return;
@@ -705,13 +711,25 @@ function confirmLink(displayText: string, url: string) {
       editorState
         .chain()
         .focus()
-        .insertContentAt(range, [{ type: "text", text, marks: [{ type: "link", attrs: { href, target: "_blank", rel: "noopener noreferrer" } }] }])
+        .insertContentAt(range, [
+          {
+            type: "text",
+            text,
+            marks: [{ type: "link", attrs: { href, target: "_blank", rel: "noopener noreferrer" } }],
+          },
+        ])
         .run();
     } else {
       editorState
         .chain()
         .focus()
-        .insertContentAt(range.from, [{ type: "text", text, marks: [{ type: "link", attrs: { href, target: "_blank", rel: "noopener noreferrer" } }] }])
+        .insertContentAt(range.from, [
+          {
+            type: "text",
+            text,
+            marks: [{ type: "link", attrs: { href, target: "_blank", rel: "noopener noreferrer" } }],
+          },
+        ])
         .run();
     }
   }
@@ -757,7 +775,10 @@ async function openLinkExternal() {
   if (!linkPopover) return;
   const rawHref = linkPopover.href.trim();
   if (!rawHref) return;
-  const href = /^https?:\/\//i.test(rawHref) || /^mailto:/i.test(rawHref) || /^ftp:/i.test(rawHref) ? rawHref : `https://${rawHref}`;
+  const href =
+    /^https?:\/\//i.test(rawHref) || /^mailto:/i.test(rawHref) || /^ftp:/i.test(rawHref)
+      ? rawHref
+      : `https://${rawHref}`;
   hideLinkPopover();
   const isTauri = typeof window !== "undefined" && ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__);
   if (isTauri) {
@@ -872,7 +893,8 @@ function updateAutoEntityReferences() {
     const id = erMark.attrs.entityId;
     const expected = map.get(id);
     if (!expected) return;
-    if (node.text !== expected) replacements.push({ from: pos, to: pos + node.text.length, text: expected, mark: erMark });
+    if (node.text !== expected)
+      replacements.push({ from: pos, to: pos + node.text.length, text: expected, mark: erMark });
   });
   if (replacements.length === 0) return;
   // apply from end to start to keep positions valid
@@ -974,7 +996,11 @@ function saveEntityReference(entity: Entity, label: string, isCustom: boolean) {
       .focus()
       .insertContentAt(
         { from: reference.from, to: reference.to },
-        { type: "text", text: displayText, marks: [{ type: "entityReference", attrs: { entityId: entity.id, isCustom } }] },
+        {
+          type: "text",
+          text: displayText,
+          marks: [{ type: "entityReference", attrs: { entityId: entity.id, isCustom } }],
+        },
       )
       .run();
     entityReferenceEdit = null;
@@ -1270,7 +1296,8 @@ onMount(() => {
               }
             } catch {}
           }
-          if (linkPopover && linkPopover.href === href && linkPopover.from === from && linkPopover.to === to) hideLinkPopover();
+          if (linkPopover && linkPopover.href === href && linkPopover.from === from && linkPopover.to === to)
+            hideLinkPopover();
           else showLinkPopover(href, text, from, to, linkAnchor.getBoundingClientRect());
           return true;
         }
@@ -2010,15 +2037,28 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
       aria-label="Link actions">
       <div class="link-popover-url" title={linkPopover.href}>{linkPopover.href}</div>
       <div class="link-popover-actions">
-        <button type="button" class="link-popover-btn" onmousedown={(event) => event.preventDefault()} onclick={openLinkExternal}
-          >Open</button>
-        <button type="button" class="link-popover-btn primary" onmousedown={(event) => event.preventDefault()} onclick={editLinkFromPopover}
-          >Edit</button>
-        <button type="button" class="link-popover-btn danger" onmousedown={(event) => event.preventDefault()} onclick={unlinkFromPopover}
-          >Unlink</button>
+        <button
+          type="button"
+          class="link-popover-btn"
+          onmousedown={(event) => event.preventDefault()}
+          onclick={openLinkExternal}>Open</button>
+        <button
+          type="button"
+          class="link-popover-btn primary"
+          onmousedown={(event) => event.preventDefault()}
+          onclick={editLinkFromPopover}>Edit</button>
+        <button
+          type="button"
+          class="link-popover-btn danger"
+          onmousedown={(event) => event.preventDefault()}
+          onclick={unlinkFromPopover}>Unlink</button>
       </div>
-      <button type="button" class="link-popover-close" aria-label="Close link popover" onmousedown={(event) => event.preventDefault()} onclick={hideLinkPopover}
-        ><XIcon size={12} strokeWidth={1.8} /></button>
+      <button
+        type="button"
+        class="link-popover-close"
+        aria-label="Close link popover"
+        onmousedown={(event) => event.preventDefault()}
+        onclick={hideLinkPopover}><XIcon size={12} strokeWidth={1.8} /></button>
     </div>
   {/if}
 

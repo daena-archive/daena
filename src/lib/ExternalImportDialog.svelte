@@ -495,13 +495,16 @@ onMount(() => {
           <p>
             Created {report.created.length}, mapped {report.mapped.length}, and skipped
             {report.skippedSourcePaths.length} source {report.skippedSourcePaths.length === 1 ? "item" : "items"}.
-            Imported {report.assets.length} {report.assets.length === 1 ? "attachment" : "attachments"}.
+            Imported {report.assets.length}
+            {report.assets.length === 1 ? "attachment" : "attachments"}.
           </p>
         </div>
         {#if report.created.length || report.mapped.length}
           <div class="result-list">
             {#each [...report.created, ...report.mapped] as item}
-              <div><strong>{item.sourcePath}</strong><span>{item.entityType ?? "Existing entity"} · {item.entityId}</span></div>
+              <div>
+                <strong>{item.sourcePath}</strong><span>{item.entityType ?? "Existing entity"} · {item.entityId}</span>
+              </div>
             {/each}
             {#each report.assets as asset}
               <div><strong>{asset.sourcePath}</strong><span>Attachment · {asset.filename}</span></div>
@@ -511,7 +514,10 @@ onMount(() => {
         {#if report.warnings.length}
           <div class="message warning-message">
             <AlertTriangle size={15} strokeWidth={1.8} />
-            <span>Imported with {report.warnings.length} acknowledged warning{report.warnings.length === 1 ? "" : "s"}.</span>
+            <span
+              >Imported with {report.warnings.length} acknowledged warning{report.warnings.length === 1
+                ? ""
+                : "s"}.</span>
           </div>
         {/if}
       </section>
@@ -564,7 +570,9 @@ onMount(() => {
                 {#if validation.warningCount > 0}
                   <label>
                     <input type="checkbox" bind:checked={acknowledgeWarnings} />
-                    I reviewed and accept the {validation.warningCount} warning{validation.warningCount === 1 ? "" : "s"}.
+                    I reviewed and accept the {validation.warningCount} warning{validation.warningCount === 1
+                      ? ""
+                      : "s"}.
                   </label>
                 {/if}
               </div>
@@ -629,7 +637,7 @@ onMount(() => {
                   <label>
                     <span>Existing entity</span>
                     <select
-                    value={existingTargetId(object)}
+                      value={existingTargetId(object)}
                       onchange={(event) => setExistingTarget(object, event.currentTarget.value)}>
                       {#each entities.filter((entity) => !entity.deleted) as entity}
                         <option value={entity.id}>{entity.name} · {entity.entity_type}</option>
@@ -639,74 +647,75 @@ onMount(() => {
                 {/if}
               </div>
               {#if objectDecision(object).kind === "create"}
-              <div class="mapping-card">
-                <div class="mapping-heading">
-                  <div>
-                    <span class="kicker">MAPPING</span><strong
-                      >{planLoading
-                        ? "Updating candidate plan…"
-                        : effectiveEntityType(object) || "Needs a type"}</strong>
+                <div class="mapping-card">
+                  <div class="mapping-heading">
+                    <div>
+                      <span class="kicker">MAPPING</span><strong
+                        >{planLoading
+                          ? "Updating candidate plan…"
+                          : effectiveEntityType(object) || "Needs a type"}</strong>
+                    </div>
+                    {#if !planLoading && effectiveEntityType(object)}<CircleCheck size={17} strokeWidth={1.8} />{/if}
                   </div>
-                  {#if !planLoading && effectiveEntityType(object)}<CircleCheck size={17} strokeWidth={1.8} />{/if}
+                  <div class="scope-tabs" role="group" aria-label="Mapping override scope">
+                    <button
+                      class:active={mappingScope === "global"}
+                      type="button"
+                      onclick={() => (mappingScope = "global")}>All items</button>
+                    <button
+                      class:active={mappingScope === "folder"}
+                      type="button"
+                      disabled={!selectedFolder()}
+                      onclick={() => (mappingScope = "folder")}>Folder</button>
+                    <button class:active={mappingScope === "item"} type="button" onclick={() => (mappingScope = "item")}
+                      >This item</button>
+                  </div>
+                  <label
+                    ><span>Entity type</span><select
+                      value={currentDecision().entityType ?? ""}
+                      onchange={(event) => setEntityType(event.currentTarget.value)}>
+                      <option value=""
+                        >{mappingScope === "global" ? "Choose a type" : "Inherit broader mapping"}</option>
+                      {#each catalog().entityTypes as choice}<option value={choice.id}
+                          >{choice.moduleName} · {choice.label}</option
+                        >{/each}
+                    </select></label>
+                  {#if Object.keys(object.fields ?? {}).length > 0}
+                    <div class="mapping-fields">
+                      <span>Source fields</span>{#each Object.keys(object.fields ?? {}).sort() as sourceKey}<label
+                          ><code>{sourceKey}</code><select
+                            value={currentDecision().fieldMappings?.[sourceKey] ?? ""}
+                            onchange={(event) => setFieldMapping(sourceKey, event.currentTarget.value)}
+                            ><option value=""
+                              >{mappingScope === "global"
+                                ? "Preserve as unmapped metadata"
+                                : "Inherit broader mapping"}</option
+                            >{#each fieldsForEntity(effectiveEntityType(object)) as choice}<option value={choice.id}
+                                >{choice.moduleName} · {choice.label}</option
+                              >{/each}</select
+                          ></label
+                        >{/each}
+                    </div>
+                  {/if}
+                  {#if relationshipSources(object).length > 0}
+                    <div class="mapping-fields">
+                      <span>Source relationships</span>{#each relationshipSources(object) as sourceKey}<label
+                          ><code>{sourceKey}</code><select
+                            value={currentDecision().relationshipMappings?.[sourceKey] ?? ""}
+                            onchange={(event) => setFieldMapping(sourceKey, event.currentTarget.value, true)}
+                            ><option value=""
+                              >{mappingScope === "global" ? "Leave unresolved" : "Inherit broader mapping"}</option
+                            >{#each catalog().relationships as choice}<option value={choice.id}
+                                >{choice.moduleName} · {choice.label}</option
+                              >{/each}</select
+                          ></label
+                        >{/each}
+                    </div>
+                  {/if}
+                  {#if mappingScope === "folder" && selectedFolder()}<small
+                      >Overrides items under <code>{selectedFolder()}</code>.</small
+                    >{/if}
                 </div>
-                <div class="scope-tabs" role="group" aria-label="Mapping override scope">
-                  <button
-                    class:active={mappingScope === "global"}
-                    type="button"
-                    onclick={() => (mappingScope = "global")}>All items</button>
-                  <button
-                    class:active={mappingScope === "folder"}
-                    type="button"
-                    disabled={!selectedFolder()}
-                    onclick={() => (mappingScope = "folder")}>Folder</button>
-                  <button class:active={mappingScope === "item"} type="button" onclick={() => (mappingScope = "item")}
-                    >This item</button>
-                </div>
-                <label
-                  ><span>Entity type</span><select
-                    value={currentDecision().entityType ?? ""}
-                    onchange={(event) => setEntityType(event.currentTarget.value)}>
-                    <option value="">{mappingScope === "global" ? "Choose a type" : "Inherit broader mapping"}</option>
-                    {#each catalog().entityTypes as choice}<option value={choice.id}
-                        >{choice.moduleName} · {choice.label}</option
-                      >{/each}
-                  </select></label>
-                {#if Object.keys(object.fields ?? {}).length > 0}
-                  <div class="mapping-fields">
-                    <span>Source fields</span>{#each Object.keys(object.fields ?? {}).sort() as sourceKey}<label
-                        ><code>{sourceKey}</code><select
-                          value={currentDecision().fieldMappings?.[sourceKey] ?? ""}
-                          onchange={(event) => setFieldMapping(sourceKey, event.currentTarget.value)}
-                          ><option value=""
-                            >{mappingScope === "global"
-                              ? "Preserve as unmapped metadata"
-                              : "Inherit broader mapping"}</option
-                          >{#each fieldsForEntity(effectiveEntityType(object)) as choice}<option value={choice.id}
-                              >{choice.moduleName} · {choice.label}</option
-                            >{/each}</select
-                        ></label
-                      >{/each}
-                  </div>
-                {/if}
-                {#if relationshipSources(object).length > 0}
-                  <div class="mapping-fields">
-                    <span>Source relationships</span>{#each relationshipSources(object) as sourceKey}<label
-                        ><code>{sourceKey}</code><select
-                          value={currentDecision().relationshipMappings?.[sourceKey] ?? ""}
-                          onchange={(event) => setFieldMapping(sourceKey, event.currentTarget.value, true)}
-                          ><option value=""
-                            >{mappingScope === "global" ? "Leave unresolved" : "Inherit broader mapping"}</option
-                          >{#each catalog().relationships as choice}<option value={choice.id}
-                              >{choice.moduleName} · {choice.label}</option
-                            >{/each}</select
-                        ></label
-                      >{/each}
-                  </div>
-                {/if}
-                {#if mappingScope === "folder" && selectedFolder()}<small
-                    >Overrides items under <code>{selectedFolder()}</code>.</small
-                  >{/if}
-              </div>
               {/if}
               <div class="document-preview">
                 <span class="kicker">SOURCE PREVIEW</span>
@@ -753,11 +762,15 @@ onMount(() => {
                   {inspectedItem.value.source_path} · {inspectedItem.value.size.toLocaleString()} bytes ·
                   {inspectedItem.value.mime_type ?? "unknown media type"}
                 </p>
-                <pre>{JSON.stringify({
-                    contentHash: inspectedItem.value.content_hash,
-                    ownerObjectId: inspectedItem.value.owner_object_id,
-                    relationship: inspectedItem.value.relationship,
-                  }, null, 2)}</pre>
+                <pre>{JSON.stringify(
+                    {
+                      contentHash: inspectedItem.value.content_hash,
+                      ownerObjectId: inspectedItem.value.owner_object_id,
+                      relationship: inspectedItem.value.relationship,
+                    },
+                    null,
+                    2,
+                  )}</pre>
               </div>
             {:else}<div class="empty-inspector">Select an item to inspect it.</div>{/if}
           </section>

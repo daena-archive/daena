@@ -3,9 +3,25 @@ import { filterWorkspaceEntities, TIMELINE_VIEW_TYPES } from "../src/lib/modules
 
 const ENTITY_TYPES = new Set(["event", "encounter", "era", "calendar", "person"]);
 const entities = [
-  { id: "1", name: "Battle of Iradan", entity_type: "event", deleted: false, created_at: "", updated_at: "", revision: "a" },
+  {
+    id: "1",
+    name: "Battle of Iradan",
+    entity_type: "event",
+    deleted: false,
+    created_at: "",
+    updated_at: "",
+    revision: "a",
+  },
   { id: "2", name: "Imperial Era", entity_type: "era", deleted: false, created_at: "", updated_at: "", revision: "b" },
-  { id: "3", name: "Temple Calendar", entity_type: "calendar", deleted: false, created_at: "", updated_at: "", revision: "c" },
+  {
+    id: "3",
+    name: "Temple Calendar",
+    entity_type: "calendar",
+    deleted: false,
+    created_at: "",
+    updated_at: "",
+    revision: "c",
+  },
   { id: "4", name: "Council", entity_type: "encounter", deleted: false, created_at: "", updated_at: "", revision: "d" },
   { id: "5", name: "Aldric", entity_type: "person", deleted: false, created_at: "", updated_at: "", revision: "e" },
 ];
@@ -21,7 +37,9 @@ assert.deepEqual(
   "eras tab shows only eras",
 );
 assert.deepEqual(
-  filterWorkspaceEntities({ entityTypes: ENTITY_TYPES, entities, query: "", timelineView: "calendars" }).map((e) => e.id),
+  filterWorkspaceEntities({ entityTypes: ENTITY_TYPES, entities, query: "", timelineView: "calendars" }).map(
+    (e) => e.id,
+  ),
   ["3"],
   "calendars tab shows only calendars",
 );

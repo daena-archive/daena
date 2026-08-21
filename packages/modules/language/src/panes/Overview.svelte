@@ -262,7 +262,7 @@ async function archiveOverviewLanguage() {
   const message = overviewDirty
     ? `Archive "${name}"? Unsaved language details will be discarded.`
     : `Archive "${name}"? It will be removed from the active language list.`;
-  if (!await confirm("Archive language", message)) return;
+  if (!(await confirm("Archive language", message))) return;
   clearOverviewAutosave();
   overviewDeleting = true;
   overviewError = "";
@@ -319,7 +319,8 @@ let status = $derived.by(() => {
     </p>
   </div>
   <div class="language-toolbar-actions">
-    <span class="language-overview-status" role="status" aria-live="polite" data-state={status.state}>{status.text}</span>
+    <span class="language-overview-status" role="status" aria-live="polite" data-state={status.state}
+      >{status.text}</span>
   </div>
 </div>
 {#if !selectedLanguage}

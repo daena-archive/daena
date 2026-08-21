@@ -339,8 +339,7 @@ export function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcC
       callTransport<AssetReadHandle>(transport, "asset.read.begin", { assetId, namespace }),
     updateAssetMetadata: (input, options) =>
       callTransport<unknown>(transport, "asset.update", input, options?.requestId),
-    deleteAsset: (input, options) =>
-      callTransport<void>(transport, "asset.delete", input, options?.requestId),
+    deleteAsset: (input, options) => callTransport<void>(transport, "asset.delete", input, options?.requestId),
     beginAssetReplace: (input, options) =>
       callTransport<AssetReplaceHandle>(transport, "asset.replace.begin", input, options?.requestId),
     commitAssetReplace: (handle, contentHash, options) =>

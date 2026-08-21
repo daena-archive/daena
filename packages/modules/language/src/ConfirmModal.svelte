@@ -37,12 +37,22 @@ function settle(value: boolean) {
 {#if confirmState.open}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="language-modal-backdrop" role="presentation" onclick={() => settle(false)}>
-    <div class="language-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+    <div
+      class="language-modal"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="confirm-title"
+      tabindex="-1"
+      onclick={(e) => e.stopPropagation()}>
       <h3 id="confirm-title">{confirmState.title}</h3>
       <p>{confirmState.message}</p>
       <div class="language-modal-actions">
         <button type="button" class="language-button secondary" onclick={() => settle(false)}>Cancel</button>
-        <button type="button" class="language-button secondary language-danger" bind:this={confirmButton} onclick={() => settle(true)}>Confirm</button>
+        <button
+          type="button"
+          class="language-button secondary language-danger"
+          bind:this={confirmButton}
+          onclick={() => settle(true)}>Confirm</button>
       </div>
     </div>
   </div>

@@ -909,9 +909,7 @@ export interface ImportCandidatePlan {
   unresolvedDecisionCount: number;
 }
 export type ImportObjectDecision =
-  | { kind: "create" }
-  | { kind: "skip" }
-  | { kind: "map_to_existing"; entity_id: string; expected_revision: string };
+  { kind: "create" } | { kind: "skip" } | { kind: "map_to_existing"; entity_id: string; expected_revision: string };
 export interface ImportValidationIssue {
   severity: "error" | "warning";
   code: string;
@@ -977,11 +975,7 @@ export const project = {
   externalImporters: () => invoke<ExternalImporterDescriptor[]>("project_external_importers"),
   externalImportSelectSource: (sourceKind: "file" | "folder") =>
     invoke<ExternalImportSourceHandle | null>("project_external_import_select_source", { sourceKind }),
-  externalImportAnalyzeBegin: (
-    sourceHandle: string,
-    importerId: string,
-    limits?: ExternalImportLimits,
-  ) =>
+  externalImportAnalyzeBegin: (sourceHandle: string, importerId: string, limits?: ExternalImportLimits) =>
     invoke<ExternalImportAnalysisStatus>("project_external_import_analyze_begin", {
       input: { sourceHandle, importerId, limits: limits ?? null },
     }),
@@ -991,11 +985,7 @@ export const project = {
     invoke<ExternalImportAnalysisStatus>("project_external_import_analysis_cancel", { sessionId }),
   externalImportAnalysisPage: (sessionId: string, offset: number, limit: number) =>
     invoke<ExternalImportPage>("project_external_import_analysis_page", { sessionId, offset, limit }),
-  externalImportCandidatePlan: (
-    sessionId: string,
-    manifestFingerprint: string,
-    mappings: ImportMappingOverrides,
-  ) =>
+  externalImportCandidatePlan: (sessionId: string, manifestFingerprint: string, mappings: ImportMappingOverrides) =>
     invoke<ImportCandidatePlan>("project_external_import_candidate_plan", {
       input: { sessionId, manifestFingerprint, mappings },
     }),

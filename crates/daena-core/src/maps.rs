@@ -697,7 +697,8 @@ fn anchor(value: &Value) -> Result<Anchor, CoreError> {
                 }
                 VECTOR_PROVIDER => {
                     feature_kind == "geojson-feature"
-                        && Uuid::parse_str(feature_id).is_ok_and(|uuid| uuid.to_string() == *feature_id)
+                        && Uuid::parse_str(feature_id)
+                            .is_ok_and(|uuid| uuid.to_string() == *feature_id)
                 }
                 _ => false,
             };

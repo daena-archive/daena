@@ -20,6 +20,7 @@ import {
 } from "@lucide/svelte";
 import { setSchemaEditorDiscardPrompt } from "$lib/schemaEditorGuard";
 import { confirmDialog } from "$lib/dialogs.svelte";
+import { project } from "$lib/project/client";
 
 type SettingsSection = "general" | "ai" | "plugins" | "schema" | "git";
 type RecentProject = { name: string; root: string };
@@ -321,6 +322,16 @@ async function createRecoveryBackup() {
   }
 }
 
+async function pickRestorePath() {
+  try {
+    const selection = await project.pickDirectory();
+    const path = typeof selection === "string" ? selection : Array.isArray(selection) ? selection[0] : null;
+    if (path) recoveryPath = path;
+  } catch {
+    // ignore picker cancellation
+  }
+}
+
 async function restoreRecoveryBackup() {
   if (
     !recoveryPath.trim() ||
@@ -474,23 +485,37 @@ async function handleClose() {
               <span class="block-hint">Portable vs recovery</span>
             </div>
             <p class="subtle-note">
-              Portable backups contain canonical files. Recovery backups retain the runtime queue and staged payloads.
+              Portable = migratable snapshot<br />
+              Recovery = local undo point
             </p>
             <div class="settings-actions">
               <button type="button" class="primary" disabled={storageBusy} onclick={() => void createPortableBackup()}
-                ><DatabaseZap size={14} strokeWidth={1.8} aria-hidden="true" /> Portable backup</button>
-              <button type="button" class="action" disabled={storageBusy} onclick={() => void createRecoveryBackup()}
-                ><Wrench size={14} strokeWidth={1.8} aria-hidden="true" /> Recovery backup</button>
+                ><DatabaseZap size={14} strokeWidth={1.8} aria-hidden="true" /> Create portable backup</button>
+              <button type="button" class="primary" disabled={storageBusy} onclick={() => void createRecoveryBackup()}
+                ><Wrench size={14} strokeWidth={1.8} aria-hidden="true" /> Create recovery backup</button>
             </div>
-            <label class="settings-path-field">
-              <span>Recovery backup path</span>
-              <input bind:value={recoveryPath} placeholder="Paste a recovery backup directory" />
-            </label>
-            <button
-              type="button"
-              class="quiet"
-              disabled={storageBusy || !recoveryPath.trim()}
-              onclick={() => void restoreRecoveryBackup()}>Restore recovery backup</button>
+            <div class="block" style="gap:10px; padding:14px; background:#f7f3ec">
+              <div class="heading-left" style="gap:8px">
+                <span class="heading-icon"><Wrench size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+                <h4 style="margin:0; font-size:12px">Restore from recovery backup</h4>
+              </div>
+              <label class="settings-path-field" style="margin:0">
+                <span>Backup to restore (source folder)</span>
+                <div style="display:flex; gap:8px; align-items:center">
+                  <input
+                    bind:value={recoveryPath}
+                    placeholder="Choose or paste a recovery backup folder"
+                    style="flex:1" />
+                  <button type="button" class="quiet" disabled={storageBusy} onclick={() => void pickRestorePath()}
+                    ><FolderOpen size={14} strokeWidth={1.8} aria-hidden="true" /> Browse</button>
+                </div>
+              </label>
+              <button
+                type="button"
+                class="quiet"
+                disabled={storageBusy || !recoveryPath.trim()}
+                onclick={() => void restoreRecoveryBackup()}>Restore recovery backup</button>
+            </div>
             {#if storageError}
               <div class="inline-alert error" role="alert">
                 <span>{storageError}</span>
@@ -533,20 +558,16 @@ async function handleClose() {
                   <strong id="ai-enable-heading">AI features</strong>
                   <p>
                     {#if aiEnabled}
-                      AI is enabled for this project. Disable it to hide every AI surface until it is turned on
-                      again.
+                      AI is enabled for this project. Disable it to hide every AI surface until it is turned on again.
                     {:else}
-                      AI is off for this project and every AI surface is hidden. Enable it to use rewrite,
-                      generation, field fill, and semantic search here.
+                      AI is off for this project and every AI surface is hidden. Enable it to use rewrite, generation,
+                      field fill, and semantic search here.
                     {/if}
                   </p>
                 </div>
                 <span class="ai-card-badge" class:ok={aiEnabled}>{aiEnabled ? "Enabled" : "Off"}</span>
               </div>
-              <button
-                type="button"
-                class={aiEnabled ? "quiet" : "primary"}
-                onclick={() => onToggleAi(!aiEnabled)}>
+              <button type="button" class={aiEnabled ? "quiet" : "primary"} onclick={() => onToggleAi(!aiEnabled)}>
                 {#if aiEnabled}<X size={14} strokeWidth={1.8} aria-hidden="true" /> Disable AI{:else}
                   <Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /> Enable AI{/if}
               </button>
@@ -769,25 +790,27 @@ async function handleClose() {
           {/if}
           {#if aiEnabled}
             <section class="ai-settings-card elevated" aria-labelledby="retrieval-index-heading">
-            <div class="ai-card-heading ai-card-heading-compact">
-              <div>
-                <span class="ai-card-kicker">PROJECT CONTEXT</span>
-                <strong id="retrieval-index-heading">Semantic retrieval</strong>
-                <p>Embeddings use the active provider when supported; lexical retrieval remains available otherwise.</p>
+              <div class="ai-card-heading ai-card-heading-compact">
+                <div>
+                  <span class="ai-card-kicker">PROJECT CONTEXT</span>
+                  <strong id="retrieval-index-heading">Semantic retrieval</strong>
+                  <p>
+                    Embeddings use the active provider when supported; lexical retrieval remains available otherwise.
+                  </p>
+                </div>
+                <Cpu size={18} strokeWidth={1.7} aria-hidden="true" />
               </div>
-              <Cpu size={18} strokeWidth={1.7} aria-hidden="true" />
-            </div>
-            <div class="ai-settings-actions">
-              <button type="button" class="quiet" onclick={onAiIndexRefresh}>Refresh status</button>
-              <button type="button" class="primary" onclick={onAiIndexRebuild} disabled={aiIndexBusy}
-                >{aiIndexBusy ? "Building index…" : "Build semantic index"}</button>
-              {#if aiIndexBusy}<button type="button" class="quiet" onclick={onAiIndexCancel}>Cancel</button>{/if}
-              {#if aiIndexStatus}<span class="ai-status"
-                  >{aiIndexStatus.message ?? aiIndexStatus.state ?? "Unavailable"}</span
-                >{/if}
-              {#if aiIndexMessage}<span class="ai-status">{aiIndexMessage}</span>{/if}
-            </div>
-          </section>
+              <div class="ai-settings-actions">
+                <button type="button" class="quiet" onclick={onAiIndexRefresh}>Refresh status</button>
+                <button type="button" class="primary" onclick={onAiIndexRebuild} disabled={aiIndexBusy}
+                  >{aiIndexBusy ? "Building index…" : "Build semantic index"}</button>
+                {#if aiIndexBusy}<button type="button" class="quiet" onclick={onAiIndexCancel}>Cancel</button>{/if}
+                {#if aiIndexStatus}<span class="ai-status"
+                    >{aiIndexStatus.message ?? aiIndexStatus.state ?? "Unavailable"}</span
+                  >{/if}
+                {#if aiIndexMessage}<span class="ai-status">{aiIndexMessage}</span>{/if}
+              </div>
+            </section>
           {/if}
         </div>
       {:else if section === "plugins"}

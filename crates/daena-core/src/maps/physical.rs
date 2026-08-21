@@ -333,9 +333,7 @@ fn historical_forcing(settings: &PhysicalMapGenerationSettings) -> HistoricalFor
             daena_physical::history::ForcingComponent {
                 amplitude_centi_c: components.first().map_or(0, |c| c.amplitude_centi_c),
                 period_years: components.first().map_or(0, |c| c.period_years),
-                phase_offset_years: components
-                    .first()
-                    .map_or(0, |c| c.phase_offset_years),
+                phase_offset_years: components.first().map_or(0, |c| c.phase_offset_years),
             },
             daena_physical::history::ForcingComponent {
                 amplitude_centi_c: components.get(1).map_or(0, |c| c.amplitude_centi_c),

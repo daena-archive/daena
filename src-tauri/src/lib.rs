@@ -30,6 +30,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
+use tauri_plugin_dialog::DialogExt;
 
 mod ai;
 mod atlas_jobs;
@@ -1228,12 +1229,9 @@ fn watched_portable_path(root: &std::path::Path, path: &std::path::Path) -> Opti
     let mut components = relative.components();
     let first = components.next()?.as_os_str().to_str()?;
     if matches!(first, ".daena" | ".git")
-        || relative.components().any(|component| {
-            matches!(
-                component.as_os_str().to_str(),
-                Some(".daena" | ".git")
-            )
-        })
+        || relative
+            .components()
+            .any(|component| matches!(component.as_os_str().to_str(), Some(".daena" | ".git")))
     {
         return None;
     }
@@ -1389,7 +1387,8 @@ fn plugin_asset_response(
         }
         let ui_root = package_root
             .join(entrypoint)
-            .parent().map_or_else(|| package_root.to_path_buf(), Path::to_path_buf);
+            .parent()
+            .map_or_else(|| package_root.to_path_buf(), Path::to_path_buf);
         let requested = package_root.join(relative);
         let Ok(canonical_ui_root) = ui_root.canonicalize() else {
             return tauri::http::Response::builder()
@@ -1500,7 +1499,8 @@ fn plugin_asset_response(
     });
     let csp = manifest
         .as_ref()
-        .and_then(webview_policy).map_or_else(|| "default-src 'none'".into(), |policy| policy.csp);
+        .and_then(webview_policy)
+        .map_or_else(|| "default-src 'none'".into(), |policy| policy.csp);
     tauri::http::Response::builder()
         .status(200)
         .header("Content-Type", content_type)
@@ -3370,7 +3370,8 @@ where
                 .map_err(|_| CoreError::Conflict("read connection pool poisoned".into()))?;
             pool.retain(|project| project.database_epoch() == database_epoch);
             pool.pop()
-        }.map_or_else(|| ProjectStore::open_read_only(&root), Ok)?;
+        }
+        .map_or_else(|| ProjectStore::open_read_only(&root), Ok)?;
         let result = operation(&project);
         let mut pool = session
             .read_pool
@@ -4086,8 +4087,10 @@ async fn sync_project_usage_and_wait(
         let pending_migrations = bundled
             .iter()
             .filter(|(manifest, _)| {
-                states
-                    .get(&manifest.id).map_or_else(|| manifest.enabled_by_default.unwrap_or(true), |(enabled, _)| *enabled)
+                states.get(&manifest.id).map_or_else(
+                    || manifest.enabled_by_default.unwrap_or(true),
+                    |(enabled, _)| *enabled,
+                )
             })
             .map(|(manifest, digest)| {
                 let current = states
@@ -6390,7 +6393,11 @@ async fn project_git_preflight(
     state: tauri::State<'_, SharedCore>,
 ) -> Result<GitPreflight, String> {
     flush_project_checkpoint(state.clone(), "git preflight").await?;
-    with_read_project(state, daena_core::ProjectStore::git_preflight_after_checkpoint).await
+    with_read_project(
+        state,
+        daena_core::ProjectStore::git_preflight_after_checkpoint,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -6398,7 +6405,11 @@ async fn project_git_staging_preview(
     state: tauri::State<'_, SharedCore>,
 ) -> Result<GitPreflight, String> {
     flush_project_checkpoint(state.clone(), "git staging preview").await?;
-    with_read_project(state, daena_core::ProjectStore::git_preflight_after_checkpoint).await
+    with_read_project(
+        state,
+        daena_core::ProjectStore::git_preflight_after_checkpoint,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -9089,6 +9100,21 @@ async fn project_query_map_locations(
     .await
 }
 
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|error| error.to_string())?;
+    for entry in fs::read_dir(src).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn project_backup(
     app: tauri::AppHandle,
@@ -9099,10 +9125,20 @@ async fn project_backup(
         .app_data_dir()
         .map_err(|error| error.to_string())?;
     flush_project_checkpoint(state.clone(), "portable backup").await?;
-    with_read_project(state, move |project| {
+    let backup_path = with_read_project(state, move |project| {
         project.portable_backup_after_checkpoint(directory)
     })
-    .await
+    .await?;
+    let backup_path_buf = PathBuf::from(&backup_path);
+    if let Some(folder) = app.dialog().file().blocking_pick_folder() {
+        let folder_path = folder.into_path().map_err(|error| error.to_string())?;
+        if let Some(file_name) = backup_path_buf.file_name() {
+            let dest = folder_path.join(file_name);
+            copy_dir_recursive(&backup_path_buf, &dest)?;
+            return Ok(dest.to_string_lossy().into_owned());
+        }
+    }
+    Ok(backup_path)
 }
 
 #[tauri::command]
@@ -9125,11 +9161,21 @@ async fn project_recovery_backup(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    with_core(state, move |core| {
+    let backup_path = with_core(state, move |core| {
         core.project_mut(trusted_shell())?
             .recovery_backup_to(directory)
     })
-    .await
+    .await?;
+    let backup_path_buf = PathBuf::from(&backup_path);
+    if let Some(folder) = app.dialog().file().blocking_pick_folder() {
+        let folder_path = folder.into_path().map_err(|error| error.to_string())?;
+        if let Some(file_name) = backup_path_buf.file_name() {
+            let dest = folder_path.join(file_name);
+            copy_dir_recursive(&backup_path_buf, &dest)?;
+            return Ok(dest.to_string_lossy().into_owned());
+        }
+    }
+    Ok(backup_path)
 }
 
 #[tauri::command]

@@ -865,8 +865,10 @@ pub fn write_canonical_project(
                 applied_at: migration.applied_at.clone(),
             })
             .collect::<Vec<_>>();
-        let preserved_state = existing_state
-            .as_ref().map_or_else(|| serde_json::json!({}), |state| state.preserved_state.clone());
+        let preserved_state = existing_state.as_ref().map_or_else(
+            || serde_json::json!({}),
+            |state| state.preserved_state.clone(),
+        );
         let records = canonical_module_records(snapshot, &plugin_id);
         let schema_overlay = module
             .and_then(|module| module.schema_overlay.clone())
@@ -1062,8 +1064,10 @@ pub(crate) fn write_canonical_plugin(
             applied_at: migration.applied_at.clone(),
         })
         .collect::<Vec<_>>();
-    let preserved_state = existing_state
-        .as_ref().map_or_else(|| serde_json::json!({}), |state| state.preserved_state.clone());
+    let preserved_state = existing_state.as_ref().map_or_else(
+        || serde_json::json!({}),
+        |state| state.preserved_state.clone(),
+    );
     let records = canonical_module_records(snapshot, plugin_id);
     let schema_overlay = module
         .and_then(|module| module.schema_overlay.clone())

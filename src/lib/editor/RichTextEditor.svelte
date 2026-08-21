@@ -1664,51 +1664,50 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
             aria-expanded={aiMenuOpen}
             disabled={!editable}
             onmousedown={(event) => event.preventDefault()}
-            onclick={() => (aiMenuOpen = !aiMenuOpen)}
-          ><SparklesIcon size={14} strokeWidth={1.8} /></button>
+            onclick={() => (aiMenuOpen = !aiMenuOpen)}><SparklesIcon size={14} strokeWidth={1.8} /></button>
           {#if aiMenuOpen}
-          <div class="ai-toolbar-menu" role="menu" aria-label="Ask AI">
-            <button
-              type="button"
-              role="menuitem"
-              disabled={!selectionText.trim()}
-              onmousedown={(event) => event.preventDefault()}
-              onclick={() => requestAi("rewrite")}>Rewrite selection</button>
-            <button
-              type="button"
-              role="menuitem"
-              onmousedown={(event) => event.preventDefault()}
-              onclick={() => requestAi("generate")}>Generate text</button>
-            <button
-              type="button"
-              role="menuitem"
-              disabled={!selectionText.trim()}
-              onmousedown={(event) => event.preventDefault()}
-              onclick={() => requestAi("concise")}>Make concise</button>
-            <button
-              type="button"
-              role="menuitem"
-              disabled={!selectionText.trim()}
-              onmousedown={(event) => event.preventDefault()}
-              onclick={() => requestAi("expand")}>Expand</button>
-            <button
-              type="button"
-              role="menuitem"
-              disabled={!selectionText.trim()}
-              onmousedown={(event) => event.preventDefault()}
-              onclick={() => requestAi("grammar")}>Fix grammar</button>
-            <button
-              type="button"
-              role="menuitem"
-              disabled={!selectionText.trim()}
-              onmousedown={(event) => event.preventDefault()}
-              onclick={() => requestAi("tone")}>Change tone</button>
-            <button
-              type="button"
-              role="menuitem"
-              onmousedown={(event) => event.preventDefault()}
-              onclick={() => requestAi("custom")}>Custom instruction</button>
-          </div>
+            <div class="ai-toolbar-menu" role="menu" aria-label="Ask AI">
+              <button
+                type="button"
+                role="menuitem"
+                disabled={!selectionText.trim()}
+                onmousedown={(event) => event.preventDefault()}
+                onclick={() => requestAi("rewrite")}>Rewrite selection</button>
+              <button
+                type="button"
+                role="menuitem"
+                onmousedown={(event) => event.preventDefault()}
+                onclick={() => requestAi("generate")}>Generate text</button>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={!selectionText.trim()}
+                onmousedown={(event) => event.preventDefault()}
+                onclick={() => requestAi("concise")}>Make concise</button>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={!selectionText.trim()}
+                onmousedown={(event) => event.preventDefault()}
+                onclick={() => requestAi("expand")}>Expand</button>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={!selectionText.trim()}
+                onmousedown={(event) => event.preventDefault()}
+                onclick={() => requestAi("grammar")}>Fix grammar</button>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={!selectionText.trim()}
+                onmousedown={(event) => event.preventDefault()}
+                onclick={() => requestAi("tone")}>Change tone</button>
+              <button
+                type="button"
+                role="menuitem"
+                onmousedown={(event) => event.preventDefault()}
+                onclick={() => requestAi("custom")}>Custom instruction</button>
+            </div>
           {/if}
         </div>
       {/if}

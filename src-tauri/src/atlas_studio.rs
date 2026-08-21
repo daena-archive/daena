@@ -802,7 +802,9 @@ pub async fn project_atlas_studio_status(
         .lock()
         .map_err(|_| "atlas studio state is unavailable".to_string())?
         .status(&session_token)?;
-    if let Ok(current) = with_read_project(state, daena_core::ProjectStore::content_generation).await {
+    if let Ok(current) =
+        with_read_project(state, daena_core::ProjectStore::content_generation).await
+    {
         status.current_content_generation = Some(current);
         if current > status.captured_content_generation {
             status.error_code = Some(daena_atlas::studio::CODE_STUDIO_STALE.into());

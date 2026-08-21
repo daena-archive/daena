@@ -1394,9 +1394,7 @@ fn parse_loopback_endpoint(endpoint: &str) -> Result<LocalEndpoint, String> {
     } else {
         (authority, "1234")
     };
-    let ip_is_local = host
-        .parse::<IpAddr>()
-        .is_ok_and(|ip| ip.is_loopback());
+    let ip_is_local = host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback());
     if host != "localhost" && host != "localhost.localdomain" && !ip_is_local {
         return Err("Local providers require a loopback endpoint".to_string());
     }
@@ -2110,7 +2108,10 @@ fn build_generation_prompt(
     selection: &str,
     output_contract: Option<&serde_json::Value>,
 ) -> (String, String) {
-    let contract = output_contract.map_or_else(|| "text-only; preserve the meaning of the selection.".into(), std::string::ToString::to_string);
+    let contract = output_contract.map_or_else(
+        || "text-only; preserve the meaning of the selection.".into(),
+        std::string::ToString::to_string,
+    );
     let output_rules = if output_contract.is_some() {
         "Return exactly one JSON value matching [OUTPUT_CONTRACT]. Do not include Markdown fences or commentary."
     } else {
@@ -2579,7 +2580,9 @@ pub fn start_ai_request_mode(
                     return;
                 }
             };
-        let (status, mut bytes) = if let Ok(response) = read_http_headers(&mut stream) { response } else {
+        let (status, mut bytes) = if let Ok(response) = read_http_headers(&mut stream) {
+            response
+        } else {
             emit(AiStreamEvent {
                 sequence: 0,
                 request_id: request_id_for_task.clone(),

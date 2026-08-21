@@ -878,14 +878,10 @@ fn extract_mountain_features(
             }
             let dist = chebyshev(lattice_width, peak_a.lattice_index, peak_b.lattice_index);
             let candidate = (dist, peak_b.lattice_index, b);
-            if nearest
-                .is_none_or(|(d, _, _)| candidate < (d, usize::MAX, usize::MAX))
-            {
+            if nearest.is_none_or(|(d, _, _)| candidate < (d, usize::MAX, usize::MAX)) {
                 second = nearest;
                 nearest = Some(candidate);
-            } else if second
-                .is_none_or(|(d, idx, _)| (dist, peak_b.lattice_index) < (d, idx))
-            {
+            } else if second.is_none_or(|(d, idx, _)| (dist, peak_b.lattice_index) < (d, idx)) {
                 second = Some(candidate);
             }
         }
@@ -921,9 +917,7 @@ fn extract_mountain_features(
             let dist = chebyshev(lattice_width, peak.lattice_index, cell);
             if (2..=8).contains(&dist) {
                 let candidate = (dist, cell);
-                if foothill
-                    .is_none_or(|best: (u32, usize)| candidate < best)
-                {
+                if foothill.is_none_or(|best: (u32, usize)| candidate < best) {
                     foothill = Some(candidate);
                 }
             }

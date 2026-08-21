@@ -132,15 +132,12 @@ fn is_wet_basin(hydrology: &HydrologyField, cell: usize) -> bool {
     if basin == OCEAN {
         return false;
     }
-    hydrology
-        .basins
-        .get(basin as usize)
-        .is_some_and(|record| {
-            matches!(
-                record.status,
-                BasinStatus::Endorheic | BasinStatus::Active | BasinStatus::Overflowing
-            ) || record.water_volume_m3 > 0
-        })
+    hydrology.basins.get(basin as usize).is_some_and(|record| {
+        matches!(
+            record.status,
+            BasinStatus::Endorheic | BasinStatus::Active | BasinStatus::Overflowing
+        ) || record.water_volume_m3 > 0
+    })
 }
 
 fn is_protected(hydrology: &HydrologyField, cell: usize) -> bool {
@@ -159,10 +156,7 @@ fn river_occupancy(hydrology: &HydrologyField) -> (BTreeSet<usize>, Vec<u32>) {
     let mut cells = BTreeSet::new();
     let mut river_at = vec![0_u32; count];
     for (index, path) in hydrology.river_coordinates.iter().enumerate() {
-        let id = hydrology
-            .rivers
-            .get(index)
-            .map_or(0, |river| river.id);
+        let id = hydrology.rivers.get(index).map_or(0, |river| river.id);
         for point in path {
             let cell = nearest_cell(hydrology.grid, point[0], point[1]);
             cells.insert(cell);

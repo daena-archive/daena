@@ -3377,8 +3377,7 @@ fn manifest_without_ai_flag_reads_as_disabled() {
     ProjectStore::open_directory(&root).unwrap();
     // Simulate a canonical file written before the field existed.
     let path = root.join("project.json");
-    let manifest =
-        crate::storage::read_json::<crate::storage::ProjectManifest>(&path).unwrap();
+    let manifest = crate::storage::read_json::<crate::storage::ProjectManifest>(&path).unwrap();
     let without_flag = serde_json::json!({
         "formatVersion": manifest.format_version,
         "id": manifest.id,

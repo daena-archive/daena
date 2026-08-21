@@ -1511,7 +1511,9 @@ impl GenericDocumentAnalyzer<'_> {
             )));
         }
         self.total_source_bytes = next_total;
-        let body = if let Ok(body) = String::from_utf8(bytes) { body } else {
+        let body = if let Ok(body) = String::from_utf8(bytes) {
+            body
+        } else {
             self.record_unsupported(
                 source_path.to_owned(),
                 "document",

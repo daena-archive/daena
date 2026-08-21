@@ -465,7 +465,8 @@ fn ai_index_lifecycle_is_project_bound_and_non_blocking() {
 #[test]
 fn ai_gate_fails_closed_until_project_opt_in() {
     // Missing manifest → fail closed.
-    let missing = std::env::temp_dir().join(format!("daena-ai-gate-missing-{}", uuid::Uuid::new_v4()));
+    let missing =
+        std::env::temp_dir().join(format!("daena-ai-gate-missing-{}", uuid::Uuid::new_v4()));
     assert!(ensure_project_ai_enabled(missing.to_str().unwrap()).is_err());
 
     // Fresh project defaults to disabled.
@@ -502,8 +503,7 @@ fn ai_test_context(runtime: ai::SharedAiRuntime) -> AiBrokerContext {
     // reads the canonical manifest and fails closed without an opt-in.
     static PROJECT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     let root = PROJECT.get_or_init(|| {
-        let root =
-            std::env::temp_dir().join(format!("daena-ai-broker-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("daena-ai-broker-{}", uuid::Uuid::new_v4()));
         ProjectStore::open_directory(&root)
             .unwrap()
             .set_ai_enabled(true)

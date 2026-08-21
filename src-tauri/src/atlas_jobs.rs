@@ -312,7 +312,9 @@ fn spawn_render(
             }
             return;
         }
-        let mut manager = if let Ok(manager) = jobs.lock() { manager } else {
+        let mut manager = if let Ok(manager) = jobs.lock() {
+            manager
+        } else {
             let _ = remove_atlas_path(&path);
             return;
         };

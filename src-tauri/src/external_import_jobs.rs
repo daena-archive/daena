@@ -717,19 +717,15 @@ pub async fn project_external_import_validate(
     })
     .await?;
     let plan = outcome.plan;
-    let (create_count, skip_count, map_count) = plan
-        .as_ref()
-        .map_or((0, 0, 0), |plan| {
-            plan.objects
-                .iter()
-                .fold((0, 0, 0), |counts, object| match &object.decision {
-                    ImportObjectDecision::Create => (counts.0 + 1, counts.1, counts.2),
-                    ImportObjectDecision::Skip => (counts.0, counts.1 + 1, counts.2),
-                    ImportObjectDecision::MapToExisting { .. } => {
-                        (counts.0, counts.1, counts.2 + 1)
-                    }
-                })
-        });
+    let (create_count, skip_count, map_count) = plan.as_ref().map_or((0, 0, 0), |plan| {
+        plan.objects
+            .iter()
+            .fold((0, 0, 0), |counts, object| match &object.decision {
+                ImportObjectDecision::Create => (counts.0 + 1, counts.1, counts.2),
+                ImportObjectDecision::Skip => (counts.0, counts.1 + 1, counts.2),
+                ImportObjectDecision::MapToExisting { .. } => (counts.0, counts.1, counts.2 + 1),
+            })
+    });
     let asset_count = plan.as_ref().map_or(0, |plan| plan.assets.len());
     let warning_count = outcome
         .issues
@@ -954,7 +950,9 @@ fn spawn_analysis(
             finish_cancelled(&app, &imports, &session_id);
             return;
         }
-        let mut manager = if let Ok(manager) = imports.lock() { manager } else {
+        let mut manager = if let Ok(manager) = imports.lock() {
+            manager
+        } else {
             let _ = result.cleanup();
             return;
         };

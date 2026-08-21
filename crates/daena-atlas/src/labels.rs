@@ -244,7 +244,9 @@ fn glyph_for(ch: char) -> [u8; 7] {
     GLYPHS
         .iter()
         .find(|(ch, _)| *ch == key)
-        .map_or([0x1F, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1F], |(_, rows)| *rows)
+        .map_or([0x1F, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1F], |(_, rows)| {
+            *rows
+        })
 }
 
 #[cfg(test)]

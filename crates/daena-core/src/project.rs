@@ -2454,7 +2454,10 @@ impl ProjectStore {
         result: Option<&serde_json::Value>,
         affected_prefixes: &[String],
     ) -> Result<rusqlite::Transaction<'a>, CoreError> {
-        let fingerprint = result.map_or_else(|| digest_bytes(b"null"), |value| digest_bytes(value.to_string().as_bytes()));
+        let fingerprint = result.map_or_else(
+            || digest_bytes(b"null"),
+            |value| digest_bytes(value.to_string().as_bytes()),
+        );
         self.begin_mutation_with_fingerprint(request_id, result, affected_prefixes, &fingerprint)
     }
 
@@ -2685,13 +2688,15 @@ impl ProjectStore {
         )
         .ok();
         Some(ProjectInfo {
-            name: manifest
-                .as_ref().map_or_else(|| {
+            name: manifest.as_ref().map_or_else(
+                || {
                     root.file_name()
                         .and_then(|value| value.to_str())
                         .unwrap_or("Daena Archive project")
                         .to_string()
-                }, |manifest| manifest.name.clone()),
+                },
+                |manifest| manifest.name.clone(),
+            ),
             root: root.to_string_lossy().to_string(),
             index_status: if sync.state == "clean" {
                 "ready"
@@ -2701,7 +2706,9 @@ impl ProjectStore {
             .into(),
             assets: root.join("assets").to_string_lossy().to_string(),
             sync,
-            ai_enabled: manifest.as_ref().is_some_and(|manifest| manifest.ai_enabled),
+            ai_enabled: manifest
+                .as_ref()
+                .is_some_and(|manifest| manifest.ai_enabled),
         })
     }
 
@@ -8187,7 +8194,8 @@ impl ProjectStore {
             source,
         })?;
         let project_name = self
-            .info().map_or_else(|| "Daena Archive".into(), |info| info.name);
+            .info()
+            .map_or_else(|| "Daena Archive".into(), |info| info.name);
         let export_stem = markdown_export_stem(&project_name);
         let mut export_directory = destination.join(format!("{export_stem}-markdown"));
         let mut suffix = 2;
@@ -8786,9 +8794,7 @@ impl ProjectStore {
         max_x: f64,
         max_y: f64,
     ) -> Result<Vec<serde_json::Value>, CoreError> {
-        if ![min_x, min_y, max_x, max_y]
-            .into_iter()
-            .all(f64::is_finite)
+        if ![min_x, min_y, max_x, max_y].into_iter().all(f64::is_finite)
             || min_x > max_x
             || min_y > max_y
         {

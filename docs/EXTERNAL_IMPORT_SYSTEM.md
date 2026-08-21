@@ -357,6 +357,12 @@ bundled and plugin output pass identical core validation.
   project-bound source through symlink-refusing normalized paths, verifies the
   analyzed hash and size, and adds attachment rows in the same receipt-backed
   transaction as their created or mapped owner. Attachment bytes and metadata
-  are covered by checkpoint and clean-rebuild tests. ZIP equivalence and
-  HTML/DOCX/ODT/RTF quality/security fixtures remain planned Iteration 5 slices.
+  are covered by checkpoint and clean-rebuild tests. ZIP sources now pass the
+  same staging/validation/commit path without extracting to disk; central-
+  directory preflight rejects non-UTF-8, absolute, traversal, platform-prefix,
+  duplicate/case-colliding, link/special-file, oversized, excessive-depth, and
+  high-compression-ratio entries before content parsing. Folder/ZIP equivalence,
+  malformed/traversal/bomb rejection, cancellation checks, archive attachment
+  commit, and clean rebuild are covered. HTML/DOCX/ODT/RTF parsers remain planned
+  and will only be enabled with format-specific quality and security fixtures.
 - Iterations 6-8: planned, not yet implemented.

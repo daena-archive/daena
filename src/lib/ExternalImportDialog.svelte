@@ -455,7 +455,7 @@ onMount(() => {
             <label class:active={sourceKind === "file"}>
               <input type="radio" bind:group={sourceKind} value="file" />
               <FileText size={19} strokeWidth={1.7} /><span
-                ><strong>Single file</strong><small>Markdown or plain text</small></span>
+                ><strong>Single file</strong><small>Markdown, plain text, or ZIP archive</small></span>
             </label>
           </div>
         </fieldset>

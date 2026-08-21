@@ -383,9 +383,9 @@ pub fn project_external_importers() -> Vec<ExternalImporterDescriptor> {
         id: GENERIC_DOCUMENT_IMPORTER_ID.into(),
         version: GENERIC_DOCUMENT_IMPORTER_VERSION.into(),
         name: "Generic documents".into(),
-        description: "Markdown, plain-text, and recursive folder analysis".into(),
+        description: "Markdown, plain-text, ZIP, and recursive folder analysis".into(),
         source_kinds: vec!["file".into(), "folder".into()],
-        extensions: vec!["md".into(), "markdown".into(), "txt".into()],
+        extensions: vec!["md".into(), "markdown".into(), "txt".into(), "zip".into()],
     }]
 }
 

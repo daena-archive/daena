@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read;
 use std::path::Path;
+use zip::ZipArchive;
 
 pub const STAGED_IMPORT_SCHEMA_VERSION: u32 = 1;
 pub const IMPORT_CANDIDATE_PLAN_SCHEMA_VERSION: u32 = 1;
@@ -12,6 +14,12 @@ pub const VALIDATED_IMPORT_PLAN_SCHEMA_VERSION: u32 = 1;
 pub const GENERIC_DOCUMENT_IMPORTER_ID: &str = "daena.generic-documents";
 pub const GENERIC_DOCUMENT_IMPORTER_VERSION: &str = "1";
 pub const EXTERNAL_IMPORT_ANALYSIS_CANCELLED: &str = "external import analysis cancelled";
+const MAX_ARCHIVE_COMPRESSED_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_ARCHIVE_COMPRESSION_RATIO: u64 = 200;
+const MAX_ARCHIVE_PATH_BYTES: usize = 1_024;
+const MAX_ARCHIVE_EXPANDED_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_ARCHIVE_ENTRIES: usize = 20_000;
+const MAX_ARCHIVE_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1259,8 +1267,11 @@ pub fn analyze_generic_documents_with_progress(
         source,
     })?;
     let source_id = hex_digest(canonical_source.to_string_lossy().as_bytes());
+    let is_zip_archive = metadata.is_file() && is_zip_path(source);
     let source_kind = if metadata.is_dir() {
         ImportSourceKind::Folder
+    } else if is_zip_archive {
+        ImportSourceKind::Archive
     } else {
         ImportSourceKind::File
     };
@@ -1284,7 +1295,7 @@ pub fn analyze_generic_documents_with_progress(
             diagnostics: Vec::new(),
             summary: ImportAnalysisSummary::default(),
         },
-        discovered_entries: usize::from(metadata.is_file()),
+        discovered_entries: usize::from(metadata.is_file() && !is_zip_archive),
         discovered_files: 0,
         processed_entries: 0,
         total_source_bytes: 0,
@@ -1296,6 +1307,8 @@ pub fn analyze_generic_documents_with_progress(
 
     if metadata.is_dir() {
         analyzer.analyze_directory(source, &[], 0)?;
+    } else if is_zip_archive {
+        analyzer.analyze_archive(source, metadata.len())?;
     } else {
         analyzer.analyze_file(source, &source_name, &metadata)?;
         analyzer.finish_entry(Some(source_name))?;
@@ -1332,6 +1345,154 @@ struct GenericDocumentAnalyzer<'a> {
 }
 
 impl GenericDocumentAnalyzer<'_> {
+    fn analyze_archive(&mut self, path: &Path, compressed_bytes: u64) -> Result<(), CoreError> {
+        if compressed_bytes > MAX_ARCHIVE_COMPRESSED_BYTES {
+            return Err(CoreError::Validation(format!(
+                "ZIP archive exceeds the maximum compressed size of {MAX_ARCHIVE_COMPRESSED_BYTES} bytes"
+            )));
+        }
+        let file = fs::File::open(path).map_err(|source| CoreError::Io {
+            operation: "open import ZIP archive",
+            source,
+        })?;
+        let mut archive = ZipArchive::new(file)
+            .map_err(|error| CoreError::Validation(format!("invalid ZIP archive: {error}")))?;
+        if archive.len() > self.limits.max_entries {
+            return Err(CoreError::Validation(format!(
+                "ZIP archive exceeds the maximum entry count of {}",
+                self.limits.max_entries
+            )));
+        }
+
+        struct ArchiveEntryPlan {
+            index: usize,
+            source_path: String,
+            is_dir: bool,
+            size: u64,
+        }
+        let mut entries = Vec::with_capacity(archive.len());
+        let mut names = BTreeSet::new();
+        let mut folded_names = BTreeSet::new();
+        let mut expanded_bytes = 0_u64;
+        for index in 0..archive.len() {
+            let entry = archive.by_index(index).map_err(|error| {
+                CoreError::Validation(format!("invalid ZIP central-directory entry: {error}"))
+            })?;
+            let is_dir = entry.is_dir();
+            let source_path = validate_archive_source_path(entry.name_raw(), is_dir)?;
+            self.report_progress(Some(source_path.clone()))?;
+            if !names.insert(source_path.clone())
+                || !folded_names.insert(source_path.to_lowercase())
+            {
+                return Err(CoreError::Validation(format!(
+                    "ZIP archive contains duplicate or case-colliding path: {source_path}"
+                )));
+            }
+            if !is_dir
+                && entry
+                    .unix_mode()
+                    .is_some_and(|mode| mode & 0o170000 != 0 && mode & 0o170000 != 0o100000)
+            {
+                return Err(CoreError::Validation(format!(
+                    "ZIP links and special files are not allowed: {source_path}"
+                )));
+            }
+            let depth = source_path.split('/').count().saturating_sub(1);
+            if depth > self.limits.max_depth {
+                return Err(CoreError::Validation(format!(
+                    "ZIP entry exceeds the maximum folder depth of {}: {source_path}",
+                    self.limits.max_depth
+                )));
+            }
+            let size = entry.size();
+            if !is_dir && size > self.limits.max_file_bytes {
+                return Err(CoreError::Validation(format!(
+                    "ZIP entry '{source_path}' exceeds the maximum file size of {} bytes",
+                    self.limits.max_file_bytes
+                )));
+            }
+            expanded_bytes = expanded_bytes
+                .checked_add(size)
+                .ok_or_else(|| CoreError::Validation("ZIP expanded size overflowed".into()))?;
+            if expanded_bytes > self.limits.max_total_bytes {
+                return Err(CoreError::Validation(format!(
+                    "ZIP archive exceeds the maximum expanded size of {} bytes",
+                    self.limits.max_total_bytes
+                )));
+            }
+            let packed = entry.compressed_size();
+            if size > 0
+                && (packed == 0 || size > packed.saturating_mul(MAX_ARCHIVE_COMPRESSION_RATIO))
+            {
+                return Err(CoreError::Validation(format!(
+                    "ZIP entry exceeds the maximum compression ratio of {MAX_ARCHIVE_COMPRESSION_RATIO}:1: {source_path}"
+                )));
+            }
+            entries.push(ArchiveEntryPlan {
+                index,
+                source_path,
+                is_dir,
+                size,
+            });
+        }
+
+        self.discovered_entries = entries.len();
+        for planned in entries {
+            record_parent_folders(&mut self.folders, &planned.source_path);
+            if planned.is_dir {
+                self.folders.insert(planned.source_path.clone());
+                self.finish_entry(Some(planned.source_path))?;
+                continue;
+            }
+            self.discovered_files = self.discovered_files.saturating_add(1);
+            if self.discovered_files > self.limits.max_files {
+                return Err(CoreError::Validation(format!(
+                    "ZIP archive exceeds the maximum file count of {}",
+                    self.limits.max_files
+                )));
+            }
+            if asset_mime_type(&planned.source_path).is_none()
+                && document_format(&planned.source_path).is_none()
+            {
+                self.record_unsupported(
+                    planned.source_path.clone(),
+                    "archive_entry",
+                    "file type is not supported by the generic document importer",
+                )?;
+                self.finish_entry(Some(planned.source_path))?;
+                continue;
+            }
+            let next_total = self
+                .total_source_bytes
+                .checked_add(planned.size)
+                .ok_or_else(|| {
+                    CoreError::Validation("import source byte count overflowed".into())
+                })?;
+            let mut entry = archive.by_index(planned.index).map_err(|error| {
+                CoreError::Validation(format!("invalid ZIP entry data: {error}"))
+            })?;
+            let mut bytes = Vec::with_capacity(planned.size.min(1024 * 1024) as usize);
+            entry
+                .by_ref()
+                .take(planned.size.saturating_add(1))
+                .read_to_end(&mut bytes)
+                .map_err(|source| CoreError::Io {
+                    operation: "read import ZIP entry",
+                    source,
+                })?;
+            if bytes.len() as u64 != planned.size {
+                return Err(CoreError::Validation(format!(
+                    "ZIP entry size does not match its central-directory declaration: {}",
+                    planned.source_path
+                )));
+            }
+            drop(entry);
+            self.analyze_loaded_file(&planned.source_path, planned.size, next_total, bytes)?;
+            self.finish_entry(Some(planned.source_path))?;
+        }
+        Ok(())
+    }
+
     fn analyze_directory(
         &mut self,
         directory: &Path,
@@ -1439,17 +1600,34 @@ impl GenericDocumentAnalyzer<'_> {
                 self.limits.max_total_bytes
             )));
         }
+        if asset_mime_type(source_path).is_none() && document_format(source_path).is_none() {
+            return self.record_unsupported(
+                source_path.to_owned(),
+                "file",
+                "file type is not supported by the generic document importer",
+            );
+        }
+        let bytes = fs::read(path).map_err(|source| CoreError::Io {
+            operation: "read import source file",
+            source,
+        })?;
+        if bytes.len() as u64 != size {
+            return Err(CoreError::Conflict(format!(
+                "import file '{source_path}' changed during analysis"
+            )));
+        }
+        self.analyze_loaded_file(source_path, size, next_total, bytes)
+    }
+
+    fn analyze_loaded_file(
+        &mut self,
+        source_path: &str,
+        size: u64,
+        next_total: u64,
+        bytes: Vec<u8>,
+    ) -> Result<(), CoreError> {
+        self.total_source_bytes = next_total;
         if let Some(mime_type) = asset_mime_type(source_path) {
-            let bytes = fs::read(path).map_err(|source| CoreError::Io {
-                operation: "read import asset",
-                source,
-            })?;
-            if bytes.len() as u64 != size {
-                return Err(CoreError::Conflict(format!(
-                    "import asset '{source_path}' changed during analysis"
-                )));
-            }
-            self.total_source_bytes = next_total;
             if !asset_signature_matches(mime_type, &bytes) {
                 self.record_unsupported(
                     source_path.to_owned(),
@@ -1491,26 +1669,7 @@ impl GenericDocumentAnalyzer<'_> {
             });
             return Ok(());
         }
-        let format = match document_format(source_path) {
-            Some(format) => format,
-            None => {
-                return self.record_unsupported(
-                    source_path.to_owned(),
-                    "file",
-                    "file type is not supported by the generic document importer",
-                );
-            }
-        };
-        let bytes = fs::read(path).map_err(|source| CoreError::Io {
-            operation: "read import source file",
-            source,
-        })?;
-        if bytes.len() as u64 != size {
-            return Err(CoreError::Conflict(format!(
-                "import file '{source_path}' changed during analysis"
-            )));
-        }
-        self.total_source_bytes = next_total;
+        let format = document_format(source_path).expect("supported file format was checked");
         let body = if let Ok(body) = String::from_utf8(bytes) {
             body
         } else {
@@ -1716,6 +1875,157 @@ impl GenericDocumentAnalyzer<'_> {
             source_bytes: self.total_source_bytes,
             source_path,
         })
+    }
+}
+
+fn is_zip_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+}
+
+fn validate_archive_source_path(raw_name: &[u8], is_dir: bool) -> Result<String, CoreError> {
+    let name = std::str::from_utf8(raw_name)
+        .map_err(|_| CoreError::Validation("ZIP entry path is not valid UTF-8".into()))?;
+    if name.is_empty()
+        || name.len() > MAX_ARCHIVE_PATH_BYTES
+        || name.starts_with('/')
+        || name.contains('\\')
+        || name.contains(':')
+        || name.chars().any(char::is_control)
+    {
+        return Err(CoreError::Validation(format!(
+            "ZIP entry path is not portable: {name}"
+        )));
+    }
+    let normalized = if is_dir {
+        name.strip_suffix('/').unwrap_or(name)
+    } else {
+        name
+    };
+    if normalized.is_empty()
+        || normalized
+            .split('/')
+            .any(|component| component.is_empty() || matches!(component, "." | ".."))
+    {
+        return Err(CoreError::Validation(format!(
+            "ZIP entry path escapes or is not normalized: {name}"
+        )));
+    }
+    Ok(normalized.into())
+}
+
+pub(crate) fn read_archive_asset_bytes(
+    archive_path: &Path,
+    target_path: &str,
+    expected_size: u64,
+) -> Result<Vec<u8>, CoreError> {
+    let metadata = fs::symlink_metadata(archive_path).map_err(|source| CoreError::Io {
+        operation: "read import ZIP metadata",
+        source,
+    })?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > MAX_ARCHIVE_COMPRESSED_BYTES
+    {
+        return Err(CoreError::Validation(
+            "import ZIP source is unavailable or exceeds its compressed-size limit".into(),
+        ));
+    }
+    let file = fs::File::open(archive_path).map_err(|source| CoreError::Io {
+        operation: "open import ZIP archive",
+        source,
+    })?;
+    let mut archive = ZipArchive::new(file)
+        .map_err(|error| CoreError::Validation(format!("invalid ZIP archive: {error}")))?;
+    if archive.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(CoreError::Validation(
+            "ZIP archive exceeds the entry limit during asset preflight".into(),
+        ));
+    }
+    let mut names = BTreeSet::new();
+    let mut folded_names = BTreeSet::new();
+    let mut expanded_bytes = 0_u64;
+    let mut target_index = None;
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index).map_err(|error| {
+            CoreError::Validation(format!("invalid ZIP central-directory entry: {error}"))
+        })?;
+        let is_dir = entry.is_dir();
+        let source_path = validate_archive_source_path(entry.name_raw(), is_dir)?;
+        if !names.insert(source_path.clone()) || !folded_names.insert(source_path.to_lowercase()) {
+            return Err(CoreError::Validation(format!(
+                "ZIP archive contains duplicate or case-colliding path: {source_path}"
+            )));
+        }
+        if !is_dir
+            && entry
+                .unix_mode()
+                .is_some_and(|mode| mode & 0o170000 != 0 && mode & 0o170000 != 0o100000)
+        {
+            return Err(CoreError::Validation(format!(
+                "ZIP links and special files are not allowed: {source_path}"
+            )));
+        }
+        let size = entry.size();
+        if !is_dir && size > MAX_ARCHIVE_FILE_BYTES {
+            return Err(CoreError::Validation(format!(
+                "ZIP entry exceeds the file-size limit: {source_path}"
+            )));
+        }
+        expanded_bytes = expanded_bytes
+            .checked_add(size)
+            .ok_or_else(|| CoreError::Validation("ZIP expanded size overflowed".into()))?;
+        if expanded_bytes > MAX_ARCHIVE_EXPANDED_BYTES {
+            return Err(CoreError::Validation(
+                "ZIP archive exceeds the expanded-size limit".into(),
+            ));
+        }
+        let packed = entry.compressed_size();
+        if size > 0 && (packed == 0 || size > packed.saturating_mul(MAX_ARCHIVE_COMPRESSION_RATIO))
+        {
+            return Err(CoreError::Validation(format!(
+                "ZIP entry exceeds the compression-ratio limit: {source_path}"
+            )));
+        }
+        if !is_dir && source_path == target_path {
+            target_index = Some(index);
+        }
+    }
+    let target_index = target_index.ok_or_else(|| {
+        CoreError::Conflict(format!(
+            "import ZIP asset disappeared after analysis: {target_path}"
+        ))
+    })?;
+    let mut entry = archive
+        .by_index(target_index)
+        .map_err(|error| CoreError::Validation(format!("invalid ZIP asset entry: {error}")))?;
+    if entry.size() != expected_size {
+        return Err(CoreError::Conflict(format!(
+            "import ZIP asset changed size after analysis: {target_path}"
+        )));
+    }
+    let mut bytes = Vec::with_capacity(expected_size.min(1024 * 1024) as usize);
+    entry
+        .by_ref()
+        .take(expected_size.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|source| CoreError::Io {
+            operation: "read import ZIP asset",
+            source,
+        })?;
+    if bytes.len() as u64 != expected_size {
+        return Err(CoreError::Conflict(format!(
+            "import ZIP asset data changed after analysis: {target_path}"
+        )));
+    }
+    Ok(bytes)
+}
+
+fn record_parent_folders(folders: &mut BTreeSet<String>, source_path: &str) {
+    let parts = source_path.split('/').collect::<Vec<_>>();
+    for end in 1..parts.len() {
+        folders.insert(parts[..end].join("/"));
     }
 }
 
@@ -1994,8 +2304,10 @@ mod tests {
     use super::*;
     use crate::ProjectStore;
     use std::fs;
+    use std::io::Write;
     use std::path::PathBuf;
     use uuid::Uuid;
+    use zip::write::SimpleFileOptions;
 
     struct TestDirectory(PathBuf);
 
@@ -2016,6 +2328,19 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = fs::File::create(path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        let options = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(0o644);
+        for (name, bytes) in entries {
+            archive.start_file(*name, options).unwrap();
+            archive.write_all(bytes).unwrap();
+        }
+        archive.finish().unwrap();
     }
 
     #[test]
@@ -2395,6 +2720,231 @@ mod tests {
         );
         assert_eq!(staged.summary.asset_count, 1);
         assert_eq!(staged.summary.unresolved_link_count, 1);
+    }
+
+    #[test]
+    fn zip_analysis_matches_folder_structure_and_content() {
+        let folder = TestDirectory::new();
+        fs::create_dir_all(folder.path().join("Notes")).unwrap();
+        fs::create_dir_all(folder.path().join("assets")).unwrap();
+        let note = b"# Note\n\n[Other](Other.md)\n![Map](../assets/map.png)\n";
+        let other = b"# Other\n";
+        let image = b"\x89PNG\r\n\x1a\nfixture";
+        fs::write(folder.path().join("Notes/Note.md"), note).unwrap();
+        fs::write(folder.path().join("Notes/Other.md"), other).unwrap();
+        fs::write(folder.path().join("assets/map.png"), image).unwrap();
+        let archive_directory = TestDirectory::new();
+        let archive_path = archive_directory.path().join("fixture.zip");
+        write_zip(
+            &archive_path,
+            &[
+                ("Notes/Note.md", note),
+                ("Notes/Other.md", other),
+                ("assets/map.png", image),
+            ],
+        );
+
+        let folder_result =
+            analyze_generic_documents(folder.path(), GenericDocumentImportLimits::default())
+                .unwrap();
+        let archive_result =
+            analyze_generic_documents(&archive_path, GenericDocumentImportLimits::default())
+                .unwrap();
+
+        assert_eq!(archive_result.source.kind, ImportSourceKind::Archive);
+        assert_eq!(
+            archive_result
+                .objects
+                .iter()
+                .map(|object| (&object.source_path, &object.title, &object.body))
+                .collect::<Vec<_>>(),
+            folder_result
+                .objects
+                .iter()
+                .map(|object| (&object.source_path, &object.title, &object.body))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(archive_result.assets.len(), 1);
+        assert_eq!(archive_result.assets[0].source_path, "assets/map.png");
+        assert_eq!(
+            archive_result.assets[0].content_hash,
+            folder_result.assets[0].content_hash
+        );
+        assert_eq!(
+            archive_result
+                .objects
+                .iter()
+                .flat_map(|object| object.links.iter())
+                .map(|link| (&link.kind, &link.target, &link.resolution))
+                .collect::<Vec<_>>(),
+            folder_result
+                .objects
+                .iter()
+                .flat_map(|object| object.links.iter())
+                .map(|link| (&link.kind, &link.target, &link.resolution))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(archive_result.summary, folder_result.summary);
+    }
+
+    #[test]
+    fn zip_analysis_rejects_traversal_bombs_and_malformed_archives() {
+        let source = TestDirectory::new();
+        let traversal = source.path().join("traversal.zip");
+        write_zip(&traversal, &[("../outside.md", b"outside")]);
+        assert!(
+            analyze_generic_documents(&traversal, GenericDocumentImportLimits::default())
+                .unwrap_err()
+                .to_string()
+                .contains("escapes or is not normalized")
+        );
+
+        let symlink = source.path().join("symlink.zip");
+        let file = fs::File::create(&symlink).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .add_symlink(
+                "linked.md",
+                "target.md",
+                SimpleFileOptions::default().unix_permissions(0o777),
+            )
+            .unwrap();
+        archive.finish().unwrap();
+        assert!(
+            analyze_generic_documents(&symlink, GenericDocumentImportLimits::default())
+                .unwrap_err()
+                .to_string()
+                .contains("links and special files")
+        );
+
+        let collision = source.path().join("collision.zip");
+        write_zip(&collision, &[("Note.md", b"one"), ("note.md", b"two")]);
+        assert!(
+            analyze_generic_documents(&collision, GenericDocumentImportLimits::default())
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate or case-colliding")
+        );
+
+        let bomb = source.path().join("bomb.zip");
+        let repeated = vec![0_u8; 256 * 1024];
+        write_zip(&bomb, &[("bomb.md", repeated.as_slice())]);
+        assert!(
+            analyze_generic_documents(&bomb, GenericDocumentImportLimits::default())
+                .unwrap_err()
+                .to_string()
+                .contains("compression ratio")
+        );
+
+        let malformed = source.path().join("malformed.zip");
+        fs::write(&malformed, b"not a ZIP archive").unwrap();
+        assert!(
+            analyze_generic_documents(&malformed, GenericDocumentImportLimits::default())
+                .unwrap_err()
+                .to_string()
+                .contains("invalid ZIP archive")
+        );
+    }
+
+    #[test]
+    fn zip_central_directory_preflight_can_be_cancelled() {
+        let source = TestDirectory::new();
+        let archive_path = source.path().join("cancel.zip");
+        write_zip(&archive_path, &[("one.md", b"one"), ("two.md", b"two")]);
+
+        let error = analyze_generic_documents_with_progress(
+            &archive_path,
+            GenericDocumentImportLimits::default(),
+            |progress| {
+                if progress.source_path.is_some() {
+                    Err(CoreError::Conflict(
+                        EXTERNAL_IMPORT_ANALYSIS_CANCELLED.into(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), EXTERNAL_IMPORT_ANALYSIS_CANCELLED);
+    }
+
+    #[test]
+    fn zip_attachment_commit_survives_checkpoint_rebuild() {
+        let source = TestDirectory::new();
+        let archive_path = source.path().join("fixture.zip");
+        let note = b"# Note\n\n![Map](assets/map.png)\n";
+        let image = b"\x89PNG\r\n\x1a\nfixture";
+        write_zip(
+            &archive_path,
+            &[("Note.md", note), ("assets/map.png", image)],
+        );
+        let staged =
+            analyze_generic_documents(&archive_path, GenericDocumentImportLimits::default())
+                .unwrap();
+        let project = TestDirectory::new();
+        let store = ProjectStore::open_directory(project.path()).unwrap();
+        let generation = store.content_generation().unwrap();
+        let mut mappings = ImportMappingOverrides::default();
+        mappings.global.entity_type = Some("note".into());
+        let candidate = build_import_candidate_plan(
+            ImportCandidatePlanBuild {
+                session_id: "zip-session".into(),
+                importer: staged.importer.clone(),
+                source: staged.source.clone(),
+                captured_content_generation: generation,
+                current_content_generation: generation,
+                manifest_fingerprint: "manifest-v1".into(),
+                objects: staged.objects.clone(),
+                unsupported_count: staged.unsupported.len(),
+                diagnostics: staged.diagnostics.clone(),
+            },
+            &mappings,
+        )
+        .unwrap();
+        let validated = validate_import_candidate_plan(ImportValidationBuild {
+            candidate,
+            staged_objects: staged.objects,
+            staged_assets: staged.assets,
+            catalog: ImportMappingCatalog {
+                fingerprint: "manifest-v1".into(),
+                entity_types: BTreeSet::from(["note".into()]),
+                fields: BTreeMap::new(),
+                relationship_types: BTreeSet::new(),
+            },
+            decisions: BTreeMap::new(),
+            existing_targets: BTreeMap::new(),
+            duplicate_targets: BTreeMap::new(),
+        })
+        .unwrap()
+        .plan
+        .unwrap();
+        let report = store
+            .commit_external_import(
+                &validated,
+                Some(&archive_path),
+                true,
+                "00000000-0000-4000-8000-000000000002",
+            )
+            .unwrap();
+        assert_eq!(report.created.len(), 1);
+        assert_eq!(report.assets.len(), 1);
+        assert_eq!(
+            store
+                .asset_bytes(report.assets[0].asset_id.clone())
+                .unwrap(),
+            image
+        );
+        store.flush_checkpoint("ZIP import test").unwrap();
+        drop(store);
+        fs::remove_dir_all(project.path().join(".daena")).unwrap();
+        let rebuilt = ProjectStore::open_directory(project.path()).unwrap();
+        let assets = rebuilt
+            .list_assets(report.created[0].entity_id.clone())
+            .unwrap();
+        assert_eq!(assets.len(), 1);
+        assert_eq!(rebuilt.asset_bytes(assets[0].id.clone()).unwrap(), image);
     }
 
     #[test]

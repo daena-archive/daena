@@ -277,13 +277,7 @@ pub fn capabilities_for_descriptor(descriptor: &Value, layers: &Value) -> AtlasR
             id: (*role).to_string(),
             name: role_name(role),
             role: (*role).to_string(),
-            default_visible: matches!(
-                *role,
-                "ocean"
-                    | "relief"
-                    | "ice"
-                    | "graticule"
-            ),
+            default_visible: matches!(*role, "ocean" | "relief" | "ice" | "graticule"),
         })
         .collect::<Vec<_>>();
     if let Some(stored) = layers.get("layers").and_then(Value::as_array) {

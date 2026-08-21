@@ -1627,7 +1627,11 @@ fn plugin_request_origin_matches(request: &tauri::http::Request<Vec<u8>>, plugin
         "{}://{plugin_id}",
         daena_plugin_host::runtime::plugin_protocol(plugin_id)
     );
-    match request.headers().get("Origin").and_then(|value| value.to_str().ok()) {
+    match request
+        .headers()
+        .get("Origin")
+        .and_then(|value| value.to_str().ok())
+    {
         Some(origin) => origin.eq_ignore_ascii_case(&expected),
         None => true,
     }
@@ -1912,11 +1916,9 @@ fn plugin_protocol_response(
     };
     match result {
         Ok(value) => json_response_with_origin(value, 200, &plugin_origin),
-        Err(error) => json_response_with_origin(
-            serde_json::json!({"error": error}),
-            400,
-            &plugin_origin,
-        ),
+        Err(error) => {
+            json_response_with_origin(serde_json::json!({"error": error}), 400, &plugin_origin)
+        }
     }
 }
 
@@ -9039,8 +9041,11 @@ async fn project_delete_asset(
     request_id: Option<String>,
 ) -> Result<(), String> {
     with_core(state, move |core| {
-        core.project(trusted_shell())?
-            .delete_asset_with_request(asset_id, &expected_revision, request_id.as_deref())
+        core.project(trusted_shell())?.delete_asset_with_request(
+            asset_id,
+            &expected_revision,
+            request_id.as_deref(),
+        )
     })
     .await
 }

@@ -390,7 +390,7 @@ pub fn project_external_importers() -> Vec<ExternalImporterDescriptor> {
 }
 
 #[tauri::command]
-pub fn project_external_import_select_source(
+pub async fn project_external_import_select_source(
     app: AppHandle,
     core: tauri::State<'_, SharedCore>,
     imports: tauri::State<'_, SharedExternalImports>,

@@ -3038,9 +3038,7 @@ fn field_value_matches(
         return true;
     }
     match field.field_type.as_str() {
-        "text" | "date" => {
-            value.is_string() || (field.field_type == "date" && value.is_object())
-        }
+        "text" | "date" => value.is_string() || (field.field_type == "date" && value.is_object()),
         "number" => value.is_number(),
         "boolean" => value.is_boolean(),
         "enum" => value

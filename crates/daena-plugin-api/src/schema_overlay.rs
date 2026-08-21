@@ -17,7 +17,8 @@ const ALLOWED_FIELD_TYPES: &[&str] = &[
     "relationship",
 ];
 
-const ALLOWED_METADATA_FIELD_TYPES: &[&str] = &["text", "number", "boolean", "date", "enum", "oneof"];
+const ALLOWED_METADATA_FIELD_TYPES: &[&str] =
+    &["text", "number", "boolean", "date", "enum", "oneof"];
 
 /// Validate the relationship-only metadata declaration attached to a field.
 pub fn validate_metadata_fields(
@@ -59,10 +60,12 @@ pub fn validate_metadata_fields(
             ));
         }
         if field.field_type == "oneof" {
-            let one_of = field
-                .one_of
-                .as_ref()
-                .ok_or_else(|| format!("relationship metadata oneof field {} must declare oneOf", field.key))?;
+            let one_of = field.one_of.as_ref().ok_or_else(|| {
+                format!(
+                    "relationship metadata oneof field {} must declare oneOf",
+                    field.key
+                )
+            })?;
             if one_of.is_empty() {
                 return Err(format!(
                     "relationship metadata oneof field {} must have at least one variant",

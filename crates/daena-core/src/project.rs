@@ -1,8 +1,9 @@
 use crate::error::CoreError;
 use crate::external_import::{
-    read_archive_asset_bytes, ExternalImportCommitReport, ImportExistingTarget,
-    ImportObjectDecision, ImportSourceKind, ImportedAssetReport, ImportedObjectReport,
-    ValidatedImportPlan, VALIDATED_IMPORT_PLAN_SCHEMA_VERSION,
+    is_docx_import_asset_source_path, read_archive_asset_bytes, read_docx_import_asset_bytes,
+    ExternalImportCommitReport, ImportExistingTarget, ImportObjectDecision, ImportSourceKind,
+    ImportedAssetReport, ImportedObjectReport, ValidatedImportPlan,
+    VALIDATED_IMPORT_PLAN_SCHEMA_VERSION,
 };
 use daena_plugin_api::MetadataFieldDefinition;
 use rusqlite::{named_params, params, Connection, OpenFlags, OptionalExtension};
@@ -4581,29 +4582,44 @@ impl ProjectStore {
             let project_root = self.root.as_deref().ok_or_else(|| {
                 CoreError::Validation("asset import requires a directory project".into())
             })?;
-            let (content_hash, size) = match &plan.source.kind {
-                ImportSourceKind::Archive => {
-                    let bytes = read_archive_asset_bytes(root, &asset.source_path, asset.size)?;
-                    store_runtime_asset(project_root, bytes.as_slice(), Some(&asset.content_hash))?
-                }
-                ImportSourceKind::Folder => {
-                    let source = crate::storage::normalized_project_path(root, &asset.source_path)?;
-                    let metadata =
-                        std::fs::symlink_metadata(&source).map_err(|source| CoreError::Io {
-                            operation: "read import asset metadata",
-                            source,
-                        })?;
-                    if metadata.file_type().is_symlink() || !metadata.is_file() {
+            let (content_hash, size) = if is_docx_import_asset_source_path(&asset.source_path) {
+                let bytes = read_docx_import_asset_bytes(
+                    root,
+                    &plan.source.kind,
+                    &asset.source_path,
+                    asset.size,
+                )?;
+                store_runtime_asset(project_root, bytes.as_slice(), Some(&asset.content_hash))?
+            } else {
+                match &plan.source.kind {
+                    ImportSourceKind::Archive => {
+                        let bytes = read_archive_asset_bytes(root, &asset.source_path, asset.size)?;
+                        store_runtime_asset(
+                            project_root,
+                            bytes.as_slice(),
+                            Some(&asset.content_hash),
+                        )?
+                    }
+                    ImportSourceKind::Folder => {
+                        let source =
+                            crate::storage::normalized_project_path(root, &asset.source_path)?;
+                        let metadata =
+                            std::fs::symlink_metadata(&source).map_err(|source| CoreError::Io {
+                                operation: "read import asset metadata",
+                                source,
+                            })?;
+                        if metadata.file_type().is_symlink() || !metadata.is_file() {
+                            return Err(CoreError::Validation(
+                                "import asset source must remain a regular file".into(),
+                            ));
+                        }
+                        store_runtime_asset_file(project_root, &source, Some(&asset.content_hash))?
+                    }
+                    _ => {
                         return Err(CoreError::Validation(
-                            "import asset source must remain a regular file".into(),
+                            "this import source kind cannot provide attachments".into(),
                         ));
                     }
-                    store_runtime_asset_file(project_root, &source, Some(&asset.content_hash))?
-                }
-                _ => {
-                    return Err(CoreError::Validation(
-                        "this import source kind cannot provide attachments".into(),
-                    ));
                 }
             };
             if size != declared_size {

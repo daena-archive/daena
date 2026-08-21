@@ -124,7 +124,7 @@ implicit synchronization.
 
 Delivery order is:
 
-1. Markdown, plain text, HTML, and recursive folders;
+1. Markdown, plain text, HTML, DOCX, and recursive folders;
 2. ZIP and additional reliable rich-document parsers, followed by Obsidian as
    a specialization of Markdown;
 3. streaming MediaWiki-compatible XML and conservative wikitext preservation;
@@ -175,6 +175,29 @@ removed content produce reviewable warnings. Original HTML is retained only in
 the transient staged item's raw source data for review; the committed document
 is sanitized Markdown, so active source bytes do not enter canonical project
 content.
+
+### DOCX conversion policy
+
+DOCX is treated as an untrusted OOXML ZIP package and converted into one
+Markdown document. Before XML parsing, every package entry passes portable-path,
+duplicate/case-collision, special-file, depth, entry-count, per-entry size,
+total expanded-size, and compression-ratio checks. Required content types and
+the main Word document part must be present. XML parsing disables DTDs and uses
+an explicit node ceiling; malformed or excessive packages fail closed.
+
+The converter preserves core title metadata, headings, paragraphs, common run
+formatting, hyperlinks, numbered/bulleted lists, line breaks, simple tables,
+and supported embedded images. Images are resolved through OOXML relationships,
+validated by extension and byte signature, hashed during analysis, and re-read
+from the unchanged DOCX package at commit. This works for direct files, folders,
+and DOCX files nested in an imported ZIP without extracting either package.
+
+Comments, note bodies, headers/footers, revisions, fields, merged-table details,
+embedded objects, macros, and other unsupported structures are never guessed.
+They are omitted or simplified with reviewable diagnostics. Core-properties XML
+and the package-entry manifest are retained as transient staged raw data; the
+committed document is Markdown, and active or unconverted OOXML parts are not
+copied into canonical content.
 
 ## Architecture and contracts
 
@@ -304,10 +327,10 @@ limits and safe extraction, and only those HTML/DOCX/ODT/RTF parsers that pass
 quality and security fixtures.
 
 **Exit gate:** nested folders and ZIPs produce equivalent staged structure;
-HTML produces reviewable Markdown without active content; traversal, symlinks,
-bombs, malformed documents, unsafe HTML targets, and missing assets are safely
-blocked or reported; successful document and asset imports round-trip through
-checkpoint rebuild without path or hash drift.
+HTML and DOCX produce reviewable Markdown without active content; traversal,
+symlinks, bombs, malformed documents/XML, unsafe targets, and missing assets are
+safely blocked or reported; successful document and asset imports round-trip
+through checkpoint rebuild without path or hash drift.
 
 ### Iteration 6: Obsidian specialization
 
@@ -392,6 +415,12 @@ bundled and plugin output pass identical core validation.
   images through the Markdown resolver, removes active/embedded content and
   unsafe targets with diagnostics, and rejects excessive DOM complexity. Quality,
   malformed-input, active-content, link/asset, limit, commit, and clean-rebuild
-  fixtures cover the enabled path. DOCX/ODT/RTF parsers remain planned and will
-  only be enabled with their own format-specific quality and security fixtures.
+  fixtures cover the enabled path. DOCX sources now pass bounded OOXML package
+  and DTD-disabled XML preflight, preserve common document structure and core
+  title metadata as Markdown, resolve safe hyperlinks, and import signature-
+  checked embedded images from direct, folder, or nested-ZIP sources. Traversal,
+  malformed package/XML, active/unsupported content diagnostics, conversion
+  quality, attachment re-read, commit, and clean-rebuild fixtures cover the
+  enabled DOCX path. ODT/RTF parsers remain planned and will only be enabled with
+  their own format-specific quality and security fixtures.
 - Iterations 6-8: planned, not yet implemented.

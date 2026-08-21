@@ -383,13 +383,14 @@ pub fn project_external_importers() -> Vec<ExternalImporterDescriptor> {
         id: GENERIC_DOCUMENT_IMPORTER_ID.into(),
         version: GENERIC_DOCUMENT_IMPORTER_VERSION.into(),
         name: "Generic documents".into(),
-        description: "Markdown, HTML, plain-text, ZIP, and recursive folder analysis".into(),
+        description: "Markdown, HTML, DOCX, plain-text, ZIP, and recursive folder analysis".into(),
         source_kinds: vec!["file".into(), "folder".into()],
         extensions: vec![
             "md".into(),
             "markdown".into(),
             "html".into(),
             "htm".into(),
+            "docx".into(),
             "txt".into(),
             "zip".into(),
         ],
@@ -410,7 +411,7 @@ pub async fn project_external_import_select_source(
             .file()
             .add_filter(
                 "Documents and archives",
-                &["md", "markdown", "html", "htm", "txt", "zip"],
+                &["md", "markdown", "html", "htm", "docx", "txt", "zip"],
             )
             .blocking_pick_file(),
         "folder" => app.dialog().file().blocking_pick_folder(),

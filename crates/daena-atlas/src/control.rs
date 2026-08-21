@@ -110,38 +110,47 @@ impl ControlFields {
         })
     }
 
+    #[must_use]
     pub fn sample_elevation(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         sample_field_mm(self.grid, &self.elevation_mm, lon_micro, lat_micro)
     }
 
+    #[must_use]
     pub fn sample_crust_influence(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         sample_field_mm(self.grid, &self.crust_influence_ppm, lon_micro, lat_micro)
     }
 
+    #[must_use]
     pub fn sample_temperature(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         sample_field_mm(self.grid, &self.temperature_centi_c, lon_micro, lat_micro)
     }
 
+    #[must_use]
     pub fn sample_runoff(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         sample_field_mm(self.grid, &self.runoff_mm, lon_micro, lat_micro)
     }
 
+    #[must_use]
     pub fn sample_precipitation(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         sample_field_mm(self.grid, &self.precipitation_mm, lon_micro, lat_micro)
     }
 
+    #[must_use]
     pub fn sample_ice_thickness(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         sample_field_mm(self.grid, &self.ice_thickness_mm, lon_micro, lat_micro)
     }
 
+    #[must_use]
     pub fn sample_water_level(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         sample_field_mm(self.grid, &self.water_level_mm, lon_micro, lat_micro)
     }
 
+    #[must_use]
     pub fn sample_lake_level(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         sample_field_mm(self.grid, &self.lake_level_mm, lon_micro, lat_micro)
     }
 
+    #[must_use]
     pub fn sample_mountain_influence(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         sample_field_mm(
             self.grid,
@@ -151,31 +160,38 @@ impl ControlFields {
         )
     }
 
+    #[must_use]
     pub fn sample_sea_level(&self, _lon_micro: i32, _lat_micro: i32) -> i32 {
         self.sea_level_mm
     }
 
+    #[must_use]
     pub fn sample_climate_class(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         self.climate_class[nearest_cell(self.grid, lon_micro, lat_micro)]
     }
 
+    #[must_use]
     pub fn sample_watershed_id(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         self.watershed_id[nearest_cell(self.grid, lon_micro, lat_micro)]
     }
 
+    #[must_use]
     pub fn sample_basin_id(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         self.basin_id[nearest_cell(self.grid, lon_micro, lat_micro)]
     }
 
+    #[must_use]
     pub fn sample_lake_mask(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         self.lake_mask[nearest_cell(self.grid, lon_micro, lat_micro)]
     }
 
+    #[must_use]
     pub fn sample_crust_class(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         self.crust_class[nearest_cell(self.grid, lon_micro, lat_micro)]
     }
 }
 
+#[must_use]
 pub fn climate_class_at(ice: bool, temperature_centi_c: i32, precipitation_mm: u32) -> i32 {
     if ice {
         CLIMATE_CLASS_ICE
@@ -190,6 +206,7 @@ pub fn climate_class_at(ice: bool, temperature_centi_c: i32, precipitation_mm: u
     }
 }
 
+#[must_use]
 pub fn climate_class_name(class: i32) -> &'static str {
     match class {
         CLIMATE_CLASS_ICE => "ice",
@@ -201,6 +218,7 @@ pub fn climate_class_name(class: i32) -> &'static str {
     }
 }
 
+#[must_use]
 pub fn surface_kind(ice: bool, lake: bool, elevation_mm: i32, sea_level_mm: i32) -> &'static str {
     if ice {
         "ice"
@@ -213,6 +231,7 @@ pub fn surface_kind(ice: bool, lake: bool, elevation_mm: i32, sea_level_mm: i32)
     }
 }
 
+#[must_use]
 pub fn mountain_influence_ppm(tectonics: &TectonicWorld, elevations_mm: &[i32]) -> Vec<i32> {
     let count = tectonics.grid.sample_count();
     let mut influence = vec![0_i32; count];
@@ -268,12 +287,14 @@ pub fn mountain_influence_ppm(tectonics: &TectonicWorld, elevations_mm: &[i32]) 
     dilated
 }
 
+#[must_use]
 pub fn wrapped_antimeridian_pair(lon_a: i32, lon_b: i32) -> (i32, i32) {
     let a = wrap_lon_micro(i64::from(lon_a));
     let b = wrap_lon_micro(i64::from(lon_b));
     (a, b)
 }
 
+#[must_use]
 pub fn pole_safe_lat(lat_micro: i32) -> i32 {
     clamp_lat_micro(i64::from(lat_micro))
 }

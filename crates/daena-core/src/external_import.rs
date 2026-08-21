@@ -1284,7 +1284,7 @@ pub fn analyze_generic_documents_with_progress(
             diagnostics: Vec::new(),
             summary: ImportAnalysisSummary::default(),
         },
-        discovered_entries: if metadata.is_file() { 1 } else { 0 },
+        discovered_entries: usize::from(metadata.is_file()),
         discovered_files: 0,
         processed_entries: 0,
         total_source_bytes: 0,
@@ -1511,23 +1511,20 @@ impl GenericDocumentAnalyzer<'_> {
             )));
         }
         self.total_source_bytes = next_total;
-        let body = match String::from_utf8(bytes) {
-            Ok(body) => body,
-            Err(_) => {
-                self.record_unsupported(
-                    source_path.to_owned(),
-                    "document",
-                    "document content is not valid UTF-8",
-                )?;
-                self.record_diagnostic(ImportDiagnostic {
-                    severity: ImportDiagnosticSeverity::Error,
-                    code: "invalid_utf8".into(),
-                    message: "document content is not valid UTF-8".into(),
-                    source_path: Some(source_path.to_owned()),
-                    object_id: None,
-                })?;
-                return Ok(());
-            }
+        let body = if let Ok(body) = String::from_utf8(bytes) { body } else {
+            self.record_unsupported(
+                source_path.to_owned(),
+                "document",
+                "document content is not valid UTF-8",
+            )?;
+            self.record_diagnostic(ImportDiagnostic {
+                severity: ImportDiagnosticSeverity::Error,
+                code: "invalid_utf8".into(),
+                message: "document content is not valid UTF-8".into(),
+                source_path: Some(source_path.to_owned()),
+                object_id: None,
+            })?;
+            return Ok(());
         };
         let content_hash = hex_digest(body.as_bytes());
         let source_id = hex_digest(

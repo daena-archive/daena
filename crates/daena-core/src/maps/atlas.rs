@@ -38,6 +38,7 @@ pub const ATLAS_CACHE_RELATIVE: &str = ".daena/cache/atlas";
 const MAX_PRESETS: usize = 32;
 const MAX_OVERLAY_FEATURES: usize = 2_048;
 
+#[must_use]
 pub fn atlas_cache_dir(project_root: &Path) -> PathBuf {
     project_root.join(ATLAS_CACHE_RELATIVE)
 }
@@ -184,6 +185,7 @@ impl AtlasStudioSessionRequestV1 {
             .map_err(|error| CoreError::Validation(format!("{}: {}", error.code, error.message)))
     }
 
+    #[must_use]
     pub fn scene_request(&self) -> AtlasStudioSceneRequestV1 {
         AtlasStudioSceneRequestV1 {
             schema_version: ATLAS_STUDIO_SESSION_SCHEMA_VERSION,

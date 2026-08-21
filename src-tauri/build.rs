@@ -23,9 +23,7 @@ fn main() {
         .arg(&archive)
         .status()
         .expect("failed to run Node.js for FMG archive verification");
-    if !status.success() {
-        panic!("FMG archive is missing or stale; set DAENA_FMG_SOURCE to the pinned FMG checkout and retry");
-    }
+    assert!(status.success(), "FMG archive is missing or stale; set DAENA_FMG_SOURCE to the pinned FMG checkout and retry");
 
     tauri_build::build();
 }

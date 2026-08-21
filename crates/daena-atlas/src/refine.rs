@@ -49,6 +49,7 @@ pub struct RefinedValley {
 }
 
 impl RefinedValley {
+    #[must_use]
     pub fn id_for(lattice_index: usize) -> String {
         format!("atlas:valley:v{ATLAS_DERIVED_DRAINAGE_VERSION}:{lattice_index}")
     }
@@ -61,6 +62,7 @@ pub enum DepositionKind {
 }
 
 impl DepositionKind {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Fan => "fan",
@@ -80,6 +82,7 @@ pub struct DepositionFeature {
 }
 
 impl DepositionFeature {
+    #[must_use]
     pub fn id_for(kind: DepositionKind, lattice_index: usize) -> String {
         format!(
             "atlas:deposition:v{ATLAS_DERIVED_DRAINAGE_VERSION}:{}:{lattice_index}",
@@ -110,6 +113,7 @@ pub struct RefinedHydrology {
 }
 
 impl RefinedTributary {
+    #[must_use]
     pub fn id_for(lattice_index: usize) -> String {
         format!("atlas:tributary:v{ATLAS_DERIVED_DRAINAGE_VERSION}:{lattice_index}")
     }
@@ -131,13 +135,12 @@ fn is_wet_basin(hydrology: &HydrologyField, cell: usize) -> bool {
     hydrology
         .basins
         .get(basin as usize)
-        .map(|record| {
+        .is_some_and(|record| {
             matches!(
                 record.status,
                 BasinStatus::Endorheic | BasinStatus::Active | BasinStatus::Overflowing
             ) || record.water_volume_m3 > 0
         })
-        .unwrap_or(false)
 }
 
 fn is_protected(hydrology: &HydrologyField, cell: usize) -> bool {
@@ -159,8 +162,7 @@ fn river_occupancy(hydrology: &HydrologyField) -> (BTreeSet<usize>, Vec<u32>) {
         let id = hydrology
             .rivers
             .get(index)
-            .map(|river| river.id)
-            .unwrap_or(0);
+            .map_or(0, |river| river.id);
         for point in path {
             let cell = nearest_cell(hydrology.grid, point[0], point[1]);
             cells.insert(cell);
@@ -979,6 +981,7 @@ pub fn build_refined_hydrology(
 }
 
 impl RefinedHydrology {
+    #[must_use]
     pub fn encode_identities(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&self.version.to_le_bytes());
@@ -1081,6 +1084,7 @@ fn read_i32(bytes: &[u8], offset: &mut usize) -> Result<i32, AtlasError> {
     Ok(read_u32(bytes, offset)? as i32)
 }
 
+#[must_use]
 pub fn flow_stays_in_watershed(
     model: &RefinedHydrology,
     hydrology: &HydrologyField,

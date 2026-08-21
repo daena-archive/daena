@@ -49,6 +49,7 @@ fn domain_prefix(algorithm_version: u32) -> &'static [u8] {
     }
 }
 
+#[must_use]
 pub fn domain_key(identity: &[u8], algorithm_version: u32, variant: u32, domain: &str) -> [u8; 32] {
     let domain_bytes = domain.as_bytes();
     let mut input = Vec::with_capacity(64 + identity.len() + domain_bytes.len());
@@ -62,6 +63,7 @@ pub fn domain_key(identity: &[u8], algorithm_version: u32, variant: u32, domain:
     Sha256::digest(input).into()
 }
 
+#[must_use]
 pub fn lattice_sample(key: &[u8; 32], lattice_i: u32, lattice_j: u32, octave: u32) -> u64 {
     let k0 = u64::from_le_bytes(key[0..8].try_into().expect("key word"));
     let k1 = u64::from_le_bytes(key[8..16].try_into().expect("key word"));
@@ -73,12 +75,14 @@ pub fn lattice_sample(key: &[u8; 32], lattice_i: u32, lattice_j: u32, octave: u3
     )
 }
 
+#[must_use]
 pub fn nearest_cell(grid: Grid, lon_micro: i32, lat_micro: i32) -> usize {
     let (col, _, _) = lon_to_column_ppm(lon_micro, grid.width);
     let (row, _, _) = lat_to_row_ppm(lat_micro, grid.height);
     grid.index(row, col)
 }
 
+#[must_use]
 pub fn sample_field_mm(grid: Grid, field: &[i32], lon_micro: i32, lat_micro: i32) -> i32 {
     let (col, next_col, fx) = lon_to_column_ppm(lon_micro, grid.width);
     let (row, next_row, fy) = lat_to_row_ppm(lat_micro, grid.height);
@@ -109,6 +113,7 @@ pub(crate) fn lattice_lat_micro(j: u32, lattice_height: u32) -> i32 {
 }
 
 impl AtlasDetailModel {
+    #[must_use]
     pub fn residual_at(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         let lattice = Grid {
             width: self.lattice_width,
@@ -118,10 +123,12 @@ impl AtlasDetailModel {
         sample_field_mm(lattice, &self.residual_mm, lon_micro, lat_micro)
     }
 
+    #[must_use]
     pub fn canonical_at(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         sample_field_mm(self.grid, &self.elevations_mm, lon_micro, lat_micro)
     }
 
+    #[must_use]
     pub fn refined_at(
         &self,
         lon_micro: i32,
@@ -164,6 +171,7 @@ impl AtlasDetailModel {
     }
 }
 
+#[must_use]
 pub fn signed_coastal_distance_ppm(
     grid: Grid,
     elevations_mm: &[i32],
@@ -210,6 +218,7 @@ pub fn signed_coastal_distance_ppm(
     distance
 }
 
+#[must_use]
 pub fn sample_sdf_ppm(grid: Grid, sdf: &[i32], lon_micro: i32, lat_micro: i32) -> i32 {
     sample_field_mm(grid, sdf, lon_micro, lat_micro)
 }

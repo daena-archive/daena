@@ -64,6 +64,7 @@ pub enum SourceProfile {
     Committed,
 }
 
+#[must_use]
 pub fn lon_lat_to_normalized(longitude: f64, latitude: f64) -> (f64, f64) {
     ((longitude + 180.0) / 360.0, (90.0 - latitude) / 180.0)
 }
@@ -973,6 +974,7 @@ fn write_geometry(out: &mut String, geometry: &Geometry) {
     }
 }
 
+#[must_use]
 pub fn empty_canonical_bytes() -> Vec<u8> {
     serialize_features(&[])
 }
@@ -1112,6 +1114,7 @@ pub fn feature_bounds(
         .collect())
 }
 
+#[must_use]
 pub fn contains_feature_id(bytes: &[u8], feature_id: &str) -> bool {
     parse_strict_json(bytes)
         .ok()

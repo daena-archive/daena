@@ -22,6 +22,7 @@ pub struct DerivedDrainage {
 }
 
 impl DerivedDrainage {
+    #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&self.version.to_le_bytes());
@@ -88,6 +89,7 @@ impl DerivedDrainage {
         })
     }
 
+    #[must_use]
     pub fn encode_product(&self, width: u32, height: u32, worked_mm: &[i32]) -> Vec<u8> {
         let inner = self.encode();
         let residual = crate::cache::encode_residual(width, height, worked_mm);
@@ -124,6 +126,7 @@ impl DerivedDrainage {
     }
 }
 
+#[must_use]
 pub fn tributary_id(source_cell: usize) -> String {
     format!("atlas:tributary:v{ATLAS_DERIVED_DRAINAGE_VERSION}:{source_cell}")
 }

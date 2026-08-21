@@ -55,6 +55,7 @@ pub enum MountainKind {
 }
 
 impl MountainKind {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Peak => "peak",
@@ -345,6 +346,7 @@ fn sample_octave(
     sample_field_mm(lattice, field, lon_micro, lat_micro)
 }
 
+#[must_use]
 pub fn mountain_window_origin(controls: &ControlFields) -> (u32, u32) {
     let mut best_sum = i64::MIN;
     let mut best = (0, 0);
@@ -877,14 +879,12 @@ fn extract_mountain_features(
             let dist = chebyshev(lattice_width, peak_a.lattice_index, peak_b.lattice_index);
             let candidate = (dist, peak_b.lattice_index, b);
             if nearest
-                .map(|(d, _, _)| candidate < (d, usize::MAX, usize::MAX))
-                .unwrap_or(true)
+                .is_none_or(|(d, _, _)| candidate < (d, usize::MAX, usize::MAX))
             {
                 second = nearest;
                 nearest = Some(candidate);
             } else if second
-                .map(|(d, idx, _)| (dist, peak_b.lattice_index) < (d, idx))
-                .unwrap_or(true)
+                .is_none_or(|(d, idx, _)| (dist, peak_b.lattice_index) < (d, idx))
             {
                 second = Some(candidate);
             }
@@ -922,8 +922,7 @@ fn extract_mountain_features(
             if (2..=8).contains(&dist) {
                 let candidate = (dist, cell);
                 if foothill
-                    .map(|best: (u32, usize)| candidate < best)
-                    .unwrap_or(true)
+                    .is_none_or(|best: (u32, usize)| candidate < best)
                 {
                     foothill = Some(candidate);
                 }
@@ -1119,14 +1118,14 @@ fn synthesize_coastline(
                 + i64::from(target) * i64::from(proximity as i32))
                 / 1_000_000) as i32;
             let want_land = displaced >= 500_000;
-            let signed = if want_land != (blended >= sea) {
+            let signed = if want_land == (blended >= sea) {
+                blended
+            } else {
                 if want_land {
                     blended.max(sea.saturating_add(1)).max(target)
                 } else {
                     blended.min(sea.saturating_sub(1)).min(target)
                 }
-            } else {
-                blended
             };
             residual[index] = signed.saturating_sub(canonical);
         }
@@ -1442,6 +1441,7 @@ pub fn build_amplification_model(
 }
 
 impl AmplificationModel {
+    #[must_use]
     pub fn from_cached_detail(
         detail: AtlasDetailModel,
         controls: &ControlFields,
@@ -1473,6 +1473,7 @@ impl AmplificationModel {
     }
 }
 
+#[must_use]
 pub fn land_components(grid: Grid, elevations_mm: &[i32], sea_level_mm: i32) -> Vec<i32> {
     let count = grid.sample_count();
     let mut labels = vec![-1_i32; count];
@@ -1496,6 +1497,7 @@ pub fn land_components(grid: Grid, elevations_mm: &[i32], sea_level_mm: i32) -> 
     labels
 }
 
+#[must_use]
 pub fn downsample_preserves_sign_outside_envelope(
     model: &AtlasDetailModel,
     sea_level_mm: i32,
@@ -1519,6 +1521,7 @@ pub fn downsample_preserves_sign_outside_envelope(
     true
 }
 
+#[must_use]
 pub fn interior_land_components_equivalent(
     canonical: &[i32],
     refined: &[i32],

@@ -35,6 +35,7 @@ pub const DIRS: [(i32, i32); 8] = [
     (1, -1),
 ];
 
+#[must_use]
 pub fn lattice_index(width: u32, i: u32, j: u32) -> usize {
     j as usize * width as usize + i as usize
 }
@@ -106,6 +107,7 @@ pub fn lock_polar_rows(width: u32, height: u32, field: &mut [i32]) {
     }
 }
 
+#[must_use]
 pub fn neighbor_at(
     width: u32,
     height: u32,
@@ -130,6 +132,7 @@ fn dist_ppm(dir: (i32, i32)) -> i32 {
     }
 }
 
+#[must_use]
 pub fn walk_flow(primary: &[u32], start: usize, hops: u32, count: usize) -> u32 {
     let mut dest = start as u32;
     for _ in 0..hops {
@@ -439,7 +442,7 @@ fn fluvial_and_deposition_delta(
                 continue;
             }
             delta[index] = delta[index].saturating_sub(flux);
-            let hops = scale.max(1) as i64;
+            let hops = i64::from(scale.max(1));
             let slope_ppm = (i64::from(drop) * 1_000) / hops;
             let mut deposit = flux;
             if slope_ppm < i64::from(FAN_SLOPE_PPM) && mountain_ppm[index] > 80_000 {

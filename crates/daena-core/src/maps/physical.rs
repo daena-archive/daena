@@ -78,6 +78,7 @@ fn push_manifest_string(bytes: &mut Vec<u8>, value: &str) {
 }
 
 /// Encode `PhysicalIdentityManifestV1` in its one locked byte representation.
+#[must_use]
 pub fn encode_identity_manifest(manifest: &PhysicalIdentityManifestV1) -> Vec<u8> {
     let mut bytes = Vec::new();
     push_manifest_string(&mut bytes, &manifest.provider_id);
@@ -166,6 +167,7 @@ pub fn physical_derived_cache_dir(
         .join(daena_physical::derived_cache::StaticDerivedPhysics::version_dir()))
 }
 
+#[must_use]
 pub fn is_reserved_layer_id(id: &str) -> bool {
     matches!(
         id,
@@ -189,6 +191,7 @@ pub fn is_reserved_layer_id(id: &str) -> bool {
 /// Locked physical renderer layers are persisted in the shared map layer
 /// field so authored vector layers can be added above them without making the
 /// physical source editable.
+#[must_use]
 pub fn initial_layers_value() -> Value {
     serde_json::json!({
         "schemaVersion": 1,
@@ -280,8 +283,7 @@ pub fn validate_generation(value: &Value) -> Result<PhysicalMapGenerationSetting
         return Err(invalid(
             CODE_INVALID_GENERATION,
             format!(
-                "production grid is limited to {}x{}; larger grids are preview-only",
-                PRODUCTION_MAX_WIDTH, PRODUCTION_MAX_HEIGHT
+                "production grid is limited to {PRODUCTION_MAX_WIDTH}x{PRODUCTION_MAX_HEIGHT}; larger grids are preview-only"
             ),
         ));
     }
@@ -329,22 +331,21 @@ fn historical_forcing(settings: &PhysicalMapGenerationSettings) -> HistoricalFor
         version: settings.historical_forcing.version,
         components: [
             daena_physical::history::ForcingComponent {
-                amplitude_centi_c: components.first().map(|c| c.amplitude_centi_c).unwrap_or(0),
-                period_years: components.first().map(|c| c.period_years).unwrap_or(0),
+                amplitude_centi_c: components.first().map_or(0, |c| c.amplitude_centi_c),
+                period_years: components.first().map_or(0, |c| c.period_years),
                 phase_offset_years: components
                     .first()
-                    .map(|c| c.phase_offset_years)
-                    .unwrap_or(0),
+                    .map_or(0, |c| c.phase_offset_years),
             },
             daena_physical::history::ForcingComponent {
-                amplitude_centi_c: components.get(1).map(|c| c.amplitude_centi_c).unwrap_or(0),
-                period_years: components.get(1).map(|c| c.period_years).unwrap_or(0),
-                phase_offset_years: components.get(1).map(|c| c.phase_offset_years).unwrap_or(0),
+                amplitude_centi_c: components.get(1).map_or(0, |c| c.amplitude_centi_c),
+                period_years: components.get(1).map_or(0, |c| c.period_years),
+                phase_offset_years: components.get(1).map_or(0, |c| c.phase_offset_years),
             },
             daena_physical::history::ForcingComponent {
-                amplitude_centi_c: components.get(2).map(|c| c.amplitude_centi_c).unwrap_or(0),
-                period_years: components.get(2).map(|c| c.period_years).unwrap_or(0),
-                phase_offset_years: components.get(2).map(|c| c.phase_offset_years).unwrap_or(0),
+                amplitude_centi_c: components.get(2).map_or(0, |c| c.amplitude_centi_c),
+                period_years: components.get(2).map_or(0, |c| c.period_years),
+                phase_offset_years: components.get(2).map_or(0, |c| c.phase_offset_years),
             },
         ],
         sensitivity_ppm: settings.historical_forcing.sensitivity_ppm,

@@ -32,8 +32,8 @@ use super::{
 
 pub const EXTERNAL_IMPORT_PROGRESS_EVENT: &str = "external-import-progress";
 
-const SOURCE_HANDLE_TTL: Duration = Duration::from_secs(10 * 60);
-const ANALYSIS_SESSION_TTL: Duration = Duration::from_secs(30 * 60);
+const SOURCE_HANDLE_TTL: Duration = Duration::from_mins(10);
+const ANALYSIS_SESSION_TTL: Duration = Duration::from_mins(30);
 const MAX_SOURCE_HANDLES: usize = 16;
 const MAX_ANALYSIS_SESSIONS: usize = 8;
 const MAX_PAGE_ITEMS: usize = 200;
@@ -439,7 +439,7 @@ pub async fn project_external_import_analyze_begin(
     }
     let project_id = current_project_id(core.inner())?;
     let captured_content_generation =
-        with_read_project(core.clone(), |project| project.content_generation()).await?;
+        with_read_project(core.clone(), daena_core::ProjectStore::content_generation).await?;
     let limits = input.limits.map(Into::into).unwrap_or_default();
     let (session_id, source, cancel, status) = {
         let mut manager = imports
@@ -505,7 +505,7 @@ pub async fn project_external_import_analysis_status(
 ) -> Result<ExternalImportAnalysisStatus, String> {
     let project_id = current_project_id(core.inner())?;
     let current_content_generation =
-        with_read_project(core, |project| project.content_generation()).await?;
+        with_read_project(core, daena_core::ProjectStore::content_generation).await?;
     let mut manager = imports
         .lock()
         .map_err(|_| "external import state is unavailable".to_string())?;
@@ -592,7 +592,7 @@ pub async fn project_external_import_candidate_plan(
 ) -> Result<ImportCandidatePlan, String> {
     let project_id = current_project_id(core.inner())?;
     let current_content_generation =
-        with_read_project(core, |project| project.content_generation()).await?;
+        with_read_project(core, daena_core::ProjectStore::content_generation).await?;
     let imports = imports.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut manager = imports
@@ -719,7 +719,7 @@ pub async fn project_external_import_validate(
     let plan = outcome.plan;
     let (create_count, skip_count, map_count) = plan
         .as_ref()
-        .map(|plan| {
+        .map_or((0, 0, 0), |plan| {
             plan.objects
                 .iter()
                 .fold((0, 0, 0), |counts, object| match &object.decision {
@@ -729,8 +729,7 @@ pub async fn project_external_import_validate(
                         (counts.0, counts.1, counts.2 + 1)
                     }
                 })
-        })
-        .unwrap_or((0, 0, 0));
+        });
     let asset_count = plan.as_ref().map_or(0, |plan| plan.assets.len());
     let warning_count = outcome
         .issues
@@ -750,7 +749,7 @@ pub async fn project_external_import_validate(
             .ok_or_else(|| {
                 "external_import.session_not_found: analysis session was not found".to_string()
             })?;
-        job.validated = plan.clone();
+        job.validated.clone_from(&plan);
     }
     Ok(ExternalImportValidationSummary {
         validation_id: validation_id.clone(),
@@ -955,12 +954,9 @@ fn spawn_analysis(
             finish_cancelled(&app, &imports, &session_id);
             return;
         }
-        let mut manager = match imports.lock() {
-            Ok(manager) => manager,
-            Err(_) => {
-                let _ = result.cleanup();
-                return;
-            }
+        let mut manager = if let Ok(manager) = imports.lock() { manager } else {
+            let _ = result.cleanup();
+            return;
         };
         let Some(job) = manager.jobs.get_mut(&session_id) else {
             let _ = result.cleanup();

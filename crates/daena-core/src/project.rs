@@ -625,7 +625,7 @@ fn is_rfc3339_date(value: &str) -> bool {
     }
     match bytes.get(index) {
         Some(b'Z') => index + 1 == bytes.len(),
-        Some(b'+') | Some(b'-') => {
+        Some(b'+' | b'-') => {
             index + 6 == bytes.len()
                 && bytes[index + 3] == b':'
                 && parse_fixed_decimal(bytes, index + 1, index + 3).is_some_and(|hour| hour <= 23)
@@ -1004,7 +1004,7 @@ fn store_runtime_asset<R: Read>(
         })?;
     let result = (|| {
         let mut digest = Sha256::new();
-        let mut buffer = [0_u8; 128 * 1024];
+        let mut buffer = vec![0_u8; 128 * 1024];
         let mut size = 0_i64;
         loop {
             let count = input.read(&mut buffer).map_err(|source| CoreError::Io {
@@ -1397,7 +1397,11 @@ impl ProjectStore {
         std::fs::create_dir_all(root.join("assets/files"))
             .map_err(|error| CoreError::NotFound(error.to_string()))?;
         let metadata_path = root.join("project.json");
-        if !metadata_path.exists() {
+        if metadata_path.exists() {
+            let metadata =
+                crate::storage::read_json::<crate::storage::ProjectManifest>(&metadata_path)?;
+            metadata.validate(&metadata_path)?;
+        } else {
             let name = root
                 .file_name()
                 .and_then(|value| value.to_str())
@@ -1405,10 +1409,6 @@ impl ProjectStore {
             let metadata = crate::storage::ProjectManifest::new(name);
             metadata.validate(&metadata_path)?;
             crate::storage::write_json(&metadata_path, &metadata)?;
-        } else {
-            let metadata =
-                crate::storage::read_json::<crate::storage::ProjectManifest>(&metadata_path)?;
-            metadata.validate(&metadata_path)?;
         }
         let gitignore = root.join(".gitignore");
         let required_gitignore = [".daena/", "checkpoint.json"];
@@ -1743,7 +1743,7 @@ impl ProjectStore {
             .is_none_or(|project_id| project_id == metadata.2);
         if metadata.0 != RUNTIME_STORAGE_ROLE
             || metadata.1 != RUNTIME_SCHEMA_VERSION
-            || metadata.3 != crate::storage::PROJECT_FORMAT_VERSION as i64
+            || metadata.3 != i64::from(crate::storage::PROJECT_FORMAT_VERSION)
             || metadata.4 != EXPORTER_CONTRACT_VERSION
             || metadata.5 < 0
             || metadata.6 < 0
@@ -2454,9 +2454,7 @@ impl ProjectStore {
         result: Option<&serde_json::Value>,
         affected_prefixes: &[String],
     ) -> Result<rusqlite::Transaction<'a>, CoreError> {
-        let fingerprint = result
-            .map(|value| digest_bytes(value.to_string().as_bytes()))
-            .unwrap_or_else(|| digest_bytes(b"null"));
+        let fingerprint = result.map_or_else(|| digest_bytes(b"null"), |value| digest_bytes(value.to_string().as_bytes()));
         self.begin_mutation_with_fingerprint(request_id, result, affected_prefixes, &fingerprint)
     }
 
@@ -2469,9 +2467,7 @@ impl ProjectStore {
     ) -> Result<rusqlite::Transaction<'a>, CoreError> {
         let transaction = self.connection.unchecked_transaction()?;
         let _ = affected_prefixes;
-        let result_json = result
-            .map(serde_json::Value::to_string)
-            .unwrap_or_else(|| "null".into());
+        let result_json = result.map_or_else(|| "null".into(), serde_json::Value::to_string);
         let stored_fingerprint: Option<String> = transaction
             .query_row(
                 "SELECT fingerprint FROM mutation_receipts WHERE request_id=?1",
@@ -2690,14 +2686,12 @@ impl ProjectStore {
         .ok();
         Some(ProjectInfo {
             name: manifest
-                .as_ref()
-                .map(|manifest| manifest.name.clone())
-                .unwrap_or_else(|| {
+                .as_ref().map_or_else(|| {
                     root.file_name()
                         .and_then(|value| value.to_str())
                         .unwrap_or("Daena Archive project")
                         .to_string()
-                }),
+                }, |manifest| manifest.name.clone()),
             root: root.to_string_lossy().to_string(),
             index_status: if sync.state == "clean" {
                 "ready"
@@ -2779,9 +2773,7 @@ impl ProjectStore {
     }
 
     fn request_id(&self, request_id: Option<&str>) -> Result<String, CoreError> {
-        let request_id = request_id
-            .map(str::to_owned)
-            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let request_id = request_id.map_or_else(|| Uuid::new_v4().to_string(), str::to_owned);
         Uuid::parse_str(&request_id)
             .map_err(|_| CoreError::Validation("transaction request ID must be a UUID".into()))?;
         Ok(request_id)
@@ -3037,13 +3029,7 @@ impl ProjectStore {
             .filter(|(index_status, worktree_status, _)| {
                 matches!(
                     (*index_status, *worktree_status),
-                    (b'D', b'D')
-                        | (b'A', b'U')
-                        | (b'U', b'D')
-                        | (b'U', b'A')
-                        | (b'D', b'U')
-                        | (b'A', b'A')
-                        | (b'U', b'U')
+                    (b'D' | b'U', b'D') | (b'A' | b'D' | b'U', b'U') | (b'U' | b'A', b'A')
                 )
             })
             .map(|(_, _, path)| path.clone())
@@ -3270,6 +3256,7 @@ impl ProjectStore {
         self.git_status()
     }
 
+    #[must_use]
     pub fn git_tool_info() -> GitToolInfo {
         match Command::new("git").args(["--version"]).output() {
             Ok(output) if output.status.success() => {
@@ -3902,7 +3889,7 @@ impl ProjectStore {
                     RUNTIME_STORAGE_ROLE,
                     RUNTIME_SCHEMA_VERSION,
                     project_id,
-                    crate::storage::PROJECT_FORMAT_VERSION as i64,
+                    i64::from(crate::storage::PROJECT_FORMAT_VERSION),
                     Uuid::new_v4().to_string(),
                     EXPORTER_CONTRACT_VERSION,
                 ],
@@ -5453,8 +5440,7 @@ impl ProjectStore {
             .iter()
             .filter_map(|layer| layer.get("order").and_then(serde_json::Value::as_i64))
             .max()
-            .map(|order| order + 1)
-            .unwrap_or(0);
+            .map_or(0, |order| order + 1);
         let mut layers = layers;
         layers.push(serde_json::json!({
             "id": layer_id,
@@ -5581,8 +5567,7 @@ impl ProjectStore {
             .iter()
             .filter_map(|layer| layer.get("order").and_then(serde_json::Value::as_i64))
             .max()
-            .map(|order| order + 1)
-            .unwrap_or(0);
+            .map_or(0, |order| order + 1);
         let mut layers = layers;
         layers.push(serde_json::json!({
             "id": layer_id,
@@ -5693,8 +5678,7 @@ impl ProjectStore {
             .iter()
             .filter_map(|layer| layer.get("order").and_then(serde_json::Value::as_i64))
             .max()
-            .map(|order| order + 1)
-            .unwrap_or(0);
+            .map_or(0, |order| order + 1);
         let style = style.unwrap_or_else(|| {
             serde_json::json!({
                 "fill": "#8f6fd1",
@@ -7516,7 +7500,7 @@ impl ProjectStore {
             )?;
         }
         for entity in &snapshot.entities {
-            transaction.execute("INSERT INTO entities(id,name,entity_type,deleted,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET name=excluded.name,entity_type=excluded.entity_type,deleted=excluded.deleted,created_at=excluded.created_at,updated_at=excluded.updated_at", params![entity.id, entity.name, entity.entity_type, entity.deleted as i64, entity.created_at, entity.updated_at])?;
+            transaction.execute("INSERT INTO entities(id,name,entity_type,deleted,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET name=excluded.name,entity_type=excluded.entity_type,deleted=excluded.deleted,created_at=excluded.created_at,updated_at=excluded.updated_at", params![entity.id, entity.name, entity.entity_type, i64::from(entity.deleted), entity.created_at, entity.updated_at])?;
         }
         for document in &snapshot.documents {
             transaction.execute("INSERT INTO documents(id,entity_id,format,body,updated_at) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET entity_id=excluded.entity_id,format=excluded.format,body=excluded.body,updated_at=excluded.updated_at", params![document.id, document.entity_id, document.format, document.body, document.updated_at])?;
@@ -7540,7 +7524,7 @@ impl ProjectStore {
         }
         for module in &snapshot.modules {
             transaction.execute("INSERT INTO module_versions(module_id,version) VALUES (?1,?2) ON CONFLICT(module_id) DO UPDATE SET version=excluded.version", params![module.module_id, module.version])?;
-            transaction.execute("INSERT INTO module_state(module_id,enabled) VALUES (?1,?2) ON CONFLICT(module_id) DO UPDATE SET enabled=excluded.enabled", params![module.module_id, module.enabled as i64])?;
+            transaction.execute("INSERT INTO module_state(module_id,enabled) VALUES (?1,?2) ON CONFLICT(module_id) DO UPDATE SET enabled=excluded.enabled", params![module.module_id, i64::from(module.enabled)])?;
             if let Some(package_version) = &module.package_version {
                 transaction.execute("INSERT INTO module_package_versions(module_id,package_version) VALUES (?1,?2) ON CONFLICT(module_id) DO UPDATE SET package_version=excluded.package_version", params![module.module_id, package_version])?;
             }
@@ -7564,7 +7548,7 @@ impl ProjectStore {
         for field in &snapshot.module_fields {
             transaction.execute(
                 "INSERT INTO module_fields(module_id,namespace,key,field_type,required) VALUES (?1,?2,?3,?4,?5)",
-                params![field.module_id, field.namespace, field.key, field.field_type, field.required as i64],
+                params![field.module_id, field.namespace, field.key, field.field_type, i64::from(field.required)],
             )?;
         }
         for record in &snapshot.module_records {
@@ -8203,9 +8187,7 @@ impl ProjectStore {
             source,
         })?;
         let project_name = self
-            .info()
-            .map(|info| info.name)
-            .unwrap_or_else(|| "Daena Archive".into());
+            .info().map_or_else(|| "Daena Archive".into(), |info| info.name);
         let export_stem = markdown_export_stem(&project_name);
         let mut export_directory = destination.join(format!("{export_stem}-markdown"));
         let mut suffix = 2;
@@ -8806,7 +8788,7 @@ impl ProjectStore {
     ) -> Result<Vec<serde_json::Value>, CoreError> {
         if ![min_x, min_y, max_x, max_y]
             .into_iter()
-            .all(|value| value.is_finite())
+            .all(f64::is_finite)
             || min_x > max_x
             || min_y > max_y
         {
@@ -9767,7 +9749,7 @@ impl ProjectStore {
         )?;
         transaction.execute(
             "INSERT INTO module_state(module_id, enabled) VALUES (?1, ?2) ON CONFLICT(module_id) DO UPDATE SET enabled=excluded.enabled",
-            params![module_id, enabled as i64],
+            params![module_id, i64::from(enabled)],
         )?;
         transaction.commit()?;
         self.notify_export_worker()?;
@@ -10051,7 +10033,7 @@ fn streamed_file_digest(path: &Path) -> Result<(String, i64), CoreError> {
     let mut file =
         std::fs::File::open(path).map_err(|error| CoreError::NotFound(error.to_string()))?;
     let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 128 * 1024];
+    let mut buffer = vec![0_u8; 128 * 1024];
     let mut size = 0_i64;
     loop {
         let count = std::io::Read::read(&mut file, &mut buffer).map_err(|error| CoreError::Io {
@@ -10345,7 +10327,7 @@ fn write_location_projection(
         "area" => anchor
             .get("rings")
             .and_then(serde_json::Value::as_array)
-            .map(|rings| {
+            .map_or((None, None, None, None), |rings| {
                 bounds_for_points(Some(
                     &rings
                         .iter()
@@ -10354,8 +10336,7 @@ fn write_location_projection(
                         .cloned()
                         .collect::<Vec<_>>(),
                 ))
-            })
-            .unwrap_or((None, None, None, None)),
+            }),
         _ => (None, None, None, None),
     };
     let geometry = serde_json::to_string(&anchor)

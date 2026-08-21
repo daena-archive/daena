@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use super::{current_info, with_read_project, SharedAtlasJobs, SharedCore, ATLAS_PROGRESS_EVENT};
 
-const ATLAS_JOB_TTL: Duration = Duration::from_secs(30 * 60);
+const ATLAS_JOB_TTL: Duration = Duration::from_mins(30);
 const PREVIEW_MAX_WIDTH: u32 = daena_atlas::request::PREVIEW_MAX_WIDTH;
 const PREVIEW_MAX_HEIGHT: u32 = daena_atlas::request::PREVIEW_MAX_HEIGHT;
 
@@ -107,16 +107,14 @@ pub struct AtlasBeginInput {
 fn install_artifact_bytes(dest: &Path, bytes: &[u8], ext: &str) -> Result<(), String> {
     if dest
         .symlink_metadata()
-        .map(|meta| meta.file_type().is_symlink())
-        .unwrap_or(false)
+        .is_ok_and(|meta| meta.file_type().is_symlink())
     {
         return Err("atlas.save.failed: refused to follow a symlink".into());
     }
     let partial = dest.with_extension(format!("{ext}.partial"));
     if partial
         .symlink_metadata()
-        .map(|meta| meta.file_type().is_symlink())
-        .unwrap_or(false)
+        .is_ok_and(|meta| meta.file_type().is_symlink())
     {
         return Err("atlas.save.failed: refused to follow a symlink".into());
     }
@@ -314,12 +312,9 @@ fn spawn_render(
             }
             return;
         }
-        let mut manager = match jobs.lock() {
-            Ok(manager) => manager,
-            Err(_) => {
-                let _ = remove_atlas_path(&path);
-                return;
-            }
+        let mut manager = if let Ok(manager) = jobs.lock() { manager } else {
+            let _ = remove_atlas_path(&path);
+            return;
         };
         let Some(job) = manager.jobs.get_mut(&job_id) else {
             let _ = remove_atlas_path(&path);
@@ -490,7 +485,7 @@ pub async fn project_atlas_job_status(
     jobs: tauri::State<'_, SharedAtlasJobs>,
     job_id: String,
 ) -> Result<AtlasJobStatus, String> {
-    let current_generation = with_read_project(state, |project| project.content_generation())
+    let current_generation = with_read_project(state, daena_core::ProjectStore::content_generation)
         .await
         .ok();
     let mut manager = jobs

@@ -97,6 +97,7 @@ pub fn encode_svg(
     Ok(svg.into_bytes())
 }
 
+#[must_use]
 pub fn page_points(px: u32, dpi: u32) -> u32 {
     let dpi = dpi.max(1);
     ((u64::from(px) * 72 + u64::from(dpi) / 2) / u64::from(dpi)) as u32
@@ -120,7 +121,7 @@ pub fn encode_pdf(
         ));
     }
     let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
-    for pixel in rgba.chunks_exact(4) {
+    for pixel in rgba.as_chunks::<4>().0 {
         rgb.extend_from_slice(&pixel[..3]);
     }
     let mut encoder = ZlibEncoder::new(Vec::new(), ZlibCompression::fast());
@@ -207,7 +208,7 @@ pub fn parse_pdf_media_box(bytes: &[u8]) -> Result<[u32; 4], AtlasError> {
         .ok_or_else(|| AtlasError::new(CODE_ENCODER_FAILED, "PDF MediaBox is malformed"))?;
     let nums = slice[open + 1..close]
         .split_whitespace()
-        .map(|part| part.parse::<u32>())
+        .map(str::parse::<u32>)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| AtlasError::new(CODE_ENCODER_FAILED, error.to_string()))?;
     if nums.len() != 4 {

@@ -65,11 +65,13 @@ pub struct AtlasStyle {
 }
 
 impl AtlasStyle {
+    #[must_use]
     pub fn content_hash(&self, raw: &str) -> String {
         format!("sha256:{:x}", Sha256::digest(raw.as_bytes()))
     }
 }
 
+#[must_use]
 pub fn bundled_style_ids() -> [&'static str; 8] {
     [
         RELIEF_STYLE_ID,
@@ -163,6 +165,7 @@ pub fn validate_style_source(raw: &str) -> Result<(), AtlasError> {
     Ok(())
 }
 
+#[must_use]
 pub fn mix_rgb(from: [u8; 3], to: [u8; 3], t_ppm: u32) -> [u8; 3] {
     let t = t_ppm.min(1_000_000);
     let inv = 1_000_000 - t;
@@ -173,6 +176,7 @@ pub fn mix_rgb(from: [u8; 3], to: [u8; 3], t_ppm: u32) -> [u8; 3] {
     ]
 }
 
+#[must_use]
 pub fn apply_shade(rgb: [u8; 3], shade_ppm: u32) -> [u8; 4] {
     let shade = shade_ppm.clamp(350_000, 1_000_000);
     [
@@ -183,6 +187,7 @@ pub fn apply_shade(rgb: [u8; 3], shade_ppm: u32) -> [u8; 4] {
     ]
 }
 
+#[must_use]
 pub fn biome_fill(style: &AtlasStyle, climate_class: i32) -> [u8; 3] {
     match climate_class {
         crate::control::CLIMATE_CLASS_ICE => style.ice,
@@ -193,6 +198,7 @@ pub fn biome_fill(style: &AtlasStyle, climate_class: i32) -> [u8; 3] {
     }
 }
 
+#[must_use]
 pub fn ramp3(style: &AtlasStyle, t_ppm: u32) -> [u8; 3] {
     let t = t_ppm.min(1_000_000);
     if t < 500_000 {
@@ -206,6 +212,7 @@ pub fn ramp3(style: &AtlasStyle, t_ppm: u32) -> [u8; 3] {
     }
 }
 
+#[must_use]
 pub fn temperature_fill(style: &AtlasStyle, centi_c: i32) -> [u8; 3] {
     const LO: i32 = -3_500;
     const HI: i32 = 4_000;
@@ -214,12 +221,14 @@ pub fn temperature_fill(style: &AtlasStyle, centi_c: i32) -> [u8; 3] {
     ramp3(style, t)
 }
 
+#[must_use]
 pub fn precipitation_fill(style: &AtlasStyle, precip_mm: i32) -> [u8; 3] {
     const HI: i32 = 2_800;
     let t = (i64::from(precip_mm.clamp(0, HI)) * 1_000_000 / i64::from(HI)) as u32;
     ramp3(style, t)
 }
 
+#[must_use]
 pub fn hypsometric(style: &AtlasStyle, elevation_mm: i32, sea_level_mm: i32) -> [u8; 3] {
     let relative = elevation_mm.saturating_sub(sea_level_mm);
     if relative < 0 {

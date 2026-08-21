@@ -31,6 +31,7 @@ pub struct AuthoredFeature {
     pub path: Vec<[i32; 2]>,
 }
 
+#[must_use]
 pub fn lon_to_x(lon_micro: i32, width: u32) -> i32 {
     crate::projection::ProjectedView {
         projection: crate::projection::AtlasProjection::Equirectangular,
@@ -39,10 +40,10 @@ pub fn lon_to_x(lon_micro: i32, width: u32) -> i32 {
         height: 1,
     }
     .project(lon_micro, 0)
-    .map(|(x, _)| x)
-    .unwrap_or(0)
+    .map_or(0, |(x, _)| x)
 }
 
+#[must_use]
 pub fn lat_to_y(lat_micro: i32, height: u32) -> i32 {
     crate::projection::ProjectedView {
         projection: crate::projection::AtlasProjection::Equirectangular,
@@ -51,8 +52,7 @@ pub fn lat_to_y(lat_micro: i32, height: u32) -> i32 {
         height,
     }
     .project(0, lat_micro)
-    .map(|(_, y)| y)
-    .unwrap_or(0)
+    .map_or(0, |(_, y)| y)
 }
 
 fn project_point(view: ProjectedView, lon_micro: i32, lat_micro: i32) -> Option<(i32, i32)> {
@@ -389,6 +389,7 @@ pub struct AtlasInspectResult {
     pub surface: AtlasSurfaceSample,
 }
 
+#[must_use]
 pub fn hit_test_features(
     overlays: &[AuthoredFeature],
     lon_micro: i32,

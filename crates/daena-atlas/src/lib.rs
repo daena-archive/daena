@@ -57,6 +57,7 @@ impl AtlasError {
         Self::new(CODE_REQUEST_INVALID, message)
     }
 
+    #[must_use]
     pub fn cancelled() -> Self {
         Self::new(CODE_RENDER_CANCELLED, "atlas render was cancelled")
     }
@@ -84,6 +85,7 @@ pub enum AtlasPhase {
 }
 
 impl AtlasPhase {
+    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Validating => "validating",
@@ -156,6 +158,7 @@ impl AtlasProgress for FlagProgress<'_> {
 
 /// Spike-only identity from source bytes. Production identity is constructed
 /// exclusively by `daena-core`.
+#[must_use]
 pub fn spike_identity_from_source(source_bytes: &[u8]) -> Vec<u8> {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(source_bytes);
@@ -230,6 +233,7 @@ pub struct AtlasPreparedScene {
 }
 
 impl AtlasPreparedScene {
+    #[must_use]
     pub fn paint_fields(&self) -> render::PaintFields<'_> {
         render::PaintFields {
             climate_class: &self.climate_class,
@@ -238,6 +242,7 @@ impl AtlasPreparedScene {
         }
     }
 
+    #[must_use]
     pub fn sample_surface(&self, lon_micro: i32, lat_micro: i32) -> overlay::AtlasSurfaceSample {
         let grid = self.model.grid;
         let cell = detail::nearest_cell(grid, lon_micro, lat_micro);

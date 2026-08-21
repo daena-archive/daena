@@ -49,6 +49,7 @@ pub struct StudioDiagnostic {
     pub action: &'static str,
 }
 
+#[must_use]
 pub fn explain_studio_code(code: &str) -> StudioDiagnostic {
     match code {
         CODE_STUDIO_REQUEST_INVALID => StudioDiagnostic {
@@ -104,14 +105,15 @@ pub fn explain_studio_code(code: &str) -> StudioDiagnostic {
     }
 }
 
+#[must_use]
 pub fn parse_studio_error(raw: &str) -> StudioDiagnostic {
     let code = raw
         .split_once(':')
-        .map(|(code, _)| code.trim())
-        .unwrap_or(raw.trim());
+        .map_or(raw.trim(), |(code, _)| code.trim());
     explain_studio_code(code)
 }
 
+#[must_use]
 pub fn derived_feature_explanation(kind: &str, derived: bool) -> &'static str {
     if kind == "derived-tributary" {
         "Atlas-only derived drainage. It is not canonical Physical Map data and cannot be edited or promoted from Studio."
@@ -136,6 +138,7 @@ pub struct AtlasStudioSceneRequestV1 {
 }
 
 impl AtlasStudioSceneRequestV1 {
+    #[must_use]
     pub fn spike() -> Self {
         Self {
             schema_version: ATLAS_STUDIO_SESSION_SCHEMA_VERSION,
@@ -217,6 +220,7 @@ pub struct AtlasStudioTileRequestV1 {
 }
 
 impl AtlasStudioTileRequestV1 {
+    #[must_use]
     pub fn new(z: u32, x: u32, y: u32) -> Self {
         Self {
             schema_version: ATLAS_STUDIO_TILE_SCHEMA_VERSION,
@@ -364,6 +368,7 @@ pub fn xyz_extent(z: u32, x: u32, y: u32) -> Result<AtlasExtent, AtlasError> {
     Ok(extent)
 }
 
+#[must_use]
 pub fn current_view_export_height(extent: AtlasExtent, width_px: u32) -> u32 {
     let lat_span = (i64::from(extent.north_lat_micro) - i64::from(extent.south_lat_micro)).max(1);
     let mut lon_span = (i64::from(extent.east_lon_micro) - i64::from(extent.west_lon_micro)
@@ -549,7 +554,7 @@ pub fn render_studio_tile_with_style_overlays(
     let output = tile.output_px()?;
     let mut request = scene_request
         .as_render_request(output)
-        .and_then(|request| request.normalize())
+        .and_then(super::request::AtlasRenderRequest::normalize)
         .map_err(map_studio_error)?;
     request.extent = xyz_extent(tile.z, tile.x, tile.y)?;
     let halo = studio_halo(&request, overlays);
@@ -706,17 +711,17 @@ impl StudioShadeField {
         let top = if x.is_multiple_of(STUDIO_SHADE_STEP) {
             a
         } else {
-            ((u64::from(a) + u64::from(b)) / 2) as u32
+            u64::midpoint(u64::from(a), u64::from(b)) as u32
         };
         let bottom = if x.is_multiple_of(STUDIO_SHADE_STEP) {
             c
         } else {
-            ((u64::from(c) + u64::from(d)) / 2) as u32
+            u64::midpoint(u64::from(c), u64::from(d)) as u32
         };
         if y.is_multiple_of(STUDIO_SHADE_STEP) {
             top
         } else {
-            ((u64::from(top) + u64::from(bottom)) / 2) as u32
+            u64::midpoint(u64::from(top), u64::from(bottom)) as u32
         }
     }
 }
@@ -891,7 +896,7 @@ pub fn render_xyz_region(
         .clone()
         .normalize()?
         .as_render_request(output_px)
-        .and_then(|request| request.normalize())
+        .and_then(super::request::AtlasRenderRequest::normalize)
         .map_err(map_studio_error)?;
     let end_x = origin_x
         .checked_add(tiles_x)

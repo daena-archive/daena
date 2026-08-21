@@ -417,6 +417,7 @@ impl FilesystemRepository {
         read_canonical_project(&self.root)
     }
 
+    #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -865,9 +866,7 @@ pub fn write_canonical_project(
             })
             .collect::<Vec<_>>();
         let preserved_state = existing_state
-            .as_ref()
-            .map(|state| state.preserved_state.clone())
-            .unwrap_or_else(|| serde_json::json!({}));
+            .as_ref().map_or_else(|| serde_json::json!({}), |state| state.preserved_state.clone());
         let records = canonical_module_records(snapshot, &plugin_id);
         let schema_overlay = module
             .and_then(|module| module.schema_overlay.clone())
@@ -879,7 +878,7 @@ pub fn write_canonical_project(
         let state = PluginStateFile {
             plugin_id,
             namespaces,
-            enabled: module.map(|module| module.enabled).unwrap_or(true),
+            enabled: module.is_none_or(|module| module.enabled),
             data_version: module.map(|module| module.version).unwrap_or_default(),
             schema_version: module.map(|module| module.version).unwrap_or_default(),
             schema_checksum,
@@ -1064,9 +1063,7 @@ pub(crate) fn write_canonical_plugin(
         })
         .collect::<Vec<_>>();
     let preserved_state = existing_state
-        .as_ref()
-        .map(|state| state.preserved_state.clone())
-        .unwrap_or_else(|| serde_json::json!({}));
+        .as_ref().map_or_else(|| serde_json::json!({}), |state| state.preserved_state.clone());
     let records = canonical_module_records(snapshot, plugin_id);
     let schema_overlay = module
         .and_then(|module| module.schema_overlay.clone())
@@ -1080,7 +1077,7 @@ pub(crate) fn write_canonical_plugin(
         &PluginStateFile {
             plugin_id: plugin_id.into(),
             namespaces,
-            enabled: module.map(|module| module.enabled).unwrap_or(true),
+            enabled: module.is_none_or(|module| module.enabled),
             data_version: module.map(|module| module.version).unwrap_or_default(),
             schema_version: module.map(|module| module.version).unwrap_or_default(),
             schema_checksum,
@@ -1115,7 +1112,7 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
             .map_err(|error| codec_error(&entities_dir, "entities.read", error))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| codec_error(&entities_dir, "entities.read", error))?;
-        entries.sort_by_key(|entry| entry.file_name());
+        entries.sort_by_key(std::fs::DirEntry::file_name);
         let mut names = BTreeSet::new();
         for entry in entries {
             let name = entry.file_name().to_string_lossy().into_owned();
@@ -1201,7 +1198,7 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
                     .map_err(|error| codec_error(&fields_dir, "fields.read", error))?
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|error| codec_error(&fields_dir, "fields.read", error))?;
-                field_entries.sort_by_key(|entry| entry.file_name());
+                field_entries.sort_by_key(std::fs::DirEntry::file_name);
                 let mut field_names = BTreeSet::new();
                 for entry in field_entries {
                     let filename = entry.file_name().to_string_lossy().into_owned();
@@ -1410,7 +1407,7 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
             .map_err(|error| codec_error(&plugins_dir, "plugins.read", error))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| codec_error(&plugins_dir, "plugins.read", error))?;
-        entries.sort_by_key(|entry| entry.file_name());
+        entries.sort_by_key(std::fs::DirEntry::file_name);
         let mut plugin_paths = BTreeSet::new();
         for entry in entries {
             let filename = entry.file_name().to_string_lossy().into_owned();
@@ -1621,7 +1618,7 @@ where
         .map_err(|error| codec_error(&directory, "directory.read", error))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| codec_error(&directory, "directory.read", error))?;
-    entries.sort_by_key(|entry| entry.file_name());
+    entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
         if is_ignored_metadata_entry(&name) {
@@ -1660,7 +1657,7 @@ fn validate_entity_directory(root: &Path, entity_dir: &Path) -> Result<(), CoreE
         .map_err(|error| codec_error(entity_dir, "entity.read", error))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| codec_error(entity_dir, "entity.read", error))?;
-    entries.sort_by_key(|entry| entry.file_name());
+    entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
         if is_ignored_metadata_entry(&name) {
@@ -1708,7 +1705,7 @@ fn validate_fields_directory(directory: &Path) -> Result<(), CoreError> {
         .map_err(|error| codec_error(directory, "fields.read", error))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| codec_error(directory, "fields.read", error))?;
-    entries.sort_by_key(|entry| entry.file_name());
+    entries.sort_by_key(std::fs::DirEntry::file_name);
     let mut names = BTreeSet::new();
     for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -1809,7 +1806,7 @@ fn collect_files(root: &Path, directory: &Path, paths: &mut Vec<PathBuf>) -> Res
         .map_err(|error| codec_error(directory, "source.read", error))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| codec_error(directory, "source.read", error))?;
-    entries.sort_by_key(|entry| entry.file_name());
+    entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
         if is_ignored_metadata_entry(&name) {
@@ -1840,7 +1837,7 @@ pub fn normalized_project_path(root: &Path, relative: &str) -> Result<PathBuf, C
         || relative.contains('\\')
         || relative.contains('\0')
         || relative.starts_with('/')
-        || relative.split('/').any(|component| component.is_empty())
+        || relative.split('/').any(str::is_empty)
     {
         return Err(codec_error(
             root,
@@ -1924,7 +1921,7 @@ fn validate_component(value: &str, path: &Path, code: &str) -> Result<(), CoreEr
         || value.contains('/')
         || value.contains('\\')
         || value.contains('\0')
-        || value.chars().any(|character| character.is_control())
+        || value.chars().any(char::is_control)
         || !value.chars().all(|character| {
             character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
         })
@@ -2027,7 +2024,7 @@ pub fn write_checkpoint_manifest(
             .map_err(|error| codec_error(&temporary, "checkpoint.write", error.to_string()))?;
         output
             .write_all(&bytes)
-            .and_then(|_| output.sync_all())
+            .and_then(|()| output.sync_all())
             .map_err(|error| codec_error(&temporary, "checkpoint.write", error.to_string()))?;
         drop(output);
         crate::sync::replace_staged_file(&temporary, &path)
@@ -2040,6 +2037,7 @@ pub fn write_checkpoint_manifest(
     result
 }
 
+#[must_use]
 pub fn canonical_markdown(body: &str) -> String {
     let mut normalized = body.replace("\r\n", "\n").replace('\r', "\n");
     if !normalized.ends_with('\n') {

@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 use super::{current_info, with_read_project, SharedCore, ATLAS_STUDIO_PROGRESS_EVENT};
 
-const SESSION_IDLE: Duration = Duration::from_secs(15 * 60);
+const SESSION_IDLE: Duration = Duration::from_mins(15);
 const MAX_SESSIONS: usize = 4;
 const MAX_PREPARED_SCENES: usize = 4;
 const MAX_WAITING_TILES: u32 = 24;
@@ -717,7 +717,7 @@ pub async fn project_atlas_studio_open(
     let render = capture
         .scene
         .as_render_request(STUDIO_TILE_SIZE)
-        .and_then(|request| request.normalize())
+        .and_then(daena_atlas::request::AtlasRenderRequest::normalize)
         .map_err(|error| format!("{}: {}", error.code, error.message))?;
     let prepared = studio
         .lock()
@@ -802,7 +802,7 @@ pub async fn project_atlas_studio_status(
         .lock()
         .map_err(|_| "atlas studio state is unavailable".to_string())?
         .status(&session_token)?;
-    if let Ok(current) = with_read_project(state, |project| project.content_generation()).await {
+    if let Ok(current) = with_read_project(state, daena_core::ProjectStore::content_generation).await {
         status.current_content_generation = Some(current);
         if current > status.captured_content_generation {
             status.error_code = Some(daena_atlas::studio::CODE_STUDIO_STALE.into());

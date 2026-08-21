@@ -52,6 +52,7 @@ const GLYPHS: [(u8, [u8; 7]); 37] = [
     (b'r', [0, 0, 0x16, 0x19, 0x10, 0x10, 0x10]),
 ];
 
+#[must_use]
 pub fn font_hash() -> String {
     let mut bytes = FONT_ID.as_bytes().to_vec();
     for (ch, rows) in GLYPHS {
@@ -243,8 +244,7 @@ fn glyph_for(ch: char) -> [u8; 7] {
     GLYPHS
         .iter()
         .find(|(ch, _)| *ch == key)
-        .map(|(_, rows)| *rows)
-        .unwrap_or([0x1F, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1F])
+        .map_or([0x1F, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1F], |(_, rows)| *rows)
 }
 
 #[cfg(test)]

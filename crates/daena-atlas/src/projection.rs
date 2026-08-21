@@ -30,6 +30,7 @@ impl AtlasProjection {
         }
     }
 
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Equirectangular => EQUIRECTANGULAR_ID,
@@ -54,6 +55,7 @@ impl Default for AtlasExtent {
 }
 
 impl AtlasExtent {
+    #[must_use]
     pub const fn world() -> Self {
         Self {
             west_lon_micro: LON_MICRO_MIN,
@@ -63,6 +65,7 @@ impl AtlasExtent {
         }
     }
 
+    #[must_use]
     pub fn is_world(self) -> bool {
         self.west_lon_micro == LON_MICRO_MIN
             && self.east_lon_micro == 180_000_000
@@ -105,6 +108,7 @@ impl AtlasExtent {
         Ok(())
     }
 
+    #[must_use]
     pub fn lon_span_micro(self) -> i64 {
         let west = wrap_lon_micro(i64::from(self.west_lon_micro));
         if self.east_lon_micro == 180_000_000 {
@@ -118,16 +122,19 @@ impl AtlasExtent {
         span
     }
 
+    #[must_use]
     pub fn lat_span_micro(self) -> i64 {
         i64::from(self.north_lat_micro) - i64::from(self.south_lat_micro)
     }
 
+    #[must_use]
     pub fn central_meridian_micro(self) -> i32 {
         wrap_lon_micro(
             i64::from(wrap_lon_micro(i64::from(self.west_lon_micro))) + self.lon_span_micro() / 2,
         )
     }
 
+    #[must_use]
     pub fn contains_lon(self, lon_micro: i32) -> bool {
         let lon = wrap_lon_micro(i64::from(lon_micro));
         let west = wrap_lon_micro(i64::from(self.west_lon_micro));
@@ -138,6 +145,7 @@ impl AtlasExtent {
         offset < self.lon_span_micro()
     }
 
+    #[must_use]
     pub fn contains_lat(self, lat_micro: i32) -> bool {
         let lat = clamp_lat_micro(i64::from(lat_micro));
         (lat >= self.south_lat_micro && lat < self.north_lat_micro)
@@ -172,6 +180,7 @@ impl ProjectedView {
         })
     }
 
+    #[must_use]
     pub fn pixel_center(self, x: u32, y: u32) -> (i32, i32) {
         match self.projection {
             AtlasProjection::Equirectangular => (
@@ -182,6 +191,7 @@ impl ProjectedView {
         }
     }
 
+    #[must_use]
     pub fn project(self, lon_micro: i32, lat_micro: i32) -> Option<(i32, i32)> {
         if !self.extent.contains_lon(lon_micro) || !self.extent.contains_lat(lat_micro) {
             return None;
@@ -209,6 +219,7 @@ impl ProjectedView {
         }
     }
 
+    #[must_use]
     pub fn aspect_num_den(self) -> (u128, u128) {
         match self.projection {
             AtlasProjection::Equirectangular => (
@@ -270,6 +281,7 @@ impl ProjectedView {
     }
 }
 
+#[must_use]
 pub fn wrap_lon_micro(value: i64) -> i32 {
     let span = LON_MICRO_SPAN;
     let mut wrapped = (value - i64::from(LON_MICRO_MIN)).rem_euclid(span);
@@ -279,10 +291,12 @@ pub fn wrap_lon_micro(value: i64) -> i32 {
     (wrapped + i64::from(LON_MICRO_MIN)) as i32
 }
 
+#[must_use]
 pub fn clamp_lat_micro(value: i64) -> i32 {
     value.clamp(i64::from(LAT_MICRO_MIN), 90_000_000) as i32
 }
 
+#[must_use]
 pub fn pixel_center_lon_micro(x: u32, width: u32) -> i32 {
     ProjectedView {
         projection: AtlasProjection::Equirectangular,
@@ -293,6 +307,7 @@ pub fn pixel_center_lon_micro(x: u32, width: u32) -> i32 {
     .equirect_lon(x, width)
 }
 
+#[must_use]
 pub fn pixel_center_lat_micro(y: u32, height: u32) -> i32 {
     ProjectedView {
         projection: AtlasProjection::Equirectangular,
@@ -303,6 +318,7 @@ pub fn pixel_center_lat_micro(y: u32, height: u32) -> i32 {
     .equirect_lat(y, height)
 }
 
+#[must_use]
 pub fn lon_to_column_ppm(lon_micro: i32, width: u32) -> (u32, u32, u32) {
     let width = width.max(1);
     let span = i64::from(width) * 1_000_000;
@@ -315,6 +331,7 @@ pub fn lon_to_column_ppm(lon_micro: i32, width: u32) -> (u32, u32, u32) {
     (col, next, frac)
 }
 
+#[must_use]
 pub fn lat_to_row_ppm(lat_micro: i32, height: u32) -> (u32, u32, u32) {
     let height = height.max(1);
     let last = height - 1;
@@ -332,6 +349,7 @@ pub fn lat_to_row_ppm(lat_micro: i32, height: u32) -> (u32, u32, u32) {
     (row, next, frac)
 }
 
+#[must_use]
 pub fn bilinear_i32(c00: i32, c10: i32, c01: i32, c11: i32, frac_x: u32, frac_y: u32) -> i32 {
     let fx = i128::from(frac_x.min(1_000_000));
     let fy = i128::from(frac_y.min(1_000_000));

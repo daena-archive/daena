@@ -54,6 +54,7 @@ pub struct CoreService {
 }
 
 impl CoreService {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

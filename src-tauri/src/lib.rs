@@ -53,7 +53,7 @@ type SharedAtlasStudio = Arc<Mutex<crate::atlas_studio::AtlasStudioManager>>;
 type SharedExternalImports = Arc<Mutex<crate::external_import_jobs::ExternalImportJobManager>>;
 type SharedSettings = Arc<Mutex<SettingsStore>>;
 const READ_CONNECTION_POOL_CAPACITY: usize = 4;
-const PHYSICAL_JOB_TTL: Duration = Duration::from_secs(15 * 60);
+const PHYSICAL_JOB_TTL: Duration = Duration::from_mins(15);
 const HISTORICAL_CACHE_CAPACITY: usize = 16;
 static HISTORICAL_EPOCH_CACHE: OnceLock<Mutex<BTreeMap<String, serde_json::Value>>> =
     OnceLock::new();
@@ -332,8 +332,7 @@ fn current_info(core: &SharedCore) -> Result<Option<ProjectInfo>, String> {
 pub(crate) fn ensure_project_ai_enabled(project_root: &str) -> Result<(), String> {
     let path = std::path::Path::new(project_root).join("project.json");
     let enabled = daena_core::read_json::<daena_core::ProjectManifest>(&path)
-        .map(|manifest| manifest.ai_enabled)
-        .unwrap_or(false);
+        .is_ok_and(|manifest| manifest.ai_enabled);
     if !enabled {
         return Err("AI is disabled for this project. Enable AI in Settings first.".into());
     }
@@ -1143,8 +1142,7 @@ fn start_project_watcher(
         let app_export_pending = current_info(&watched_core)
             .ok()
             .flatten()
-            .map(|info| info.sync.state == "pending")
-            .unwrap_or(false);
+            .is_some_and(|info| info.sync.state == "pending");
         if !paths.is_empty() && app_export_pending {
             continue;
         }
@@ -1233,7 +1231,7 @@ fn watched_portable_path(root: &std::path::Path, path: &std::path::Path) -> Opti
         || relative.components().any(|component| {
             matches!(
                 component.as_os_str().to_str(),
-                Some(".daena") | Some(".git")
+                Some(".daena" | ".git")
             )
         })
     {
@@ -1333,12 +1331,12 @@ fn bundled_maps_asset(path: &str) -> Option<(Vec<u8>, &'static str)> {
         .and_then(|value| value.to_str())
     {
         Some("html") => "text/html",
-        Some("js") | Some("mjs") => "text/javascript",
+        Some("js" | "mjs") => "text/javascript",
         Some("css") => "text/css",
-        Some("json") | Some("webmanifest") => "application/json",
+        Some("json" | "webmanifest") => "application/json",
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("jpg" | "jpeg") => "image/jpeg",
         Some("webp") => "image/webp",
         Some("woff") => "font/woff",
         Some("woff2") => "font/woff2",
@@ -1391,9 +1389,7 @@ fn plugin_asset_response(
         }
         let ui_root = package_root
             .join(entrypoint)
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| package_root.to_path_buf());
+            .parent().map_or_else(|| package_root.to_path_buf(), Path::to_path_buf);
         let requested = package_root.join(relative);
         let Ok(canonical_ui_root) = ui_root.canonicalize() else {
             return tauri::http::Response::builder()
@@ -1415,12 +1411,12 @@ fn plugin_asset_response(
         }
         let content_type = match requested.extension().and_then(|value| value.to_str()) {
             Some("html") => "text/html",
-            Some("js") | Some("mjs") => "text/javascript",
+            Some("js" | "mjs") => "text/javascript",
             Some("css") => "text/css",
             Some("json") => "application/json",
             Some("svg") => "image/svg+xml",
             Some("png") => "image/png",
-            Some("jpg") | Some("jpeg") => "image/jpeg",
+            Some("jpg" | "jpeg") => "image/jpeg",
             Some("webp") => "image/webp",
             Some("woff") => "font/woff",
             Some("woff2") => "font/woff2",
@@ -1433,59 +1429,57 @@ fn plugin_asset_response(
                 .unwrap();
         };
         (bytes, content_type)
+    } else if plugin_id == "daena.maps" {
+        if let Some((bytes, content_type)) = bundled_maps_asset(path) {
+            (bytes, content_type)
+        } else {
+            return tauri::http::Response::builder()
+                .status(404)
+                .body(Vec::new())
+                .unwrap();
+        }
     } else {
-        if plugin_id == "daena.maps" {
-            if let Some((bytes, content_type)) = bundled_maps_asset(path) {
-                (bytes, content_type)
-            } else {
+        let (bytes, content_type): (&[u8], &str) = match (plugin_id, path) {
+            ("daena.lore", "/dist/ui/index.html") => (
+                include_bytes!("../plugin-assets/lore/index.html"),
+                "text/html",
+            ),
+            ("daena.timeline", "/dist/ui/index.html") => (
+                include_bytes!("../plugin-assets/timeline/index.html"),
+                "text/html",
+            ),
+            ("daena.writing", "/dist/ui/index.html") => (
+                include_bytes!("../plugin-assets/writing/index.html"),
+                "text/html",
+            ),
+            (_, "/dist/ui/plugin.js") => (
+                include_bytes!("../plugin-assets/shared/plugin.js"),
+                "text/javascript",
+            ),
+            (_, "/dist/ui/plugin-sdk.js") => (
+                include_bytes!("../../packages/plugin-sdk/dist/index.js"),
+                "text/javascript",
+            ),
+            (_, "/dist/ui/generated.js") => (
+                include_bytes!("../../packages/plugin-sdk/dist/generated.js"),
+                "text/javascript",
+            ),
+            (_, "/dist/ui/maps.js") => (
+                include_bytes!("../../packages/plugin-sdk/dist/maps.js"),
+                "text/javascript",
+            ),
+            (_, "/dist/ui/plugin.css") => (
+                include_bytes!("../plugin-assets/shared/plugin.css"),
+                "text/css",
+            ),
+            _ => {
                 return tauri::http::Response::builder()
                     .status(404)
                     .body(Vec::new())
-                    .unwrap();
+                    .unwrap()
             }
-        } else {
-            let (bytes, content_type): (&[u8], &str) = match (plugin_id, path) {
-                ("daena.lore", "/dist/ui/index.html") => (
-                    include_bytes!("../plugin-assets/lore/index.html"),
-                    "text/html",
-                ),
-                ("daena.timeline", "/dist/ui/index.html") => (
-                    include_bytes!("../plugin-assets/timeline/index.html"),
-                    "text/html",
-                ),
-                ("daena.writing", "/dist/ui/index.html") => (
-                    include_bytes!("../plugin-assets/writing/index.html"),
-                    "text/html",
-                ),
-                (_, "/dist/ui/plugin.js") => (
-                    include_bytes!("../plugin-assets/shared/plugin.js"),
-                    "text/javascript",
-                ),
-                (_, "/dist/ui/plugin-sdk.js") => (
-                    include_bytes!("../../packages/plugin-sdk/dist/index.js"),
-                    "text/javascript",
-                ),
-                (_, "/dist/ui/generated.js") => (
-                    include_bytes!("../../packages/plugin-sdk/dist/generated.js"),
-                    "text/javascript",
-                ),
-                (_, "/dist/ui/maps.js") => (
-                    include_bytes!("../../packages/plugin-sdk/dist/maps.js"),
-                    "text/javascript",
-                ),
-                (_, "/dist/ui/plugin.css") => (
-                    include_bytes!("../plugin-assets/shared/plugin.css"),
-                    "text/css",
-                ),
-                _ => {
-                    return tauri::http::Response::builder()
-                        .status(404)
-                        .body(Vec::new())
-                        .unwrap()
-                }
-            };
-            (bytes.to_vec(), content_type)
-        }
+        };
+        (bytes.to_vec(), content_type)
     };
     let manifest = package_manifest.cloned().or_else(|| {
         let manifest = match plugin_id {
@@ -1506,9 +1500,7 @@ fn plugin_asset_response(
     });
     let csp = manifest
         .as_ref()
-        .and_then(webview_policy)
-        .map(|policy| policy.csp)
-        .unwrap_or_else(|| "default-src 'none'".into());
+        .and_then(webview_policy).map_or_else(|| "default-src 'none'".into(), |policy| policy.csp);
     tauri::http::Response::builder()
         .status(200)
         .header("Content-Type", content_type)
@@ -1735,9 +1727,7 @@ fn plugin_protocol_response(
             } else {
                 let project_id = project_id.unwrap_or_default();
                 let current_project = current_info(core).ok().flatten().map(|info| info.root);
-                if current_project.as_deref() != Some(project_id) {
-                    Err("plugin bootstrap project mismatch".into())
-                } else {
+                if current_project.as_deref() == Some(project_id) {
                     let host = plugins
                         .lock()
                         .map_err(|_| "plugin host lock poisoned".to_string());
@@ -1762,6 +1752,8 @@ fn plugin_protocol_response(
                         })
                         .map_err(|error| error.to_string())
                     })
+                } else {
+                    Err("plugin bootstrap project mismatch".into())
                 }
             }
         }
@@ -2196,9 +2188,7 @@ fn dispatch_binary_asset_rpc(
                 .into_iter()
                 .find(|field| {
                     field.namespace == daena_core::maps::MAP_NAMESPACE && field.key == "map"
-                })
-                .map(|field| field.value)
-                .unwrap_or_else(|| {
+                }).map_or_else(|| {
                     serde_json::json!({
                         "schemaVersion": 1,
                         "provider": {"id": "azgaar-fmg", "adapterVersion": 1, "sourceFormat": "fmg-map"},
@@ -2206,7 +2196,7 @@ fn dispatch_binary_asset_rpc(
                         "previewAssetId": null,
                         "defaultView": {"center": [0.5, 0.5], "zoom": 1}
                     })
-                });
+                }, |field| field.value);
             if let Some(object) = descriptor.as_object_mut() {
                 object.insert(
                     "sourceAssetId".into(),
@@ -3380,9 +3370,7 @@ where
                 .map_err(|_| CoreError::Conflict("read connection pool poisoned".into()))?;
             pool.retain(|project| project.database_epoch() == database_epoch);
             pool.pop()
-        }
-        .map(Ok)
-        .unwrap_or_else(|| ProjectStore::open_read_only(&root))?;
+        }.map_or_else(|| ProjectStore::open_read_only(&root), Ok)?;
         let result = operation(&project);
         let mut pool = session
             .read_pool
@@ -3824,7 +3812,7 @@ fn dispatch_host_rpc(
             "ai.request.poll" => {
                 return serde_json::to_value(
                     ai::poll_ai_events(&context.ai_runtime, target)
-                        .map_err(|error| error.to_string())?,
+                        .map_err(|error| error.clone())?,
                 )
                 .map_err(|error| error.to_string())
             }
@@ -4099,9 +4087,7 @@ async fn sync_project_usage_and_wait(
             .iter()
             .filter(|(manifest, _)| {
                 states
-                    .get(&manifest.id)
-                    .map(|(enabled, _)| *enabled)
-                    .unwrap_or_else(|| manifest.enabled_by_default.unwrap_or(true))
+                    .get(&manifest.id).map_or_else(|| manifest.enabled_by_default.unwrap_or(true), |(enabled, _)| *enabled)
             })
             .map(|(manifest, digest)| {
                 let current = states
@@ -4267,8 +4253,8 @@ fn core_migrations(
             Ok(Migration {
                 id: migration.id.clone(),
                 module_id: manifest.id.clone(),
-                from: migration.from as i64,
-                to: migration.to as i64,
+                from: i64::from(migration.from),
+                to: i64::from(migration.to),
                 operations,
                 recovery: migration.recovery.clone(),
                 package_digest: package_digest.into(),
@@ -4542,7 +4528,7 @@ async fn module_enable(
             }
         }
         let migrations = core_migrations(&manifest, &package_digest)
-            .map_err(|error| CoreError::Validation(error.to_string()))?;
+            .map_err(|error| CoreError::Validation(error.clone()))?;
         let current = project.get_module_version(&id)?;
         let pending = migrations
             .iter()
@@ -4728,7 +4714,7 @@ async fn plugin_upgrade(
             &plugin_id,
             Some(&old_version),
             Some(&version),
-            current as i64,
+            i64::from(current),
         )?;
         let requested = target_manifest.capabilities.clone();
         let mut next_grants = old_grants
@@ -4753,9 +4739,9 @@ async fn plugin_upgrade(
                 .map_err(|error| CoreError::Conflict(error.to_string()))?;
         }
         let migrations = core_migrations(&target_manifest, &target_digest)
-            .map_err(|error| CoreError::Validation(error.to_string()))?
+            .map_err(|error| CoreError::Validation(error.clone()))?
             .into_iter()
-            .filter(|migration| migration.from >= current as i64)
+            .filter(|migration| migration.from >= i64::from(current))
             .collect::<Vec<_>>();
         if let Err(error) = project.apply_migrations(&migrations) {
             let _ = project.restore_plugin_backup(&backup);
@@ -4847,7 +4833,7 @@ async fn plugin_rollback(
             &plugin_id,
             Some(&current_version),
             Some(&version),
-            current as i64,
+            i64::from(current),
         )?;
         let result = plugins
             .lock()
@@ -5059,7 +5045,7 @@ async fn plugin_admin_view(
                     "rollbackAvailable": false,
                 }));
             } else if let (Some(project), Some(selected)) = (project, selected_version.as_deref()) {
-                for version in versions.iter_mut() {
+                for version in &mut versions {
                     let candidate = version
                         .get("version")
                         .and_then(|value| value.as_str())
@@ -5623,14 +5609,20 @@ fn dispatch_module_rpc(
                 &payload_string(&payload, "ownerEntityId")?,
                 record_owner_entity_types.as_deref(),
             )?;
-            let limit = payload
-                .get("limit")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(50) as usize;
-            let offset = payload
-                .get("offset")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or_default() as usize;
+            let limit = usize::try_from(
+                payload
+                    .get("limit")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(50),
+            )
+            .unwrap_or(usize::MAX);
+            let offset = usize::try_from(
+                payload
+                    .get("offset")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or_default(),
+            )
+            .unwrap_or(usize::MAX);
             serde_json::to_value(
                 project.list_module_records_with(
                     module_id,
@@ -6014,7 +6006,7 @@ fn dispatch_module_rpc(
                 },
                 request_id,
             )?;
-            location.label = created.name.clone();
+            location.label.clone_from(&created.name);
             project.upsert_map_location(created.id.clone(), location, None)?;
             serde_json::to_value(created).map_err(|error| CoreError::Validation(error.to_string()))
         }
@@ -6390,7 +6382,7 @@ fn git_tool_info() -> GitToolInfo {
 
 #[tauri::command]
 async fn project_git_status(state: tauri::State<'_, SharedCore>) -> Result<GitStatus, String> {
-    with_read_project(state, |project| project.git_status()).await
+    with_read_project(state, daena_core::ProjectStore::git_status).await
 }
 
 #[tauri::command]
@@ -6398,7 +6390,7 @@ async fn project_git_preflight(
     state: tauri::State<'_, SharedCore>,
 ) -> Result<GitPreflight, String> {
     flush_project_checkpoint(state.clone(), "git preflight").await?;
-    with_read_project(state, |project| project.git_preflight_after_checkpoint()).await
+    with_read_project(state, daena_core::ProjectStore::git_preflight_after_checkpoint).await
 }
 
 #[tauri::command]
@@ -6406,7 +6398,7 @@ async fn project_git_staging_preview(
     state: tauri::State<'_, SharedCore>,
 ) -> Result<GitPreflight, String> {
     flush_project_checkpoint(state.clone(), "git staging preview").await?;
-    with_read_project(state, |project| project.git_preflight_after_checkpoint()).await
+    with_read_project(state, daena_core::ProjectStore::git_preflight_after_checkpoint).await
 }
 
 #[tauri::command]
@@ -6416,7 +6408,7 @@ async fn project_git_init(state: tauri::State<'_, SharedCore>) -> Result<GitStat
 
 #[tauri::command]
 async fn project_git_log(state: tauri::State<'_, SharedCore>) -> Result<Vec<GitLogEntry>, String> {
-    with_read_project(state, |project| project.git_log()).await
+    with_read_project(state, daena_core::ProjectStore::git_log).await
 }
 
 #[tauri::command]
@@ -6509,7 +6501,7 @@ async fn project_git_reset_hard(
 async fn project_git_remote_list(
     state: tauri::State<'_, SharedCore>,
 ) -> Result<Vec<GitRemote>, String> {
-    with_read_project(state, |project| project.git_remote_list()).await
+    with_read_project(state, daena_core::ProjectStore::git_remote_list).await
 }
 
 #[tauri::command]
@@ -6686,7 +6678,7 @@ async fn project_create_map(
 
 #[tauri::command]
 async fn project_list_entities(state: tauri::State<'_, SharedCore>) -> Result<Vec<Entity>, String> {
-    with_read_project(state, |project| project.list_entities()).await
+    with_read_project(state, daena_core::ProjectStore::list_entities).await
 }
 
 #[tauri::command]
@@ -7377,7 +7369,7 @@ async fn project_import_image_map_file(
         .as_deref()
     {
         Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("jpg" | "jpeg") => "image/jpeg",
         Some("svg") => "image/svg+xml",
         _ => return Err("Choose a PNG, JPEG, or SVG image".into()),
     }
@@ -7610,8 +7602,7 @@ fn project_physical_cancel(
     let session_matches = manager
         .jobs
         .get(&job_id)
-        .map(|job| manager.active_session_matches(&project_id, &job.session_id))
-        .unwrap_or(false);
+        .is_some_and(|job| manager.active_session_matches(&project_id, &job.session_id));
     if !session_matches {
         return Err("physical job was not found, expired, or belongs to another session".into());
     }
@@ -8717,7 +8708,7 @@ async fn project_physical_materialize_events(
         let generator_version = generation
             .get("version")
             .and_then(serde_json::Value::as_u64)
-            .unwrap_or(daena_physical::GENERATOR_VERSION as u64);
+            .unwrap_or(u64::from(daena_physical::GENERATOR_VERSION));
         let retry_index = generation
             .get("retryIndex")
             .and_then(serde_json::Value::as_u64)

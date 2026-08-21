@@ -53,6 +53,7 @@ impl DetailLevel {
         }
     }
 
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Standard => "standard",
@@ -61,6 +62,7 @@ impl DetailLevel {
         }
     }
 
+    #[must_use]
     pub const fn lattice_factor(self) -> u32 {
         match self {
             Self::Standard => 4,
@@ -90,6 +92,7 @@ impl AtlasFormat {
         }
     }
 
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Png => "png",
@@ -98,6 +101,7 @@ impl AtlasFormat {
         }
     }
 
+    #[must_use]
     pub const fn encoder_id(self) -> &'static str {
         match self {
             Self::Png => "png-0.17-fast-nofilter",
@@ -167,6 +171,7 @@ impl AtlasRenderRequest {
         })
     }
 
+    #[must_use]
     pub fn layer_enabled(&self, role: &str) -> bool {
         self.active_layer_ids.iter().any(|id| id == role)
     }
@@ -247,12 +252,14 @@ impl AtlasRenderRequest {
         Ok(self)
     }
 
+    #[must_use]
     pub fn tile_count(&self) -> u32 {
         let tiles_x = self.width_px.div_ceil(TILE_SIZE);
         let tiles_y = self.height_px.div_ceil(TILE_SIZE);
         tiles_x.saturating_mul(tiles_y)
     }
 
+    #[must_use]
     pub fn estimate(&self) -> ResourceEstimate {
         let pixels = u64::from(self.width_px) * u64::from(self.height_px);
         ResourceEstimate {
@@ -278,6 +285,7 @@ pub struct ResourceEstimate {
     pub print_height_inches_milli: u64,
 }
 
+#[must_use]
 pub fn physical_layer_role(layer_id: &str) -> Option<&'static str> {
     match layer_id {
         "ocean" | "bathymetry" | "shelves" => Some("ocean"),

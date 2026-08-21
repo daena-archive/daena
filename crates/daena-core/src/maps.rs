@@ -467,7 +467,7 @@ struct ProviderSpec {
 }
 
 fn validate_vector_generation(value: &Value) -> Result<(), CoreError> {
-    vector::validate_generation(value).map(|_| ())
+    vector::validate_generation(value)
 }
 
 fn validate_physical_generation(value: &Value) -> Result<(), CoreError> {
@@ -599,7 +599,7 @@ fn date(value: &Value, label: &str) -> Result<(), CoreError> {
     if object.get("calendar").and_then(Value::as_str) != Some("gregorian")
         || !matches!(
             object.get("era").and_then(Value::as_str),
-            Some("BCE") | Some("CE")
+            Some("BCE" | "CE")
         )
         || object.get("year").and_then(Value::as_i64).is_none()
         || !matches!(
@@ -697,9 +697,7 @@ fn anchor(value: &Value) -> Result<Anchor, CoreError> {
                 }
                 VECTOR_PROVIDER => {
                     feature_kind == "geojson-feature"
-                        && Uuid::parse_str(feature_id)
-                            .ok()
-                            .is_some_and(|uuid| uuid.to_string() == *feature_id)
+                        && Uuid::parse_str(feature_id).is_ok_and(|uuid| uuid.to_string() == *feature_id)
                 }
                 _ => false,
             };

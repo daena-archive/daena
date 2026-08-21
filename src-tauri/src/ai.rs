@@ -1081,7 +1081,7 @@ fn build_retrieval_context_with_semantic(
                         summary: None,
                         entity_id: Some(entity_id.clone()),
                         document_id: Some(document.id.clone()),
-                        canonical_path: Some(format!("entities/{}/document.md", entity_id)),
+                        canonical_path: Some(format!("entities/{entity_id}/document.md")),
                         revision: document.revision,
                         content_hash: hash_text(&document.body),
                         byte_start: Some(0),
@@ -1170,7 +1170,7 @@ fn retrieval_source_ids(
                 document.id,
                 RetrievalSource {
                     entity_id: Some(entity_id.clone()),
-                    canonical_path: Some(format!("entities/{}/document.md", entity_id)),
+                    canonical_path: Some(format!("entities/{entity_id}/document.md")),
                     summary: None,
                 },
             );
@@ -1396,8 +1396,7 @@ fn parse_loopback_endpoint(endpoint: &str) -> Result<LocalEndpoint, String> {
     };
     let ip_is_local = host
         .parse::<IpAddr>()
-        .map(|ip| ip.is_loopback())
-        .unwrap_or(false);
+        .is_ok_and(|ip| ip.is_loopback());
     if host != "localhost" && host != "localhost.localdomain" && !ip_is_local {
         return Err("Local providers require a loopback endpoint".to_string());
     }
@@ -1656,7 +1655,7 @@ pub fn ai_provider_credential_status(
 
 /// Imports a key from the process environment into OS-backed storage. The key
 /// is intentionally not a command argument, so it never crosses the frontend
-/// or plugin bridge. Launch the app with DAENA_REMOTE_API_KEY set once, then
+/// or plugin bridge. Launch the app with `DAENA_REMOTE_API_KEY` set once, then
 /// remove it from the environment.
 #[tauri::command]
 pub fn ai_provider_import_credential(
@@ -2111,9 +2110,7 @@ fn build_generation_prompt(
     selection: &str,
     output_contract: Option<&serde_json::Value>,
 ) -> (String, String) {
-    let contract = output_contract
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "text-only; preserve the meaning of the selection.".into());
+    let contract = output_contract.map_or_else(|| "text-only; preserve the meaning of the selection.".into(), std::string::ToString::to_string);
     let output_rules = if output_contract.is_some() {
         "Return exactly one JSON value matching [OUTPUT_CONTRACT]. Do not include Markdown fences or commentary."
     } else {
@@ -2432,7 +2429,7 @@ pub fn start_ai_request_mode(
         }
     }
     let request_id = Uuid::new_v4().to_string();
-    caller.request_id = request_id.clone();
+    caller.request_id.clone_from(&request_id);
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     register_request(&runtime, &request_id, cancelled.clone())
         .map_err(|error| error.to_string())?;
@@ -2582,19 +2579,16 @@ pub fn start_ai_request_mode(
                     return;
                 }
             };
-        let (status, mut bytes) = match read_http_headers(&mut stream) {
-            Ok(response) => response,
-            Err(_) => {
-                emit(AiStreamEvent {
-                    sequence: 0,
-                    request_id: request_id_for_task.clone(),
-                    phase: "failed".into(),
-                    delta: None,
-                    output: None,
-                    error: Some(AiError::InvalidProviderResponse.to_string()),
-                });
-                return;
-            }
+        let (status, mut bytes) = if let Ok(response) = read_http_headers(&mut stream) { response } else {
+            emit(AiStreamEvent {
+                sequence: 0,
+                request_id: request_id_for_task.clone(),
+                phase: "failed".into(),
+                delta: None,
+                output: None,
+                error: Some(AiError::InvalidProviderResponse.to_string()),
+            });
+            return;
         };
         if status / 100 != 2 {
             emit(AiStreamEvent {

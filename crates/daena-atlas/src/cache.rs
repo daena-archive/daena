@@ -28,6 +28,7 @@ pub enum CacheLookup {
 }
 
 impl CacheLookup {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Off => "off",
@@ -71,7 +72,7 @@ fn root_lock(root: &Path) -> Arc<Mutex<()>> {
     let locks = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut map = locks
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     map.entry(root.to_path_buf())
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
@@ -83,14 +84,13 @@ impl AtlasDiskCache {
         let io_lock = root_lock(&root);
         let _guard = io_lock
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         fs::create_dir_all(&root).map_err(|error| {
             AtlasError::new(crate::CODE_RENDER_FAILED, format!("atlas cache: {error}"))
         })?;
         if root
             .symlink_metadata()
-            .map(|meta| meta.file_type().is_symlink())
-            .unwrap_or(false)
+            .is_ok_and(|meta| meta.file_type().is_symlink())
         {
             return Err(AtlasError::invalid(
                 "atlas cache root must not be a symlink",
@@ -141,23 +141,20 @@ impl AtlasDiskCache {
         let _guard = self
             .io_lock
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let hex = hex_key(key);
         let path = self.root.join(format!("{hex}.bin"));
-        match read_entry(&path, kind, key) {
-            Ok(payload) => {
-                self.touch(&hex, kind, payload.len() as u64);
+        if let Ok(payload) = read_entry(&path, kind, key) {
+            self.touch(&hex, kind, payload.len() as u64);
+            let _ = self.persist_index();
+            CacheLookupResult::Hit(payload)
+        } else {
+            if path.exists() {
+                let _ = fs::remove_file(&path);
+                self.drop_entry(&hex);
                 let _ = self.persist_index();
-                CacheLookupResult::Hit(payload)
             }
-            Err(_) => {
-                if path.exists() {
-                    let _ = fs::remove_file(&path);
-                    self.drop_entry(&hex);
-                    let _ = self.persist_index();
-                }
-                CacheLookupResult::Miss
-            }
+            CacheLookupResult::Miss
         }
     }
 
@@ -165,7 +162,7 @@ impl AtlasDiskCache {
         let _guard = self
             .io_lock
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if payload.len() as u64 > self.max_entry_bytes {
             return Ok(());
         }
@@ -176,8 +173,7 @@ impl AtlasDiskCache {
         let dest = self.root.join(format!("{hex}.bin"));
         if dest
             .symlink_metadata()
-            .map(|meta| meta.file_type().is_symlink())
-            .unwrap_or(false)
+            .is_ok_and(|meta| meta.file_type().is_symlink())
         {
             return Err(AtlasError::invalid("atlas cache refused a symlink"));
         }
@@ -277,6 +273,7 @@ pub enum CacheLookupResult {
     Miss,
 }
 
+#[must_use]
 pub fn cache_key(parts: &[&[u8]]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     for part in parts {
@@ -293,8 +290,7 @@ fn hex_key(key: &[u8; 32]) -> String {
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 fn io_error(error: std::io::Error) -> AtlasError {
@@ -309,8 +305,7 @@ fn read_index(root: &Path) -> Option<CacheIndex> {
 fn read_entry(path: &Path, kind: u16, key: &[u8; 32]) -> Result<Vec<u8>, AtlasError> {
     if path
         .symlink_metadata()
-        .map(|meta| meta.file_type().is_symlink())
-        .unwrap_or(false)
+        .is_ok_and(|meta| meta.file_type().is_symlink())
     {
         return Err(AtlasError::invalid("atlas cache refused a symlink"));
     }
@@ -347,6 +342,7 @@ fn read_entry(path: &Path, kind: u16, key: &[u8; 32]) -> Result<Vec<u8>, AtlasEr
     Ok(payload.to_vec())
 }
 
+#[must_use]
 pub fn encode_residual(lattice_width: u32, lattice_height: u32, residual_mm: &[i32]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(12 + residual_mm.len() * 4);
     bytes.extend_from_slice(&lattice_width.to_le_bytes());
@@ -381,6 +377,7 @@ pub fn decode_residual(bytes: &[u8]) -> Result<(u32, u32, Vec<i32>), AtlasError>
     Ok((lattice_width, lattice_height, residual))
 }
 
+#[must_use]
 pub fn encode_artifact(png: &[u8], artifact: &[u8], provenance_json: &str) -> Vec<u8> {
     let provenance = provenance_json.as_bytes();
     let mut bytes = Vec::new();

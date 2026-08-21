@@ -56,7 +56,7 @@ impl ProjectSessionLock {
         };
         let mut file = file;
         file.write_all(format!("{}\n{}\n", std::process::id(), token).as_bytes())
-            .and_then(|_| file.sync_all())
+            .and_then(|()| file.sync_all())
             .map_err(|source| CoreError::Io {
                 operation: "write project session lock",
                 source,
@@ -139,7 +139,7 @@ impl SyncExporter {
         };
         lock_file
             .write_all(owner.as_bytes())
-            .and_then(|_| lock_file.sync_all())
+            .and_then(|()| lock_file.sync_all())
             .map_err(|source| CoreError::Io {
                 operation: "write project sync lock",
                 source,
@@ -228,7 +228,7 @@ impl SyncExporter {
             source,
         })?;
         let mut digest = Sha256::new();
-        let mut buffer = [0_u8; 128 * 1024];
+        let mut buffer = vec![0_u8; 128 * 1024];
         loop {
             let count =
                 std::io::Read::read(&mut input, &mut buffer).map_err(|source| CoreError::Io {
@@ -347,7 +347,7 @@ fn hash_file(path: &Path) -> Result<Option<String>, CoreError> {
         source,
     })?;
     let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 128 * 1024];
+    let mut buffer = vec![0_u8; 128 * 1024];
     loop {
         let count =
             std::io::Read::read(&mut file, &mut buffer).map_err(|source| CoreError::Io {

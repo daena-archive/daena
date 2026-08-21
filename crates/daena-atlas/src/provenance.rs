@@ -39,6 +39,7 @@ pub struct AtlasRenderProvenanceV1 {
 }
 
 impl AtlasRenderProvenanceV1 {
+    #[must_use]
     pub fn for_request(
         request: &AtlasRenderRequest,
         physical_identity: &[u8],
@@ -74,6 +75,7 @@ impl AtlasRenderProvenanceV1 {
         }
     }
 
+    #[must_use]
     pub fn spike(
         request: &AtlasRenderRequest,
         physical_identity: &[u8],

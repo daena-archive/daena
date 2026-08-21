@@ -207,7 +207,7 @@ pub fn apply_in_transaction(
                 .map_err(|e| e.to_string())?;
             }
             Operation::AddField { namespace, field } => {
-                connection.execute("INSERT INTO module_fields(module_id,namespace,key,field_type,required) VALUES (?1,?2,?3,?4,?5)", params![migration.module_id, namespace, field.key, field.field_type, field.required as i64]).map_err(|e| e.to_string())?;
+                connection.execute("INSERT INTO module_fields(module_id,namespace,key,field_type,required) VALUES (?1,?2,?3,?4,?5)", params![migration.module_id, namespace, field.key, field.field_type, i64::from(field.required)]).map_err(|e| e.to_string())?;
             }
             Operation::RenameField {
                 namespace,

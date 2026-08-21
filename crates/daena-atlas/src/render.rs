@@ -74,6 +74,7 @@ fn flood_component(
     cells
 }
 
+#[must_use]
 pub fn classify_visible_water(
     grid: Grid,
     elevations_mm: &[i32],
@@ -143,6 +144,7 @@ pub struct TileRect {
     pub height: u32,
 }
 
+#[must_use]
 pub fn tile_rects(width: u32, height: u32) -> Vec<TileRect> {
     let mut tiles = Vec::new();
     let mut index = 0_u32;
@@ -291,10 +293,10 @@ pub(crate) fn studio_shade_ppm(
         elevation,
         options.approximate_shading,
     );
-    if options.theme != RasterTheme::Relief {
-        shade.max(780_000)
-    } else {
+    if options.theme == RasterTheme::Relief {
         shade
+    } else {
+        shade.max(780_000)
     }
 }
 
@@ -349,10 +351,10 @@ pub(crate) fn pixel_rgba_with_options(
         elevation,
         options.approximate_shading,
     );
-    let shade = if options.theme != RasterTheme::Relief {
-        shade.max(780_000)
-    } else {
+    let shade = if options.theme == RasterTheme::Relief {
         shade
+    } else {
+        shade.max(780_000)
     };
     paint_pixel(
         hydrology, style, options, water, paint, sea, elevation, cell, shade,
@@ -443,7 +445,7 @@ fn paint_pixel(
     if options.coastlines {
         let band = elevation.saturating_sub(sea).unsigned_abs();
         if band < 28_000 {
-            let t = ((28_000 - band) as u64 * 620_000 / 28_000) as u32;
+            let t = (u64::from(28_000 - band) * 620_000 / 28_000) as u32;
             rgb = mix_rgb(rgb, style.coast, t);
         }
     }
@@ -520,14 +522,17 @@ pub fn render_rgba(
     Ok(buffer)
 }
 
+#[must_use]
 pub fn forward_tile_order(count: u32) -> Vec<u32> {
     (0..count).collect()
 }
 
+#[must_use]
 pub fn reverse_tile_order(count: u32) -> Vec<u32> {
     (0..count).rev().collect()
 }
 
+#[must_use]
 pub fn shuffled_tile_order(count: u32, seed: u64) -> Vec<u32> {
     let mut order = forward_tile_order(count);
     let mut state = seed ^ 0x9e37_79b9_7f4a_7c15;

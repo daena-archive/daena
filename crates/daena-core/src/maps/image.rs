@@ -150,6 +150,7 @@ pub fn encode_transparent_png(width: u32, height: u32) -> Result<Vec<u8>, CoreEr
     Ok(png)
 }
 
+#[must_use]
 pub fn content_hash(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }

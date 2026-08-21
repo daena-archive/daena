@@ -462,7 +462,54 @@ fn ai_index_lifecycle_is_project_bound_and_non_blocking() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn ai_gate_fails_closed_until_project_opt_in() {
+    // Missing manifest → fail closed.
+    let missing = std::env::temp_dir().join(format!("daena-ai-gate-missing-{}", uuid::Uuid::new_v4()));
+    assert!(ensure_project_ai_enabled(missing.to_str().unwrap()).is_err());
+
+    // Fresh project defaults to disabled.
+    let root = std::env::temp_dir().join(format!("daena-ai-gate-{}", uuid::Uuid::new_v4()));
+    {
+        let project = ProjectStore::open_directory(&root).unwrap();
+        assert!(ensure_project_ai_enabled(root.to_str().unwrap()).is_err());
+        drop(project);
+        let project = ProjectStore::open_directory(&root).unwrap();
+        project.set_ai_enabled(true).unwrap();
+    }
+    assert!(ensure_project_ai_enabled(root.to_str().unwrap()).is_ok());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn ai_toggle_works_through_read_only_store_like_the_command_path() {
+    // with_read_project hands commands an open_read_only store; the toggle
+    // must still persist through it because project.json is a plain file.
+    let root = std::env::temp_dir().join(format!("daena-ai-toggle-ro-{}", uuid::Uuid::new_v4()));
+    ProjectStore::open_directory(&root).unwrap();
+    let reader = ProjectStore::open_read_only(&root).unwrap();
+    assert!(!reader.info().unwrap().ai_enabled);
+    let info = reader.set_ai_enabled(true).unwrap();
+    assert!(info.ai_enabled);
+    drop(reader);
+    let reader = ProjectStore::open_read_only(&root).unwrap();
+    assert!(reader.info().unwrap().ai_enabled);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn ai_test_context(runtime: ai::SharedAiRuntime) -> AiBrokerContext {
+    // Broker tests need a real, AI-enabled project: the ai.request.start gate
+    // reads the canonical manifest and fails closed without an opt-in.
+    static PROJECT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    let root = PROJECT.get_or_init(|| {
+        let root =
+            std::env::temp_dir().join(format!("daena-ai-broker-{}", uuid::Uuid::new_v4()));
+        ProjectStore::open_directory(&root)
+            .unwrap()
+            .set_ai_enabled(true)
+            .unwrap();
+        root
+    });
     AiBrokerContext {
         app: None,
         core: None,
@@ -471,9 +518,9 @@ fn ai_test_context(runtime: ai::SharedAiRuntime) -> AiBrokerContext {
         session_id: "test-session".into(),
         caller: daena_ai::AiCaller::authorized_plugin(
             "daena.lore",
-            "project",
+            root.to_str().unwrap(),
             Vec::new(),
-            vec!["project:project".into()],
+            vec![format!("project:{}", root.to_string_lossy())],
             1,
             "pending",
         ),

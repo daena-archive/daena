@@ -232,14 +232,18 @@ pub fn ai_index_cancel(runtime: State<'_, SharedAiRuntime>) -> Result<(), String
 
 #[tauri::command]
 pub fn ai_index_status(
+    core: State<'_, crate::SharedCore>,
     runtime: State<'_, SharedAiRuntime>,
     settings: State<'_, Arc<Mutex<SettingsStore>>>,
-) -> AiIndexStatus {
+) -> Result<AiIndexStatus, String> {
+    if let Some(project_id) = crate::current_info(core.inner())?.map(|info| info.root) {
+        crate::ensure_project_ai_enabled(&project_id)?;
+    }
     let mut status = index_status(runtime.inner());
     let configured = settings.lock().ok().and_then(|store| store.load().ok());
     let Some(configured) = configured else {
         status.message = Some("AI provider settings are unavailable".into());
-        return status;
+        return Ok(status);
     };
     match resolve_ai_provider_with_credential(&configured, None, false, false) {
         Ok(provider) => {
@@ -254,7 +258,7 @@ pub fn ai_index_status(
         }
         Err(error) => status.message = Some(error),
     }
-    status
+    Ok(status)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -294,6 +298,7 @@ pub async fn ai_index_search(
     let project_id = crate::current_info(core.inner())?
         .map(|info| info.root)
         .ok_or_else(|| "No project is open".to_string())?;
+    crate::ensure_project_ai_enabled(&project_id)?;
     let provider = resolve_ai_provider(&configured, Some(&project_id), true)?;
     if !provider.embedding_available {
         return Err(format!(
@@ -501,6 +506,7 @@ pub async fn ai_index_rebuild(
     let project_id = crate::current_info(core.inner())?
         .map(|info| info.root)
         .ok_or_else(|| "No project is open".to_string())?;
+    crate::ensure_project_ai_enabled(&project_id)?;
     let provider = resolve_ai_provider(&configured, Some(&project_id), true)?;
     if !provider.embedding_available {
         return Err(format!(
@@ -2300,6 +2306,7 @@ pub async fn ai_generate_text(
         .lock()
         .map_err(|_| "settings lock poisoned".to_string())?
         .load()?;
+    crate::ensure_project_ai_enabled(&project_id)?;
     let provider = resolve_ai_provider(&configured, Some(&project_id), include_retrieval)?;
     let (retrieved_context, citations) = if include_retrieval {
         direct_retrieval_context(
@@ -2350,6 +2357,7 @@ pub async fn ai_generate_structured(
         .lock()
         .map_err(|_| "settings lock poisoned".to_string())?
         .load()?;
+    crate::ensure_project_ai_enabled(&project_id)?;
     let provider = resolve_ai_provider(&configured, Some(&project_id), include_retrieval)?;
     let (retrieved_context, citations) = if include_retrieval {
         direct_retrieval_context(

@@ -536,6 +536,7 @@ export interface ProjectInfo {
   index_status: string;
   assets: string;
   sync: SyncSummary;
+  aiEnabled: boolean;
 }
 export interface ExternalChangeReport {
   changed: boolean;
@@ -971,6 +972,7 @@ export const project = {
   create: (path: string) => invoke<ProjectInfo>("project_new", { path }),
   close: () => invoke<void>("project_close"),
   info: () => invoke<ProjectInfo | null>("project_info"),
+  setAiEnabled: (enabled: boolean) => invoke<ProjectInfo>("project_set_ai_enabled", { enabled }),
   importCheckpoint: () => invoke<ExternalChangeReport>("project_import_checkpoint"),
   externalImporters: () => invoke<ExternalImporterDescriptor[]>("project_external_importers"),
   externalImportSelectSource: (sourceKind: "file" | "folder") =>

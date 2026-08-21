@@ -86,6 +86,8 @@ let {
   onAiRemoteImport,
   onAiRemoteSave,
   onAiRemoteClear,
+  aiEnabled,
+  onToggleAi,
   onPortableBackup,
   onRecoveryBackup,
   onRestoreRecoveryBackup,
@@ -152,6 +154,9 @@ let {
   /** Returns true when the credential was stored, so the input can be cleared. */
   onAiRemoteSave: (apiKey: string) => Promise<boolean>;
   onAiRemoteClear: () => void;
+  /** Project-level AI opt-in (default off). */
+  aiEnabled: boolean;
+  onToggleAi: (enabled: boolean) => void;
   onPortableBackup: () => Promise<string>;
   onRecoveryBackup: () => Promise<string>;
   onRestoreRecoveryBackup: (path: string) => Promise<void>;
@@ -507,6 +512,11 @@ async function handleClose() {
             <p>Configure one provider. Every generation, rewrite, and field-fill uses the active provider.</p>
           </div>
           <div class="hero-stats">
+            {#if projectOpen}
+              <span class="stat-pill" class:on={aiEnabled} class:off={!aiEnabled}
+                ><Sparkles size={12} strokeWidth={1.8} aria-hidden="true" /> AI
+                {aiEnabled ? "enabled" : "disabled"}</span>
+            {/if}
             <span class="stat-pill"
               ><Bot size={12} strokeWidth={1.8} aria-hidden="true" /> {aiSettings.provider.name || "No provider"}</span>
             <span class="stat-pill"
@@ -515,6 +525,33 @@ async function handleClose() {
         </div>
 
         <div class="ai-settings-form">
+          {#if projectOpen}
+            <section class="ai-settings-card ai-enable-card elevated" aria-labelledby="ai-enable-heading">
+              <div class="ai-card-heading">
+                <div>
+                  <span class="ai-card-kicker">THIS PROJECT</span>
+                  <strong id="ai-enable-heading">AI features</strong>
+                  <p>
+                    {#if aiEnabled}
+                      AI is enabled for this project. Disable it to hide every AI surface until it is turned on
+                      again.
+                    {:else}
+                      AI is off for this project and every AI surface is hidden. Enable it to use rewrite,
+                      generation, field fill, and semantic search here.
+                    {/if}
+                  </p>
+                </div>
+                <span class="ai-card-badge" class:ok={aiEnabled}>{aiEnabled ? "Enabled" : "Off"}</span>
+              </div>
+              <button
+                type="button"
+                class={aiEnabled ? "quiet" : "primary"}
+                onclick={() => onToggleAi(!aiEnabled)}>
+                {#if aiEnabled}<X size={14} strokeWidth={1.8} aria-hidden="true" /> Disable AI{:else}
+                  <Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /> Enable AI{/if}
+              </button>
+            </section>
+          {/if}
           <section class="ai-settings-card ai-overview-card elevated" aria-labelledby="ai-overview-heading">
             <div class="ai-card-heading">
               <div>
@@ -715,7 +752,7 @@ async function handleClose() {
                         DAENA_REMOTE_API_KEY set and use the environment import.
                       </p>
                     </div>
-                    {#if projectOpen}
+                    {#if projectOpen && aiEnabled}
                       <div class="ai-action-group">
                         <span class="ai-action-label">Project access</span>
                         <div class="ai-settings-actions ai-card-actions">
@@ -730,7 +767,8 @@ async function handleClose() {
               </div>
             </div>
           {/if}
-          <section class="ai-settings-card elevated" aria-labelledby="retrieval-index-heading">
+          {#if aiEnabled}
+            <section class="ai-settings-card elevated" aria-labelledby="retrieval-index-heading">
             <div class="ai-card-heading ai-card-heading-compact">
               <div>
                 <span class="ai-card-kicker">PROJECT CONTEXT</span>
@@ -750,6 +788,7 @@ async function handleClose() {
               {#if aiIndexMessage}<span class="ai-status">{aiIndexMessage}</span>{/if}
             </div>
           </section>
+          {/if}
         </div>
       {:else if section === "plugins"}
         {#if !projectOpen}
@@ -1047,6 +1086,16 @@ async function handleClose() {
     ui-sans-serif,
     system-ui,
     sans-serif;
+}
+.stat-pill.on {
+  border-color: #c8d8cb;
+  background: #eef5ef;
+  color: #557d63;
+}
+.stat-pill.off {
+  border-color: #e7c4bc;
+  background: #fdf2ef;
+  color: #9a4d3f;
 }
 .block {
   display: grid;
@@ -1495,7 +1544,6 @@ async function handleClose() {
   font-size: 16px;
 }
 .ai-card-heading p {
-  max-width: 520px;
   margin: 6px 0 0;
   color: var(--ink-soft);
   font-size: 11px;
@@ -1520,6 +1568,11 @@ async function handleClose() {
   font-size: 10px;
   font-weight: 700;
   white-space: nowrap;
+}
+.ai-card-badge.ok {
+  border-color: #c8d8cb;
+  background: #eef5ef;
+  color: #557d63;
 }
 .ai-field-grid {
   display: grid;

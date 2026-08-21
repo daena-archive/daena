@@ -26,6 +26,8 @@ pub struct ProjectManifest {
     pub id: String,
     pub name: String,
     pub created_at: String,
+    #[serde(default)]
+    pub ai_enabled: bool,
 }
 
 impl ProjectManifest {
@@ -35,6 +37,7 @@ impl ProjectManifest {
             id: Uuid::new_v4().to_string(),
             name: name.into(),
             created_at: crate::project::chrono_like_now(),
+            ai_enabled: false,
         }
     }
 

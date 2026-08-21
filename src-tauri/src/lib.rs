@@ -327,6 +327,19 @@ fn current_info(core: &SharedCore) -> Result<Option<ProjectInfo>, String> {
     Ok(core.info())
 }
 
+/// Project-level AI opt-in gate. Reads canonical `project.json` directly so the
+/// decision never depends on cached state; fails closed when unreadable.
+pub(crate) fn ensure_project_ai_enabled(project_root: &str) -> Result<(), String> {
+    let path = std::path::Path::new(project_root).join("project.json");
+    let enabled = daena_core::read_json::<daena_core::ProjectManifest>(&path)
+        .map(|manifest| manifest.ai_enabled)
+        .unwrap_or(false);
+    if !enabled {
+        return Err("AI is disabled for this project. Enable AI in Settings first.".into());
+    }
+    Ok(())
+}
+
 fn cancel_physical_jobs(jobs: &SharedPhysicalJobs) -> Result<(), String> {
     jobs.lock()
         .map_err(|_| "physical job state is unavailable".to_string())?
@@ -3677,6 +3690,7 @@ fn dispatch_host_rpc(
         drop(host);
         let request_id_value = payload.get("requestId").and_then(serde_json::Value::as_str);
         if method == "ai.request.start" {
+            crate::ensure_project_ai_enabled(&context.caller.project_id)?;
             let operation = payload
                 .get("operation")
                 .and_then(serde_json::Value::as_str)
@@ -6337,6 +6351,14 @@ fn close_project_for_app(
 #[tauri::command]
 async fn project_info(state: tauri::State<'_, SharedCore>) -> Result<Option<ProjectInfo>, String> {
     with_read_project(state, |project| Ok(project.info())).await
+}
+
+#[tauri::command]
+async fn project_set_ai_enabled(
+    state: tauri::State<'_, SharedCore>,
+    enabled: bool,
+) -> Result<ProjectInfo, String> {
+    with_read_project(state, move |project| project.set_ai_enabled(enabled)).await
 }
 
 #[tauri::command]
@@ -9324,6 +9346,7 @@ pub fn run() {
             ai::ai_provider_import_credential,
             ai::ai_provider_set_credential,
             ai::ai_provider_clear_credential,
+            project_set_ai_enabled,
             ai::ai_remote_set_consent,
             ai::ai_index_status,
             ai::ai_index_rebuild,

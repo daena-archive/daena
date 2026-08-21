@@ -8,11 +8,13 @@ fn project_manifest_is_byte_stable_and_lexicographically_ordered() {
         id: "6f21a771-eec6-4833-9a56-89b5cfc8f126".into(),
         name: "Eldermere".into(),
         created_at: "2026-08-05T10:30:00Z".into(),
+        ai_enabled: false,
     };
 
     assert_eq!(
         canonical_json_bytes(&manifest).unwrap(),
         br#"{
+  "aiEnabled": false,
   "createdAt": "2026-08-05T10:30:00Z",
   "formatVersion": 3,
   "id": "6f21a771-eec6-4833-9a56-89b5cfc8f126",

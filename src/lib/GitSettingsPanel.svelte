@@ -28,12 +28,14 @@ import {
 let {
   projectOpen,
   projectId,
+  aiEnabled = false,
   onError,
   onBusyMessage,
   beforeWrite,
 }: {
   projectOpen: boolean;
   projectId: string;
+  aiEnabled?: boolean;
   onError: (message: string) => void;
   onBusyMessage?: (message: string) => void;
   beforeWrite?: () => Promise<boolean>;
@@ -186,7 +188,7 @@ function formatSnapshotMessage(value: string) {
 }
 
 async function generateAiMessage() {
-  if (!projectId || aiMessageBusy || !preflight?.ready || selectedPaths.length === 0) return;
+  if (!aiEnabled || !projectId || aiMessageBusy || !preflight?.ready || selectedPaths.length === 0) return;
   aiMessageBusy = true;
   aiMessageBase = commitMessage;
   aiMessageStream = "";
@@ -978,17 +980,19 @@ function restoreFromRemote() {
               bind:value={commitMessage}
               placeholder="Describe this snapshot"
               disabled={busy || aiMessageBusy}></textarea>
-            <button
-              type="button"
-              class="git-ai-message-button"
-              aria-label={aiMessageBusy ? "Cancel AI message generation" : "Generate snapshot message with AI"}
-              title={aiMessageBusy ? "Cancel generation" : "Generate snapshot message with AI"}
-              disabled={busy || (!aiMessageBusy && (!preflight?.ready || selectedPaths.length === 0))}
-              onclick={() => void (aiMessageBusy ? cancelAiMessage() : generateAiMessage())}
-              >{#if aiMessageBusy}<X size={14} strokeWidth={1.8} aria-hidden="true" />{:else}<Sparkles
-                  size={14}
-                  strokeWidth={1.8}
-                  aria-hidden="true" />{/if}</button>
+            {#if aiEnabled && (aiMessageBusy || !commitMessage.trim())}
+              <button
+                type="button"
+                class="git-ai-message-button"
+                aria-label={aiMessageBusy ? "Cancel AI message generation" : "Generate snapshot message with AI"}
+                title={aiMessageBusy ? "Cancel generation" : "Generate snapshot message with AI"}
+                disabled={busy || (!aiMessageBusy && (!preflight?.ready || selectedPaths.length === 0))}
+                onclick={() => void (aiMessageBusy ? cancelAiMessage() : generateAiMessage())}
+                >{#if aiMessageBusy}<X size={14} strokeWidth={1.8} aria-hidden="true" />{:else}<Sparkles
+                    size={14}
+                    strokeWidth={1.8}
+                    aria-hidden="true" />{/if}</button>
+            {/if}
           </label>
           <div class="git-commit-actions">
             <button type="button" class="quiet-button" onclick={generateMessage}>Generate message</button>

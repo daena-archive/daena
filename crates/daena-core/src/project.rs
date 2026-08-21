@@ -436,6 +436,8 @@ pub struct ProjectInfo {
     pub index_status: String,
     pub assets: String,
     pub sync: SyncSummary,
+    #[serde(rename = "aiEnabled", alias = "ai_enabled", default)]
+    pub ai_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2682,17 +2684,20 @@ impl ProjectStore {
             dirty_count: 0,
             export_error: Some("runtime metadata is unavailable".into()),
         });
+        let manifest = crate::storage::read_json::<crate::storage::ProjectManifest>(
+            &root.join("project.json"),
+        )
+        .ok();
         Some(ProjectInfo {
-            name: crate::storage::read_json::<crate::storage::ProjectManifest>(
-                &root.join("project.json"),
-            )
-            .map(|manifest| manifest.name)
-            .unwrap_or_else(|_| {
-                root.file_name()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("Daena Archive project")
-                    .to_string()
-            }),
+            name: manifest
+                .as_ref()
+                .map(|manifest| manifest.name.clone())
+                .unwrap_or_else(|| {
+                    root.file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("Daena Archive project")
+                        .to_string()
+                }),
             root: root.to_string_lossy().to_string(),
             index_status: if sync.state == "clean" {
                 "ready"
@@ -2702,7 +2707,25 @@ impl ProjectStore {
             .into(),
             assets: root.join("assets").to_string_lossy().to_string(),
             sync,
+            ai_enabled: manifest.as_ref().is_some_and(|manifest| manifest.ai_enabled),
         })
+    }
+
+    /// Persists the project-level AI opt-in flag to canonical `project.json`.
+    pub fn set_ai_enabled(&self, enabled: bool) -> Result<ProjectInfo, CoreError> {
+        let root = self
+            .root
+            .as_ref()
+            .ok_or_else(|| CoreError::NotFound("no project is open".to_string()))?;
+        let metadata_path = root.join("project.json");
+        let mut manifest =
+            crate::storage::read_json::<crate::storage::ProjectManifest>(&metadata_path)?;
+        if manifest.ai_enabled != enabled {
+            manifest.ai_enabled = enabled;
+            manifest.validate(&metadata_path)?;
+            crate::storage::write_json(&metadata_path, &manifest)?;
+        }
+        Ok(self.info().expect("root is present"))
     }
 
     pub fn database_epoch(&self) -> &str {

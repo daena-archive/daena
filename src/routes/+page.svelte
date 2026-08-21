@@ -1797,6 +1797,23 @@ async function clearRemoteCredential() {
     showAiIndexMessage(friendlyError(cause));
   }
 }
+async function setProjectAiEnabled(enabled: boolean) {
+  if (!projectInfo) return;
+  if (enabled) {
+    const confirmed = await confirmDialog({
+      title: "Enable AI for this project?",
+      message:
+        "AI features become available in this project. Requests run through the configured provider; remote providers still require per-project consent before any context leaves this machine.",
+      confirmLabel: "Enable AI",
+    });
+    if (!confirmed) return;
+  }
+  try {
+    projectInfo = await project.setAiEnabled(enabled);
+  } catch (cause) {
+    showAiIndexMessage(friendlyError(cause));
+  }
+}
 async function setRemoteConsent(allowed: boolean) {
   if (
     !projectInfo?.root ||
@@ -1877,6 +1894,10 @@ async function loadAiModels() {
 }
 async function refreshAiIndexStatus() {
   if (aiIndexStatusMessageTimer !== null) window.clearTimeout(aiIndexStatusMessageTimer);
+  if (!projectInfo?.aiEnabled) {
+    aiIndexStatus = { available: false, state: null, provider: null, embeddingAvailable: false, message: null };
+    return;
+  }
   try {
     const status = await project.aiIndexStatus();
     aiIndexStatus = status;
@@ -1895,6 +1916,10 @@ async function refreshAiIndexStatus() {
   }
 }
 async function rebuildAiIndex() {
+  if (!projectInfo?.aiEnabled) {
+    showAiIndexMessage("AI is disabled for this project. Enable AI in Settings first.");
+    return;
+  }
   if (!aiSettings.provider.endpoint.trim() || !aiSettings.provider.model.trim()) {
     showAiIndexMessage("Configure the active provider endpoint and model before building the semantic index.");
     return;
@@ -1939,6 +1964,7 @@ function openAiAction(
   plainText: string,
   context: string,
 ) {
+  if (!projectInfo?.aiEnabled) return;
   if (action !== "generate" && !markdown.trim()) return;
   if (action !== "generate") {
     aiSourceSelection = markdown;
@@ -2047,6 +2073,7 @@ function handleAiFieldFillEvent(payload: AiStreamEvent) {
 }
 async function fillAiFields() {
   if (!selected || aiFieldFillBusy) return;
+  if (!projectInfo?.aiEnabled) return;
   const empty = emptyInspectorDefinitions();
   if (empty.length === 0) return;
   const endpoint = aiSettings.provider.endpoint.trim();
@@ -4573,6 +4600,8 @@ onMount(() => {
         onAiRemoteImport={() => void importRemoteCredential()}
         onAiRemoteSave={(apiKey) => saveRemoteCredential(apiKey)}
         onAiRemoteClear={() => void clearRemoteCredential()}
+        aiEnabled={projectInfo?.aiEnabled ?? false}
+        onToggleAi={(enabled) => void setProjectAiEnabled(enabled)}
         onPortableBackup={createPortableBackup}
         onRecoveryBackup={createRecoveryBackup}
         onRestoreRecoveryBackup={restoreRecoveryBackup}>
@@ -4828,6 +4857,7 @@ onMount(() => {
           <GitSettingsPanel
             projectOpen={ready}
             projectId={projectInfo?.root ?? ""}
+            aiEnabled={projectInfo?.aiEnabled ?? false}
             onError={(message) => (error = message)}
             beforeWrite={flushAutoSave} />
         {/snippet}
@@ -5417,6 +5447,7 @@ onMount(() => {
                       {entities}
                       editable={projectDiagnostics.length === 0 && !aiBusy && !aiRewriteOpen}
                       fullscreen={editorFullscreen}
+                      aiEnabled={projectInfo?.aiEnabled ?? false}
                       onChange={updateDocumentBody}
                       onSelectionChange={setAiSelection}
                       onAiRequest={openAiAction}
@@ -5470,7 +5501,7 @@ onMount(() => {
               <div><span class="panel-kicker">INSPECTOR</span><strong>Details</strong></div>
               <div class="inspector-heading-actions">
                 <span class="inspector-type">{selected.entity_type}</span
-                >{#if emptyInspectorDefinitions().length}<button
+                >{#if projectInfo?.aiEnabled && emptyInspectorDefinitions().length}<button
                     class="inspector-ai-action"
                     type="button"
                     onclick={() => void fillAiFields()}

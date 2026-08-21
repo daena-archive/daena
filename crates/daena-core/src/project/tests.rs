@@ -3343,6 +3343,56 @@ fn directory_projects_create_portable_layout() {
 }
 
 #[test]
+fn ai_enabled_defaults_to_false_and_round_trips() {
+    let root = std::env::temp_dir().join(format!("daena-ai-flag-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    assert!(!store.info().unwrap().ai_enabled);
+    let manifest =
+        crate::storage::read_json::<crate::storage::ProjectManifest>(&root.join("project.json"))
+            .unwrap();
+    assert!(!manifest.ai_enabled);
+    drop(store);
+
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let info = store.set_ai_enabled(true).unwrap();
+    assert!(info.ai_enabled);
+    // Canonical file carries the flag and survives a reopen (fresh .daena state).
+    let manifest =
+        crate::storage::read_json::<crate::storage::ProjectManifest>(&root.join("project.json"))
+            .unwrap();
+    assert!(manifest.ai_enabled);
+    drop(store);
+
+    let store = ProjectStore::open_directory(&root).unwrap();
+    assert!(store.info().unwrap().ai_enabled);
+    let info = store.set_ai_enabled(false).unwrap();
+    assert!(!info.ai_enabled);
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn manifest_without_ai_flag_reads_as_disabled() {
+    let root = std::env::temp_dir().join(format!("daena-ai-legacy-{}", Uuid::new_v4()));
+    ProjectStore::open_directory(&root).unwrap();
+    // Simulate a canonical file written before the field existed.
+    let path = root.join("project.json");
+    let manifest =
+        crate::storage::read_json::<crate::storage::ProjectManifest>(&path).unwrap();
+    let without_flag = serde_json::json!({
+        "formatVersion": manifest.format_version,
+        "id": manifest.id,
+        "name": manifest.name,
+        "createdAt": manifest.created_at,
+    });
+    std::fs::write(&path, serde_json::to_vec_pretty(&without_flag).unwrap()).unwrap();
+    let parsed = crate::storage::read_json::<crate::storage::ProjectManifest>(&path).unwrap();
+    parsed.validate(&path).unwrap();
+    assert!(!parsed.ai_enabled);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn directory_assets_are_copied_and_hashed() {
     let root = std::env::temp_dir().join(format!("daena-project-{}", Uuid::new_v4()));
     let source = std::env::temp_dir().join(format!("daena-asset-{}.txt", Uuid::new_v4()));

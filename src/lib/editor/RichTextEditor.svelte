@@ -291,6 +291,8 @@ export let onAiRequest: (
 ) => void = () => {};
 export let editable = true;
 export let fullscreen = false;
+/** Project-level AI opt-in; hides the Ask-AI toolbar entry when false. */
+export let aiEnabled = false;
 export let onFullscreenChange: (value: boolean) => void = () => {};
 export let entities: Entity[] = [];
 
@@ -1651,18 +1653,20 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
       </div>
     </div>
     <div class="editor-toolbar-actions">
-      <div class="ai-toolbar-menu-control">
-        <button
-          class="ai-toolbar-button"
-          type="button"
-          title="Ask AI"
-          aria-label="Ask AI"
-          aria-haspopup="menu"
-          aria-expanded={aiMenuOpen}
-          disabled={!editable}
-          onmousedown={(event) => event.preventDefault()}
-          onclick={() => (aiMenuOpen = !aiMenuOpen)}><SparklesIcon size={14} strokeWidth={1.8} /></button>
-        {#if aiMenuOpen}
+      {#if aiEnabled}
+        <div class="ai-toolbar-menu-control">
+          <button
+            class="ai-toolbar-button"
+            type="button"
+            title="Ask AI"
+            aria-label="Ask AI"
+            aria-haspopup="menu"
+            aria-expanded={aiMenuOpen}
+            disabled={!editable}
+            onmousedown={(event) => event.preventDefault()}
+            onclick={() => (aiMenuOpen = !aiMenuOpen)}
+          ><SparklesIcon size={14} strokeWidth={1.8} /></button>
+          {#if aiMenuOpen}
           <div class="ai-toolbar-menu" role="menu" aria-label="Ask AI">
             <button
               type="button"
@@ -1705,8 +1709,9 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
               onmousedown={(event) => event.preventDefault()}
               onclick={() => requestAi("custom")}>Custom instruction</button>
           </div>
-        {/if}
-      </div>
+          {/if}
+        </div>
+      {/if}
       <span class="toolbar-divider"></span>
       {#if !isFullscreen}
         <div class="more-toolbar-menu-control" bind:this={moreMenuControl}>

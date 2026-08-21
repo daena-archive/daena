@@ -1,6 +1,6 @@
 //! Trusted-shell source selection and bounded external-import analysis sessions.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -9,19 +9,26 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use daena_core::{
-    analyze_generic_documents_with_progress, build_import_candidate_plan, CoreError,
+    analyze_generic_documents_with_progress, build_import_candidate_plan,
+    validate_import_candidate_plan, CoreError, ExternalImportCommitReport,
     GenericDocumentImportLimits, ImportAnalysisProgress, ImportAnalysisSummary,
-    ImportCandidatePlan, ImportCandidatePlanBuild, ImportDiagnostic, ImportMappingOverrides,
-    ImportSource, ImporterIdentity, StagedAsset, StagedImport, StagedObject, UnsupportedSourceData,
+    ImportCandidatePlan, ImportCandidatePlanBuild, ImportDiagnostic, ImportFieldTarget,
+    ImportMappingCatalog, ImportMappingOverrides, ImportObjectDecision, ImportSource,
+    ImportValidationBuild, ImportValidationIssue, ImportValidationSeverity, ImporterIdentity,
+    StagedAsset, StagedImport, StagedObject, UnsupportedSourceData, ValidatedImportPlan,
     EXTERNAL_IMPORT_ANALYSIS_CANCELLED, GENERIC_DOCUMENT_IMPORTER_ID,
     GENERIC_DOCUMENT_IMPORTER_VERSION,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
-use super::{current_info, with_read_project, SharedCore, SharedExternalImports};
+use super::{
+    current_info, effective_module_manifests, with_core, with_read_project, SharedCore,
+    SharedExternalImports, SharedPluginHost,
+};
 
 pub const EXTERNAL_IMPORT_PROGRESS_EVENT: &str = "external-import-progress";
 
@@ -144,6 +151,39 @@ pub struct ExternalImportCandidatePlanInput {
     pub mappings: ImportMappingOverrides,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExternalImportValidateInput {
+    pub session_id: String,
+    #[serde(default)]
+    pub mappings: ImportMappingOverrides,
+    #[serde(default)]
+    pub decisions: BTreeMap<String, ImportObjectDecision>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalImportValidationSummary {
+    pub validation_id: Option<String>,
+    pub plan_id: Option<String>,
+    pub create_count: usize,
+    pub skip_count: usize,
+    pub map_count: usize,
+    pub warning_count: usize,
+    pub error_count: usize,
+    pub issues: Vec<ImportValidationIssue>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExternalImportCommitInput {
+    pub session_id: String,
+    pub validation_id: String,
+    pub request_id: String,
+    #[serde(default)]
+    pub acknowledge_warnings: bool,
+}
+
 #[derive(Debug)]
 struct SourceSelection {
     project_id: String,
@@ -209,6 +249,7 @@ struct ExternalImportJob {
     cancel: Arc<AtomicBool>,
     status: ExternalImportAnalysisStatus,
     result: Option<ImportResultStorage>,
+    validated: Option<ValidatedImportPlan>,
 }
 
 #[derive(Default)]
@@ -434,6 +475,7 @@ pub async fn project_external_import_analyze_begin(
                 cancel: cancel.clone(),
                 status: status.clone(),
                 result: None,
+                validated: None,
             },
         );
         (session_id, source, cancel, status)
@@ -492,6 +534,7 @@ pub fn project_external_import_analysis_cancel(
         result.cleanup()?;
     }
     job.result = None;
+    job.validated = None;
     job.status.state = "cancelled".into();
     job.status.stage = "cancelled".into();
     job.status.error = None;
@@ -579,6 +622,241 @@ pub async fn project_external_import_candidate_plan(
     })
     .await
     .map_err(|error| format!("external import planning worker failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn project_external_import_validate(
+    core: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    imports: tauri::State<'_, SharedExternalImports>,
+    input: ExternalImportValidateInput,
+) -> Result<ExternalImportValidationSummary, String> {
+    let project_id = current_project_id(core.inner())?;
+    let validation_session_id = input.session_id;
+    let mappings = input.mappings;
+    let decisions = input.decisions;
+    let imports_shared = imports.inner().clone();
+    let material_project_id = project_id.clone();
+    let material_session_id = validation_session_id.clone();
+    let (captured_generation, metadata, objects, diagnostics) =
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut manager = imports_shared
+                .lock()
+                .map_err(|_| "external import state is unavailable".to_string())?;
+            manager.reap()?;
+            let job = project_job(&manager, &material_project_id, &material_session_id)?;
+            if job.status.state != "ready" {
+                return Err(String::from(
+                    "external_import.not_ready: analysis result is not ready",
+                ));
+            }
+            let result = job.result.as_ref().ok_or_else(|| {
+                "external_import.not_ready: analysis result is missing".to_string()
+            })?;
+            let (objects, diagnostics) = result.candidate_material()?;
+            Ok((
+                job.status.captured_content_generation,
+                result.metadata().clone(),
+                objects,
+                diagnostics,
+            ))
+        })
+        .await
+        .map_err(|error| format!("external import validation worker failed: {error}"))??;
+    let plugins = plugins.inner().clone();
+    let candidate_session_id = validation_session_id.clone();
+    let outcome = with_read_project(core, move |project| {
+        let host = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        let catalog = import_mapping_catalog(project, &host)?;
+        let current_generation = project.content_generation()?;
+        let candidate = build_import_candidate_plan(
+            ImportCandidatePlanBuild {
+                session_id: candidate_session_id,
+                importer: metadata.importer.clone(),
+                source: metadata.source.clone(),
+                captured_content_generation: captured_generation,
+                current_content_generation: current_generation,
+                manifest_fingerprint: catalog.fingerprint.clone(),
+                objects: objects.clone(),
+                unsupported_count: metadata.summary.unsupported_count,
+                diagnostics,
+            },
+            &mappings,
+        )?;
+        let existing_ids = decisions
+            .values()
+            .filter_map(|decision| match decision {
+                ImportObjectDecision::MapToExisting { entity_id, .. } => Some(entity_id.clone()),
+                ImportObjectDecision::Create | ImportObjectDecision::Skip => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let existing_targets = project.external_import_existing_targets(&existing_ids)?;
+        let duplicate_sources = objects
+            .iter()
+            .map(|object| (object.id.clone(), object.source_id.clone()))
+            .collect::<Vec<_>>();
+        let duplicate_targets =
+            project.external_import_duplicate_targets(&metadata.importer.id, &duplicate_sources)?;
+        validate_import_candidate_plan(ImportValidationBuild {
+            candidate,
+            staged_objects: objects,
+            catalog,
+            decisions,
+            existing_targets,
+            duplicate_targets,
+        })
+    })
+    .await?;
+    let plan = outcome.plan;
+    let (create_count, skip_count, map_count) = plan
+        .as_ref()
+        .map(|plan| {
+            plan.objects
+                .iter()
+                .fold((0, 0, 0), |counts, object| match &object.decision {
+                    ImportObjectDecision::Create => (counts.0 + 1, counts.1, counts.2),
+                    ImportObjectDecision::Skip => (counts.0, counts.1 + 1, counts.2),
+                    ImportObjectDecision::MapToExisting { .. } => {
+                        (counts.0, counts.1, counts.2 + 1)
+                    }
+                })
+        })
+        .unwrap_or((0, 0, 0));
+    let warning_count = outcome
+        .issues
+        .iter()
+        .filter(|issue| issue.severity == ImportValidationSeverity::Warning)
+        .count();
+    let error_count = outcome.issues.len().saturating_sub(warning_count);
+    let validation_id = plan.as_ref().map(|plan| plan.plan_id.clone());
+    {
+        let mut manager = imports
+            .lock()
+            .map_err(|_| "external import state is unavailable".to_string())?;
+        let job = manager
+            .jobs
+            .get_mut(&validation_session_id)
+            .filter(|job| job.project_id == project_id)
+            .ok_or_else(|| {
+                "external_import.session_not_found: analysis session was not found".to_string()
+            })?;
+        job.validated = plan.clone();
+    }
+    Ok(ExternalImportValidationSummary {
+        validation_id: validation_id.clone(),
+        plan_id: validation_id,
+        create_count,
+        skip_count,
+        map_count,
+        warning_count,
+        error_count,
+        issues: outcome.issues,
+    })
+}
+
+#[tauri::command]
+pub async fn project_external_import_commit(
+    core: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    imports: tauri::State<'_, SharedExternalImports>,
+    input: ExternalImportCommitInput,
+) -> Result<ExternalImportCommitReport, String> {
+    let project_id = current_project_id(core.inner())?;
+    let plan = {
+        let mut manager = imports
+            .lock()
+            .map_err(|_| "external import state is unavailable".to_string())?;
+        manager.reap()?;
+        let job = project_job(&manager, &project_id, &input.session_id)?;
+        let plan = job.validated.as_ref().ok_or_else(|| {
+            "external_import.validation_required: validate the import plan before commit"
+                .to_string()
+        })?;
+        if plan.plan_id != input.validation_id {
+            return Err("external_import.validation_stale: validation ID does not match".into());
+        }
+        plan.clone()
+    };
+    let plugins = plugins.inner().clone();
+    let acknowledge_warnings = input.acknowledge_warnings;
+    let request_id = input.request_id.clone();
+    let report = with_core(core, move |core| {
+        let project = core.project(super::trusted_shell())?;
+        let host = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        let catalog = import_mapping_catalog(project, &host)?;
+        if catalog.fingerprint != plan.manifest_fingerprint {
+            return Err(CoreError::Conflict(
+                "enabled schema contributions changed after validation".into(),
+            ));
+        }
+        project.commit_external_import(&plan, acknowledge_warnings, &request_id)
+    })
+    .await?;
+    let mut manager = imports
+        .lock()
+        .map_err(|_| "external import state is unavailable".to_string())?;
+    if let Some(job) = manager.jobs.get(&input.session_id) {
+        let cleanup_succeeded = job
+            .result
+            .as_ref()
+            .is_none_or(|result| result.cleanup().is_ok());
+        if cleanup_succeeded {
+            manager.jobs.remove(&input.session_id);
+        }
+    }
+    Ok(report)
+}
+
+fn import_mapping_catalog(
+    project: &daena_core::ProjectStore,
+    host: &daena_plugin_host::PluginHost,
+) -> Result<ImportMappingCatalog, CoreError> {
+    let mut manifests = effective_module_manifests(project, host)?
+        .into_iter()
+        .filter_map(|(manifest, enabled)| enabled.then_some(manifest))
+        .collect::<Vec<_>>();
+    manifests.sort_by(|left, right| left.id.cmp(&right.id));
+    let bytes = serde_json::to_vec(&manifests)
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+    let fingerprint = format!("sha256:{:x}", Sha256::digest(bytes));
+    let mut entity_types = BTreeSet::new();
+    let mut fields = BTreeMap::new();
+    let mut relationship_types = BTreeSet::new();
+    for manifest in manifests {
+        for schema in manifest.schemas {
+            entity_types.extend(schema.entity_types);
+            for field in schema.fields {
+                let id = format!("{}:{}", schema.namespace, field.key);
+                if let Some(relationship_type) = &field.relationship_type {
+                    relationship_types.insert(relationship_type.clone());
+                }
+                fields.insert(
+                    id,
+                    ImportFieldTarget {
+                        namespace: schema.namespace.clone(),
+                        key: field.key,
+                        entity_types: field.entity_types.unwrap_or_default().into_iter().collect(),
+                    },
+                );
+            }
+        }
+        entity_types.extend(
+            manifest
+                .templates
+                .into_iter()
+                .map(|template| template.entity_type),
+        );
+    }
+    Ok(ImportMappingCatalog {
+        fingerprint,
+        entity_types,
+        fields,
+        relationship_types,
+    })
 }
 
 pub fn cancel_external_imports(imports: &SharedExternalImports) -> Result<(), String> {
@@ -1094,6 +1372,7 @@ mod tests {
                 cancel: cancel.clone(),
                 status: test_status(&session_id),
                 result: Some(storage),
+                validated: None,
             },
         );
         manager.cancel_all().unwrap();
@@ -1114,6 +1393,7 @@ mod tests {
                 cancel: Arc::new(AtomicBool::new(false)),
                 status: test_status(&session_id),
                 result: None,
+                validated: None,
             },
         );
 

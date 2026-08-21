@@ -342,4 +342,11 @@ bundled and plugin output pass identical core validation.
   enabled-manifest-derived entity/field/relationship choices, global/folder/item
   overrides, and a deterministic generation-bound candidate plan. Closing or
   cancelling cleans the session without mutating project content.
-- Iterations 4-8: planned, not yet implemented.
+- Iteration 4: implemented for Markdown/plain-text/folder imports. The server
+  rebuilds and validates plans against the current enabled manifests and project
+  generation, detects repeated source identities, requires explicit conflict
+  decisions, and supports create/skip/map-to-existing. Commit uses one
+  receipt-backed transaction with revision preconditions, warning acknowledgement,
+  idempotent retry, canonical source-identity fields, session cleanup, and a
+  per-item result report. Replace and merge remain intentionally disabled.
+- Iterations 5-8: planned, not yet implemented.

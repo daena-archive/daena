@@ -5803,7 +5803,14 @@ onMount(() => {
     onClose={() => (assetDialog = null)} />
 {/if}
 {#if showExternalImport}
-  <ExternalImportDialog {modules} onClose={() => (showExternalImport = false)} />
+  <ExternalImportDialog
+    {modules}
+    {entities}
+    onCommitted={async () => {
+      clearSelection();
+      await loadEntities();
+    }}
+    onClose={() => (showExternalImport = false)} />
 {/if}
 <DialogHost />
 

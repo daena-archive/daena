@@ -1,4 +1,8 @@
 use crate::error::CoreError;
+use crate::external_import::{
+    ExternalImportCommitReport, ImportExistingTarget, ImportObjectDecision, ImportedObjectReport,
+    ValidatedImportPlan, VALIDATED_IMPORT_PLAN_SCHEMA_VERSION,
+};
 use daena_plugin_api::MetadataFieldDefinition;
 use rusqlite::{named_params, params, Connection, OpenFlags, OptionalExtension};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -13,6 +17,9 @@ use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
+
+const EXTERNAL_IMPORT_SOURCE_NAMESPACE: &str = "daena.core";
+const EXTERNAL_IMPORT_SOURCE_KEY_PREFIX: &str = "externalImportSource.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateEntity {
@@ -512,6 +519,11 @@ fn encode_field_value(value: &serde_json::Value) -> Result<String, CoreError> {
     serde_json::to_string(value).map_err(|error| CoreError::NotFound(error.to_string()))
 }
 
+fn external_import_source_key(importer_id: &str, source_id: &str) -> String {
+    let fingerprint = digest_bytes(format!("{importer_id}\0{source_id}").as_bytes());
+    format!("{EXTERNAL_IMPORT_SOURCE_KEY_PREFIX}{}", &fingerprint[..24])
+}
+
 fn validate_document_format(format: Option<&str>, directory_backed: bool) -> Result<(), CoreError> {
     let format = format.unwrap_or("markdown");
     if directory_backed && format != "markdown" {
@@ -644,7 +656,11 @@ fn is_calendar_date_object(value: &serde_json::Value) -> bool {
     let Some(object) = value.as_object() else {
         return false;
     };
-    let Some(year) = object.get("year").and_then(|candidate| candidate.as_i64().or(candidate.as_u64().map(|value| value as i64))) else {
+    let Some(year) = object.get("year").and_then(|candidate| {
+        candidate
+            .as_i64()
+            .or(candidate.as_u64().map(|value| value as i64))
+    }) else {
         return false;
     };
     let _ = year;
@@ -737,7 +753,8 @@ fn validate_relationship_metadata(
             "number" => value.is_number(),
             "boolean" => value.is_boolean(),
             "date" => {
-                value.as_str().is_some_and(is_gregorian_date_string) || is_calendar_date_object(value)
+                value.as_str().is_some_and(is_gregorian_date_string)
+                    || is_calendar_date_object(value)
             }
             "enum" => value.as_str().is_some_and(|candidate| {
                 field
@@ -4310,6 +4327,257 @@ impl ProjectStore {
         Ok(entities)
     }
 
+    pub fn external_import_existing_targets(
+        &self,
+        entity_ids: &BTreeSet<String>,
+    ) -> Result<BTreeMap<String, ImportExistingTarget>, CoreError> {
+        let mut targets = BTreeMap::new();
+        for entity_id in entity_ids {
+            let entity: Option<(String, Option<String>)> = self
+                .connection
+                .query_row(
+                    "SELECT id,entity_type FROM entities WHERE id=?1 AND deleted=0",
+                    params![entity_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if let Some((entity_id, entity_type)) = entity {
+                targets.insert(
+                    entity_id.clone(),
+                    ImportExistingTarget {
+                        revision: self.revision_for_entity(&entity_id)?,
+                        entity_id,
+                        entity_type,
+                    },
+                );
+            }
+        }
+        Ok(targets)
+    }
+
+    pub fn external_import_duplicate_targets(
+        &self,
+        importer_id: &str,
+        objects: &[(String, String)],
+    ) -> Result<BTreeMap<String, Vec<String>>, CoreError> {
+        let mut duplicates = BTreeMap::new();
+        for (object_id, source_id) in objects {
+            let key = external_import_source_key(importer_id, source_id);
+            let mut statement = self.connection.prepare(
+                "SELECT f.entity_id,f.value FROM entity_fields f JOIN entities e ON e.id=f.entity_id WHERE f.namespace=?1 AND f.key=?2 AND e.deleted=0 ORDER BY f.entity_id",
+            )?;
+            let rows = statement
+                .query_map(params![EXTERNAL_IMPORT_SOURCE_NAMESPACE, key], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+            let mut entity_ids = Vec::new();
+            for row in rows {
+                let (entity_id, encoded) = row?;
+                let value = decode_field_value(encoded);
+                if value.get("importerId").and_then(serde_json::Value::as_str) == Some(importer_id)
+                    && value.get("sourceId").and_then(serde_json::Value::as_str) == Some(source_id)
+                {
+                    entity_ids.push(entity_id);
+                }
+            }
+            if !entity_ids.is_empty() {
+                duplicates.insert(object_id.clone(), entity_ids);
+            }
+        }
+        Ok(duplicates)
+    }
+
+    pub fn commit_external_import(
+        &self,
+        plan: &ValidatedImportPlan,
+        acknowledge_warnings: bool,
+        request_id: &str,
+    ) -> Result<ExternalImportCommitReport, CoreError> {
+        if plan.schema_version != VALIDATED_IMPORT_PLAN_SCHEMA_VERSION {
+            return Err(CoreError::Validation(
+                "unsupported validated import plan version".into(),
+            ));
+        }
+        if !plan.warnings.is_empty() && !acknowledge_warnings {
+            return Err(CoreError::Validation(
+                "import warnings must be acknowledged before commit".into(),
+            ));
+        }
+        let input_fingerprint = digest_bytes(
+            &serde_json::to_vec(&(plan, acknowledge_warnings))
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if let Some(report) = self
+            .committed_mutation_with_fingerprint::<ExternalImportCommitReport>(
+                Some(request_id),
+                Some(&input_fingerprint),
+            )?
+        {
+            return Ok(report);
+        }
+        let current_generation = self.content_generation()?;
+        if current_generation != plan.content_generation {
+            return Err(CoreError::Conflict(format!(
+                "import plan is stale: expected project generation {}, current {}",
+                plan.content_generation, current_generation
+            )));
+        }
+
+        struct PreparedCreate {
+            entity_id: String,
+            object_index: usize,
+            fields: Vec<(String, String, String)>,
+            source_key: String,
+            source_value: String,
+        }
+        let mut creates = Vec::new();
+        let mut mapped_sources = Vec::new();
+        let mut created_report = Vec::new();
+        let mut mapped_report = Vec::new();
+        let mut skipped_source_paths = Vec::new();
+        let mut affected_prefixes = Vec::new();
+        for (object_index, object) in plan.objects.iter().enumerate() {
+            let source_key = external_import_source_key(&plan.importer.id, &object.source_id);
+            let source_value = encode_field_value(&serde_json::json!({
+                "importerId": plan.importer.id,
+                "importerVersion": plan.importer.version,
+                "sourceId": object.source_id,
+                "sourcePath": object.source_path,
+                "contentHash": object.content_hash,
+            }))?;
+            match &object.decision {
+                ImportObjectDecision::Skip => {
+                    skipped_source_paths.push(object.source_path.clone());
+                }
+                ImportObjectDecision::MapToExisting {
+                    entity_id,
+                    expected_revision,
+                } => {
+                    let current_revision = self.revision_for_entity(entity_id)?;
+                    Self::ensure_expected_revision(
+                        Some(expected_revision),
+                        current_revision,
+                        "import map target",
+                    )?;
+                    mapped_sources.push((entity_id.clone(), source_key, source_value));
+                    affected_prefixes.push(format!("entities/{entity_id}/"));
+                    mapped_report.push(ImportedObjectReport {
+                        staged_object_id: object.staged_object_id.clone(),
+                        source_path: object.source_path.clone(),
+                        entity_id: entity_id.clone(),
+                        entity_type: object.entity_type.clone(),
+                    });
+                }
+                ImportObjectDecision::Create => {
+                    if object.title.trim().is_empty() || object.entity_type.is_none() {
+                        return Err(CoreError::Validation(
+                            "validated create item requires a title and entity type".into(),
+                        ));
+                    }
+                    validate_document_format(
+                        object
+                            .document
+                            .as_ref()
+                            .map(|document| document.format.as_str()),
+                        self.root.is_some(),
+                    )?;
+                    let fields = object
+                        .fields
+                        .iter()
+                        .map(|field| {
+                            Ok((
+                                field.namespace.clone(),
+                                field.key.clone(),
+                                encode_field_value(&field.value)?,
+                            ))
+                        })
+                        .collect::<Result<Vec<_>, CoreError>>()?;
+                    let entity_id = Uuid::new_v4().to_string();
+                    affected_prefixes.push(format!("entities/{entity_id}/"));
+                    created_report.push(ImportedObjectReport {
+                        staged_object_id: object.staged_object_id.clone(),
+                        source_path: object.source_path.clone(),
+                        entity_id: entity_id.clone(),
+                        entity_type: object.entity_type.clone(),
+                    });
+                    creates.push(PreparedCreate {
+                        entity_id,
+                        object_index,
+                        fields,
+                        source_key,
+                        source_value,
+                    });
+                }
+            }
+        }
+        let report = ExternalImportCommitReport {
+            request_id: request_id.into(),
+            plan_id: plan.plan_id.clone(),
+            importer: plan.importer.clone(),
+            source: plan.source.clone(),
+            created: created_report,
+            mapped: mapped_report,
+            skipped_source_paths,
+            warnings: plan.warnings.clone(),
+        };
+        let result = serde_json::to_value(&report)?;
+        let request_id = self.request_id(Some(request_id))?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&result),
+            &affected_prefixes,
+            &input_fingerprint,
+        )?;
+        let transaction_generation: i64 = transaction.query_row(
+            "SELECT content_generation FROM runtime_meta WHERE key='runtime'",
+            [],
+            |row| row.get(0),
+        )?;
+        if transaction_generation != plan.content_generation {
+            return Err(CoreError::Conflict(
+                "import plan became stale before commit".into(),
+            ));
+        }
+        let now = chrono_like_now();
+        for prepared in &creates {
+            let object = &plan.objects[prepared.object_index];
+            transaction.execute(
+                "INSERT INTO entities(id,name,entity_type,created_at,updated_at) VALUES (?1,?2,?3,?4,?4)",
+                params![prepared.entity_id, object.title.trim(), object.entity_type, now],
+            )?;
+            if let Some(document) = &object.document {
+                transaction.execute(
+                    "INSERT INTO documents(id,entity_id,format,body,updated_at) VALUES (?1,?2,?3,?4,?5)",
+                    params![Uuid::new_v4().to_string(), prepared.entity_id, document.format, document.body, now],
+                )?;
+            }
+            for (namespace, key, encoded) in &prepared.fields {
+                transaction.execute(
+                    "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
+                    params![prepared.entity_id, namespace, key, encoded],
+                )?;
+            }
+            transaction.execute(
+                "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
+                params![
+                    prepared.entity_id,
+                    EXTERNAL_IMPORT_SOURCE_NAMESPACE,
+                    prepared.source_key,
+                    prepared.source_value
+                ],
+            )?;
+        }
+        for (entity_id, source_key, source_value) in &mapped_sources {
+            transaction.execute(
+                "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value",
+                params![entity_id, EXTERNAL_IMPORT_SOURCE_NAMESPACE, source_key, source_value],
+            )?;
+        }
+        transaction.commit()?;
+        self.notify_export_worker()?;
+        Ok(report)
+    }
+
     pub fn update_entity(
         &self,
         id: String,
@@ -7417,10 +7685,9 @@ impl ProjectStore {
             }))
             .map_err(|error| CoreError::Serialization(error.to_string()))?,
         );
-        if let Some(mut asset) = self.committed_mutation_with_fingerprint::<Asset>(
-            request_id,
-            Some(&input_fingerprint),
-        )? {
+        if let Some(mut asset) =
+            self.committed_mutation_with_fingerprint::<Asset>(request_id, Some(&input_fingerprint))?
+        {
             asset.revision = self.revision_for_asset(&asset.id)?;
             return Ok(asset);
         }
@@ -7484,10 +7751,9 @@ impl ProjectStore {
             }))
             .map_err(|error| CoreError::Serialization(error.to_string()))?,
         );
-        if let Some(mut asset) = self.committed_mutation_with_fingerprint::<Asset>(
-            request_id,
-            Some(&input_fingerprint),
-        )? {
+        if let Some(mut asset) =
+            self.committed_mutation_with_fingerprint::<Asset>(request_id, Some(&input_fingerprint))?
+        {
             asset.revision = self.revision_for_asset(&asset.id)?;
             return Ok(asset);
         }
@@ -7702,7 +7968,10 @@ impl ProjectStore {
             .map_err(|error| CoreError::Serialization(error.to_string()))?,
         );
         if self
-            .committed_mutation_with_fingerprint::<serde_json::Value>(request_id, Some(&input_fingerprint))?
+            .committed_mutation_with_fingerprint::<serde_json::Value>(
+                request_id,
+                Some(&input_fingerprint),
+            )?
             .is_some()
         {
             return Ok(());
@@ -7716,10 +7985,7 @@ impl ProjectStore {
             &[format!("entities/{}/", asset.entity_id), asset.path.clone()],
             &input_fingerprint,
         )?;
-        let deleted = transaction.execute(
-            "DELETE FROM assets WHERE id=?1",
-            params![asset_id],
-        )?;
+        let deleted = transaction.execute("DELETE FROM assets WHERE id=?1", params![asset_id])?;
         if deleted == 0 {
             return Err(CoreError::NotFound("asset not found".into()));
         }

@@ -1,4 +1,8 @@
 use super::*;
+use crate::{
+    ImportSource, ImportSourceKind, ImportValidationIssue, ImportValidationSeverity,
+    ImporterIdentity, StagedDocument, ValidatedImportObject,
+};
 use daena_plugin_api::MetadataFieldDefinition;
 use std::collections::BTreeMap;
 
@@ -453,6 +457,138 @@ fn physical_map_acceptance_is_atomic_and_request_idempotent() {
     assert_eq!(
         rebuilt.asset_bytes(authored_source_id).unwrap(),
         crate::maps::vector::empty_canonical_bytes()
+    );
+    drop(rebuilt);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn external_import_commit_is_idempotent_and_survives_clean_rebuild() {
+    let root = std::env::temp_dir().join(format!("daena-external-commit-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let existing = store
+        .create_entity(CreateEntity {
+            name: "Existing note".into(),
+            entity_type: Some("note".into()),
+        })
+        .unwrap();
+    let generation = store.content_generation().unwrap();
+    let importer = ImporterIdentity {
+        id: "test.importer".into(),
+        version: "1".into(),
+        name: "Test importer".into(),
+    };
+    let source = ImportSource {
+        id: "source-root".into(),
+        kind: ImportSourceKind::Folder,
+        display_name: "Fixture".into(),
+    };
+    let plan = ValidatedImportPlan {
+        schema_version: VALIDATED_IMPORT_PLAN_SCHEMA_VERSION,
+        plan_id: "validated-plan".into(),
+        candidate_plan_id: "candidate-plan".into(),
+        session_id: "session".into(),
+        importer,
+        source,
+        content_generation: generation,
+        manifest_fingerprint: "manifest".into(),
+        objects: vec![
+            ValidatedImportObject {
+                staged_object_id: "create-object".into(),
+                source_id: "create-source".into(),
+                source_path: "Created.md".into(),
+                content_hash: "create-hash".into(),
+                title: "Created note".into(),
+                entity_type: Some("note".into()),
+                document: Some(StagedDocument {
+                    format: "markdown".into(),
+                    body: "# Created note".into(),
+                }),
+                fields: Vec::new(),
+                decision: ImportObjectDecision::Create,
+            },
+            ValidatedImportObject {
+                staged_object_id: "mapped-object".into(),
+                source_id: "mapped-source".into(),
+                source_path: "Mapped.md".into(),
+                content_hash: "mapped-hash".into(),
+                title: "Mapped note".into(),
+                entity_type: existing.entity_type.clone(),
+                document: None,
+                fields: Vec::new(),
+                decision: ImportObjectDecision::MapToExisting {
+                    entity_id: existing.id.clone(),
+                    expected_revision: existing.revision.clone(),
+                },
+            },
+            ValidatedImportObject {
+                staged_object_id: "skipped-object".into(),
+                source_id: "skipped-source".into(),
+                source_path: "Skipped.md".into(),
+                content_hash: "skipped-hash".into(),
+                title: "Skipped note".into(),
+                entity_type: Some("note".into()),
+                document: None,
+                fields: Vec::new(),
+                decision: ImportObjectDecision::Skip,
+            },
+        ],
+        warnings: vec![ImportValidationIssue {
+            severity: ImportValidationSeverity::Warning,
+            code: "fixture_warning".into(),
+            message: "Fixture warning".into(),
+            source_path: None,
+            object_id: None,
+            existing_entity_id: None,
+        }],
+    };
+
+    let request_id = "00000000-0000-4000-8000-000000000001";
+    assert!(store
+        .commit_external_import(&plan, false, request_id)
+        .is_err());
+    let first = store
+        .commit_external_import(&plan, true, request_id)
+        .unwrap();
+    let retry = store
+        .commit_external_import(&plan, true, request_id)
+        .unwrap();
+    assert_eq!(retry, first);
+    assert_eq!(first.created.len(), 1);
+    assert_eq!(first.mapped.len(), 1);
+    assert_eq!(first.skipped_source_paths, vec!["Skipped.md"]);
+    assert_eq!(store.list_entities().unwrap().len(), 2);
+    let duplicates = store
+        .external_import_duplicate_targets(
+            "test.importer",
+            &[
+                ("create-object".into(), "create-source".into()),
+                ("mapped-object".into(), "mapped-source".into()),
+            ],
+        )
+        .unwrap();
+    assert_eq!(
+        duplicates["create-object"],
+        vec![first.created[0].entity_id.clone()]
+    );
+    assert_eq!(duplicates["mapped-object"], vec![existing.id]);
+
+    store
+        .flush_checkpoint("external import commit test")
+        .unwrap();
+    drop(store);
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(rebuilt.list_entities().unwrap().len(), 2);
+    let rebuilt_duplicates = rebuilt
+        .external_import_duplicate_targets(
+            "test.importer",
+            &[("create-object".into(), "create-source".into())],
+        )
+        .unwrap();
+    assert_eq!(
+        rebuilt_duplicates["create-object"],
+        vec![first.created[0].entity_id.clone()]
     );
     drop(rebuilt);
     std::fs::remove_dir_all(root).unwrap();

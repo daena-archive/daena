@@ -7,17 +7,31 @@ import {
   project,
   type ExternalImporterDescriptor,
   type ExternalImportAnalysisStatus,
+  type ExternalImportCommitReport,
   type ExternalImportPage,
   type ExternalImportPageItem,
+  type ExternalImportValidationSummary,
+  type Entity,
   type ImportCandidatePlan,
   type ImportMappingDecision,
   type ImportMappingOverrides,
+  type ImportObjectDecision,
   type ProjectModuleManifest,
   type StagedObject,
 } from "$lib/project/client";
 import { buildExternalImportMappingCatalog, importFolderFor, type ImportFieldChoice } from "$lib/externalImport";
 
-let { modules, onClose }: { modules: ProjectModuleManifest[]; onClose: () => void } = $props();
+let {
+  modules,
+  entities,
+  onCommitted,
+  onClose,
+}: {
+  modules: ProjectModuleManifest[];
+  entities: Entity[];
+  onCommitted: (report: ExternalImportCommitReport) => Promise<void>;
+  onClose: () => void;
+} = $props();
 
 const pageSize = 50;
 let dialogElement = $state<HTMLDivElement | null>(null);
@@ -32,6 +46,14 @@ let selectedItemIndex = $state(0);
 let inspectedItem = $derived.by(() => page?.items[selectedItemIndex] ?? null);
 let plan = $state<ImportCandidatePlan | null>(null);
 let mappings = $state<ImportMappingOverrides>({ global: {}, folders: {}, items: {} });
+let decisions = $state<Record<string, ImportObjectDecision>>({});
+let validation = $state<ExternalImportValidationSummary | null>(null);
+let report = $state<ExternalImportCommitReport | null>(null);
+let acknowledgeWarnings = $state(false);
+let confirmCommit = $state(false);
+let commitRequestId = $state("");
+let validating = $state(false);
+let committing = $state(false);
 let mappingScope = $state<"global" | "folder" | "item">("global");
 let busy = $state(false);
 let previewLoading = $state(false);
@@ -92,6 +114,49 @@ function currentDecision(): ImportMappingDecision {
   return mappings.global ?? {};
 }
 
+function invalidateValidation() {
+  validation = null;
+  acknowledgeWarnings = false;
+  confirmCommit = false;
+  commitRequestId = "";
+}
+
+function objectDecision(object: StagedObject): ImportObjectDecision {
+  return decisions[object.id] ?? { kind: "create" };
+}
+
+function existingTargetId(object: StagedObject): string {
+  const decision = objectDecision(object);
+  return decision.kind === "map_to_existing" ? decision.entity_id : "";
+}
+
+function setObjectAction(object: StagedObject, kind: ImportObjectDecision["kind"]) {
+  let decision: ImportObjectDecision;
+  if (kind === "map_to_existing") {
+    const target = entities[0];
+    if (!target) return;
+    decision = { kind, entity_id: target.id, expected_revision: target.revision };
+  } else {
+    decision = { kind };
+  }
+  decisions = { ...decisions, [object.id]: decision };
+  invalidateValidation();
+}
+
+function setExistingTarget(object: StagedObject, entityId: string) {
+  const target = entities.find((entity) => entity.id === entityId);
+  if (!target) return;
+  decisions = {
+    ...decisions,
+    [object.id]: {
+      kind: "map_to_existing",
+      entity_id: target.id,
+      expected_revision: target.revision,
+    },
+  };
+  invalidateValidation();
+}
+
 function replaceCurrentDecision(decision: ImportMappingDecision) {
   const object = selectedObject();
   const folder = selectedFolder();
@@ -102,6 +167,7 @@ function replaceCurrentDecision(decision: ImportMappingDecision) {
   } else {
     mappings = { ...mappings, global: decision };
   }
+  invalidateValidation();
   schedulePlanRefresh();
 }
 
@@ -153,6 +219,42 @@ async function refreshPlan() {
   }
 }
 
+async function validatePlan() {
+  if (status?.state !== "ready") return;
+  validating = true;
+  error = "";
+  confirmCommit = false;
+  try {
+    validation = await project.externalImportValidate(status.sessionId, mappings, decisions);
+    commitRequestId = validation.validationId ? crypto.randomUUID() : "";
+  } catch (cause) {
+    validation = null;
+    error = displayError(cause);
+  } finally {
+    validating = false;
+  }
+}
+
+async function commitPlan() {
+  if (!status || !validation?.validationId) return;
+  committing = true;
+  error = "";
+  try {
+    report = await project.externalImportCommit(
+      status.sessionId,
+      validation.validationId,
+      acknowledgeWarnings,
+      commitRequestId,
+    );
+    await onCommitted(report);
+    confirmCommit = false;
+  } catch (cause) {
+    error = displayError(cause);
+  } finally {
+    committing = false;
+  }
+}
+
 async function loadPage(offset: number) {
   if (status?.state !== "ready") return;
   previewLoading = true;
@@ -199,6 +301,9 @@ async function chooseAndAnalyze() {
   page = null;
   plan = null;
   mappings = { global: {}, folders: {}, items: {} };
+  decisions = {};
+  validation = null;
+  report = null;
   try {
     const source = await project.externalImportSelectSource(sourceKind);
     if (!source) return;
@@ -218,6 +323,7 @@ async function cancelAnalysis() {
     applyStatus(await project.externalImportAnalysisCancel(status.sessionId));
     page = null;
     plan = null;
+    validation = null;
   } catch (cause) {
     error = displayError(cause);
   } finally {
@@ -231,6 +337,9 @@ async function startOver() {
   sourceName = "";
   page = null;
   plan = null;
+  decisions = {};
+  validation = null;
+  report = null;
   error = "";
 }
 
@@ -377,6 +486,31 @@ onMount(() => {
         <p>No project content was changed.</p>
         <button class="primary-button" type="button" onclick={startOver}>Choose another source</button>
       </section>
+    {:else if report}
+      <section class="result-step" aria-live="polite">
+        <CircleCheck size={32} strokeWidth={1.6} />
+        <div>
+          <span class="kicker">IMPORT COMPLETE</span>
+          <h3>Project content was updated</h3>
+          <p>
+            Created {report.created.length}, mapped {report.mapped.length}, and skipped
+            {report.skippedSourcePaths.length} source {report.skippedSourcePaths.length === 1 ? "item" : "items"}.
+          </p>
+        </div>
+        {#if report.created.length || report.mapped.length}
+          <div class="result-list">
+            {#each [...report.created, ...report.mapped] as item}
+              <div><strong>{item.sourcePath}</strong><span>{item.entityType ?? "Existing entity"} · {item.entityId}</span></div>
+            {/each}
+          </div>
+        {/if}
+        {#if report.warnings.length}
+          <div class="message warning-message">
+            <AlertTriangle size={15} strokeWidth={1.8} />
+            <span>Imported with {report.warnings.length} acknowledged warning{report.warnings.length === 1 ? "" : "s"}.</span>
+          </div>
+        {/if}
+      </section>
     {:else if status.result}
       <div class="preview-shell">
         <section class="summary-row" aria-label="Analysis summary">
@@ -401,6 +535,36 @@ onMount(() => {
             <AlertTriangle size={15} strokeWidth={1.8} />
             <span>{plan.issues[0].message}</span>
           </div>{/if}
+        {#if validation}
+          <section class:invalid={validation.errorCount > 0} class="validation-panel" aria-live="polite">
+            <div>
+              <strong>{validation.errorCount > 0 ? "Resolve validation errors" : "Plan validated"}</strong>
+              <span>
+                {validation.createCount} create · {validation.mapCount} map · {validation.skipCount} skip ·
+                {validation.warningCount} warnings
+              </span>
+            </div>
+            {#if validation.issues.length}
+              <ul>
+                {#each validation.issues as issue}
+                  <li class={issue.severity}><strong>{issue.code}</strong> {issue.message}</li>
+                {/each}
+              </ul>
+            {/if}
+            {#if confirmCommit && validation.validationId}
+              <div class="commit-confirmation">
+                <strong>Commit this validated plan?</strong>
+                <span>The changes are applied as one atomic project mutation.</span>
+                {#if validation.warningCount > 0}
+                  <label>
+                    <input type="checkbox" bind:checked={acknowledgeWarnings} />
+                    I reviewed and accept the {validation.warningCount} warning{validation.warningCount === 1 ? "" : "s"}.
+                  </label>
+                {/if}
+              </div>
+            {/if}
+          </section>
+        {/if}
 
         <div class="preview-grid">
           <section class="item-list" aria-label="Staged items">
@@ -440,6 +604,35 @@ onMount(() => {
                 </div>
                 <span class="format-badge">{object.body?.format ?? object.source_kind}</span>
               </div>
+              <div class="decision-card">
+                <label>
+                  <span>Import action</span>
+                  <select
+                    value={decisions[object.id]?.kind ?? ""}
+                    onchange={(event) => {
+                      const kind = event.currentTarget.value as ImportObjectDecision["kind"];
+                      if (kind) setObjectAction(object, kind);
+                    }}>
+                    <option value="">Create (default)</option>
+                    <option value="create">Create new entity</option>
+                    <option value="skip">Skip this item</option>
+                    <option value="map_to_existing" disabled={entities.length === 0}>Map to existing entity</option>
+                  </select>
+                </label>
+                {#if objectDecision(object).kind === "map_to_existing"}
+                  <label>
+                    <span>Existing entity</span>
+                    <select
+                    value={existingTargetId(object)}
+                      onchange={(event) => setExistingTarget(object, event.currentTarget.value)}>
+                      {#each entities.filter((entity) => !entity.deleted) as entity}
+                        <option value={entity.id}>{entity.name} · {entity.entity_type}</option>
+                      {/each}
+                    </select>
+                  </label>
+                {/if}
+              </div>
+              {#if objectDecision(object).kind === "create"}
               <div class="mapping-card">
                 <div class="mapping-heading">
                   <div>
@@ -508,6 +701,7 @@ onMount(() => {
                     >Overrides items under <code>{selectedFolder()}</code>.</small
                   >{/if}
               </div>
+              {/if}
               <div class="document-preview">
                 <span class="kicker">SOURCE PREVIEW</span>
                 <pre>{object.body?.body ?? "No document body."}</pre>
@@ -549,13 +743,31 @@ onMount(() => {
 
     <footer class="import-footer">
       <div>
-        <strong>No project changes</strong><span
-          >{plan ? `Candidate ${plan.planId.slice(7, 19)}` : "Analysis and mapping are preview-only."}</span>
+        <strong>{report ? "Import committed" : "No project changes yet"}</strong><span
+          >{report
+            ? `Request ${report.requestId.slice(0, 12)}`
+            : plan
+              ? `Candidate ${plan.planId.slice(7, 19)}`
+              : "Analysis and mapping are preview-only."}</span>
       </div>
       <div>
-        {#if status?.state === "ready"}<button class="secondary-button" type="button" onclick={startOver}
-            >Start over</button
-          >{/if}<button class="primary-button" type="button" onclick={() => void closeDialog()}>Close</button>
+        {#if status?.state === "ready" && !report}
+          <button class="secondary-button" type="button" disabled={validating || committing} onclick={startOver}
+            >Start over</button>
+          <button class="secondary-button" type="button" disabled={validating || committing} onclick={validatePlan}
+            >{validating ? "Validating…" : "Validate plan"}</button>
+          {#if validation?.validationId && validation.errorCount === 0 && !confirmCommit}
+            <button class="primary-button" type="button" onclick={() => (confirmCommit = true)}>Review commit</button>
+          {:else if validation?.validationId && validation.errorCount === 0 && confirmCommit}
+            <button
+              class="primary-button"
+              type="button"
+              disabled={committing || (validation.warningCount > 0 && !acknowledgeWarnings)}
+              onclick={commitPlan}>{committing ? "Committing…" : "Commit import"}</button>
+          {/if}
+        {/if}
+        <button class={report ? "primary-button" : "secondary-button"} type="button" onclick={() => void closeDialog()}
+          >Close</button>
       </div>
     </footer>
   </div>
@@ -632,7 +844,9 @@ onMount(() => {
   padding: 30px;
 }
 .source-step label,
-.mapping-card label {
+.mapping-card label,
+.decision-card label,
+.commit-confirmation label {
   display: grid;
   gap: 6px;
   color: var(--ink-soft, #77766d);
@@ -640,7 +854,8 @@ onMount(() => {
   font-weight: 650;
 }
 .source-step select,
-.mapping-card select {
+.mapping-card select,
+.decision-card select {
   min-height: 39px;
   width: 100%;
   padding: 7px 10px;
@@ -788,6 +1003,79 @@ button:disabled {
   gap: 8px;
   background: #fff2d8;
   color: #79571e;
+}
+.validation-panel {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid #a8c4b3;
+  border-radius: 9px;
+  background: #eef6f1;
+  color: #365342;
+  font-size: 11px;
+}
+.validation-panel.invalid {
+  border-color: #dfb3a6;
+  background: #fbeae5;
+  color: #913f2b;
+}
+.validation-panel > div:first-child,
+.commit-confirmation {
+  display: grid;
+  gap: 3px;
+}
+.validation-panel ul {
+  max-height: 110px;
+  margin: 0;
+  padding-left: 18px;
+  overflow: auto;
+}
+.validation-panel li.warning {
+  color: #79571e;
+}
+.commit-confirmation {
+  padding-top: 8px;
+  border-top: 1px solid currentColor;
+}
+.commit-confirmation label {
+  display: flex;
+  align-items: center;
+  font-weight: 600;
+}
+.result-step {
+  width: min(720px, calc(100% - 40px));
+  min-height: 0;
+  margin: auto;
+  display: grid;
+  justify-items: center;
+  gap: 16px;
+  padding: 30px;
+  text-align: center;
+  color: var(--accent-dark, #365342);
+}
+.result-step h3,
+.result-step p {
+  margin: 4px 0;
+}
+.result-step p,
+.result-list span {
+  color: var(--ink-soft, #77766d);
+  font-size: 11px;
+}
+.result-list {
+  width: 100%;
+  max-height: 300px;
+  overflow: auto;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 9px;
+  text-align: left;
+}
+.result-list div {
+  display: grid;
+  gap: 2px;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--line, #e4e1d8);
 }
 .preview-shell {
   min-height: 0;
@@ -943,6 +1231,16 @@ button:disabled {
   border: 1px solid #ded8ca;
   border-radius: 10px;
   background: #faf8f2;
+}
+.decision-card {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 10px;
+  background: var(--canvas, #f7f6f2);
 }
 .mapping-heading strong {
   font-size: 12px;

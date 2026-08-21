@@ -7,6 +7,7 @@ use std::path::Path;
 
 pub const STAGED_IMPORT_SCHEMA_VERSION: u32 = 1;
 pub const IMPORT_CANDIDATE_PLAN_SCHEMA_VERSION: u32 = 1;
+pub const VALIDATED_IMPORT_PLAN_SCHEMA_VERSION: u32 = 1;
 pub const GENERIC_DOCUMENT_IMPORTER_ID: &str = "daena.generic-documents";
 pub const GENERIC_DOCUMENT_IMPORTER_VERSION: &str = "1";
 pub const EXTERNAL_IMPORT_ANALYSIS_CANCELLED: &str = "external import analysis cancelled";
@@ -382,6 +383,421 @@ pub fn build_import_candidate_plan(
     })?;
     plan.plan_id = format!("sha256:{:x}", Sha256::digest(bytes));
     Ok(plan)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImportObjectDecision {
+    Create,
+    Skip,
+    MapToExisting {
+        entity_id: String,
+        expected_revision: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportFieldTarget {
+    pub namespace: String,
+    pub key: String,
+    #[serde(default)]
+    pub entity_types: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportMappingCatalog {
+    pub fingerprint: String,
+    pub entity_types: BTreeSet<String>,
+    pub fields: BTreeMap<String, ImportFieldTarget>,
+    pub relationship_types: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportExistingTarget {
+    pub entity_id: String,
+    pub entity_type: Option<String>,
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportValidationSeverity {
+    Error,
+    Warning,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportValidationIssue {
+    pub severity: ImportValidationSeverity,
+    pub code: String,
+    pub message: String,
+    #[serde(default)]
+    pub source_path: Option<String>,
+    #[serde(default)]
+    pub object_id: Option<String>,
+    #[serde(default)]
+    pub existing_entity_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidatedImportField {
+    pub namespace: String,
+    pub key: String,
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidatedImportObject {
+    pub staged_object_id: String,
+    pub source_id: String,
+    pub source_path: String,
+    pub content_hash: String,
+    pub title: String,
+    pub entity_type: Option<String>,
+    pub document: Option<StagedDocument>,
+    pub fields: Vec<ValidatedImportField>,
+    pub decision: ImportObjectDecision,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidatedImportPlan {
+    pub schema_version: u32,
+    pub plan_id: String,
+    pub candidate_plan_id: String,
+    pub session_id: String,
+    pub importer: ImporterIdentity,
+    pub source: ImportSource,
+    pub content_generation: i64,
+    pub manifest_fingerprint: String,
+    pub objects: Vec<ValidatedImportObject>,
+    pub warnings: Vec<ImportValidationIssue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedObjectReport {
+    pub staged_object_id: String,
+    pub source_path: String,
+    pub entity_id: String,
+    pub entity_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalImportCommitReport {
+    pub request_id: String,
+    pub plan_id: String,
+    pub importer: ImporterIdentity,
+    pub source: ImportSource,
+    pub created: Vec<ImportedObjectReport>,
+    pub mapped: Vec<ImportedObjectReport>,
+    pub skipped_source_paths: Vec<String>,
+    pub warnings: Vec<ImportValidationIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportValidationBuild {
+    pub candidate: ImportCandidatePlan,
+    pub staged_objects: Vec<StagedObject>,
+    pub catalog: ImportMappingCatalog,
+    pub decisions: BTreeMap<String, ImportObjectDecision>,
+    pub existing_targets: BTreeMap<String, ImportExistingTarget>,
+    pub duplicate_targets: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportValidationOutcome {
+    pub plan: Option<ValidatedImportPlan>,
+    pub issues: Vec<ImportValidationIssue>,
+}
+
+pub fn validate_import_candidate_plan(
+    input: ImportValidationBuild,
+) -> Result<ImportValidationOutcome, CoreError> {
+    let ImportValidationBuild {
+        candidate,
+        staged_objects,
+        catalog,
+        decisions,
+        existing_targets,
+        duplicate_targets,
+    } = input;
+    let staged = staged_objects
+        .into_iter()
+        .map(|object| (object.id.clone(), object))
+        .collect::<BTreeMap<_, _>>();
+    let mut issues = Vec::new();
+    if candidate.captured_content_generation != candidate.current_content_generation {
+        issues.push(validation_issue(
+            ImportValidationSeverity::Error,
+            "project_generation_changed",
+            "The project changed after analysis. Analyze the source again.",
+            None,
+            None,
+            None,
+        ));
+    }
+    if candidate.manifest_fingerprint != catalog.fingerprint {
+        issues.push(validation_issue(
+            ImportValidationSeverity::Error,
+            "manifest_changed",
+            "Enabled schema contributions changed. Review the mappings again.",
+            None,
+            None,
+            None,
+        ));
+    }
+    for diagnostic in &candidate.diagnostics {
+        let severity = match diagnostic.severity {
+            ImportDiagnosticSeverity::Warning => ImportValidationSeverity::Warning,
+            ImportDiagnosticSeverity::Fatal | ImportDiagnosticSeverity::Error => {
+                ImportValidationSeverity::Error
+            }
+        };
+        issues.push(validation_issue(
+            severity,
+            &diagnostic.code,
+            &diagnostic.message,
+            diagnostic.source_path.clone(),
+            diagnostic.object_id.clone(),
+            None,
+        ));
+    }
+    if candidate.unsupported_count > 0 {
+        issues.push(validation_issue(
+            ImportValidationSeverity::Warning,
+            "unsupported_source_data",
+            &format!(
+                "{} unsupported source item(s) will not be imported.",
+                candidate.unsupported_count
+            ),
+            None,
+            None,
+            None,
+        ));
+    }
+    let candidate_ids = candidate
+        .objects
+        .iter()
+        .map(|object| object.staged_object_id.as_str())
+        .collect::<BTreeSet<_>>();
+    for decision_id in decisions.keys() {
+        if !candidate_ids.contains(decision_id.as_str()) {
+            return Err(CoreError::Validation(format!(
+                "decision references unknown staged object: {decision_id}"
+            )));
+        }
+    }
+    let mut validated = Vec::with_capacity(candidate.objects.len());
+    for candidate_object in &candidate.objects {
+        let Some(object) = staged.get(&candidate_object.staged_object_id) else {
+            return Err(CoreError::Validation(format!(
+                "candidate object is missing from staged data: {}",
+                candidate_object.staged_object_id
+            )));
+        };
+        let decision = decisions
+            .get(&object.id)
+            .cloned()
+            .unwrap_or(ImportObjectDecision::Create);
+        let mut entity_type = None;
+        let mut fields = Vec::new();
+        match &decision {
+            ImportObjectDecision::Skip => {}
+            ImportObjectDecision::MapToExisting {
+                entity_id,
+                expected_revision,
+            } => match existing_targets.get(entity_id) {
+                Some(target) if target.revision == *expected_revision => {
+                    entity_type = target.entity_type.clone();
+                }
+                Some(_) => issues.push(validation_issue(
+                    ImportValidationSeverity::Error,
+                    "existing_target_revision_changed",
+                    "The selected existing entity changed. Select it again.",
+                    Some(object.source_path.clone()),
+                    Some(object.id.clone()),
+                    Some(entity_id.clone()),
+                )),
+                None => issues.push(validation_issue(
+                    ImportValidationSeverity::Error,
+                    "existing_target_missing",
+                    "The selected existing entity no longer exists.",
+                    Some(object.source_path.clone()),
+                    Some(object.id.clone()),
+                    Some(entity_id.clone()),
+                )),
+            },
+            ImportObjectDecision::Create => {
+                if !decisions.contains_key(&object.id) {
+                    if let Some(existing) = duplicate_targets
+                        .get(&object.id)
+                        .and_then(|targets| targets.first())
+                    {
+                        issues.push(validation_issue(
+                            ImportValidationSeverity::Error,
+                            "duplicate_source_identity",
+                            "This source was imported before. Choose create, skip, or map to existing explicitly.",
+                            Some(object.source_path.clone()),
+                            Some(object.id.clone()),
+                            Some(existing.clone()),
+                        ));
+                    }
+                }
+                let selected_type = candidate_object
+                    .mapping
+                    .entity_type
+                    .as_deref()
+                    .filter(|value| catalog.entity_types.contains(*value));
+                match selected_type {
+                    Some(selected) => entity_type = Some(selected.into()),
+                    None => issues.push(validation_issue(
+                        ImportValidationSeverity::Error,
+                        "entity_type_unavailable",
+                        "Choose an entity type contributed by an enabled plugin.",
+                        Some(object.source_path.clone()),
+                        Some(object.id.clone()),
+                        None,
+                    )),
+                }
+                for (source_key, target_id) in &candidate_object.mapping.field_mappings {
+                    let Some(value) = object.fields.get(source_key) else {
+                        issues.push(validation_issue(
+                            ImportValidationSeverity::Error,
+                            "source_field_missing",
+                            &format!("The source field {source_key} is not present."),
+                            Some(object.source_path.clone()),
+                            Some(object.id.clone()),
+                            None,
+                        ));
+                        continue;
+                    };
+                    let Some(target) = catalog.fields.get(target_id) else {
+                        issues.push(validation_issue(
+                            ImportValidationSeverity::Error,
+                            "target_field_unavailable",
+                            &format!("The mapped field {target_id} is not available."),
+                            Some(object.source_path.clone()),
+                            Some(object.id.clone()),
+                            None,
+                        ));
+                        continue;
+                    };
+                    if let Some(selected) = entity_type.as_deref() {
+                        if !target.entity_types.is_empty()
+                            && !target.entity_types.contains(selected)
+                        {
+                            issues.push(validation_issue(
+                                ImportValidationSeverity::Error,
+                                "target_field_scope_mismatch",
+                                &format!("The field {target_id} does not apply to {selected}."),
+                                Some(object.source_path.clone()),
+                                Some(object.id.clone()),
+                                None,
+                            ));
+                            continue;
+                        }
+                    }
+                    fields.push(ValidatedImportField {
+                        namespace: target.namespace.clone(),
+                        key: target.key.clone(),
+                        value: value.clone(),
+                    });
+                }
+                for source_key in object.fields.keys() {
+                    if !candidate_object
+                        .mapping
+                        .field_mappings
+                        .contains_key(source_key)
+                    {
+                        issues.push(validation_issue(
+                            ImportValidationSeverity::Warning,
+                            "unmapped_source_field",
+                            &format!("The source field {source_key} will not be imported."),
+                            Some(object.source_path.clone()),
+                            Some(object.id.clone()),
+                            None,
+                        ));
+                    }
+                }
+                if !candidate_object.mapping.relationship_mappings.is_empty()
+                    || !object.links.is_empty()
+                {
+                    issues.push(validation_issue(
+                        ImportValidationSeverity::Error,
+                        "relationship_mapping_not_supported",
+                        "Relationship commit is not enabled in this import iteration.",
+                        Some(object.source_path.clone()),
+                        Some(object.id.clone()),
+                        None,
+                    ));
+                }
+            }
+        }
+        validated.push(ValidatedImportObject {
+            staged_object_id: object.id.clone(),
+            source_id: object.source_id.clone(),
+            source_path: object.source_path.clone(),
+            content_hash: object.content_hash.clone(),
+            title: object.title.clone(),
+            entity_type,
+            document: object.body.clone(),
+            fields,
+            decision,
+        });
+    }
+    let has_errors = issues
+        .iter()
+        .any(|issue| issue.severity == ImportValidationSeverity::Error);
+    if has_errors {
+        return Ok(ImportValidationOutcome { plan: None, issues });
+    }
+    let warnings = issues.clone();
+    let mut plan = ValidatedImportPlan {
+        schema_version: VALIDATED_IMPORT_PLAN_SCHEMA_VERSION,
+        plan_id: String::new(),
+        candidate_plan_id: candidate.plan_id,
+        session_id: candidate.session_id,
+        importer: candidate.importer,
+        source: candidate.source,
+        content_generation: candidate.current_content_generation,
+        manifest_fingerprint: catalog.fingerprint,
+        objects: validated,
+        warnings,
+    };
+    let bytes =
+        serde_json::to_vec(&plan).map_err(|error| CoreError::Serialization(error.to_string()))?;
+    plan.plan_id = format!("sha256:{:x}", Sha256::digest(bytes));
+    Ok(ImportValidationOutcome {
+        plan: Some(plan),
+        issues,
+    })
+}
+
+fn validation_issue(
+    severity: ImportValidationSeverity,
+    code: &str,
+    message: &str,
+    source_path: Option<String>,
+    object_id: Option<String>,
+    existing_entity_id: Option<String>,
+) -> ImportValidationIssue {
+    ImportValidationIssue {
+        severity,
+        code: code.into(),
+        message: message.into(),
+        source_path,
+        object_id,
+        existing_entity_id,
+    }
 }
 
 fn resolve_import_mapping(
@@ -1501,6 +1917,63 @@ mod tests {
         assert_eq!(plan.unresolved_decision_count, 1);
         assert_eq!(plan.objects[0].issues[0].code, "entity_type_required");
         assert_eq!(plan.issues[0].code, "project_generation_changed");
+    }
+
+    #[test]
+    fn validation_requires_explicit_duplicate_decision_and_uses_enabled_catalog() {
+        let source = TestDirectory::new();
+        fs::write(source.path().join("note.md"), "# Note").unwrap();
+        let staged =
+            analyze_generic_documents(source.path(), GenericDocumentImportLimits::default())
+                .unwrap();
+        let object = staged.objects[0].clone();
+        let mut overrides = ImportMappingOverrides::default();
+        overrides.global.entity_type = Some("note".into());
+        let candidate = build_import_candidate_plan(
+            ImportCandidatePlanBuild {
+                session_id: "session".into(),
+                importer: staged.importer,
+                source: staged.source,
+                captured_content_generation: 4,
+                current_content_generation: 4,
+                manifest_fingerprint: "manifest-v1".into(),
+                objects: vec![object.clone()],
+                unsupported_count: 0,
+                diagnostics: Vec::new(),
+            },
+            &overrides,
+        )
+        .unwrap();
+        let build = ImportValidationBuild {
+            candidate,
+            staged_objects: vec![object.clone()],
+            catalog: ImportMappingCatalog {
+                fingerprint: "manifest-v1".into(),
+                entity_types: BTreeSet::from(["note".into()]),
+                fields: BTreeMap::new(),
+                relationship_types: BTreeSet::new(),
+            },
+            decisions: BTreeMap::new(),
+            existing_targets: BTreeMap::new(),
+            duplicate_targets: BTreeMap::from([(object.id.clone(), vec!["existing".into()])]),
+        };
+
+        let unresolved = validate_import_candidate_plan(build.clone()).unwrap();
+        assert!(unresolved.plan.is_none());
+        assert!(unresolved
+            .issues
+            .iter()
+            .any(|issue| issue.code == "duplicate_source_identity"));
+
+        let accepted = validate_import_candidate_plan(ImportValidationBuild {
+            decisions: BTreeMap::from([(object.id, ImportObjectDecision::Create)]),
+            ..build
+        })
+        .unwrap();
+        let plan = accepted.plan.unwrap();
+        assert_eq!(plan.content_generation, 4);
+        assert_eq!(plan.objects.len(), 1);
+        assert_eq!(plan.objects[0].entity_type.as_deref(), Some("note"));
     }
 
     #[cfg(unix)]

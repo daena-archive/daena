@@ -908,6 +908,44 @@ export interface ImportCandidatePlan {
   issues: ImportCandidateIssue[];
   unresolvedDecisionCount: number;
 }
+export type ImportObjectDecision =
+  | { kind: "create" }
+  | { kind: "skip" }
+  | { kind: "map_to_existing"; entity_id: string; expected_revision: string };
+export interface ImportValidationIssue {
+  severity: "error" | "warning";
+  code: string;
+  message: string;
+  sourcePath?: string | null;
+  objectId?: string | null;
+  existingEntityId?: string | null;
+}
+export interface ExternalImportValidationSummary {
+  validationId: string | null;
+  planId: string | null;
+  createCount: number;
+  skipCount: number;
+  mapCount: number;
+  warningCount: number;
+  errorCount: number;
+  issues: ImportValidationIssue[];
+}
+export interface ImportedObjectReport {
+  stagedObjectId: string;
+  sourcePath: string;
+  entityId: string;
+  entityType: string | null;
+}
+export interface ExternalImportCommitReport {
+  requestId: string;
+  planId: string;
+  importer: ImporterIdentity;
+  source: ExternalImportSource;
+  created: ImportedObjectReport[];
+  mapped: ImportedObjectReport[];
+  skippedSourcePaths: string[];
+  warnings: ImportValidationIssue[];
+}
 export interface MutationOptions {
   expectedRevision?: string;
   requestId?: string;
@@ -950,6 +988,23 @@ export const project = {
   ) =>
     invoke<ImportCandidatePlan>("project_external_import_candidate_plan", {
       input: { sessionId, manifestFingerprint, mappings },
+    }),
+  externalImportValidate: (
+    sessionId: string,
+    mappings: ImportMappingOverrides,
+    decisions: Record<string, ImportObjectDecision>,
+  ) =>
+    invoke<ExternalImportValidationSummary>("project_external_import_validate", {
+      input: { sessionId, mappings, decisions },
+    }),
+  externalImportCommit: (
+    sessionId: string,
+    validationId: string,
+    acknowledgeWarnings: boolean,
+    commitRequestId: string = crypto.randomUUID(),
+  ) =>
+    invoke<ExternalImportCommitReport>("project_external_import_commit", {
+      input: { sessionId, validationId, requestId: commitRequestId, acknowledgeWarnings },
     }),
   saveRecoveryCopy: (entityId: string, body: string) =>
     invoke<string>("project_save_recovery_copy", { entityId, body }),

@@ -4261,6 +4261,37 @@ fn core_migrations(
         .collect()
 }
 
+pub(crate) fn effective_module_manifests(
+    project: &ProjectStore,
+    host: &PluginHost,
+) -> Result<Vec<(PluginManifest, bool)>, CoreError> {
+    let project_id = project.info().map(|info| info.root);
+    let plugin_ids = host
+        .catalog
+        .list()
+        .map(|entry| entry.manifest.id.clone())
+        .collect::<Vec<_>>();
+    let mut manifests = Vec::with_capacity(plugin_ids.len());
+    for id in plugin_ids {
+        let entry = project_id
+            .as_deref()
+            .and_then(|project_id| host.runtime_entry(project_id, &id))
+            .or_else(|| host.catalog.get(&id).cloned())
+            .ok_or_else(|| CoreError::Validation("plugin catalog entry disappeared".into()))?;
+        let mut manifest = entry.manifest.clone();
+        if supports_schema_overlay(&entry.manifest) {
+            let overlay_value = project
+                .module_schema_overlay(&id)?
+                .unwrap_or_else(|| serde_json::json!({}));
+            let overlay = parse_module_overlay(&overlay_value).map_err(CoreError::Validation)?;
+            manifest =
+                merge_module_manifest(&entry.manifest, &overlay).map_err(CoreError::Validation)?;
+        }
+        manifests.push((manifest, project.is_module_enabled(&id)?));
+    }
+    Ok(manifests)
+}
+
 #[tauri::command]
 async fn module_list_manifests(
     state: tauri::State<'_, SharedCore>,
@@ -4268,42 +4299,21 @@ async fn module_list_manifests(
 ) -> Result<Vec<serde_json::Value>, String> {
     let plugins = plugins.inner().clone();
     with_read_project(state, move |project| {
-        let project_id = project.info().map(|info| info.root);
         let host = plugins
             .lock()
             .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
-        let plugin_ids = host
-            .catalog
-            .list()
-            .map(|entry| entry.manifest.id.clone())
-            .collect::<Vec<_>>();
-        let mut manifests = Vec::with_capacity(plugin_ids.len());
-        for id in plugin_ids {
-            let entry = project_id
-                .as_deref()
-                .and_then(|project_id| host.runtime_entry(project_id, &id))
-                .or_else(|| host.catalog.get(&id).cloned())
-                .ok_or_else(|| CoreError::Validation("plugin catalog entry disappeared".into()))?;
-            let mut manifest_struct = entry.manifest.clone();
-            if supports_schema_overlay(&entry.manifest) {
-                let overlay_value = project
-                    .module_schema_overlay(&id)?
-                    .unwrap_or_else(|| serde_json::json!({}));
-                let overlay =
-                    parse_module_overlay(&overlay_value).map_err(CoreError::Validation)?;
-                manifest_struct = merge_module_manifest(&entry.manifest, &overlay)
-                    .map_err(CoreError::Validation)?;
-            }
-            let mut manifest = serde_json::to_value(&manifest_struct)
-                .map_err(|error| CoreError::Validation(error.to_string()))?;
-            let enabled = project.is_module_enabled(&id)?;
-            manifest
-                .as_object_mut()
-                .expect("manifest is an object")
-                .insert("enabled".into(), serde_json::Value::Bool(enabled));
-            manifests.push(manifest);
-        }
-        Ok(manifests)
+        effective_module_manifests(project, &host)?
+            .into_iter()
+            .map(|(manifest_struct, enabled)| {
+                let mut manifest = serde_json::to_value(&manifest_struct)
+                    .map_err(|error| CoreError::Validation(error.to_string()))?;
+                manifest
+                    .as_object_mut()
+                    .expect("manifest is an object")
+                    .insert("enabled".into(), serde_json::Value::Bool(enabled));
+                Ok(manifest)
+            })
+            .collect()
     })
     .await
 }
@@ -9357,6 +9367,8 @@ pub fn run() {
             external_import_jobs::project_external_import_analysis_cancel,
             external_import_jobs::project_external_import_analysis_page,
             external_import_jobs::project_external_import_candidate_plan,
+            external_import_jobs::project_external_import_validate,
+            external_import_jobs::project_external_import_commit,
             project_save_recovery_copy,
             project_git_status,
             project_git_preflight,

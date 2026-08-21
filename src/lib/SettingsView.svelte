@@ -84,6 +84,8 @@ let {
   remoteCredential,
   onAiRemoteConsent,
   onAiRemoteImport,
+  onAiRemoteSave,
+  onAiRemoteClear,
   onPortableBackup,
   onRecoveryBackup,
   onRestoreRecoveryBackup,
@@ -147,6 +149,9 @@ let {
   remoteCredential: { configured: boolean } | null;
   onAiRemoteConsent: (allowed: boolean) => void;
   onAiRemoteImport: () => void;
+  /** Returns true when the credential was stored, so the input can be cleared. */
+  onAiRemoteSave: (apiKey: string) => Promise<boolean>;
+  onAiRemoteClear: () => void;
   onPortableBackup: () => Promise<string>;
   onRecoveryBackup: () => Promise<string>;
   onRestoreRecoveryBackup: (path: string) => Promise<void>;
@@ -155,8 +160,21 @@ let {
 let providerModalOpen = $state(false);
 let modelPickerOpen = $state<"chat" | "embedding" | null>(null);
 let embeddingSectionOpen = $state(false);
+let credentialInput = $state("");
+let credentialBusy = $state(false);
 let recoveryPath = $state("");
 let storageBusy = $state(false);
+
+async function saveRemoteCredential() {
+  const key = credentialInput.trim();
+  if (!key || credentialBusy) return;
+  credentialBusy = true;
+  try {
+    if (await onAiRemoteSave(key)) credentialInput = "";
+  } finally {
+    credentialBusy = false;
+  }
+}
 let storageMessage = $state("");
 let storageError = $state("");
 
@@ -666,10 +684,36 @@ async function handleClose() {
                       <div class="ai-settings-actions ai-card-actions">
                         {#if remoteCredential?.configured}
                           <span class="ai-status ai-status-badge ok">Credential stored in OS keychain</span>
-                        {:else}<button type="button" class="quiet" onclick={onAiRemoteImport}
-                            >Import environment key</button
-                          ><span class="ai-status ai-status-badge">No OS credential configured</span>{/if}
+                          <button type="button" class="quiet" onclick={onAiRemoteClear}>Remove</button>
+                        {:else}
+                          <span class="ai-status ai-status-badge">No OS credential configured</span>
+                        {/if}
                       </div>
+                      <div class="credential-row">
+                        <input
+                          type="password"
+                          bind:value={credentialInput}
+                          placeholder="API key"
+                          autocomplete="off"
+                          spellcheck="false"
+                          onkeydown={(event) => event.key === "Enter" && void saveRemoteCredential()} />
+                        <button
+                          type="button"
+                          class="primary"
+                          disabled={!credentialInput.trim() || credentialBusy}
+                          onclick={() => void saveRemoteCredential()}>
+                          {remoteCredential?.configured ? "Replace key" : "Save key"}
+                        </button>
+                        {#if !remoteCredential?.configured}
+                          <button type="button" class="quiet" onclick={onAiRemoteImport}>
+                            Import environment key
+                          </button>
+                        {/if}
+                      </div>
+                      <p class="credential-hint">
+                        The key is stored in the OS keychain and never shown again. Alternatively, launch with
+                        DAENA_REMOTE_API_KEY set and use the environment import.
+                      </p>
                     </div>
                     {#if projectOpen}
                       <div class="ai-action-group">
@@ -1357,6 +1401,7 @@ async function handleClose() {
 }
 .ai-provider-preset strong {
   margin: 0;
+  color: inherit;
   font-size: 12px;
 }
 .ai-provider-preset span {
@@ -1364,6 +1409,7 @@ async function handleClose() {
   font-size: 10px;
   line-height: 1.35;
 }
+.ai-provider-preset:hover span,
 .ai-provider-preset.active span {
   color: rgba(255, 255, 255, 0.7);
 }
@@ -1551,6 +1597,22 @@ async function handleClose() {
 .ai-action-group {
   display: grid;
   gap: 6px;
+}
+.credential-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.credential-row input {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.credential-hint {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 10.5px;
+  line-height: 1.5;
 }
 .ai-action-label {
   color: var(--ink-soft);

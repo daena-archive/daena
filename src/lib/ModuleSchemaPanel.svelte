@@ -1,5 +1,6 @@
 <script lang="ts">
 import type { EntityTemplate, FieldDefinition, ModuleSchemaOverlay } from "$lib/project/client";
+import FieldPicker from "$lib/FieldPicker.svelte";
 import { onMount } from "svelte";
 import { setSchemaEditorDirtyCheck } from "$lib/schemaEditorGuard";
 import { confirmDialog } from "$lib/dialogs.svelte";
@@ -200,8 +201,10 @@ let builtinFieldsCollapsed = $state(false);
 let builtinTemplatesCollapsed = $state(false);
 
 let newType = $state("");
+let newTypeFieldKeys = $state<string[]>([]);
 let editingTypeId = $state<string | null>(null);
 let editTypeValue = $state("");
+let editTypeFieldKeys = $state<string[]>([]);
 
 let newFieldLabel = $state("");
 let newFieldType = $state<FieldType>("text");
@@ -351,6 +354,18 @@ function effectiveFieldsForType(entityType: string): FieldDefinition[] {
   );
 }
 
+/** All enabled fields (builtin + custom) as searchable picker options. */
+function selectableFieldOptions() {
+  return [...packageFields, ...(draft.customFields ?? [])]
+    .filter((field) => !isDisabled(draft.disabledFields, field.key))
+    .map((field) => ({
+      key: field.key,
+      label: field.label || humanizeId(field.key),
+      hint: fieldTypeLabel(field.type),
+    }))
+    .sort((left, right) => left.label.localeCompare(right.label));
+}
+
 function updateBuiltinFieldScope(field: FieldDefinition, entityTypes: string[]) {
   const nextTypes = [...new Set(entityTypes)].sort();
   const baseline = field.entityTypes?.length ? [...field.entityTypes].sort() : effectiveTypes().sort();
@@ -392,6 +407,91 @@ function updateBuiltinFieldScope(field: FieldDefinition, entityTypes: string[]) 
     }),
   });
   editingBuiltinFieldKey = null;
+}
+
+/**
+ * Diff `desiredKeys` against the fields that currently apply to `typeId` and rewrite
+ * custom-field scopes / builtin scope overrides accordingly, pruning templates whose
+ * fields no longer apply.
+ */
+function applyTypeFieldSelection(typeId: string, desiredKeys: string[]) {
+  const desired = new Set(desiredKeys);
+  const current = new Set(effectiveFieldsForType(typeId).map((field) => field.key));
+  const changedKeys = [...desired, ...current].filter((key) => desired.has(key) !== current.has(key));
+  if (changedKeys.length === 0) return;
+
+  const allTypes = effectiveTypes().sort();
+  const typesWithout = allTypes.filter((type) => type !== typeId);
+
+  const customFields = (draft.customFields ?? []).map((field) => {
+    if (!changedKeys.includes(field.key)) return field;
+    // Empty entityTypes means "all types" — materialize the full list before removing one.
+    const base = field.entityTypes?.length ? [...field.entityTypes] : [...allTypes];
+    const next = desired.has(field.key) ? [...base, typeId] : base.filter((type) => type !== typeId);
+    const unique = [...new Set(next)];
+    return { ...field, entityTypes: (unique.length ? unique : typesWithout).sort() };
+  });
+
+  const overrides = new Map((draft.fieldScopeOverrides ?? []).map((scope) => [scope.fieldKey, scope.entityTypes]));
+  const disabledFields = new Set(draft.disabledFields ?? []);
+  for (const field of packageFields) {
+    if (!changedKeys.includes(field.key)) continue;
+    const base = builtinFieldScope(field);
+    const next = desired.has(field.key) ? [...base, typeId] : base.filter((type) => type !== typeId);
+    const unique = [...new Set(next)].sort();
+    const baseline = field.entityTypes?.length ? [...field.entityTypes].sort() : allTypes;
+    if (unique.length === 0) {
+      disabledFields.add(field.key);
+      overrides.delete(field.key);
+    } else if (JSON.stringify(unique) === JSON.stringify(baseline)) {
+      disabledFields.delete(field.key);
+      overrides.delete(field.key);
+    } else {
+      disabledFields.delete(field.key);
+      overrides.set(field.key, unique);
+    }
+  }
+
+  const customByKey = new Map(customFields.map((field) => [field.key, field]));
+  const enabledPackageTypes = packageTypes.filter((type) => !isDisabled(draft.disabledEntityTypes, type));
+  const appliesFinal = (key: string, type: string): boolean => {
+    const custom = customByKey.get(key);
+    if (custom) {
+      const scope = custom.entityTypes?.length ? custom.entityTypes : allTypes;
+      return scope.includes(type);
+    }
+    const builtin = packageFields.find((candidate) => candidate.key === key);
+    if (!builtin || disabledFields.has(key)) return false;
+    const override = overrides.get(key);
+    if (override) return override.includes(type);
+    if (builtin.entityTypes?.length) return builtin.entityTypes.includes(type);
+    return enabledPackageTypes.includes(type);
+  };
+
+  setDraft({
+    ...draft,
+    customFields,
+    disabledFields: [...disabledFields].sort(),
+    fieldScopeOverrides: [...overrides.entries()]
+      .map(([fieldKey, entityTypes]) => ({ fieldKey, entityTypes }))
+      .sort((left, right) => left.fieldKey.localeCompare(right.fieldKey)),
+    customTemplates: (draft.customTemplates ?? []).map((template) => {
+      const fields = { ...(template.fields as Record<string, unknown>) };
+      for (const key of Object.keys(fields)) if (!appliesFinal(key, template.entityType)) delete fields[key];
+      return {
+        ...template,
+        fields,
+        requiredFields: template.requiredFields?.filter((key) => key in fields) ?? null,
+      };
+    }),
+    templateOverrides: (draft.templateOverrides ?? []).map((override) => {
+      const template = packageTemplates.find((candidate) => candidate.id === override.templateId);
+      if (!template) return override;
+      const fields = { ...override.fields };
+      for (const key of Object.keys(fields)) if (!appliesFinal(key, template.entityType)) delete fields[key];
+      return { ...override, fields, requiredFields: override.requiredFields?.filter((key) => key in fields) ?? null };
+    }),
+  });
 }
 
 function scopeLabel(entityTypes: string[] | undefined): string {
@@ -488,8 +588,10 @@ async function discardChanges() {
   if (!confirmed) return;
   setDraft(initialPlain);
   newType = "";
+  newTypeFieldKeys = [];
   editingTypeId = null;
   editTypeValue = "";
+  editTypeFieldKeys = [];
   newFieldLabel = "";
   newFieldType = "text";
   newFieldEntityTypes = [];
@@ -528,6 +630,7 @@ async function discardChanges() {
 function cancelTypeEdit() {
   editingTypeId = null;
   editTypeValue = "";
+  editTypeFieldKeys = [];
 }
 
 function startTypeEdit(type: string) {
@@ -535,40 +638,49 @@ function startTypeEdit(type: string) {
   editingTemplateId = null;
   editingTypeId = type;
   editTypeValue = humanizeId(type);
+  editTypeFieldKeys = effectiveFieldsForType(type)
+    .map((field) => field.key)
+    .sort();
 }
 
 function addCustomType() {
-  const name = ensureTypeId(newType, "type");
-  if (!newType.trim()) return;
-  if (packageTypes.includes(name) || (draft.customEntityTypes ?? []).includes(name)) return;
+  const name = newType.trim();
+  if (!name) return;
+  const id = ensureTypeId(name, "type");
+  if (packageTypes.includes(id) || (draft.customEntityTypes ?? []).includes(id)) return;
   setDraft({
     ...draft,
-    customEntityTypes: [...(draft.customEntityTypes ?? []), name].sort(),
+    customEntityTypes: [...(draft.customEntityTypes ?? []), id].sort(),
   });
+  if (newTypeFieldKeys.length > 0) applyTypeFieldSelection(id, newTypeFieldKeys);
   newType = "";
+  newTypeFieldKeys = [];
 }
 
 function commitTypeEdit() {
   if (!editingTypeId) return;
   const from = editingTypeId;
   const to = ensureTypeId(editTypeValue, "type");
-  if (!editTypeValue.trim() || to === from) {
+  if (!editTypeValue.trim()) {
     cancelTypeEdit();
     return;
   }
-  if (packageTypes.includes(to) || (draft.customEntityTypes ?? []).includes(to)) return;
-  setDraft({
-    ...draft,
-    customEntityTypes: (draft.customEntityTypes ?? []).map((item) => (item === from ? to : item)).sort(),
-    customFields: (draft.customFields ?? []).map((field) => ({
-      ...field,
-      entityTypes: field.entityTypes?.map((type) => (type === from ? to : type)),
-    })),
-    customTemplates: (draft.customTemplates ?? []).map((template) => ({
-      ...template,
-      entityType: template.entityType === from ? to : template.entityType,
-    })),
-  });
+  if (to !== from && (packageTypes.includes(to) || (draft.customEntityTypes ?? []).includes(to))) return;
+  if (to !== from) {
+    setDraft({
+      ...draft,
+      customEntityTypes: (draft.customEntityTypes ?? []).map((item) => (item === from ? to : item)).sort(),
+      customFields: (draft.customFields ?? []).map((field) => ({
+        ...field,
+        entityTypes: field.entityTypes?.map((type) => (type === from ? to : type)),
+      })),
+      customTemplates: (draft.customTemplates ?? []).map((template) => ({
+        ...template,
+        entityType: template.entityType === from ? to : template.entityType,
+      })),
+    });
+  }
+  applyTypeFieldSelection(to, editTypeFieldKeys);
   cancelTypeEdit();
 }
 
@@ -1183,6 +1295,14 @@ function removeCustomTemplate(id: string) {
                       <span>Name</span>
                       <input bind:value={editTypeValue} placeholder="Species" />
                     </label>
+                    <div class="type-select" role="group" aria-label={`Fields for ${editTypeValue || type}`}>
+                      <span class="type-select-label">Fields</span>
+                      <FieldPicker
+                        options={selectableFieldOptions()}
+                        selected={editTypeFieldKeys}
+                        onChange={(keys) => (editTypeFieldKeys = keys)}
+                        placeholder="Search fields…" />
+                    </div>
                     <div class="edit-actions">
                       <button type="button" class="action" onclick={commitTypeEdit}
                         ><Check size={14} strokeWidth={2} aria-hidden="true" /> Save</button>
@@ -1214,15 +1334,25 @@ function removeCustomTemplate(id: string) {
           </ul>
         {/if}
         <div class="add-form">
-          <label>
-            <span>New type</span>
-            <input
-              bind:value={newType}
-              placeholder="Species"
-              onkeydown={(event) => event.key === "Enter" && addCustomType()} />
-          </label>
-          <button type="button" class="action primary-action" onclick={addCustomType}
-            ><Plus size={14} strokeWidth={2} aria-hidden="true" /> Add type</button>
+          <div class="add-row">
+            <label>
+              <span>New type</span>
+              <input
+                bind:value={newType}
+                placeholder="Species"
+                onkeydown={(event) => event.key === "Enter" && addCustomType()} />
+            </label>
+            <button type="button" class="action primary-action" onclick={addCustomType}
+              ><Plus size={14} strokeWidth={2} aria-hidden="true" /> Add type</button>
+          </div>
+          <div class="type-select" role="group" aria-label="Fields for the new type">
+            <span class="type-select-label">Fields <em>(optional)</em></span>
+            <FieldPicker
+              options={selectableFieldOptions()}
+              selected={newTypeFieldKeys}
+              onChange={(keys) => (newTypeFieldKeys = keys)}
+              placeholder="Search fields to include…" />
+          </div>
         </div>
       </div>
     {:else if activeTab === "fields"}

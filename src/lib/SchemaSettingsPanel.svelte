@@ -2,7 +2,7 @@
 import ModuleSchemaPanel from "$lib/ModuleSchemaPanel.svelte";
 import type { EntityTemplate, FieldDefinition, ModuleSchemaOverlay } from "$lib/project/client";
 import { allowLeaveSchemaEditor } from "$lib/schemaEditorGuard";
-import { Puzzle, ChevronLeft, ChevronRight, SlidersHorizontal, Layers, Sparkles, Info } from "@lucide/svelte";
+import { Puzzle, ChevronLeft, ChevronRight, SlidersHorizontal, Layers, Sparkles } from "@lucide/svelte";
 
 export type SchemaPluginCandidate = {
   id: string;
@@ -118,7 +118,6 @@ function pluginInitial(name: string) {
           {candidates.length}
           {candidates.length === 1 ? "plugin" : "plugins"} customizable
         </span>
-        <span class="meta-hint">Changes are project-local and never modify the installed plugin.</span>
       </div>
       <ul class="schema-plugin-list">
         {#each candidates as plugin}
@@ -138,11 +137,6 @@ function pluginInitial(name: string) {
           </li>
         {/each}
       </ul>
-      <div class="helper-row">
-        <Info size={13} strokeWidth={1.8} aria-hidden="true" />
-        <span
-          >Tip: overlays are versioned with the project. Disable a type and its fields/templates hide automatically.</span>
-      </div>
     {/if}
   {:else if packageManifest}
     <div class="schema-plugin-toolbar">
@@ -223,7 +217,6 @@ function pluginInitial(name: string) {
 }
 .settings-section-heading p {
   margin: 7px 0 0;
-  max-width: 640px;
   color: var(--ink-soft, #8f897e);
   font:
     400 12.5px/1.55 Inter,
@@ -295,29 +288,6 @@ function pluginInitial(name: string) {
   color: #62594e;
   font:
     600 11px Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
-}
-.meta-hint {
-  color: var(--ink-faint, #b0a89c);
-  font:
-    400 11.5px/1.4 Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
-}
-.helper-row {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: #f7f3ec;
-  border: 1px solid #ebe3d6;
-  color: #8f897e;
-  font:
-    400 11.5px/1.5 Inter,
     ui-sans-serif,
     system-ui,
     sans-serif;

@@ -1478,6 +1478,8 @@ export const project = {
   aiProviderModels: () => invoke<string[]>("ai_provider_models"),
   aiProviderCredentialStatus: () => invoke<RemoteCredentialStatus>("ai_provider_credential_status"),
   aiProviderImportCredential: () => invoke<RemoteCredentialStatus>("ai_provider_import_credential"),
+  aiProviderSetCredential: (apiKey: string) => invoke<RemoteCredentialStatus>("ai_provider_set_credential", { apiKey }),
+  aiProviderClearCredential: () => invoke<RemoteCredentialStatus>("ai_provider_clear_credential"),
   aiRemoteSetConsent: (projectId: string, allowed: boolean) =>
     invoke<void>("ai_remote_set_consent", { projectId, allowed }),
   aiIndexStatus: () => invoke<AiIndexStatus>("ai_index_status"),

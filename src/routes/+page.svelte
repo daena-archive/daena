@@ -1779,6 +1779,24 @@ async function importRemoteCredential() {
     showAiIndexMessage(friendlyError(cause));
   }
 }
+async function saveRemoteCredential(apiKey: string): Promise<boolean> {
+  if (!aiSettings.provider.id.trim()) return false;
+  try {
+    remoteCredential = await project.aiProviderSetCredential(apiKey);
+    return true;
+  } catch (cause) {
+    showAiIndexMessage(friendlyError(cause));
+    return false;
+  }
+}
+async function clearRemoteCredential() {
+  if (!aiSettings.provider.id.trim()) return;
+  try {
+    remoteCredential = await project.aiProviderClearCredential();
+  } catch (cause) {
+    showAiIndexMessage(friendlyError(cause));
+  }
+}
 async function setRemoteConsent(allowed: boolean) {
   if (
     !projectInfo?.root ||
@@ -4553,6 +4571,8 @@ onMount(() => {
         {remoteCredential}
         onAiRemoteConsent={(allowed) => void setRemoteConsent(allowed)}
         onAiRemoteImport={() => void importRemoteCredential()}
+        onAiRemoteSave={(apiKey) => saveRemoteCredential(apiKey)}
+        onAiRemoteClear={() => void clearRemoteCredential()}
         onPortableBackup={createPortableBackup}
         onRecoveryBackup={createRecoveryBackup}
         onRestoreRecoveryBackup={restoreRecoveryBackup}>

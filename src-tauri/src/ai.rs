@@ -1513,6 +1513,17 @@ fn import_remote_api_key(provider: &str, api_key: &str) -> Result<(), String> {
         .map_err(|error| format!("OS secret storage rejected the credential: {error}"))
 }
 
+/// Returns true when an entry was removed, false when none existed.
+fn delete_remote_api_key(provider: &str) -> Result<bool, String> {
+    let entry = keyring::Entry::new(&remote_secret_service(provider), "daena")
+        .map_err(|error| format!("OS secret storage unavailable: {error}"))?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(true),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        Err(error) => Err(format!("OS secret storage unavailable: {error}")),
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteCredentialStatus {
@@ -1669,6 +1680,56 @@ pub fn ai_provider_import_credential(
     Ok(RemoteCredentialStatus {
         provider: provider.id,
         configured: true,
+    })
+}
+
+/// Stores a user-provided credential in OS-backed storage. The value crosses the
+/// IPC bridge once on its way in and is never returned to the frontend; only the
+/// boolean status is readable afterwards.
+#[tauri::command]
+pub fn ai_provider_set_credential(
+    settings: State<'_, Arc<Mutex<SettingsStore>>>,
+    api_key: String,
+) -> Result<RemoteCredentialStatus, String> {
+    let provider = settings
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_string())?
+        .load()?
+        .ai
+        .provider;
+    if !endpoint_is_remote(&provider.endpoint)? {
+        return Err("The active provider does not require a remote credential".into());
+    }
+    let key = api_key.trim();
+    if key.is_empty() {
+        return Err("Provide an API key before saving".into());
+    }
+    if key.len() > 4096 {
+        return Err("The API key is too long".into());
+    }
+    import_remote_api_key(&provider.id, key)?;
+    Ok(RemoteCredentialStatus {
+        provider: provider.id,
+        configured: true,
+    })
+}
+
+#[tauri::command]
+pub fn ai_provider_clear_credential(
+    settings: State<'_, Arc<Mutex<SettingsStore>>>,
+) -> Result<RemoteCredentialStatus, String> {
+    let provider = settings
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_string())?
+        .load()?
+        .ai
+        .provider;
+    // Clearing is intentionally allowed even when the active endpoint is local,
+    // so a stale key for this provider can always be removed.
+    delete_remote_api_key(&provider.id)?;
+    Ok(RemoteCredentialStatus {
+        provider: provider.id,
+        configured: false,
     })
 }
 

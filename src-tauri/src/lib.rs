@@ -9322,6 +9322,8 @@ pub fn run() {
             ai::ai_provider_models,
             ai::ai_provider_credential_status,
             ai::ai_provider_import_credential,
+            ai::ai_provider_set_credential,
+            ai::ai_provider_clear_credential,
             ai::ai_remote_set_consent,
             ai::ai_index_status,
             ai::ai_index_rebuild,

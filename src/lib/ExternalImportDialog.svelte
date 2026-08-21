@@ -67,6 +67,7 @@ let lastFocused: Element | null = null;
 
 const catalog = () => buildExternalImportMappingCatalog(modules);
 const activeImporter = () => importers.find((importer) => importer.id === importerId) ?? null;
+const importerSupports = (kind: "file" | "folder") => activeImporter()?.sourceKinds.includes(kind) ?? false;
 const selectedPageItem = () => inspectedItem;
 const selectedObject = (): StagedObject | null => {
   const item = selectedPageItem();
@@ -82,6 +83,12 @@ function displayError(cause: unknown): string {
 function pageItemKey(item: ExternalImportPageItem, index: number): string {
   if (item.kind === "object" || item.kind === "asset") return item.value.id;
   return `${item.kind}:${pageOffset + index}`;
+}
+
+function normalizeSourceKind() {
+  const importer = activeImporter();
+  if (!importer || importer.sourceKinds.includes(sourceKind)) return;
+  sourceKind = importer.sourceKinds.includes("folder") ? "folder" : "file";
 }
 
 function pageItemTitle(item: ExternalImportPageItem): string {
@@ -295,7 +302,7 @@ async function pollStatus() {
 
 async function chooseAndAnalyze() {
   const importer = activeImporter();
-  if (!importer) return;
+  if (!importer || !importer.sourceKinds.includes(sourceKind)) return;
   busy = true;
   error = "";
   page = null;
@@ -370,6 +377,7 @@ onMount(() => {
       if (disposed) return;
       importers = available;
       importerId = available[0]?.id ?? "";
+      normalizeSourceKind();
     })
     .catch((cause) => (error = displayError(cause)));
   void listen<ExternalImportAnalysisStatus>(EXTERNAL_IMPORT_PROGRESS_EVENT, (event) => {
@@ -439,7 +447,7 @@ onMount(() => {
       <section class="source-step" aria-label="Choose import source">
         <label>
           <span>Importer</span>
-          <select bind:value={importerId} disabled={busy || importers.length === 0}>
+          <select bind:value={importerId} disabled={busy || importers.length === 0} onchange={normalizeSourceKind}>
             {#each importers as importer}<option value={importer.id}>{importer.name}</option>{/each}
           </select>
           {#if activeImporter()}<small>{activeImporter()!.description}</small>{/if}
@@ -447,19 +455,23 @@ onMount(() => {
         <fieldset>
           <legend>Source</legend>
           <div class="source-kinds">
-            <label class:active={sourceKind === "folder"}>
-              <input type="radio" bind:group={sourceKind} value="folder" />
+            <label class:active={sourceKind === "folder" && importerSupports("folder")}>
+              <input type="radio" bind:group={sourceKind} value="folder" disabled={!importerSupports("folder")} />
               <FolderOpen size={19} strokeWidth={1.7} /><span
                 ><strong>Folder</strong><small>Analyze supported files recursively</small></span>
             </label>
-            <label class:active={sourceKind === "file"}>
-              <input type="radio" bind:group={sourceKind} value="file" />
+            <label class:active={sourceKind === "file" && importerSupports("file")}>
+              <input type="radio" bind:group={sourceKind} value="file" disabled={!importerSupports("file")} />
               <FileText size={19} strokeWidth={1.7} /><span
                 ><strong>Single file</strong><small>Markdown, HTML, DOCX, plain text, or ZIP archive</small></span>
             </label>
           </div>
         </fieldset>
-        <button class="primary-button" type="button" disabled={busy || !activeImporter()} onclick={chooseAndAnalyze}>
+        <button
+          class="primary-button"
+          type="button"
+          disabled={busy || !activeImporter() || !importerSupports(sourceKind)}
+          onclick={chooseAndAnalyze}>
           {busy ? "Opening…" : `Choose ${sourceKind}`}
         </button>
       </section>

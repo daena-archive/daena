@@ -9,15 +9,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use daena_core::{
-    analyze_generic_documents_with_progress, build_import_candidate_plan,
-    validate_import_candidate_plan, CoreError, ExternalImportCommitReport,
-    GenericDocumentImportLimits, ImportAnalysisProgress, ImportAnalysisSummary,
-    ImportCandidatePlan, ImportCandidatePlanBuild, ImportDiagnostic, ImportFieldTarget,
-    ImportMappingCatalog, ImportMappingOverrides, ImportObjectDecision, ImportSource,
-    ImportValidationBuild, ImportValidationIssue, ImportValidationSeverity, ImporterIdentity,
-    StagedAsset, StagedImport, StagedObject, UnsupportedSourceData, ValidatedImportPlan,
-    EXTERNAL_IMPORT_ANALYSIS_CANCELLED, GENERIC_DOCUMENT_IMPORTER_ID,
-    GENERIC_DOCUMENT_IMPORTER_VERSION,
+    analyze_generic_documents_with_progress, analyze_obsidian_vault_with_progress,
+    build_import_candidate_plan, validate_import_candidate_plan, CoreError,
+    ExternalImportCommitReport, GenericDocumentImportLimits, ImportAnalysisProgress,
+    ImportAnalysisSummary, ImportCandidatePlan, ImportCandidatePlanBuild, ImportDiagnostic,
+    ImportFieldTarget, ImportMappingCatalog, ImportMappingOverrides, ImportObjectDecision,
+    ImportSource, ImportValidationBuild, ImportValidationIssue, ImportValidationSeverity,
+    ImporterIdentity, StagedAsset, StagedImport, StagedObject, UnsupportedSourceData,
+    ValidatedImportPlan, EXTERNAL_IMPORT_ANALYSIS_CANCELLED, GENERIC_DOCUMENT_IMPORTER_ID,
+    GENERIC_DOCUMENT_IMPORTER_VERSION, OBSIDIAN_IMPORTER_ID, OBSIDIAN_IMPORTER_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -190,6 +190,7 @@ pub struct ExternalImportCommitInput {
 #[derive(Debug)]
 struct SourceSelection {
     project_id: String,
+    source_kind: String,
     path: PathBuf,
     expires_at: Instant,
 }
@@ -332,6 +333,7 @@ impl ExternalImportJobManager {
             source_handle.clone(),
             SourceSelection {
                 project_id,
+                source_kind: source_kind.clone(),
                 path,
                 expires_at: Instant::now() + SOURCE_HANDLE_TTL,
             },
@@ -379,22 +381,33 @@ impl ExternalImportJobManager {
 
 #[tauri::command]
 pub fn project_external_importers() -> Vec<ExternalImporterDescriptor> {
-    vec![ExternalImporterDescriptor {
-        id: GENERIC_DOCUMENT_IMPORTER_ID.into(),
-        version: GENERIC_DOCUMENT_IMPORTER_VERSION.into(),
-        name: "Generic documents".into(),
-        description: "Markdown, HTML, DOCX, plain-text, ZIP, and recursive folder analysis".into(),
-        source_kinds: vec!["file".into(), "folder".into()],
-        extensions: vec![
-            "md".into(),
-            "markdown".into(),
-            "html".into(),
-            "htm".into(),
-            "docx".into(),
-            "txt".into(),
-            "zip".into(),
-        ],
-    }]
+    vec![
+        ExternalImporterDescriptor {
+            id: GENERIC_DOCUMENT_IMPORTER_ID.into(),
+            version: GENERIC_DOCUMENT_IMPORTER_VERSION.into(),
+            name: "Generic documents".into(),
+            description: "Markdown, HTML, DOCX, plain-text, ZIP, and recursive folder analysis"
+                .into(),
+            source_kinds: vec!["file".into(), "folder".into()],
+            extensions: vec![
+                "md".into(),
+                "markdown".into(),
+                "html".into(),
+                "htm".into(),
+                "docx".into(),
+                "txt".into(),
+                "zip".into(),
+            ],
+        },
+        ExternalImporterDescriptor {
+            id: OBSIDIAN_IMPORTER_ID.into(),
+            version: OBSIDIAN_IMPORTER_VERSION.into(),
+            name: "Obsidian vault".into(),
+            description: "Markdown vaults with YAML, wikilinks, embeds, and attachments".into(),
+            source_kinds: vec!["folder".into()],
+            extensions: vec!["md".into(), "markdown".into()],
+        },
+    ]
 }
 
 #[tauri::command]
@@ -445,7 +458,10 @@ pub async fn project_external_import_analyze_begin(
     imports: tauri::State<'_, SharedExternalImports>,
     input: ExternalImportBeginInput,
 ) -> Result<ExternalImportAnalysisStatus, String> {
-    if input.importer_id != GENERIC_DOCUMENT_IMPORTER_ID {
+    if !matches!(
+        input.importer_id.as_str(),
+        GENERIC_DOCUMENT_IMPORTER_ID | OBSIDIAN_IMPORTER_ID
+    ) {
         return Err("external_import.importer_not_found: importer is not available".into());
     }
     let project_id = current_project_id(core.inner())?;
@@ -463,11 +479,16 @@ pub async fn project_external_import_analyze_begin(
         }
         manager.ensure_can_begin(&project_id)?;
         let source = manager.take_source(&project_id, &input.source_handle)?;
+        if input.importer_id == OBSIDIAN_IMPORTER_ID && source.source_kind != "folder" {
+            return Err(
+                "external_import.invalid_source: Obsidian import requires a vault folder".into(),
+            );
+        }
         let session_id = Uuid::new_v4().to_string();
         let cancel = Arc::new(AtomicBool::new(false));
         let status = ExternalImportAnalysisStatus {
             session_id: session_id.clone(),
-            importer_id: input.importer_id,
+            importer_id: input.importer_id.clone(),
             state: "queued".into(),
             stage: "queued".into(),
             processed_entries: 0,
@@ -502,6 +523,7 @@ pub async fn project_external_import_analyze_begin(
         session_id,
         project_id,
         source,
+        input.importer_id,
         limits,
         cancel,
     );
@@ -905,6 +927,7 @@ fn spawn_analysis(
     session_id: String,
     project_id: String,
     source: SourceSelection,
+    importer_id: String,
     limits: GenericDocumentImportLimits,
     cancel: Arc<AtomicBool>,
 ) {
@@ -915,11 +938,30 @@ fn spawn_analysis(
             &session_id,
             ImportAnalysisProgress::default(),
         );
-        let progress_app = app.clone();
-        let progress_imports = imports.clone();
-        let progress_session_id = session_id.clone();
-        let progress_cancel = cancel.clone();
-        let staged =
+        let staged = if importer_id == OBSIDIAN_IMPORTER_ID {
+            let progress_app = app.clone();
+            let progress_imports = imports.clone();
+            let progress_session_id = session_id.clone();
+            let progress_cancel = cancel.clone();
+            analyze_obsidian_vault_with_progress(&source.path, limits, move |progress| {
+                if progress_cancel.load(Ordering::Relaxed) {
+                    return Err(CoreError::Conflict(
+                        EXTERNAL_IMPORT_ANALYSIS_CANCELLED.into(),
+                    ));
+                }
+                update_progress(
+                    &progress_app,
+                    &progress_imports,
+                    &progress_session_id,
+                    progress,
+                );
+                Ok(())
+            })
+        } else {
+            let progress_app = app.clone();
+            let progress_imports = imports.clone();
+            let progress_session_id = session_id.clone();
+            let progress_cancel = cancel.clone();
             analyze_generic_documents_with_progress(&source.path, limits, move |progress| {
                 if progress_cancel.load(Ordering::Relaxed) {
                     return Err(CoreError::Conflict(
@@ -933,7 +975,8 @@ fn spawn_analysis(
                     progress,
                 );
                 Ok(())
-            });
+            })
+        };
         if cancel.load(Ordering::Relaxed) {
             finish_cancelled(&app, &imports, &session_id);
             return;
@@ -1307,6 +1350,24 @@ mod tests {
     }
 
     #[test]
+    fn built_in_importers_advertise_obsidian_as_folder_only() {
+        let importers = project_external_importers();
+        let generic = importers
+            .iter()
+            .find(|importer| importer.id == GENERIC_DOCUMENT_IMPORTER_ID)
+            .unwrap();
+        let obsidian = importers
+            .iter()
+            .find(|importer| importer.id == OBSIDIAN_IMPORTER_ID)
+            .unwrap();
+
+        assert_eq!(importers.len(), 2);
+        assert_eq!(generic.source_kinds, vec!["file", "folder"]);
+        assert_eq!(obsidian.source_kinds, vec!["folder"]);
+        assert_eq!(obsidian.extensions, vec!["md", "markdown"]);
+    }
+
+    #[test]
     fn source_handles_are_project_bound_and_single_use() {
         let directory = TestDirectory::new();
         let source_path = directory.path().join("notes.md");
@@ -1324,6 +1385,7 @@ mod tests {
             .take_source("project-a", &handle.source_handle)
             .unwrap();
         assert_eq!(selected.path, source_path);
+        assert_eq!(selected.source_kind, "file");
         assert!(manager
             .take_source("project-a", &handle.source_handle)
             .is_err());

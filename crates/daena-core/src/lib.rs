@@ -10,21 +10,21 @@ mod sync;
 pub use authority::{Authority, AuthorityContext};
 pub use error::CoreError;
 pub use external_import::{
-    analyze_generic_documents, analyze_generic_documents_with_progress,
-    build_import_candidate_plan, validate_import_candidate_plan, ExternalImportCommitReport,
-    GenericDocumentImportLimits, ImportAnalysisProgress, ImportAnalysisSummary,
-    ImportCandidateIssue, ImportCandidateMapping, ImportCandidateObject, ImportCandidatePlan,
-    ImportCandidatePlanBuild, ImportDiagnostic, ImportDiagnosticSeverity, ImportExistingTarget,
-    ImportFieldTarget, ImportMappingCatalog, ImportMappingDecision, ImportMappingOverrides,
-    ImportObjectDecision, ImportSource, ImportSourceKind, ImportValidationBuild,
-    ImportValidationIssue, ImportValidationOutcome, ImportValidationSeverity, ImportedAssetReport,
-    ImportedObjectReport, ImporterIdentity, MappingHintKind, StagedAsset, StagedDocument,
-    StagedImport, StagedLink, StagedLinkKind, StagedLinkResolution, StagedMappingHint,
-    StagedObject, UnsupportedSourceData, ValidatedImportAsset, ValidatedImportField,
-    ValidatedImportObject, ValidatedImportPlan, EXTERNAL_IMPORT_ANALYSIS_CANCELLED,
-    GENERIC_DOCUMENT_IMPORTER_ID, GENERIC_DOCUMENT_IMPORTER_VERSION,
-    IMPORT_CANDIDATE_PLAN_SCHEMA_VERSION, STAGED_IMPORT_SCHEMA_VERSION,
-    VALIDATED_IMPORT_PLAN_SCHEMA_VERSION,
+    analyze_generic_documents, analyze_generic_documents_with_progress, analyze_obsidian_vault,
+    analyze_obsidian_vault_with_progress, build_import_candidate_plan,
+    validate_import_candidate_plan, ExternalImportCommitReport, GenericDocumentImportLimits,
+    ImportAnalysisProgress, ImportAnalysisSummary, ImportCandidateIssue, ImportCandidateMapping,
+    ImportCandidateObject, ImportCandidatePlan, ImportCandidatePlanBuild, ImportDiagnostic,
+    ImportDiagnosticSeverity, ImportExistingTarget, ImportFieldTarget, ImportMappingCatalog,
+    ImportMappingDecision, ImportMappingOverrides, ImportObjectDecision, ImportSource,
+    ImportSourceKind, ImportValidationBuild, ImportValidationIssue, ImportValidationOutcome,
+    ImportValidationSeverity, ImportedAssetReport, ImportedObjectReport, ImporterIdentity,
+    MappingHintKind, StagedAsset, StagedDocument, StagedImport, StagedLink, StagedLinkKind,
+    StagedLinkResolution, StagedMappingHint, StagedObject, UnsupportedSourceData,
+    ValidatedImportAsset, ValidatedImportField, ValidatedImportObject, ValidatedImportPlan,
+    EXTERNAL_IMPORT_ANALYSIS_CANCELLED, GENERIC_DOCUMENT_IMPORTER_ID,
+    GENERIC_DOCUMENT_IMPORTER_VERSION, IMPORT_CANDIDATE_PLAN_SCHEMA_VERSION, OBSIDIAN_IMPORTER_ID,
+    OBSIDIAN_IMPORTER_VERSION, STAGED_IMPORT_SCHEMA_VERSION, VALIDATED_IMPORT_PLAN_SCHEMA_VERSION,
 };
 pub use migrations::{FieldDefinition, Migration, Operation};
 pub use project::{

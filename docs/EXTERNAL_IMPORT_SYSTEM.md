@@ -125,15 +125,43 @@ implicit synchronization.
 Delivery order is:
 
 1. Markdown, plain text, HTML, DOCX, and recursive folders;
-2. ZIP and additional reliable rich-document parsers, followed by Obsidian as
-   a specialization of Markdown;
+2. ZIP, followed by Obsidian as a specialization of Markdown;
 3. streaming MediaWiki-compatible XML and conservative wikitext preservation;
-4. third-party importer plugins.
+4. third-party importer plugins; and
+5. ODT and RTF after their dedicated parser, fidelity, and security work is
+   planned and accepted.
 
 Markdown initially remains one staged object per file. Headings are preserved
 in the document body and do not create entities automatically. Obsidian adds
 frontmatter, aliases, wikilinks, embeds, attachments, and vault-resolution
 rules while producing the same staged contract.
+
+### Deferred ODT and RTF support
+
+ODT and RTF are explicitly deferred beyond Iteration 6. They are not advertised
+by the built-in importer and are not selectable in the current UI. Each format
+needs a maintained parser path, malformed-input and resource-limit fixtures,
+conversion-quality expectations, attachment/link handling, and commit plus
+clean-rebuild coverage before it can be enabled. This deferral does not change
+the neutral staged contract or block a future first-party or capability-gated
+plugin adapter.
+
+### Obsidian adapter policy
+
+Obsidian is a separate, folder-only built-in importer profile so generic
+Markdown behavior remains unchanged. It accepts Markdown notes and supported
+attachments, excludes root `.obsidian` and `.trash` directories with a visible
+diagnostic, and preserves note bodies and unsupported plugin syntax verbatim.
+
+YAML frontmatter is parsed conservatively into generic staged fields, aliases,
+tags, and an optional entity-type hint. Raw frontmatter is retained. Unsupported
+nested YAML is retained as text and reported rather than discarded or executed.
+Wikilinks and embeds are resolved vault-wide by normalized path, Markdown path,
+filename, title, and alias. Heading and block fragments resolve to their owning
+note. A unique match is resolved, multiple matches are staged as ambiguous with
+candidate note IDs, and absent targets remain missing; the importer never
+invents a target. Attachment bytes still pass signature, size, hash, source
+re-read, atomic commit, and clean-rebuild validation.
 
 ### Security and resource limits
 
@@ -323,8 +351,8 @@ matches every applied or skipped item.
 
 Add standard Markdown link/image discovery, safe relative resolution,
 frontmatter preservation/mapping, preflighted assets, ZIP central-directory
-limits and safe extraction, and only those HTML/DOCX/ODT/RTF parsers that pass
-quality and security fixtures.
+limits and safe extraction, and the HTML/DOCX parsers that pass quality and
+security fixtures. ODT and RTF remain deferred as described above.
 
 **Exit gate:** nested folders and ZIPs produce equivalent staged structure;
 HTML and DOCX produce reviewable Markdown without active content; traversal,
@@ -395,7 +423,7 @@ bundled and plugin output pass identical core validation.
   receipt-backed transaction with revision preconditions, warning acknowledgement,
   idempotent retry, canonical source-identity fields, session cleanup, and a
   per-item result report. Replace and merge remain intentionally disabled.
-- Iteration 5: in progress. The first vertical slice preserves raw YAML
+- Iteration 5: implemented. The delivered slice preserves raw YAML
   frontmatter without rewriting the Markdown body, discovers standard Markdown
   links/images (including reference links), resolves normalized relative paths,
   reports missing or escaping targets, and preflights referenced PNG/JPEG/GIF/
@@ -421,6 +449,15 @@ bundled and plugin output pass identical core validation.
   checked embedded images from direct, folder, or nested-ZIP sources. Traversal,
   malformed package/XML, active/unsupported content diagnostics, conversion
   quality, attachment re-read, commit, and clean-rebuild fixtures cover the
-  enabled DOCX path. ODT/RTF parsers remain planned and will only be enabled with
-  their own format-specific quality and security fixtures.
-- Iterations 6-8: planned, not yet implemented.
+  enabled DOCX path. ODT/RTF parsers remain explicitly deferred and will only be
+  enabled with their own format-specific quality and security fixtures.
+- Iteration 6: implemented. A separate folder-only Obsidian importer reuses the
+  staged analysis, mapping, validation, and atomic commit pipeline while leaving
+  generic Markdown semantics unchanged. It parses a bounded YAML subset into
+  generic fields, aliases, tags, and type hints while retaining raw frontmatter;
+  preserves note bodies and plugin syntax; excludes configuration/trash folders;
+  resolves path, filename, title, and alias wikilinks plus note/attachment embeds;
+  and reports ambiguous, missing, partially parsed, and unsupported data for
+  review. Representative, ambiguity, missing-target, generic-compatibility,
+  folder-only, attachment commit, and clean-rebuild fixtures cover the profile.
+- Iterations 7-8: planned, not yet implemented.

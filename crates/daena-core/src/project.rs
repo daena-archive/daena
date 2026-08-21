@@ -4600,7 +4600,7 @@ impl ProjectStore {
                             Some(&asset.content_hash),
                         )?
                     }
-                    ImportSourceKind::Folder => {
+                    ImportSourceKind::Folder | ImportSourceKind::Vault => {
                         let source =
                             crate::storage::normalized_project_path(root, &asset.source_path)?;
                         let metadata =

@@ -14,6 +14,8 @@ pub const IMPORT_CANDIDATE_PLAN_SCHEMA_VERSION: u32 = 1;
 pub const VALIDATED_IMPORT_PLAN_SCHEMA_VERSION: u32 = 1;
 pub const GENERIC_DOCUMENT_IMPORTER_ID: &str = "daena.generic-documents";
 pub const GENERIC_DOCUMENT_IMPORTER_VERSION: &str = "1";
+pub const OBSIDIAN_IMPORTER_ID: &str = "daena.obsidian-vault";
+pub const OBSIDIAN_IMPORTER_VERSION: &str = "1";
 pub const EXTERNAL_IMPORT_ANALYSIS_CANCELLED: &str = "external import analysis cancelled";
 const MAX_ARCHIVE_COMPRESSED_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_ARCHIVE_COMPRESSION_RATIO: u64 = 200;
@@ -1245,6 +1247,36 @@ pub fn analyze_generic_documents(
 pub fn analyze_generic_documents_with_progress(
     source: impl AsRef<Path>,
     limits: GenericDocumentImportLimits,
+    progress: impl FnMut(ImportAnalysisProgress) -> Result<(), CoreError>,
+) -> Result<StagedImport, CoreError> {
+    analyze_documents_with_progress(source, limits, ImportProfile::Generic, progress)
+}
+
+pub fn analyze_obsidian_vault(
+    source: impl AsRef<Path>,
+    limits: GenericDocumentImportLimits,
+) -> Result<StagedImport, CoreError> {
+    analyze_obsidian_vault_with_progress(source, limits, |_| Ok(()))
+}
+
+pub fn analyze_obsidian_vault_with_progress(
+    source: impl AsRef<Path>,
+    limits: GenericDocumentImportLimits,
+    progress: impl FnMut(ImportAnalysisProgress) -> Result<(), CoreError>,
+) -> Result<StagedImport, CoreError> {
+    analyze_documents_with_progress(source, limits, ImportProfile::Obsidian, progress)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImportProfile {
+    Generic,
+    Obsidian,
+}
+
+fn analyze_documents_with_progress(
+    source: impl AsRef<Path>,
+    limits: GenericDocumentImportLimits,
+    profile: ImportProfile,
     mut progress: impl FnMut(ImportAnalysisProgress) -> Result<(), CoreError>,
 ) -> Result<StagedImport, CoreError> {
     validate_limits(&limits)?;
@@ -1263,6 +1295,11 @@ pub fn analyze_generic_documents_with_progress(
             "import source must be a regular file or directory".into(),
         ));
     }
+    if profile == ImportProfile::Obsidian && !metadata.is_dir() {
+        return Err(CoreError::Validation(
+            "Obsidian import requires a vault folder".into(),
+        ));
+    }
 
     let source_name = source
         .file_name()
@@ -1276,21 +1313,36 @@ pub fn analyze_generic_documents_with_progress(
     })?;
     let source_id = hex_digest(canonical_source.to_string_lossy().as_bytes());
     let is_zip_archive = metadata.is_file() && is_zip_path(source);
-    let source_kind = if metadata.is_dir() {
+    let source_kind = if profile == ImportProfile::Obsidian {
+        ImportSourceKind::Vault
+    } else if metadata.is_dir() {
         ImportSourceKind::Folder
     } else if is_zip_archive {
         ImportSourceKind::Archive
     } else {
         ImportSourceKind::File
     };
+    let (importer_id, importer_version, importer_name) = match profile {
+        ImportProfile::Generic => (
+            GENERIC_DOCUMENT_IMPORTER_ID,
+            GENERIC_DOCUMENT_IMPORTER_VERSION,
+            "Generic documents",
+        ),
+        ImportProfile::Obsidian => (
+            OBSIDIAN_IMPORTER_ID,
+            OBSIDIAN_IMPORTER_VERSION,
+            "Obsidian vault",
+        ),
+    };
     let mut analyzer = GenericDocumentAnalyzer {
+        profile,
         limits,
         import: StagedImport {
             schema_version: STAGED_IMPORT_SCHEMA_VERSION,
             importer: ImporterIdentity {
-                id: GENERIC_DOCUMENT_IMPORTER_ID.into(),
-                version: GENERIC_DOCUMENT_IMPORTER_VERSION.into(),
-                name: "Generic documents".into(),
+                id: importer_id.into(),
+                version: importer_version.into(),
+                name: importer_name.into(),
             },
             source: ImportSource {
                 id: source_id,
@@ -1321,7 +1373,11 @@ pub fn analyze_generic_documents_with_progress(
         analyzer.analyze_file(source, &source_name, &metadata)?;
         analyzer.finish_entry(Some(source_name))?;
     }
-    analyzer.resolve_markdown_references()?;
+    if profile == ImportProfile::Obsidian {
+        analyzer.resolve_obsidian_references()?;
+    } else {
+        analyzer.resolve_markdown_references()?;
+    }
     analyzer
         .import
         .objects
@@ -1342,6 +1398,7 @@ pub fn analyze_generic_documents_with_progress(
 }
 
 struct GenericDocumentAnalyzer<'a> {
+    profile: ImportProfile,
     limits: GenericDocumentImportLimits,
     import: StagedImport,
     discovered_entries: usize,
@@ -1561,6 +1618,16 @@ impl GenericDocumentAnalyzer<'_> {
                     "symlink",
                     "symbolic links are not followed during import analysis",
                 )?;
+            } else if metadata.is_dir()
+                && self.profile == ImportProfile::Obsidian
+                && child_parts.len() == 1
+                && matches!(child_parts[0].as_str(), ".obsidian" | ".trash")
+            {
+                self.record_unsupported(
+                    relative_path.clone(),
+                    "obsidian_configuration",
+                    "Obsidian configuration and trash folders are intentionally excluded",
+                )?;
             } else if metadata.is_dir() {
                 self.folders.insert(relative_path.clone());
                 self.analyze_directory(&path, &child_parts, depth + 1)?;
@@ -1608,11 +1675,15 @@ impl GenericDocumentAnalyzer<'_> {
                 self.limits.max_total_bytes
             )));
         }
-        if asset_mime_type(source_path).is_none() && document_format(source_path).is_none() {
+        if asset_mime_type(source_path).is_none() && !self.supports_document(source_path) {
             return self.record_unsupported(
                 source_path.to_owned(),
                 "file",
-                "file type is not supported by the generic document importer",
+                if self.profile == ImportProfile::Obsidian {
+                    "file type is not supported by the Obsidian vault importer"
+                } else {
+                    "file type is not supported by the generic document importer"
+                },
             );
         }
         let bytes = fs::read(path).map_err(|source| CoreError::Io {
@@ -1625,6 +1696,13 @@ impl GenericDocumentAnalyzer<'_> {
             )));
         }
         self.analyze_loaded_file(source_path, size, next_total, bytes)
+    }
+
+    fn supports_document(&self, source_path: &str) -> bool {
+        match self.profile {
+            ImportProfile::Generic => document_format(source_path).is_some(),
+            ImportProfile::Obsidian => document_format(source_path) == Some("markdown"),
+        }
     }
 
     fn analyze_loaded_file(
@@ -1659,7 +1737,7 @@ impl GenericDocumentAnalyzer<'_> {
             let source_id = hex_digest(
                 format!(
                     "{}\0{}\0asset\0{}",
-                    GENERIC_DOCUMENT_IMPORTER_ID, self.import.source.id, source_path
+                    self.import.importer.id, self.import.source.id, source_path
                 )
                 .as_bytes(),
             );
@@ -1703,7 +1781,7 @@ impl GenericDocumentAnalyzer<'_> {
         let source_id = hex_digest(
             format!(
                 "{}\0{}\0{}",
-                GENERIC_DOCUMENT_IMPORTER_ID, self.import.source.id, source_path
+                self.import.importer.id, self.import.source.id, source_path
             )
             .as_bytes(),
         );
@@ -1712,25 +1790,49 @@ impl GenericDocumentAnalyzer<'_> {
             .rsplit_once('/')
             .map(|(parent, _)| parent.to_owned());
         let mut body_format = source_format;
-        let (frontmatter, fields, mut raw_source_data) = if source_format == "markdown" {
-            markdown_frontmatter(&body)
-                .map(|frontmatter| {
-                    (
-                        Some(frontmatter.to_owned()),
-                        BTreeMap::from([(
-                            "frontmatter".into(),
-                            serde_json::Value::String(frontmatter.to_owned()),
-                        )]),
-                        BTreeMap::from([(
-                            "frontmatter".into(),
-                            serde_json::Value::String(frontmatter.to_owned()),
-                        )]),
-                    )
-                })
-                .unwrap_or_default()
-        } else {
-            Default::default()
-        };
+        let frontmatter = (source_format == "markdown")
+            .then(|| markdown_frontmatter(&body).map(str::to_owned))
+            .flatten();
+        let mut fields = BTreeMap::new();
+        let mut raw_source_data = BTreeMap::new();
+        let mut aliases = Vec::new();
+        let mut tags = Vec::new();
+        let mut mapping_hints = Vec::new();
+        if let Some(frontmatter) = &frontmatter {
+            raw_source_data.insert(
+                "frontmatter".into(),
+                serde_json::Value::String(frontmatter.clone()),
+            );
+            if self.profile == ImportProfile::Obsidian {
+                let parsed = parse_obsidian_frontmatter(frontmatter);
+                fields = parsed.fields;
+                aliases = parsed.aliases;
+                tags = parsed.tags;
+                if let Some(entity_type) = parsed.entity_type_hint {
+                    mapping_hints.push(StagedMappingHint {
+                        kind: MappingHintKind::EntityType,
+                        source_key: Some("type".into()),
+                        suggested_value: serde_json::Value::String(entity_type),
+                        confidence: Some(0.85),
+                        reason: Some("Obsidian YAML frontmatter type".into()),
+                    });
+                }
+                for message in parsed.warnings {
+                    self.record_diagnostic(ImportDiagnostic {
+                        severity: ImportDiagnosticSeverity::Warning,
+                        code: "obsidian_frontmatter_partial".into(),
+                        message,
+                        source_path: Some(source_path.to_owned()),
+                        object_id: Some(source_id.clone()),
+                    })?;
+                }
+            } else {
+                fields.insert(
+                    "frontmatter".into(),
+                    serde_json::Value::String(frontmatter.clone()),
+                );
+            }
+        }
         let mut metadata = BTreeMap::new();
         if source_format == "html" {
             let conversion = convert_html_to_markdown(&body)?;
@@ -1755,7 +1857,16 @@ impl GenericDocumentAnalyzer<'_> {
             }
         }
         let links = if body_format == "markdown" {
-            discover_markdown_links(&body)
+            let link_body = if self.profile == ImportProfile::Obsidian {
+                markdown_body_after_frontmatter(&body)
+            } else {
+                &body
+            };
+            let mut links = discover_markdown_links(link_body);
+            if self.profile == ImportProfile::Obsidian {
+                links.extend(discover_obsidian_links(link_body));
+            }
+            links
         } else {
             Vec::new()
         };
@@ -1768,7 +1879,11 @@ impl GenericDocumentAnalyzer<'_> {
         self.import.objects.push(StagedObject {
             id: source_id.clone(),
             source_id,
-            source_kind: source_format.to_owned(),
+            source_kind: if self.profile == ImportProfile::Obsidian {
+                "obsidian_markdown".into()
+            } else {
+                source_format.to_owned()
+            },
             source_path: source_path.to_owned(),
             content_hash,
             title,
@@ -1777,13 +1892,13 @@ impl GenericDocumentAnalyzer<'_> {
                 body,
             }),
             parent_source_path,
-            tags: Vec::new(),
-            aliases: Vec::new(),
+            tags,
+            aliases,
             fields,
             metadata,
             raw_source_data,
             links,
-            mapping_hints: Vec::new(),
+            mapping_hints,
             diagnostics: Vec::new(),
         });
         Ok(())
@@ -1799,7 +1914,7 @@ impl GenericDocumentAnalyzer<'_> {
         let source_id = hex_digest(
             format!(
                 "{}\0{}\0{}",
-                GENERIC_DOCUMENT_IMPORTER_ID, self.import.source.id, source_path
+                self.import.importer.id, self.import.source.id, source_path
             )
             .as_bytes(),
         );
@@ -1821,7 +1936,7 @@ impl GenericDocumentAnalyzer<'_> {
             let asset_id = hex_digest(
                 format!(
                     "{}\0{}\0asset\0{}",
-                    GENERIC_DOCUMENT_IMPORTER_ID, self.import.source.id, asset_source_path
+                    self.import.importer.id, self.import.source.id, asset_source_path
                 )
                 .as_bytes(),
             );
@@ -1972,6 +2087,225 @@ impl GenericDocumentAnalyzer<'_> {
         Ok(())
     }
 
+    fn resolve_obsidian_references(&mut self) -> Result<(), CoreError> {
+        let objects_by_path = self
+            .import
+            .objects
+            .iter()
+            .map(|object| (object.source_path.clone(), object.id.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let assets_by_path = self
+            .import
+            .assets
+            .iter()
+            .enumerate()
+            .map(|(index, asset)| (asset.source_path.clone(), index))
+            .collect::<BTreeMap<_, _>>();
+        let mut object_keys = BTreeMap::<String, BTreeSet<String>>::new();
+        for object in &self.import.objects {
+            for key in std::iter::once(object.source_path.as_str())
+                .chain(std::iter::once(obsidian_path_without_markdown_extension(
+                    &object.source_path,
+                )))
+                .chain(
+                    Path::new(&object.source_path)
+                        .file_stem()
+                        .and_then(|value| value.to_str()),
+                )
+                .chain(std::iter::once(object.title.as_str()))
+                .chain(object.aliases.iter().map(String::as_str))
+            {
+                object_keys
+                    .entry(obsidian_lookup_key(key))
+                    .or_default()
+                    .insert(object.id.clone());
+            }
+        }
+        let mut asset_keys = BTreeMap::<String, BTreeSet<usize>>::new();
+        for (index, asset) in self.import.assets.iter().enumerate() {
+            for key in [asset.source_path.as_str(), asset.filename.as_str()] {
+                asset_keys
+                    .entry(obsidian_lookup_key(key))
+                    .or_default()
+                    .insert(index);
+            }
+        }
+
+        struct PendingDiagnostic {
+            code: &'static str,
+            message: String,
+            source_path: String,
+            object_id: String,
+        }
+        let mut diagnostics = Vec::new();
+        let (objects, assets) = (&mut self.import.objects, &mut self.import.assets);
+        for object in objects {
+            for link in &mut object.links {
+                if is_external_markdown_target(&link.target) {
+                    link.resolution = StagedLinkResolution::NotApplicable;
+                    continue;
+                }
+                if link.raw.is_none() {
+                    let Some(target_path) =
+                        resolve_relative_source_path(&object.source_path, &link.target)
+                    else {
+                        link.resolution = StagedLinkResolution::Missing;
+                        diagnostics.push(PendingDiagnostic {
+                            code: "markdown_target_missing",
+                            message: format!(
+                                "Markdown target '{}' was not found in the selected vault.",
+                                link.target
+                            ),
+                            source_path: object.source_path.clone(),
+                            object_id: object.id.clone(),
+                        });
+                        continue;
+                    };
+                    if let Some(target_id) = objects_by_path.get(&target_path) {
+                        link.resolution = StagedLinkResolution::Resolved;
+                        link.resolved_object_id = Some(target_id.clone());
+                    } else if let Some(asset_index) = assets_by_path.get(&target_path) {
+                        attach_obsidian_asset(
+                            &object.id,
+                            &mut object.mapping_hints,
+                            link,
+                            &target_path,
+                            &mut assets[*asset_index],
+                        );
+                    } else {
+                        link.resolution = StagedLinkResolution::Missing;
+                        diagnostics.push(PendingDiagnostic {
+                            code: "markdown_target_missing",
+                            message: format!(
+                                "Markdown target '{}' was not found in the selected vault.",
+                                link.target
+                            ),
+                            source_path: object.source_path.clone(),
+                            object_id: object.id.clone(),
+                        });
+                    }
+                    continue;
+                }
+
+                let target = obsidian_target_path(&link.target);
+                if target.is_empty() {
+                    link.resolution = StagedLinkResolution::Resolved;
+                    link.resolved_object_id = Some(object.id.clone());
+                    continue;
+                }
+                let candidate_paths = obsidian_candidate_paths(&object.source_path, target);
+                let mut object_candidates = BTreeSet::new();
+                for path in &candidate_paths {
+                    if let Some(candidates) = object_keys.get(&obsidian_lookup_key(path)) {
+                        object_candidates.extend(candidates.iter().cloned());
+                    }
+                    if Path::new(path).extension().is_none() {
+                        let markdown_path = format!("{path}.md");
+                        if let Some(candidates) =
+                            object_keys.get(&obsidian_lookup_key(&markdown_path))
+                        {
+                            object_candidates.extend(candidates.iter().cloned());
+                        }
+                    }
+                }
+                if object_candidates.is_empty() {
+                    for key in obsidian_fallback_keys(target) {
+                        if let Some(candidates) = object_keys.get(&key) {
+                            object_candidates.extend(candidates.iter().cloned());
+                        }
+                    }
+                }
+                let mut asset_candidates = BTreeSet::new();
+                for path in &candidate_paths {
+                    if let Some(candidates) = asset_keys.get(&obsidian_lookup_key(path)) {
+                        asset_candidates.extend(candidates.iter().copied());
+                    }
+                }
+                if asset_candidates.is_empty() {
+                    for key in obsidian_fallback_keys(target) {
+                        if let Some(candidates) = asset_keys.get(&key) {
+                            asset_candidates.extend(candidates.iter().copied());
+                        }
+                    }
+                }
+
+                let prefer_asset =
+                    link.kind == StagedLinkKind::Embed && obsidian_target_looks_like_asset(target);
+                if prefer_asset && asset_candidates.len() == 1 {
+                    let index = *asset_candidates.iter().next().expect("one candidate");
+                    let target_path = assets[index].source_path.clone();
+                    attach_obsidian_asset(
+                        &object.id,
+                        &mut object.mapping_hints,
+                        link,
+                        &target_path,
+                        &mut assets[index],
+                    );
+                } else if object_candidates.len() == 1 {
+                    link.resolution = StagedLinkResolution::Resolved;
+                    link.resolved_object_id = object_candidates.into_iter().next();
+                } else if object_candidates.len() > 1 {
+                    link.resolution = StagedLinkResolution::Ambiguous;
+                    link.candidate_object_ids = object_candidates.into_iter().collect();
+                    diagnostics.push(PendingDiagnostic {
+                        code: "obsidian_target_ambiguous",
+                        message: format!(
+                            "Obsidian target '{}' matches multiple notes.",
+                            link.target
+                        ),
+                        source_path: object.source_path.clone(),
+                        object_id: object.id.clone(),
+                    });
+                } else if asset_candidates.len() == 1 {
+                    let index = *asset_candidates.iter().next().expect("one candidate");
+                    let target_path = assets[index].source_path.clone();
+                    attach_obsidian_asset(
+                        &object.id,
+                        &mut object.mapping_hints,
+                        link,
+                        &target_path,
+                        &mut assets[index],
+                    );
+                } else {
+                    link.resolution = StagedLinkResolution::Missing;
+                    let (code, message) = if asset_candidates.len() > 1 {
+                        (
+                            "obsidian_asset_ambiguous",
+                            format!(
+                                "Obsidian target '{}' matches multiple attachments.",
+                                link.target
+                            ),
+                        )
+                    } else {
+                        (
+                            "obsidian_target_missing",
+                            format!(
+                                "Obsidian target '{}' was not found in the vault.",
+                                link.target
+                            ),
+                        )
+                    };
+                    diagnostics.push(PendingDiagnostic {
+                        code,
+                        message,
+                        source_path: object.source_path.clone(),
+                        object_id: object.id.clone(),
+                    });
+                }
+            }
+        }
+        for diagnostic in diagnostics {
+            self.record_diagnostic(ImportDiagnostic {
+                severity: ImportDiagnosticSeverity::Warning,
+                code: diagnostic.code.into(),
+                message: diagnostic.message,
+                source_path: Some(diagnostic.source_path),
+                object_id: Some(diagnostic.object_id),
+            })?;
+        }
+        Ok(())
+    }
+
     fn record_unsupported(
         &mut self,
         source_path: String,
@@ -2018,6 +2352,99 @@ impl GenericDocumentAnalyzer<'_> {
             source_path,
         })
     }
+}
+
+fn attach_obsidian_asset(
+    object_id: &str,
+    mapping_hints: &mut Vec<StagedMappingHint>,
+    link: &mut StagedLink,
+    target_path: &str,
+    asset: &mut StagedAsset,
+) {
+    link.resolution = StagedLinkResolution::NotApplicable;
+    if asset.owner_object_id.is_none() {
+        asset.owner_object_id = Some(object_id.into());
+    }
+    asset.raw_metadata.insert(
+        "resolved_from".into(),
+        serde_json::Value::String(link.target.clone()),
+    );
+    mapping_hints.push(StagedMappingHint {
+        kind: MappingHintKind::AssetRelationship,
+        source_key: Some(target_path.into()),
+        suggested_value: serde_json::Value::String("attachment".into()),
+        confidence: Some(1.0),
+        reason: Some("Obsidian attachment or embed".into()),
+    });
+}
+
+fn obsidian_path_without_markdown_extension(path: &str) -> &str {
+    path.get(path.len().saturating_sub(3)..)
+        .filter(|suffix| suffix.eq_ignore_ascii_case(".md"))
+        .map_or(path, |_| &path[..path.len() - 3])
+}
+
+fn obsidian_lookup_key(value: &str) -> String {
+    value.trim().trim_start_matches('/').to_lowercase()
+}
+
+fn obsidian_target_path(target: &str) -> &str {
+    let target = target
+        .split_once('#')
+        .map(|(path, _)| path)
+        .unwrap_or(target);
+    target
+        .split_once('^')
+        .map(|(path, _)| path)
+        .unwrap_or(target)
+        .trim()
+}
+
+fn obsidian_candidate_paths(source_path: &str, target: &str) -> Vec<String> {
+    if target.contains('\\') || target.chars().any(char::is_control) {
+        return Vec::new();
+    }
+    let target = target.trim();
+    let root_target = target.trim_start_matches('/');
+    let mut paths = BTreeSet::new();
+    if !target.starts_with('/') {
+        if let Some(relative) = resolve_relative_source_path(source_path, target) {
+            paths.insert(relative);
+        }
+    }
+    if !root_target.is_empty() {
+        paths.insert(root_target.into());
+    }
+    paths.into_iter().collect()
+}
+
+fn obsidian_fallback_keys(target: &str) -> Vec<String> {
+    let target = target.trim().trim_start_matches('/');
+    let mut keys = BTreeSet::new();
+    keys.insert(obsidian_lookup_key(target));
+    keys.insert(obsidian_lookup_key(
+        obsidian_path_without_markdown_extension(target),
+    ));
+    if let Some(filename) = Path::new(target)
+        .file_name()
+        .and_then(|value| value.to_str())
+    {
+        keys.insert(obsidian_lookup_key(filename));
+    }
+    if let Some(stem) = Path::new(target)
+        .file_stem()
+        .and_then(|value| value.to_str())
+    {
+        keys.insert(obsidian_lookup_key(stem));
+    }
+    keys.into_iter().filter(|key| !key.is_empty()).collect()
+}
+
+fn obsidian_target_looks_like_asset(target: &str) -> bool {
+    Path::new(target)
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| !extension.eq_ignore_ascii_case("md"))
 }
 
 fn is_zip_path(path: &Path) -> bool {
@@ -3694,6 +4121,340 @@ fn discover_markdown_links(body: &str) -> Vec<StagedLink> {
         .collect()
 }
 
+fn discover_obsidian_links(body: &str) -> Vec<StagedLink> {
+    let mut links = Vec::new();
+    let mut fence = None::<char>;
+    let mut frontmatter = markdown_frontmatter(body).is_some();
+    let mut first_line = true;
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        if frontmatter {
+            if !first_line && matches!(trimmed, "---" | "...") {
+                frontmatter = false;
+            }
+            first_line = false;
+            continue;
+        }
+        first_line = false;
+        if let Some(marker) = fence {
+            if trimmed.starts_with(&marker.to_string().repeat(3)) {
+                fence = None;
+            }
+            continue;
+        }
+        if trimmed.starts_with("```") {
+            fence = Some('`');
+            continue;
+        }
+        if trimmed.starts_with("~~~") {
+            fence = Some('~');
+            continue;
+        }
+        let bytes = line.as_bytes();
+        let mut index = 0;
+        let mut inline_code = false;
+        while index < bytes.len() {
+            if bytes[index] == b'`' {
+                inline_code = !inline_code;
+                index += 1;
+                continue;
+            }
+            if inline_code {
+                index += 1;
+                continue;
+            }
+            let (embed, open) = if bytes[index] == b'!'
+                && bytes.get(index + 1) == Some(&b'[')
+                && bytes.get(index + 2) == Some(&b'[')
+            {
+                (true, index + 1)
+            } else if bytes[index] == b'[' && bytes.get(index + 1) == Some(&b'[') {
+                (false, index)
+            } else {
+                index += 1;
+                continue;
+            };
+            if open > 0 && bytes.get(open - 1) == Some(&b'\\') {
+                index = open + 2;
+                continue;
+            }
+            let content_start = open + 2;
+            let Some(relative_end) = line[content_start..].find("]]") else {
+                break;
+            };
+            let content_end = content_start + relative_end;
+            let content = line[content_start..content_end].trim();
+            let raw_start = if embed { open - 1 } else { open };
+            let raw_end = content_end + 2;
+            let raw = line[raw_start..raw_end].to_owned();
+            let (target, label) = content
+                .split_once('|')
+                .map(|(target, label)| (target.trim(), Some(label.trim())))
+                .unwrap_or((content, None));
+            if !target.is_empty() {
+                links.push(StagedLink {
+                    kind: if embed {
+                        StagedLinkKind::Embed
+                    } else {
+                        StagedLinkKind::Internal
+                    },
+                    target: target.into(),
+                    label: label.filter(|label| !label.is_empty()).map(str::to_owned),
+                    resolution: StagedLinkResolution::Unresolved,
+                    resolved_object_id: None,
+                    candidate_object_ids: Vec::new(),
+                    raw: Some(raw),
+                });
+            }
+            index = raw_end;
+        }
+    }
+    links
+}
+
+#[derive(Debug, Default)]
+struct ObsidianFrontmatter {
+    fields: BTreeMap<String, serde_json::Value>,
+    aliases: Vec<String>,
+    tags: Vec<String>,
+    entity_type_hint: Option<String>,
+    warnings: Vec<String>,
+}
+
+fn parse_obsidian_frontmatter(frontmatter: &str) -> ObsidianFrontmatter {
+    let lines = frontmatter.lines().collect::<Vec<_>>();
+    let mut parsed = ObsidianFrontmatter::default();
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            index += 1;
+            continue;
+        }
+        if line.starts_with(char::is_whitespace) {
+            parsed
+                .warnings
+                .push("Ignored an unattached indented YAML frontmatter line.".into());
+            index += 1;
+            continue;
+        }
+        let Some((key, remainder)) = line.split_once(':') else {
+            parsed
+                .warnings
+                .push("Ignored a YAML frontmatter line without a key/value separator.".into());
+            index += 1;
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty()
+            || !key.chars().all(|character| {
+                character.is_alphanumeric() || matches!(character, '_' | '-' | '.')
+            })
+        {
+            parsed
+                .warnings
+                .push(format!("Ignored unsupported YAML frontmatter key: {key}"));
+            index += 1;
+            continue;
+        }
+        let remainder = remainder.trim();
+        let mut consumed_until = index + 1;
+        let value = if remainder.is_empty() || matches!(remainder, "|" | ">") {
+            let mut block = Vec::new();
+            while consumed_until < lines.len()
+                && (lines[consumed_until].starts_with(char::is_whitespace)
+                    || lines[consumed_until].trim().is_empty())
+            {
+                block.push(lines[consumed_until]);
+                consumed_until += 1;
+            }
+            let non_empty = block
+                .iter()
+                .filter(|line| !line.trim().is_empty())
+                .collect::<Vec<_>>();
+            if !non_empty.is_empty()
+                && non_empty
+                    .iter()
+                    .all(|line| line.trim_start().starts_with("- "))
+            {
+                serde_json::Value::Array(
+                    non_empty
+                        .into_iter()
+                        .map(|line| parse_obsidian_yaml_scalar(line.trim_start()[2..].trim()))
+                        .collect(),
+                )
+            } else if matches!(remainder, "|" | ">") {
+                let separator = if remainder == ">" { " " } else { "\n" };
+                serde_json::Value::String(
+                    block
+                        .into_iter()
+                        .map(|line| line.trim_start())
+                        .collect::<Vec<_>>()
+                        .join(separator),
+                )
+            } else if block.is_empty() {
+                serde_json::Value::Null
+            } else {
+                parsed.warnings.push(format!(
+                    "Preserved unsupported nested YAML for '{key}' as text."
+                ));
+                serde_json::Value::String(
+                    block
+                        .into_iter()
+                        .map(str::trim_end)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )
+            }
+        } else {
+            parse_obsidian_yaml_value(remainder, &mut parsed.warnings)
+        };
+        if parsed.fields.insert(key.into(), value).is_some() {
+            parsed.warnings.push(format!(
+                "A duplicate YAML frontmatter key was replaced: {key}"
+            ));
+        }
+        index = consumed_until;
+    }
+
+    parsed.aliases = ["aliases", "alias"]
+        .into_iter()
+        .filter_map(|key| parsed.fields.get(key))
+        .flat_map(obsidian_string_values)
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    parsed.tags = parsed
+        .fields
+        .get("tags")
+        .or_else(|| parsed.fields.get("tag"))
+        .into_iter()
+        .flat_map(obsidian_string_values)
+        .flat_map(|value| {
+            value
+                .split([',', ' '])
+                .map(|tag| tag.trim().trim_start_matches('#').to_owned())
+                .filter(|tag| !tag.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    parsed.entity_type_hint = parsed
+        .fields
+        .get("type")
+        .or_else(|| parsed.fields.get("entity_type"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    parsed.warnings.sort();
+    parsed.warnings.dedup();
+    parsed
+}
+
+fn parse_obsidian_yaml_value(value: &str, warnings: &mut Vec<String>) -> serde_json::Value {
+    let value = value.trim();
+    if value.starts_with('[') && value.ends_with(']') {
+        return serde_json::Value::Array(
+            split_obsidian_inline_list(&value[1..value.len() - 1])
+                .into_iter()
+                .map(|value| parse_obsidian_yaml_scalar(&value))
+                .collect(),
+        );
+    }
+    if value.starts_with('{') && value.ends_with('}') {
+        if let Ok(value) = serde_json::from_str(value) {
+            return value;
+        }
+        warnings.push("Preserved a non-JSON inline YAML mapping as text.".into());
+    }
+    parse_obsidian_yaml_scalar(value)
+}
+
+fn parse_obsidian_yaml_scalar(value: &str) -> serde_json::Value {
+    let value = value.trim();
+    if value.starts_with('"') && value.ends_with('"') {
+        return serde_json::from_str(value)
+            .unwrap_or_else(|_| serde_json::Value::String(value[1..value.len() - 1].into()));
+    }
+    if value.starts_with('\'') && value.ends_with('\'') && value.len() >= 2 {
+        return serde_json::Value::String(value[1..value.len() - 1].replace("''", "'"));
+    }
+    match value.to_ascii_lowercase().as_str() {
+        "true" => return serde_json::Value::Bool(true),
+        "false" => return serde_json::Value::Bool(false),
+        "null" | "~" => return serde_json::Value::Null,
+        _ => {}
+    }
+    if let Ok(integer) = value.parse::<i64>() {
+        return serde_json::Value::from(integer);
+    }
+    if let Ok(float) = value.parse::<f64>() {
+        if float.is_finite() {
+            return serde_json::Value::from(float);
+        }
+    }
+    serde_json::Value::String(value.into())
+}
+
+fn split_obsidian_inline_list(value: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for character in value.chars() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+            continue;
+        }
+        if character == '\\' && quote == Some('"') {
+            current.push(character);
+            escaped = true;
+            continue;
+        }
+        if matches!(character, '\'' | '"') {
+            if quote == Some(character) {
+                quote = None;
+            } else if quote.is_none() {
+                quote = Some(character);
+            }
+            current.push(character);
+            continue;
+        }
+        if character == ',' && quote.is_none() {
+            values.push(current.trim().to_owned());
+            current.clear();
+        } else {
+            current.push(character);
+        }
+    }
+    if !current.trim().is_empty() {
+        values.push(current.trim().to_owned());
+    }
+    values
+}
+
+fn obsidian_string_values(value: &serde_json::Value) -> Vec<String> {
+    match value {
+        serde_json::Value::Array(values) => values
+            .iter()
+            .filter_map(|value| match value {
+                serde_json::Value::String(value) => Some(value.clone()),
+                serde_json::Value::Number(value) => Some(value.to_string()),
+                _ => None,
+            })
+            .collect(),
+        serde_json::Value::String(value) => vec![value.clone()],
+        serde_json::Value::Number(value) => vec![value.to_string()],
+        _ => Vec::new(),
+    }
+}
+
 fn markdown_frontmatter(body: &str) -> Option<&str> {
     let remainder = body
         .strip_prefix("---\n")
@@ -3707,6 +4468,24 @@ fn markdown_frontmatter(body: &str) -> Option<&str> {
         offset += line.len();
     }
     None
+}
+
+fn markdown_body_after_frontmatter(body: &str) -> &str {
+    let Some(remainder) = body
+        .strip_prefix("---\n")
+        .or_else(|| body.strip_prefix("---\r\n"))
+    else {
+        return body;
+    };
+    let mut offset = 0;
+    for line in remainder.split_inclusive('\n') {
+        let value = line.trim_end_matches(['\r', '\n']);
+        offset += line.len();
+        if value == "---" || value == "..." {
+            return &remainder[offset..];
+        }
+    }
+    body
 }
 
 fn asset_mime_type(source_path: &str) -> Option<&'static str> {
@@ -4907,6 +5686,265 @@ mod tests {
             )
             .unwrap(),
             expected
+        );
+    }
+
+    #[test]
+    fn obsidian_vault_preserves_frontmatter_and_resolves_vault_links_and_embeds() {
+        let vault = TestDirectory::new();
+        fs::create_dir_all(vault.path().join(".obsidian")).unwrap();
+        fs::create_dir_all(vault.path().join("Characters")).unwrap();
+        fs::create_dir_all(vault.path().join("Places")).unwrap();
+        fs::create_dir_all(vault.path().join("assets")).unwrap();
+        fs::write(vault.path().join(".obsidian/app.json"), "{}").unwrap();
+        let home_body = r#"---
+aliases:
+  - The Grey
+  - Mithrandir
+tags: [wizard, fellowship]
+type: person
+species: Maia
+rank: 7
+homepage: "[Metadata](Missing.md)"
+---
+# Gandalf
+
+Travel to [[Places/Middle Earth|Middle Earth]] or [[Middle Earth]].
+![[assets/map.png|Map]]
+![[Places/Middle Earth#North]]
+`[[Ignored inline]]`
+```text
+[[Ignored fenced]]
+```
+> [!note] Unsupported plugin syntax remains verbatim.
+"#;
+        fs::write(vault.path().join("Characters/Gandalf.md"), home_body).unwrap();
+        fs::write(
+            vault.path().join("Places/Middle Earth.md"),
+            "# Middle Earth\n\n## North\n",
+        )
+        .unwrap();
+        fs::write(
+            vault.path().join("assets/map.png"),
+            b"\x89PNG\r\n\x1a\nfixture",
+        )
+        .unwrap();
+
+        let staged =
+            analyze_obsidian_vault(vault.path(), GenericDocumentImportLimits::default()).unwrap();
+        let gandalf = staged
+            .objects
+            .iter()
+            .find(|object| object.source_path == "Characters/Gandalf.md")
+            .unwrap();
+
+        assert_eq!(staged.importer.id, OBSIDIAN_IMPORTER_ID);
+        assert_eq!(staged.source.kind, ImportSourceKind::Vault);
+        assert_eq!(gandalf.source_kind, "obsidian_markdown");
+        assert_eq!(gandalf.aliases, vec!["Mithrandir", "The Grey"]);
+        assert_eq!(gandalf.tags, vec!["fellowship", "wizard"]);
+        assert_eq!(gandalf.fields["species"], "Maia");
+        assert_eq!(gandalf.fields["rank"], 7);
+        assert!(!gandalf
+            .links
+            .iter()
+            .any(|link| link.target == "Missing.md"));
+        assert_eq!(gandalf.body.as_ref().unwrap().body, home_body);
+        assert!(gandalf.raw_source_data["frontmatter"]
+            .as_str()
+            .unwrap()
+            .contains("type: person"));
+        assert!(gandalf.mapping_hints.iter().any(|hint| {
+            hint.kind == MappingHintKind::EntityType && hint.suggested_value == "person"
+        }));
+        assert_eq!(
+            gandalf
+                .links
+                .iter()
+                .filter(|link| link.raw.is_some())
+                .count(),
+            4
+        );
+        assert!(gandalf.links.iter().any(|link| {
+            link.target == "Middle Earth" && link.resolution == StagedLinkResolution::Resolved
+        }));
+        assert!(gandalf.links.iter().any(|link| {
+            link.target == "Places/Middle Earth#North"
+                && link.kind == StagedLinkKind::Embed
+                && link.resolution == StagedLinkResolution::Resolved
+        }));
+        assert!(gandalf.links.iter().any(|link| {
+            link.target == "assets/map.png"
+                && link.kind == StagedLinkKind::Embed
+                && link.resolution == StagedLinkResolution::NotApplicable
+        }));
+        assert_eq!(staged.assets.len(), 1);
+        assert_eq!(
+            staged.assets[0].owner_object_id.as_deref(),
+            Some(gandalf.id.as_str())
+        );
+        assert!(staged.unsupported.iter().any(|item| {
+            item.source_path == ".obsidian" && item.source_kind == "obsidian_configuration"
+        }));
+    }
+
+    #[test]
+    fn obsidian_vault_reports_ambiguous_missing_and_partial_frontmatter() {
+        let vault = TestDirectory::new();
+        fs::create_dir_all(vault.path().join("A")).unwrap();
+        fs::create_dir_all(vault.path().join("B")).unwrap();
+        fs::write(vault.path().join("A/Twin.md"), "# First").unwrap();
+        fs::write(vault.path().join("B/Twin.md"), "# Second").unwrap();
+        fs::write(
+            vault.path().join("Home.md"),
+            "---\ncustom:\n  nested: value\n---\n[[Twin]] [[Missing]]",
+        )
+        .unwrap();
+
+        let staged =
+            analyze_obsidian_vault(vault.path(), GenericDocumentImportLimits::default()).unwrap();
+        let home = staged
+            .objects
+            .iter()
+            .find(|object| object.source_path == "Home.md")
+            .unwrap();
+        let twin = home
+            .links
+            .iter()
+            .find(|link| link.target == "Twin")
+            .unwrap();
+        let missing = home
+            .links
+            .iter()
+            .find(|link| link.target == "Missing")
+            .unwrap();
+
+        assert_eq!(twin.resolution, StagedLinkResolution::Ambiguous);
+        assert_eq!(twin.candidate_object_ids.len(), 2);
+        assert_eq!(missing.resolution, StagedLinkResolution::Missing);
+        assert_eq!(home.fields["custom"], "  nested: value");
+        for code in [
+            "obsidian_target_ambiguous",
+            "obsidian_target_missing",
+            "obsidian_frontmatter_partial",
+        ] {
+            assert!(staged
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == code));
+        }
+    }
+
+    #[test]
+    fn generic_markdown_does_not_apply_obsidian_semantics() {
+        let source = TestDirectory::new();
+        fs::write(
+            source.path().join("Note.md"),
+            "---\naliases: [Alias]\n---\n[[Other]]",
+        )
+        .unwrap();
+
+        let staged =
+            analyze_generic_documents(source.path(), GenericDocumentImportLimits::default())
+                .unwrap();
+        let object = &staged.objects[0];
+
+        assert!(object.aliases.is_empty());
+        assert!(object.links.is_empty());
+        assert_eq!(object.fields.len(), 1);
+        assert!(object.fields["frontmatter"]
+            .as_str()
+            .unwrap()
+            .contains("aliases"));
+    }
+
+    #[test]
+    fn obsidian_vault_commit_preserves_markdown_and_attachment_after_clean_rebuild() {
+        let vault = TestDirectory::new();
+        fs::create_dir_all(vault.path().join("assets")).unwrap();
+        let body = "# Home\n\n![[assets/map.png]]\n";
+        fs::write(vault.path().join("Home.md"), body).unwrap();
+        fs::write(
+            vault.path().join("assets/map.png"),
+            b"\x89PNG\r\n\x1a\nfixture",
+        )
+        .unwrap();
+        let staged =
+            analyze_obsidian_vault(vault.path(), GenericDocumentImportLimits::default()).unwrap();
+        let project = TestDirectory::new();
+        let store = ProjectStore::open_directory(project.path()).unwrap();
+        let generation = store.content_generation().unwrap();
+        let mut mappings = ImportMappingOverrides::default();
+        mappings.global.entity_type = Some("note".into());
+        let candidate = build_import_candidate_plan(
+            ImportCandidatePlanBuild {
+                session_id: "obsidian-session".into(),
+                importer: staged.importer.clone(),
+                source: staged.source.clone(),
+                captured_content_generation: generation,
+                current_content_generation: generation,
+                manifest_fingerprint: "manifest-v1".into(),
+                objects: staged.objects.clone(),
+                unsupported_count: staged.unsupported.len(),
+                diagnostics: staged.diagnostics.clone(),
+            },
+            &mappings,
+        )
+        .unwrap();
+        let validated = validate_import_candidate_plan(ImportValidationBuild {
+            candidate,
+            staged_objects: staged.objects,
+            staged_assets: staged.assets,
+            catalog: ImportMappingCatalog {
+                fingerprint: "manifest-v1".into(),
+                entity_types: BTreeSet::from(["note".into()]),
+                fields: BTreeMap::new(),
+                relationship_types: BTreeSet::new(),
+            },
+            decisions: BTreeMap::new(),
+            existing_targets: BTreeMap::new(),
+            duplicate_targets: BTreeMap::new(),
+        })
+        .unwrap()
+        .plan
+        .unwrap();
+        let report = store
+            .commit_external_import(
+                &validated,
+                Some(vault.path()),
+                true,
+                "00000000-0000-4000-8000-000000000006",
+            )
+            .unwrap();
+
+        assert_eq!(report.created.len(), 1);
+        assert_eq!(report.assets.len(), 1);
+        store.flush_checkpoint("Obsidian import test").unwrap();
+        drop(store);
+        fs::remove_dir_all(project.path().join(".daena")).unwrap();
+        let rebuilt = ProjectStore::open_directory(project.path()).unwrap();
+        let entity_id = report.created[0].entity_id.clone();
+        let documents = rebuilt.list_documents(entity_id.clone()).unwrap();
+        assert_eq!(documents[0].body, body);
+        let assets = rebuilt.list_assets(entity_id).unwrap();
+        assert_eq!(assets.len(), 1);
+        assert_eq!(
+            rebuilt.asset_bytes(assets[0].id.clone()).unwrap(),
+            b"\x89PNG\r\n\x1a\nfixture"
+        );
+    }
+
+    #[test]
+    fn obsidian_import_rejects_single_files() {
+        let source = TestDirectory::new();
+        let note = source.path().join("Note.md");
+        fs::write(&note, "# Note").unwrap();
+
+        assert!(
+            analyze_obsidian_vault(&note, GenericDocumentImportLimits::default())
+                .unwrap_err()
+                .to_string()
+                .contains("requires a vault folder")
         );
     }
 

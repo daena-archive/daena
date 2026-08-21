@@ -495,12 +495,16 @@ onMount(() => {
           <p>
             Created {report.created.length}, mapped {report.mapped.length}, and skipped
             {report.skippedSourcePaths.length} source {report.skippedSourcePaths.length === 1 ? "item" : "items"}.
+            Imported {report.assets.length} {report.assets.length === 1 ? "attachment" : "attachments"}.
           </p>
         </div>
         {#if report.created.length || report.mapped.length}
           <div class="result-list">
             {#each [...report.created, ...report.mapped] as item}
               <div><strong>{item.sourcePath}</strong><span>{item.entityType ?? "Existing entity"} · {item.entityId}</span></div>
+            {/each}
+            {#each report.assets as asset}
+              <div><strong>{asset.sourcePath}</strong><span>Attachment · {asset.filename}</span></div>
             {/each}
           </div>
         {/if}
@@ -516,6 +520,7 @@ onMount(() => {
         <section class="summary-row" aria-label="Analysis summary">
           <div><strong>{status.result.summary.document_count}</strong><span>Documents</span></div>
           <div><strong>{status.result.summary.folder_count}</strong><span>Folders</span></div>
+          <div><strong>{status.result.summary.asset_count}</strong><span>Assets</span></div>
           <div><strong>{status.result.summary.unsupported_count}</strong><span>Unsupported</span></div>
           <div>
             <strong>{status.result.summary.warning_count + status.result.summary.error_count}</strong><span
@@ -541,6 +546,7 @@ onMount(() => {
               <strong>{validation.errorCount > 0 ? "Resolve validation errors" : "Plan validated"}</strong>
               <span>
                 {validation.createCount} create · {validation.mapCount} map · {validation.skipCount} skip ·
+                {validation.assetCount} assets ·
                 {validation.warningCount} warnings
               </span>
             </div>
@@ -706,6 +712,16 @@ onMount(() => {
                 <span class="kicker">SOURCE PREVIEW</span>
                 <pre>{object.body?.body ?? "No document body."}</pre>
               </div>
+              {#if (object.links ?? []).length}
+                <div class="diagnostics">
+                  <span class="kicker">DISCOVERED LINKS</span>
+                  {#each object.links ?? [] as link}
+                    <p class={link.resolution === "missing" ? "error" : ""}>
+                      <strong>{link.kind}</strong>{link.target} · {link.resolution}
+                    </p>
+                  {/each}
+                </div>
+              {/if}
               {#if object.diagnostics?.length}<div class="diagnostics">
                   <span class="kicker">DIAGNOSTICS</span>{#each object.diagnostics as diagnostic}<p
                       class={diagnostic.severity}>
@@ -733,7 +749,15 @@ onMount(() => {
               <div class="unsupported-detail">
                 <FileText size={24} strokeWidth={1.7} /><span class="kicker">ASSET</span>
                 <h3>{inspectedItem.value.filename}</h3>
-                <p>{inspectedItem.value.source_path} · {inspectedItem.value.size.toLocaleString()} bytes</p>
+                <p>
+                  {inspectedItem.value.source_path} · {inspectedItem.value.size.toLocaleString()} bytes ·
+                  {inspectedItem.value.mime_type ?? "unknown media type"}
+                </p>
+                <pre>{JSON.stringify({
+                    contentHash: inspectedItem.value.content_hash,
+                    ownerObjectId: inspectedItem.value.owner_object_id,
+                    relationship: inspectedItem.value.relationship,
+                  }, null, 2)}</pre>
               </div>
             {:else}<div class="empty-inspector">Select an item to inspect it.</div>{/if}
           </section>
@@ -953,7 +977,7 @@ button:disabled {
 .progress-grid,
 .summary-row {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 8px;
   width: 100%;
 }

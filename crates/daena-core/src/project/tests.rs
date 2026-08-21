@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     ImportSource, ImportSourceKind, ImportValidationIssue, ImportValidationSeverity,
-    ImporterIdentity, StagedDocument, ValidatedImportObject,
+    ImporterIdentity, StagedDocument, ValidatedImportAsset, ValidatedImportObject,
 };
 use daena_plugin_api::MetadataFieldDefinition;
 use std::collections::BTreeMap;
@@ -465,6 +465,11 @@ fn physical_map_acceptance_is_atomic_and_request_idempotent() {
 #[test]
 fn external_import_commit_is_idempotent_and_survives_clean_rebuild() {
     let root = std::env::temp_dir().join(format!("daena-external-commit-{}", Uuid::new_v4()));
+    let source_root =
+        std::env::temp_dir().join(format!("daena-external-source-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(source_root.join("assets")).unwrap();
+    let asset_bytes = b"\x89PNG\r\n\x1a\nfixture";
+    std::fs::write(source_root.join("assets/map.png"), asset_bytes).unwrap();
     let store = ProjectStore::open_directory(&root).unwrap();
     let existing = store
         .create_entity(CreateEntity {
@@ -533,6 +538,15 @@ fn external_import_commit_is_idempotent_and_survives_clean_rebuild() {
                 decision: ImportObjectDecision::Skip,
             },
         ],
+        assets: vec![ValidatedImportAsset {
+            staged_asset_id: "asset-object".into(),
+            owner_staged_object_id: "create-object".into(),
+            source_path: "assets/map.png".into(),
+            filename: "map.png".into(),
+            content_hash: format!("sha256:{}", digest_bytes(asset_bytes)),
+            size: asset_bytes.len() as u64,
+            mime_type: "image/png".into(),
+        }],
         warnings: vec![ImportValidationIssue {
             severity: ImportValidationSeverity::Warning,
             code: "fixture_warning".into(),
@@ -545,17 +559,28 @@ fn external_import_commit_is_idempotent_and_survives_clean_rebuild() {
 
     let request_id = "00000000-0000-4000-8000-000000000001";
     assert!(store
-        .commit_external_import(&plan, false, request_id)
+        .commit_external_import(&plan, None, false, request_id)
         .is_err());
+    std::fs::write(source_root.join("assets/map.png"), b"changed").unwrap();
+    assert!(store
+        .commit_external_import(&plan, Some(&source_root), true, request_id)
+        .is_err());
+    assert_eq!(store.list_entities().unwrap().len(), 1);
+    std::fs::write(source_root.join("assets/map.png"), asset_bytes).unwrap();
     let first = store
-        .commit_external_import(&plan, true, request_id)
+        .commit_external_import(&plan, Some(&source_root), true, request_id)
         .unwrap();
     let retry = store
-        .commit_external_import(&plan, true, request_id)
+        .commit_external_import(&plan, Some(&source_root), true, request_id)
         .unwrap();
     assert_eq!(retry, first);
     assert_eq!(first.created.len(), 1);
     assert_eq!(first.mapped.len(), 1);
+    assert_eq!(first.assets.len(), 1);
+    assert_eq!(
+        store.asset_bytes(first.assets[0].asset_id.clone()).unwrap(),
+        asset_bytes
+    );
     assert_eq!(first.skipped_source_paths, vec!["Skipped.md"]);
     assert_eq!(store.list_entities().unwrap().len(), 2);
     let duplicates = store
@@ -590,8 +615,17 @@ fn external_import_commit_is_idempotent_and_survives_clean_rebuild() {
         rebuilt_duplicates["create-object"],
         vec![first.created[0].entity_id.clone()]
     );
+    let rebuilt_assets = rebuilt
+        .list_assets(first.created[0].entity_id.clone())
+        .unwrap();
+    assert_eq!(rebuilt_assets.len(), 1);
+    assert_eq!(
+        rebuilt.asset_bytes(rebuilt_assets[0].id.clone()).unwrap(),
+        asset_bytes
+    );
     drop(rebuilt);
     std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(source_root).unwrap();
 }
 
 #[test]

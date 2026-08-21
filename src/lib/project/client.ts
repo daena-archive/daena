@@ -926,6 +926,7 @@ export interface ExternalImportValidationSummary {
   createCount: number;
   skipCount: number;
   mapCount: number;
+  assetCount: number;
   warningCount: number;
   errorCount: number;
   issues: ImportValidationIssue[];
@@ -936,6 +937,14 @@ export interface ImportedObjectReport {
   entityId: string;
   entityType: string | null;
 }
+export interface ImportedAssetReport {
+  stagedAssetId: string;
+  sourcePath: string;
+  assetId: string;
+  entityId: string;
+  filename: string;
+  contentHash: string;
+}
 export interface ExternalImportCommitReport {
   requestId: string;
   planId: string;
@@ -943,6 +952,7 @@ export interface ExternalImportCommitReport {
   source: ExternalImportSource;
   created: ImportedObjectReport[];
   mapped: ImportedObjectReport[];
+  assets: ImportedAssetReport[];
   skippedSourcePaths: string[];
   warnings: ImportValidationIssue[];
 }

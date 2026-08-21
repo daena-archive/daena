@@ -1,4 +1,5 @@
 use crate::CoreError;
+use pulldown_cmark::{Event, Options, Parser, Tag};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -465,6 +466,18 @@ pub struct ValidatedImportObject {
     pub decision: ImportObjectDecision,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidatedImportAsset {
+    pub staged_asset_id: String,
+    pub owner_staged_object_id: String,
+    pub source_path: String,
+    pub filename: String,
+    pub content_hash: String,
+    pub size: u64,
+    pub mime_type: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ValidatedImportPlan {
@@ -477,6 +490,8 @@ pub struct ValidatedImportPlan {
     pub content_generation: i64,
     pub manifest_fingerprint: String,
     pub objects: Vec<ValidatedImportObject>,
+    #[serde(default)]
+    pub assets: Vec<ValidatedImportAsset>,
     pub warnings: Vec<ImportValidationIssue>,
 }
 
@@ -491,6 +506,17 @@ pub struct ImportedObjectReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ImportedAssetReport {
+    pub staged_asset_id: String,
+    pub source_path: String,
+    pub asset_id: String,
+    pub entity_id: String,
+    pub filename: String,
+    pub content_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ExternalImportCommitReport {
     pub request_id: String,
     pub plan_id: String,
@@ -498,6 +524,8 @@ pub struct ExternalImportCommitReport {
     pub source: ImportSource,
     pub created: Vec<ImportedObjectReport>,
     pub mapped: Vec<ImportedObjectReport>,
+    #[serde(default)]
+    pub assets: Vec<ImportedAssetReport>,
     pub skipped_source_paths: Vec<String>,
     pub warnings: Vec<ImportValidationIssue>,
 }
@@ -506,6 +534,7 @@ pub struct ExternalImportCommitReport {
 pub struct ImportValidationBuild {
     pub candidate: ImportCandidatePlan,
     pub staged_objects: Vec<StagedObject>,
+    pub staged_assets: Vec<StagedAsset>,
     pub catalog: ImportMappingCatalog,
     pub decisions: BTreeMap<String, ImportObjectDecision>,
     pub existing_targets: BTreeMap<String, ImportExistingTarget>,
@@ -525,6 +554,7 @@ pub fn validate_import_candidate_plan(
     let ImportValidationBuild {
         candidate,
         staged_objects,
+        staged_assets,
         catalog,
         decisions,
         existing_targets,
@@ -728,13 +758,20 @@ pub fn validate_import_candidate_plan(
                         ));
                     }
                 }
-                if !candidate_object.mapping.relationship_mappings.is_empty()
-                    || !object.links.is_empty()
-                {
+                if !candidate_object.mapping.relationship_mappings.is_empty() {
                     issues.push(validation_issue(
                         ImportValidationSeverity::Error,
                         "relationship_mapping_not_supported",
                         "Relationship commit is not enabled in this import iteration.",
+                        Some(object.source_path.clone()),
+                        Some(object.id.clone()),
+                        None,
+                    ));
+                } else if !object.links.is_empty() {
+                    issues.push(validation_issue(
+                        ImportValidationSeverity::Warning,
+                        "source_links_preserved",
+                        "Markdown links remain in the imported document; entity relationships are not created automatically.",
                         Some(object.source_path.clone()),
                         Some(object.id.clone()),
                         None,
@@ -760,6 +797,78 @@ pub fn validate_import_candidate_plan(
     if has_errors {
         return Ok(ImportValidationOutcome { plan: None, issues });
     }
+    let decisions_by_object = validated
+        .iter()
+        .map(|object| (object.staged_object_id.as_str(), &object.decision))
+        .collect::<BTreeMap<_, _>>();
+    let mut validated_assets = Vec::new();
+    for asset in staged_assets {
+        let Some(owner_id) = asset.owner_object_id.as_deref() else {
+            issues.push(validation_issue(
+                ImportValidationSeverity::Warning,
+                "unreferenced_asset_skipped",
+                "This unreferenced asset will not be imported.",
+                Some(asset.source_path),
+                None,
+                None,
+            ));
+            continue;
+        };
+        if matches!(
+            decisions_by_object.get(owner_id),
+            Some(ImportObjectDecision::Skip)
+        ) {
+            continue;
+        }
+        if !decisions_by_object.contains_key(owner_id) {
+            issues.push(validation_issue(
+                ImportValidationSeverity::Error,
+                "asset_owner_unavailable",
+                "The entity selected for this asset is not available.",
+                Some(asset.source_path),
+                Some(owner_id.into()),
+                None,
+            ));
+            continue;
+        }
+        let Some(content_hash) = asset.content_hash else {
+            issues.push(validation_issue(
+                ImportValidationSeverity::Error,
+                "asset_hash_missing",
+                "The asset did not produce a content hash during analysis.",
+                Some(asset.source_path),
+                Some(owner_id.into()),
+                None,
+            ));
+            continue;
+        };
+        let Some(mime_type) = asset.mime_type else {
+            issues.push(validation_issue(
+                ImportValidationSeverity::Error,
+                "asset_mime_type_missing",
+                "The asset did not produce a media type during analysis.",
+                Some(asset.source_path),
+                Some(owner_id.into()),
+                None,
+            ));
+            continue;
+        };
+        validated_assets.push(ValidatedImportAsset {
+            staged_asset_id: asset.id,
+            owner_staged_object_id: owner_id.into(),
+            source_path: asset.source_path,
+            filename: asset.filename,
+            content_hash,
+            size: asset.size,
+            mime_type,
+        });
+    }
+    let has_errors = issues
+        .iter()
+        .any(|issue| issue.severity == ImportValidationSeverity::Error);
+    if has_errors {
+        return Ok(ImportValidationOutcome { plan: None, issues });
+    }
     let warnings = issues.clone();
     let mut plan = ValidatedImportPlan {
         schema_version: VALIDATED_IMPORT_PLAN_SCHEMA_VERSION,
@@ -771,6 +880,7 @@ pub fn validate_import_candidate_plan(
         content_generation: candidate.current_content_generation,
         manifest_fingerprint: catalog.fingerprint,
         objects: validated,
+        assets: validated_assets,
         warnings,
     };
     let bytes =
@@ -1190,9 +1300,14 @@ pub fn analyze_generic_documents_with_progress(
         analyzer.analyze_file(source, &source_name, &metadata)?;
         analyzer.finish_entry(Some(source_name))?;
     }
+    analyzer.resolve_markdown_references()?;
     analyzer
         .import
         .objects
+        .sort_by(|left, right| left.source_path.cmp(&right.source_path));
+    analyzer
+        .import
+        .assets
         .sort_by(|left, right| left.source_path.cmp(&right.source_path));
     analyzer
         .import
@@ -1307,16 +1422,6 @@ impl GenericDocumentAnalyzer<'_> {
                 self.limits.max_files
             )));
         }
-        let format = match document_format(source_path) {
-            Some(format) => format,
-            None => {
-                return self.record_unsupported(
-                    source_path.to_owned(),
-                    "file",
-                    "file type is not supported by the generic document importer",
-                );
-            }
-        };
         let size = metadata.len();
         if size > self.limits.max_file_bytes {
             return Err(CoreError::Validation(format!(
@@ -1334,6 +1439,68 @@ impl GenericDocumentAnalyzer<'_> {
                 self.limits.max_total_bytes
             )));
         }
+        if let Some(mime_type) = asset_mime_type(source_path) {
+            let bytes = fs::read(path).map_err(|source| CoreError::Io {
+                operation: "read import asset",
+                source,
+            })?;
+            if bytes.len() as u64 != size {
+                return Err(CoreError::Conflict(format!(
+                    "import asset '{source_path}' changed during analysis"
+                )));
+            }
+            self.total_source_bytes = next_total;
+            if !asset_signature_matches(mime_type, &bytes) {
+                self.record_unsupported(
+                    source_path.to_owned(),
+                    "asset",
+                    "asset bytes do not match the supported file signature",
+                )?;
+                self.record_diagnostic(ImportDiagnostic {
+                    severity: ImportDiagnosticSeverity::Error,
+                    code: "invalid_asset_content".into(),
+                    message: "asset bytes do not match the supported file signature".into(),
+                    source_path: Some(source_path.to_owned()),
+                    object_id: None,
+                })?;
+                return Ok(());
+            }
+            let filename = source_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(source_path)
+                .to_owned();
+            let source_id = hex_digest(
+                format!(
+                    "{}\0{}\0asset\0{}",
+                    GENERIC_DOCUMENT_IMPORTER_ID, self.import.source.id, source_path
+                )
+                .as_bytes(),
+            );
+            self.import.assets.push(StagedAsset {
+                id: source_id,
+                source_path: source_path.to_owned(),
+                filename,
+                size,
+                mime_type: Some(mime_type.into()),
+                content_hash: Some(format!("sha256:{}", hex_digest(&bytes))),
+                owner_object_id: None,
+                relationship: Some("attachment".into()),
+                raw_metadata: BTreeMap::new(),
+                diagnostics: Vec::new(),
+            });
+            return Ok(());
+        }
+        let format = match document_format(source_path) {
+            Some(format) => format,
+            None => {
+                return self.record_unsupported(
+                    source_path.to_owned(),
+                    "file",
+                    "file type is not supported by the generic document importer",
+                );
+            }
+        };
         let bytes = fs::read(path).map_err(|source| CoreError::Io {
             operation: "read import source file",
             source,
@@ -1374,6 +1541,37 @@ impl GenericDocumentAnalyzer<'_> {
         let parent_source_path = source_path
             .rsplit_once('/')
             .map(|(parent, _)| parent.to_owned());
+        let (frontmatter, fields, raw_source_data) = if format == "markdown" {
+            markdown_frontmatter(&body)
+                .map(|frontmatter| {
+                    (
+                        Some(frontmatter.to_owned()),
+                        BTreeMap::from([(
+                            "frontmatter".into(),
+                            serde_json::Value::String(frontmatter.to_owned()),
+                        )]),
+                        BTreeMap::from([(
+                            "frontmatter".into(),
+                            serde_json::Value::String(frontmatter.to_owned()),
+                        )]),
+                    )
+                })
+                .unwrap_or_default()
+        } else {
+            Default::default()
+        };
+        let links = if format == "markdown" {
+            discover_markdown_links(&body)
+        } else {
+            Vec::new()
+        };
+        let mut metadata = BTreeMap::new();
+        if frontmatter.is_some() {
+            metadata.insert(
+                "frontmatter_format".into(),
+                serde_json::Value::String("yaml".into()),
+            );
+        }
         self.import.objects.push(StagedObject {
             id: source_id.clone(),
             source_id,
@@ -1388,13 +1586,89 @@ impl GenericDocumentAnalyzer<'_> {
             parent_source_path,
             tags: Vec::new(),
             aliases: Vec::new(),
-            fields: BTreeMap::new(),
-            metadata: BTreeMap::new(),
-            raw_source_data: BTreeMap::new(),
-            links: Vec::new(),
+            fields,
+            metadata,
+            raw_source_data,
+            links,
             mapping_hints: Vec::new(),
             diagnostics: Vec::new(),
         });
+        Ok(())
+    }
+
+    fn resolve_markdown_references(&mut self) -> Result<(), CoreError> {
+        let objects_by_path = self
+            .import
+            .objects
+            .iter()
+            .map(|object| (object.source_path.clone(), object.id.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let assets_by_path = self
+            .import
+            .assets
+            .iter()
+            .enumerate()
+            .map(|(index, asset)| (asset.source_path.clone(), index))
+            .collect::<BTreeMap<_, _>>();
+        let mut missing = Vec::new();
+        for object in &mut self.import.objects {
+            for link in &mut object.links {
+                if is_external_markdown_target(&link.target) {
+                    link.resolution = StagedLinkResolution::NotApplicable;
+                    continue;
+                }
+                let Some(target_path) =
+                    resolve_relative_source_path(&object.source_path, &link.target)
+                else {
+                    link.resolution = StagedLinkResolution::Missing;
+                    missing.push((
+                        object.id.clone(),
+                        object.source_path.clone(),
+                        link.target.clone(),
+                    ));
+                    continue;
+                };
+                if let Some(target_id) = objects_by_path.get(&target_path) {
+                    link.resolution = StagedLinkResolution::Resolved;
+                    link.resolved_object_id = Some(target_id.clone());
+                } else if let Some(asset_index) = assets_by_path.get(&target_path) {
+                    link.resolution = StagedLinkResolution::NotApplicable;
+                    let asset = &mut self.import.assets[*asset_index];
+                    if asset.owner_object_id.is_none() {
+                        asset.owner_object_id = Some(object.id.clone());
+                    }
+                    asset.raw_metadata.insert(
+                        "resolved_from".into(),
+                        serde_json::Value::String(link.target.clone()),
+                    );
+                    object.mapping_hints.push(StagedMappingHint {
+                        kind: MappingHintKind::AssetRelationship,
+                        source_key: Some(target_path),
+                        suggested_value: serde_json::Value::String("attachment".into()),
+                        confidence: Some(1.0),
+                        reason: Some("standard Markdown file reference".into()),
+                    });
+                } else {
+                    link.resolution = StagedLinkResolution::Missing;
+                    missing.push((
+                        object.id.clone(),
+                        object.source_path.clone(),
+                        link.target.clone(),
+                    ));
+                }
+            }
+        }
+        for (object_id, source_path, target) in missing {
+            self.record_diagnostic(ImportDiagnostic {
+                severity: ImportDiagnosticSeverity::Warning,
+                code: "markdown_target_missing".into(),
+                message: format!(
+                    "Markdown target '{target}' was not found in the selected source."
+                ),
+                source_path: Some(source_path),
+                object_id: Some(object_id),
+            })?;
+        }
         Ok(())
     }
 
@@ -1443,6 +1717,148 @@ impl GenericDocumentAnalyzer<'_> {
             source_bytes: self.total_source_bytes,
             source_path,
         })
+    }
+}
+
+fn discover_markdown_links(body: &str) -> Vec<StagedLink> {
+    Parser::new_ext(body, Options::all())
+        .filter_map(|event| match event {
+            Event::Start(Tag::Link { dest_url, .. }) => Some(StagedLink {
+                kind: if is_external_markdown_target(&dest_url) {
+                    StagedLinkKind::External
+                } else {
+                    StagedLinkKind::Internal
+                },
+                target: dest_url.to_string(),
+                label: None,
+                resolution: StagedLinkResolution::Unresolved,
+                resolved_object_id: None,
+                candidate_object_ids: Vec::new(),
+                raw: None,
+            }),
+            Event::Start(Tag::Image { dest_url, .. }) => Some(StagedLink {
+                kind: StagedLinkKind::Embed,
+                target: dest_url.to_string(),
+                label: None,
+                resolution: StagedLinkResolution::Unresolved,
+                resolved_object_id: None,
+                candidate_object_ids: Vec::new(),
+                raw: None,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+fn markdown_frontmatter(body: &str) -> Option<&str> {
+    let remainder = body
+        .strip_prefix("---\n")
+        .or_else(|| body.strip_prefix("---\r\n"))?;
+    let mut offset = 0;
+    for line in remainder.split_inclusive('\n') {
+        let value = line.trim_end_matches(['\r', '\n']);
+        if value == "---" || value == "..." {
+            return Some(&remainder[..offset]);
+        }
+        offset += line.len();
+    }
+    None
+}
+
+fn asset_mime_type(source_path: &str) -> Option<&'static str> {
+    let extension = Path::new(source_path)
+        .extension()
+        .and_then(|extension| extension.to_str())?
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "pdf" => Some("application/pdf"),
+        _ => None,
+    }
+}
+
+fn asset_signature_matches(mime_type: &str, bytes: &[u8]) -> bool {
+    match mime_type {
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "image/gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        "image/webp" => bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP",
+        "application/pdf" => bytes.starts_with(b"%PDF-"),
+        _ => false,
+    }
+}
+
+fn is_external_markdown_target(target: &str) -> bool {
+    let target = target.trim();
+    if target.starts_with("//") {
+        return true;
+    }
+    let Some((scheme, _)) = target.split_once(':') else {
+        return false;
+    };
+    let mut characters = scheme.chars();
+    characters
+        .next()
+        .is_some_and(|value| value.is_ascii_alphabetic())
+        && characters.all(|value| value.is_ascii_alphanumeric() || matches!(value, '+' | '-' | '.'))
+}
+
+fn resolve_relative_source_path(source_path: &str, target: &str) -> Option<String> {
+    let path = target
+        .split(['?', '#'])
+        .next()
+        .map(str::trim)
+        .unwrap_or_default();
+    if path.is_empty() {
+        return Some(source_path.to_owned());
+    }
+    let decoded = percent_decode_utf8(path)?;
+    if decoded.starts_with('/') || decoded.contains('\\') || decoded.chars().any(char::is_control) {
+        return None;
+    }
+    let mut components = source_path
+        .rsplit_once('/')
+        .map(|(parent, _)| parent.split('/').map(str::to_owned).collect::<Vec<_>>())
+        .unwrap_or_default();
+    for component in decoded.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                components.pop()?;
+            }
+            value => components.push(value.to_owned()),
+        }
+    }
+    (!components.is_empty()).then(|| components.join("/"))
+}
+
+fn percent_decode_utf8(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = *bytes.get(index + 1)?;
+            let low = *bytes.get(index + 2)?;
+            decoded.push(hex_nibble(high)? << 4 | hex_nibble(low)?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -1920,6 +2336,76 @@ mod tests {
     }
 
     #[test]
+    fn markdown_analysis_preserves_frontmatter_and_resolves_safe_links_and_assets() {
+        let source = TestDirectory::new();
+        fs::create_dir_all(source.path().join("Notes")).unwrap();
+        fs::create_dir_all(source.path().join("assets")).unwrap();
+        fs::write(
+            source.path().join("Notes/Note.md"),
+            "---\ncategory: place\n---\n# Note\n\n[Other][other]\n![Map](../assets/map.png)\n![Missing](../../outside.png)\n[Web](https://example.com)\n\n[other]: Other%20Note.md\n",
+        )
+        .unwrap();
+        fs::write(source.path().join("Notes/Other Note.md"), "# Other").unwrap();
+        fs::write(
+            source.path().join("assets/map.png"),
+            b"\x89PNG\r\n\x1a\nfixture",
+        )
+        .unwrap();
+
+        let staged =
+            analyze_generic_documents(source.path(), GenericDocumentImportLimits::default())
+                .unwrap();
+        let note = staged
+            .objects
+            .iter()
+            .find(|object| object.source_path == "Notes/Note.md")
+            .unwrap();
+        assert_eq!(note.fields["frontmatter"], "category: place\n");
+        assert_eq!(note.raw_source_data["frontmatter"], "category: place\n");
+        assert!(note
+            .body
+            .as_ref()
+            .unwrap()
+            .body
+            .starts_with("---\ncategory: place\n---\n"));
+        assert_eq!(note.links.len(), 4);
+        assert!(note.links.iter().any(|link| {
+            link.target == "Other%20Note.md" && link.resolution == StagedLinkResolution::Resolved
+        }));
+        assert!(note.links.iter().any(|link| {
+            link.target == "../assets/map.png"
+                && link.resolution == StagedLinkResolution::NotApplicable
+        }));
+        assert!(note.links.iter().any(|link| {
+            link.target == "../../outside.png" && link.resolution == StagedLinkResolution::Missing
+        }));
+        assert_eq!(staged.assets.len(), 1);
+        assert_eq!(
+            staged.assets[0].owner_object_id.as_deref(),
+            Some(note.id.as_str())
+        );
+        assert_eq!(staged.summary.asset_count, 1);
+        assert_eq!(staged.summary.unresolved_link_count, 1);
+    }
+
+    #[test]
+    fn markdown_analysis_rejects_malformed_asset_signatures() {
+        let source = TestDirectory::new();
+        fs::write(source.path().join("fake.png"), b"not a png").unwrap();
+
+        let staged =
+            analyze_generic_documents(source.path(), GenericDocumentImportLimits::default())
+                .unwrap();
+
+        assert!(staged.assets.is_empty());
+        assert_eq!(staged.unsupported.len(), 1);
+        assert!(staged
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "invalid_asset_content"));
+    }
+
+    #[test]
     fn validation_requires_explicit_duplicate_decision_and_uses_enabled_catalog() {
         let source = TestDirectory::new();
         fs::write(source.path().join("note.md"), "# Note").unwrap();
@@ -1947,6 +2433,18 @@ mod tests {
         let build = ImportValidationBuild {
             candidate,
             staged_objects: vec![object.clone()],
+            staged_assets: vec![StagedAsset {
+                id: "asset".into(),
+                source_path: "map.png".into(),
+                filename: "map.png".into(),
+                size: 8,
+                mime_type: Some("image/png".into()),
+                content_hash: Some(format!("sha256:{}", "0".repeat(64))),
+                owner_object_id: Some(object.id.clone()),
+                relationship: Some("attachment".into()),
+                raw_metadata: BTreeMap::new(),
+                diagnostics: Vec::new(),
+            }],
             catalog: ImportMappingCatalog {
                 fingerprint: "manifest-v1".into(),
                 entity_types: BTreeSet::from(["note".into()]),
@@ -1973,6 +2471,7 @@ mod tests {
         let plan = accepted.plan.unwrap();
         assert_eq!(plan.content_generation, 4);
         assert_eq!(plan.objects.len(), 1);
+        assert_eq!(plan.assets.len(), 1);
         assert_eq!(plan.objects[0].entity_type.as_deref(), Some("note"));
     }
 

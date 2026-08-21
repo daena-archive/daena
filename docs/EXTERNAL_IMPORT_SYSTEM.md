@@ -349,4 +349,14 @@ bundled and plugin output pass identical core validation.
   receipt-backed transaction with revision preconditions, warning acknowledgement,
   idempotent retry, canonical source-identity fields, session cleanup, and a
   per-item result report. Replace and merge remain intentionally disabled.
-- Iterations 5-8: planned, not yet implemented.
+- Iteration 5: in progress. The first vertical slice preserves raw YAML
+  frontmatter without rewriting the Markdown body, discovers standard Markdown
+  links/images (including reference links), resolves normalized relative paths,
+  reports missing or escaping targets, and preflights referenced PNG/JPEG/GIF/
+  WebP/PDF attachments by signature, size, and SHA-256. Commit reopens the
+  project-bound source through symlink-refusing normalized paths, verifies the
+  analyzed hash and size, and adds attachment rows in the same receipt-backed
+  transaction as their created or mapped owner. Attachment bytes and metadata
+  are covered by checkpoint and clean-rebuild tests. ZIP equivalence and
+  HTML/DOCX/ODT/RTF quality/security fixtures remain planned Iteration 5 slices.
+- Iterations 6-8: planned, not yet implemented.

@@ -1,7 +1,7 @@
 use crate::error::CoreError;
 use crate::external_import::{
-    ExternalImportCommitReport, ImportExistingTarget, ImportObjectDecision, ImportedObjectReport,
-    ValidatedImportPlan, VALIDATED_IMPORT_PLAN_SCHEMA_VERSION,
+    ExternalImportCommitReport, ImportExistingTarget, ImportObjectDecision, ImportedAssetReport,
+    ImportedObjectReport, ValidatedImportPlan, VALIDATED_IMPORT_PLAN_SCHEMA_VERSION,
 };
 use daena_plugin_api::MetadataFieldDefinition;
 use rusqlite::{named_params, params, Connection, OpenFlags, OptionalExtension};
@@ -195,6 +195,25 @@ fn validated_asset_filename(filename: &str) -> Result<String, CoreError> {
         return Err(CoreError::Validation("asset filename is invalid".into()));
     }
     Ok(filename.into())
+}
+
+fn imported_asset_category(filename: &str, mime_type: &str) -> &'static str {
+    if mime_type.starts_with("image/") {
+        "images"
+    } else if mime_type.starts_with("video/") {
+        "videos"
+    } else if mime_type.contains("map")
+        || matches!(
+            Path::new(filename)
+                .extension()
+                .and_then(|value| value.to_str()),
+            Some("geojson" | "tmx" | "mbtiles")
+        )
+    {
+        "maps"
+    } else {
+        "files"
+    }
 }
 
 fn validate_asset_role(role: &str) -> Result<(), CoreError> {
@@ -4390,6 +4409,7 @@ impl ProjectStore {
     pub fn commit_external_import(
         &self,
         plan: &ValidatedImportPlan,
+        asset_source_root: Option<&Path>,
         acknowledge_warnings: bool,
         request_id: &str,
     ) -> Result<ExternalImportCommitReport, CoreError> {
@@ -4429,6 +4449,15 @@ impl ProjectStore {
             fields: Vec<(String, String, String)>,
             source_key: String,
             source_value: String,
+        }
+        struct PreparedAsset {
+            id: String,
+            entity_id: String,
+            filename: String,
+            content_hash: String,
+            size: i64,
+            mime_type: String,
+            path: String,
         }
         let mut creates = Vec::new();
         let mut mapped_sources = Vec::new();
@@ -4510,6 +4539,74 @@ impl ProjectStore {
                 }
             }
         }
+        let entity_by_staged_object = created_report
+            .iter()
+            .chain(mapped_report.iter())
+            .map(|object| (object.staged_object_id.as_str(), object.entity_id.as_str()))
+            .collect::<BTreeMap<_, _>>();
+        let mut prepared_assets = Vec::new();
+        let mut asset_report = Vec::new();
+        for asset in &plan.assets {
+            let entity_id = entity_by_staged_object
+                .get(asset.owner_staged_object_id.as_str())
+                .ok_or_else(|| {
+                    CoreError::Validation(
+                        "validated import asset owner was not created or mapped".into(),
+                    )
+                })?
+                .to_string();
+            let root = asset_source_root.ok_or_else(|| {
+                CoreError::Validation("import asset source root is unavailable".into())
+            })?;
+            let source = crate::storage::normalized_project_path(root, &asset.source_path)?;
+            let metadata = std::fs::symlink_metadata(&source).map_err(|source| CoreError::Io {
+                operation: "read import asset metadata",
+                source,
+            })?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(CoreError::Validation(
+                    "import asset source must remain a regular file".into(),
+                ));
+            }
+            let declared_size = i64::try_from(asset.size)
+                .map_err(|_| CoreError::Validation("import asset is too large".into()))?;
+            let (content_hash, size) = store_runtime_asset_file(
+                self.root.as_deref().ok_or_else(|| {
+                    CoreError::Validation("asset import requires a directory project".into())
+                })?,
+                &source,
+                Some(&asset.content_hash),
+            )?;
+            if size != declared_size {
+                return Err(CoreError::Conflict(format!(
+                    "import asset '{}' changed size after analysis",
+                    asset.source_path
+                )));
+            }
+            let filename = validated_asset_filename(&asset.filename)?;
+            let category = imported_asset_category(&filename, &asset.mime_type);
+            let id = Uuid::new_v4().to_string();
+            let path = format!("assets/{category}/{id}-{filename}");
+            affected_prefixes.push(format!("entities/{entity_id}/"));
+            affected_prefixes.push(path.clone());
+            asset_report.push(ImportedAssetReport {
+                staged_asset_id: asset.staged_asset_id.clone(),
+                source_path: asset.source_path.clone(),
+                asset_id: id.clone(),
+                entity_id: entity_id.clone(),
+                filename: filename.clone(),
+                content_hash: content_hash.clone(),
+            });
+            prepared_assets.push(PreparedAsset {
+                id,
+                entity_id,
+                filename,
+                content_hash,
+                size,
+                mime_type: asset.mime_type.clone(),
+                path,
+            });
+        }
         let report = ExternalImportCommitReport {
             request_id: request_id.into(),
             plan_id: plan.plan_id.clone(),
@@ -4517,6 +4614,7 @@ impl ProjectStore {
             source: plan.source.clone(),
             created: created_report,
             mapped: mapped_report,
+            assets: asset_report,
             skipped_source_paths,
             warnings: plan.warnings.clone(),
         };
@@ -4571,6 +4669,22 @@ impl ProjectStore {
             transaction.execute(
                 "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value",
                 params![entity_id, EXTERNAL_IMPORT_SOURCE_NAMESPACE, source_key, source_value],
+            )?;
+        }
+        for asset in &prepared_assets {
+            transaction.execute(
+                "INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                params![
+                    asset.id,
+                    asset.entity_id,
+                    EXTERNAL_IMPORT_SOURCE_NAMESPACE,
+                    asset.filename,
+                    asset.content_hash,
+                    asset.size,
+                    asset.mime_type,
+                    asset.path,
+                    now
+                ],
             )?;
         }
         transaction.commit()?;

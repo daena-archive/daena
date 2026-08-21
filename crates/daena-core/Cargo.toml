@@ -17,3 +17,4 @@ uuid = { version = "1", features = ["v4", "serde"] }
 png = "0.17.16"
 jpeg-decoder = "0.3"
 roxmltree = "0.20"
+pulldown-cmark = { version = "0.12", default-features = false }

@@ -169,6 +169,7 @@ pub struct ExternalImportValidationSummary {
     pub create_count: usize,
     pub skip_count: usize,
     pub map_count: usize,
+    pub asset_count: usize,
     pub warning_count: usize,
     pub error_count: usize,
     pub issues: Vec<ImportValidationIssue>,
@@ -235,7 +236,9 @@ impl ImportResultStorage {
         Ok(())
     }
 
-    fn candidate_material(&self) -> Result<(Vec<StagedObject>, Vec<ImportDiagnostic>), String> {
+    fn candidate_material(
+        &self,
+    ) -> Result<(Vec<StagedObject>, Vec<StagedAsset>, Vec<ImportDiagnostic>), String> {
         match self {
             Self::Memory { items, .. } => Ok(candidate_material_from_items(items.iter())),
             Self::Spill { path, .. } => read_spill_candidate_material(path),
@@ -245,6 +248,7 @@ impl ImportResultStorage {
 
 struct ExternalImportJob {
     project_id: String,
+    source_root: PathBuf,
     expires_at: Instant,
     cancel: Arc<AtomicBool>,
     status: ExternalImportAnalysisStatus,
@@ -471,6 +475,7 @@ pub async fn project_external_import_analyze_begin(
             session_id.clone(),
             ExternalImportJob {
                 project_id: project_id.clone(),
+                source_root: source.path.clone(),
                 expires_at: Instant::now() + ANALYSIS_SESSION_TTL,
                 cancel: cancel.clone(),
                 status: status.clone(),
@@ -603,7 +608,7 @@ pub async fn project_external_import_candidate_plan(
             .as_ref()
             .ok_or_else(|| "external_import.not_ready: analysis result is missing".to_string())?;
         let metadata = result.metadata().clone();
-        let (objects, diagnostics) = result.candidate_material()?;
+        let (objects, _, diagnostics) = result.candidate_material()?;
         build_import_candidate_plan(
             ImportCandidatePlanBuild {
                 session_id: input.session_id,
@@ -638,7 +643,7 @@ pub async fn project_external_import_validate(
     let imports_shared = imports.inner().clone();
     let material_project_id = project_id.clone();
     let material_session_id = validation_session_id.clone();
-    let (captured_generation, metadata, objects, diagnostics) =
+    let (captured_generation, metadata, objects, assets, diagnostics) =
         tauri::async_runtime::spawn_blocking(move || {
             let mut manager = imports_shared
                 .lock()
@@ -653,11 +658,12 @@ pub async fn project_external_import_validate(
             let result = job.result.as_ref().ok_or_else(|| {
                 "external_import.not_ready: analysis result is missing".to_string()
             })?;
-            let (objects, diagnostics) = result.candidate_material()?;
+            let (objects, assets, diagnostics) = result.candidate_material()?;
             Ok((
                 job.status.captured_content_generation,
                 result.metadata().clone(),
                 objects,
+                assets,
                 diagnostics,
             ))
         })
@@ -702,6 +708,7 @@ pub async fn project_external_import_validate(
         validate_import_candidate_plan(ImportValidationBuild {
             candidate,
             staged_objects: objects,
+            staged_assets: assets,
             catalog,
             decisions,
             existing_targets,
@@ -724,6 +731,7 @@ pub async fn project_external_import_validate(
                 })
         })
         .unwrap_or((0, 0, 0));
+    let asset_count = plan.as_ref().map_or(0, |plan| plan.assets.len());
     let warning_count = outcome
         .issues
         .iter()
@@ -750,6 +758,7 @@ pub async fn project_external_import_validate(
         create_count,
         skip_count,
         map_count,
+        asset_count,
         warning_count,
         error_count,
         issues: outcome.issues,
@@ -764,7 +773,7 @@ pub async fn project_external_import_commit(
     input: ExternalImportCommitInput,
 ) -> Result<ExternalImportCommitReport, String> {
     let project_id = current_project_id(core.inner())?;
-    let plan = {
+    let (plan, source_root) = {
         let mut manager = imports
             .lock()
             .map_err(|_| "external import state is unavailable".to_string())?;
@@ -777,7 +786,7 @@ pub async fn project_external_import_commit(
         if plan.plan_id != input.validation_id {
             return Err("external_import.validation_stale: validation ID does not match".into());
         }
-        plan.clone()
+        (plan.clone(), job.source_root.clone())
     };
     let plugins = plugins.inner().clone();
     let acknowledge_warnings = input.acknowledge_warnings;
@@ -793,7 +802,7 @@ pub async fn project_external_import_commit(
                 "enabled schema contributions changed after validation".into(),
             ));
         }
-        project.commit_external_import(&plan, acknowledge_warnings, &request_id)
+        project.commit_external_import(&plan, Some(&source_root), acknowledge_warnings, &request_id)
     })
     .await?;
     let mut manager = imports
@@ -1188,24 +1197,26 @@ fn read_spill_page(
 
 fn candidate_material_from_items<'a>(
     items: impl Iterator<Item = &'a ExternalImportPageItem>,
-) -> (Vec<StagedObject>, Vec<ImportDiagnostic>) {
+) -> (Vec<StagedObject>, Vec<StagedAsset>, Vec<ImportDiagnostic>) {
     let mut objects = Vec::new();
+    let mut assets = Vec::new();
     let mut diagnostics = Vec::new();
     for item in items {
         match item {
             ExternalImportPageItem::Object(object) => objects.push(object.clone()),
+            ExternalImportPageItem::Asset(asset) => assets.push(asset.clone()),
             ExternalImportPageItem::Diagnostic(diagnostic) => {
                 diagnostics.push(diagnostic.clone());
             }
-            ExternalImportPageItem::Asset(_) | ExternalImportPageItem::Unsupported(_) => {}
+            ExternalImportPageItem::Unsupported(_) => {}
         }
     }
-    (objects, diagnostics)
+    (objects, assets, diagnostics)
 }
 
 fn read_spill_candidate_material(
     path: &Path,
-) -> Result<(Vec<StagedObject>, Vec<ImportDiagnostic>), String> {
+) -> Result<(Vec<StagedObject>, Vec<StagedAsset>, Vec<ImportDiagnostic>), String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("external_import.local_storage_failed: {error}"))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -1216,6 +1227,7 @@ fn read_spill_candidate_material(
     let file = fs::File::open(path)
         .map_err(|error| format!("external_import.local_storage_failed: {error}"))?;
     let mut objects = Vec::new();
+    let mut assets = Vec::new();
     let mut diagnostics = Vec::new();
     for line in BufReader::new(file).lines() {
         let line =
@@ -1224,11 +1236,12 @@ fn read_spill_candidate_material(
             .map_err(|error| format!("external_import.local_storage_failed: {error}"))?;
         match item {
             ExternalImportPageItem::Object(object) => objects.push(object),
+            ExternalImportPageItem::Asset(asset) => assets.push(asset),
             ExternalImportPageItem::Diagnostic(diagnostic) => diagnostics.push(diagnostic),
-            ExternalImportPageItem::Asset(_) | ExternalImportPageItem::Unsupported(_) => {}
+            ExternalImportPageItem::Unsupported(_) => {}
         }
     }
-    Ok((objects, diagnostics))
+    Ok((objects, assets, diagnostics))
 }
 
 fn remove_spill_file(path: &Path) -> Result<(), String> {
@@ -1368,6 +1381,7 @@ mod tests {
             session_id.clone(),
             ExternalImportJob {
                 project_id: project.path().to_string_lossy().into_owned(),
+                source_root: project.path().to_path_buf(),
                 expires_at: Instant::now() + ANALYSIS_SESSION_TTL,
                 cancel: cancel.clone(),
                 status: test_status(&session_id),
@@ -1389,6 +1403,7 @@ mod tests {
             session_id.clone(),
             ExternalImportJob {
                 project_id: "project-a".into(),
+                source_root: PathBuf::from("source-a"),
                 expires_at: Instant::now() + ANALYSIS_SESSION_TTL,
                 cancel: Arc::new(AtomicBool::new(false)),
                 status: test_status(&session_id),

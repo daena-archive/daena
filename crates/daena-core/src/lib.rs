@@ -17,13 +17,14 @@ pub use external_import::{
     ImportCandidatePlanBuild, ImportDiagnostic, ImportDiagnosticSeverity, ImportExistingTarget,
     ImportFieldTarget, ImportMappingCatalog, ImportMappingDecision, ImportMappingOverrides,
     ImportObjectDecision, ImportSource, ImportSourceKind, ImportValidationBuild,
-    ImportValidationIssue, ImportValidationOutcome, ImportValidationSeverity, ImportedObjectReport,
-    ImporterIdentity, MappingHintKind, StagedAsset, StagedDocument, StagedImport, StagedLink,
-    StagedLinkKind, StagedLinkResolution, StagedMappingHint, StagedObject, UnsupportedSourceData,
-    ValidatedImportField, ValidatedImportObject, ValidatedImportPlan,
-    EXTERNAL_IMPORT_ANALYSIS_CANCELLED, GENERIC_DOCUMENT_IMPORTER_ID,
-    GENERIC_DOCUMENT_IMPORTER_VERSION, IMPORT_CANDIDATE_PLAN_SCHEMA_VERSION,
-    STAGED_IMPORT_SCHEMA_VERSION, VALIDATED_IMPORT_PLAN_SCHEMA_VERSION,
+    ImportValidationIssue, ImportValidationOutcome, ImportValidationSeverity, ImportedAssetReport,
+    ImportedObjectReport, ImporterIdentity, MappingHintKind, StagedAsset, StagedDocument,
+    StagedImport, StagedLink, StagedLinkKind, StagedLinkResolution, StagedMappingHint,
+    StagedObject, UnsupportedSourceData, ValidatedImportAsset, ValidatedImportField,
+    ValidatedImportObject, ValidatedImportPlan, EXTERNAL_IMPORT_ANALYSIS_CANCELLED,
+    GENERIC_DOCUMENT_IMPORTER_ID, GENERIC_DOCUMENT_IMPORTER_VERSION,
+    IMPORT_CANDIDATE_PLAN_SCHEMA_VERSION, STAGED_IMPORT_SCHEMA_VERSION,
+    VALIDATED_IMPORT_PLAN_SCHEMA_VERSION,
 };
 pub use migrations::{FieldDefinition, Migration, Operation};
 pub use project::{

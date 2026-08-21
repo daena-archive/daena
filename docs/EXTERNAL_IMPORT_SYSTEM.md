@@ -124,9 +124,9 @@ implicit synchronization.
 
 Delivery order is:
 
-1. Markdown, plain text, and recursive folders;
-2. ZIP and reliable rich-document parsers, followed by Obsidian as a
-   specialization of Markdown;
+1. Markdown, plain text, HTML, and recursive folders;
+2. ZIP and additional reliable rich-document parsers, followed by Obsidian as
+   a specialization of Markdown;
 3. streaming MediaWiki-compatible XML and conservative wikitext preservation;
 4. third-party importer plugins.
 
@@ -153,6 +153,28 @@ All imported bytes and plugin output are untrusted. The implementation must:
 Raw host paths are trusted-shell data and are not included in plugin payloads,
 portable project metadata, or user-visible plugin diagnostics. Diagnostics use
 source-relative paths.
+
+### HTML conversion policy
+
+HTML is parsed with an HTML5 parser and converted to Markdown during analysis;
+imported HTML is never rendered directly or granted a privileged origin. The
+converter preserves headings, paragraphs, emphasis, code, lists, quotations,
+basic tables, safe links, and images. It removes active or embedded document
+content such as scripts, styles, frames, objects, templates, SVG, and MathML;
+event-handler and other unconsumed attributes never enter the converted body.
+
+Only relative references, fragments, protocol-relative URLs, and explicit
+`http`, `https`, or `mailto` targets survive conversion. Root-absolute,
+backslash-containing, control-character, and other URI schemes are removed
+with visible diagnostics. Relative links and images then pass through the same
+normalization, missing-target reporting, asset signature, hash, ownership, and
+commit checks as authored Markdown.
+
+DOM node/depth and converted-output limits fail closed. Parser recovery and
+removed content produce reviewable warnings. Original HTML is retained only in
+the transient staged item's raw source data for review; the committed document
+is sanitized Markdown, so active source bytes do not enter canonical project
+content.
 
 ## Architecture and contracts
 
@@ -282,9 +304,10 @@ limits and safe extraction, and only those HTML/DOCX/ODT/RTF parsers that pass
 quality and security fixtures.
 
 **Exit gate:** nested folders and ZIPs produce equivalent staged structure;
-traversal, symlinks, bombs, malformed documents, and missing assets are safely
-blocked or reported; successful asset imports round-trip through checkpoint
-rebuild without path or hash drift.
+HTML produces reviewable Markdown without active content; traversal, symlinks,
+bombs, malformed documents, unsafe HTML targets, and missing assets are safely
+blocked or reported; successful document and asset imports round-trip through
+checkpoint rebuild without path or hash drift.
 
 ### Iteration 6: Obsidian specialization
 
@@ -363,6 +386,12 @@ bundled and plugin output pass identical core validation.
   duplicate/case-colliding, link/special-file, oversized, excessive-depth, and
   high-compression-ratio entries before content parsing. Folder/ZIP equivalence,
   malformed/traversal/bomb rejection, cancellation checks, archive attachment
-  commit, and clean rebuild are covered. HTML/DOCX/ODT/RTF parsers remain planned
-  and will only be enabled with format-specific quality and security fixtures.
+  commit, and clean rebuild are covered. HTML and HTM sources now use a bounded
+  HTML5-to-Markdown converter that retains the original bytes in transient staged
+  review data, preserves safe document structure, routes converted links and
+  images through the Markdown resolver, removes active/embedded content and
+  unsafe targets with diagnostics, and rejects excessive DOM complexity. Quality,
+  malformed-input, active-content, link/asset, limit, commit, and clean-rebuild
+  fixtures cover the enabled path. DOCX/ODT/RTF parsers remain planned and will
+  only be enabled with their own format-specific quality and security fixtures.
 - Iterations 6-8: planned, not yet implemented.

@@ -961,6 +961,7 @@ dependencies = [
  "daena-atlas",
  "daena-physical",
  "daena-plugin-api",
+ "dom_query",
  "jpeg-decoder",
  "libc",
  "png 0.17.16",

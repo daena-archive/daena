@@ -19,3 +19,4 @@ jpeg-decoder = "0.3"
 roxmltree = "0.20"
 pulldown-cmark = { version = "0.12", default-features = false }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+dom_query = "0.27"

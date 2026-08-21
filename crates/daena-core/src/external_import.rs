@@ -1,4 +1,5 @@
 use crate::CoreError;
+use dom_query::{Document, NodeRef};
 use pulldown_cmark::{Event, Options, Parser, Tag};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -20,6 +21,9 @@ const MAX_ARCHIVE_PATH_BYTES: usize = 1_024;
 const MAX_ARCHIVE_EXPANDED_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 20_000;
 const MAX_ARCHIVE_FILE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_HTML_DOM_NODES: usize = 100_000;
+const MAX_HTML_DOM_DEPTH: usize = 128;
+const MAX_HTML_MARKDOWN_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1669,8 +1673,9 @@ impl GenericDocumentAnalyzer<'_> {
             });
             return Ok(());
         }
-        let format = document_format(source_path).expect("supported file format was checked");
-        let body = if let Ok(body) = String::from_utf8(bytes) {
+        let source_format =
+            document_format(source_path).expect("supported file format was checked");
+        let mut body = if let Ok(body) = String::from_utf8(bytes) {
             body
         } else {
             self.record_unsupported(
@@ -1695,11 +1700,12 @@ impl GenericDocumentAnalyzer<'_> {
             )
             .as_bytes(),
         );
-        let title = document_title(source_path);
+        let mut title = document_title(source_path);
         let parent_source_path = source_path
             .rsplit_once('/')
             .map(|(parent, _)| parent.to_owned());
-        let (frontmatter, fields, raw_source_data) = if format == "markdown" {
+        let mut body_format = source_format;
+        let (frontmatter, fields, mut raw_source_data) = if source_format == "markdown" {
             markdown_frontmatter(&body)
                 .map(|frontmatter| {
                     (
@@ -1718,12 +1724,34 @@ impl GenericDocumentAnalyzer<'_> {
         } else {
             Default::default()
         };
-        let links = if format == "markdown" {
+        let mut metadata = BTreeMap::new();
+        if source_format == "html" {
+            let conversion = convert_html_to_markdown(&body)?;
+            if let Some(html_title) = conversion.title {
+                title = html_title;
+            }
+            raw_source_data.insert("html".into(), serde_json::Value::String(body));
+            body = conversion.markdown;
+            body_format = "markdown";
+            metadata.insert(
+                "converted_from".into(),
+                serde_json::Value::String("html".into()),
+            );
+            for warning in conversion.warnings {
+                self.record_diagnostic(ImportDiagnostic {
+                    severity: ImportDiagnosticSeverity::Warning,
+                    code: warning.code.into(),
+                    message: warning.message,
+                    source_path: Some(source_path.to_owned()),
+                    object_id: Some(source_id.clone()),
+                })?;
+            }
+        }
+        let links = if body_format == "markdown" {
             discover_markdown_links(&body)
         } else {
             Vec::new()
         };
-        let mut metadata = BTreeMap::new();
         if frontmatter.is_some() {
             metadata.insert(
                 "frontmatter_format".into(),
@@ -1733,12 +1761,12 @@ impl GenericDocumentAnalyzer<'_> {
         self.import.objects.push(StagedObject {
             id: source_id.clone(),
             source_id,
-            source_kind: format.to_owned(),
+            source_kind: source_format.to_owned(),
             source_path: source_path.to_owned(),
             content_hash,
             title,
             body: Some(StagedDocument {
-                format: format.to_owned(),
+                format: body_format.to_owned(),
                 body,
             }),
             parent_source_path,
@@ -2029,6 +2057,448 @@ fn record_parent_folders(folders: &mut BTreeSet<String>, source_path: &str) {
     }
 }
 
+#[derive(Debug)]
+struct HtmlConversion {
+    markdown: String,
+    title: Option<String>,
+    warnings: Vec<HtmlConversionWarning>,
+}
+
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct HtmlConversionWarning {
+    code: &'static str,
+    message: String,
+}
+
+struct HtmlMarkdownWriter {
+    output: String,
+    warnings: BTreeSet<HtmlConversionWarning>,
+    visited_nodes: usize,
+    pending_space: bool,
+}
+
+impl HtmlMarkdownWriter {
+    fn render(mut self, document: &Document) -> Result<HtmlConversion, CoreError> {
+        for child in document.root().children() {
+            self.render_node(child, 0, 0, false, false)?;
+        }
+        if self.output.len() > MAX_HTML_MARKDOWN_BYTES {
+            return Err(CoreError::Validation(
+                "converted HTML exceeds the Markdown output limit".into(),
+            ));
+        }
+        let markdown = self.output.trim().to_owned() + "\n";
+        let title = document
+            .try_select("title")
+            .map(|selection| {
+                selection
+                    .text()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .filter(|title| !title.is_empty());
+        let title = if title
+            .as_deref()
+            .is_some_and(|title| title.chars().count() > 512)
+        {
+            self.warn(
+                "html_title_ignored",
+                "Ignored an HTML title longer than the 512-character import limit.",
+            );
+            None
+        } else {
+            title
+        };
+        if !document.errors.borrow().is_empty() {
+            self.warn(
+                "html_parser_recovered",
+                format!(
+                    "The HTML5 parser recovered from {} malformed construct(s).",
+                    document.errors.borrow().len()
+                ),
+            );
+        }
+        Ok(HtmlConversion {
+            markdown,
+            title,
+            warnings: self.warnings.into_iter().collect(),
+        })
+    }
+
+    fn render_node(
+        &mut self,
+        node: NodeRef<'_>,
+        depth: usize,
+        list_depth: usize,
+        ordered_list: bool,
+        preformatted: bool,
+    ) -> Result<(), CoreError> {
+        self.visited_nodes = self.visited_nodes.saturating_add(1);
+        if self.visited_nodes > MAX_HTML_DOM_NODES || depth > MAX_HTML_DOM_DEPTH {
+            return Err(CoreError::Validation(
+                "HTML document exceeds the DOM complexity limit".into(),
+            ));
+        }
+        if node.is_text() {
+            let text = node.immediate_text();
+            if preformatted {
+                self.output.push_str(&text);
+            } else {
+                self.push_normalized_text(&text);
+            }
+            return Ok(());
+        }
+        let Some(name) = node.node_name().map(|name| name.to_string()) else {
+            return self.render_children(node, depth, list_depth, ordered_list, preformatted);
+        };
+        if matches!(
+            name.as_str(),
+            "script"
+                | "style"
+                | "iframe"
+                | "object"
+                | "embed"
+                | "applet"
+                | "template"
+                | "noscript"
+                | "svg"
+                | "math"
+        ) {
+            self.warn(
+                "html_content_removed",
+                format!("Removed active or non-document <{name}> content."),
+            );
+            return Ok(());
+        }
+        match name.as_str() {
+            "head" | "title" | "meta" | "link" | "base" => Ok(()),
+            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                self.ensure_blank_line();
+                let level = name[1..].parse::<usize>().unwrap_or(1);
+                self.output.push_str(&"#".repeat(level));
+                self.output.push(' ');
+                self.render_children(node, depth, list_depth, ordered_list, false)?;
+                self.ensure_blank_line();
+                Ok(())
+            }
+            "p" | "article" | "section" | "main" | "header" | "footer" | "aside" | "nav"
+            | "div" | "figure" | "figcaption" | "address" => {
+                self.ensure_blank_line();
+                self.render_children(node, depth, list_depth, ordered_list, false)?;
+                self.ensure_blank_line();
+                Ok(())
+            }
+            "br" => {
+                self.output.push_str("  \n");
+                Ok(())
+            }
+            "hr" => {
+                self.ensure_blank_line();
+                self.output.push_str("---");
+                self.ensure_blank_line();
+                Ok(())
+            }
+            "strong" | "b" => {
+                self.flush_pending_space();
+                self.output.push_str("**");
+                self.render_children(node, depth, list_depth, ordered_list, false)?;
+                self.output.push_str("**");
+                Ok(())
+            }
+            "em" | "i" => {
+                self.flush_pending_space();
+                self.output.push('*');
+                self.render_children(node, depth, list_depth, ordered_list, false)?;
+                self.output.push('*');
+                Ok(())
+            }
+            "del" | "s" | "strike" => {
+                self.flush_pending_space();
+                self.output.push_str("~~");
+                self.render_children(node, depth, list_depth, ordered_list, false)?;
+                self.output.push_str("~~");
+                Ok(())
+            }
+            "code" if !preformatted => {
+                self.flush_pending_space();
+                self.push_inline_code(node.text().trim());
+                Ok(())
+            }
+            "pre" => {
+                self.ensure_blank_line();
+                self.push_fenced_code(node.text().trim_matches('\n'));
+                self.ensure_blank_line();
+                Ok(())
+            }
+            "a" => {
+                let href = node.attr("href").map(|value| value.to_string());
+                if let Some(href) = href.as_deref().and_then(safe_html_target) {
+                    self.flush_pending_space();
+                    self.output.push('[');
+                    let before = self.output.len();
+                    self.render_children(node, depth, list_depth, ordered_list, false)?;
+                    if self.output.len() == before {
+                        self.output.push_str(&escape_markdown_text(href));
+                    }
+                    self.output.push_str("](");
+                    self.output.push_str(&markdown_destination(href));
+                    self.output.push(')');
+                } else {
+                    if href.is_some() {
+                        self.warn(
+                            "html_unsafe_target_removed",
+                            "Removed an unsafe HTML link target.",
+                        );
+                    }
+                    self.render_children(node, depth, list_depth, ordered_list, false)?;
+                }
+                Ok(())
+            }
+            "img" => {
+                let source = node.attr("src").map(|value| value.to_string());
+                if let Some(source) = source.as_deref().and_then(safe_html_target) {
+                    let alt = node
+                        .attr("alt")
+                        .map(|value| value.to_string())
+                        .unwrap_or_default();
+                    self.flush_pending_space();
+                    self.output.push_str("![");
+                    self.output.push_str(&escape_markdown_text(&alt));
+                    self.output.push_str("](");
+                    self.output.push_str(&markdown_destination(source));
+                    self.output.push(')');
+                } else if source.is_some() {
+                    self.warn(
+                        "html_unsafe_target_removed",
+                        "Removed an unsafe HTML image target.",
+                    );
+                }
+                Ok(())
+            }
+            "ul" | "ol" => {
+                self.ensure_line_break();
+                self.render_children(node, depth, list_depth + 1, name == "ol", false)?;
+                self.ensure_line_break();
+                Ok(())
+            }
+            "li" => {
+                self.ensure_line_break();
+                self.output
+                    .push_str(&"  ".repeat(list_depth.saturating_sub(1)));
+                self.output
+                    .push_str(if ordered_list { "1. " } else { "- " });
+                self.render_children(node, depth, list_depth, ordered_list, false)?;
+                self.ensure_line_break();
+                Ok(())
+            }
+            "blockquote" => {
+                self.ensure_blank_line();
+                self.output.push_str("> ");
+                self.render_children(node, depth, list_depth, ordered_list, false)?;
+                self.ensure_blank_line();
+                Ok(())
+            }
+            "table" | "thead" | "tbody" | "tfoot" => {
+                self.ensure_blank_line();
+                self.render_children(node, depth, list_depth, ordered_list, false)?;
+                self.ensure_blank_line();
+                Ok(())
+            }
+            "tr" => {
+                let header_cells = node
+                    .children()
+                    .into_iter()
+                    .filter(|child| {
+                        child
+                            .node_name()
+                            .is_some_and(|name| name.to_string() == "th")
+                    })
+                    .count();
+                self.ensure_line_break();
+                self.output.push_str("| ");
+                self.render_children(node, depth, list_depth, ordered_list, false)?;
+                self.ensure_line_break();
+                if header_cells > 0 {
+                    self.output.push('|');
+                    for _ in 0..header_cells {
+                        self.output.push_str(" --- |");
+                    }
+                    self.ensure_line_break();
+                }
+                Ok(())
+            }
+            "th" | "td" => {
+                self.render_children(node, depth, list_depth, ordered_list, false)?;
+                self.output.push_str(" | ");
+                Ok(())
+            }
+            _ => self.render_children(node, depth, list_depth, ordered_list, preformatted),
+        }
+    }
+
+    fn render_children(
+        &mut self,
+        node: NodeRef<'_>,
+        depth: usize,
+        list_depth: usize,
+        ordered_list: bool,
+        preformatted: bool,
+    ) -> Result<(), CoreError> {
+        for child in node.children() {
+            self.render_node(child, depth + 1, list_depth, ordered_list, preformatted)?;
+        }
+        Ok(())
+    }
+
+    fn push_normalized_text(&mut self, value: &str) {
+        if value.chars().next().is_some_and(char::is_whitespace) {
+            self.pending_space = true;
+        }
+        let mut emitted_word = false;
+        for word in value.split_whitespace() {
+            if emitted_word {
+                self.pending_space = true;
+            }
+            self.flush_pending_space();
+            self.output.push_str(&escape_markdown_text(word));
+            emitted_word = true;
+        }
+        if emitted_word {
+            self.pending_space = value.chars().last().is_some_and(char::is_whitespace);
+        } else if value.chars().any(char::is_whitespace) {
+            self.pending_space = true;
+        }
+    }
+
+    fn flush_pending_space(&mut self) {
+        if self.pending_space
+            && !self.output.is_empty()
+            && !self.output.ends_with(char::is_whitespace)
+        {
+            self.output.push(' ');
+        }
+        self.pending_space = false;
+    }
+
+    fn warn(&mut self, code: &'static str, message: impl Into<String>) {
+        self.warnings.insert(HtmlConversionWarning {
+            code,
+            message: message.into(),
+        });
+    }
+
+    fn push_inline_code(&mut self, value: &str) {
+        let delimiter = "`".repeat(longest_character_run(value, '`').saturating_add(1).max(1));
+        let pad = value.starts_with(['`', ' ']) || value.ends_with(['`', ' ']);
+        self.output.push_str(&delimiter);
+        if pad {
+            self.output.push(' ');
+        }
+        self.output.push_str(value);
+        if pad {
+            self.output.push(' ');
+        }
+        self.output.push_str(&delimiter);
+    }
+
+    fn push_fenced_code(&mut self, value: &str) {
+        let delimiter = "`".repeat(longest_character_run(value, '`').saturating_add(1).max(3));
+        self.output.push_str(&delimiter);
+        self.output.push('\n');
+        self.output.push_str(value);
+        self.output.push('\n');
+        self.output.push_str(&delimiter);
+    }
+
+    fn ensure_line_break(&mut self) {
+        self.pending_space = false;
+        while self.output.ends_with(' ') {
+            self.output.pop();
+        }
+        if !self.output.is_empty() && !self.output.ends_with('\n') {
+            self.output.push('\n');
+        }
+    }
+
+    fn ensure_blank_line(&mut self) {
+        self.ensure_line_break();
+        if !self.output.is_empty() && !self.output.ends_with("\n\n") {
+            self.output.push('\n');
+        }
+    }
+}
+
+fn convert_html_to_markdown(html: &str) -> Result<HtmlConversion, CoreError> {
+    HtmlMarkdownWriter {
+        output: String::new(),
+        warnings: BTreeSet::new(),
+        visited_nodes: 0,
+        pending_space: false,
+    }
+    .render(&Document::from(html))
+}
+
+fn safe_html_target(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.contains('\\')
+        || value.contains(['<', '>', '"', '\''])
+        || value.chars().any(char::is_control)
+    {
+        return None;
+    }
+    if value.starts_with("//") || value.starts_with('#') {
+        return Some(value);
+    }
+    if value.starts_with('/') {
+        return None;
+    }
+    if let Some((scheme, _)) = value.split_once(':') {
+        return matches!(
+            scheme.to_ascii_lowercase().as_str(),
+            "http" | "https" | "mailto"
+        )
+        .then_some(value);
+    }
+    Some(value)
+}
+
+fn escape_markdown_text(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        if matches!(
+            character,
+            '\\' | '`' | '*' | '_' | '[' | ']' | '|' | '<' | '>'
+        ) {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
+}
+
+fn longest_character_run(value: &str, target: char) -> usize {
+    let mut longest = 0;
+    let mut current = 0;
+    for character in value.chars() {
+        if character == target {
+            current += 1;
+            longest = longest.max(current);
+        } else {
+            current = 0;
+        }
+    }
+    longest
+}
+
+fn markdown_destination(value: &str) -> String {
+    value
+        .replace(' ', "%20")
+        .replace('(', "%28")
+        .replace(')', "%29")
+}
+
 fn discover_markdown_links(body: &str) -> Vec<StagedLink> {
     Parser::new_ext(body, Options::all())
         .filter_map(|event| match event {
@@ -2266,6 +2736,8 @@ fn document_format(source_path: &str) -> Option<&'static str> {
         Some("markdown")
     } else if extension.eq_ignore_ascii_case("txt") {
         Some("plain_text")
+    } else if extension.eq_ignore_ascii_case("html") || extension.eq_ignore_ascii_case("htm") {
+        Some("html")
     } else {
         None
     }
@@ -2720,6 +3192,227 @@ mod tests {
         );
         assert_eq!(staged.summary.asset_count, 1);
         assert_eq!(staged.summary.unresolved_link_count, 1);
+    }
+
+    #[test]
+    fn html_analysis_converts_structure_and_resolves_links_and_assets() {
+        let source = TestDirectory::new();
+        fs::create_dir_all(source.path().join("Notes")).unwrap();
+        fs::create_dir_all(source.path().join("assets")).unwrap();
+        let html = r#"<!doctype html>
+<html><head><title>Field Guide</title></head><body>
+<h1>Field Guide</h1>
+<p>A <strong>bold</strong> and <em>careful</em> <code>note</code>.</p>
+<ul><li>First</li><li>Second</li></ul>
+<blockquote>Quoted passage</blockquote>
+<table><tr><th>Name</th><th>Value</th></tr><tr><td>North</td><td>Cold</td></tr></table>
+<p><a href="Other.html">Other note</a> <a href="https://example.com">Web</a></p>
+<img src="../assets/map.png" alt="Map">
+</body></html>"#;
+        fs::write(source.path().join("Notes/Guide.html"), html).unwrap();
+        fs::write(
+            source.path().join("Notes/Other.html"),
+            "<!doctype html><title>Other</title><p>Another note.</p>",
+        )
+        .unwrap();
+        fs::write(
+            source.path().join("assets/map.png"),
+            b"\x89PNG\r\n\x1a\nfixture",
+        )
+        .unwrap();
+
+        let staged =
+            analyze_generic_documents(source.path(), GenericDocumentImportLimits::default())
+                .unwrap();
+        let guide = staged
+            .objects
+            .iter()
+            .find(|object| object.source_path == "Notes/Guide.html")
+            .unwrap();
+        let body = guide.body.as_ref().unwrap();
+
+        assert_eq!(guide.source_kind, "html");
+        assert_eq!(guide.title, "Field Guide");
+        assert_eq!(body.format, "markdown");
+        assert_eq!(guide.metadata["converted_from"], "html");
+        assert_eq!(guide.raw_source_data["html"], html);
+        assert!(body.body.contains("# Field Guide"));
+        assert!(
+            body.body.contains("A **bold** and *careful* `note`."),
+            "{}",
+            body.body
+        );
+        assert!(body.body.contains("- First"));
+        assert!(body.body.contains("> Quoted passage"));
+        assert!(body.body.contains("| Name | Value |"));
+        assert!(body.body.contains("| --- | --- |"));
+        assert!(guide.links.iter().any(|link| {
+            link.target == "Other.html" && link.resolution == StagedLinkResolution::Resolved
+        }));
+        assert!(guide.links.iter().any(|link| {
+            link.target == "https://example.com"
+                && link.resolution == StagedLinkResolution::NotApplicable
+        }));
+        assert!(guide.links.iter().any(|link| {
+            link.target == "../assets/map.png"
+                && link.resolution == StagedLinkResolution::NotApplicable
+        }));
+        assert_eq!(staged.assets.len(), 1);
+        assert_eq!(
+            staged.assets[0].owner_object_id.as_deref(),
+            Some(guide.id.as_str())
+        );
+    }
+
+    #[test]
+    fn html_analysis_removes_active_content_and_unsafe_targets() {
+        let source = TestDirectory::new();
+        fs::write(
+            source.path().join("unsafe.html"),
+            r#"<!doctype html><html><body>
+<p onclick="steal()">Keep this text.</p>
+<script>script_payload()</script><style>style_payload{}</style>
+<iframe src="https://example.com">iframe_payload</iframe>
+<svg><text>svg_payload</text></svg>
+<p>&lt;script&gt;encoded_payload()&lt;/script&gt;</p>
+<a href="javascript:alert(1)">Unsafe link</a>
+<img src="data:text/html,unsafe" alt="unsafe image">
+<a href="/absolute/path">Absolute link</a>
+</body></html>"#,
+        )
+        .unwrap();
+
+        let staged =
+            analyze_generic_documents(source.path(), GenericDocumentImportLimits::default())
+                .unwrap();
+        let object = &staged.objects[0];
+        let body = &object.body.as_ref().unwrap().body;
+
+        assert!(body.contains("Keep this text."));
+        assert!(body.contains("Unsafe link"));
+        assert!(body.contains("Absolute link"));
+        assert!(!body.contains("script_payload"));
+        assert!(!body.contains("style_payload"));
+        assert!(!body.contains("iframe_payload"));
+        assert!(!body.contains("svg_payload"));
+        assert!(!body.contains("javascript:"));
+        assert!(!body.contains("data:text/html"));
+        assert!(!body.contains("/absolute/path"));
+        assert!(!Parser::new_ext(body, Options::all())
+            .any(|event| matches!(event, Event::Html(_) | Event::InlineHtml(_))));
+        assert!(staged
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "html_content_removed"));
+        assert!(staged.summary.warning_count > 0);
+    }
+
+    #[test]
+    fn malformed_html_recovers_with_a_visible_warning() {
+        let source = TestDirectory::new();
+        fs::write(
+            source.path().join("broken.htm"),
+            "<!doctype html><title>Recovered</title><p>First <b>bold<p>Second</div>",
+        )
+        .unwrap();
+
+        let staged =
+            analyze_generic_documents(source.path(), GenericDocumentImportLimits::default())
+                .unwrap();
+
+        assert_eq!(staged.objects[0].title, "Recovered");
+        assert!(staged.objects[0]
+            .body
+            .as_ref()
+            .unwrap()
+            .body
+            .contains("Second"));
+        assert!(staged
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "html_parser_recovered"));
+    }
+
+    #[test]
+    fn html_conversion_enforces_dom_depth_limit() {
+        let mut html = String::from("<!doctype html><body>");
+        html.push_str(&"<div>".repeat(MAX_HTML_DOM_DEPTH + 8));
+        html.push_str("too deep");
+        html.push_str(&"</div>".repeat(MAX_HTML_DOM_DEPTH + 8));
+
+        let error = convert_html_to_markdown(&html).unwrap_err();
+        assert!(error.to_string().contains("DOM complexity limit"));
+    }
+
+    #[test]
+    fn html_commit_preserves_converted_markdown_after_clean_rebuild() {
+        let source = TestDirectory::new();
+        let source_path = source.path().join("Guide.html");
+        fs::write(
+            &source_path,
+            "<!doctype html><title>Guide</title><h1>Guide</h1><p>Converted <strong>body</strong>.</p>",
+        )
+        .unwrap();
+        let staged =
+            analyze_generic_documents(&source_path, GenericDocumentImportLimits::default())
+                .unwrap();
+        let expected_body = staged.objects[0].body.as_ref().unwrap().body.clone();
+        let project = TestDirectory::new();
+        let store = ProjectStore::open_directory(project.path()).unwrap();
+        let generation = store.content_generation().unwrap();
+        let mut mappings = ImportMappingOverrides::default();
+        mappings.global.entity_type = Some("note".into());
+        let candidate = build_import_candidate_plan(
+            ImportCandidatePlanBuild {
+                session_id: "html-session".into(),
+                importer: staged.importer.clone(),
+                source: staged.source.clone(),
+                captured_content_generation: generation,
+                current_content_generation: generation,
+                manifest_fingerprint: "manifest-v1".into(),
+                objects: staged.objects.clone(),
+                unsupported_count: staged.unsupported.len(),
+                diagnostics: staged.diagnostics.clone(),
+            },
+            &mappings,
+        )
+        .unwrap();
+        let validated = validate_import_candidate_plan(ImportValidationBuild {
+            candidate,
+            staged_objects: staged.objects,
+            staged_assets: staged.assets,
+            catalog: ImportMappingCatalog {
+                fingerprint: "manifest-v1".into(),
+                entity_types: BTreeSet::from(["note".into()]),
+                fields: BTreeMap::new(),
+                relationship_types: BTreeSet::new(),
+            },
+            decisions: BTreeMap::new(),
+            existing_targets: BTreeMap::new(),
+            duplicate_targets: BTreeMap::new(),
+        })
+        .unwrap()
+        .plan
+        .unwrap();
+        let report = store
+            .commit_external_import(
+                &validated,
+                Some(&source_path),
+                true,
+                "00000000-0000-4000-8000-000000000003",
+            )
+            .unwrap();
+
+        store.flush_checkpoint("HTML import test").unwrap();
+        drop(store);
+        fs::remove_dir_all(project.path().join(".daena")).unwrap();
+        let rebuilt = ProjectStore::open_directory(project.path()).unwrap();
+        let documents = rebuilt
+            .list_documents(report.created[0].entity_id.clone())
+            .unwrap();
+        assert_eq!(documents.len(), 1);
+        assert_eq!(documents[0].format, "markdown");
+        assert_eq!(documents[0].body, expected_body);
     }
 
     #[test]

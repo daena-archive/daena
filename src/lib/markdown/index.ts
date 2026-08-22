@@ -16,6 +16,7 @@ import { entityReferenceToMarkdown, remarkDaenaEntities } from "./plugins/entiti
 import {
   alignedParagraphToMarkdown,
   headingToMarkdown,
+  imageToMarkdown,
   paragraphToMarkdown,
   spoilerToMarkdown,
   underlineToMarkdown,
@@ -37,6 +38,7 @@ const stringifyHandlers = {
   alignedParagraph: alignedParagraphToMarkdown,
   paragraph: paragraphToMarkdown,
   heading: headingToMarkdown,
+  image: imageToMarkdown,
 };
 
 function rehypeAlignedDivs() {

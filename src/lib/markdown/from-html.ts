@@ -145,7 +145,34 @@ const spoiler = (state: HastState, node: Element) => {
   return result;
 };
 
+const imageNode = (state: HastState, node: Element) => {
+  const src = propertyString(node, "src");
+  const alt = propertyString(node, "alt");
+  const title = propertyString(node, "title");
+  const widthRaw = propertyString(node, "width");
+  const heightRaw = propertyString(node, "height");
+  const w = /^\d+$/.test(widthRaw) ? widthRaw : "";
+  const h = /^\d+$/.test(heightRaw) ? heightRaw : "";
+  const hProperties: Record<string, unknown> = { src, alt };
+  if (title) hProperties.title = title;
+  if (w) hProperties.width = w;
+  if (h) hProperties.height = h;
+  const data: Record<string, unknown> = { hName: "img", hProperties };
+  const result: Record<string, unknown> = {
+    type: "image",
+    url: src,
+    alt,
+    title: title || null,
+    data,
+  };
+  if (w) result.width = w;
+  if (h) result.height = h;
+  state.patch(node, result as never);
+  return result;
+};
+
 export const hastToMdastHandlers = {
+  img: imageNode,
   a: entityOrLink,
   u: underline,
   span: spoiler,

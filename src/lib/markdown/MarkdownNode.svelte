@@ -1,7 +1,8 @@
 <script lang="ts">
 import MarkdownNode from "./MarkdownNode.svelte";
 import { nodeText } from "./text.ts";
-import { safeHref, safeSrc } from "./urls.ts";
+import { safeHref } from "./urls.ts";
+import AssetImage from "./AssetImage.svelte";
 
 type MdNode = {
   type: string;
@@ -13,12 +14,17 @@ type MdNode = {
   lang?: string | null;
   url?: string;
   alt?: string;
+  title?: string;
+  width?: string;
+  height?: string;
   entityId?: string;
   isCustom?: boolean;
   ordered?: boolean;
   start?: number | null;
   checked?: boolean | null;
-  data?: { hProperties?: { id?: string; dir?: string; style?: string } };
+  data?: {
+    hProperties?: { id?: string; dir?: string; style?: string; width?: string; height?: string; title?: string };
+  };
 };
 
 export let node: MdNode;
@@ -67,6 +73,21 @@ function url(): string {
 
 function alt(): string {
   return node.alt ?? "";
+}
+
+function title(): string {
+  const t = (node as any).title ?? node.data?.hProperties?.title;
+  return t != null ? String(t) : "";
+}
+
+function width(): string {
+  const w = (node as any).width ?? node.data?.hProperties?.width;
+  return w != null && /^\d+$/.test(String(w).trim()) ? String(w).trim() : "";
+}
+
+function height(): string {
+  const h = (node as any).height ?? node.data?.hProperties?.height;
+  return h != null && /^\d+$/.test(String(h).trim()) ? String(h).trim() : "";
 }
 
 function entityId(): string {
@@ -220,8 +241,7 @@ function openEntity(event: MouseEvent) {
     {/if}
   </a>
 {:else if node.type === "image"}
-  {@const src = safeSrc(url())}
-  {#if src}<img {src} alt={alt()} />{:else}{alt()}{/if}
+  <AssetImage src={url()} alt={alt()} title={title()} width={width()} height={height()} />
 {:else}
   {#each children() as child}<MarkdownNode node={child} {entityIds} {entities} {onOpenEntity} />{/each}
   {#if !children().length}{nodeText(node)}{/if}

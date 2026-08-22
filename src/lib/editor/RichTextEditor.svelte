@@ -52,12 +52,17 @@ import {
   ChevronUp,
   ChevronDown,
   Replace as ReplaceIcon,
+  Image as ImageIcon,
+  Paperclip,
 } from "@lucide/svelte";
 import { onMount, tick } from "svelte";
 import { htmlToMarkdown, markdownToHtml } from "$lib/markdown";
-import type { Entity } from "$lib/project/client";
+import type { Asset, Entity } from "$lib/project/client";
 import EntityReferenceDialog from "$lib/editor/EntityReferenceDialog.svelte";
 import LinkDialog from "$lib/editor/LinkDialog.svelte";
+import InsertAssetDialog from "$lib/editor/InsertAssetDialog.svelte";
+import { AssetImage } from "$lib/editor/AssetImageExtension";
+import { denormalizeAssetHtml, resolveAssetSrc } from "$lib/assets/resolve";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 const EntityReference = Mark.create({
@@ -295,6 +300,8 @@ export let fullscreen = false;
 export let aiEnabled = false;
 export let onFullscreenChange: (value: boolean) => void = () => {};
 export let entities: Entity[] = [];
+export let entityId: string | null = null;
+export let defaultNamespace: string | null = null;
 
 let editorElement: HTMLDivElement;
 let editor: Editor | null = null;
@@ -336,6 +343,31 @@ let linkDialogHasSelection = false;
 let linkDialogRange: { from: number; to: number } | null = null;
 let linkPopover: { href: string; text: string; from: number; to: number; top: number; left: number } | null = null;
 let linkPopoverEl: HTMLDivElement | null = null;
+let insertAssetOpen = false;
+let insertAssetRange: { from: number; to: number } | null = null;
+let imagePopover: {
+  from: number;
+  to: number;
+  src: string;
+  alt: string;
+  title: string;
+  width: string;
+  height: string;
+  top: number;
+  left: number;
+} | null = null;
+let imagePopoverEl: HTMLDivElement | null = null;
+let imageDraftAlt = "";
+let imageDraftTitle = "";
+let imageDraftWidth = "";
+let imageDraftHeight = "";
+let imageTitleCustom = false;
+let imagePreserveAspect = true;
+let imageNaturalWidth = 0;
+let imageNaturalHeight = 0;
+let imageNaturalCache = new Map<string, { w: number; h: number }>();
+let imageAltInputEl: HTMLInputElement | null = null;
+let imageReplaceMode = false;
 let isFullscreen = false;
 let searchOpen = false;
 let searchReplaceOpen = false;
@@ -390,6 +422,11 @@ $: if (moreMenuHydrated && typeof window !== "undefined") {
     localStorage.setItem("daena:moreMenuVertical", String(moreMenuVertical));
   } catch {}
 }
+$: if (moreMenuHydrated && typeof window !== "undefined") {
+  try {
+    localStorage.setItem("daena:imagePreserveAspect", String(imagePreserveAspect));
+  } catch {}
+}
 $: if (moreMenuOpen && moreMenuVertical !== undefined) {
   tick().then(() => handleResize());
 }
@@ -415,7 +452,9 @@ function sanitizeHtml(value: string): string {
 function emitChange() {
   if (!editor) return;
   editorText = editor.view.dom.textContent ?? "";
-  currentMarkdown = htmlToMarkdown(editor.getHTML());
+  const rawHtml = editor.getHTML();
+  const denorm = denormalizeAssetHtml(rawHtml);
+  currentMarkdown = htmlToMarkdown(denorm);
   onChange(currentMarkdown);
 }
 
@@ -487,6 +526,11 @@ function handleFullscreenKeydown(event: KeyboardEvent) {
     cancelEntityReference();
     return;
   }
+  if (event.key === "Escape" && imagePopover) {
+    event.preventDefault();
+    hideImagePopover();
+    return;
+  }
   if (event.key === "Escape" && linkPopover) {
     event.preventDefault();
     hideLinkPopover();
@@ -500,6 +544,11 @@ function handleFullscreenKeydown(event: KeyboardEvent) {
   if (event.key === "Escape" && searchOpen) {
     event.preventDefault();
     closeSearch();
+    return;
+  }
+  if (event.key === "Escape" && insertAssetOpen) {
+    event.preventDefault();
+    insertAssetOpen = false;
     return;
   }
   if (event.key === "Escape" && moreMenuOpen) {
@@ -777,6 +826,19 @@ async function openLinkExternal() {
   if (!linkPopover) return;
   const rawHref = linkPopover.href.trim();
   if (!rawHref) return;
+  // Internal asset paths should resolve to a blob URL, not an external https:// URL
+  if (rawHref.startsWith("assets/")) {
+    hideLinkPopover();
+    try {
+      const blobUrl = await resolveAssetSrc(rawHref);
+      if (blobUrl) {
+        window.open(blobUrl, "_blank", "noopener,noreferrer");
+        return;
+      }
+    } catch {}
+    console.warn("Failed to open asset link", rawHref);
+    return;
+  }
   const href =
     /^https?:\/\//i.test(rawHref) || /^mailto:/i.test(rawHref) || /^ftp:/i.test(rawHref)
       ? rawHref
@@ -855,6 +917,452 @@ function syncLinkPopover(nextEditor: Editor) {
       hideLinkPopover();
     }
   }
+}
+
+function getImageNodeAtPos(pos: number): { node: any; pos: number } | null {
+  if (!editorState) return null;
+  try {
+    let found: { node: any; pos: number } | null = null;
+    editorState.state.doc.descendants((n: any, p: number) => {
+      if (n.type.name === "image" && p <= pos && pos < p + n.nodeSize) {
+        found = { node: n, pos: p };
+        return false;
+      }
+      return true;
+    });
+    if (found) return found;
+    const sel: any = editorState.state.selection;
+    if (sel.node && sel.node.type.name === "image") return { node: sel.node, pos: sel.from };
+    const $pos = editorState.state.doc.resolve(pos);
+    const maybe = $pos.parent.maybeChild($pos.index());
+    if (maybe && maybe.type.name === "image") {
+      return { node: maybe, pos: $pos.pos - $pos.parentOffset };
+    }
+  } catch {}
+  return null;
+}
+
+function probeNatural(src: string) {
+  const cached = imageNaturalCache.get(src);
+  if (cached) {
+    imageNaturalWidth = cached.w;
+    imageNaturalHeight = cached.h;
+    return;
+  }
+  const tryProbe = (url: string) => {
+    const img = new window.Image();
+    img.onload = () => {
+      const w = (img as HTMLImageElement).naturalWidth;
+      const h = (img as HTMLImageElement).naturalHeight;
+      if (w && h) {
+        imageNaturalCache.set(src, { w, h });
+        if (imagePopover && imagePopover.src === src) {
+          imageNaturalWidth = w;
+          imageNaturalHeight = h;
+        }
+      }
+    };
+    img.onerror = () => {};
+    img.src = url;
+  };
+  if (src.startsWith("assets/")) {
+    void resolveAssetSrc(src).then((blob) => {
+      if (blob) tryProbe(blob);
+      else tryProbe(src);
+    });
+  } else {
+    tryProbe(src);
+  }
+}
+
+function showImagePopover(pos: number, bounds: DOMRect) {
+  if (!editorState) return;
+  const info = getImageNodeAtPos(pos);
+  if (!info) return;
+  const node = info.node;
+  const from = info.pos;
+  const to = from + node.nodeSize;
+  const src = String(node.attrs.src ?? "");
+  const alt = String(node.attrs.alt ?? "");
+  const title = String(node.attrs.title ?? "");
+  const widthRaw = node.attrs.width;
+  const heightRaw = node.attrs.height;
+  const width = widthRaw != null && String(widthRaw).trim() !== "" ? String(widthRaw).trim() : "";
+  const height = heightRaw != null && String(heightRaw).trim() !== "" ? String(heightRaw).trim() : "";
+  hideLinkPopover();
+  imageDraftAlt = alt;
+  imageDraftTitle = title;
+  imageDraftWidth = /^\d+$/.test(width) ? width : "";
+  imageDraftHeight = /^\d+$/.test(height) ? height : "";
+  imageTitleCustom = !!(title && title !== alt);
+  imageNaturalWidth = 0;
+  imageNaturalHeight = 0;
+  if (src) probeNatural(src);
+  imagePopover = {
+    from,
+    to,
+    src,
+    alt,
+    title,
+    width: imageDraftWidth,
+    height: imageDraftHeight,
+    top: bounds.bottom + 6,
+    left: bounds.left,
+  };
+  tick().then(() => {
+    if (!imagePopover || !imagePopoverEl) return;
+    const rect = imagePopoverEl.getBoundingClientRect();
+    let left = imagePopover.left;
+    let top = imagePopover.top;
+    left = Math.max(8, Math.min(left, window.innerWidth - rect.width - 8));
+    if (top + rect.height > window.innerHeight - 8) top = bounds.top - rect.height - 6;
+    top = Math.max(8, Math.min(top, window.innerHeight - rect.height - 8));
+    if (top !== imagePopover.top || left !== imagePopover.left) imagePopover = { ...imagePopover, top, left };
+  });
+}
+
+function hideImagePopover() {
+  imagePopover = null;
+}
+
+function syncImagePopover(nextEditor: Editor, transaction?: Transaction) {
+  if (!imagePopover) return;
+  if (!nextEditor.isActive("image")) {
+    const sel: any = nextEditor.state.selection;
+    const isImageSel = sel.node && sel.node.type.name === "image";
+    if (!isImageSel) {
+      hideImagePopover();
+      return;
+    }
+  }
+  try {
+    const mapping = transaction ? transaction.mapping : nextEditor.state.tr.mapping;
+    const mappedFrom = mapping.map(imagePopover.from, -1);
+    const mappedTo = mapping.map(imagePopover.to, -1);
+    if (mappedFrom === mappedTo) {
+      hideImagePopover();
+      return;
+    }
+    const node = nextEditor.state.doc.nodeAt(mappedFrom);
+    if (!node || node.type.name !== "image") {
+      // fallback: search by src
+      const currentSrc = imagePopover?.src ?? "";
+      let found: any = null;
+      let foundPos = -1;
+      nextEditor.state.doc.descendants((n: any, p: number) => {
+        if (n.type.name === "image" && String(n.attrs.src) === currentSrc) {
+          found = n;
+          foundPos = p;
+          return false;
+        }
+        return true;
+      });
+      if (found && imagePopover) {
+        imagePopover = { ...imagePopover, from: foundPos, to: foundPos + found.nodeSize };
+        return;
+      }
+      hideImagePopover();
+      return;
+    }
+    const src = String(node.attrs.src ?? "");
+    if (src !== imagePopover?.src) {
+      hideImagePopover();
+      return;
+    }
+    // sync width/height/alt/title from node if changed externally (e.g., undo)
+    const w = node.attrs.width != null ? String(node.attrs.width) : "";
+    const h = node.attrs.height != null ? String(node.attrs.height) : "";
+    const alt = String(node.attrs.alt ?? "");
+    const title = String(node.attrs.title ?? "");
+    imagePopover = { ...imagePopover, from: mappedFrom, to: mappedTo, width: w, height: h, alt, title };
+    imageDraftAlt = alt;
+    imageDraftTitle = title;
+    imageDraftWidth = /^\d+$/.test(w) ? w : "";
+    imageDraftHeight = /^\d+$/.test(h) ? h : "";
+    imageTitleCustom = !!(title && title !== alt);
+  } catch {
+    hideImagePopover();
+  }
+}
+
+function handleImageClick(target: EventTarget | null, posHint?: number): boolean {
+  if (!editorState || !editorElement) return false;
+  const el = target as HTMLElement | null;
+  const img = el?.closest?.("img") as HTMLImageElement | null;
+  if (!img || !editorElement.contains(img)) return false;
+  // only for images that are part of editor (check ProseMirror-selectednode or daena-content-image)
+  if (!img.classList.contains("ProseMirror-selectednode") && !img.classList.contains("daena-content-image")) {
+    // still allow if inside editor
+    if (!img.closest(".daena-asset-image-wrapper")) return false;
+  }
+  let pos: number | null = null;
+  // Prefer the ProseMirror position hint from handleClickOn, which is authoritative
+  if (typeof posHint === "number" && Number.isFinite(posHint)) {
+    const hintInfo = getImageNodeAtPos(posHint);
+    if (hintInfo) {
+      pos = hintInfo.pos;
+    } else {
+      // posHint might be inside paragraph text offset near image; try nearby offsets
+      for (const delta of [0, 1, -1, 2, -2]) {
+        const probe = posHint + delta;
+        if (probe >= 0) {
+          const probeInfo = getImageNodeAtPos(probe);
+          if (probeInfo) {
+            pos = probeInfo.pos;
+            break;
+          }
+        }
+      }
+      // Fallback: resolve parent index
+      if (pos == null) {
+        try {
+          const $pos = editorState.state.doc.resolve(posHint);
+          const maybe = $pos.parent.maybeChild($pos.index());
+          if (maybe && maybe.type.name === "image") {
+            pos = $pos.pos - $pos.parentOffset;
+          } else if ($pos.parent.maybeChild($pos.index() - 1)?.type.name === "image") {
+            const idx = $pos.index() - 1;
+            const before = $pos.parent.maybeChild(idx);
+            if (before) {
+              // find its start pos by scanning
+              let p = $pos.pos - $pos.parentOffset;
+              // walk children before idx to sum sizes
+              for (let i = 0; i < idx; i++) p += $pos.parent.child(i).nodeSize;
+              pos = p;
+            }
+          }
+        } catch {}
+      }
+    }
+  }
+  if (pos == null) {
+    try {
+      const wrapper = img.closest(".daena-asset-image-wrapper") as HTMLElement | null;
+      const dom = wrapper ?? img;
+      const rawPos = editorState.view.posAtDOM(dom, 0);
+      const test = getImageNodeAtPos(rawPos);
+      if (test) {
+        pos = test.pos;
+      } else {
+        // Try offsets around rawPos as NodeView wrapper offset can be off by 1
+        for (const delta of [1, -1, 2, -2]) {
+          const probe = rawPos + delta;
+          const probeInfo = getImageNodeAtPos(probe);
+          if (probeInfo) {
+            pos = probeInfo.pos;
+            break;
+          }
+        }
+        if (pos == null) pos = rawPos;
+      }
+    } catch {}
+  }
+  if (pos == null || !Number.isFinite(pos)) return false;
+  const bounds = img.getBoundingClientRect();
+  showImagePopover(pos, bounds);
+  // Ensure NodeSelection is set so isActive('image') and styling work; ProseMirror won't auto-select when handleClick returns true
+  try {
+    const node = editorState.state.doc.nodeAt(pos);
+    if (node && node.type.name === "image") {
+      const sel: any = editorState.state.selection;
+      const needsSelect = !sel.node || sel.from !== pos || sel.node.type?.name !== "image";
+      if (needsSelect) {
+        // Defer selection to avoid nesting dispatch inside handleClick stack
+        tick().then(() => {
+          try {
+            if (editorState && editorState.state.doc.nodeAt(pos)?.type.name === "image") {
+              editorState.chain().focus().setNodeSelection(pos).run();
+            }
+          } catch {}
+        });
+      }
+    }
+  } catch {}
+  return true;
+}
+
+function clampDim(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed === "") return "";
+  const n = Number(trimmed);
+  if (!Number.isFinite(n)) return "";
+  const clamped = Math.max(16, Math.min(2000, Math.round(n)));
+  return String(clamped);
+}
+
+function commitImageAttributes(partial: Record<string, unknown>) {
+  if (!editorState || !imagePopover) return;
+  const from = imagePopover.from;
+  try {
+    const node = editorState.state.doc.nodeAt(from);
+    if (!node || node.type.name !== "image") return;
+    editorState.chain().focus().setNodeSelection(from).updateAttributes("image", partial).run();
+    // update popover state to reflect new attrs
+    const nextNode = editorState.state.doc.nodeAt(from);
+    if (nextNode) {
+      const w = nextNode.attrs.width != null ? String(nextNode.attrs.width) : "";
+      const h = nextNode.attrs.height != null ? String(nextNode.attrs.height) : "";
+      imagePopover = {
+        ...imagePopover,
+        width: w,
+        height: h,
+        alt: String(nextNode.attrs.alt ?? ""),
+        title: String(nextNode.attrs.title ?? ""),
+      };
+    }
+  } catch {}
+}
+
+function updateImageAlt(value: string) {
+  imageDraftAlt = value;
+  const alt = value;
+  const title = imageTitleCustom ? imageDraftTitle : alt;
+  if (!imageTitleCustom) imageDraftTitle = alt;
+  commitImageAttributes({ alt, title: imageTitleCustom ? imageDraftTitle : alt });
+}
+
+function updateImageTitle(value: string) {
+  imageDraftTitle = value;
+  imageTitleCustom = value !== imageDraftAlt;
+  commitImageAttributes({ title: value });
+}
+
+function updateImageWidth(value: string) {
+  const clamped = clampDim(value);
+  // if empty, user wants auto
+  if (clamped === "" && value.trim() !== "") {
+    // invalid, ignore
+    imageDraftWidth = value;
+    return;
+  }
+  imageDraftWidth = clamped === "" ? "" : clamped;
+  if (imageDraftWidth === "") {
+    // auto: clear width (and maybe height if both auto? keep height as is? plan says Auto clears both)
+    // For single field edit, only clear that field; Auto button clears both
+    commitImageAttributes({ width: null });
+    return;
+  }
+  let newWidth = imageDraftWidth;
+  let newHeight = imageDraftHeight;
+  if (imagePreserveAspect && imageNaturalWidth && imageNaturalHeight) {
+    const wNum = Number(newWidth);
+    if (Number.isFinite(wNum) && wNum > 0) {
+      const hNum = Math.round((wNum * imageNaturalHeight) / imageNaturalWidth);
+      newHeight = String(Math.max(16, Math.min(2000, hNum)));
+      imageDraftHeight = newHeight;
+      commitImageAttributes({ width: Number(newWidth), height: Number(newHeight) });
+      return;
+    }
+  }
+  commitImageAttributes({ width: Number(newWidth) });
+}
+
+function updateImageHeight(value: string) {
+  const clamped = clampDim(value);
+  if (clamped === "" && value.trim() !== "") {
+    imageDraftHeight = value;
+    return;
+  }
+  imageDraftHeight = clamped === "" ? "" : clamped;
+  if (imageDraftHeight === "") {
+    commitImageAttributes({ height: null });
+    return;
+  }
+  let newHeight = imageDraftHeight;
+  let newWidth = imageDraftWidth;
+  if (imagePreserveAspect && imageNaturalWidth && imageNaturalHeight) {
+    const hNum = Number(newHeight);
+    if (Number.isFinite(hNum) && hNum > 0) {
+      const wNum = Math.round((hNum * imageNaturalWidth) / imageNaturalHeight);
+      newWidth = String(Math.max(16, Math.min(2000, wNum)));
+      imageDraftWidth = newWidth;
+      commitImageAttributes({ width: Number(newWidth), height: Number(newHeight) });
+      return;
+    }
+  }
+  commitImageAttributes({ height: Number(newHeight) });
+}
+
+function clearImageDimensions() {
+  imageDraftWidth = "";
+  imageDraftHeight = "";
+  commitImageAttributes({ width: null, height: null });
+}
+
+function applyImagePreset(preset: string) {
+  if (!editorState || !imagePopover) return;
+  if (preset === "S") {
+    imageDraftWidth = "320";
+    if (imagePreserveAspect && imageNaturalWidth && imageNaturalHeight) {
+      const h = Math.round((320 * imageNaturalHeight) / imageNaturalWidth);
+      imageDraftHeight = String(h);
+      commitImageAttributes({ width: 320, height: h });
+    } else {
+      commitImageAttributes({ width: 320 });
+    }
+    return;
+  }
+  if (preset === "M") {
+    imageDraftWidth = "640";
+    if (imagePreserveAspect && imageNaturalWidth && imageNaturalHeight) {
+      const h = Math.round((640 * imageNaturalHeight) / imageNaturalWidth);
+      imageDraftHeight = String(h);
+      commitImageAttributes({ width: 640, height: h });
+    } else {
+      commitImageAttributes({ width: 640 });
+    }
+    return;
+  }
+  if (preset === "L") {
+    imageDraftWidth = "960";
+    if (imagePreserveAspect && imageNaturalWidth && imageNaturalHeight) {
+      const h = Math.round((960 * imageNaturalHeight) / imageNaturalWidth);
+      imageDraftHeight = String(h);
+      commitImageAttributes({ width: 960, height: h });
+    } else {
+      commitImageAttributes({ width: 960 });
+    }
+    return;
+  }
+  if (preset === "Original") {
+    if (imageNaturalWidth && imageNaturalHeight) {
+      imageDraftWidth = String(imageNaturalWidth);
+      imageDraftHeight = String(imageNaturalHeight);
+      commitImageAttributes({ width: imageNaturalWidth, height: imageNaturalHeight });
+    }
+    return;
+  }
+  if (preset === "Full") {
+    clearImageDimensions();
+    return;
+  }
+}
+
+function alignImage(dir: string) {
+  if (!editorState) return;
+  editorState.chain().focus().setTextAlign(dir).run();
+}
+
+function removeImage() {
+  if (!editorState || !imagePopover) return;
+  const from = imagePopover.from;
+  hideImagePopover();
+  editorState.chain().focus().setNodeSelection(from).deleteSelection().run();
+}
+
+function replaceImage() {
+  if (!editorState || !imagePopover) return;
+  imageReplaceMode = true;
+  const from = imagePopover.from;
+  insertAssetRange = { from, to: from + 1 };
+  // use from/to of image node (nodeSize 1)
+  const node = editorState.state.doc.nodeAt(from);
+  if (node) insertAssetRange = { from, to: from + node.nodeSize };
+  insertAssetOpen = true;
+}
+
+function isImageActive(): boolean {
+  return !!editorState?.isActive("image");
 }
 
 function hydrateEntityReferences(html: string): string {
@@ -1202,6 +1710,160 @@ function handleSearchKeydown(event: KeyboardEvent) {
   }
 }
 
+function openInsertAsset() {
+  if (!editor || !editable) return;
+  imageReplaceMode = false;
+  const { from, to } = editor.state.selection;
+  insertAssetRange = { from, to };
+  insertAssetOpen = true;
+}
+function handleInsertAsset(asset: Asset | null, meta?: { alt: string; title: string; width: string; height: string }) {
+  if (!editor || !editorState) return;
+  const range = insertAssetRange ?? editor.state.selection;
+  // close first to avoid focus issues
+  insertAssetOpen = false;
+  // Handle edit of existing image without picking new asset (meta only)
+  if (imageReplaceMode && imagePopover) {
+    const from = imagePopover.from;
+    const node = editorState.state.doc.nodeAt(from);
+    if (node && node.type.name === "image") {
+      if (asset && asset.mime_type.startsWith("image/")) {
+        const src = asset.path;
+        const alt = meta?.alt?.trim() ? meta.alt.trim() : asset.filename;
+        const title = meta?.title?.trim() ? meta.title.trim() : alt;
+        const width = meta?.width && /^\d+$/.test(meta.width) ? Number(meta.width) : null;
+        const height = meta?.height && /^\d+$/.test(meta.height) ? Number(meta.height) : null;
+        try {
+          editorState
+            .chain()
+            .focus()
+            .setNodeSelection(from)
+            .updateAttributes("image", { src, alt, title, width, height })
+            .run();
+          imagePopover = {
+            ...imagePopover,
+            src,
+            alt,
+            title,
+            width: width ? String(width) : "",
+            height: height ? String(height) : "",
+          };
+          imageDraftAlt = alt;
+          imageDraftTitle = title;
+          imageDraftWidth = width ? String(width) : "";
+          imageDraftHeight = height ? String(height) : "";
+          imageTitleCustom = !!(title && title !== alt);
+          probeNatural(src);
+        } catch {
+          const md = `![${alt}](${src})`;
+          const html = markdownToHtml(md);
+          try {
+            editor.chain().focus().insertContentAt(range.from, html).run();
+          } catch {}
+        }
+      } else if (!asset && meta) {
+        // meta-only edit (no new asset)
+        const alt = meta.alt;
+        const title = meta.title;
+        const width = meta.width && /^\d+$/.test(meta.width) ? Number(meta.width) : null;
+        const height = meta.height && /^\d+$/.test(meta.height) ? Number(meta.height) : null;
+        try {
+          editorState
+            .chain()
+            .focus()
+            .setNodeSelection(from)
+            .updateAttributes("image", { alt, title, width, height })
+            .run();
+          imagePopover = {
+            ...imagePopover,
+            alt,
+            title,
+            width: width ? String(width) : "",
+            height: height ? String(height) : "",
+          };
+          imageDraftAlt = alt;
+          imageDraftTitle = title;
+          imageDraftWidth = width ? String(width) : "";
+          imageDraftHeight = height ? String(height) : "";
+          imageTitleCustom = !!(title && title !== alt);
+        } catch {}
+      } else if (asset) {
+        // non-image replace? fallback to file link insertion at same position
+        const src = asset.path;
+        const alt = meta?.alt?.trim() ? meta.alt.trim() : asset.filename;
+        try {
+          editor
+            .chain()
+            .focus()
+            .setNodeSelection(from)
+            .deleteSelection()
+            .setTextSelection(from)
+            .insertContentAt(from, [
+              { type: "text", text: alt, marks: [{ type: "link", attrs: { href: src } }] } as any,
+              { type: "text", text: " " } as any,
+            ])
+            .run();
+          hideImagePopover();
+        } catch {}
+      }
+      imageReplaceMode = false;
+      insertAssetRange = null;
+      tick().then(() => editor?.commands.focus());
+      return;
+    }
+  }
+  // Normal insert (not replace mode)
+  if (!asset) {
+    imageReplaceMode = false;
+    insertAssetRange = null;
+    tick().then(() => editor?.commands.focus());
+    return;
+  }
+  const isImg = asset.mime_type.startsWith("image/");
+  const src = asset.path;
+  const alt = meta?.alt?.trim() ? meta.alt.trim() : asset.filename;
+  const title = meta?.title?.trim() ? meta.title.trim() : alt;
+  const width = meta?.width && /^\d+$/.test(meta.width) ? Number(meta.width) : null;
+  const height = meta?.height && /^\d+$/.test(meta.height) ? Number(meta.height) : null;
+  imageReplaceMode = false;
+  try {
+    if (isImg) {
+      // @ts-ignore setImage from Image extension
+      const chain: any = editor.chain().focus();
+      if (range.from !== range.to) chain.setTextSelection(range);
+      const attrs: Record<string, unknown> = { src, alt, title };
+      if (width != null) attrs.width = width;
+      if (height != null) attrs.height = height;
+      chain.setImage(attrs).run();
+    } else {
+      editor
+        .chain()
+        .focus()
+        .setTextSelection(range.from === range.to ? { from: range.from, to: range.to } : range)
+        .insertContentAt(range, [
+          { type: "text", text: alt, marks: [{ type: "link", attrs: { href: src } }] } as any,
+          { type: "text", text: " " } as any,
+        ])
+        .run();
+    }
+  } catch {
+    // fallback: parse markdown to HTML before inserting so tiptap creates proper nodes
+    const md = isImg ? `![${alt}](${src})` : `[${alt}](${src})`;
+    const html = markdownToHtml(md);
+    try {
+      editor.chain().focus().insertContentAt(range.from, html).run();
+    } catch {}
+  }
+  insertAssetRange = null;
+  tick().then(() => editor?.commands.focus());
+}
+function cancelInsertAsset() {
+  insertAssetOpen = false;
+  insertAssetRange = null;
+  imageReplaceMode = false;
+  editor?.commands.focus();
+}
+
 onMount(() => {
   try {
     const savedOpen = localStorage.getItem("daena:moreMenuOpen");
@@ -1213,6 +1875,8 @@ onMount(() => {
     }
     const savedVertical = localStorage.getItem("daena:moreMenuVertical");
     if (savedVertical !== null) moreMenuVertical = savedVertical === "true";
+    const savedAspect = localStorage.getItem("daena:imagePreserveAspect");
+    if (savedAspect !== null) imagePreserveAspect = savedAspect === "true";
   } catch {}
   moreMenuHydrated = true;
   window.addEventListener("keydown", handleFullscreenKeydown);
@@ -1230,9 +1894,21 @@ onMount(() => {
     if (target?.closest(".entity-reference-menu") || target?.closest(".entity-reference-dialog")) return;
     cancelEntityReference();
   };
+  const handleImagePopoverOutside = (event: MouseEvent) => {
+    if (!imagePopover) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest(".image-popover") || target?.closest(".insert-asset-dialog")) return;
+    if (target?.closest("img")) return;
+    hideImagePopover();
+  };
+  const handleImageResize = () => {
+    if (imagePopover) hideImagePopover();
+  };
   window.addEventListener("mousedown", handleLinkPopoverOutside);
   window.addEventListener("mousedown", handleEntityReferenceMenuOutside);
+  window.addEventListener("mousedown", handleImagePopoverOutside);
   window.addEventListener("resize", hideLinkPopover);
+  window.addEventListener("resize", handleImageResize);
   editor = new Editor({
     element: editorElement,
     extensions: [
@@ -1255,6 +1931,7 @@ onMount(() => {
       SearchAndReplace,
       ExternalLink.configure({ openOnClick: false, autolink: true, linkOnPaste: true }),
       EntityReference,
+      AssetImage.configure({ inline: true, allowBase64: false, HTMLAttributes: { class: "daena-content-image" } }),
       TextAlign.configure({ types: ["heading", "paragraph"], alignments: ["left", "center", "right"] }),
       TextDirection.configure({ types: ["heading", "paragraph"] }),
       UndoRedo,
@@ -1273,6 +1950,11 @@ onMount(() => {
           event.preventDefault();
           const revealed = spoilerEl.classList.toggle("revealed");
           spoilerEl.setAttribute("aria-expanded", revealed ? "true" : "false");
+          return true;
+        }
+        if (handleImageClick(event.target, _position)) {
+          event.preventDefault();
+          event.stopPropagation();
           return true;
         }
         const linkAnchor = getExternalLinkAnchor(event.target);
@@ -1325,6 +2007,30 @@ onMount(() => {
           return false;
         },
         click: (_view, event) => {
+          const img = (event.target as HTMLElement | null)?.closest?.("img");
+          if (img && editorElement.contains(img)) {
+            // Let handleClick (handleClickOn) show the image popover; do not swallow here.
+            // Only prevent default link navigation if img is inside a link – delegate to image handler.
+            try {
+              const targetView = _view as any;
+              let posHint: number | undefined;
+              try {
+                const c = { left: (event as MouseEvent).clientX, top: (event as MouseEvent).clientY };
+                const probe = targetView.posAtCoords?.(c);
+                if (probe?.pos != null) posHint = probe.pos;
+                else if (targetView.posAtDOM) posHint = targetView.posAtDOM(img, 0);
+              } catch {}
+              if (handleImageClick(event.target, posHint)) {
+                event.preventDefault();
+                event.stopPropagation();
+                return true;
+              }
+            } catch {}
+            // Fallback: at least prevent navigation, still return true to avoid double handling
+            event.preventDefault();
+            event.stopPropagation();
+            return true;
+          }
           const linkAnchor = getExternalLinkAnchor(event.target);
           if (linkAnchor) {
             event.preventDefault();
@@ -1398,10 +2104,11 @@ onMount(() => {
       syncEntityReferenceEditor(nextEditor);
       syncSearchState(nextEditor);
       syncLinkPopover(nextEditor);
+      syncImagePopover(nextEditor, transaction);
     },
   });
   editorState = editor;
-  currentMarkdown = htmlToMarkdown(editor.getHTML());
+  currentMarkdown = htmlToMarkdown(denormalizeAssetHtml(editor.getHTML()));
   editorText = editor.view.dom.textContent ?? "";
   const preventLinkNavigationCapture = (event: MouseEvent) => {
     const anchor = getExternalLinkAnchor(event.target);
@@ -1424,7 +2131,9 @@ onMount(() => {
     window.removeEventListener("resize", handleResize);
     window.removeEventListener("mousedown", handleLinkPopoverOutside);
     window.removeEventListener("mousedown", handleEntityReferenceMenuOutside);
+    window.removeEventListener("mousedown", handleImagePopoverOutside);
     window.removeEventListener("resize", hideLinkPopover);
+    window.removeEventListener("resize", handleImageResize);
     window.removeEventListener("click", preventWindowLinkClickCapture, true);
     window.removeEventListener("auxclick", preventWindowLinkClickCapture, true);
     editorElement.removeEventListener("click", preventLinkNavigationCapture, true);
@@ -1437,7 +2146,7 @@ onMount(() => {
 $: if (editor && !editor.isFocused && value !== currentMarkdown) {
   const nextHtml = hydrateEntityReferences(sanitizeHtml(markdownToHtml(value)));
   if (nextHtml !== editor.getHTML()) editor.commands.setContent(nextHtml, { emitUpdate: false });
-  currentMarkdown = htmlToMarkdown(editor.getHTML());
+  currentMarkdown = htmlToMarkdown(denormalizeAssetHtml(editor.getHTML()));
   editorText = editor.view.dom.textContent ?? "";
 }
 $: if (editor && entities) {
@@ -1449,7 +2158,7 @@ $: if (editor && entities) {
       const hydrated = hydrateEntityReferences(sanitizeHtml(markdownToHtml(value)));
       if (hydrated !== editor.getHTML()) {
         editor.commands.setContent(hydrated, { emitUpdate: false });
-        currentMarkdown = htmlToMarkdown(editor.getHTML());
+        currentMarkdown = htmlToMarkdown(denormalizeAssetHtml(editor.getHTML()));
         editorText = editor.view.dom.textContent ?? "";
       } else updateAutoEntityReferences();
     }
@@ -1651,6 +2360,17 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
             ><Eraser size={14} strokeWidth={1.8} /></button>
         {/if}
       </div>
+      {#if isFullscreen}
+        <span class="toolbar-divider"></span>
+        <div class="toolbar-group" aria-label="Insert">
+          <button
+            type="button"
+            title="Insert image or file"
+            aria-label="Insert image or file"
+            disabled={!editable}
+            onclick={openInsertAsset}><ImageIcon size={14} strokeWidth={1.8} /></button>
+        </div>
+      {/if}
     </div>
     <div class="editor-toolbar-actions">
       {#if aiEnabled}
@@ -1800,6 +2520,12 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
                 aria-pressed={editorState?.isActive("link") ?? false}
                 class:active={editorState?.isActive("link")}
                 onclick={setLink}><LinkIcon size={14} strokeWidth={1.8} /></button>
+              <button
+                type="button"
+                title="Insert image or file"
+                aria-label="Insert image or file"
+                disabled={!editable}
+                onclick={openInsertAsset}><ImageIcon size={14} strokeWidth={1.8} /></button>
               <span class="toolbar-divider"></span>
               <button
                 type="button"
@@ -1871,6 +2597,98 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
                 aria-label="Clear formatting"
                 onclick={() => run((currentEditor) => currentEditor.chain().focus().clearNodes().unsetAllMarks().run())}
                 ><Eraser size={14} strokeWidth={1.8} /></button>
+              {#if isImageActive()}
+                <span class="toolbar-divider"></span>
+                <button
+                  type="button"
+                  title="Align left"
+                  aria-label="Align image left"
+                  onclick={() => alignImage("left")}
+                  onmousedown={(event) => event.preventDefault()}
+                  ><TextAlignStart size={14} strokeWidth={1.8} /></button>
+                <button
+                  type="button"
+                  title="Align center"
+                  aria-label="Align image center"
+                  onclick={() => alignImage("center")}
+                  onmousedown={(event) => event.preventDefault()}
+                  ><TextAlignCenter size={14} strokeWidth={1.8} /></button>
+                <button
+                  type="button"
+                  title="Align right"
+                  aria-label="Align image right"
+                  onclick={() => alignImage("right")}
+                  onmousedown={(event) => event.preventDefault()}><TextAlignEnd size={14} strokeWidth={1.8} /></button>
+                <button
+                  type="button"
+                  title="Remove image"
+                  aria-label="Remove image"
+                  onclick={removeImage}
+                  onmousedown={(event) => event.preventDefault()}>Remove</button>
+                <button
+                  type="button"
+                  title="Replace image"
+                  aria-label="Replace image"
+                  onclick={replaceImage}
+                  onmousedown={(event) => event.preventDefault()}>Replace</button>
+                <button
+                  type="button"
+                  title="Edit image"
+                  aria-label="Edit image"
+                  onclick={() => {
+                    if (imagePopover) {
+                      // compact popover has no alt input; focus is handled by dialog
+                      return;
+                    }
+                    // Prefer current NodeSelection or nearest image via DOM
+                    const sel: any = editorState?.state.selection;
+                    let img = editorElement.querySelector("img.ProseMirror-selectednode") as HTMLElement | null;
+                    let pos = -1;
+                    if (img) {
+                      try {
+                        const wrapper = img.closest(".daena-asset-image-wrapper") as HTMLElement | null;
+                        const maybe = editorState?.view.posAtDOM(wrapper ?? img, 0);
+                        if (typeof maybe === "number" && Number.isFinite(maybe)) pos = maybe;
+                      } catch {}
+                    }
+                    if (pos < 0 && sel?.node?.type?.name === "image") {
+                      pos = sel.from;
+                      // find img element for bounds from doc position
+                      try {
+                        const dom = editorState?.view.domAtPos(pos).node as HTMLElement | null;
+                        const found =
+                          dom?.closest?.("img") ??
+                          (editorElement.querySelector("img.ProseMirror-selectednode") as HTMLElement | null);
+                        if (found) img = found;
+                      } catch {}
+                    }
+                    if (pos < 0) pos = sel?.from ?? 0;
+                    const info = getImageNodeAtPos(pos);
+                    if (info) {
+                      try {
+                        const dom = editorState?.view.domAtPos(info.pos).node as HTMLElement | null;
+                        const candidate =
+                          (dom?.querySelector?.("img") as HTMLElement | null) ??
+                          (dom?.closest?.("img") as HTMLElement | null);
+                        const boundsEl = candidate ?? img ?? (editorElement.querySelector("img") as HTMLElement | null);
+                        if (boundsEl) {
+                          showImagePopover(info.pos, boundsEl.getBoundingClientRect());
+                          return;
+                        }
+                      } catch {}
+                      const fallbackImg = editorElement.querySelector("img") as HTMLElement | null;
+                      if (fallbackImg) showImagePopover(info.pos, fallbackImg.getBoundingClientRect());
+                      else if (img) showImagePopover(info.pos, img.getBoundingClientRect());
+                    } else if (img) {
+                      // last resort use posAtDOM fallback
+                      try {
+                        const p = editorState?.view.posAtDOM(img, 0) ?? pos;
+                        showImagePopover(p, img.getBoundingClientRect());
+                      } catch {}
+                    }
+                  }}
+                  onmousedown={(event) => event.preventDefault()}>Edit</button>
+              {/if}
             </div>
           {/if}
         </div>
@@ -2065,6 +2883,67 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
         onclick={hideLinkPopover}><XIcon size={12} strokeWidth={1.8} /></button>
     </div>
   {/if}
+  {#if imagePopover}
+    <div
+      use:portal
+      class="image-popover image-popover--compact"
+      bind:this={imagePopoverEl}
+      style={`top: ${imagePopover.top}px; left: ${imagePopover.left}px;`}
+      role="dialog"
+      aria-label="Image actions"
+      aria-modal="false">
+      <div class="image-popover-header">
+        <strong>Image</strong>
+        <button
+          type="button"
+          class="image-popover-close"
+          aria-label="Close"
+          onmousedown={(event) => event.preventDefault()}
+          onclick={hideImagePopover}><XIcon size={12} strokeWidth={1.8} /></button>
+      </div>
+      {#if imageDraftAlt}
+        <div class="image-popover-alt" title={imageDraftAlt}>{imageDraftAlt}</div>
+      {/if}
+      <div class="image-compact-actions">
+        <button
+          type="button"
+          class="image-compact-btn primary"
+          onmousedown={(event) => event.preventDefault()}
+          onclick={replaceImage}>Edit…</button>
+        <button
+          type="button"
+          class="image-compact-btn danger"
+          onmousedown={(event) => event.preventDefault()}
+          onclick={removeImage}>Remove</button>
+      </div>
+      <div class="image-align-row compact">
+        <button
+          type="button"
+          title="Align left"
+          aria-label="Align left"
+          aria-pressed={isAligned("left")}
+          class:active={isAligned("left")}
+          onmousedown={(event) => event.preventDefault()}
+          onclick={() => alignImage("left")}><TextAlignStart size={14} strokeWidth={1.8} /></button>
+        <button
+          type="button"
+          title="Align center"
+          aria-label="Align center"
+          aria-pressed={isAligned("center")}
+          class:active={isAligned("center")}
+          onmousedown={(event) => event.preventDefault()}
+          onclick={() => alignImage("center")}><TextAlignCenter size={14} strokeWidth={1.8} /></button>
+        <button
+          type="button"
+          title="Align right"
+          aria-label="Align right"
+          aria-pressed={isAligned("right")}
+          class:active={isAligned("right")}
+          onmousedown={(event) => event.preventDefault()}
+          onclick={() => alignImage("right")}><TextAlignEnd size={14} strokeWidth={1.8} /></button>
+      </div>
+    </div>
+  {/if}
 
   <div class="editor-statusbar" aria-live="polite">
     <span>{wordCountValue} {wordCountValue === 1 ? "word" : "words"}</span>
@@ -2090,6 +2969,19 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
     onConfirm={confirmLink}
     onCancel={cancelLink}
     onRemove={linkDialogInitialUrl ? removeLink : null} />
+  <InsertAssetDialog
+    open={insertAssetOpen}
+    {entityId}
+    {entities}
+    {defaultNamespace}
+    mode={imageReplaceMode ? "replace" : "insert"}
+    initialAlt={imageReplaceMode && imagePopover ? imageDraftAlt : ""}
+    initialTitle={imageReplaceMode && imagePopover ? imageDraftTitle : ""}
+    initialWidth={imageReplaceMode && imagePopover ? imageDraftWidth : ""}
+    initialHeight={imageReplaceMode && imagePopover ? imageDraftHeight : ""}
+    initialSrc={imageReplaceMode && imagePopover ? imagePopover.src : ""}
+    onInsert={handleInsertAsset}
+    onCancel={cancelInsertAsset} />
 </div>
 
 <style>
@@ -2504,6 +3396,126 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
   color: var(--ink, #25251f);
   outline: 0;
 }
+.image-popover {
+  position: fixed;
+  z-index: 76;
+  display: grid;
+  gap: 10px;
+  max-width: min(380px, calc(100vw - 16px));
+  min-width: 320px;
+  padding: 12px;
+  border: 1px solid #d3c0a9;
+  border-radius: 10px;
+  background: var(--surface, #fffefa);
+  box-shadow: 0 12px 28px rgba(48, 45, 38, 0.18);
+}
+.image-popover--compact {
+  min-width: 220px;
+  max-width: 260px;
+  gap: 8px;
+  padding: 10px;
+}
+.image-popover-alt {
+  font: 500 11px/1.4 var(--font-body, system-ui, sans-serif);
+  color: var(--ink-soft, #77766d);
+  background: var(--canvas, #f7f6f2);
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 6px;
+  padding: 6px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.image-compact-actions {
+  display: flex;
+  gap: 6px;
+}
+.image-compact-btn {
+  flex: 1;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font: 700 11px/1 var(--font-body, system-ui, sans-serif);
+  cursor: pointer;
+  border: 1px solid var(--line, #e4e1d8);
+  background: var(--surface, #fffefa);
+  color: var(--ink-soft, #77766d);
+}
+.image-compact-btn.primary {
+  border-color: var(--accent-dark, #365342);
+  background: var(--accent-dark, #365342);
+  color: #fff;
+}
+.image-compact-btn.danger {
+  border-color: transparent;
+  color: #a14f42;
+}
+.image-compact-btn:hover,
+.image-compact-btn:focus-visible {
+  border-color: #d3c0a9;
+  background: #f2e4d2;
+  outline: 0;
+}
+.image-compact-btn.primary:hover {
+  filter: brightness(1.06);
+}
+.image-compact-btn.danger:hover {
+  border-color: #e8c0b8;
+  background: #fdf0ed;
+}
+.image-align-row.compact {
+  justify-content: center;
+}
+.image-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font: 700 12px/1 var(--font-body, system-ui, sans-serif);
+  color: var(--ink, #25251f);
+}
+.image-popover-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-faint, #aaa79d);
+  cursor: pointer;
+}
+.image-popover-close:hover,
+.image-popover-close:focus-visible {
+  background: var(--surface-muted, #f4f2ec);
+  color: var(--ink, #25251f);
+  outline: 0;
+}
+.image-align-row {
+  display: inline-flex;
+  gap: 4px;
+}
+.image-align-row button {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 6px;
+  background: var(--surface, #fffefa);
+  color: var(--ink-soft, #77766d);
+  cursor: pointer;
+}
+.image-align-row button:hover,
+.image-align-row button:focus-visible {
+  border-color: #d3c0a9;
+  background: #f2e4d2;
+  outline: 0;
+}
+.image-align-row button.active {
+  border-color: #d3c0a9;
+  background: #f2e4d2;
+  color: var(--accent-dark, #365342);
+}
 .editor-toolbar button.ai-toolbar-button {
   color: var(--accent-dark, #365342);
   font-size: 17px;
@@ -2757,6 +3769,20 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
 .editor-content :global(span.spoiler:focus-visible) {
   outline: 2px solid var(--accent, #b4773f);
   outline-offset: 2px;
+}
+.editor-content :global(img) {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0.8em 0;
+  border-radius: 6px;
+  border: 1px solid var(--line, #e4e1d8);
+}
+.editor-content :global(img.daena-content-image) {
+  max-width: 100%;
+}
+.editor-content :global(a) {
+  word-break: break-all;
 }
 .editor-content :global(table) {
   width: 100%;

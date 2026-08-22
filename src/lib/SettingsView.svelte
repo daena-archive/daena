@@ -1787,25 +1787,6 @@ async function handleClose() {
   transform: none;
   box-shadow: none;
 }
-.action {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  border: 1px solid #e9dfd0;
-  border-radius: 9px;
-  background: #f7f1e7;
-  color: #62594e;
-  font:
-    600 11.5px Inter,
-    sans-serif;
-  cursor: pointer;
-  transition: all 0.14s ease;
-}
-.action:hover {
-  border-color: #b7a88f;
-  background: #f4eee4;
-}
 .quiet-button {
   display: inline-flex;
   align-items: center;

@@ -542,8 +542,7 @@ onMount(() => {
             {#each report.relationships as relationship}
               <div>
                 <strong>{relationship.relationshipType}</strong><span
-                  >Relationship · {relationship.sourceEntityId} → {relationship.targetEntityId}</span
-                >
+                  >Relationship · {relationship.sourceEntityId} → {relationship.targetEntityId}</span>
               </div>
             {/each}
           </div>
@@ -720,9 +719,9 @@ onMount(() => {
                   {#if Object.keys(object.fields ?? {}).length > 0}
                     <div class="mapping-fields">
                       <span>Source fields</span>{#each Object.keys(object.fields ?? {}).sort() as sourceKey}<label
-                          ><span class="source-field"><code>{sourceKey}</code><small
-                              >{previewValue(object.fields?.[sourceKey])}</small
-                            ></span><select
+                          ><span class="source-field"
+                            ><code>{sourceKey}</code><small>{previewValue(object.fields?.[sourceKey])}</small></span
+                          ><select
                             value={currentDecision().fieldMappings?.[sourceKey] ?? ""}
                             onchange={(event) => setFieldMapping(sourceKey, event.currentTarget.value)}
                             ><option value=""
@@ -752,7 +751,8 @@ onMount(() => {
                     </div>
                   {/if}
                   {#if catalog().relationships.length === 0 && relationshipSources(object).length > 0}
-                    <small>No enabled relationship type without required metadata can accept resolved source links.</small>
+                    <small
+                      >No enabled relationship type without required metadata can accept resolved source links.</small>
                   {/if}
                   {#if mappingScope === "folder" && selectedFolder()}<small
                       >Overrides items under <code>{selectedFolder()}</code>.</small
@@ -764,7 +764,7 @@ onMount(() => {
                   <span class="kicker">SOURCE CONTEXT</span>
                   {#if object.aliases?.length}<p><strong>Aliases</strong>{object.aliases.join(", ")}</p>{/if}
                   {#if object.tags?.length}<p><strong>Tags / categories</strong>{object.tags.join(", ")}</p>{/if}
-                  {#each Object.entries(object.metadata ?? {}).sort(([left], [right]) => left.localeCompare(right)) as [key, value]}
+                  {#each Object.entries(object.metadata ?? {}).sort( ([left], [right]) => left.localeCompare(right) ) as [key, value]}
                     <p><strong>{key}</strong>{previewValue(value)}</p>
                   {/each}
                 </div>

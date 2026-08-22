@@ -7358,6 +7358,11 @@ async fn project_list_assets(
 }
 
 #[tauri::command]
+async fn project_list_shared_assets(state: tauri::State<'_, SharedCore>) -> Result<Vec<Asset>, String> {
+    with_read_project(state, move |project| project.list_shared_assets()).await
+}
+
+#[tauri::command]
 async fn project_import_image_map_file(
     state: tauri::State<'_, SharedCore>,
     source_path: String,
@@ -8864,6 +8869,22 @@ async fn project_read_asset_bytes(
 }
 
 #[tauri::command]
+async fn project_read_asset_bytes_by_path(
+    state: tauri::State<'_, SharedCore>,
+    path: String,
+) -> Result<Vec<u8>, String> {
+    with_read_project(state, move |project| project.asset_bytes_by_path(path)).await
+}
+
+#[tauri::command]
+async fn project_get_asset_by_path(
+    state: tauri::State<'_, SharedCore>,
+    path: String,
+) -> Result<Asset, String> {
+    with_read_project(state, move |project| project.asset_by_path(path)).await
+}
+
+#[tauri::command]
 async fn project_create_raster_layer(
     state: tauri::State<'_, SharedCore>,
     map_entity_id: String,
@@ -9488,6 +9509,7 @@ pub fn run() {
             project_register_asset,
             project_register_asset_file,
             project_list_assets,
+            project_list_shared_assets,
             project_import_image_map_file,
             project_accept_vector_map,
             project_physical_generate,
@@ -9522,6 +9544,8 @@ pub fn run() {
             atlas_studio::project_atlas_studio_regenerate_cache,
             atlas_studio::project_atlas_studio_inspect,
             project_read_asset_bytes,
+            project_read_asset_bytes_by_path,
+            project_get_asset_by_path,
             project_create_raster_layer,
             project_create_semantic_layer,
             project_update_map_layer,

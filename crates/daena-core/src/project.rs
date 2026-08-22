@@ -8210,6 +8210,70 @@ impl ProjectStore {
         Ok(())
     }
 
+    pub fn list_shared_assets(&self) -> Result<Vec<Asset>, CoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope FROM assets WHERE reference_scope='project' ORDER BY created_at DESC LIMIT 200",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(Asset {
+                id: row.get(0)?,
+                entity_id: row.get(1)?,
+                namespace: row.get(2)?,
+                filename: row.get(3)?,
+                content_hash: row.get(4)?,
+                size: row.get(5)?,
+                mime_type: row.get(6)?,
+                path: row.get(7)?,
+                created_at: row.get(8)?,
+                role: row.get(9)?,
+                reference_scope: row.get(10)?,
+                revision: String::new(),
+            })
+        })?;
+        let mut assets = rows.collect::<Result<Vec<_>, _>>()?;
+        for asset in &mut assets {
+            asset.revision = self.revision_for_asset_value(asset)?;
+        }
+        Ok(assets)
+    }
+
+    pub fn asset_by_path(&self, path: String) -> Result<Asset, CoreError> {
+        if !path.starts_with("assets/") || path.contains("..") || path.contains('\0') || path.len() > 1024 {
+            return Err(CoreError::Validation("invalid asset path".into()));
+        }
+        let mut asset = self
+            .connection
+            .query_row(
+                "SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope FROM assets WHERE path=?1",
+                params![path],
+                |row| {
+                    Ok(Asset {
+                        id: row.get(0)?,
+                        entity_id: row.get(1)?,
+                        namespace: row.get(2)?,
+                        filename: row.get(3)?,
+                        content_hash: row.get(4)?,
+                        size: row.get(5)?,
+                        mime_type: row.get(6)?,
+                        path: row.get(7)?,
+                        created_at: row.get(8)?,
+                        role: row.get(9)?,
+                        reference_scope: row.get(10)?,
+                        revision: String::new(),
+                    })
+                },
+            )
+            .optional()?
+            .ok_or_else(|| CoreError::NotFound("asset not found".into()))?;
+        asset.revision = self.revision_for_asset(&asset.id)?;
+        Ok(asset)
+    }
+
+    pub fn asset_bytes_by_path(&self, path: String) -> Result<Vec<u8>, CoreError> {
+        let asset = self.asset_by_path(path)?;
+        self.read_asset_bytes(&asset)
+    }
+
     fn list_assets_unchecked(&self, entity_id: String) -> Result<Vec<Asset>, CoreError> {
         let mut statement = self.connection.prepare("SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope FROM assets WHERE entity_id=?1 ORDER BY created_at")?;
         let rows = statement.query_map(params![entity_id], |row| {

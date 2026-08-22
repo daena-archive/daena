@@ -32,4 +32,16 @@ export const MARKDOWN_FIXTURES = [
     name: "empty",
     markdown: "",
   },
+  {
+    name: "image-with-dimensions",
+    markdown: '<img src="assets/a.png" alt="x" width="400" height="264">\n',
+  },
+  {
+    name: "image-auto",
+    markdown: "![auto](https://example.com/auto.png)\n",
+  },
+  {
+    name: "image-align",
+    markdown: '<p style="text-align: center"><img src="assets/b.png" alt="centered" width="320"></p>\n',
+  },
 ] as const;

@@ -1,7 +1,7 @@
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 
-// @ts-expect-error process is a nodejs global
+// @ts-ignore process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
 /** Vite only treats `.json` as JSON. A `.geojson` file is otherwise parsed as JS, where `{ "type":` is a syntax error. */
@@ -25,6 +25,9 @@ function geojson() {
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [geojson(), sveltekit()],
+  build: {
+    chunkSizeWarningLimit: 4000,
+  },
 
   // Keep Deno's node_modules layout from stale uuid paths during dep prebundling.
   optimizeDeps: {

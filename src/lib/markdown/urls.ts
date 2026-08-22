@@ -1,4 +1,4 @@
-const SAFE_HREF = /^(?:https?:|mailto:|#|daena:\/\/entity\/)/i;
+const SAFE_HREF = /^(?:https?:|mailto:|#|daena:\/\/entity\/|assets\/)/i;
 const SAFE_SRC = /^(?:https?:|#|assets\/)/i;
 
 export function safeHref(value: string): string {

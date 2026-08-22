@@ -60,7 +60,23 @@ function phrasingToHtml(nodes: unknown[], state: unknown, info: unknown): string
       case "image": {
         const url = String((raw as { url?: string }).url ?? "");
         const alt = String((raw as { alt?: string }).alt ?? "");
-        out += `<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">`;
+        const title =
+          (raw as { title?: string | null }).title ??
+          ((raw as { data?: { hProperties?: Record<string, unknown> } }).data?.hProperties?.title as
+            string | undefined);
+        const wRaw =
+          (raw as { width?: unknown }).width ??
+          (raw as { data?: { hProperties?: Record<string, unknown> } }).data?.hProperties?.width;
+        const hRaw =
+          (raw as { height?: unknown }).height ??
+          (raw as { data?: { hProperties?: Record<string, unknown> } }).data?.hProperties?.height;
+        const w = wRaw != null && /^\d+$/.test(String(wRaw).trim()) ? String(wRaw).trim() : "";
+        const h = hRaw != null && /^\d+$/.test(String(hRaw).trim()) ? String(hRaw).trim() : "";
+        let attrs = `src="${escapeHtml(url)}" alt="${escapeHtml(alt)}"`;
+        if (w) attrs += ` width="${w}"`;
+        if (h) attrs += ` height="${h}"`;
+        if (title) attrs += ` title="${escapeHtml(String(title))}"`;
+        out += `<img ${attrs}>`;
         break;
       }
       default: {
@@ -77,6 +93,94 @@ function phrasingToHtml(nodes: unknown[], state: unknown, info: unknown): string
   }
   return out;
 }
+
+export const imageToMarkdown: ToMarkdownHandle = (node, _parent, state, info) => {
+  const img = node as {
+    url?: string;
+    alt?: string;
+    title?: string | null;
+    data?: { hProperties?: Record<string, unknown> };
+  } & { width?: unknown; height?: unknown };
+  const url = String(img.url ?? "");
+  const alt = String(img.alt ?? "");
+  const titleRaw =
+    img.title != null
+      ? String(img.title)
+      : img.data?.hProperties?.title != null
+        ? String(img.data?.hProperties?.title)
+        : null;
+  const title = titleRaw && titleRaw.trim() ? titleRaw : null;
+  const wRaw = img.data?.hProperties?.width ?? (img as Record<string, unknown>).width;
+  const hRaw = img.data?.hProperties?.height ?? (img as Record<string, unknown>).height;
+  const w = wRaw != null && /^\d+$/.test(String(wRaw).trim()) ? String(wRaw).trim() : "";
+  const h = hRaw != null && /^\d+$/.test(String(hRaw).trim()) ? String(hRaw).trim() : "";
+  if (w || h) {
+    const attrs = [`src="${escapeHtml(url)}"`, `alt="${escapeHtml(alt)}"`];
+    if (w) attrs.push(`width="${w}"`);
+    if (h) attrs.push(`height="${h}"`);
+    if (title) attrs.push(`title="${escapeHtml(title)}"`);
+    return `<img ${attrs.join(" ")}>`;
+  }
+  const exit = (state as unknown as { enter: (n: string) => () => void }).enter("image");
+  let subexit = (state as unknown as { enter: (n: string) => () => void }).enter("label");
+  const tracker = (
+    state as unknown as {
+      createTracker: (i: unknown) => { move: (s: string) => string; current: () => Record<string, unknown> };
+    }
+  ).createTracker(info);
+  let value = tracker.move("![");
+  value += tracker.move(
+    (state as unknown as { safe: (v: string, o: Record<string, unknown>) => string }).safe(alt, {
+      before: value,
+      after: "]",
+      ...tracker.current(),
+    }),
+  );
+  value += tracker.move("](");
+  subexit();
+  const needsLiteral = !url || (title != null && /[\0- \u007F]/.test(url));
+  if (needsLiteral) {
+    subexit = (state as unknown as { enter: (n: string) => () => void }).enter("destinationLiteral");
+    value += tracker.move(
+      "<" +
+        (state as unknown as { safe: (v: string, o: Record<string, unknown>) => string }).safe(url, {
+          before: value,
+          after: title ? " " : ")",
+          ...tracker.current(),
+        }) +
+        ">",
+    );
+    subexit();
+  } else {
+    subexit = (state as unknown as { enter: (n: string) => () => void }).enter("destinationRaw");
+    value += tracker.move(
+      (state as unknown as { safe: (v: string, o: Record<string, unknown>) => string }).safe(url, {
+        before: value,
+        after: title ? " " : ")",
+        ...tracker.current(),
+      }),
+    );
+    subexit();
+  }
+  if (title) {
+    const quote = (state as unknown as { options?: { quote?: string } }).options?.quote === "'" ? "'" : '"';
+    const suffix = quote === '"' ? "Quote" : "Apostrophe";
+    subexit = (state as unknown as { enter: (n: string) => () => void }).enter(`title${suffix}`);
+    value += tracker.move(
+      ` ${quote}` +
+        (state as unknown as { safe: (v: string, o: Record<string, unknown>) => string }).safe(title, {
+          before: value,
+          after: quote,
+          ...tracker.current(),
+        }) +
+        quote,
+    );
+    subexit();
+  }
+  value += tracker.move(")");
+  exit();
+  return value;
+};
 
 export const alignedParagraphToMarkdown: ToMarkdownHandle = (node, _parent, state, info) => {
   const aligned = node as AlignedParagraph;

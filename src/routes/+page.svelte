@@ -2,6 +2,7 @@
 import { onMount } from "svelte";
 import { listen } from "@tauri-apps/api/event";
 const logoUrl = "/branding/logo.png";
+import { revokeAllResolvedAssetUrls } from "$lib/assets/resolve";
 import {
   project,
   type Asset,
@@ -3710,6 +3711,9 @@ function clearSelection() {
   showCreateForm = false;
 }
 function resetProjectSessionState() {
+  try {
+    revokeAllResolvedAssetUrls();
+  } catch {}
   selectedLoadToken += 1;
   closeAiFieldFill();
   closeAiRewrite();
@@ -5445,6 +5449,8 @@ onMount(() => {
                       bind:this={editorRef}
                       value={documentBody}
                       {entities}
+                      entityId={selected?.id ?? null}
+                      defaultNamespace={activeManifest()?.schemas[0]?.namespace ?? activeModuleId()}
                       editable={projectDiagnostics.length === 0 && !aiBusy && !aiRewriteOpen}
                       fullscreen={editorFullscreen}
                       aiEnabled={projectInfo?.aiEnabled ?? false}

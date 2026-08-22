@@ -1176,6 +1176,7 @@ export const project = {
       request_id: requestId(options),
     }),
   listAssets: (entityId: string) => invoke<Asset[]>("project_list_assets", { entityId }),
+  listSharedAssets: () => invoke<Asset[]>("project_list_shared_assets"),
   importImageMapFile: (sourcePath: string) =>
     invoke<{ entity: Entity; source: Asset; preview: Asset }>("project_import_image_map_file", { sourcePath }),
   acceptVectorMap: (name: string, candidateJson: string, generation: unknown, options?: MutationOptions) =>
@@ -1296,6 +1297,8 @@ export const project = {
       input: { sessionToken, lonMicro, latMicro, zoom },
     }),
   readAssetBytes: (assetId: string) => invoke<number[]>("project_read_asset_bytes", { assetId }),
+  readAssetBytesByPath: (path: string) => invoke<number[]>("project_read_asset_bytes_by_path", { path }),
+  getAssetByPath: (path: string) => invoke<Asset>("project_get_asset_by_path", { path }),
   createRasterLayer: (mapEntityId: string, name: string, expectedRevision: string, options?: MutationOptions) =>
     invoke<RasterLayerChange>("project_create_raster_layer", {
       mapEntityId,

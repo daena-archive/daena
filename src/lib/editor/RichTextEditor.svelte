@@ -968,7 +968,9 @@ function probeNatural(src: string) {
   if (src.startsWith("assets/")) {
     void resolveAssetSrc(src).then((blob) => {
       if (blob) tryProbe(blob);
-      else tryProbe(src);
+      // else: asset missing or not yet available — do not fall back to
+      // `assets/...` fetch which would emit `GET /assets/... 404` in the
+      // webview/dev console. Natural size stays 0 until blob is available.
     });
   } else {
     tryProbe(src);

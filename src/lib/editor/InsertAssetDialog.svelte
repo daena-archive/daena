@@ -1,6 +1,19 @@
 <script lang="ts">
 import { tick, onMount } from "svelte";
-import { X, Search as SearchIcon, Image as ImageIcon, File as FileIcon, Upload } from "@lucide/svelte";
+import {
+  X,
+  Search as SearchIcon,
+  Image as ImageIcon,
+  File as FileIcon,
+  Upload,
+  Link as LinkIcon,
+  Unlink as UnlinkIcon,
+  Info as InfoIcon,
+  CircleCheck as CircleCheckIcon,
+  Trash2 as Trash2Icon,
+  RefreshCw as RefreshCwIcon,
+  TriangleAlert as TriangleAlertIcon,
+} from "@lucide/svelte";
 import type { Asset, Entity } from "$lib/project/client";
 import { project } from "$lib/project/client";
 
@@ -54,6 +67,11 @@ let uploading = $state(false);
 let uploadError = $state("");
 let shareNew = $state(false);
 let pickedFileLabel = $state("");
+let uploadedAsset = $state<Asset | null>(null);
+let uploadedPreviewUrl = $state("");
+let uploadedPreviewError = $state(false);
+
+import { resolveAssetSrc } from "$lib/assets/resolve";
 
 // image edit state (for alt/dim before insert or when replacing)
 let draftAlt = $state("");
@@ -65,6 +83,20 @@ let draftPreserveAspect = $state(true);
 let draftNaturalW = $state(0);
 let draftNaturalH = $state(0);
 let draftNaturalCache = new Map<string, { w: number; h: number }>();
+
+let isWidthOversized = $derived(
+  draftWidth !== "" &&
+    draftNaturalW > 0 &&
+    /^\d+$/.test(draftWidth.trim()) &&
+    Number(draftWidth) > draftNaturalW,
+);
+let isHeightOversized = $derived(
+  draftHeight !== "" &&
+    draftNaturalH > 0 &&
+    /^\d+$/.test(draftHeight.trim()) &&
+    Number(draftHeight) > draftNaturalH,
+);
+let isOversized = $derived(isWidthOversized || isHeightOversized);
 
 function clampDim(v: string): string {
   const t = v.trim();
@@ -83,18 +115,34 @@ function probeNaturalForDialog(src: string, preview: string) {
   }
   const url = preview || src;
   if (!url) return;
-  const img = new window.Image();
-  img.onload = () => {
-    const w = (img as HTMLImageElement).naturalWidth;
-    const h = (img as HTMLImageElement).naturalHeight;
-    if (w && h) {
-      draftNaturalCache.set(cacheKey, { w, h });
-      draftNaturalW = w;
-      draftNaturalH = h;
-    }
+  // Never assign a raw `assets/...` portable path to `img.src` — the webview
+  // would issue `GET /assets/...` and log `[404] GET /assets/...` in console.
+  // Resolve to a blob: URL first; external http/blob URLs can be probed directly.
+  const doProbe = (probeUrl: string) => {
+    const img = new window.Image();
+    img.onload = () => {
+      const w = (img as HTMLImageElement).naturalWidth;
+      const h = (img as HTMLImageElement).naturalHeight;
+      if (w && h) {
+        draftNaturalCache.set(cacheKey, { w, h });
+        draftNaturalW = w;
+        draftNaturalH = h;
+      }
+    };
+    img.onerror = () => {};
+    img.src = probeUrl;
   };
-  img.onerror = () => {};
-  img.src = url;
+  if (url.startsWith("assets/")) {
+    void resolveAssetSrc(url).then((blob) => {
+      if (blob) doProbe(blob);
+    });
+    return;
+  }
+  if (url.startsWith("blob:") || /^https?:/i.test(url) || url.startsWith("data:")) {
+    doProbe(url);
+    return;
+  }
+  // Fallback: unknown scheme — do not probe to avoid stray GET
 }
 function updateDraftAlt(v: string) {
   draftAlt = v;
@@ -266,6 +314,9 @@ $effect(() => {
     previewError = false;
     pickedFileLabel = "";
     uploadError = "";
+    uploadedAsset = null;
+    uploadedPreviewUrl = "";
+    uploadedPreviewError = false;
     // init image edit drafts from props (for replace mode or new insert)
     draftAlt = initialAlt;
     draftTitle = initialTitle;
@@ -299,9 +350,25 @@ $effect(() => {
   // probe natural from previewUrl will happen separately, but also allow probing after preview loads
 });
 
+// when a newly uploaded image is staged, initialize alt/title similarly
+$effect(() => {
+  const a = uploadedAsset;
+  if (!open || !a || !isImage(a.mime_type) || activeTab !== "upload") return;
+  if (!draftAlt || draftAlt === initialAlt) {
+    draftAlt = a.filename;
+    if (!draftTitleCustom) draftTitle = draftAlt;
+  }
+});
+
 $effect(() => {
   if (previewUrl && (selectedAsset ? isImage(selectedAsset.mime_type) : !!initialSrc)) {
     probeNaturalForDialog(initialSrc, previewUrl);
+  }
+});
+
+$effect(() => {
+  if (uploadedPreviewUrl && uploadedAsset && isImage(uploadedAsset.mime_type)) {
+    probeNaturalForDialog("", uploadedPreviewUrl);
   }
 });
 
@@ -355,6 +422,42 @@ $effect(() => {
   };
 });
 
+// preview blob for staged upload
+$effect(() => {
+  const a = uploadedAsset;
+  let disposed = false;
+  let objectUrl = "";
+  uploadedPreviewUrl = "";
+  uploadedPreviewError = false;
+  if (!a) return;
+  if (activeTab !== "upload") return;
+  const shouldPreview = isImage(a.mime_type) || isVideo(a.mime_type);
+  if (!shouldPreview) return;
+  void project
+    .readAssetBytes(a.id)
+    .then((bytes) => {
+      if (disposed) return;
+      try {
+        const blob = new Blob([Uint8Array.from(bytes)], { type: a.mime_type });
+        objectUrl = URL.createObjectURL(blob);
+        if (disposed) {
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
+        uploadedPreviewUrl = objectUrl;
+      } catch {
+        if (!disposed) uploadedPreviewError = true;
+      }
+    })
+    .catch(() => {
+      if (!disposed) uploadedPreviewError = true;
+    });
+  return () => {
+    disposed = true;
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+  };
+});
+
 function imageMeta(): { alt: string; title: string; width: string; height: string } {
   const alt = draftAlt.trim();
   const title = draftTitleCustom ? draftTitle.trim() : alt;
@@ -363,18 +466,52 @@ function imageMeta(): { alt: string; title: string; width: string; height: strin
   return { alt, title, width: w, height: h };
 }
 function isImageContext(): boolean {
+  if (activeTab === "upload" && uploadedAsset) return isImage(uploadedAsset.mime_type);
   if (selectedAsset) return isImage(selectedAsset.mime_type);
   if (mode === "replace" && initialSrc) return true;
   return false;
 }
 function canConfirm(): boolean {
-  if (activeTab === "upload") return false;
+  if (activeTab === "upload") {
+    if (uploadedAsset) return true;
+    if (mode === "replace" && initialSrc) return true;
+    return false;
+  }
   if (selectedAsset) return true;
   // in replace mode we allow saving meta edits without picking new asset
   if (mode === "replace" && initialSrc) return true;
   return false;
 }
+async function confirmUploadInsert() {
+  const asset = uploadedAsset;
+  if (!asset) return;
+  const mime = asset.mime_type;
+  let meta: { alt: string; title: string; width: string; height: string } | undefined = undefined;
+  if (isImage(mime)) {
+    meta = imageMeta();
+    if (!meta.alt) meta.alt = asset.filename;
+  }
+  // apply share scope if requested
+  let finalAsset: Asset = asset;
+  if (shareNew && asset.reference_scope !== "project") {
+    try {
+      finalAsset = await project.updateAssetMetadata(asset.id, { referenceScope: "project" }, asset.revision);
+      // keep local lists in sync
+      myAssets = myAssets.map((a) => (a.id === asset.id ? finalAsset : a));
+      sharedAssets = [finalAsset, ...sharedAssets.filter((a) => a.id !== finalAsset.id)];
+      uploadedAsset = finalAsset;
+    } catch {
+      // keep original
+    }
+  }
+  onInsert(finalAsset, meta);
+}
+
 function confirmInsert() {
+  if (activeTab === "upload" && uploadedAsset) {
+    void confirmUploadInsert();
+    return;
+  }
   if (selectedAsset) {
     const meta = isImage(selectedAsset.mime_type) ? imageMeta() : undefined;
     onInsert(selectedAsset, meta);
@@ -388,10 +525,10 @@ function handleKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") {
     event.preventDefault();
     onCancel();
-  } else if (event.key === "Enter" && canConfirm() && activeTab !== "upload") {
-    // avoid submitting when typing search?
+  } else if (event.key === "Enter" && canConfirm()) {
+    // avoid submitting when typing search or image fields
     const target = event.target as HTMLElement | null;
-    if (target?.tagName === "INPUT") return;
+    if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") return;
     event.preventDefault();
     confirmInsert();
   }
@@ -401,7 +538,7 @@ function selectAsset(id: string) {
   selectedId = id;
 }
 
-async function handleUploadAndInsert() {
+async function handlePickAndStageUpload() {
   if (!entityId) {
     uploadError = "No entry selected — cannot attach file.";
     return;
@@ -426,29 +563,52 @@ async function handleUploadAndInsert() {
       filename,
       mime_type: mime,
     });
-    // optionally update referenceScope if shareNew
-    const metaForUpload = isImage(mime) ? imageMeta() : undefined;
-    // if user edited alt in dialog before upload, prefer that alt; otherwise default to filename
-    if (metaForUpload && !metaForUpload.alt) metaForUpload.alt = filename;
-    if (shareNew && asset.reference_scope !== "project") {
-      try {
-        const updated = await project.updateAssetMetadata(asset.id, { referenceScope: "project" }, asset.revision);
-        onInsert(updated, metaForUpload);
-      } catch {
-        // still insert original
-        onInsert(asset, metaForUpload);
-      }
+    // stage for confirmation instead of immediate insert
+    uploadedAsset = asset;
+    uploadedPreviewError = false;
+    // initialize image meta defaults for staged upload — always reset to new file's name/dims
+    if (isImage(mime)) {
+      draftAlt = filename;
+      draftTitle = filename;
+      draftTitleCustom = false;
+      // reset dimensions for new image; natural size will be probed from preview
+      draftWidth = "";
+      draftHeight = "";
+      draftNaturalW = 0;
+      draftNaturalH = 0;
     } else {
-      onInsert(asset, metaForUpload);
+      // non-image: clear image-specific drafts
+      draftAlt = "";
+      draftTitle = "";
+      draftTitleCustom = false;
+      draftWidth = "";
+      draftHeight = "";
     }
-    // also refresh local lists
+    // also refresh local lists for future picks without waiting for explicit reload
     myAssets = [...myAssets, asset];
     if (asset.reference_scope === "project") sharedAssets = [asset, ...sharedAssets];
+    // probe will happen via uploadedPreviewUrl effect; also try immediate probe if possible
   } catch (e) {
     uploadError = e instanceof Error ? e.message : String(e);
   } finally {
     uploading = false;
   }
+}
+
+function clearStagedUpload() {
+  uploadedAsset = null;
+  uploadedPreviewUrl = "";
+  uploadedPreviewError = false;
+  pickedFileLabel = "";
+  // reset image drafts to initial (replace-mode) defaults or empty
+  draftAlt = initialAlt;
+  draftTitle = initialTitle;
+  draftTitleCustom = !!(initialTitle && initialTitle !== initialAlt);
+  draftWidth = /^\d+$/.test(initialWidth) ? initialWidth : "";
+  draftHeight = /^\d+$/.test(initialHeight) ? initialHeight : "";
+  draftNaturalW = 0;
+  draftNaturalH = 0;
+  if (initialSrc) probeNaturalForDialog(initialSrc, "");
 }
 
 function focusableElements(): HTMLElement[] {
@@ -559,11 +719,7 @@ onMount(() => {
                 aria-selected={selectedId === asset.id}
                 class="asset-row"
                 class:selected={selectedId === asset.id}
-                onclick={() => selectAsset(asset.id)}
-                ondblclick={() => {
-                  const meta = isImage(asset.mime_type) ? imageMeta() : undefined;
-                  onInsert(asset, meta);
-                }}>
+                onclick={() => selectAsset(asset.id)}>
                 <span class="thumb">
                   {#if isImage(asset.mime_type)}<ImageIcon size={16} />{:else}<FileIcon size={16} />{/if}
                 </span>
@@ -594,11 +750,7 @@ onMount(() => {
                 aria-selected={selectedId === asset.id}
                 class="asset-row"
                 class:selected={selectedId === asset.id}
-                onclick={() => selectAsset(asset.id)}
-                ondblclick={() => {
-                  const meta = isImage(asset.mime_type) ? imageMeta() : undefined;
-                  onInsert(asset, meta);
-                }}>
+                onclick={() => selectAsset(asset.id)}>
                 <span class="thumb">
                   {#if isImage(asset.mime_type)}<ImageIcon size={16} />{:else}<FileIcon size={16} />{/if}
                 </span>
@@ -612,25 +764,77 @@ onMount(() => {
           {/if}
         </div>
       {:else}
-        <div class="upload-pane">
-          <div class="drop-hint">
-            <Upload size={20} strokeWidth={1.6} />
-            <p><strong>Upload a new file to this entry</strong></p>
-            <p class="muted">Images will be inserted as images, other files as links.</p>
-          </div>
-          <label class="share-row">
-            <input type="checkbox" bind:checked={shareNew} />
-            <span>Share with other entries <small>Others can pick this file from Shared files.</small></span>
-          </label>
-          {#if pickedFileLabel}<p class="picked">Last picked: {pickedFileLabel}</p>{/if}
-          {#if uploadError}<p class="error">{uploadError}</p>{/if}
-          <button
-            type="button"
-            class="primary upload-btn"
-            disabled={uploading || !entityId}
-            onclick={handleUploadAndInsert}>
-            {#if uploading}Uploading…{:else}Choose file & insert{/if}
-          </button>
+        <div class="upload-pane" class:upload-pane--staged={!!uploadedAsset} class:upload-pane--empty={!uploadedAsset}>
+          {#if !uploadedAsset}
+            <div class="drop-hint">
+              <Upload size={20} strokeWidth={1.6} />
+              <p><strong>Upload a new file to this entry</strong></p>
+              <p class="muted">Images insert as images, other files as links.</p>
+            </div>
+            <label class="share-row">
+              <input type="checkbox" bind:checked={shareNew} />
+              <span>Share with other entries <small>Others can pick this file from Shared files.</small></span>
+            </label>
+            {#if uploadError}<p class="error">{uploadError}</p>{/if}
+            {#if pickedFileLabel}<p class="picked">Last picked: {pickedFileLabel}</p>{/if}
+            <button
+              type="button"
+              class="primary upload-btn"
+              disabled={uploading || !entityId}
+              onclick={handlePickAndStageUpload}>
+              {#if uploading}Uploading…{:else}Choose file{/if}
+            </button>
+          {:else}
+            <div class="staged-header">
+              <span class="staged-badge"><CircleCheckIcon size={13} strokeWidth={2} /> Staged</span>
+              <span class="staged-hint">Review details → Insert in footer</span>
+            </div>
+            <div class="staged-card">
+              <div class="staged-thumb">
+                {#if uploadedPreviewUrl && isImage(uploadedAsset.mime_type)}
+                  <img src={uploadedPreviewUrl} alt={uploadedAsset.filename} />
+                {:else if uploadedPreviewUrl && isVideo(uploadedAsset.mime_type)}
+                  <!-- svelte-ignore a11y_media_has_caption -->
+                  <video src={uploadedPreviewUrl} controls preload="metadata"></video>
+                {:else if isImage(uploadedAsset.mime_type) && uploadedPreviewError}
+                  <div class="staged-fallback staged-fallback--error">Preview unavailable</div>
+                {:else}
+                  <div class="staged-fallback">
+                    {#if isImage(uploadedAsset.mime_type)}<ImageIcon size={20} />{:else}<FileIcon size={20} />{/if}
+                    <span>{uploadedAsset.mime_type}</span>
+                  </div>
+                {/if}
+              </div>
+              <div class="staged-meta">
+                <strong class="staged-filename" title={uploadedAsset.filename}>{uploadedAsset.filename}</strong>
+                <span class="staged-path" title={uploadedAsset.path}>{uploadedAsset.path}</span>
+                <span class="staged-details">
+                  <span class="staged-mime">{uploadedAsset.mime_type}</span>
+                  <span class="staged-dot">·</span>
+                  <span>{formatSize(uploadedAsset.size)}</span>
+                  {#if isImage(uploadedAsset.mime_type)}<span class="staged-dot">·</span><span class="staged-image-badge">Image</span>{/if}
+                </span>
+                {#if shareNew}
+                  <span class="staged-share-hint"><InfoIcon size={11} strokeWidth={1.8} /> Will be shared on insert</span>
+                {/if}
+              </div>
+            </div>
+            <label class="share-row">
+              <input type="checkbox" bind:checked={shareNew} />
+              <span>Share with other entries <small>Others can pick this file from Shared files.</small></span>
+            </label>
+            {#if uploadError}<p class="error">{uploadError}</p>{/if}
+            <div class="upload-actions upload-actions--staged">
+              <button type="button" class="quiet" onclick={clearStagedUpload}><Trash2Icon size={12} strokeWidth={1.8} /> Clear</button>
+              <button
+                type="button"
+                class="secondary"
+                disabled={uploading || !entityId}
+                onclick={handlePickAndStageUpload}>
+                <RefreshCwIcon size={12} strokeWidth={1.8} /> {#if uploading}Uploading…{:else}Choose different file{/if}
+              </button>
+            </div>
+          {/if}
           {#if !entityId}<p class="empty">Select an entry before uploading.</p>{/if}
         </div>
       {/if}
@@ -658,71 +862,151 @@ onMount(() => {
 
       {#if isImageContext()}
         <div class="image-edit-section">
+          <div class="image-edit-header">
+            <span class="image-edit-header-title"><ImageIcon size={14} strokeWidth={1.8} /> Image details</span>
+            <span class="image-edit-header-hint">Applied on insert</span>
+          </div>
+
           <label class="image-edit-field">
-            <span>Alt text</span>
+            <span class="field-label"
+              >Alt text <span class="field-badge field-badge--required">accessibility</span></span
+            >
             <input
               type="text"
-              placeholder="Describe image"
+              placeholder="Describe the image for screen readers"
               value={draftAlt}
               oninput={(e) => updateDraftAlt((e.target as HTMLInputElement).value)} />
+            <span class="field-hint">Read by screen readers and shown if the image fails to load.</span>
           </label>
-          <details class="image-edit-advanced">
-            <summary>Title (advanced)</summary>
+
+          <label class="image-edit-field">
+            <span class="field-label"
+              >Hover title <span class="field-badge field-badge--optional">optional</span></span
+            >
             <input
               type="text"
-              placeholder="Title defaults to alt"
+              placeholder="Tooltip on hover — leave empty to use alt text"
               value={draftTitle}
               oninput={(e) => updateDraftTitle((e.target as HTMLInputElement).value)} />
-          </details>
-          <div class="image-edit-dim-row">
-            <label
-              >W <input
-                type="number"
-                min="16"
-                max="2000"
-                step="1"
-                placeholder="Auto"
-                value={draftWidth}
-                oninput={(e) => updateDraftWidth((e.target as HTMLInputElement).value)} /> px</label>
-            <span>×</span>
-            <label
-              >H <input
-                type="number"
-                min="16"
-                max="2000"
-                step="1"
-                placeholder="Auto"
-                value={draftHeight}
-                oninput={(e) => updateDraftHeight((e.target as HTMLInputElement).value)} /> px</label>
-            <button
-              type="button"
-              class="image-lock-btn"
-              aria-pressed={draftPreserveAspect}
-              onclick={() => (draftPreserveAspect = !draftPreserveAspect)}
-              title={draftPreserveAspect ? "Aspect locked" : "Aspect unlocked"}
-              >{draftPreserveAspect ? "🔗" : "🔓"}</button>
-            <button type="button" class="image-auto-btn" onclick={clearDraftDims}>Auto</button>
-          </div>
-          {#if draftNaturalW && draftNaturalH}
-            <small class="image-natural-hint">Original {draftNaturalW}×{draftNaturalH}</small>
-          {/if}
-          <div class="image-presets">
-            <button type="button" onclick={() => applyDraftPreset("S")}>S 320</button>
-            <button type="button" onclick={() => applyDraftPreset("M")}>M 640</button>
-            <button type="button" onclick={() => applyDraftPreset("L")}>L 960</button>
-            <button type="button" disabled={!draftNaturalW} onclick={() => applyDraftPreset("Original")}
-              >Original</button>
-            <button type="button" onclick={() => applyDraftPreset("Full")}>Full</button>
+            <span class="field-hint"
+              >Shown on hover. Leave empty and the alt text will be used as the <code>title</code>.</span
+            >
+          </label>
+
+          <div class="image-edit-dim-group">
+            <span class="field-label">Size <span class="field-optional">pixels · empty = auto</span></span>
+            <div class="image-edit-dim-row">
+              <label class="dim-input" class:dim-input--oversized={isWidthOversized}
+                ><span class="dim-label">W</span><input
+                  type="number"
+                  min="16"
+                  max="2000"
+                  step="1"
+                  placeholder="Auto"
+                  value={draftWidth}
+                  oninput={(e) => updateDraftWidth((e.target as HTMLInputElement).value)}
+                  aria-invalid={isWidthOversized} />
+                <span class="dim-unit">px</span></label
+              >
+              <span class="dim-x" aria-hidden="true">×</span>
+              <label class="dim-input" class:dim-input--oversized={isHeightOversized}
+                ><span class="dim-label">H</span><input
+                  type="number"
+                  min="16"
+                  max="2000"
+                  step="1"
+                  placeholder="Auto"
+                  value={draftHeight}
+                  oninput={(e) => updateDraftHeight((e.target as HTMLInputElement).value)}
+                  aria-invalid={isHeightOversized} />
+                <span class="dim-unit">px</span></label
+              >
+              <button
+                type="button"
+                class="image-lock-btn"
+                aria-pressed={draftPreserveAspect}
+                aria-label={draftPreserveAspect ? "Aspect ratio locked" : "Aspect ratio unlocked"}
+                title={draftPreserveAspect ? "Aspect locked — height follows width" : "Aspect unlocked — width and height independent"}
+                onclick={() => (draftPreserveAspect = !draftPreserveAspect)}>
+                {#if draftPreserveAspect}<LinkIcon size={13} strokeWidth={1.9} />{:else}<UnlinkIcon
+                    size={13}
+                    strokeWidth={1.9} />{/if}
+                <span>{draftPreserveAspect ? "Locked" : "Free"}</span>
+              </button>
+              <button type="button" class="image-auto-btn" onclick={clearDraftDims} title="Clear width and height — use natural size"
+                >Auto</button>
+            </div>
+            {#if isOversized}
+              <div class="image-oversize-warning" role="alert">
+                <TriangleAlertIcon size={13} strokeWidth={1.9} />
+                <span
+                  >Upscaling — larger than natural <strong>{draftNaturalW}×{draftNaturalH}</strong>
+                  {#if isWidthOversized && isHeightOversized}
+                    ({draftWidth}×{draftHeight})
+                  {:else if isWidthOversized}
+                    (width {draftWidth} > {draftNaturalW})
+                  {:else}
+                    (height {draftHeight} > {draftNaturalH})
+                  {/if}
+                  may look blurry.</span
+                >
+              </div>
+            {/if}
+            {#if draftNaturalW && draftNaturalH}
+              <div class="image-natural-row">
+                <InfoIcon size={11} strokeWidth={1.8} />
+                <span>Natural <strong>{draftNaturalW}×{draftNaturalH}</strong></span>
+                <span class="image-natural-sep">·</span>
+                <span>Presets scale with aspect lock on</span>
+              </div>
+            {/if}
+            <div class="image-presets">
+              <span class="presets-label">Quick sizes</span>
+              <div class="presets-buttons">
+                <button
+                  type="button"
+                  onclick={() => applyDraftPreset("S")}
+                  title={draftNaturalW && 320 > draftNaturalW
+                    ? `Width 320px — will upscale beyond natural ${draftNaturalW}×${draftNaturalH}`
+                    : "Width 320px"}
+                  class:presets-btn--upscale={!!(draftNaturalW && 320 > draftNaturalW)}>
+                  <span>S</span> <small>320</small>
+                  {#if draftNaturalW && 320 > draftNaturalW}<TriangleAlertIcon size={10} strokeWidth={1.9} />{/if}
+                </button>
+                <button
+                  type="button"
+                  onclick={() => applyDraftPreset("M")}
+                  title={draftNaturalW && 640 > draftNaturalW
+                    ? `Width 640px — will upscale beyond natural ${draftNaturalW}×${draftNaturalH}`
+                    : "Width 640px"}
+                  class:presets-btn--upscale={!!(draftNaturalW && 640 > draftNaturalW)}>
+                  <span>M</span> <small>640</small>
+                  {#if draftNaturalW && 640 > draftNaturalW}<TriangleAlertIcon size={10} strokeWidth={1.9} />{/if}
+                </button>
+                <button
+                  type="button"
+                  onclick={() => applyDraftPreset("L")}
+                  title={draftNaturalW && 960 > draftNaturalW
+                    ? `Width 960px — will upscale beyond natural ${draftNaturalW}×${draftNaturalH}`
+                    : "Width 960px"}
+                  class:presets-btn--upscale={!!(draftNaturalW && 960 > draftNaturalW)}>
+                  <span>L</span> <small>960</small>
+                  {#if draftNaturalW && 960 > draftNaturalW}<TriangleAlertIcon size={10} strokeWidth={1.9} />{/if}
+                </button>
+                <button type="button" disabled={!draftNaturalW} onclick={() => applyDraftPreset("Original")} title="Use natural dimensions"
+                  ><span>Original</span> {#if draftNaturalW}<small>{draftNaturalW}×{draftNaturalH}</small>{/if}</button
+                >
+                <button type="button" onclick={() => applyDraftPreset("Full")} title="Remove width and height">Full</button>
+              </div>
+            </div>
           </div>
         </div>
       {/if}
 
       <footer>
         <button type="button" class="quiet" onclick={onCancel}>Cancel</button>
-        {#if activeTab !== "upload"}
-          <button type="button" class="primary" disabled={!canConfirm()} onclick={confirmInsert}
-            >{mode === "replace" ? "Save" : "Insert"}</button>
-        {/if}
+        <button type="button" class="primary" disabled={!canConfirm()} onclick={confirmInsert}
+          >{mode === "replace" ? "Save" : "Insert"}</button>
       </footer>
     </div>
   </div>
@@ -929,16 +1213,32 @@ header h2 {
   gap: 12px;
   padding: 14px;
   border: 1px solid var(--line, #e4e1d8);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--canvas, #f7f6f2);
+}
+.upload-pane--empty {
   place-items: center;
   text-align: center;
+}
+.upload-pane--staged {
+  place-items: stretch;
+  text-align: left;
+  gap: 14px;
+  border-color: #d3c0a9;
+  background: var(--surface, #fffefa);
+  box-shadow: var(--shadow-sm, 0 2px 8px rgba(38, 42, 33, 0.06));
 }
 .drop-hint {
   display: grid;
   gap: 6px;
   place-items: center;
   color: var(--ink-soft, #77766d);
+}
+.upload-pane--staged .drop-hint {
+  place-items: start;
+  text-align: left;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--line, #e4e1d8);
 }
 .drop-hint p {
   margin: 0;
@@ -947,6 +1247,128 @@ header h2 {
 .drop-hint .muted {
   color: var(--ink-faint, #aaa79d);
   font-size: 11px;
+}
+.staged-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -2px 0 -2px;
+}
+.staged-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #eaf6ec;
+  border: 1px solid #b8dcc0;
+  color: #2d6a3f;
+  font: 700 10px/1 var(--font-body, system-ui, sans-serif);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.staged-hint {
+  font: 500 10.5px/1 var(--font-body, system-ui, sans-serif);
+  color: var(--ink-soft, #77766d);
+  white-space: nowrap;
+}
+.staged-card {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 10px;
+  background: var(--canvas, #f7f6f2);
+  align-items: center;
+}
+.staged-thumb {
+  width: 96px;
+  height: 72px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface, #fffefa);
+  border: 1px solid var(--line, #e4e1d8);
+  display: grid;
+  place-items: center;
+}
+.staged-thumb img,
+.staged-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.staged-fallback {
+  display: grid;
+  gap: 4px;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  padding: 8px 6px;
+  background: #ede9e0;
+  color: var(--ink-soft, #77766d);
+  font: 600 10px/1.2 var(--font-body, system-ui, sans-serif);
+  text-align: center;
+}
+.staged-fallback--error {
+  background: #fdf0ed;
+  border: 1px dashed #e8c0b8;
+  color: #a1482f;
+}
+.staged-meta {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  align-content: center;
+}
+.staged-filename {
+  font: 700 13px/1.2 var(--font-body, system-ui, sans-serif);
+  color: var(--ink, #25251f);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.staged-path {
+  font: 500 10px/1.2 var(--font-body, system-ui, sans-serif);
+  color: var(--ink-faint, #aaa79d);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.staged-details {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  font: 500 10px/1 var(--font-body, system-ui, sans-serif);
+  color: var(--ink-soft, #77766d);
+}
+.staged-dot {
+  color: var(--ink-faint, #aaa79d);
+}
+.staged-image-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 16px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #f2e4d2;
+  border: 1px solid #d3c0a9;
+  color: var(--accent-dark, #365342);
+  font: 700 9px/1 var(--font-body, system-ui, sans-serif);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.staged-share-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font: 500 10.5px/1 var(--font-body, system-ui, sans-serif);
+  color: #2d6a3f;
 }
 .share-row {
   display: grid;
@@ -957,10 +1379,21 @@ header h2 {
   width: 100%;
   padding: 10px;
   border: 1px solid var(--line, #e4e1d8);
-  border-radius: 7px;
+  border-radius: 8px;
   background: var(--surface, #fffefa);
   font-size: 12px;
   cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+.share-row:hover {
+  border-color: #d3c0a9;
+  background: #fcf8f1;
+}
+.share-row:has(input:checked) {
+  border-color: #b8dcc0;
+  background: #eaf6ec;
 }
 .share-row input {
   margin-top: 2px;
@@ -986,6 +1419,7 @@ header h2 {
   font: 700 12px/1 var(--font-body, system-ui, sans-serif);
   cursor: pointer;
   box-shadow: 0 2px 8px rgba(38, 42, 33, 0.12);
+  transition: filter 0.15s ease;
 }
 .upload-btn:hover:not(:disabled),
 .upload-btn:focus-visible:not(:disabled) {
@@ -996,6 +1430,58 @@ header h2 {
   opacity: 0.45;
   cursor: not-allowed;
   box-shadow: none;
+}
+.upload-actions {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  justify-content: center;
+}
+.upload-pane--staged .upload-actions {
+  justify-content: flex-end;
+}
+.upload-actions--staged {
+  padding-top: 2px;
+  border-top: 1px solid var(--line, #e4e1d8);
+  margin-top: 2px;
+}
+.upload-actions .quiet,
+.upload-actions .secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font: 700 11px/1 var(--font-body, system-ui, sans-serif);
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    color 0.15s ease;
+}
+.upload-actions .quiet {
+  border: 1px solid var(--line, #e4e1d8);
+  background: var(--surface, #fffefa);
+  color: var(--ink-soft, #77766d);
+}
+.upload-actions .quiet:hover {
+  border-color: #d3c0a9;
+  background: #f2e4d2;
+  color: var(--ink, #25251f);
+}
+.upload-actions .secondary {
+  border: 1px solid #d3c0a9;
+  background: var(--surface, #fffefa);
+  color: var(--accent-dark, #365342);
+}
+.upload-actions .secondary:hover:not(:disabled) {
+  background: #f2e4d2;
+}
+.upload-actions .secondary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .preview {
   display: grid;
@@ -1076,114 +1562,319 @@ footer .primary:disabled {
 }
 .image-edit-section {
   display: grid;
-  gap: 10px;
-  padding: 12px;
+  gap: 14px;
+  padding: 14px;
   border: 1px solid var(--line, #e4e1d8);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--surface, #fffefa);
+  box-shadow: var(--shadow-sm, 0 2px 8px rgba(38, 42, 33, 0.04));
+}
+.image-edit-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line, #e4e1d8);
+  margin: -2px 0 2px;
+}
+.image-edit-header-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 700 11px/1 var(--font-body, system-ui, sans-serif);
+  color: var(--ink, #25251f);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.image-edit-header-hint {
+  font: 500 10px/1 var(--font-body, system-ui, sans-serif);
+  color: var(--ink-faint, #aaa79d);
+  white-space: nowrap;
 }
 .image-edit-field {
   display: grid;
-  gap: 4px;
-  font: 600 11px/1 var(--font-body, system-ui, sans-serif);
+  gap: 6px;
+}
+.field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 700 11px/1 var(--font-body, system-ui, sans-serif);
+  color: var(--ink, #25251f);
+  letter-spacing: 0.01em;
+}
+.field-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 16px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font: 700 9px/1 var(--font-body, system-ui, sans-serif);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+.field-badge--required {
+  background: #fdf0ed;
+  border-color: #e8c0b8;
+  color: #a1482f;
+}
+.field-badge--optional {
+  background: var(--canvas, #f7f6f2);
+  border-color: var(--line, #e4e1d8);
   color: var(--ink-soft, #77766d);
 }
-.image-edit-field input,
-.image-edit-advanced input {
+.field-optional {
+  font: 500 10px/1 var(--font-body, system-ui, sans-serif);
+  color: var(--ink-faint, #aaa79d);
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.image-edit-field input {
   width: 100%;
-  min-height: 30px;
-  padding: 0 8px;
+  min-height: 34px;
+  padding: 0 10px;
   border: 1px solid var(--line, #e4e1d8);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--canvas, #f7f6f2);
   color: var(--ink, #25251f);
-  font: 500 12px/1 var(--font-body, system-ui, sans-serif);
+  font: 500 13px/1 var(--font-body, system-ui, sans-serif);
   outline: 0;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    background 0.15s ease;
 }
-.image-edit-field input:focus,
-.image-edit-advanced input:focus {
+.image-edit-field input::placeholder {
+  color: var(--ink-faint, #aaa79d);
+}
+.image-edit-field input:focus {
   border-color: #d3c0a9;
-  box-shadow: 0 0 0 2px rgba(211, 192, 169, 0.18);
+  background: var(--surface, #fffefa);
+  box-shadow: 0 0 0 3px rgba(211, 192, 169, 0.22);
 }
-.image-edit-advanced {
-  font: 600 11px/1 var(--font-body, system-ui, sans-serif);
+.field-hint {
+  display: inline-flex;
+  gap: 4px;
+  font: 500 10.5px/1.4 var(--font-body, system-ui, sans-serif);
   color: var(--ink-soft, #77766d);
 }
-.image-edit-advanced summary {
-  cursor: pointer;
-  user-select: none;
-  padding: 4px 0;
+.field-hint code {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--canvas, #f7f6f2);
+  border: 1px solid var(--line, #e4e1d8);
+  font: 600 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--ink-soft, #77766d);
+}
+.image-edit-dim-group {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 8px;
+  background: var(--canvas, #f7f6f2);
+}
+.image-edit-dim-group .field-label {
+  margin-bottom: 2px;
 }
 .image-edit-dim-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font: 600 11px/1 var(--font-body, system-ui, sans-serif);
-  color: var(--ink-soft, #77766d);
+  gap: 8px;
+  flex-wrap: wrap;
 }
-.image-edit-dim-row label {
+.dim-input {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-}
-.image-edit-dim-row input {
-  width: 70px;
-  min-height: 28px;
-  padding: 0 6px;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 8px 0 8px;
   border: 1px solid var(--line, #e4e1d8);
-  border-radius: 6px;
-  background: var(--canvas, #f7f6f2);
-  color: var(--ink, #25251f);
-  font: 500 12px/1 var(--font-body, system-ui, sans-serif);
-  outline: 0;
+  border-radius: 8px;
+  background: var(--surface, #fffefa);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
-.image-edit-dim-row input:focus {
+.dim-input:focus-within {
   border-color: #d3c0a9;
-  box-shadow: 0 0 0 2px rgba(211, 192, 169, 0.18);
+  box-shadow: 0 0 0 3px rgba(211, 192, 169, 0.18);
+}
+.dim-label {
+  font: 700 11px/1 var(--font-body, system-ui, sans-serif);
+  color: var(--ink-soft, #77766d);
+}
+.dim-input input {
+  width: 64px;
+  min-height: 28px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--ink, #25251f);
+  font: 600 13px/1 var(--font-body, system-ui, sans-serif);
+  outline: 0;
+  text-align: center;
+}
+.dim-input input::placeholder {
+  color: var(--ink-faint, #aaa79d);
+  font-weight: 500;
+}
+.dim-unit {
+  font: 600 11px/1 var(--font-body, system-ui, sans-serif);
+  color: var(--ink-faint, #aaa79d);
+}
+.dim-x {
+  font: 500 13px/1 var(--font-body, system-ui, sans-serif);
+  color: var(--ink-faint, #aaa79d);
+  padding: 0 2px;
+  user-select: none;
+}
+.dim-input--oversized {
+  border-color: #e8a040 !important;
+  background: #fdf6e3 !important;
+  box-shadow: 0 0 0 2px rgba(232, 160, 64, 0.18);
+}
+.dim-input--oversized .dim-label,
+.dim-input--oversized .dim-unit {
+  color: #7a4a08;
+}
+.dim-input--oversized input {
+  color: #7a4a08;
+}
+.image-oversize-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #f0c98a;
+  border-radius: 8px;
+  background: #fdf6e3;
+  color: #7a4a08;
+  font: 500 11px/1.4 var(--font-body, system-ui, sans-serif);
+}
+.image-oversize-warning strong {
+  color: #5e3800;
+  font-weight: 700;
 }
 .image-lock-btn,
 .image-auto-btn {
-  min-height: 26px;
-  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
   border: 1px solid var(--line, #e4e1d8);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--surface, #fffefa);
   color: var(--ink-soft, #77766d);
-  font: 600 11px/1 var(--font-body, system-ui, sans-serif);
+  font: 700 11px/1 var(--font-body, system-ui, sans-serif);
   cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    color 0.15s ease;
+  white-space: nowrap;
+}
+.image-lock-btn:hover,
+.image-auto-btn:hover,
+.image-lock-btn:focus-visible,
+.image-auto-btn:focus-visible {
+  border-color: #d3c0a9;
+  background: #f2e4d2;
+  color: var(--ink, #25251f);
+  outline: 0;
 }
 .image-lock-btn[aria-pressed="true"] {
   border-color: #d3c0a9;
   background: #f2e4d2;
   color: var(--accent-dark, #365342);
+  box-shadow: inset 0 0 0 1px rgba(211, 192, 169, 0.35);
 }
-.image-natural-hint {
+.image-lock-btn[aria-pressed="false"] {
+  border-style: dashed;
+}
+.image-natural-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font: 500 11px/1 var(--font-body, system-ui, sans-serif);
+  color: var(--ink-soft, #77766d);
+  padding: 2px 0 0;
+}
+.image-natural-row strong {
+  color: var(--ink, #25251f);
+  font-weight: 700;
+}
+.image-natural-sep {
   color: var(--ink-faint, #aaa79d);
-  font: 500 10px/1 var(--font-body, system-ui, sans-serif);
 }
 .image-presets {
+  display: grid;
+  gap: 6px;
+  padding-top: 2px;
+  border-top: 1px dashed var(--line, #e4e1d8);
+  margin-top: 2px;
+}
+.presets-label {
+  font: 700 10px/1 var(--font-body, system-ui, sans-serif);
+  color: var(--ink-faint, #aaa79d);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.presets-buttons {
   display: flex;
-  gap: 4px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 .image-presets button {
-  min-height: 24px;
-  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 0 10px;
   border: 1px solid var(--line, #e4e1d8);
-  border-radius: 6px;
+  border-radius: 999px;
   background: var(--surface, #fffefa);
   color: var(--ink-soft, #77766d);
-  font: 600 11px/1 var(--font-body, system-ui, sans-serif);
+  font: 700 11px/1 var(--font-body, system-ui, sans-serif);
   cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    color 0.15s ease,
+    transform 0.08s ease;
+}
+.image-presets button small {
+  font: 600 10px/1 var(--font-body, system-ui, sans-serif);
+  color: var(--ink-faint, #aaa79d);
 }
 .image-presets button:hover,
 .image-presets button:focus-visible {
   border-color: #d3c0a9;
   background: #f2e4d2;
+  color: var(--accent-dark, #365342);
   outline: 0;
+  transform: translateY(-1px);
 }
 .image-presets button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+  transform: none;
+}
+.image-presets button:active:not(:disabled) {
+  transform: translateY(0);
+}
+.presets-btn--upscale {
+  border-color: #f0c98a !important;
+  background: #fdf6e3 !important;
+  color: #7a4a08 !important;
+}
+.presets-btn--upscale small {
+  color: #7a4a08 !important;
 }
 </style>

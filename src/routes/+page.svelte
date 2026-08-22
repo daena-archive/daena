@@ -565,8 +565,13 @@ function enabledEntityTypes() {
       .flatMap((module) => module.schemas.flatMap((schema) => schema.entityTypes)),
   );
 }
-function fieldAppliesToEntity(field: FieldDefinition, entityType?: string | null) {
-  return fieldAppliesToEnabledTypes(field, entityType, modules.length === 0 ? null : enabledEntityTypes());
+function fieldAppliesToEntity(field: FieldDefinition, entityType?: string | null, moduleId = activeModuleId()) {
+  return fieldAppliesToEnabledTypes(
+    field,
+    entityType,
+    modules.length === 0 ? null : enabledEntityTypes(),
+    schemaPluginId === moduleId ? moduleSchemaOverlay : null,
+  );
 }
 function availableEditTypes(): string[] {
   const types = new Set<string>();
@@ -836,7 +841,7 @@ function createFieldsFor(option: CreateOption | null = selectedCreateOption()): 
     .filter((schema) => schema.entityTypes.includes(option.template.entityType))
     .flatMap((schema) =>
       schema.fields
-        .filter((field) => fieldAppliesToEntity(field, option.template.entityType))
+        .filter((field) => fieldAppliesToEntity(field, option.template.entityType, option.module.id))
         .map((field) => ({
           namespace: schema.namespace,
           field,

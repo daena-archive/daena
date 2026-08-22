@@ -1,9 +1,15 @@
 export const TIMELINE_ENTITY_TYPES = new Set(["event", "encounter", "era", "calendar"]);
 
 export type SchemaFieldLike = {
+  key: string;
   type: string;
   entityTypes?: string[];
   targetEntityTypes?: string[];
+};
+
+export type SchemaOverlayLike = {
+  disabledFields?: string[];
+  fieldScopeOverrides?: Array<{ fieldKey: string; entityTypes: string[] }>;
 };
 
 /**
@@ -15,8 +21,12 @@ export function fieldAppliesToEntity(
   field: SchemaFieldLike,
   entityType: string | null | undefined,
   enabledEntityTypes: ReadonlySet<string> | null,
+  overlay: SchemaOverlayLike | null = null,
 ): boolean {
-  const appliesToSource = !field.entityTypes || !entityType || field.entityTypes.includes(entityType);
+  if (overlay?.disabledFields?.includes(field.key)) return false;
+  const override = overlay?.fieldScopeOverrides?.find((candidate) => candidate.fieldKey === field.key)?.entityTypes;
+  const scope = override ?? field.entityTypes;
+  const appliesToSource = !scope || !entityType || scope.includes(entityType);
   if (!appliesToSource) return false;
   if (enabledEntityTypes === null) return true;
   if (field.type === "relationship" && field.targetEntityTypes?.length) {

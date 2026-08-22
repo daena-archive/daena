@@ -41,6 +41,18 @@ assert.equal(fieldAppliesToEntity(byKey.createdAt, "concept", withTimeline), tru
 
 const startsAt = timeline.schemas[0].fields.find((field) => field.key === "startsAt");
 assert.equal(fieldAppliesToEntity(startsAt, "event", timelineTypes), true);
+assert.equal(
+  fieldAppliesToEntity(byKey.aliases, "person", withTimeline, {
+    fieldScopeOverrides: [{ fieldKey: "aliases", entityTypes: ["place"] }],
+  }),
+  false,
+  "schema scope overrides hide fields for excluded entity types",
+);
+assert.equal(
+  fieldAppliesToEntity(byKey.aliases, "person", withTimeline, { disabledFields: ["aliases"] }),
+  false,
+  "disabled schema fields stay hidden",
+);
 
 const gregorian = parseCalendarDate("412-3-17");
 assert.equal(gregorian?.calendar, GREGORIAN_CALENDAR_ID);

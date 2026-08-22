@@ -263,6 +263,8 @@ pub struct ImportMappingOverrides {
     #[serde(default)]
     pub global: ImportMappingDecision,
     #[serde(default)]
+    pub categories: BTreeMap<String, ImportMappingDecision>,
+    #[serde(default)]
     pub folders: BTreeMap<String, ImportMappingDecision>,
     #[serde(default)]
     pub items: BTreeMap<String, ImportMappingDecision>,
@@ -432,6 +434,24 @@ pub struct ImportFieldTarget {
     pub key: String,
     #[serde(default)]
     pub entity_types: BTreeSet<String>,
+    #[serde(default)]
+    pub field_type: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub multiple: bool,
+    #[serde(default)]
+    pub options: BTreeSet<String>,
+    #[serde(default)]
+    pub one_of: Vec<ImportFieldVariant>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportFieldVariant {
+    pub field_type: String,
+    #[serde(default)]
+    pub options: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -475,6 +495,7 @@ pub struct ImportValidationIssue {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ValidatedImportField {
+    pub source_key: String,
     pub namespace: String,
     pub key: String,
     pub value: serde_json::Value,
@@ -553,6 +574,10 @@ pub struct ValidatedImportPlan {
     pub relationships: Vec<ValidatedImportRelationship>,
     #[serde(default)]
     pub assets: Vec<ValidatedImportAsset>,
+    #[serde(default)]
+    pub unsupported: Vec<UnsupportedSourceData>,
+    #[serde(default)]
+    pub diagnostics: Vec<ImportDiagnostic>,
     pub warnings: Vec<ImportValidationIssue>,
 }
 
@@ -587,6 +612,36 @@ pub struct ImportedRelationshipReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ImportedFieldReport {
+    pub staged_object_id: String,
+    pub source_path: String,
+    pub entity_id: String,
+    pub source_key: String,
+    pub namespace: String,
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportDecisionReport {
+    pub staged_object_id: String,
+    pub source_path: String,
+    pub decision: String,
+    #[serde(default)]
+    pub entity_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportMissingReferenceReport {
+    pub staged_object_id: String,
+    pub source_path: String,
+    pub target: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ExternalImportCommitReport {
     pub request_id: String,
     pub plan_id: String,
@@ -598,6 +653,16 @@ pub struct ExternalImportCommitReport {
     pub assets: Vec<ImportedAssetReport>,
     #[serde(default)]
     pub relationships: Vec<ImportedRelationshipReport>,
+    #[serde(default)]
+    pub fields: Vec<ImportedFieldReport>,
+    #[serde(default)]
+    pub decisions: Vec<ImportDecisionReport>,
+    #[serde(default)]
+    pub unsupported: Vec<UnsupportedSourceData>,
+    #[serde(default)]
+    pub missing_references: Vec<ImportMissingReferenceReport>,
+    #[serde(default)]
+    pub diagnostics: Vec<ImportDiagnostic>,
     pub skipped_source_paths: Vec<String>,
     pub warnings: Vec<ImportValidationIssue>,
 }
@@ -607,6 +672,7 @@ pub struct ImportValidationBuild {
     pub candidate: ImportCandidatePlan,
     pub staged_objects: Vec<StagedObject>,
     pub staged_assets: Vec<StagedAsset>,
+    pub staged_unsupported: Vec<UnsupportedSourceData>,
     pub catalog: ImportMappingCatalog,
     pub decisions: BTreeMap<String, ImportObjectDecision>,
     pub existing_targets: BTreeMap<String, ImportExistingTarget>,
@@ -627,6 +693,7 @@ pub fn validate_import_candidate_plan(
         candidate,
         staged_objects,
         staged_assets,
+        staged_unsupported,
         catalog,
         decisions,
         existing_targets,
@@ -636,6 +703,7 @@ pub fn validate_import_candidate_plan(
         .into_iter()
         .map(|object| (object.id.clone(), object))
         .collect::<BTreeMap<_, _>>();
+    let source_diagnostics = candidate.diagnostics.clone();
     let mut issues = Vec::new();
     if candidate.captured_content_generation != candidate.current_content_generation {
         issues.push(validation_issue(
@@ -773,6 +841,7 @@ pub fn validate_import_candidate_plan(
                         None,
                     )),
                 }
+                let mut mapped_target_ids = BTreeSet::new();
                 for (source_key, target_id) in &candidate_object.mapping.field_mappings {
                     let Some(value) = object.fields.get(source_key) else {
                         // Folder/global mappings mean "map this key when present". Wiki
@@ -805,11 +874,46 @@ pub fn validate_import_candidate_plan(
                             continue;
                         }
                     }
+                    if !import_field_value_matches(target, value) {
+                        issues.push(validation_issue(
+                            ImportValidationSeverity::Error,
+                            "target_field_value_invalid",
+                            &format!(
+                                "The source value for {source_key} does not match the schema for {target_id}."
+                            ),
+                            Some(object.source_path.clone()),
+                            Some(object.id.clone()),
+                            None,
+                        ));
+                        continue;
+                    }
+                    mapped_target_ids.insert(target_id.clone());
                     fields.push(ValidatedImportField {
+                        source_key: source_key.clone(),
                         namespace: target.namespace.clone(),
                         key: target.key.clone(),
                         value: value.clone(),
                     });
+                }
+                if let Some(selected) = entity_type.as_deref() {
+                    for (target_id, target) in &catalog.fields {
+                        if target.required
+                            && (target.entity_types.is_empty()
+                                || target.entity_types.contains(selected))
+                            && !mapped_target_ids.contains(target_id)
+                        {
+                            issues.push(validation_issue(
+                                ImportValidationSeverity::Error,
+                                "required_target_field_missing",
+                                &format!(
+                                    "The required field {target_id} has no mapped source value."
+                                ),
+                                Some(object.source_path.clone()),
+                                Some(object.id.clone()),
+                                None,
+                            ));
+                        }
+                    }
                 }
                 let object_unmapped = object
                     .fields
@@ -1078,6 +1182,8 @@ pub fn validate_import_candidate_plan(
         objects: validated,
         relationships: validated_relationships,
         assets: validated_assets,
+        unsupported: staged_unsupported,
+        diagnostics: source_diagnostics,
         warnings,
     };
     let bytes =
@@ -1125,6 +1231,11 @@ fn resolve_import_mapping(
         relationship_mappings: BTreeMap::new(),
     };
     apply_mapping_decision(&mut resolved, &overrides.global);
+    for category in object.tags.iter().collect::<BTreeSet<_>>() {
+        if let Some(decision) = overrides.categories.get(category) {
+            apply_mapping_decision(&mut resolved, decision);
+        }
+    }
     let segments = object.source_path.split('/').collect::<Vec<_>>();
     for end in 1..segments.len() {
         let folder = segments[..end].join("/");
@@ -1136,6 +1247,51 @@ fn resolve_import_mapping(
         apply_mapping_decision(&mut resolved, decision);
     }
     resolved
+}
+
+fn import_field_value_matches(target: &ImportFieldTarget, value: &serde_json::Value) -> bool {
+    if value.is_null() {
+        return !target.required;
+    }
+    match target.field_type.as_str() {
+        "text" => value.is_string(),
+        "date" => value.is_string() || value.is_object(),
+        "number" => value.is_number(),
+        "boolean" => value.is_boolean(),
+        "enum" if target.multiple => value.as_array().is_some_and(|values| {
+            !values.is_empty()
+                && values.iter().all(|value| {
+                    value
+                        .as_str()
+                        .is_some_and(|value| target.options.contains(value))
+                })
+        }),
+        "enum" => value
+            .as_str()
+            .is_some_and(|value| target.options.contains(value)),
+        "oneof" => {
+            target
+                .one_of
+                .iter()
+                .filter(|variant| import_field_variant_matches(variant, value))
+                .count()
+                == 1
+        }
+        _ => false,
+    }
+}
+
+fn import_field_variant_matches(variant: &ImportFieldVariant, value: &serde_json::Value) -> bool {
+    match variant.field_type.as_str() {
+        "text" => value.is_string(),
+        "date" => value.is_string() || value.is_object(),
+        "number" => value.is_number(),
+        "boolean" => value.is_boolean(),
+        "enum" => value
+            .as_str()
+            .is_some_and(|value| variant.options.contains(value)),
+        _ => false,
+    }
 }
 
 fn apply_mapping_decision(target: &mut ImportCandidateMapping, decision: &ImportMappingDecision) {
@@ -2786,6 +2942,13 @@ struct GenericDocumentAnalyzer<'a> {
     progress: &'a mut dyn FnMut(ImportAnalysisProgress) -> Result<(), CoreError>,
 }
 
+#[derive(Debug)]
+struct PendingAssetAttachment {
+    asset_index: usize,
+    owner_object_id: String,
+    target: String,
+}
+
 impl GenericDocumentAnalyzer<'_> {
     fn analyze_archive(&mut self, path: &Path, compressed_bytes: u64) -> Result<(), CoreError> {
         if compressed_bytes > MAX_ARCHIVE_COMPRESSED_BYTES {
@@ -3403,6 +3566,7 @@ impl GenericDocumentAnalyzer<'_> {
             .map(|(index, asset)| (asset.source_path.clone(), index))
             .collect::<BTreeMap<_, _>>();
         let mut missing = Vec::new();
+        let mut attachments = Vec::new();
         for object in &mut self.import.objects {
             for link in &mut object.links {
                 if is_external_markdown_target(&link.target) {
@@ -3424,22 +3588,15 @@ impl GenericDocumentAnalyzer<'_> {
                     link.resolution = StagedLinkResolution::Resolved;
                     link.resolved_object_id = Some(target_id.clone());
                 } else if let Some(asset_index) = assets_by_path.get(&target_path) {
-                    link.resolution = StagedLinkResolution::NotApplicable;
-                    let asset = &mut self.import.assets[*asset_index];
-                    if asset.owner_object_id.is_none() {
-                        asset.owner_object_id = Some(object.id.clone());
-                    }
-                    asset.raw_metadata.insert(
-                        "resolved_from".into(),
-                        serde_json::Value::String(link.target.clone()),
+                    stage_asset_attachment(
+                        &object.id,
+                        &mut object.mapping_hints,
+                        link,
+                        &target_path,
+                        *asset_index,
+                        "standard Markdown file reference",
+                        &mut attachments,
                     );
-                    object.mapping_hints.push(StagedMappingHint {
-                        kind: MappingHintKind::AssetRelationship,
-                        source_key: Some(target_path),
-                        suggested_value: serde_json::Value::String("attachment".into()),
-                        confidence: Some(1.0),
-                        reason: Some("standard Markdown file reference".into()),
-                    });
                 } else {
                     link.resolution = StagedLinkResolution::Missing;
                     missing.push((
@@ -3450,6 +3607,7 @@ impl GenericDocumentAnalyzer<'_> {
                 }
             }
         }
+        apply_asset_attachments(&mut self.import.assets, attachments);
         for (object_id, source_path, target) in missing {
             self.record_diagnostic(ImportDiagnostic {
                 severity: ImportDiagnosticSeverity::Warning,
@@ -3515,6 +3673,7 @@ impl GenericDocumentAnalyzer<'_> {
             object_id: String,
         }
         let mut diagnostics = Vec::new();
+        let mut attachments = Vec::new();
         let (objects, assets) = (&mut self.import.objects, &mut self.import.assets);
         for object in objects {
             for link in &mut object.links {
@@ -3542,12 +3701,14 @@ impl GenericDocumentAnalyzer<'_> {
                         link.resolution = StagedLinkResolution::Resolved;
                         link.resolved_object_id = Some(target_id.clone());
                     } else if let Some(asset_index) = assets_by_path.get(&target_path) {
-                        attach_obsidian_asset(
+                        stage_asset_attachment(
                             &object.id,
                             &mut object.mapping_hints,
                             link,
                             &target_path,
-                            &mut assets[*asset_index],
+                            *asset_index,
+                            "Obsidian attachment or embed",
+                            &mut attachments,
                         );
                     } else {
                         link.resolution = StagedLinkResolution::Missing;
@@ -3611,12 +3772,14 @@ impl GenericDocumentAnalyzer<'_> {
                 if prefer_asset && asset_candidates.len() == 1 {
                     let index = *asset_candidates.iter().next().expect("one candidate");
                     let target_path = assets[index].source_path.clone();
-                    attach_obsidian_asset(
+                    stage_asset_attachment(
                         &object.id,
                         &mut object.mapping_hints,
                         link,
                         &target_path,
-                        &mut assets[index],
+                        index,
+                        "Obsidian attachment or embed",
+                        &mut attachments,
                     );
                 } else if object_candidates.len() == 1 {
                     link.resolution = StagedLinkResolution::Resolved;
@@ -3636,12 +3799,14 @@ impl GenericDocumentAnalyzer<'_> {
                 } else if asset_candidates.len() == 1 {
                     let index = *asset_candidates.iter().next().expect("one candidate");
                     let target_path = assets[index].source_path.clone();
-                    attach_obsidian_asset(
+                    stage_asset_attachment(
                         &object.id,
                         &mut object.mapping_hints,
                         link,
                         &target_path,
-                        &mut assets[index],
+                        index,
+                        "Obsidian attachment or embed",
+                        &mut attachments,
                     );
                 } else {
                     link.resolution = StagedLinkResolution::Missing;
@@ -3671,6 +3836,7 @@ impl GenericDocumentAnalyzer<'_> {
                 }
             }
         }
+        apply_asset_attachments(assets, attachments);
         for diagnostic in diagnostics {
             self.record_diagnostic(ImportDiagnostic {
                 severity: ImportDiagnosticSeverity::Warning,
@@ -3731,28 +3897,77 @@ impl GenericDocumentAnalyzer<'_> {
     }
 }
 
-fn attach_obsidian_asset(
+fn stage_asset_attachment(
     object_id: &str,
     mapping_hints: &mut Vec<StagedMappingHint>,
     link: &mut StagedLink,
     target_path: &str,
-    asset: &mut StagedAsset,
+    asset_index: usize,
+    reason: &str,
+    attachments: &mut Vec<PendingAssetAttachment>,
 ) {
     link.resolution = StagedLinkResolution::NotApplicable;
-    if asset.owner_object_id.is_none() {
-        asset.owner_object_id = Some(object_id.into());
-    }
-    asset.raw_metadata.insert(
-        "resolved_from".into(),
-        serde_json::Value::String(link.target.clone()),
-    );
+    attachments.push(PendingAssetAttachment {
+        asset_index,
+        owner_object_id: object_id.into(),
+        target: link.target.clone(),
+    });
     mapping_hints.push(StagedMappingHint {
         kind: MappingHintKind::AssetRelationship,
         source_key: Some(target_path.into()),
         suggested_value: serde_json::Value::String("attachment".into()),
         confidence: Some(1.0),
-        reason: Some("Obsidian attachment or embed".into()),
+        reason: Some(reason.into()),
     });
+}
+
+fn apply_asset_attachments(
+    assets: &mut Vec<StagedAsset>,
+    attachments: Vec<PendingAssetAttachment>,
+) {
+    let mut by_asset = BTreeMap::<usize, BTreeMap<String, BTreeSet<String>>>::new();
+    for attachment in attachments {
+        by_asset
+            .entry(attachment.asset_index)
+            .or_default()
+            .entry(attachment.owner_object_id)
+            .or_default()
+            .insert(attachment.target);
+    }
+    let mut additional_assets = Vec::new();
+    for (asset_index, owners) in by_asset {
+        let Some(asset) = assets.get_mut(asset_index) else {
+            continue;
+        };
+        let original_id = asset.id.clone();
+        let original_metadata = asset.raw_metadata.clone();
+        for (owner_index, (owner_object_id, targets)) in owners.into_iter().enumerate() {
+            let target_metadata = if targets.len() == 1 {
+                serde_json::Value::String(targets.into_iter().next().expect("one target"))
+            } else {
+                serde_json::Value::Array(
+                    targets.into_iter().map(serde_json::Value::String).collect(),
+                )
+            };
+            if owner_index == 0 {
+                asset.owner_object_id = Some(owner_object_id);
+                asset
+                    .raw_metadata
+                    .insert("resolved_from".into(), target_metadata);
+                continue;
+            }
+            let mut duplicate = asset.clone();
+            duplicate.id =
+                hex_digest(format!("{original_id}\0owner\0{owner_object_id}").as_bytes());
+            duplicate.owner_object_id = Some(owner_object_id);
+            duplicate.raw_metadata = original_metadata.clone();
+            duplicate
+                .raw_metadata
+                .insert("resolved_from".into(), target_metadata);
+            additional_assets.push(duplicate);
+        }
+    }
+    assets.extend(additional_assets);
 }
 
 fn obsidian_path_without_markdown_extension(path: &str) -> &str {
@@ -3982,6 +4197,7 @@ pub(crate) fn read_docx_import_asset_bytes(
     source_kind: &ImportSourceKind,
     asset_source_path: &str,
     expected_size: u64,
+    expected_package_hash: &str,
 ) -> Result<Vec<u8>, CoreError> {
     let (container_path, entry_path) = asset_source_path.split_once("!/").ok_or_else(|| {
         CoreError::Validation("DOCX import asset path is missing its container boundary".into())
@@ -4043,6 +4259,11 @@ pub(crate) fn read_docx_import_asset_bytes(
             ));
         }
     };
+    if hex_digest(&package_bytes) != expected_package_hash {
+        return Err(CoreError::Conflict(format!(
+            "DOCX import package changed after analysis: {container_path}"
+        )));
+    }
     let mut package = ZipArchive::new(Cursor::new(package_bytes.as_slice()))
         .map_err(|error| CoreError::Validation(format!("invalid DOCX package: {error}")))?;
     let entries = preflight_docx_package(&mut package)?;
@@ -6509,6 +6730,81 @@ mod tests {
     }
 
     #[test]
+    fn candidate_plan_applies_source_category_mappings_before_folder_and_item_overrides() {
+        let source = TestDirectory::new();
+        fs::create_dir_all(source.path().join("People")).unwrap();
+        fs::write(source.path().join("People/Alice.md"), "Alice").unwrap();
+        let mut staged =
+            analyze_generic_documents(source.path(), GenericDocumentImportLimits::default())
+                .unwrap();
+        staged.objects[0].tags = vec!["Heroes".into()];
+        let object_id = staged.objects[0].id.clone();
+        let mut overrides = ImportMappingOverrides::default();
+        overrides.global.entity_type = Some("note".into());
+        overrides.categories.insert(
+            "Heroes".into(),
+            ImportMappingDecision {
+                entity_type: Some("person".into()),
+                ..ImportMappingDecision::default()
+            },
+        );
+
+        let category_plan = build_import_candidate_plan(
+            ImportCandidatePlanBuild {
+                session_id: "session".into(),
+                importer: staged.importer.clone(),
+                source: staged.source.clone(),
+                captured_content_generation: 1,
+                current_content_generation: 1,
+                manifest_fingerprint: "manifest-v1".into(),
+                objects: staged.objects.clone(),
+                unsupported_count: 0,
+                diagnostics: Vec::new(),
+            },
+            &overrides,
+        )
+        .unwrap();
+        assert_eq!(
+            category_plan.objects[0].mapping.entity_type.as_deref(),
+            Some("person")
+        );
+
+        overrides.folders.insert(
+            "People".into(),
+            ImportMappingDecision {
+                entity_type: Some("character".into()),
+                ..ImportMappingDecision::default()
+            },
+        );
+        overrides.items.insert(
+            object_id,
+            ImportMappingDecision {
+                entity_type: Some("protagonist".into()),
+                ..ImportMappingDecision::default()
+            },
+        );
+        let specific_plan = build_import_candidate_plan(
+            ImportCandidatePlanBuild {
+                session_id: "session".into(),
+                importer: staged.importer,
+                source: staged.source,
+                captured_content_generation: 1,
+                current_content_generation: 1,
+                manifest_fingerprint: "manifest-v1".into(),
+                objects: staged.objects,
+                unsupported_count: 0,
+                diagnostics: Vec::new(),
+            },
+            &overrides,
+        )
+        .unwrap();
+        assert_eq!(
+            specific_plan.objects[0].mapping.entity_type.as_deref(),
+            Some("protagonist")
+        );
+    }
+
+    #[test]
     fn candidate_plan_surfaces_unresolved_types_and_stale_generation() {
         let source = TestDirectory::new();
         fs::write(source.path().join("note.md"), "note").unwrap();
@@ -6588,6 +6884,47 @@ mod tests {
         );
         assert_eq!(staged.summary.asset_count, 1);
         assert_eq!(staged.summary.unresolved_link_count, 1);
+    }
+
+    #[test]
+    fn shared_markdown_attachment_is_staged_once_for_each_owner() {
+        let source = TestDirectory::new();
+        fs::create_dir_all(source.path().join("assets")).unwrap();
+        fs::write(
+            source.path().join("assets/map.png"),
+            b"\x89PNG\r\n\x1a\nfixture",
+        )
+        .unwrap();
+        fs::write(source.path().join("one.md"), "![Map](assets/map.png)").unwrap();
+        fs::write(source.path().join("two.md"), "![Map](assets/map.png)").unwrap();
+
+        let staged =
+            analyze_generic_documents(source.path(), GenericDocumentImportLimits::default())
+                .unwrap();
+        let owners = staged
+            .assets
+            .iter()
+            .filter_map(|asset| asset.owner_object_id.as_deref())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(staged.assets.len(), 2);
+        assert_eq!(owners.len(), 2);
+        assert_eq!(
+            staged
+                .assets
+                .iter()
+                .map(|asset| asset.source_path.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["assets/map.png"])
+        );
+        assert_eq!(
+            staged
+                .assets
+                .iter()
+                .map(|asset| asset.id.as_str())
+                .collect::<BTreeSet<_>>()
+                .len(),
+            2
+        );
     }
 
     #[test]
@@ -6777,6 +7114,7 @@ mod tests {
             candidate,
             staged_objects: staged.objects,
             staged_assets: staged.assets,
+            staged_unsupported: staged.unsupported,
             catalog: ImportMappingCatalog {
                 fingerprint: "manifest-v1".into(),
                 entity_types: BTreeSet::from(["note".into()]),
@@ -6989,6 +7327,7 @@ mod tests {
             candidate,
             staged_objects: staged.objects,
             staged_assets: staged.assets,
+            staged_unsupported: staged.unsupported,
             catalog: ImportMappingCatalog {
                 fingerprint: "manifest-v1".into(),
                 entity_types: BTreeSet::from(["note".into()]),
@@ -7045,6 +7384,8 @@ mod tests {
         let docx_path = source.path().join("Docs/Guide.docx");
         write_docx_fixture(&docx_path);
         let expected = b"\x89PNG\r\n\x1a\nfixture";
+        let docx_bytes = fs::read(&docx_path).unwrap();
+        let docx_hash = hex_digest(&docx_bytes);
 
         assert_eq!(
             read_docx_import_asset_bytes(
@@ -7052,6 +7393,7 @@ mod tests {
                 &ImportSourceKind::File,
                 "Guide.docx!/word/media/image1.png",
                 expected.len() as u64,
+                &docx_hash,
             )
             .unwrap(),
             expected
@@ -7062,12 +7404,12 @@ mod tests {
                 &ImportSourceKind::Folder,
                 "Docs/Guide.docx!/word/media/image1.png",
                 expected.len() as u64,
+                &docx_hash,
             )
             .unwrap(),
             expected
         );
 
-        let docx_bytes = fs::read(&docx_path).unwrap();
         let archive_path = source.path().join("documents.zip");
         write_zip(&archive_path, &[("Docs/Guide.docx", &docx_bytes)]);
         let staged =
@@ -7084,10 +7426,21 @@ mod tests {
                 &ImportSourceKind::Archive,
                 "Docs/Guide.docx!/word/media/image1.png",
                 expected.len() as u64,
+                &docx_hash,
             )
             .unwrap(),
             expected
         );
+        assert!(read_docx_import_asset_bytes(
+            &docx_path,
+            &ImportSourceKind::File,
+            "Guide.docx!/word/media/image1.png",
+            expected.len() as u64,
+            "changed-package-hash",
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("package changed"));
     }
 
     #[test]
@@ -7331,6 +7684,7 @@ Travel to [[Places/Middle Earth|Middle Earth]] or [[Middle Earth]].
             candidate,
             staged_objects: staged.objects,
             staged_assets: staged.assets,
+            staged_unsupported: staged.unsupported,
             catalog: ImportMappingCatalog {
                 fingerprint: "manifest-v1".into(),
                 entity_types: BTreeSet::from(["note".into()]),
@@ -7703,6 +8057,7 @@ Travel to [[Places/Middle Earth|Middle Earth]] or [[Middle Earth]].
             candidate,
             staged_objects: staged.objects,
             staged_assets: staged.assets,
+            staged_unsupported: staged.unsupported,
             catalog: ImportMappingCatalog {
                 fingerprint: "manifest-v1".into(),
                 entity_types: BTreeSet::from(["note".into()]),
@@ -7712,6 +8067,11 @@ Travel to [[Places/Middle Earth|Middle Earth]] or [[Middle Earth]].
                         namespace: "wiki".into(),
                         key: "born".into(),
                         entity_types: BTreeSet::from(["note".into()]),
+                        field_type: "text".into(),
+                        required: false,
+                        multiple: false,
+                        options: BTreeSet::new(),
+                        one_of: Vec::new(),
                     },
                 )]),
                 relationship_types: BTreeSet::from(["references".into()]),
@@ -7961,6 +8321,7 @@ Travel to [[Places/Middle Earth|Middle Earth]] or [[Middle Earth]].
             candidate,
             staged_objects: staged.objects,
             staged_assets: staged.assets,
+            staged_unsupported: staged.unsupported,
             catalog: ImportMappingCatalog {
                 fingerprint: "manifest-v1".into(),
                 entity_types: BTreeSet::from(["note".into()]),
@@ -8019,6 +8380,106 @@ Travel to [[Places/Middle Earth|Middle Earth]] or [[Middle Earth]].
     }
 
     #[test]
+    fn validation_enforces_mapped_field_types_and_required_fields() {
+        let source = TestDirectory::new();
+        fs::write(
+            source.path().join("note.md"),
+            "---\ncount: many\n---\n# Note",
+        )
+        .unwrap();
+        let staged =
+            analyze_obsidian_vault(source.path(), GenericDocumentImportLimits::default()).unwrap();
+        let mut mappings = ImportMappingOverrides::default();
+        mappings.global.entity_type = Some("note".into());
+        let candidate_without_field = build_import_candidate_plan(
+            ImportCandidatePlanBuild {
+                session_id: "session".into(),
+                importer: staged.importer.clone(),
+                source: staged.source.clone(),
+                captured_content_generation: 1,
+                current_content_generation: 1,
+                manifest_fingerprint: "manifest-v1".into(),
+                objects: staged.objects.clone(),
+                unsupported_count: 0,
+                diagnostics: staged.diagnostics.clone(),
+            },
+            &mappings,
+        )
+        .unwrap();
+        let field_target = ImportFieldTarget {
+            namespace: "core".into(),
+            key: "count".into(),
+            entity_types: BTreeSet::from(["note".into()]),
+            field_type: "number".into(),
+            required: true,
+            multiple: false,
+            options: BTreeSet::new(),
+            one_of: Vec::new(),
+        };
+        let build = |candidate, target| ImportValidationBuild {
+            candidate,
+            staged_objects: staged.objects.clone(),
+            staged_assets: staged.assets.clone(),
+            staged_unsupported: staged.unsupported.clone(),
+            catalog: ImportMappingCatalog {
+                fingerprint: "manifest-v1".into(),
+                entity_types: BTreeSet::from(["note".into()]),
+                fields: BTreeMap::from([("core:count".into(), target)]),
+                relationship_types: BTreeSet::new(),
+            },
+            decisions: BTreeMap::new(),
+            existing_targets: BTreeMap::new(),
+            duplicate_targets: BTreeMap::new(),
+        };
+        let missing =
+            validate_import_candidate_plan(build(candidate_without_field, field_target.clone()))
+                .unwrap();
+        assert!(missing
+            .issues
+            .iter()
+            .any(|issue| issue.code == "required_target_field_missing"));
+
+        mappings
+            .global
+            .field_mappings
+            .insert("count".into(), "core:count".into());
+        let candidate_with_field = build_import_candidate_plan(
+            ImportCandidatePlanBuild {
+                session_id: "session".into(),
+                importer: staged.importer.clone(),
+                source: staged.source.clone(),
+                captured_content_generation: 1,
+                current_content_generation: 1,
+                manifest_fingerprint: "manifest-v1".into(),
+                objects: staged.objects.clone(),
+                unsupported_count: 0,
+                diagnostics: staged.diagnostics.clone(),
+            },
+            &mappings,
+        )
+        .unwrap();
+        let invalid = validate_import_candidate_plan(build(
+            candidate_with_field.clone(),
+            field_target.clone(),
+        ))
+        .unwrap();
+        assert!(invalid
+            .issues
+            .iter()
+            .any(|issue| issue.code == "target_field_value_invalid"));
+
+        let valid = validate_import_candidate_plan(build(
+            candidate_with_field,
+            ImportFieldTarget {
+                field_type: "text".into(),
+                ..field_target
+            },
+        ))
+        .unwrap();
+        assert!(valid.plan.is_some());
+    }
+
+    #[test]
     fn validation_requires_explicit_duplicate_decision_and_uses_enabled_catalog() {
         let source = TestDirectory::new();
         fs::write(source.path().join("note.md"), "# Note").unwrap();
@@ -8058,6 +8519,7 @@ Travel to [[Places/Middle Earth|Middle Earth]] or [[Middle Earth]].
                 raw_metadata: BTreeMap::new(),
                 diagnostics: Vec::new(),
             }],
+            staged_unsupported: Vec::new(),
             catalog: ImportMappingCatalog {
                 fingerprint: "manifest-v1".into(),
                 entity_types: BTreeSet::from(["note".into()]),

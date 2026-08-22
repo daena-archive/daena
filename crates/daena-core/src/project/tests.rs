@@ -1,7 +1,8 @@
 use super::*;
 use crate::{
-    ImportSource, ImportSourceKind, ImportValidationIssue, ImportValidationSeverity,
-    ImporterIdentity, StagedDocument, ValidatedImportAsset, ValidatedImportObject,
+    ImportDiagnostic, ImportDiagnosticSeverity, ImportSource, ImportSourceKind,
+    ImportValidationIssue, ImportValidationSeverity, ImporterIdentity, StagedDocument, StagedLink,
+    UnsupportedSourceData, ValidatedImportAsset, ValidatedImportField, ValidatedImportObject,
     ValidatedImportRelationship, ValidatedImportSourceContext,
 };
 use daena_plugin_api::MetadataFieldDefinition;
@@ -510,11 +511,25 @@ fn external_import_commit_is_idempotent_and_survives_clean_rebuild() {
                     format: "markdown".into(),
                     body: "# Created note".into(),
                 }),
-                fields: Vec::new(),
+                fields: vec![ValidatedImportField {
+                    source_key: "summary".into(),
+                    namespace: "test.importer".into(),
+                    key: "summary".into(),
+                    value: serde_json::Value::String("Imported summary".into()),
+                }],
                 source_context: ValidatedImportSourceContext {
                     source_kind: "obsidian_markdown".into(),
                     tags: vec!["lore".into()],
                     aliases: vec!["Created alias".into()],
+                    links: vec![StagedLink {
+                        kind: StagedLinkKind::Internal,
+                        target: "Missing note".into(),
+                        label: None,
+                        resolution: StagedLinkResolution::Missing,
+                        resolved_object_id: None,
+                        candidate_object_ids: Vec::new(),
+                        raw: None,
+                    }],
                     ..ValidatedImportSourceContext::default()
                 },
                 decision: ImportObjectDecision::Create,
@@ -563,6 +578,19 @@ fn external_import_commit_is_idempotent_and_survives_clean_rebuild() {
             size: asset_bytes.len() as u64,
             mime_type: "image/png".into(),
         }],
+        unsupported: vec![UnsupportedSourceData {
+            source_path: "Unsupported.bin".into(),
+            source_kind: "file".into(),
+            reason: "unsupported fixture".into(),
+            raw_metadata: BTreeMap::new(),
+        }],
+        diagnostics: vec![ImportDiagnostic {
+            severity: ImportDiagnosticSeverity::Warning,
+            code: "fixture_diagnostic".into(),
+            message: "Fixture diagnostic".into(),
+            source_path: Some("Created.md".into()),
+            object_id: Some("create-object".into()),
+        }],
         warnings: vec![ImportValidationIssue {
             severity: ImportValidationSeverity::Warning,
             code: "fixture_warning".into(),
@@ -583,6 +611,11 @@ fn external_import_commit_is_idempotent_and_survives_clean_rebuild() {
         .is_err());
     assert_eq!(store.list_entities().unwrap().len(), 1);
     std::fs::write(source_root.join("assets/map.png"), asset_bytes).unwrap();
+    let runtime_asset = runtime_asset_path(&root, &plan.assets[0].content_hash).unwrap();
+    assert!(store
+        .commit_external_import(&plan, Some(&source_root), true, "invalid-request-id")
+        .is_err());
+    assert!(!runtime_asset.exists());
     let first = store
         .commit_external_import(&plan, Some(&source_root), true, request_id)
         .unwrap();
@@ -594,6 +627,11 @@ fn external_import_commit_is_idempotent_and_survives_clean_rebuild() {
     assert_eq!(first.mapped.len(), 1);
     assert_eq!(first.assets.len(), 1);
     assert_eq!(first.relationships.len(), 1);
+    assert_eq!(first.decisions.len(), 3);
+    assert_eq!(first.fields.len(), 1);
+    assert_eq!(first.unsupported.len(), 1);
+    assert_eq!(first.missing_references.len(), 1);
+    assert_eq!(first.diagnostics.len(), 1);
     assert_eq!(
         first.relationships[0].source_entity_id,
         first.created[0].entity_id

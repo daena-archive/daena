@@ -46,7 +46,7 @@ export function buildExternalImportMappingCatalog(modules: ProjectModuleManifest
       }
       for (const field of schema.fields) {
         const id = `${schema.namespace}:${field.key}`;
-        if (!fields.has(id)) {
+        if (field.type !== "relationship" && !fields.has(id)) {
           fields.set(id, {
             id,
             namespace: schema.namespace,

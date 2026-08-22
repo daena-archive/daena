@@ -7358,7 +7358,9 @@ async fn project_list_assets(
 }
 
 #[tauri::command]
-async fn project_list_shared_assets(state: tauri::State<'_, SharedCore>) -> Result<Vec<Asset>, String> {
+async fn project_list_shared_assets(
+    state: tauri::State<'_, SharedCore>,
+) -> Result<Vec<Asset>, String> {
     with_read_project(state, move |project| project.list_shared_assets()).await
 }
 

@@ -1,9 +1,10 @@
 use crate::error::CoreError;
 use crate::external_import::{
     is_docx_import_asset_source_path, read_archive_asset_bytes, read_docx_import_asset_bytes,
-    ExternalImportCommitReport, ImportExistingTarget, ImportObjectDecision, ImportSourceKind,
-    ImportedAssetReport, ImportedObjectReport, ImportedRelationshipReport, ValidatedImportPlan,
-    VALIDATED_IMPORT_PLAN_SCHEMA_VERSION,
+    ExternalImportCommitReport, ImportDecisionReport, ImportExistingTarget,
+    ImportMissingReferenceReport, ImportObjectDecision, ImportSourceKind, ImportedAssetReport,
+    ImportedFieldReport, ImportedObjectReport, ImportedRelationshipReport, StagedLinkKind,
+    StagedLinkResolution, ValidatedImportPlan, VALIDATED_IMPORT_PLAN_SCHEMA_VERSION,
 };
 use daena_plugin_api::MetadataFieldDefinition;
 use rusqlite::{named_params, params, Connection, OpenFlags, OptionalExtension};
@@ -1074,6 +1075,36 @@ fn store_runtime_asset_file(
         source,
     })?;
     store_runtime_asset(root, input, expected_hash)
+}
+
+#[derive(Default)]
+struct RuntimeAssetInstallGuard {
+    installed_paths: BTreeSet<PathBuf>,
+    committed: bool,
+}
+
+impl RuntimeAssetInstallGuard {
+    fn track(&mut self, path: PathBuf) {
+        self.installed_paths.insert(path);
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for RuntimeAssetInstallGuard {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        for path in &self.installed_paths {
+            let _ = std::fs::remove_file(path);
+            if let Some(parent) = path.parent() {
+                let _ = crate::sync::sync_directory(parent);
+            }
+        }
+    }
 }
 
 fn ensure_runtime_asset(
@@ -4488,6 +4519,8 @@ impl ProjectStore {
         let mut mapped_sources = Vec::new();
         let mut created_report = Vec::new();
         let mut mapped_report = Vec::new();
+        let mut field_report = Vec::new();
+        let mut decision_report = Vec::new();
         let mut skipped_source_paths = Vec::new();
         let mut affected_prefixes = Vec::new();
         for (object_index, object) in plan.objects.iter().enumerate() {
@@ -4503,6 +4536,12 @@ impl ProjectStore {
             match &object.decision {
                 ImportObjectDecision::Skip => {
                     skipped_source_paths.push(object.source_path.clone());
+                    decision_report.push(ImportDecisionReport {
+                        staged_object_id: object.staged_object_id.clone(),
+                        source_path: object.source_path.clone(),
+                        decision: "skip".into(),
+                        entity_id: None,
+                    });
                 }
                 ImportObjectDecision::MapToExisting {
                     entity_id,
@@ -4521,6 +4560,12 @@ impl ProjectStore {
                         source_path: object.source_path.clone(),
                         entity_id: entity_id.clone(),
                         entity_type: object.entity_type.clone(),
+                    });
+                    decision_report.push(ImportDecisionReport {
+                        staged_object_id: object.staged_object_id.clone(),
+                        source_path: object.source_path.clone(),
+                        decision: "map_to_existing".into(),
+                        entity_id: Some(entity_id.clone()),
                     });
                 }
                 ImportObjectDecision::Create => {
@@ -4555,6 +4600,20 @@ impl ProjectStore {
                         entity_id: entity_id.clone(),
                         entity_type: object.entity_type.clone(),
                     });
+                    field_report.extend(object.fields.iter().map(|field| ImportedFieldReport {
+                        staged_object_id: object.staged_object_id.clone(),
+                        source_path: object.source_path.clone(),
+                        entity_id: entity_id.clone(),
+                        source_key: field.source_key.clone(),
+                        namespace: field.namespace.clone(),
+                        key: field.key.clone(),
+                    }));
+                    decision_report.push(ImportDecisionReport {
+                        staged_object_id: object.staged_object_id.clone(),
+                        source_path: object.source_path.clone(),
+                        decision: "create".into(),
+                        entity_id: Some(entity_id.clone()),
+                    });
                     creates.push(PreparedCreate {
                         entity_id,
                         object_index,
@@ -4569,6 +4628,11 @@ impl ProjectStore {
             .iter()
             .chain(mapped_report.iter())
             .map(|object| (object.staged_object_id.clone(), object.entity_id.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let object_by_source_path = plan
+            .objects
+            .iter()
+            .map(|object| (object.source_path.as_str(), object))
             .collect::<BTreeMap<_, _>>();
         let mut prepared_relationships = Vec::with_capacity(plan.relationships.len());
         let mut relationship_report = Vec::with_capacity(plan.relationships.len());
@@ -4612,6 +4676,7 @@ impl ProjectStore {
         }
         let mut prepared_assets = Vec::new();
         let mut asset_report = Vec::new();
+        let mut asset_install_guard = RuntimeAssetInstallGuard::default();
         for asset in &plan.assets {
             let entity_id = entity_by_staged_object
                 .get(&asset.owner_staged_object_id)
@@ -4629,12 +4694,29 @@ impl ProjectStore {
             let project_root = self.root.as_deref().ok_or_else(|| {
                 CoreError::Validation("asset import requires a directory project".into())
             })?;
+            let runtime_path = runtime_asset_path(project_root, &asset.content_hash)?;
+            let runtime_asset_existed = runtime_path.is_file();
             let (content_hash, size) = if is_docx_import_asset_source_path(&asset.source_path) {
+                let container_path = asset
+                    .source_path
+                    .split_once("!/")
+                    .map(|(container, _)| container)
+                    .ok_or_else(|| {
+                        CoreError::Validation(
+                            "validated DOCX import asset container is unavailable".into(),
+                        )
+                    })?;
+                let container = object_by_source_path.get(container_path).ok_or_else(|| {
+                    CoreError::Validation(
+                        "validated DOCX import asset container was not staged".into(),
+                    )
+                })?;
                 let bytes = read_docx_import_asset_bytes(
                     root,
                     &plan.source.kind,
                     &asset.source_path,
                     asset.size,
+                    &container.content_hash,
                 )?;
                 store_runtime_asset(project_root, bytes.as_slice(), Some(&asset.content_hash))?
             } else {
@@ -4669,6 +4751,9 @@ impl ProjectStore {
                     }
                 }
             };
+            if !runtime_asset_existed {
+                asset_install_guard.track(runtime_path);
+            }
             if size != declared_size {
                 return Err(CoreError::Conflict(format!(
                     "import asset '{}' changed size after analysis",
@@ -4699,6 +4784,28 @@ impl ProjectStore {
                 path,
             });
         }
+        let missing_references = plan
+            .objects
+            .iter()
+            .flat_map(|object| {
+                object
+                    .source_context
+                    .links
+                    .iter()
+                    .filter(|link| link.resolution == StagedLinkResolution::Missing)
+                    .map(|link| ImportMissingReferenceReport {
+                        staged_object_id: object.staged_object_id.clone(),
+                        source_path: object.source_path.clone(),
+                        target: link.target.clone(),
+                        kind: match link.kind {
+                            StagedLinkKind::Internal => "internal",
+                            StagedLinkKind::External => "external",
+                            StagedLinkKind::Embed => "embed",
+                        }
+                        .into(),
+                    })
+            })
+            .collect();
         let report = ExternalImportCommitReport {
             request_id: request_id.into(),
             plan_id: plan.plan_id.clone(),
@@ -4708,6 +4815,11 @@ impl ProjectStore {
             mapped: mapped_report,
             assets: asset_report,
             relationships: relationship_report,
+            fields: field_report,
+            decisions: decision_report,
+            unsupported: plan.unsupported.clone(),
+            missing_references,
+            diagnostics: plan.diagnostics.clone(),
             skipped_source_paths,
             warnings: plan.warnings.clone(),
         };
@@ -4792,6 +4904,7 @@ impl ProjectStore {
             )?;
         }
         transaction.commit()?;
+        asset_install_guard.commit();
         self.notify_export_worker()?;
         Ok(report)
     }
@@ -8238,7 +8351,11 @@ impl ProjectStore {
     }
 
     pub fn asset_by_path(&self, path: String) -> Result<Asset, CoreError> {
-        if !path.starts_with("assets/") || path.contains("..") || path.contains('\0') || path.len() > 1024 {
+        if !path.starts_with("assets/")
+            || path.contains("..")
+            || path.contains('\0')
+            || path.len() > 1024
+        {
             return Err(CoreError::Validation("invalid asset path".into()));
         }
         let mut asset = self

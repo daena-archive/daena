@@ -580,7 +580,8 @@ function groupedEditTypes(): Array<{ heading: string; types: string[] }> {
   }
   if (selected?.entity_type) enabled.add(selected.entity_type);
   if (entityEditDialog?.entity.entity_type) enabled.add(entityEditDialog.entity.entity_type);
-  if (modules.some((m) => m.schemas.some((s) => s.entityTypes.includes("daena.maps:map")))) enabled.add("daena.maps:map");
+  if (modules.some((m) => m.schemas.some((s) => s.entityTypes.includes("daena.maps:map"))))
+    enabled.add("daena.maps:map");
   const groups: Array<{ heading: string; types: string[] }> = [];
   for (const sec of workspaceSectionOrder) {
     const manifest = manifestForWorkspaceSection(sec);
@@ -620,7 +621,8 @@ function editTypeWarning(): string | null {
   }
   // Generic field/relationship hiding
   const hasPopulated = Object.entries(fields).some(([, v]) => !isEmptyFieldValue(v)) || relationships.length > 0;
-  if (hasPopulated) return "Fields and relationships that don't apply to the new type will be hidden but preserved. You can revert the type to restore them.";
+  if (hasPopulated)
+    return "Fields and relationships that don't apply to the new type will be hidden but preserved. You can revert the type to restore them.";
   return "The entry will move to the collection for the new type.";
 }
 const definitions = () => {
@@ -3093,7 +3095,7 @@ async function openEntityEditDialog() {
   const current = entities.find((entity) => entity.id === selected?.id) ?? selected;
   entityEditDialog = { entity: current, name: current.name, entityType: current.entity_type, busy: false };
   // Focus name field after mount
-  setTimeout(() => document.getElementById('entity-edit-name')?.focus(), 0);
+  setTimeout(() => document.getElementById("entity-edit-name")?.focus(), 0);
 }
 function closeEntityEditDialog() {
   entityEditDialog = null;
@@ -5488,7 +5490,8 @@ onMount(() => {
                         type="button"
                         aria-label={`Edit ${selected.name}`}
                         title="Edit name and type"
-                        onclick={() => void openEntityEditDialog()}><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button
+                        onclick={() => void openEntityEditDialog()}
+                        ><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button
                       >{/if}
                   </div>
                 </div>
@@ -6052,8 +6055,12 @@ onMount(() => {
   <div
     class="modal-backdrop"
     role="presentation"
-    onclick={() => { if (!edit.busy) closeEntityEditDialog(); }}
-    onkeydown={(e) => { if (e.key === 'Escape' && !edit.busy) closeEntityEditDialog(); }}
+    onclick={() => {
+      if (!edit.busy) closeEntityEditDialog();
+    }}
+    onkeydown={(e) => {
+      if (e.key === "Escape" && !edit.busy) closeEntityEditDialog();
+    }}
     tabindex="-1">
     <div
       class="dialog entity-edit-dialog"
@@ -6064,11 +6071,19 @@ onMount(() => {
       onclick={(e) => e.stopPropagation()}
       onkeydown={(e) => e.stopPropagation()}>
       <div class="new-form-heading">
-        <div><span class="panel-kicker">EDIT ENTRY</span><strong id="entity-edit-title">Edit {edit.entity.name}</strong></div>
-        <button type="button" class="new-form-close" aria-label="Close edit dialog" onclick={closeEntityEditDialog} disabled={edit.busy}
-          ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
+        <div>
+          <span class="panel-kicker">EDIT ENTRY</span><strong id="entity-edit-title">Edit {edit.entity.name}</strong>
+        </div>
+        <button
+          type="button"
+          class="new-form-close"
+          aria-label="Close edit dialog"
+          onclick={closeEntityEditDialog}
+          disabled={edit.busy}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>
-      <p class="dialog-body-copy">Change the name and type. The stable ID stays the same, so links and assets follow.</p>
+      <p class="dialog-body-copy">
+        Change the name and type. The stable ID stays the same, so links and assets follow.
+      </p>
       <label class="create-input-field" for="entity-edit-name"
         ><span>Name</span><input
           id="entity-edit-name"
@@ -6077,10 +6092,9 @@ onMount(() => {
           placeholder="Entity name"
           disabled={edit.busy}
           onkeydown={(e) => {
-            if (e.key === 'Enter' && !edit.busy && edit.name.trim()) void saveEntityEditDialog();
-            if (e.key === 'Escape' && !edit.busy) closeEntityEditDialog();
-          }} /></label
-      >
+            if (e.key === "Enter" && !edit.busy && edit.name.trim()) void saveEntityEditDialog();
+            if (e.key === "Escape" && !edit.busy) closeEntityEditDialog();
+          }} /></label>
       <label class="create-input-field" for="entity-edit-type"
         ><span>Type</span><select
           id="entity-edit-type"
@@ -6091,12 +6105,20 @@ onMount(() => {
           {#if edit.entity.entity_type == null}<option value={null}>Uncategorized — no template</option>{/if}
           {#each groupedEditTypes() as group}
             <optgroup label={group.heading.toUpperCase()}>
-              {#each group.types as t}<option value={t}>{entityTypeLabel(t)}{t !== entityTypeLabel(t) ? ` · ${t}` : ''}</option>{/each}
+              {#each group.types as t}<option value={t}
+                  >{entityTypeLabel(t)}{t !== entityTypeLabel(t) ? ` · ${t}` : ""}</option
+                >{/each}
             </optgroup>
           {/each}
         </select>
-        <small class="field-hint">Workspace: {sectionForEntityType(edit.entityType) ? workspaceSectionLabel(sectionForEntityType(edit.entityType)!) : (edit.entityType ? 'Other' : 'Uncategorized')} {#if edit.entityType}· {edit.entityType}{/if}</small></label
-      >
+        <small class="field-hint"
+          >Workspace: {sectionForEntityType(edit.entityType)
+            ? workspaceSectionLabel(sectionForEntityType(edit.entityType)!)
+            : edit.entityType
+              ? "Other"
+              : "Uncategorized"}
+          {#if edit.entityType}· {edit.entityType}{/if}</small
+        ></label>
       {#if warning}<p class="plugin-warning entity-edit-warning" role="note">{warning}</p>{/if}
       <div class="new-form-actions">
         <button type="button" class="quiet-button" onclick={closeEntityEditDialog} disabled={edit.busy}>Cancel</button>
@@ -6104,8 +6126,10 @@ onMount(() => {
           type="button"
           class="primary-button"
           onclick={() => void saveEntityEditDialog()}
-          disabled={edit.busy || !edit.name.trim() || (edit.name.trim()===edit.entity.name && (edit.entityType ?? null)===(edit.entity.entity_type ?? null))}>
-          {edit.busy ? 'Saving…' : 'Save'}
+          disabled={edit.busy ||
+            !edit.name.trim() ||
+            (edit.name.trim() === edit.entity.name && (edit.entityType ?? null) === (edit.entity.entity_type ?? null))}>
+          {edit.busy ? "Saving…" : "Save"}
         </button>
       </div>
     </div>

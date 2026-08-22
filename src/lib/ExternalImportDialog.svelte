@@ -45,7 +45,7 @@ let pageOffset = $state(0);
 let selectedItemIndex = $state(0);
 let inspectedItem = $derived.by(() => page?.items[selectedItemIndex] ?? null);
 let plan = $state<ImportCandidatePlan | null>(null);
-let mappings = $state<ImportMappingOverrides>({ global: {}, folders: {}, items: {} });
+let mappings = $state<ImportMappingOverrides>({ global: {}, categories: {}, folders: {}, items: {} });
 let decisions = $state<Record<string, ImportObjectDecision>>({});
 let validation = $state<ExternalImportValidationSummary | null>(null);
 let report = $state<ExternalImportCommitReport | null>(null);
@@ -54,7 +54,8 @@ let confirmCommit = $state(false);
 let commitRequestId = $state("");
 let validating = $state(false);
 let committing = $state(false);
-let mappingScope = $state<"global" | "folder" | "item">("global");
+let mappingScope = $state<"global" | "category" | "folder" | "item">("global");
+let mappingCategory = $state("");
 let busy = $state(false);
 let previewLoading = $state(false);
 let planLoading = $state(false);
@@ -74,6 +75,7 @@ const selectedObject = (): StagedObject | null => {
   return item?.kind === "object" ? item.value : null;
 };
 const selectedFolder = () => (selectedObject() ? importFolderFor(selectedObject()!.source_path) : "");
+const selectedCategories = () => selectedObject()?.tags ?? [];
 
 function displayError(cause: unknown): string {
   const message = cause instanceof Error ? cause.message : String(cause);
@@ -116,11 +118,18 @@ function selectPageItem(index: number) {
   if (mappingScope === "folder" && (item?.kind !== "object" || importFolderFor(item.value.source_path) === "")) {
     mappingScope = "global";
   }
+  if (item?.kind === "object") {
+    if (!item.value.tags?.includes(mappingCategory)) mappingCategory = item.value.tags?.[0] ?? "";
+    if (mappingScope === "category" && !mappingCategory) mappingScope = "global";
+  } else if (mappingScope === "category") {
+    mappingScope = "global";
+  }
 }
 
 function currentDecision(): ImportMappingDecision {
   const object = selectedObject();
   if (mappingScope === "item" && object) return mappings.items?.[object.id] ?? {};
+  if (mappingScope === "category" && mappingCategory) return mappings.categories?.[mappingCategory] ?? {};
   const folder = selectedFolder();
   if (mappingScope === "folder" && folder) return mappings.folders?.[folder] ?? {};
   return mappings.global ?? {};
@@ -174,6 +183,11 @@ function replaceCurrentDecision(decision: ImportMappingDecision) {
   const folder = selectedFolder();
   if (mappingScope === "item" && object) {
     mappings = { ...mappings, items: { ...(mappings.items ?? {}), [object.id]: decision } };
+  } else if (mappingScope === "category" && mappingCategory) {
+    mappings = {
+      ...mappings,
+      categories: { ...(mappings.categories ?? {}), [mappingCategory]: decision },
+    };
   } else if (mappingScope === "folder" && folder) {
     mappings = { ...mappings, folders: { ...(mappings.folders ?? {}), [folder]: decision } };
   } else {
@@ -324,7 +338,7 @@ async function chooseAndAnalyze() {
   error = "";
   page = null;
   plan = null;
-  mappings = { global: {}, folders: {}, items: {} };
+  mappings = { global: {}, categories: {}, folders: {}, items: {} };
   decisions = {};
   validation = null;
   report = null;
@@ -526,10 +540,15 @@ onMount(() => {
             {report.skippedSourcePaths.length} source {report.skippedSourcePaths.length === 1 ? "item" : "items"}.
             Imported {report.assets.length}
             {report.assets.length === 1 ? "attachment" : "attachments"} and {report.relationships.length}
-            {report.relationships.length === 1 ? "relationship" : "relationships"}.
+            {report.relationships.length === 1 ? "relationship" : "relationships"}. Converted
+            {report.fields.length}
+            {report.fields.length === 1 ? "field" : "fields"}; reported
+            {report.unsupported.length} unsupported {report.unsupported.length === 1 ? "item" : "items"} and
+            {report.missingReferences.length} missing
+            {report.missingReferences.length === 1 ? "reference" : "references"}.
           </p>
         </div>
-        {#if report.created.length || report.mapped.length}
+        {#if report.decisions.length || report.assets.length || report.relationships.length || report.unsupported.length}
           <div class="result-list">
             {#each [...report.created, ...report.mapped] as item}
               <div>
@@ -544,6 +563,26 @@ onMount(() => {
                 <strong>{relationship.relationshipType}</strong><span
                   >Relationship · {relationship.sourceEntityId} → {relationship.targetEntityId}</span>
               </div>
+            {/each}
+            {#each report.fields as field}
+              <div>
+                <strong>{field.sourcePath} · {field.sourceKey}</strong><span
+                  >Field · {field.namespace}:{field.key}</span>
+              </div>
+            {/each}
+            {#each report.decisions.filter((decision) => decision.decision === "skip") as decision}
+              <div><strong>{decision.sourcePath}</strong><span>Decision · skipped</span></div>
+            {/each}
+            {#each report.unsupported as item}
+              <div><strong>{item.source_path}</strong><span>Unsupported · {item.reason}</span></div>
+            {/each}
+            {#each report.missingReferences as reference}
+              <div>
+                <strong>{reference.sourcePath}</strong><span>Missing {reference.kind} · {reference.target}</span>
+              </div>
+            {/each}
+            {#each report.diagnostics as diagnostic}
+              <div><strong>{diagnostic.code}</strong><span>{diagnostic.message}</span></div>
             {/each}
           </div>
         {/if}
@@ -699,6 +738,14 @@ onMount(() => {
                       type="button"
                       onclick={() => (mappingScope = "global")}>All items</button>
                     <button
+                      class:active={mappingScope === "category"}
+                      type="button"
+                      disabled={selectedCategories().length === 0}
+                      onclick={() => {
+                        mappingCategory = mappingCategory || selectedCategories()[0] || "";
+                        mappingScope = "category";
+                      }}>Category</button>
+                    <button
                       class:active={mappingScope === "folder"}
                       type="button"
                       disabled={!selectedFolder()}
@@ -706,6 +753,14 @@ onMount(() => {
                     <button class:active={mappingScope === "item"} type="button" onclick={() => (mappingScope = "item")}
                       >This item</button>
                   </div>
+                  {#if mappingScope === "category" && selectedCategories().length > 0}
+                    <label>
+                      <span>Source category</span>
+                      <select bind:value={mappingCategory}>
+                        {#each selectedCategories() as category}<option value={category}>{category}</option>{/each}
+                      </select>
+                    </label>
+                  {/if}
                   <label
                     ><span>Entity type</span><select
                       value={currentDecision().entityType ?? ""}
@@ -756,6 +811,9 @@ onMount(() => {
                   {/if}
                   {#if mappingScope === "folder" && selectedFolder()}<small
                       >Overrides items under <code>{selectedFolder()}</code>.</small
+                    >{/if}
+                  {#if mappingScope === "category" && mappingCategory}<small
+                      >Overrides items tagged with source category <code>{mappingCategory}</code>.</small
                     >{/if}
                 </div>
               {/if}

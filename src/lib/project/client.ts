@@ -872,6 +872,7 @@ export interface ImportMappingDecision {
 }
 export interface ImportMappingOverrides {
   global?: ImportMappingDecision;
+  categories?: Record<string, ImportMappingDecision>;
   folders?: Record<string, ImportMappingDecision>;
   items?: Record<string, ImportMappingDecision>;
 }
@@ -951,6 +952,26 @@ export interface ImportedRelationshipReport {
   targetEntityId: string;
   relationshipType: string;
 }
+export interface ImportedFieldReport {
+  stagedObjectId: string;
+  sourcePath: string;
+  entityId: string;
+  sourceKey: string;
+  namespace: string;
+  key: string;
+}
+export interface ImportDecisionReport {
+  stagedObjectId: string;
+  sourcePath: string;
+  decision: "create" | "skip" | "map_to_existing";
+  entityId?: string | null;
+}
+export interface ImportMissingReferenceReport {
+  stagedObjectId: string;
+  sourcePath: string;
+  target: string;
+  kind: "internal" | "external" | "embed";
+}
 export interface ExternalImportCommitReport {
   requestId: string;
   planId: string;
@@ -960,6 +981,11 @@ export interface ExternalImportCommitReport {
   mapped: ImportedObjectReport[];
   assets: ImportedAssetReport[];
   relationships: ImportedRelationshipReport[];
+  fields: ImportedFieldReport[];
+  decisions: ImportDecisionReport[];
+  unsupported: UnsupportedSourceData[];
+  missingReferences: ImportMissingReferenceReport[];
+  diagnostics: ImportDiagnostic[];
   skippedSourcePaths: string[];
   warnings: ImportValidationIssue[];
 }

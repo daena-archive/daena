@@ -14,10 +14,10 @@ use daena_core::{
     validate_import_candidate_plan, CoreError, ExternalImportCommitReport,
     GenericDocumentImportLimits, ImportAnalysisProgress, ImportAnalysisSummary,
     ImportCandidatePlan, ImportCandidatePlanBuild, ImportDiagnostic, ImportFieldTarget,
-    ImportMappingCatalog, ImportMappingOverrides, ImportObjectDecision, ImportSource,
-    ImportValidationBuild, ImportValidationIssue, ImportValidationSeverity, ImporterIdentity,
-    StagedAsset, StagedImport, StagedObject, UnsupportedSourceData, ValidatedImportPlan,
-    EXTERNAL_IMPORT_ANALYSIS_CANCELLED, GENERIC_DOCUMENT_IMPORTER_ID,
+    ImportFieldVariant, ImportMappingCatalog, ImportMappingOverrides, ImportObjectDecision,
+    ImportSource, ImportValidationBuild, ImportValidationIssue, ImportValidationSeverity,
+    ImporterIdentity, StagedAsset, StagedImport, StagedObject, UnsupportedSourceData,
+    ValidatedImportPlan, EXTERNAL_IMPORT_ANALYSIS_CANCELLED, GENERIC_DOCUMENT_IMPORTER_ID,
     GENERIC_DOCUMENT_IMPORTER_VERSION, MEDIAWIKI_IMPORTER_ID, MEDIAWIKI_IMPORTER_VERSION,
     OBSIDIAN_IMPORTER_ID, OBSIDIAN_IMPORTER_VERSION,
 };
@@ -42,7 +42,12 @@ const MAX_PAGE_ITEMS: usize = 200;
 const SPILL_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 const SPILL_ITEM_COUNT: usize = 1_000;
 
-type CandidateMaterial = (Vec<StagedObject>, Vec<StagedAsset>, Vec<ImportDiagnostic>);
+type CandidateMaterial = (
+    Vec<StagedObject>,
+    Vec<StagedAsset>,
+    Vec<UnsupportedSourceData>,
+    Vec<ImportDiagnostic>,
+);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -659,7 +664,7 @@ pub async fn project_external_import_candidate_plan(
             .as_ref()
             .ok_or_else(|| "external_import.not_ready: analysis result is missing".to_string())?;
         let metadata = result.metadata().clone();
-        let (objects, _, diagnostics) = result.candidate_material()?;
+        let (objects, _, _, diagnostics) = result.candidate_material()?;
         build_import_candidate_plan(
             ImportCandidatePlanBuild {
                 session_id: input.session_id,
@@ -694,7 +699,7 @@ pub async fn project_external_import_validate(
     let imports_shared = imports.inner().clone();
     let material_project_id = project_id.clone();
     let material_session_id = validation_session_id.clone();
-    let (captured_generation, metadata, objects, assets, diagnostics) =
+    let (captured_generation, metadata, objects, assets, unsupported, diagnostics) =
         tauri::async_runtime::spawn_blocking(move || {
             let mut manager = imports_shared
                 .lock()
@@ -709,12 +714,13 @@ pub async fn project_external_import_validate(
             let result = job.result.as_ref().ok_or_else(|| {
                 "external_import.not_ready: analysis result is missing".to_string()
             })?;
-            let (objects, assets, diagnostics) = result.candidate_material()?;
+            let (objects, assets, unsupported, diagnostics) = result.candidate_material()?;
             Ok((
                 job.status.captured_content_generation,
                 result.metadata().clone(),
                 objects,
                 assets,
+                unsupported,
                 diagnostics,
             ))
         })
@@ -760,6 +766,7 @@ pub async fn project_external_import_validate(
             candidate,
             staged_objects: objects,
             staged_assets: assets,
+            staged_unsupported: unsupported,
             catalog,
             decisions,
             existing_targets,
@@ -900,14 +907,37 @@ fn import_mapping_catalog(
                 {
                     relationship_types.insert(relationship_type.clone());
                 }
-                fields.insert(
-                    id,
-                    ImportFieldTarget {
-                        namespace: schema.namespace.clone(),
-                        key: field.key,
-                        entity_types: field.entity_types.unwrap_or_default().into_iter().collect(),
-                    },
-                );
+                if field.field_type != "relationship" {
+                    fields.insert(
+                        id,
+                        ImportFieldTarget {
+                            namespace: schema.namespace.clone(),
+                            key: field.key,
+                            entity_types: field
+                                .entity_types
+                                .unwrap_or_default()
+                                .into_iter()
+                                .collect(),
+                            field_type: field.field_type,
+                            required: field.required.unwrap_or(false),
+                            multiple: field.multiple,
+                            options: field.options.unwrap_or_default().into_iter().collect(),
+                            one_of: field
+                                .one_of
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|variant| ImportFieldVariant {
+                                    field_type: variant.field_type,
+                                    options: variant
+                                        .options
+                                        .unwrap_or_default()
+                                        .into_iter()
+                                        .collect(),
+                                })
+                                .collect(),
+                        },
+                    );
+                }
             }
         }
         entity_types.extend(
@@ -1301,9 +1331,10 @@ fn read_spill_page(
 
 fn candidate_material_from_items<'a>(
     items: impl Iterator<Item = &'a ExternalImportPageItem>,
-) -> (Vec<StagedObject>, Vec<StagedAsset>, Vec<ImportDiagnostic>) {
+) -> CandidateMaterial {
     let mut objects = Vec::new();
     let mut assets = Vec::new();
+    let mut unsupported = Vec::new();
     let mut diagnostics = Vec::new();
     for item in items {
         match item {
@@ -1312,10 +1343,10 @@ fn candidate_material_from_items<'a>(
             ExternalImportPageItem::Diagnostic(diagnostic) => {
                 diagnostics.push(diagnostic.clone());
             }
-            ExternalImportPageItem::Unsupported(_) => {}
+            ExternalImportPageItem::Unsupported(item) => unsupported.push(item.clone()),
         }
     }
-    (objects, assets, diagnostics)
+    (objects, assets, unsupported, diagnostics)
 }
 
 fn read_spill_candidate_material(path: &Path) -> Result<CandidateMaterial, String> {
@@ -1330,6 +1361,7 @@ fn read_spill_candidate_material(path: &Path) -> Result<CandidateMaterial, Strin
         .map_err(|error| format!("external_import.local_storage_failed: {error}"))?;
     let mut objects = Vec::new();
     let mut assets = Vec::new();
+    let mut unsupported = Vec::new();
     let mut diagnostics = Vec::new();
     for line in BufReader::new(file).lines() {
         let line =
@@ -1340,10 +1372,10 @@ fn read_spill_candidate_material(path: &Path) -> Result<CandidateMaterial, Strin
             ExternalImportPageItem::Object(object) => objects.push(object),
             ExternalImportPageItem::Asset(asset) => assets.push(asset),
             ExternalImportPageItem::Diagnostic(diagnostic) => diagnostics.push(diagnostic),
-            ExternalImportPageItem::Unsupported(_) => {}
+            ExternalImportPageItem::Unsupported(item) => unsupported.push(item),
         }
     }
-    Ok((objects, assets, diagnostics))
+    Ok((objects, assets, unsupported, diagnostics))
 }
 
 fn remove_spill_file(path: &Path) -> Result<(), String> {

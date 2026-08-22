@@ -64,3 +64,22 @@ Deno.test("external import folder scope uses portable parent paths", () => {
     throw new Error("root-level files must use the global scope");
   }
 });
+
+Deno.test("external import keeps relationship fields out of ordinary field mappings", () => {
+  const enabled = manifest("enabled.module", true, "person", "summary");
+  enabled.schemas[0].fields.push({
+    key: "references",
+    label: "References",
+    type: "relationship",
+    relationshipType: "references",
+    targetEntityTypes: ["person"],
+  });
+  const catalog = buildExternalImportMappingCatalog([enabled]);
+
+  if (catalog.fields.some((choice) => choice.key === "references")) {
+    throw new Error("relationship fields leaked into ordinary import field mappings");
+  }
+  if (catalog.relationships.map((choice) => choice.id).join(",") !== "references") {
+    throw new Error("relationship mapping must use the manifest relationship type");
+  }
+});

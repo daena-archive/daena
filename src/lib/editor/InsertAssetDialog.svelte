@@ -94,16 +94,10 @@ let draftNaturalH = $state(0);
 let draftNaturalCache = new Map<string, { w: number; h: number }>();
 
 let isWidthOversized = $derived(
-  draftWidth !== "" &&
-    draftNaturalW > 0 &&
-    /^\d+$/.test(draftWidth.trim()) &&
-    Number(draftWidth) > draftNaturalW,
+  draftWidth !== "" && draftNaturalW > 0 && /^\d+$/.test(draftWidth.trim()) && Number(draftWidth) > draftNaturalW,
 );
 let isHeightOversized = $derived(
-  draftHeight !== "" &&
-    draftNaturalH > 0 &&
-    /^\d+$/.test(draftHeight.trim()) &&
-    Number(draftHeight) > draftNaturalH,
+  draftHeight !== "" && draftNaturalH > 0 && /^\d+$/.test(draftHeight.trim()) && Number(draftHeight) > draftNaturalH,
 );
 let isOversized = $derived(isWidthOversized || isHeightOversized);
 
@@ -331,8 +325,7 @@ $effect(() => {
     draftTitle = initialTitle;
     draftWidth = /^\d+$/.test(initialWidth) ? initialWidth : "";
     draftHeight = /^\d+$/.test(initialHeight) ? initialHeight : "";
-    draftAlign =
-      initialAlign === "center" || initialAlign === "right" || initialAlign === "left" ? initialAlign : "";
+    draftAlign = initialAlign === "center" || initialAlign === "right" || initialAlign === "left" ? initialAlign : "";
     draftTitleCustom = !!(initialTitle && initialTitle !== initialAlt);
     draftNaturalW = 0;
     draftNaturalH = 0;
@@ -469,7 +462,13 @@ $effect(() => {
   };
 });
 
-function imageMeta(): { alt: string; title: string; width: string; height: string; align: "" | "left" | "center" | "right" } {
+function imageMeta(): {
+  alt: string;
+  title: string;
+  width: string;
+  height: string;
+  align: "" | "left" | "center" | "right";
+} {
   const alt = draftAlt.trim();
   const title = draftTitleCustom ? draftTitle.trim() : alt;
   const w = /^\d+$/.test(draftWidth.trim()) ? draftWidth.trim() : "";
@@ -497,7 +496,8 @@ async function confirmUploadInsert() {
   const asset = uploadedAsset;
   if (!asset) return;
   const mime = asset.mime_type;
-  let meta: { alt: string; title: string; width: string; height: string; align: "" | "left" | "center" | "right" } | undefined =
+  let meta:
+    { alt: string; title: string; width: string; height: string; align: "" | "left" | "center" | "right" } | undefined =
     undefined;
   if (isImage(mime)) {
     meta = imageMeta();
@@ -618,8 +618,7 @@ function clearStagedUpload() {
   draftTitleCustom = !!(initialTitle && initialTitle !== initialAlt);
   draftWidth = /^\d+$/.test(initialWidth) ? initialWidth : "";
   draftHeight = /^\d+$/.test(initialHeight) ? initialHeight : "";
-  draftAlign =
-    initialAlign === "center" || initialAlign === "right" || initialAlign === "left" ? initialAlign : "";
+  draftAlign = initialAlign === "center" || initialAlign === "right" || initialAlign === "left" ? initialAlign : "";
   draftNaturalW = 0;
   draftNaturalH = 0;
   if (initialSrc) probeNaturalForDialog(initialSrc, "");
@@ -826,10 +825,13 @@ onMount(() => {
                   <span class="staged-mime">{uploadedAsset.mime_type}</span>
                   <span class="staged-dot">·</span>
                   <span>{formatSize(uploadedAsset.size)}</span>
-                  {#if isImage(uploadedAsset.mime_type)}<span class="staged-dot">·</span><span class="staged-image-badge">Image</span>{/if}
+                  {#if isImage(uploadedAsset.mime_type)}<span class="staged-dot">·</span><span
+                      class="staged-image-badge">Image</span
+                    >{/if}
                 </span>
                 {#if shareNew}
-                  <span class="staged-share-hint"><InfoIcon size={11} strokeWidth={1.8} /> Will be shared on insert</span>
+                  <span class="staged-share-hint"
+                    ><InfoIcon size={11} strokeWidth={1.8} /> Will be shared on insert</span>
                 {/if}
               </div>
             </div>
@@ -839,13 +841,15 @@ onMount(() => {
             </label>
             {#if uploadError}<p class="error">{uploadError}</p>{/if}
             <div class="upload-actions upload-actions--staged">
-              <button type="button" class="quiet" onclick={clearStagedUpload}><Trash2Icon size={12} strokeWidth={1.8} /> Clear</button>
+              <button type="button" class="quiet" onclick={clearStagedUpload}
+                ><Trash2Icon size={12} strokeWidth={1.8} /> Clear</button>
               <button
                 type="button"
                 class="secondary"
                 disabled={uploading || !entityId}
                 onclick={handlePickAndStageUpload}>
-                <RefreshCwIcon size={12} strokeWidth={1.8} /> {#if uploading}Uploading…{:else}Choose different file{/if}
+                <RefreshCwIcon size={12} strokeWidth={1.8} />
+                {#if uploading}Uploading…{:else}Choose different file{/if}
               </button>
             </div>
           {/if}
@@ -883,8 +887,7 @@ onMount(() => {
 
           <label class="image-edit-field">
             <span class="field-label"
-              >Alt text <span class="field-badge field-badge--required">accessibility</span></span
-            >
+              >Alt text <span class="field-badge field-badge--required">accessibility</span></span>
             <input
               type="text"
               placeholder="Describe the image for screen readers"
@@ -894,17 +897,14 @@ onMount(() => {
           </label>
 
           <label class="image-edit-field">
-            <span class="field-label"
-              >Hover title <span class="field-badge field-badge--optional">optional</span></span
-            >
+            <span class="field-label">Hover title <span class="field-badge field-badge--optional">optional</span></span>
             <input
               type="text"
               placeholder="Tooltip on hover — leave empty to use alt text"
               value={draftTitle}
               oninput={(e) => updateDraftTitle((e.target as HTMLInputElement).value)} />
             <span class="field-hint"
-              >Shown on hover. Leave empty and the alt text will be used as the <code>title</code>.</span
-            >
+              >Shown on hover. Leave empty and the alt text will be used as the <code>title</code>.</span>
           </label>
 
           <div class="image-align-group">
@@ -954,8 +954,7 @@ onMount(() => {
                   value={draftWidth}
                   oninput={(e) => updateDraftWidth((e.target as HTMLInputElement).value)}
                   aria-invalid={isWidthOversized} />
-                <span class="dim-unit">px</span></label
-              >
+                <span class="dim-unit">px</span></label>
               <span class="dim-x" aria-hidden="true">×</span>
               <label class="dim-input" class:dim-input--oversized={isHeightOversized}
                 ><span class="dim-label">H</span><input
@@ -967,22 +966,26 @@ onMount(() => {
                   value={draftHeight}
                   oninput={(e) => updateDraftHeight((e.target as HTMLInputElement).value)}
                   aria-invalid={isHeightOversized} />
-                <span class="dim-unit">px</span></label
-              >
+                <span class="dim-unit">px</span></label>
               <button
                 type="button"
                 class="image-lock-btn"
                 aria-pressed={draftPreserveAspect}
                 aria-label={draftPreserveAspect ? "Aspect ratio locked" : "Aspect ratio unlocked"}
-                title={draftPreserveAspect ? "Aspect locked — height follows width" : "Aspect unlocked — width and height independent"}
+                title={draftPreserveAspect
+                  ? "Aspect locked — height follows width"
+                  : "Aspect unlocked — width and height independent"}
                 onclick={() => (draftPreserveAspect = !draftPreserveAspect)}>
                 {#if draftPreserveAspect}<LinkIcon size={13} strokeWidth={1.9} />{:else}<UnlinkIcon
                     size={13}
                     strokeWidth={1.9} />{/if}
                 <span>{draftPreserveAspect ? "Locked" : "Free"}</span>
               </button>
-              <button type="button" class="image-auto-btn" onclick={clearDraftDims} title="Clear width and height — use natural size"
-                >Auto</button>
+              <button
+                type="button"
+                class="image-auto-btn"
+                onclick={clearDraftDims}
+                title="Clear width and height — use natural size">Auto</button>
             </div>
             {#if isOversized}
               <div class="image-oversize-warning" role="alert">
@@ -996,8 +999,7 @@ onMount(() => {
                   {:else}
                     (height {draftHeight} > {draftNaturalH})
                   {/if}
-                  may look blurry.</span
-                >
+                  may look blurry.</span>
               </div>
             {/if}
             {#if draftNaturalW && draftNaturalH}
@@ -1041,10 +1043,15 @@ onMount(() => {
                   <span>L</span> <small>960</small>
                   {#if draftNaturalW && 960 > draftNaturalW}<TriangleAlertIcon size={10} strokeWidth={1.9} />{/if}
                 </button>
-                <button type="button" disabled={!draftNaturalW} onclick={() => applyDraftPreset("Original")} title="Use natural dimensions"
-                  ><span>Original</span> {#if draftNaturalW}<small>{draftNaturalW}×{draftNaturalH}</small>{/if}</button
-                >
-                <button type="button" onclick={() => applyDraftPreset("Full")} title="Remove width and height">Full</button>
+                <button
+                  type="button"
+                  disabled={!draftNaturalW}
+                  onclick={() => applyDraftPreset("Original")}
+                  title="Use natural dimensions"
+                  ><span>Original</span>
+                  {#if draftNaturalW}<small>{draftNaturalW}×{draftNaturalH}</small>{/if}</button>
+                <button type="button" onclick={() => applyDraftPreset("Full")} title="Remove width and height"
+                  >Full</button>
               </div>
             </div>
           </div>
@@ -1714,7 +1721,11 @@ footer .primary:disabled {
   border-radius: 4px;
   background: var(--canvas, #f7f6f2);
   border: 1px solid var(--line, #e4e1d8);
-  font: 600 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    600 10px/1.5 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
   color: var(--ink-soft, #77766d);
 }
 .image-edit-dim-group {

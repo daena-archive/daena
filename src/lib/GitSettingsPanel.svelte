@@ -12,6 +12,7 @@ import {
   FileText,
 } from "@lucide/svelte";
 import { listen } from "@tauri-apps/api/event";
+import { onDestroy, untrack } from "svelte";
 import {
   project,
   type Entity,
@@ -32,6 +33,7 @@ let {
   onError,
   onBusyMessage,
   beforeWrite,
+  onStatusChange,
 }: {
   projectOpen: boolean;
   projectId: string;
@@ -39,6 +41,7 @@ let {
   onError: (message: string) => void;
   onBusyMessage?: (message: string) => void;
   beforeWrite?: () => Promise<boolean>;
+  onStatusChange?: (status: GitStatus | null) => void;
 } = $props();
 
 type ChangeGroup = {
@@ -61,6 +64,8 @@ let log = $state<GitLogEntry[]>([]);
 let selectedGroupIds = $state<string[]>([]);
 let commitMessage = $state("");
 let busy = $state(false);
+let loading = $state(false);
+let loadError = $state("");
 let remoteModalOpen = $state(false);
 let remoteModalMode = $state<RemoteModalMode>("add");
 let remoteName = $state("");
@@ -70,8 +75,14 @@ let selectedCommit = $state<string | null>(null);
 let selectedCommitMessage = $state("");
 let snapshotChanges = $state<GitChange[]>([]);
 let recoveryUpstream = $state<GitUpstream | null>(null);
+let refreshToken = 0;
 let snapshotLoadToken = 0;
 let diffRequestToken = 0;
+let busyDepth = 0;
+let selectionProjectId: string | null = null;
+let remoteDialog = $state<HTMLElement | null>(null);
+let confirmationDialog = $state<HTMLElement | null>(null);
+let snapshotDialog = $state<HTMLElement | null>(null);
 let selectedChangePath = $state<string | null>(null);
 let changeDiff = $state("");
 let diffLoading = $state(false);
@@ -89,7 +100,7 @@ type GitConfirmation = {
   title: string;
   message: string;
   confirmLabel: string;
-  run: () => Promise<boolean | void>;
+  run: () => Promise<boolean>;
   squash?: boolean;
 };
 let confirmation = $state<GitConfirmation | null>(null);
@@ -98,6 +109,34 @@ let squashMessage = $state("Consolidate snapshot history");
 
 function friendly(cause: unknown) {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+function notifyStatus(nextStatus: GitStatus | null) {
+  status = nextStatus;
+  onStatusChange?.(nextStatus);
+}
+
+function trapModalFocus(event: KeyboardEvent, dialog: HTMLElement | null) {
+  if (event.key !== "Tab" || !dialog) return;
+  const focusable = [
+    ...dialog.querySelectorAll<HTMLElement>(
+      'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
+    ),
+  ].filter((element) => !element.hasAttribute("hidden"));
+  if (focusable.length === 0) {
+    event.preventDefault();
+    dialog.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 $effect(() => {
@@ -112,7 +151,19 @@ $effect(() => {
 });
 
 $effect(() => {
-  const anyOpen = remoteModalOpen || confirmation !== null || selectedCommit !== null || aiMessageBusy;
+  if (!confirmation) return;
+  const frame = window.requestAnimationFrame(() => document.getElementById("git-confirm-cancel")?.focus());
+  return () => window.cancelAnimationFrame(frame);
+});
+
+$effect(() => {
+  if (!selectedCommit) return;
+  const frame = window.requestAnimationFrame(() => document.getElementById("git-snapshot-close")?.focus());
+  return () => window.cancelAnimationFrame(frame);
+});
+
+$effect(() => {
+  const anyOpen = remoteModalOpen || confirmation !== null || selectedCommit !== null;
   if (!anyOpen) return;
   const onKey = (event: KeyboardEvent) => {
     if (event.key !== "Escape") return;
@@ -126,16 +177,28 @@ $effect(() => {
 });
 
 async function withBusy<T>(label: string, run: () => Promise<T>) {
+  busyDepth += 1;
   busy = true;
   onBusyMessage?.(label);
   try {
     return await run();
   } catch (cause) {
     onError(friendly(cause));
-    throw cause;
+    return undefined;
   } finally {
-    busy = false;
-    onBusyMessage?.("");
+    busyDepth = Math.max(0, busyDepth - 1);
+    busy = busyDepth > 0;
+    if (!busy) onBusyMessage?.("");
+  }
+}
+
+async function prepareWrite() {
+  if (!beforeWrite) return true;
+  try {
+    return await beforeWrite();
+  } catch (cause) {
+    onError(friendly(cause));
+    return false;
   }
 }
 
@@ -502,7 +565,7 @@ function askConfirmation(
   title: string,
   message: string,
   confirmLabel: string,
-  run: () => Promise<boolean | void>,
+  run: () => Promise<boolean>,
   squash = false,
 ) {
   confirmation = { title, message, confirmLabel, run, squash };
@@ -519,7 +582,7 @@ async function runConfirmation() {
   confirmationBusy = true;
   try {
     const completed = await action.run();
-    if (completed !== false) confirmation = null;
+    if (completed) confirmation = null;
   } finally {
     confirmationBusy = false;
   }
@@ -527,51 +590,89 @@ async function runConfirmation() {
 
 function syncSelectedGroups(groups: ChangeGroup[], previousSelected: string[]) {
   const allowed = new Set(groups.map((group) => group.id));
-  const kept = previousSelected.filter((id) => allowed.has(id));
-  return kept.length > 0 ? kept : groups.map((group) => group.id);
+  return previousSelected.filter((id) => allowed.has(id));
 }
 
-async function refresh() {
-  tool = await project.gitToolInfo();
-  if (!projectOpen) {
-    status = null;
-    preflight = null;
-    remotes = [];
-    entities = [];
-    log = [];
-    selectedGroupIds = [];
-    return;
-  }
+function resetProjectState() {
+  snapshotLoadToken += 1;
+  diffRequestToken += 1;
+  if (aiMessageRequestId) void project.aiCancelText(aiMessageRequestId).catch(() => undefined);
+  clearAiMessageListener();
+  aiMessageBusy = false;
+  aiMessageRequestId = null;
+  notifyStatus(null);
+  preflight = null;
+  remotes = [];
+  entities = [];
+  log = [];
+  selectedGroupIds = [];
+  selectionProjectId = null;
+  commitMessage = "";
+  recoveryUpstream = null;
+  selectedCommit = null;
+  selectedCommitMessage = "";
+  selectedChangePath = null;
+  changeDiff = "";
+  snapshotChanges = [];
+  expandedSnapshotGroups = [];
+  remoteModalOpen = false;
+  confirmation = null;
+}
+
+async function refresh(resetSelection = false, expectedProjectId = projectId, expectedOpen = projectOpen) {
+  const token = ++refreshToken;
+  loading = true;
+  loadError = "";
   try {
-    status = await project.gitStatus();
-    if (status.repository) {
+    const nextTool = await project.gitToolInfo();
+    if (token !== refreshToken || expectedProjectId !== projectId) return;
+    tool = nextTool;
+    if (!expectedOpen || !nextTool.available) return;
+
+    const nextStatus = await project.gitStatus();
+    if (token !== refreshToken || expectedProjectId !== projectId) return;
+    notifyStatus(nextStatus);
+    if (nextStatus.repository) {
       const [nextPreflight, nextRemotes, nextLog, nextEntities] = await Promise.all([
         project.gitStagingPreview(),
         project.gitRemoteList(),
         project.gitLog(),
         project.listEntities(),
       ]);
+      if (token !== refreshToken || expectedProjectId !== projectId) return;
       preflight = nextPreflight;
       remotes = nextRemotes;
       log = nextLog;
       entities = nextEntities;
       const groups = buildChangeGroups(nextPreflight.staging_paths, nextEntities);
-      selectedGroupIds = syncSelectedGroups(groups, selectedGroupIds);
+      if (resetSelection || selectionProjectId !== expectedProjectId) {
+        selectedGroupIds = groups.map((group) => group.id);
+        selectionProjectId = expectedProjectId;
+      } else {
+        selectedGroupIds = syncSelectedGroups(groups, selectedGroupIds);
+      }
     } else {
       preflight = null;
       remotes = [];
       entities = [];
       log = [];
       selectedGroupIds = [];
+      selectionProjectId = expectedProjectId;
     }
   } catch (cause) {
-    onError(friendly(cause));
+    if (token === refreshToken && expectedProjectId === projectId) loadError = friendly(cause);
+  } finally {
+    if (token === refreshToken) loading = false;
   }
 }
 
 $effect(() => {
-  void projectOpen;
-  void refresh();
+  const expectedOpen = projectOpen;
+  const expectedProjectId = projectId;
+  refreshToken += 1;
+  loadError = "";
+  untrack(resetProjectState);
+  void refresh(true, expectedProjectId, expectedOpen);
 });
 
 function generateMessage() {
@@ -603,16 +704,16 @@ function generateMessage() {
 
 async function initializeGit() {
   await withBusy("Enabling snapshots…", async () => {
-    status = await project.gitInit();
+    notifyStatus(await project.gitInit());
     await refresh();
   });
 }
 
 async function commitSelected() {
   if (!commitMessage.trim() || selectedPaths.length === 0) return;
-  if (beforeWrite && !(await beforeWrite())) return;
+  if (!(await prepareWrite())) return;
   await withBusy("Creating snapshot…", async () => {
-    status = await project.gitCommit(formatSnapshotMessage(commitMessage), selectedPaths);
+    notifyStatus(await project.gitCommit(formatSnapshotMessage(commitMessage), selectedPaths));
     commitMessage = "";
     await refresh();
   });
@@ -626,12 +727,17 @@ function askSuperSquash() {
     "This permanently replaces the snapshot history with one snapshot representing the latest committed state. All earlier snapshots will be pruned. Remote history may diverge and require an explicit force-push with lease.",
     "Keep latest snapshot",
     async () => {
-      if (beforeWrite && !(await beforeWrite())) return false;
-      await withBusy("Squashing snapshots…", async () => {
-        status = await project.gitSuperSquash(squashMessage.trim() || "Consolidate snapshot history");
+      if (!(await prepareWrite())) return false;
+      const completed = await withBusy("Squashing snapshots…", async () => {
+        const result = await project.gitSuperSquash(squashMessage.trim() || "Consolidate snapshot history");
+        notifyStatus(result.status);
+        recoveryUpstream = result.divergedFromUpstream ? result.upstream : null;
         closeSnapshotModal();
         await refresh();
+        if (result.divergedFromUpstream) recoveryUpstream = result.upstream;
+        return true;
       });
+      return completed === true;
     },
     true,
   );
@@ -683,11 +789,22 @@ function removeRemote(name: string) {
     "This removes the remote from this repository. It does not delete anything from the remote server.",
     "Remove remote",
     async () => {
-      await withBusy("Removing remote…", async () => {
+      const completed = await withBusy("Removing remote…", async () => {
         remotes = await project.gitRemoteRemove(name);
+        return true;
       });
+      return completed === true;
     },
   );
+}
+
+async function pushRemote(remote: GitRemote) {
+  const branch = status?.branch?.trim();
+  if (!branch) return;
+  await withBusy(`Pushing ${branch} to ${remote.name}…`, async () => {
+    notifyStatus(await project.gitPush(remote.name, branch, false));
+    await refresh();
+  });
 }
 
 async function openDownload() {
@@ -755,15 +872,17 @@ function askReset(hash: string) {
     "This discards later commits and all uncommitted changes. Remotes may diverge and need recovery afterward.",
     "Hard-reset to snapshot",
     async () => {
-      if (beforeWrite && !(await beforeWrite())) return false;
-      await withBusy("Restoring snapshot…", async () => {
+      if (!(await prepareWrite())) return false;
+      const completed = await withBusy("Restoring snapshot…", async () => {
         const result = await project.gitResetHard(hash);
-        status = result.status;
+        notifyStatus(result.status);
         recoveryUpstream = result.divergedFromUpstream ? result.upstream : null;
         selectedCommit = null;
         await refresh();
         if (result.divergedFromUpstream) recoveryUpstream = result.upstream;
+        return true;
       });
+      return completed === true;
     },
   );
 }
@@ -776,11 +895,13 @@ function forcePushRecovery() {
     `Force-push local history to ${upstream.remote}/${upstream.branch} with lease. This may rewrite the remote history, but the lease protects newer remote work.`,
     "Force-push with lease",
     async () => {
-      await withBusy("Force-pushing with lease…", async () => {
-        status = await project.gitPush(upstream.remote, upstream.branch, true);
+      const completed = await withBusy("Force-pushing with lease…", async () => {
+        notifyStatus(await project.gitPush(upstream.remote, upstream.branch, true));
         recoveryUpstream = null;
         await refresh();
+        return true;
       });
+      return completed === true;
     },
   );
 }
@@ -791,15 +912,25 @@ function restoreFromRemote() {
     "This discards the local hard-reset state and rebuilds the project index from the upstream remote.",
     "Restore from remote",
     async () => {
-      await withBusy("Restoring from remote…", async () => {
+      const completed = await withBusy("Restoring from remote…", async () => {
         const result = await project.gitRestoreFromUpstream();
-        status = result.status;
+        notifyStatus(result.status);
         recoveryUpstream = null;
         await refresh();
+        return true;
       });
+      return completed === true;
     },
   );
 }
+
+onDestroy(() => {
+  refreshToken += 1;
+  snapshotLoadToken += 1;
+  diffRequestToken += 1;
+  clearAiMessageListener();
+  if (aiMessageRequestId) void project.aiCancelText(aiMessageRequestId).catch(() => undefined);
+});
 </script>
 
 <div class="git-settings">
@@ -850,6 +981,19 @@ function restoreFromRemote() {
       <DatabaseZap size={16} strokeWidth={1.7} aria-hidden="true" />
       <div><strong>Git not available</strong><span>Install Git to save snapshots for this project.</span></div>
     </div>
+  {:else if loading && !status}
+    <div class="empty-inline" role="status">
+      <GitBranch size={16} strokeWidth={1.7} aria-hidden="true" />
+      <div><strong>Loading snapshots…</strong><span>Reading repository status and canonical changes.</span></div>
+    </div>
+  {:else if loadError && !status}
+    <div class="empty-inline load-error" role="alert">
+      <GitBranch size={16} strokeWidth={1.7} aria-hidden="true" />
+      <div>
+        <strong>Could not load snapshots</strong><span>{loadError}</span>
+        <button type="button" class="quiet-button inline-retry" onclick={() => void refresh()}>Try again</button>
+      </div>
+    </div>
   {:else if status && !status.repository}
     <section class="git-block elevated">
       <div class="block-heading">
@@ -868,6 +1012,12 @@ function restoreFromRemote() {
         >Enable snapshots</button>
     </section>
   {:else if status}
+    {#if loadError}
+      <div class="inline-warning" role="alert">
+        <span>{loadError}</span>
+        <button type="button" class="quiet-button" disabled={loading} onclick={() => void refresh()}>Try again</button>
+      </div>
+    {/if}
     <section class="git-overview elevated" aria-label="Repository status">
       <div>
         <span class="panel-kicker">REPOSITORY</span>
@@ -879,7 +1029,8 @@ function restoreFromRemote() {
         <strong>{totalChangeCount}</strong>
         <small>{totalChangeCount === 1 ? "snapshot-ready change" : "snapshot-ready changes"}</small>
       </div>
-      <button type="button" class="quiet-button" disabled={busy} onclick={() => void refresh()}>Refresh</button>
+      <button type="button" class="quiet-button" disabled={busy || loading} onclick={() => void refresh()}
+        >{loading ? "Refreshing…" : "Refresh"}</button>
     </section>
     {#if recoveryUpstream}
       <section class="git-recovery elevated" role="status">
@@ -916,8 +1067,19 @@ function restoreFromRemote() {
               <div>
                 <strong>{remote.name}</strong>
                 <small>{remote.fetchUrl}</small>
+                {#if remote.pushUrl !== remote.fetchUrl}<small>Push: {remote.pushUrl}</small>{/if}
               </div>
               <div class="git-remote-actions">
+                <button
+                  type="button"
+                  class="primary-button compact-button"
+                  disabled={busy || loading || !status.branch || log.length === 0}
+                  title={!status.branch
+                    ? "Switch to a branch before pushing"
+                    : log.length === 0
+                      ? "Create a snapshot before pushing"
+                      : `Push ${status.branch} to ${remote.name}`}
+                  onclick={() => void pushRemote(remote)}>Push</button>
                 <button type="button" class="quiet-button" disabled={busy} onclick={() => openEditRemoteModal(remote)}
                   >Edit URL</button>
                 <button
@@ -943,7 +1105,14 @@ function restoreFromRemote() {
       </div>
       <p class="git-section-copy">Choose the canonical project changes to include in the next snapshot.</p>
       {#if preflight && !preflight.ready}
-        <p class="plugin-warning">{preflight.diagnostics[0] ?? "Commit preflight blocked."}</p>
+        <div class="git-diagnostics" role="alert">
+          <strong>Snapshot blocked</strong>
+          <ul>
+            {#each preflight.diagnostics as diagnostic}
+              <li>{diagnostic}</li>
+            {/each}
+          </ul>
+        </div>
       {/if}
       {#if changeGroups.length === 0}
         <p class="settings-empty">Working tree has no canonical changes to commit.</p>
@@ -1030,7 +1199,11 @@ function restoreFromRemote() {
         <ul class="git-log-list">
           {#each log as entry}
             <li class:active={selectedCommit === entry.hash}>
-              <button type="button" class="git-log-button" onclick={() => void selectCommit(entry.hash)}>
+              <button
+                type="button"
+                class="git-log-button"
+                disabled={busy}
+                onclick={() => void selectCommit(entry.hash)}>
                 <strong>{entry.subject}</strong>
                 <small>{entry.hash} · {snapshotDateLabel(entry.date)}</small>
               </button>
@@ -1043,7 +1216,14 @@ function restoreFromRemote() {
       {#if selectedCommit}
         {@const snapshotEntry = log.find((entry) => entry.hash === selectedCommit)}
         <div class="modal-backdrop">
-          <div class="dialog git-snapshot-dialog" role="dialog" aria-modal="true" aria-labelledby="snapshot-title">
+          <div
+            bind:this={snapshotDialog}
+            class="dialog git-snapshot-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="snapshot-title"
+            tabindex="-1"
+            onkeydown={(event) => trapModalFocus(event, snapshotDialog)}>
             <div class="new-form-heading">
               <div>
                 <span class="panel-kicker">SNAPSHOT DETAILS</span>
@@ -1060,6 +1240,7 @@ function restoreFromRemote() {
               </div>
               <button
                 type="button"
+                id="git-snapshot-close"
                 class="new-form-close"
                 aria-label="Close snapshot details"
                 onclick={closeSnapshotModal}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
@@ -1148,58 +1329,86 @@ function restoreFromRemote() {
 
 {#if remoteModalOpen}
   <div class="modal-backdrop">
-    <div class="dialog" role="dialog" aria-modal="true">
+    <div
+      bind:this={remoteDialog}
+      class="dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="git-remote-title"
+      tabindex="-1"
+      onkeydown={(event) => trapModalFocus(event, remoteDialog)}>
       <div class="new-form-heading">
         <div>
           <span class="panel-kicker">SNAPSHOT REMOTE</span>
-          <strong>{remoteModalMode === "add" ? "Add remote" : `Edit ${editingRemoteName}`}</strong>
+          <strong id="git-remote-title"
+            >{remoteModalMode === "add" ? "Add remote" : `Edit ${editingRemoteName}`}</strong>
         </div>
-        <button type="button" class="new-form-close" onclick={closeRemoteModal}
+        <button type="button" class="new-form-close" aria-label="Close remote dialog" onclick={closeRemoteModal}
           ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>
-      <div class="git-remote-form">
-        {#if remoteModalMode === "add"}
-          <label class="create-input-field" for="git-remote-name">
-            <span>Name</span>
+      <form onsubmit={(event) => (event.preventDefault(), void submitRemoteModal())}>
+        <div class="git-remote-form">
+          {#if remoteModalMode === "add"}
+            <label class="create-input-field" for="git-remote-name">
+              <span>Name</span>
+              <input
+                id="git-remote-name"
+                bind:value={remoteName}
+                placeholder={remotes.length === 0 ? "origin" : "upstream"} />
+            </label>
+          {:else}
+            <p class="dialog-body-copy">
+              Remote name stays <code>{editingRemoteName}</code>. Update the fetch/push URL below.
+            </p>
+          {/if}
+          <label class="create-input-field" for="git-remote-url">
+            <span>URL</span>
             <input
-              id="git-remote-name"
-              bind:value={remoteName}
-              placeholder={remotes.length === 0 ? "origin" : "upstream"} />
+              id="git-remote-url"
+              type="text"
+              inputmode="url"
+              autocomplete="url"
+              bind:value={remoteUrl}
+              placeholder="https://…" />
           </label>
-        {:else}
-          <p class="dialog-body-copy">
-            Remote name stays <code>{editingRemoteName}</code>. Update the fetch/push URL below.
-          </p>
-        {/if}
-        <label class="create-input-field" for="git-remote-url">
-          <span>URL</span>
-          <input id="git-remote-url" bind:value={remoteUrl} placeholder="https://…" />
-        </label>
-      </div>
-      <div class="new-form-actions">
-        <button type="button" class="quiet-button" onclick={closeRemoteModal}>Cancel</button>
-        <button
-          type="button"
-          class="primary-button"
-          disabled={busy || !remoteUrl.trim() || (remoteModalMode === "add" && !remoteName.trim())}
-          onclick={() => void submitRemoteModal()}>{remoteModalMode === "add" ? "Add remote" : "Save URL"}</button>
-      </div>
+        </div>
+        <div class="new-form-actions">
+          <button type="button" class="quiet-button" onclick={closeRemoteModal}>Cancel</button>
+          <button
+            type="submit"
+            class="primary-button"
+            disabled={busy || !remoteUrl.trim() || (remoteModalMode === "add" && !remoteName.trim())}
+            >{remoteModalMode === "add" ? "Add remote" : "Save URL"}</button>
+        </div>
+      </form>
     </div>
   </div>
 {/if}
 
 {#if confirmation}
   <div class="modal-backdrop">
-    <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="git-confirm-title">
+    <div
+      bind:this={confirmationDialog}
+      class="dialog"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="git-confirm-title"
+      aria-describedby="git-confirm-description"
+      tabindex="-1"
+      onkeydown={(event) => trapModalFocus(event, confirmationDialog)}>
       <div class="new-form-heading">
         <div>
           <span class="panel-kicker">CONFIRM SNAPSHOT ACTION</span>
           <strong id="git-confirm-title">{confirmation.title}</strong>
         </div>
-        <button type="button" class="new-form-close" disabled={confirmationBusy} onclick={closeConfirmation}
-          ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
+        <button
+          type="button"
+          class="new-form-close"
+          aria-label="Close confirmation"
+          disabled={confirmationBusy}
+          onclick={closeConfirmation}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>
-      <p class="dialog-body-copy">{confirmation.message}</p>
+      <p id="git-confirm-description" class="dialog-body-copy">{confirmation.message}</p>
       {#if confirmation.squash}
         <label class="create-input-field squash-message-field" for="squash-message">
           <span>Snapshot message <small>(optional)</small></span>
@@ -1207,8 +1416,12 @@ function restoreFromRemote() {
         </label>
       {/if}
       <div class="new-form-actions">
-        <button type="button" class="quiet-button" disabled={confirmationBusy} onclick={closeConfirmation}
-          >Cancel</button>
+        <button
+          id="git-confirm-cancel"
+          type="button"
+          class="quiet-button"
+          disabled={confirmationBusy}
+          onclick={closeConfirmation}>Cancel</button>
         <button
           type="button"
           class="primary-button danger-button"
@@ -1372,6 +1585,48 @@ function restoreFromRemote() {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+.compact-button {
+  padding: 7px 10px;
+}
+.inline-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 13px;
+  border: 1px solid #e5c4b4;
+  border-radius: 9px;
+  background: #fff4ee;
+  color: #7a4a36;
+  font-size: 12px;
+}
+.inline-retry {
+  display: block;
+  margin-top: 10px;
+}
+.load-error {
+  border-color: #e5c4b4;
+  background: #fff4ee;
+}
+.git-diagnostics {
+  padding: 11px 13px;
+  border: 1px solid #e5c4b4;
+  border-radius: 9px;
+  background: #fff4ee;
+  color: #7a4a36;
+  font-size: 12px;
+}
+.git-diagnostics strong {
+  display: block;
+  margin-bottom: 5px;
+}
+.git-diagnostics ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.git-diagnostics li + li {
+  margin-top: 3px;
 }
 .git-remote-form {
   display: grid;

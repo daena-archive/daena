@@ -2907,6 +2907,19 @@ impl ProjectStore {
             .map_err(|error| CoreError::NotFound(format!("git is unavailable: {error}")))
     }
 
+    fn git_repository_is_project_root(&self) -> Result<bool, CoreError> {
+        let output = self.run_git(&["rev-parse", "--show-toplevel"])?;
+        if !output.status.success() {
+            return Ok(false);
+        }
+        let repository_root = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+        let project_root = self.project_root()?;
+        let repository_root = std::fs::canonicalize(&repository_root).unwrap_or(repository_root);
+        let project_root =
+            std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.into());
+        Ok(repository_root == project_root)
+    }
+
     fn git_status_entries(&self) -> Result<Vec<(u8, u8, String)>, CoreError> {
         let output = self.run_git(&["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
         if !output.status.success() {
@@ -2922,11 +2935,12 @@ impl ProjectStore {
             }
             let index_status = record[0];
             let worktree_status = record[1];
-            let mut path = String::from_utf8_lossy(&record[3..]).into_owned();
+            // With porcelain v1's `-z` format, a rename/copy record stores the
+            // destination first and the source in the following NUL-delimited
+            // field. Keep the destination as the actionable canonical path.
+            let path = String::from_utf8_lossy(&record[3..]).into_owned();
             if matches!(index_status, b'R' | b'C') || matches!(worktree_status, b'R' | b'C') {
-                if let Some(new_path) = records.next() {
-                    path = String::from_utf8_lossy(new_path).into_owned();
-                }
+                let _source_path = records.next();
             }
             if !path.is_empty() {
                 entries.push((index_status, worktree_status, path));
@@ -2963,8 +2977,9 @@ impl ProjectStore {
     }
 
     pub fn git_status(&self) -> Result<GitStatus, CoreError> {
-        let repository = self.run_git(&["rev-parse", "--is-inside-work-tree"])?;
-        if !repository.status.success() {
+        // Git walks up parent directories by default. Built-in snapshots must
+        // never attach to or mutate a repository that owns a broader worktree.
+        if !self.git_repository_is_project_root()? {
             return Ok(GitStatus {
                 repository: false,
                 branch: None,
@@ -3245,7 +3260,10 @@ impl ProjectStore {
         self.git_status()
     }
 
-    pub fn git_super_squash_after_checkpoint(&self, message: &str) -> Result<GitStatus, CoreError> {
+    pub fn git_super_squash_after_checkpoint(
+        &self,
+        message: &str,
+    ) -> Result<GitResetResult, CoreError> {
         if message.trim().is_empty() {
             return Err(CoreError::NotFound(
                 "snapshot message cannot be empty".into(),
@@ -3267,6 +3285,7 @@ impl ProjectStore {
         if !head.status.success() {
             return Err(CoreError::Git("no snapshot history to squash".into()));
         }
+        let previous_head = self.git_rev_parse("HEAD")?;
         let read_tree = self.run_git(&["read-tree", "HEAD"])?;
         if !read_tree.status.success() {
             return Err(CoreError::Git(
@@ -3293,7 +3312,28 @@ impl ProjectStore {
                 String::from_utf8_lossy(&reset.stderr).trim().into(),
             ));
         }
-        self.git_status()
+        let current_head = self.git_rev_parse("HEAD")?;
+        let upstream = self.git_upstream()?;
+        let diverged_from_upstream = match (&upstream, &current_head) {
+            (Some(upstream), Some(head)) => upstream
+                .remote_hash
+                .as_ref()
+                .is_some_and(|remote| remote != head),
+            (Some(_), _) => true,
+            _ => false,
+        };
+        Ok(GitResetResult {
+            status: self.git_status()?,
+            previous_head,
+            current_head,
+            upstream,
+            diverged_from_upstream,
+            rebuild: ExternalChangeReport {
+                changed: false,
+                paths: Vec::new(),
+                diagnostics: Vec::new(),
+            },
+        })
     }
 
     #[must_use]
@@ -3454,9 +3494,14 @@ impl ProjectStore {
         Ok(String::from_utf8_lossy(&output.stdout)
             .lines()
             .filter_map(|line| {
-                let mut parts = line.splitn(2, '\t');
+                let mut parts = line.split('\t');
                 let status = parts.next()?.trim();
-                let path = parts.next()?.trim();
+                let first_path = parts.next()?.trim();
+                let path = if status.starts_with('R') || status.starts_with('C') {
+                    parts.next().unwrap_or(first_path).trim()
+                } else {
+                    first_path
+                };
                 if status.is_empty() || path.is_empty() || !Self::is_canonical_git_path(path) {
                     return None;
                 }
@@ -3760,6 +3805,11 @@ impl ProjectStore {
         let mut args = vec!["push".to_string()];
         if force_with_lease {
             args.push("--force-with-lease".into());
+        } else if self.git_upstream()?.is_none() {
+            // The first ordinary push should establish the upstream that the
+            // restore/recovery workflow relies on. Never rewrite an existing
+            // upstream when pushing to an additional remote.
+            args.push("--set-upstream".into());
         }
         args.push(remote.trim().into());
         args.push(branch);

@@ -1051,7 +1051,7 @@ export const project = {
   gitLog: () => invoke<GitLogEntry[]>("project_git_log"),
   gitCommit: (message: string, paths?: string[]) =>
     invoke<GitStatus>("project_git_commit", { message, paths: paths ?? null }),
-  gitSuperSquash: (message: string) => invoke<GitStatus>("project_git_super_squash", { message }),
+  gitSuperSquash: (message: string) => invoke<GitResetResult>("project_git_super_squash", { message }),
   gitToolInfo: () => invoke<GitToolInfo>("git_tool_info"),
   gitShowTree: (hash: string) => invoke<string[]>("project_git_show_tree", { hash }),
   gitShowMessage: (hash: string) => invoke<string>("project_git_show_message", { hash }),

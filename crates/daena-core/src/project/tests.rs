@@ -1166,6 +1166,85 @@ fn git_tool_info_reports_system_git() {
 }
 
 #[test]
+fn git_integration_does_not_attach_to_a_parent_repository() {
+    let parent = std::env::temp_dir().join(format!("daena-git-parent-{}", Uuid::new_v4()));
+    let root = parent.join("project");
+    std::fs::create_dir_all(&parent).unwrap();
+    let run_git = |directory: &std::path::Path, args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(directory)
+            .output()
+            .unwrap()
+    };
+    assert!(run_git(&parent, &["init", "-q"]).status.success());
+
+    let store = ProjectStore::open_directory(&root).unwrap();
+    assert!(!store.git_status().unwrap().repository);
+
+    let initialized = store.git_init().unwrap();
+    assert!(initialized.repository);
+    let top_level =
+        String::from_utf8(run_git(&root, &["rev-parse", "--show-toplevel"]).stdout).unwrap();
+    assert_eq!(
+        std::fs::canonicalize(top_level.trim()).unwrap(),
+        std::fs::canonicalize(&root).unwrap()
+    );
+    std::fs::remove_dir_all(parent).unwrap();
+}
+
+#[test]
+fn git_rename_status_and_snapshot_changes_use_the_destination_path() {
+    let root = std::env::temp_dir().join(format!("daena-git-rename-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let run_git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .unwrap()
+    };
+    assert!(run_git(&["init", "-q"]).status.success());
+    assert!(run_git(&["config", "user.email", "tests@daena.local"])
+        .status
+        .success());
+    assert!(run_git(&["config", "user.name", "Daena tests"])
+        .status
+        .success());
+    assert!(run_git(&["config", "commit.gpgsign", "false"])
+        .status
+        .success());
+    std::fs::create_dir_all(root.join("assets/files")).unwrap();
+    std::fs::write(root.join("assets/files/old.txt"), "rename me\n").unwrap();
+    assert!(run_git(&["add", "--all"]).status.success());
+    assert!(run_git(&["commit", "-qm", "base"]).status.success());
+
+    assert!(
+        run_git(&["mv", "assets/files/old.txt", "assets/files/new.txt"])
+            .status
+            .success()
+    );
+    let status = store.git_status().unwrap();
+    assert!(status
+        .canonical_changes
+        .iter()
+        .any(|path| path == "assets/files/new.txt"));
+    assert!(!status
+        .canonical_changes
+        .iter()
+        .any(|path| path == "assets/files/old.txt"));
+
+    assert!(run_git(&["commit", "-qm", "rename asset"]).status.success());
+    let head = store.git_rev_parse("HEAD").unwrap().unwrap();
+    let changes = store.git_show_changes(&head).unwrap();
+    assert!(changes
+        .iter()
+        .any(|change| change.status.starts_with('R') && change.path == "assets/files/new.txt"));
+    assert!(changes.iter().all(|change| !change.path.contains('\t')));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn git_commit_rejects_paths_outside_preflight_and_accepts_subset() {
     let root = std::env::temp_dir().join(format!("daena-git-select-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();
@@ -1368,9 +1447,10 @@ fn git_remote_recovery_restores_upstream_and_force_pushes_with_lease() {
     store
         .git_remote_add("origin", &remote.to_string_lossy())
         .unwrap();
-    assert!(run_git(&root, &["push", "-q", "-u", "origin", &branch])
-        .status
-        .success());
+    store.git_push("origin", Some(&branch), false).unwrap();
+    let configured_upstream = store.git_upstream().unwrap().unwrap();
+    assert_eq!(configured_upstream.remote, "origin");
+    assert_eq!(configured_upstream.branch, branch);
 
     store
         .create_entity(CreateEntity {
@@ -1387,8 +1467,11 @@ fn git_remote_recovery_restores_upstream_and_force_pushes_with_lease() {
         .status
         .success());
 
-    let reset = store.git_reset_hard(&base).unwrap();
-    assert!(reset.diverged_from_upstream);
+    let squashed = store
+        .git_super_squash_after_checkpoint("consolidated history")
+        .unwrap();
+    assert!(squashed.diverged_from_upstream);
+    assert_ne!(squashed.current_head.as_deref(), Some(later.as_str()));
     let restored = store.git_restore_from_upstream().unwrap();
     assert_eq!(restored.current_head.as_deref(), Some(later.as_str()));
     assert!(store

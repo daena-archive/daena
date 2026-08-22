@@ -6439,7 +6439,7 @@ async fn project_git_commit(
 async fn project_git_super_squash(
     state: tauri::State<'_, SharedCore>,
     message: String,
-) -> Result<GitStatus, String> {
+) -> Result<GitResetResult, String> {
     flush_project_checkpoint(state.clone(), "git super squash").await?;
     with_read_project(state, move |project| {
         project.git_super_squash_after_checkpoint(&message)

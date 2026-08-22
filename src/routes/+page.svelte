@@ -4428,8 +4428,8 @@ onMount(() => {
           (gitStatus?.repository ? `Snapshots · ${gitStatus.branch || "detached"}` : "Open Snapshots settings")}
         onclick={() => void openSettings("git")}
         ><span class="rail-icon"><GitBranch size={16} strokeWidth={1.8} /></span><span>Snapshots</span
-        >{#if gitStatus?.repository && gitStatus.changes.length > 0}<small class="rail-git-count"
-            >{gitStatus.changes.length}</small
+        >{#if gitStatus?.repository && gitStatus.canonical_changes.length > 0}<small class="rail-git-count"
+            >{gitStatus.canonical_changes.length}</small
           >{/if}</button>
     {/if}
     <button
@@ -5174,6 +5174,7 @@ onMount(() => {
             projectId={projectInfo?.root ?? ""}
             aiEnabled={projectInfo?.aiEnabled ?? false}
             onError={(message) => (error = message)}
+            onStatusChange={(status) => (gitStatus = status)}
             beforeWrite={flushAutoSave} />
         {/snippet}
       </SettingsView>
